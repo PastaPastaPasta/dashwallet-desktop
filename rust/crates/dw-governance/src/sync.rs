@@ -60,9 +60,11 @@ use crate::peer::{
     EVENTS_QUEUE, INV_GOVERNANCE_OBJECT, INV_GOVERNANCE_VOTE, Inbound, InvItem, Peer, PeerConfig,
     PeerEvent, SSC_GOVOBJ, SSC_GOVOBJ_VOTE, empty_vote_filter, object_fetch_filter,
 };
-use crate::store::{GovernanceStore, MAX_REFUSED_PER_PROPOSAL, VoteRejection, recover};
+use crate::store::{
+    GovernanceStore, MAX_REFUSED_PER_PROPOSAL, OperatorVote, VoteRejection, recover,
+};
 use crate::validate::ObjectRejection;
-use crate::vote::GovernanceVote;
+use crate::vote::{GovernanceVote, SentinelSignal};
 
 /// Where a sync is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,6 +241,10 @@ pub struct SyncConfig {
     /// Votes recovered and not kept, past which a peer's vote copies are
     /// refused before recovery, at no penalty (D63).
     pub max_unkept: u32,
+    /// Operator signatures that failed their check, past which a peer's
+    /// operator vote copies are refused before the check, at no penalty: a
+    /// BLS check costs a pairing, some 20 to 40 compact recoveries (D89).
+    pub max_failed_operator_checks: u32,
     /// Hashes one peer may announce that the wallet has not fetched (Core
     /// `MAX_PEER_OBJECT_ANNOUNCEMENTS`).
     pub max_announcements: usize,
@@ -277,6 +283,7 @@ impl SyncConfig {
             max_misbehaviour: 1000,
             max_suspect: 10_000,
             max_unkept: 25_000,
+            max_failed_operator_checks: 1_000,
             max_announcements: 100_000,
             max_refetches: MAX_REFUSED_PER_PROPOSAL,
             max_parent_fetches: 100,
@@ -363,6 +370,9 @@ const MAX_LATE: usize = 100_000;
 /// Vote syncs remembered before the first pruning of the session's
 /// history.
 const MIN_HISTORY_PRUNE: usize = 1024;
+/// Parked operator votes checked a tick: a BLS check costs about a
+/// millisecond (D89).
+const PARKED_CHECKS_PER_TICK: usize = 64;
 
 /// One connected peer and what the run asked of it.
 struct PeerState {
@@ -371,6 +381,8 @@ struct PeerState {
     suspect: u32,
     /// Its votes recovered and not kept (D63).
     unkept: u32,
+    /// Its operator votes whose signature failed the check (D89).
+    failed_checks: u32,
     /// Hashes it announced that are not fetched or given up yet.
     announced: usize,
     /// Objects phase: `ssc(10)`'s count and the object invs since.
@@ -428,6 +440,7 @@ impl PeerState {
             misbehaviour: 0,
             suspect: 0,
             unkept: 0,
+            failed_checks: 0,
             announced: 0,
             full_sync: None,
             vote_asked: Vec::new(),
@@ -954,6 +967,11 @@ impl Run {
     /// ends, and its announcements stop counting against their peers'
     /// limits (D58).
     fn accepted(&mut self, item: &Item) {
+        // A refetch of a vote now held ends; the asked peer's copy is then
+        // unsolicited (BL-230, D87).
+        if item.1 == INV_GOVERNANCE_VOTE && self.shared.store().has_vote(&item.0) {
+            self.refetches.out.remove(&item.0);
+        }
         if let Some(r) = self.release(item) {
             let (mut asked, mut owed) = (r.asked, r.owed);
             asked.push(r.peer);
@@ -1041,7 +1059,7 @@ impl Run {
     /// accepted, but a refusal never fails the phase (D35).
     fn refused(&mut self, item: Item, from: usize, taken: Taken) -> bool {
         if let Some(untried) = taken.refetch {
-            self.ask_refetch(item.0, untried);
+            self.ask_refetches(vec![(item.0, untried)]);
             return false;
         }
         self.retry(item, Some(from), taken, false)
@@ -1320,18 +1338,41 @@ impl Run {
             self.refused(item, from, taken);
             return;
         }
-        self.recovered += 1;
-        // Recovered without the store's lock.
-        let checked = match recover(vote, outcome, self.shared.network) {
-            Ok(c) => c,
-            Err(_) => {
-                self.misbehaved(from, "vote signature recovers no key");
+        let parent = vote.parent_hash;
+        let result = if SentinelSignal::from_code(vote.signal).is_some() {
+            // An operator vote, checked without the store's lock (D89);
+            // past its budget of failed checks, the sender's copies go to
+            // the next announcer unchecked.
+            let key = self.shared.store().operator_key(&vote.masternode_outpoint);
+            if key.is_some()
+                && self
+                    .peer(from)
+                    .is_some_and(|p| p.failed_checks >= self.cfg.max_failed_operator_checks)
+            {
                 self.refused(item, from, taken);
                 return;
             }
+            self.recovered += 1;
+            let v = OperatorVote::checked(vote, key);
+            if matches!(v.checked, Some((_, false)))
+                && let Some(p) = self.peer_mut(from)
+            {
+                p.failed_checks += 1;
+            }
+            self.shared.store().add_operator_vote(v, addr, now)
+        } else {
+            // Recovered without the store's lock.
+            self.recovered += 1;
+            let checked = match recover(vote, outcome, self.shared.network) {
+                Ok(c) => c,
+                Err(_) => {
+                    self.misbehaved(from, "vote signature recovers no key");
+                    self.refused(item, from, taken);
+                    return;
+                }
+            };
+            self.shared.store().add_checked(checked, addr, now)
         };
-        let parent = checked.vote.parent_hash;
-        let result = self.shared.store().add_checked(checked, addr, now);
         // A relay fetched and held from here on: gone by its sync, it
         // completes none (D78).
         if self.shared.store().has_vote(&hash) {
@@ -1344,6 +1385,7 @@ impl Run {
         if let Err(r) = result
             && !r.is_suspect()
             && !r.is_invalid()
+            && r != VoteRejection::Parked
             && !self.shared.store().has_vote(&hash)
             && let Some(p) = self.peer_mut(from)
         {
@@ -1374,9 +1416,16 @@ impl Run {
                 }
                 self.refused(item, from, taken);
             }
-            // The key's limit, met by the key the sender signed with:
-            // another announcer's copy may be kept (D59).
-            Err(VoteRejection::KeyLimit) => {
+            // Held until its outpoint resolves or its operator key changes
+            // (D89).
+            Err(VoteRejection::Parked) => {
+                self.accepted(&item);
+                self.progressed();
+            }
+            // The key's limit, met by the key the sender signed with, or an
+            // operator signature that fails: another announcer's copy may be
+            // kept (D59, D89).
+            Err(VoteRejection::KeyLimit | VoteRejection::Unverifiable) => {
                 self.refused(item, from, taken);
             }
             // Obsolete or of the same time: the store remembers this copy,
@@ -1414,6 +1463,7 @@ impl Run {
     }
 
     fn on_not_found(&mut self, from: usize, items: Vec<InvItem>) {
+        let mut moved = Vec::new();
         for i in items {
             // The kind is the peer's word: a request of the other kind is
             // ended all the same, as misbehaviour, and moves on with its own
@@ -1428,7 +1478,7 @@ impl Run {
                 // A vote asked for again: the next peer is asked. No answer
                 // settles it, as none proves no node holds it (D77).
                 if let Some(untried) = self.take_refetch(from, &i.hash) {
-                    self.ask_refetch(i.hash, untried);
+                    moved.push((i.hash, untried));
                     continue;
                 }
                 // An answer to a `getdata` that timed out spends it (D61).
@@ -1447,6 +1497,7 @@ impl Run {
             // dropped with a list change) is not a lost sync item.
             self.retry(item, Some(from), r.into(), false);
         }
+        self.ask_refetches(moved);
     }
 
     fn on_get_data(&self, from: usize, items: Vec<InvItem>) {
@@ -1521,10 +1572,7 @@ impl Run {
             .filter(|(_, r)| r.peer == id)
             .map(|(h, r)| (*h, r.untried.clone()))
             .collect();
-        for (hash, untried) in refetched {
-            self.refetches.out.remove(&hash);
-            self.ask_refetch(hash, untried);
-        }
+        self.ask_refetches(refetched);
         for item in pending {
             let r = self.requests.pending.remove(&item).expect("listed");
             self.requests.phase_pending -= usize::from(r.phase);
@@ -1632,14 +1680,7 @@ impl Run {
                 self.retry(item, None, r.into(), false);
             }
         }
-        let batch = self.cfg.getdata_batch.max(1);
-        for (peer, items) in again {
-            if let Some(p) = self.peer(peer) {
-                for chunk in items.chunks(batch) {
-                    p.peer.send_getdata(chunk);
-                }
-            }
-        }
+        self.send_batched(again);
         let late: Vec<([u8; 32], Vec<usize>)> = self
             .refetches
             .out
@@ -1647,10 +1688,7 @@ impl Run {
             .filter(|(_, r)| now.duration_since(r.sent) >= timeout)
             .map(|(h, r)| (*h, r.untried.clone()))
             .collect();
-        for (hash, untried) in late {
-            self.refetches.out.remove(&hash);
-            self.ask_refetch(hash, untried);
-        }
+        self.ask_refetches(late);
         self.refetch_votes();
         self.refill();
         for p in &self.peers {
@@ -1659,7 +1697,34 @@ impl Run {
                 p.peer.close();
             }
         }
+        self.check_parked();
         self.shared.store().prune(unix_now());
+    }
+
+    /// Checks up to [`PARKED_CHECKS_PER_TICK`] parked operator votes whose
+    /// outpoint now has an operator key they were not tried under, without
+    /// the store's lock (D89).
+    fn check_parked(&mut self) {
+        let now = unix_now();
+        let ready = self
+            .shared
+            .store()
+            .take_parked_ready(PARKED_CHECKS_PER_TICK);
+        let mut stored = false;
+        for (v, from) in ready {
+            let key = self
+                .shared
+                .store()
+                .operator_key(&v.vote.masternode_outpoint);
+            let v = OperatorVote {
+                held: v.held,
+                ..OperatorVote::checked(v.vote, key)
+            };
+            stored |= self.shared.store().add_operator_vote(v, from, now).is_ok();
+        }
+        if stored {
+            self.changed();
+        }
     }
 
     /// Asks the connected peers in turn for the votes the store dropped as
@@ -1671,7 +1736,8 @@ impl Run {
     fn refetch_votes(&mut self) {
         let hashes = self.shared.store().take_refetch();
         let ids: Vec<usize> = self.peers.iter().map(|p| p.peer.id).collect();
-        let mut asks: HashMap<usize, Vec<InvItem>> = HashMap::new();
+        let mut asks = Vec::new();
+        let mut queued = HashSet::new();
         for hash in hashes {
             // The rest wait for a later run, which starts with this one
             // (D79).
@@ -1685,30 +1751,21 @@ impl Run {
                     .requests
                     .pending
                     .contains_key(&(hash, INV_GOVERNANCE_VOTE))
+                || !queued.insert(hash)
             {
                 continue;
             }
-            let Some((&peer, untried)) = ids.split_first() else {
-                return;
-            };
-            self.refetches.started += 1;
-            let r = Refetch {
-                peer,
-                sent: Instant::now(),
-                untried: untried.to_vec(),
-            };
-            self.refetches.out.insert(hash, r);
-            let kind = INV_GOVERNANCE_VOTE;
-            asks.entry(peer).or_default().push(InvItem { kind, hash });
-        }
-        let batch = self.cfg.getdata_batch.max(1);
-        for (peer, items) in asks {
-            if let Some(p) = self.peer(peer) {
-                for chunk in items.chunks(batch) {
-                    p.peer.send_getdata(chunk);
-                }
+            if ids.is_empty() {
+                break;
             }
+            // Each hash starts at the next peer, so no one peer is asked
+            // for every one first (BL-230, D87).
+            let mut order = ids.clone();
+            order.rotate_left(self.refetches.started % ids.len());
+            self.refetches.started += 1;
+            asks.push((hash, order));
         }
+        self.ask_refetches(asks);
     }
 
     /// Ends the refetch of `hash` asked of `from`, if any; the peers left
@@ -1720,23 +1777,43 @@ impl Run {
         self.refetches.out.remove(hash).map(|r| r.untried)
     }
 
-    /// Asks the next connected peer of `untried` for `hash`; with none, the
-    /// store keeps it uncertain (D72, D76).
-    fn ask_refetch(&mut self, hash: [u8; 32], mut untried: Vec<usize>) {
-        untried.retain(|id| self.peer(*id).is_some());
-        if untried.is_empty() {
-            return;
-        }
-        let peer = untried.remove(0);
-        let r = Refetch {
-            peer,
-            sent: Instant::now(),
-            untried,
-        };
-        self.refetches.out.insert(hash, r);
-        if let Some(p) = self.peer(peer) {
+    /// Asks the next connected peer of each hash's `untried` for it, in
+    /// batches per peer (BL-230, D87), ending a refetch already out for
+    /// it; a hash with none left the store keeps uncertain (D72, D76).
+    fn ask_refetches(&mut self, asks: Vec<([u8; 32], Vec<usize>)>) {
+        let mut by_peer: HashMap<usize, Vec<InvItem>> = HashMap::new();
+        for (hash, mut untried) in asks {
+            self.refetches.out.remove(&hash);
+            untried.retain(|id| self.peer(*id).is_some());
+            if untried.is_empty() {
+                continue;
+            }
+            let peer = untried.remove(0);
+            let r = Refetch {
+                peer,
+                sent: Instant::now(),
+                untried,
+            };
+            self.refetches.out.insert(hash, r);
             let kind = INV_GOVERNANCE_VOTE;
-            p.peer.send_getdata(&[InvItem { kind, hash }]);
+            by_peer
+                .entry(peer)
+                .or_default()
+                .push(InvItem { kind, hash });
+        }
+        self.send_batched(by_peer);
+    }
+
+    /// Sends each connected peer its items, in `getdata`s of up to the
+    /// batch size.
+    fn send_batched(&self, by_peer: HashMap<usize, Vec<InvItem>>) {
+        let batch = self.cfg.getdata_batch.max(1);
+        for (peer, items) in by_peer {
+            if let Some(p) = self.peer(peer) {
+                for chunk in items.chunks(batch) {
+                    p.peer.send_getdata(chunk);
+                }
+            }
         }
     }
 
@@ -2046,6 +2123,7 @@ async fn run_inner(
     let base_bytes = shared.progress().bytes_received;
     // Overflow before the run is none of its business.
     shared.store().take_overflow();
+    shared.store().begin_vote_sync();
     let (tx, mut rx) = mpsc::channel(EVENTS_QUEUE);
     let (peers, errors) = connect_peers(&candidates, &cfg, &history, &tx).await;
     // A stop while connecting must not spend the peers' repeat windows.
@@ -2134,7 +2212,7 @@ async fn run_inner(
     // Votes of the current proposals, spread over the peers that did not
     // vote-sync them within the window; with no fresh peer, only the check
     // that enough peers completed them (D68).
-    {
+    let voted = {
         shared.set_phase(Phase::SyncingVotes);
         let started = Instant::now();
         let current = {
@@ -2144,7 +2222,7 @@ async fn run_inner(
             store.current_proposals(unix_now())
         };
         run.votes_open = true;
-        run.ask_votes(current);
+        run.ask_votes(current.clone());
         let drained = run
             .drain(&mut rx, stop, |r| {
                 Ok(r.peers.iter().all(PeerState::votes_done))
@@ -2161,9 +2239,10 @@ async fn run_inner(
             )));
         }
         shared.progress().votes_secs = Some(started.elapsed().as_secs_f64());
-    }
+        current
+    };
 
-    shared.store().set_synced();
+    shared.store().set_synced(&voted);
     {
         let mut p = shared.progress();
         p.phase = Phase::Synced;

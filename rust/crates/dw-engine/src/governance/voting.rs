@@ -201,7 +201,11 @@ fn rejection_reason(r: VoteRejection) -> &'static str {
     match r {
         VoteRejection::Duplicate => "duplicate",
         VoteRejection::Ignored => "expired",
-        VoteRejection::Unverifiable | VoteRejection::Orphan => "unknown_object",
+        // `Parked` is an operator vote's (D89): the facade relays only
+        // funding votes.
+        VoteRejection::Unverifiable | VoteRejection::Orphan | VoteRejection::Parked => {
+            "unknown_object"
+        }
         VoteRejection::Malformed => "malformed",
         VoteRejection::BadSignature => "bad_signature",
         VoteRejection::UnknownVotingKey => "unknown_voting_key",
@@ -309,6 +313,7 @@ mod tests {
                 ResolvedMasternode {
                     pro_tx_hash,
                     voting_key_id: key_id(1),
+                    operator_key: [0; 48],
                     weight: 1,
                 },
             )

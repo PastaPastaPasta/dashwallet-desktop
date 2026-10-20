@@ -15,18 +15,21 @@
 //! `match`, so a new engine variant fails to compile until it has a code.
 
 mod engine;
+mod governance;
 mod nested;
 mod platform;
 
 use serde::Serialize;
 use ts_rs::TS;
 
+use crate::dto::governance::GovernanceSyncPhaseName;
 use crate::dto::platform::{
     BudgetPurposeName, DashPayProfile, DispatchStateName, EligibilityName, KeyPurposeName,
     ProfileFieldName, RevokeCauseName, UsernameRuleName,
 };
 
 pub use engine::{EngineCode, VaultCode};
+pub use governance::GovernanceCode;
 pub use nested::{
     BackupCode, CoinJoinCode, CompatCode, ConsoleCode, LabelsCode, MasternodeCode, PsbtCode,
     SendCode, SignerCode, UriCode,
@@ -74,6 +77,7 @@ pub enum ErrorCode {
     Invitation(InvitationCode),
     Avatar(AvatarCode),
     Credits(CreditsCode),
+    Governance(GovernanceCode),
 }
 
 /// Declares a code enum: each variant serialises as its string, and
@@ -255,10 +259,17 @@ pub enum ErrorData {
     },
     /// `platform.feature_off`.
     Feature { feature: String },
-    /// `platform.not_implemented`, `not_implemented`: the call that is not.
+    /// `governance.not_synced`: the phase sync is in (no run reached
+    /// `synced` yet, or no tip for the clock).
+    GovernancePhase { phase: GovernanceSyncPhaseName },
+    /// `governance.proposal_not_found`: the hash asked for.
+    ProposalHash { hash: String },
+    /// `platform.not_implemented`, `governance.not_implemented`,
+    /// `not_implemented`: the call that is not.
     Call { call: String },
     /// `send.broadcast_rejected`, `send.broadcast_unknown` and their `psbt.*` and
-    /// `coinjoin.broadcast_rejected` twins: the peer's or library's reason.
+    /// `coinjoin.broadcast_rejected` twins: the peer's or library's reason;
+    /// `governance.vote_rejected`: the check that failed (mg-engine §4).
     Reason { reason: String },
     /// `tx_action_refused`: why the abandon or resend was refused.
     TxAction { refusal: TxActionRefusalName },
@@ -441,6 +452,7 @@ into_code!(
     Invitation(InvitationCode),
     Avatar(AvatarCode),
     Credits(CreditsCode),
+    Governance(GovernanceCode),
 );
 
 #[cfg(test)]

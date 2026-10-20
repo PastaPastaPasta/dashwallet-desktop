@@ -29,7 +29,12 @@ Checks, in order:
     every voter's outpoint from its ProRegTx, counts each vote exactly (no ranged vote, no close
     call) and its tally and `gobject getcurrentvotes` follow Core's;
  5. the superblock: the masternodes' trigger pays the passing proposal at height 1500, and the
-    wallet, synced again, shows it Funded at that height.
+    wallet, synced again, shows it Funded at that height;
+ 6. the other signals (MG-02 D82–D89): Core takes a proposal's valid, delete and endorsed votes
+    signed by the operator key only, and v24 has no RPC that signs one (`vote-conf` is gone,
+    #5552), so it refuses the voting-key votes `vote-alias` signs; after Core's maintenance pass
+    (`mockscheduler`) the wallet's flags, signal results and `gobject list` filters are Core's
+    (operator votes themselves: unit tests only, D90).
 
 Run (DWCLI = a built dwcli):
   DWCLI=<target>/debug/dwcli DWD_PYTHON=<venv>/bin/python DASHCORE_DIR=<dashcore> \\
@@ -141,6 +146,13 @@ class DwdGovernance(DashTestFramework):
 
     def mn(self, i):
         return self.mninfo[i]
+
+    def maintenance_pass(self, nodes):
+        """Runs Core's governance maintenance (`CheckAndRemove`, every 5 minutes) now, and waits
+        for it: the scheduler runs the task on its own thread."""
+        for n in nodes:
+            with n.assert_debug_log(["UpdateCachesAndClean -- Governance Objects:"], timeout=30):
+                n.mockscheduler(300)
 
     # --- the test ----------------------------------------------------------------------
 
@@ -374,6 +386,40 @@ class DwdGovernance(DashTestFramework):
         assert_equal(rows[p0]["status"], "funded")
         assert_equal(rows[p0]["funded_height"], FIRST_SUPERBLOCK)
         assert rows[p1]["funded_height"] is None
+
+        self.log.info("6. other signals: Core refuses voting-key votes on them; flags and lists agree")
+        # Core checks these against the operator key (`ProcessVote`, D89); the wallet relays
+        # funding votes only (D30) and stores none signed so (D89).
+        for signal in ("valid", "delete", "endorsed"):
+            r = node.gobject("vote-alias", p0, signal, "yes", regular[0].proTxHash)
+            assert_equal(r["overall"], "Voted successfully 0 time(s) and failed 1 time(s).")
+            r2 = node.gobject("vote-many", p1, signal, "no")
+            assert_equal(r2["overall"], f"Voted successfully 0 time(s) and failed {len(self.mninfo)} time(s).")
+            for d in [*r["detail"].values(), *r2["detail"].values()]:
+                assert "-- Invalid vote," in d["errorMessage"], d
+        self.maintenance_pass([node])
+        lists = {signal: f"gobject list {signal} proposals" for signal in ("valid", "funding", "delete", "endorsed")}
+        lines = [f"gobject get {p0}", f"gobject get {p1}", *lists.values()]
+        out = dwcli.governance(
+            "--sync-height", str(node.getblockcount()), "--min-proposals", "2", "--max-ranged", "0",
+            *[a for line in lines for a in ("--console", line)],
+            options=("--collateral-rpc", rpc),
+        )
+        console = dict(out["console"])
+        for h in (p0, p1):
+            kind, text = console[f"gobject get {h}"]
+            assert_equal(kind, "result")
+            ours, core = json.loads(text), node.gobject("get", h)
+            for k in ("fCachedValid", "fCachedFunding", "fCachedDelete", "fCachedEndorsed", "FundingResult",
+                      "ValidResult", "DeleteResult", "EndorsedResult"):
+                assert_equal((h, k, ours[k]), (h, k, core[k]))
+            for result in ("ValidResult", "DeleteResult", "EndorsedResult"):
+                assert_equal(core[result]["YesCount"] + core[result]["NoCount"], 0)
+        for signal, line in lists.items():
+            kind, text = console[line]
+            assert_equal(kind, "result")
+            assert_equal(sorted(json.loads(text)), sorted(node.gobject("list", signal, "proposals")))
+        assert_equal(sorted(node.gobject("list", "valid", "proposals")), sorted([p0, p1]))
         self.log.info("governance suite passed")
 
 

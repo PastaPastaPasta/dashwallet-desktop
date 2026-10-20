@@ -5,21 +5,21 @@
 //!
 //! The `*_json` functions turn the facade's records into Core's objects and
 //! touch no network, so the tests build the records by hand. Vote counts are
-//! the facade's estimates (MG-00 D45); the wallet tallies funding votes on
-//! proposals only, so triggers, the `valid`/`delete`/`endorsed` tallies and
-//! the erased-object count stay at what an SPV node can honestly say.
+//! the facade's estimates (MG-00 D45); the wallet tallies the votes on
+//! proposals only (all four signals, MG-02 D82), so triggers and the
+//! erased-object count stay at what an SPV node can honestly say.
 
 use std::sync::Arc;
 
 use dw_engine::EngineError;
 use dw_engine::governance::{
     CurrentVoteRow, Governance, GovernanceError, GovernanceInfo, GovernanceSyncPhase,
-    ProposalDetail, ProposalQuery, ProposalRow, ProposalScope, RawVote, VoteOutcome,
-    superblock_budget,
+    ProposalDetail, ProposalQuery, ProposalRow, ProposalScope, RawVote, VoteOutcome, VoteSignal,
+    VoteTally, superblock_budget,
 };
 use dw_governance::object::{display_hex, parse_display_hex};
 use dw_governance::params::governance_params;
-use dw_governance::vote::GovernanceVote;
+use dw_governance::vote::{GovernanceVote, SIGNAL_FUNDING, SentinelSignal};
 use zeroize::Zeroizing;
 
 use crate::ConsoleFailure;
@@ -66,14 +66,15 @@ impl ListSignal {
         })
     }
 
-    /// Whether an object with this cached funding flag passes the filter.
-    /// Every listed object is cached valid; none is cached delete or
-    /// endorsed (the wallet tallies funding votes only, MG-02 D21).
-    fn matches(self, cached_funding: bool) -> bool {
+    /// Whether an object with these cached flags passes the filter
+    /// (`ListObjects`).
+    fn matches(self, flags: &Flags) -> bool {
         match self {
-            Self::Valid | Self::All => true,
-            Self::Funding => cached_funding,
-            Self::Delete | Self::Endorsed => false,
+            Self::Valid => flags.valid,
+            Self::Funding => flags.funding,
+            Self::Delete => flags.delete,
+            Self::Endorsed => flags.endorsed,
+            Self::All => true,
         }
     }
 }
@@ -147,10 +148,9 @@ pub fn count_text(proposals: usize, votes: u64) -> String {
     )
 }
 
-/// `AbsoluteYesCount`, `YesCount`, `NoCount`, `AbstainCount` of the funding
+/// `AbsoluteYesCount`, `YesCount`, `NoCount`, `AbstainCount` of a signal's
 /// tally (`GetVotesJson`), as the facade estimates them.
-fn funding_counts(d: &ProposalDetail) -> [(&'static str, Json); 4] {
-    let t = &d.row.tally;
+fn counts(t: &VoteTally) -> [(&'static str, Json); 4] {
     [
         ("AbsoluteYesCount", Json::int(t.net_yes_estimate)),
         ("YesCount", Json::int(t.yes.estimate)),
@@ -159,14 +159,32 @@ fn funding_counts(d: &ProposalDetail) -> [(&'static str, Json); 4] {
     ]
 }
 
+/// Core's cached sentinel flags (`UpdateSentinelVariables`, MG-02 D83):
+/// funding and endorsed when the signal's absolute yes estimate reaches
+/// the passing threshold, valid unless the valid signal's absolute no
+/// estimate does, delete when the wallet marked the proposal (D84).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Flags {
+    valid: bool,
+    funding: bool,
+    delete: bool,
+    endorsed: bool,
+}
+
+impl Flags {
+    fn of(d: &ProposalDetail, threshold: u32) -> Self {
+        let threshold = i64::from(threshold);
+        Self {
+            valid: -d.signals.valid.net_yes_estimate < threshold,
+            funding: d.row.tally.net_yes_estimate >= threshold,
+            delete: d.deletion_marked_at.is_some(),
+            endorsed: d.signals.endorsed.net_yes_estimate >= threshold,
+        }
+    }
+}
+
 /// `GetStateJson`: the fields `gobject list` and `gobject get` share.
-/// `cached_funding` is Core's `fCachedFunding`, absolute yes votes at or
-/// above the passing threshold.
-fn state_fields(
-    d: &ProposalDetail,
-    local_valid_key: &str,
-    cached_funding: bool,
-) -> Vec<(String, Json)> {
+fn state_fields(d: &ProposalDetail, local_valid_key: &str, flags: &Flags) -> Vec<(String, Json)> {
     let mut f = Vec::new();
     push_kv(
         &mut f,
@@ -183,25 +201,20 @@ fn state_fields(
     push_kv(&mut f, "ObjectType", Json::int(OBJECT_TYPE_PROPOSAL));
     push_kv(&mut f, "CreationTime", Json::int(d.created_at));
     // The facade lists validated objects only (MG-02 §3), so they are valid
-    // locally with no reason, and cached valid.
+    // locally with no reason.
     push_kv(&mut f, local_valid_key, Json::Bool(true));
     push_kv(&mut f, "IsValidReason", Json::str(""));
-    push_kv(&mut f, "fCachedValid", Json::Bool(true));
-    push_kv(&mut f, "fCachedFunding", Json::Bool(cached_funding));
-    push_kv(&mut f, "fCachedDelete", Json::Bool(false));
-    push_kv(&mut f, "fCachedEndorsed", Json::Bool(false));
+    push_kv(&mut f, "fCachedValid", Json::Bool(flags.valid));
+    push_kv(&mut f, "fCachedFunding", Json::Bool(flags.funding));
+    push_kv(&mut f, "fCachedDelete", Json::Bool(flags.delete));
+    push_kv(&mut f, "fCachedEndorsed", Json::Bool(flags.endorsed));
     f
-}
-
-/// Whether the proposal's absolute yes estimate reaches `threshold`.
-fn cached_funding(d: &ProposalDetail, threshold: u32) -> bool {
-    d.row.tally.net_yes_estimate >= i64::from(threshold)
 }
 
 /// One `gobject list` entry.
 pub fn list_entry_json(d: &ProposalDetail, threshold: u32) -> Json {
-    let mut f = state_fields(d, "fBlockchainValidity", cached_funding(d, threshold));
-    for (k, v) in funding_counts(d) {
+    let mut f = state_fields(d, "fBlockchainValidity", &Flags::of(d, threshold));
+    for (k, v) in counts(&d.row.tally) {
         push_kv(&mut f, k, v);
     }
     Json::Obj(f)
@@ -229,7 +242,7 @@ pub fn list_json(
     }
     let mut keep: Vec<&ProposalDetail> = details
         .iter()
-        .filter(|d| signal.matches(cached_funding(d, threshold)))
+        .filter(|d| signal.matches(&Flags::of(d, threshold)))
         .collect();
     keep.sort_by_cached_key(|d| core_hash_order(&d.row.hash));
     let mut out = Vec::new();
@@ -241,29 +254,15 @@ pub fn list_json(
 
 /// Core's `gobject get`.
 pub fn get_json(d: &ProposalDetail, threshold: u32) -> Json {
-    let mut f = state_fields(d, "fLocalValidity", cached_funding(d, threshold));
-    push_kv(
-        &mut f,
-        "FundingResult",
-        Json::Obj(
-            funding_counts(d)
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
-        ),
-    );
-    // The wallet tallies funding votes only.
-    for key in ["ValidResult", "DeleteResult", "EndorsedResult"] {
-        push_kv(
-            &mut f,
-            key,
-            Json::obj([
-                ("AbsoluteYesCount", Json::int(0u32)),
-                ("YesCount", Json::int(0u32)),
-                ("NoCount", Json::int(0u32)),
-                ("AbstainCount", Json::int(0u32)),
-            ]),
-        );
+    let mut f = state_fields(d, "fLocalValidity", &Flags::of(d, threshold));
+    let s = &d.signals;
+    for (key, t) in [
+        ("FundingResult", &d.row.tally),
+        ("ValidResult", &s.valid),
+        ("DeleteResult", &s.delete),
+        ("EndorsedResult", &s.endorsed),
+    ] {
+        push_kv(&mut f, key, Json::obj(counts(t)));
     }
     Json::Obj(f)
 }
@@ -273,13 +272,33 @@ pub fn get_json(d: &ProposalDetail, threshold: u32) -> Json {
 fn vote_hash(proposal: &str, row: &CurrentVoteRow) -> Option<String> {
     let (txid, vout) = row.outpoint.rsplit_once('-')?;
     let outpoint = dashcore::OutPoint::new(txid.parse().ok()?, vout.parse().ok()?);
-    let vote = GovernanceVote::funding(
+    let mut vote = GovernanceVote::funding(
         outpoint,
         parse_display_hex(proposal)?,
         row.outcome.into(),
         row.time,
     );
+    vote.signal = signal_code(row.signal);
     Some(display_hex(&vote.hash()))
+}
+
+/// `vote_signal_enum_t`.
+fn signal_code(s: VoteSignal) -> i32 {
+    match s {
+        VoteSignal::Funding => SIGNAL_FUNDING,
+        VoteSignal::Valid => SentinelSignal::Valid.code(),
+        VoteSignal::Delete => SentinelSignal::Delete.code(),
+        VoteSignal::Endorsed => SentinelSignal::Endorsed.code(),
+    }
+}
+
+fn signal_name(s: VoteSignal) -> &'static str {
+    match s {
+        VoteSignal::Funding => "funding",
+        VoteSignal::Valid => "valid",
+        VoteSignal::Delete => "delete",
+        VoteSignal::Endorsed => "endorsed",
+    }
 }
 
 fn outcome_name(o: VoteOutcome) -> &'static str {
@@ -292,7 +311,7 @@ fn outcome_name(o: VoteOutcome) -> &'static str {
 
 /// Core's `gobject getcurrentvotes`: vote hash → `outpoint:time:outcome:
 /// signal:weight` (`CGovernanceVote::ToString`), the weight being the
-/// facade's estimate. The facade's votes are funding votes.
+/// facade's estimate, in the facade's order (by outpoint, then signal; D86).
 pub fn current_votes_json(proposal: &str, rows: &[CurrentVoteRow]) -> Json {
     let mut out = Vec::new();
     for r in rows {
@@ -301,10 +320,11 @@ pub fn current_votes_json(proposal: &str, rows: &[CurrentVoteRow]) -> Json {
             &mut out,
             &key,
             Json::str(format!(
-                "{}:{}:{}:funding:{}",
+                "{}:{}:{}:{}:{}",
                 r.outpoint,
                 r.time,
                 outcome_name(r.outcome),
+                signal_name(r.signal),
                 r.weight.estimate
             )),
         );
@@ -666,8 +686,9 @@ impl ConsoleContext {
                 ));
             }
         };
-        // Core relays any of the four signals; the wallet tallies, and so
-        // accepts, funding votes only (MG-02 D21).
+        // Core relays any of the four signals; the wallet relays only
+        // funding votes (MG-02 D30): the others are operator votes, signed
+        // by a key the wallet never holds (D89, MG-01).
         if signal != "funding" {
             return Err(ConsoleFailure::NotAvailable(format!(
                 "voteraw with signal {signal}"

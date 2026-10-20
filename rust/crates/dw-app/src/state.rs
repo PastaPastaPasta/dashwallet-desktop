@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
+use dw_engine::governance::Governance;
 use dw_engine::platform::DashPay;
 use dw_engine::{Engine, EngineConfig, NetworkSession, PreparedTx, TxDraft, WalletId};
 use dw_vault::VaultConfig;
@@ -276,6 +277,11 @@ impl AppState {
     pub async fn dashpay(&self, wallet_id: &str) -> Result<Arc<DashPay>, AppError> {
         let id = parse_wallet_id(wallet_id)?;
         Ok(self.session().await?.dashpay(id))
+    }
+
+    /// The governance facade of the active session.
+    pub async fn governance(&self) -> Result<Governance, AppError> {
+        Ok(self.session().await?.governance())
     }
 
     /// The `--selftest` report path; the self-test commands refuse to run without it.

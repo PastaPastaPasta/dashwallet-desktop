@@ -258,8 +258,10 @@ impl EngineEvent {
             },
             // Withheld until E0-13 binds them: the DashPay signals (E0-06),
             // the DashPay news (DP2-05), E0-04's lease, lock and dispatch
-            // events, and governance (MG-02 D7).
-            // Masternodes (MG-03) waits for the same.
+            // events. Masternodes (MG-03) waits for the same. Governance is
+            // bound for the Tauri host only: the Swift host has no
+            // governance calls, so the event would name nothing to re-read
+            // (MG-02 D95).
             E::Platform { .. }
             | E::Masternodes { .. }
             | E::DashPayNews { .. }

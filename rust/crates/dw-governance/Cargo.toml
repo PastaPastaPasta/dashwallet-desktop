@@ -11,8 +11,10 @@ publish.workspace = true
 
 [dependencies]
 # `secp-recovery`: votes carry 65-byte compact signatures; the voting key id
-# is recovered from them (Core `CPubKey::RecoverCompact`).
-dashcore = { workspace = true, features = ["secp-recovery"] }
+# is recovered from them (Core `CPubKey::RecoverCompact`). `bls`: operator
+# votes are verified against the list's operator key (MG-02 D89; already in
+# the graph through platform-wallet).
+dashcore = { workspace = true, features = ["secp-recovery", "bls"] }
 dw-message = { workspace = true }
 dw-p2p = { workspace = true }
 hex = { workspace = true }

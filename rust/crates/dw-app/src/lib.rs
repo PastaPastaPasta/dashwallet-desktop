@@ -12,6 +12,8 @@ pub mod coverage;
 pub mod dto;
 pub mod error;
 #[cfg(test)]
+mod governance_vectors_tests;
+#[cfg(test)]
 mod history_vectors_tests;
 pub mod instance;
 mod ipc;

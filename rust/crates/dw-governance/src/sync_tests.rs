@@ -8,7 +8,7 @@ use dashcore::secp256k1::{Message, PublicKey, SecretKey};
 use dw_p2p::commands;
 use dw_p2p::testing::MockPeer;
 use std::collections::HashSet;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 fn key_id(n: u8) -> [u8; 20] {
     let sk = SecretKey::from_secret_bytes([n; 32]).unwrap();
@@ -568,8 +568,10 @@ async fn votes_core_relays_but_the_wallet_ignores_cost_no_penalty() {
     let obj = proposal("a");
     let h = obj.hash();
     let t = trigger();
-    // Operators' BLS-signed votes on the trigger, and a delete vote on the
-    // proposal, relayed; one funding vote to count.
+    // Operators' BLS-signed votes on the trigger, a BLS-signed delete vote
+    // of an outpoint the wallet cannot resolve (parked, D89) and an
+    // ECDSA-signed one (Core: checked under the operator key, invalid)
+    // on the proposal, relayed; one funding vote to count.
     let mut relays = Vec::new();
     for key in 3..8u8 {
         let mut v = vote(t.hash(), key, VoteOutcome::Yes);
@@ -578,6 +580,9 @@ async fn votes_core_relays_but_the_wallet_ignores_cost_no_penalty() {
     }
     let mut delete = vote(h, 1, VoteOutcome::Yes);
     delete.signal = 3;
+    relays.push(delete.clone());
+    delete.masternode_outpoint.vout = 9;
+    delete.signature = vec![9; crate::vote::BLS_SIG_SIZE];
     relays.push(delete);
     let node = Node {
         objects: vec![obj, t],
@@ -591,6 +596,173 @@ async fn votes_core_relays_but_the_wallet_ignores_cost_no_penalty() {
     assert_eq!((p.objects, p.votes, p.peers), (2, 1, 1));
     hx.stop.send(true).unwrap();
     assert_eq!(hx.task.await.unwrap(), Ok(()));
+}
+
+/// D89, validator r2 m-F: the sync checks an operator vote's BLS signature
+/// against its resolved masternode's operator key. A copy failing it is
+/// refused without penalty and the other announcer's asked for; the
+/// operator's own is stored. The vote is signed, outside this repo (MG-01),
+/// with the throwaway secret [0x42; 32] (vote.rs `verify_operator_*`).
+#[tokio::test]
+async fn an_operator_vote_is_checked_against_the_operator_key() {
+    let data = r#"{"end_epoch":4000000000,"name":"p-d89-vector","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}"#;
+    let p = GovernanceObject::new_proposal(1, 1_760_000_000, data.as_bytes().to_vec());
+    assert_eq!(
+        hex::encode(p.hash()),
+        "48d02d679cf9dee06ad6679a67ae2b26baa3ddc5f88bf6c145828d3680d1792e"
+    );
+    let mut run = two_peer_run(&p).await;
+    let outpoint = OutPoint::new(dashcore::Txid::from_byte_array([0x11; 32]), 1);
+    let operator_key = <[u8; 48]>::try_from(hex::decode("b5b99c967e4c69822f427db1f6871dd119afb95ab9646ba2e707990a3db31777a59b66f69e89c2055699b0ade7357eae").unwrap()).unwrap();
+    run.shared.store().set_resolved(HashMap::from([(
+        outpoint,
+        crate::store::ResolvedMasternode {
+            pro_tx_hash: [9; 32],
+            voting_key_id: key_id(1),
+            operator_key,
+            weight: 1,
+        },
+    )]));
+    let mut honest = GovernanceVote::funding(outpoint, p.hash(), VoteOutcome::No, 1_760_000_100);
+    honest.signal = SentinelSignal::Delete.code();
+    honest.signature = hex::decode(
+        "97d21c57832efb74a7c8f3cf7c73914edf6d0a1ec87d2cd56e03ffd926fa5009\
+         526b6c32bbf8a0d55ed2ae48a762dfc5134b51be37aa1614fdd46bd455dd499b\
+         fda2c7f4e630cd957984f3ccd8e05598e62ca0d0376f942a9a57ef6ef9dd9a7c",
+    )
+    .unwrap();
+    let mut forged = honest.clone();
+    forged.signature[95] ^= 1;
+    let item = vote_inv(&honest);
+    let stored = |run: &Run| run.shared.store().signal_votes_on(&p.hash()).count();
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::Vote(forged.encode()));
+    assert_eq!(stored(&run), 0);
+    assert_eq!(run.peers[0].misbehaviour, 0);
+    run.handle(1, PeerEvent::Vote(honest.encode()));
+    assert_eq!(stored(&run), 1);
+    assert_eq!(run.peers[1].misbehaviour, 0);
+}
+
+/// Opus r1 m1: a BLS check costs a pairing, so a peer's failed operator
+/// checks have their own budget a run. Past it, its operator copies are
+/// refused before the check, at no penalty, and another announcer's is
+/// asked for; the other peer's budget is its own.
+#[tokio::test]
+async fn failed_operator_checks_are_bounded_per_peer() {
+    let data = r#"{"end_epoch":4000000000,"name":"p-d89-vector","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}"#;
+    let p = GovernanceObject::new_proposal(1, 1_760_000_000, data.as_bytes().to_vec());
+    let mut run = two_peer_run(&p).await;
+    run.cfg.max_failed_operator_checks = 2;
+    let outpoint = OutPoint::new(dashcore::Txid::from_byte_array([0x11; 32]), 1);
+    let operator_key = <[u8; 48]>::try_from(hex::decode("b5b99c967e4c69822f427db1f6871dd119afb95ab9646ba2e707990a3db31777a59b66f69e89c2055699b0ade7357eae").unwrap()).unwrap();
+    run.shared.store().set_resolved(HashMap::from([(
+        outpoint,
+        crate::store::ResolvedMasternode {
+            pro_tx_hash: [9; 32],
+            voting_key_id: key_id(1),
+            operator_key,
+            weight: 1,
+        },
+    )]));
+    let mut honest = GovernanceVote::funding(outpoint, p.hash(), VoteOutcome::No, 1_760_000_100);
+    honest.signal = SentinelSignal::Delete.code();
+    honest.signature = hex::decode(
+        "97d21c57832efb74a7c8f3cf7c73914edf6d0a1ec87d2cd56e03ffd926fa5009\
+         526b6c32bbf8a0d55ed2ae48a762dfc5134b51be37aa1614fdd46bd455dd499b\
+         fda2c7f4e630cd957984f3ccd8e05598e62ca0d0376f942a9a57ef6ef9dd9a7c",
+    )
+    .unwrap();
+    let stored = |run: &Run| run.shared.store().signal_votes_on(&p.hash()).count();
+    // Two forged votes spend peer 0's budget.
+    for dt in 1..=2 {
+        let mut forged = honest.clone();
+        forged.time -= dt;
+        run.handle(0, PeerEvent::Inv(vec![vote_inv(&forged)]));
+        run.handle(0, PeerEvent::Vote(forged.encode()));
+    }
+    assert_eq!((run.peers[0].failed_checks, run.recovered), (2, 2));
+    // Its next copy is refused unchecked, even the operator's own.
+    let item = vote_inv(&honest);
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::Vote(honest.encode()));
+    assert_eq!((run.peers[0].failed_checks, run.recovered), (2, 2));
+    assert_eq!(stored(&run), 0);
+    assert_eq!(run.peers[0].misbehaviour, 0);
+    // The other announcer's copy is asked for, checked and stored.
+    run.handle(1, PeerEvent::Vote(honest.encode()));
+    assert_eq!(stored(&run), 1);
+    assert_eq!((run.peers[1].failed_checks, run.recovered), (0, 3));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_parked_operator_vote_is_checked_once_its_key_resolves() {
+    let data = r#"{"end_epoch":4000000000,"name":"p-d89-vector","payment_address":"yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}"#;
+    let p = GovernanceObject::new_proposal(1, 1_760_000_000, data.as_bytes().to_vec());
+    let mut run = two_peer_run(&p).await;
+    // Counts the change notices.
+    let changes = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::new(Shared::new(Network::Regtest, {
+        let changes = changes.clone();
+        Box::new(move || {
+            changes.fetch_add(1, Ordering::Relaxed);
+        })
+    }));
+    *counted.store() = std::mem::replace(
+        &mut run.shared.store(),
+        GovernanceStore::new(Network::Regtest),
+    );
+    run.shared = counted;
+    let outpoint = OutPoint::new(dashcore::Txid::from_byte_array([0x11; 32]), 1);
+    let mut vote = GovernanceVote::funding(outpoint, p.hash(), VoteOutcome::No, 1_760_000_100);
+    vote.signal = SentinelSignal::Delete.code();
+    vote.signature = hex::decode(
+        "97d21c57832efb74a7c8f3cf7c73914edf6d0a1ec87d2cd56e03ffd926fa5009\
+         526b6c32bbf8a0d55ed2ae48a762dfc5134b51be37aa1614fdd46bd455dd499b\
+         fda2c7f4e630cd957984f3ccd8e05598e62ca0d0376f942a9a57ef6ef9dd9a7c",
+    )
+    .unwrap();
+    let stored = |run: &Run| run.shared.store().signal_votes_on(&p.hash()).count();
+    // No list yet: the vote waits for its outpoint's operator key.
+    run.handle(0, PeerEvent::Inv(vec![vote_inv(&vote)]));
+    run.handle(0, PeerEvent::Vote(vote.encode()));
+    assert_eq!(stored(&run), 0);
+    let operator_key = <[u8; 48]>::try_from(hex::decode("b5b99c967e4c69822f427db1f6871dd119afb95ab9646ba2e707990a3db31777a59b66f69e89c2055699b0ade7357eae").unwrap()).unwrap();
+    run.shared.store().set_resolved(HashMap::from([(
+        outpoint,
+        crate::store::ResolvedMasternode {
+            pro_tx_hash: [9; 32],
+            voting_key_id: key_id(1),
+            operator_key,
+            weight: 1,
+        },
+    )]));
+    // The next tick checks it under the key, stores it and says so.
+    let before = changes.load(Ordering::Relaxed);
+    run.expire();
+    assert_eq!(stored(&run), 1);
+    assert!(changes.load(Ordering::Relaxed) > before);
+    assert_eq!(run.peers[0].misbehaviour, 0);
+    // A held vote that fails under the key it waited for is asked for
+    // again (D85, D89).
+    let mut other = vote.clone();
+    other.time += 1;
+    run.handle(0, PeerEvent::Inv(vec![vote_inv(&other)]));
+    run.shared.store().set_resolved(HashMap::new());
+    run.handle(0, PeerEvent::Vote(other.encode()));
+    run.shared.store().set_resolved(HashMap::from([(
+        outpoint,
+        crate::store::ResolvedMasternode {
+            pro_tx_hash: [9; 32],
+            voting_key_id: key_id(1),
+            operator_key: [0; 48],
+            weight: 1,
+        },
+    )]));
+    run.expire();
+    assert!(run.shared.store().take_refetch().contains(&other.hash()));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3520,6 +3692,7 @@ async fn a_resolved_outpoint_brings_back_the_honest_copy() {
         crate::store::ResolvedMasternode {
             pro_tx_hash: [9; 32],
             voting_key_id: key_id(2),
+            operator_key: [0; 48],
             weight: 1,
         },
     )]));
@@ -3552,6 +3725,7 @@ async fn a_refetch_given_up_leaves_vote_syncs_recorded() {
         crate::store::ResolvedMasternode {
             pro_tx_hash: [9; 32],
             voting_key_id: key_id(3),
+            operator_key: [0; 48],
             weight: 1,
         },
     )]));
@@ -3753,6 +3927,7 @@ async fn a_failed_refetch_leaves_the_vote_uncertain_across_a_reconnect() {
         crate::store::ResolvedMasternode {
             pro_tx_hash: [9; 32],
             voting_key_id: key_id(2),
+            operator_key: [0; 48],
             weight: 4,
         },
     )]);
@@ -3875,6 +4050,12 @@ async fn an_object_only_run_prunes_stale_full_syncs() {
 /// then replaced by key 2's newer vote in its slot; peer 1's inv of the
 /// NO was skipped as known. Returns the honest NO's inv.
 fn lose_honest_no(run: &mut Run, p: &GovernanceObject) -> InvItem {
+    vote_inv(&lose_honest(run, p))
+}
+
+/// [`lose_honest_no`], returning the honest NO itself: built once, as a
+/// vote rebuilt a second later has another time and hash.
+fn lose_honest(run: &mut Run, p: &GovernanceObject) -> GovernanceVote {
     list_keys(run, [1, 2]);
     let honest = vote(p.hash(), 1, VoteOutcome::No);
     let item = vote_inv(&honest);
@@ -3894,7 +4075,7 @@ fn lose_honest_no(run: &mut Run, p: &GovernanceObject) -> InvItem {
     run.handle(0, PeerEvent::Vote(own.encode()));
     assert!(!run.shared.store().has_vote(&honest.hash()));
     assert_eq!(run.shared.store().tally(&p.hash()).uncounted, 1);
-    item
+    honest
 }
 
 /// Sol r4 Major 1 (DEC-257, D77): of three peers asked for the lost NO
@@ -4119,9 +4300,8 @@ async fn refetches_stay_within_the_run_budget() {
 async fn a_refetched_vote_is_taken_only_from_the_peer_asked() {
     let p = proposal("p-d77-asked");
     let mut run = two_peer_run(&p).await;
-    let item = lose_honest_no(&mut run, &p);
-    let honest = vote(p.hash(), 1, VoteOutcome::No);
-    assert_eq!(honest.hash(), item.hash);
+    let honest = lose_honest(&mut run, &p);
+    let item = vote_inv(&honest);
     run.expire();
     assert_eq!(run.refetches.out[&item.hash].peer, 0);
     run.handle(1, PeerEvent::Vote(honest.encode()));
@@ -4187,6 +4367,7 @@ async fn an_awaited_vote_left_unasked_is_asked_by_a_later_run() {
             crate::store::ResolvedMasternode {
                 pro_tx_hash: [9; 32],
                 voting_key_id: key_id(2),
+                operator_key: [0; 48],
                 weight: 4,
             },
         )]);
@@ -4306,4 +4487,127 @@ async fn lost_votes_past_the_budget_are_each_asked_within_two_runs() {
         let both: HashSet<[u8; 32]> = pair[0].union(&pair[1]).copied().collect();
         assert_eq!(both, lost, "passes {i} and {}", i + 1);
     }
+}
+
+/// A connected peer (id `id`) that reads everything and reports the items
+/// of each `getdata` it gets, in order.
+async fn getdata_peer(id: usize, cfg: &SyncConfig) -> (PeerState, mpsc::UnboundedReceiver<usize>) {
+    let mock = MockPeer::bind(Network::Regtest).await.unwrap();
+    let addr = mock.addr();
+    let (seen, getdatas) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let mut conn = mock.accept().await.unwrap();
+        while let Ok(msg) = conn.recv().await {
+            if msg.command == "getdata" {
+                let _ = seen.send(decode_inv(&msg.payload).unwrap().len());
+            }
+        }
+    });
+    let (tx, _rx) = mpsc::channel(EVENTS_QUEUE);
+    let state = PeerState::new(Peer::connect(id, addr, &cfg.peer, tx).await.unwrap());
+    (state, getdatas)
+}
+
+async fn next_getdata(getdatas: &mut mpsc::UnboundedReceiver<usize>) -> usize {
+    tokio::time::timeout(Duration::from_secs(10), getdatas.recv())
+        .await
+        .expect("a getdata")
+        .expect("open")
+}
+
+/// BL-230 (a, d), D87: lost votes asked for again start at alternate
+/// peers, and the ones a timeout or a close moves to the next peer go out
+/// in one batch, not one `getdata` each.
+#[tokio::test]
+async fn moved_refetches_go_out_in_batches_from_alternate_peers() {
+    let p = proposal("p-bl230-batch");
+    let h = p.hash();
+    for close in [false, true] {
+        let mut run = one_peer_run(|c, _| c.max_in_flight = 5000).await;
+        let (peer, mut getdatas) = getdata_peer(1, &run.cfg).await;
+        run.peers.push(peer);
+        list_key_1(&run);
+        {
+            let mut s = run.shared.store();
+            s.set_confirmations(1);
+            s.add_object(p.clone(), None, unix_now()).unwrap();
+            s.lose_for_tests(h, 0..4);
+        }
+        run.expire();
+        let by_peer = |run: &Run, id| run.refetches.out.values().filter(|r| r.peer == id).count();
+        assert_eq!(
+            (by_peer(&run, 0), by_peer(&run, 1)),
+            (2, 2),
+            "close {close}"
+        );
+        assert_eq!(next_getdata(&mut getdatas).await, 2);
+        if close {
+            run.on_closed(0);
+        } else {
+            expire_now(&mut run);
+        }
+        assert_eq!(by_peer(&run, 1), if close { 4 } else { 2 });
+        assert_eq!(next_getdata(&mut getdatas).await, 2, "close {close}");
+    }
+}
+
+/// D87, D89: a refetch out ends only once the vote is held. A copy parked
+/// for its unresolved outpoint is not (it may be a forged one), so the
+/// asked peer's copy is still awaited.
+#[tokio::test]
+async fn a_parked_copy_does_not_end_a_refetch() {
+    let p = proposal("p-d89-parked-refetch");
+    let mut run = two_peer_run(&p).await;
+    list_keys(&run, [1, 2]);
+    let outpoint = OutPoint::new(dashcore::Txid::from_byte_array([0x33; 32]), 0);
+    let mut v = GovernanceVote::funding(outpoint, p.hash(), VoteOutcome::Yes, unix_now() - 100);
+    v.signal = SentinelSignal::Valid.code();
+    v.signature = vec![7; crate::vote::BLS_SIG_SIZE];
+    let item = vote_inv(&v);
+    run.handle(0, PeerEvent::Inv(vec![item]));
+    run.handle(0, PeerEvent::Vote(v.encode()));
+    // Parked, then failing under its masternode's key: asked for again.
+    let resolved = |key| {
+        HashMap::from([(
+            outpoint,
+            crate::store::ResolvedMasternode {
+                pro_tx_hash: [3; 32],
+                voting_key_id: key_id(2),
+                operator_key: key,
+                weight: 1,
+            },
+        )])
+    };
+    run.shared.store().set_resolved(resolved([0; 48]));
+    run.expire();
+    run.expire();
+    let asked = run.refetches.out[&item.hash].peer;
+    // The masternode leaves the list; another announcer's copy parks.
+    run.shared.store().set_resolved(HashMap::new());
+    let other = 1 - asked;
+    open_vote_sync(&mut run.peers[other], p.hash());
+    run.handle(other, PeerEvent::Inv(vec![item]));
+    run.handle(other, PeerEvent::Vote(v.encode()));
+    assert!(!run.shared.store().has_vote(&item.hash));
+    assert!(run.refetches.out.contains_key(&item.hash));
+}
+
+/// BL-230 (b), D87: a refetch out ends when a request for the vote's
+/// announcement stores it; the asked peer's copy is then unsolicited.
+#[tokio::test]
+async fn a_vote_stored_from_its_announcement_ends_its_refetch() {
+    let p = proposal("p-bl230-stored");
+    let mut run = two_peer_run(&p).await;
+    let honest = lose_honest(&mut run, &p);
+    let item = vote_inv(&honest);
+    run.expire();
+    assert_eq!(run.refetches.out[&item.hash].peer, 0);
+    open_vote_sync(&mut run.peers[1], p.hash());
+    run.handle(1, PeerEvent::Inv(vec![item]));
+    assert_eq!(run.requests.pending[&(item.hash, item.kind)].peer, 1);
+    run.handle(1, PeerEvent::Vote(honest.encode()));
+    assert!(run.shared.store().has_vote(&item.hash));
+    assert!(run.refetches.out.is_empty());
+    run.handle(0, PeerEvent::Vote(honest.encode()));
+    assert_eq!(run.peers[0].unkept, 0);
 }

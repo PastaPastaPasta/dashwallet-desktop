@@ -53,7 +53,8 @@
         "units",
         "shell",
         "files",
-        "scan"
+        "scan",
+        "governance"
       ]
     },
     "withGlobalTauri": false

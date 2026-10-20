@@ -17,6 +17,7 @@ pub const FACADES: &[(&str, &str)] = &[
     ("Engine", "dw-engine"),
     ("NetworkSession", "dw-engine"),
     ("DashPay", "dw-engine"),
+    ("Governance", "dw-engine"),
     ("TxDraft", "dw-engine"),
     ("PreparedTx", "dw-engine"),
     ("Vault", "dw-vault"),

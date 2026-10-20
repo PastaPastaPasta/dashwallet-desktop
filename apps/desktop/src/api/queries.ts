@@ -62,6 +62,8 @@ export const keys = {
   coinjoinAll: ["coinjoin"] as const,
   coinjoinStatus: (walletId: string) => ["coinjoin", "status", walletId] as const,
   coinjoinSettings: ["coinjoin", "settings"] as const,
+  /** Every governance read (the `governance_*` commands, BL-232): a `governance` event makes them all stale. */
+  governanceAll: ["governance"] as const,
   /** Every DashPay read below: a `platform` or `dashPayNews` signal makes them all stale. */
   dashpayAll: ["dashpay"] as const,
   /** Every wallet's DashPay status: sync moves `noIdentity`'s `waitingForSync` (BL-153 D9). */

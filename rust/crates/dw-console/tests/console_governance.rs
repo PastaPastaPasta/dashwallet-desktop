@@ -11,7 +11,7 @@ use dw_console::governance::{
 use dw_console::{ConsoleContext, ConsoleFailure, Json};
 use dw_engine::governance::{
     CurrentVoteRow, GovernanceClock, GovernanceInfo, ProposalCounts, ProposalDetail, ProposalRow,
-    ProposalStatus, VoteOutcome, VoteTally, WeightRange,
+    ProposalStatus, SignalTallies, VoteOutcome, VoteSignal, VoteTally, WeightRange,
 };
 use dw_engine::{DashNetwork, Engine, EngineConfig, EngineEvent, EventSink, SessionOptions};
 use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
@@ -32,6 +32,17 @@ fn range(estimate: u32) -> WeightRange {
     }
 }
 
+fn tally(yes: u32, no: u32, abstain: u32) -> VoteTally {
+    VoteTally {
+        yes: range(yes),
+        no: range(no),
+        abstain: range(abstain),
+        net_yes_estimate: i64::from(yes) - i64::from(no),
+        voters: yes + no + abstain,
+        ranged_votes: 0,
+    }
+}
+
 fn detail(hash: String, yes: u32, no: u32, abstain: u32) -> ProposalDetail {
     ProposalDetail {
         row: ProposalRow {
@@ -45,19 +56,14 @@ fn detail(hash: String, yes: u32, no: u32, abstain: u32) -> ProposalDetail {
             payments_requested: 1,
             status: ProposalStatus::Voting,
             close_call: false,
-            tally: VoteTally {
-                yes: range(yes),
-                no: range(no),
-                abstain: range(abstain),
-                net_yes_estimate: i64::from(yes) - i64::from(no),
-                voters: yes + no + abstain,
-                ranged_votes: 0,
-            },
+            tally: tally(yes, no, abstain),
             funded_height: None,
         },
         collateral_txid: "cc".repeat(32),
         created_at: 1_700_000_000,
         data_json: DATA.into(),
+        signals: SignalTallies::default(),
+        deletion_marked_at: None,
     }
 }
 
@@ -215,7 +221,8 @@ fn gobject_list_filters_by_signal_and_type_in_core_hash_order() {
         keys(&list_json(&details, 10, ListSignal::Funding, ListType::All)),
         [funded.row.hash.as_str()]
     );
-    // Nothing is cached delete or endorsed, and no trigger is offered.
+    // With no votes of those signals nothing is cached delete or endorsed,
+    // and no trigger is offered.
     for signal in [ListSignal::Delete, ListSignal::Endorsed] {
         assert_eq!(
             list_json(&details, 10, signal, ListType::All).write(2),
@@ -233,6 +240,69 @@ fn gobject_list_filters_by_signal_and_type_in_core_hash_order() {
 }
 
 #[test]
+fn gobject_list_filters_by_every_cached_signal() {
+    // MG-02 D83: `UpdateSentinelVariables` at the passing threshold 10:
+    // endorsed at an absolute yes of 10, invalid at an absolute no of 10
+    // (exactly: Core's `>=` and `<`),
+    // and delete once the wallet marked the proposal (D84).
+    let mut endorsed = detail(hash(0, 1), 0, 0, 0);
+    endorsed.signals.endorsed = tally(10, 0, 0);
+    let mut not_endorsed = detail(hash(0, 2), 0, 0, 0);
+    not_endorsed.signals.endorsed = tally(12, 3, 0);
+    let mut invalid = detail(hash(0, 3), 0, 0, 0);
+    invalid.signals.valid = tally(0, 10, 0);
+    let mut valid = detail(hash(0, 4), 0, 0, 0);
+    valid.signals.valid = tally(0, 9, 0);
+    let mut deleted = detail(hash(0, 5), 0, 0, 0);
+    deleted.signals.delete = tally(20, 0, 0);
+    deleted.deletion_marked_at = Some(1_700_000_500);
+    let mut unmarked = detail(hash(0, 6), 0, 0, 0);
+    unmarked.signals.delete = tally(20, 0, 0);
+    // The absolute no, not the no count: 10 − 1 is under the threshold.
+    let mut valid_net = detail(hash(0, 7), 0, 0, 0);
+    valid_net.signals.valid = tally(1, 10, 0);
+    let details = [
+        endorsed,
+        not_endorsed,
+        invalid,
+        valid,
+        deleted,
+        unmarked,
+        valid_net,
+    ];
+    let listed = |signal| {
+        let json = list_json(&details, 10, signal, ListType::Proposals);
+        keys(&json)
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(listed(ListSignal::Endorsed), [hash(0, 1)]);
+    assert_eq!(
+        listed(ListSignal::Valid),
+        [
+            hash(0, 1),
+            hash(0, 2),
+            hash(0, 4),
+            hash(0, 5),
+            hash(0, 6),
+            hash(0, 7)
+        ]
+    );
+    assert_eq!(listed(ListSignal::Delete), [hash(0, 5)]);
+    assert_eq!(listed(ListSignal::All).len(), 7);
+    let flags = |d: &ProposalDetail| {
+        let e = list_entry_json(d, 10);
+        ["fCachedValid", "fCachedDelete", "fCachedEndorsed"].map(|k| e.query(k))
+    };
+    let t = Some(Json::Bool(true));
+    let f = Some(Json::Bool(false));
+    assert_eq!(flags(&details[0]), [t.clone(), f.clone(), t.clone()]);
+    assert_eq!(flags(&details[2]), [f.clone(), f.clone(), f.clone()]);
+    assert_eq!(flags(&details[4]), [t.clone(), t, f]);
+}
+
+#[test]
 fn list_signals_and_types_parse_as_core_does() {
     assert_eq!(ListSignal::parse("valid"), Some(ListSignal::Valid));
     assert_eq!(ListSignal::parse("funding"), Some(ListSignal::Funding));
@@ -247,8 +317,13 @@ fn list_signals_and_types_parse_as_core_does() {
 }
 
 #[test]
-fn gobject_get_has_cores_keys_and_zero_non_funding_results() {
-    let d = detail(hash(0, 1), 12, 2, 1);
+fn gobject_get_has_cores_keys_and_every_signals_result() {
+    let mut d = detail(hash(0, 1), 12, 2, 1);
+    d.signals = SignalTallies {
+        valid: tally(1, 2, 3),
+        delete: tally(4, 1, 0),
+        endorsed: tally(0, 0, 7),
+    };
     let json = get_json(&d, 10);
     assert_eq!(
         keys(&json),
@@ -275,10 +350,17 @@ fn gobject_get_has_cores_keys_and_zero_non_funding_results() {
         json.query("FundingResult").unwrap().write(2),
         "{\n  \"AbsoluteYesCount\": 10,\n  \"YesCount\": 12,\n  \"NoCount\": 2,\n  \"AbstainCount\": 1\n}"
     );
-    for key in ["ValidResult", "DeleteResult", "EndorsedResult"] {
+    for (key, counts) in [
+        ("ValidResult", [-1, 1, 2, 3]),
+        ("DeleteResult", [3, 4, 1, 0]),
+        ("EndorsedResult", [0, 0, 0, 7]),
+    ] {
+        let [abs, yes, no, abstain] = counts;
         assert_eq!(
             json.query(key).unwrap().write(2),
-            "{\n  \"AbsoluteYesCount\": 0,\n  \"YesCount\": 0,\n  \"NoCount\": 0,\n  \"AbstainCount\": 0\n}",
+            format!(
+                "{{\n  \"AbsoluteYesCount\": {abs},\n  \"YesCount\": {yes},\n  \"NoCount\": {no},\n  \"AbstainCount\": {abstain}\n}}"
+            ),
             "{key}"
         );
     }
@@ -292,6 +374,7 @@ fn gobject_getcurrentvotes_keys_votes_by_their_hash() {
     let txid = "ab".repeat(32);
     let row = |vout: u32, time: i64, outcome, estimate| CurrentVoteRow {
         outpoint: format!("{txid}-{vout}"),
+        signal: VoteSignal::Funding,
         time,
         outcome,
         weight: WeightRange {
@@ -333,6 +416,55 @@ fn gobject_getcurrentvotes_keys_votes_by_their_hash() {
     let other_outcome = current_votes_json(&proposal, &[row(0, 1_700_000_100, VoteOutcome::No, 1)]);
     assert_ne!(keys(&other_outcome), keys(&again));
     assert_eq!(current_votes_json(&proposal, &[]).write(2), "{\n}");
+}
+
+#[test]
+fn getcurrentvotes_lists_every_signal_in_core_order() {
+    // MG-02 D86: `GetCurrentVotes` lists every signal's vote of an
+    // outpoint, keyed by the vote's hash, which covers the signal.
+    let proposal = hash(0, 9);
+    let txid = "ab".repeat(32);
+    let row = |signal, outcome| CurrentVoteRow {
+        outpoint: format!("{txid}-0"),
+        signal,
+        time: 1_700_000_100,
+        outcome,
+        weight: range(1),
+        exact: true,
+    };
+    let rows = [
+        row(VoteSignal::Funding, VoteOutcome::Yes),
+        row(VoteSignal::Valid, VoteOutcome::No),
+        row(VoteSignal::Delete, VoteOutcome::Yes),
+        row(VoteSignal::Endorsed, VoteOutcome::Abstain),
+    ];
+    let json = current_votes_json(&proposal, &rows);
+    let Json::Obj(fields) = &json else {
+        panic!("not an object")
+    };
+    let values: Vec<_> = fields.iter().map(|(_, v)| v.clone()).collect();
+    assert_eq!(
+        values,
+        ["yes:funding", "no:valid", "yes:delete", "abstain:endorsed"]
+            .map(|s| Json::str(format!("{txid}-0:1700000100:{s}:1")))
+    );
+    // Core's hash of each vote: `CGovernanceVote::GetHash` serializes the
+    // signal after the outcome.
+    for ((key, _), code) in fields.iter().zip(1..=4) {
+        let mut v = dw_governance::vote::GovernanceVote::funding(
+            dashcore::OutPoint::new(txid.parse().unwrap(), 0),
+            dw_governance::object::parse_display_hex(&proposal).unwrap(),
+            dw_governance::vote::VoteOutcome::Yes,
+            1_700_000_100,
+        );
+        v.signal = code;
+        v.outcome = match code {
+            2 => 2,
+            4 => 3,
+            _ => 1,
+        };
+        assert_eq!(key, &dw_governance::object::display_hex(&v.hash()));
+    }
 }
 
 // --- an offline session -------------------------------------------------
@@ -591,7 +723,8 @@ fn voteraw_checks_its_arguments_like_core() {
             "{outcome}"
         );
     }
-    // Core relays these signals; the wallet tallies funding votes only.
+    // Core relays these signals; the wallet relays funding votes only
+    // (MG-02 D30).
     for signal in ["valid", "delete", "endorsed"] {
         match o.run(&format!("voteraw {txid} 0 {gov} {signal} yes 1 AAAA")) {
             Err(ConsoleFailure::NotAvailable(what)) => {

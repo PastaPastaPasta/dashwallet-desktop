@@ -51,6 +51,9 @@ describe("event bridge", () => {
     // A settled funding step re-reads the stuck top-up list (DP1-10 D3).
     expect(invalidationsFor({ kind: "dispatchResolved", network: "testnet", settled: {} as never })).toEqual([keys.lockReconcile, profileKeys.stuckTopUpsAll]);
     expect(invalidationsFor({ kind: "sessionOpened", network: "testnet" })).toBe("all");
+    // Every governance read, whichever changed (BL-232); masternodes has no screen yet.
+    expect(invalidationsFor({ kind: "governance", network: "testnet" })).toEqual([keys.governanceAll]);
+    expect(invalidationsFor({ kind: "masternodes", network: "testnet" })).toEqual([]);
     expect(invalidationsFor({ kind: "eventsOverflowed" })).toBe("all");
     expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } })).toEqual([]);
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "names" } })).toEqual([keys.dashpayAll, keys.receiveAll("w")]);

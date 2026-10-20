@@ -231,6 +231,7 @@ impl Collaterals {
                 let r = ResolvedMasternode {
                     pro_tx_hash: e.pro_tx_hash,
                     voting_key_id: e.voting_key_id,
+                    operator_key: e.operator_public_key,
                     weight: c.weight,
                 };
                 Some((c.outpoint, r))
@@ -465,6 +466,30 @@ async fn pause(d: Duration, stop: &mut watch::Receiver<bool>) -> bool {
     }
 }
 
+/// One [`resolve_round`], or `None` when sync stops first. The dropped
+/// round stores nothing: its fetches still count against the session's,
+/// and its masternodes stay unresolved for the next run.
+pub(super) async fn round_unless_stopped(
+    collaterals: &Collaterals,
+    list: &ListSnapshot,
+    source: &dyn CollateralSource,
+    appdb: Option<Arc<dw_appdb::AppDb>>,
+    stop: &mut watch::Receiver<bool>,
+) -> Option<Round> {
+    let round = resolve_round(collaterals, list, source, appdb);
+    tokio::pin!(round);
+    loop {
+        tokio::select! {
+            r = &mut round => return Some(r),
+            r = stop.changed() => {
+                if r.is_err() || *stop.borrow() {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
 /// The resolver: rounds while the list has masternodes to resolve, backing
 /// off after a failed fetch, until sync stops. Each round that found one
 /// wakes the follower to hand the store the new outpoints.
@@ -485,14 +510,10 @@ pub(super) async fn resolve_loop(session: Weak<NetworkSession>, mut stop: watch:
         let appdb = s.live().ok().map(|l| l.appdb);
         drop(s);
         let before = collaterals.generation();
-        let round = tokio::select! {
-            r = resolve_round(&collaterals, &list, source.as_ref(), appdb) => r,
-            r = stop.changed() => {
-                if r.is_err() || *stop.borrow() {
-                    return;
-                }
-                continue;
-            }
+        let Some(round) =
+            round_unless_stopped(&collaterals, &list, source.as_ref(), appdb, &mut stop).await
+        else {
+            return;
         };
         if collaterals.generation() != before {
             resolved.notify_one();
