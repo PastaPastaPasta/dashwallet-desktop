@@ -13,6 +13,9 @@
 //! - Duffs are JSON numbers: 21e14 duffs, the most that can exist, is far
 //!   below 2^53. Credits are decimal strings ([`credits`]): 1 DASH is 1e11
 //!   credits, so an identity's balance can pass 2^53.
+//! - Times are Unix seconds as JSON numbers. The wallet's own are far below
+//!   2^53, but governance carries times a peer chose, which may not be
+//!   (MG-02 D97(b)).
 
 pub mod governance;
 pub mod history;

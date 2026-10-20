@@ -4,8 +4,8 @@
 // (fixture/vectors/governance.json, which rust/crates/dw-app/src/governance_vectors_tests.rs
 // writes from engine records and fails on when it drifts) is held against the §3 records: each
 // command returns what its §3 signature says, and each record carries exactly its contract
-// fields, camelCased. Every wrapper is called once, for the
-// shape of its arguments.
+// fields, camelCased, each of its §3 type's JSON type, an enum's value one of its camelCased
+// variants. Every wrapper is called once, for the shape of its arguments.
 
 import { readFileSync } from "node:fs";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
@@ -58,6 +58,23 @@ function contractRecords(): Map<string, [string, string][]> {
   return records;
 }
 
+/** The §3 enums of unit variants, by name, as their camelCase JSON values. */
+function contractEnums(): Map<string, string[]> {
+  const enums = new Map<string, string[]>();
+  for (const m of section("## 3. Surface").matchAll(/^pub enum (\w+) \{\n((?: {4}\w+,\n)*)\}/gm)) {
+    enums.set(m[1], [...m[2].matchAll(/^ {4}(\w+),$/gm)].map((v) => v[1][0].toLowerCase() + v[1].slice(1)));
+  }
+  return enums;
+}
+
+/** The §3 Rust types that cross as JSON numbers, strings and booleans. */
+const JSON_TYPES: Record<string, string> = { u32: "number", u64: "number", i64: "number", f64: "number", String: "string", bool: "boolean" };
+
+interface Contract {
+  records: Map<string, [string, string][]>;
+  enums: Map<string, string[]>;
+}
+
 /** What each facade method of §3 returns: the type inside `Result<…>`, and whether it is a `Vec`. */
 function contractReturns(): Map<string, { type: string; list: boolean }> {
   const returns = new Map<string, { type: string; list: boolean }>();
@@ -68,21 +85,32 @@ function contractReturns(): Map<string, { type: string; list: boolean }> {
 
 const camel = (s: string) => s.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
 
-/** Checks that `value` has exactly `record`'s fields, then the §3 records nested in it, adding
- * each record it checks to `seen`. */
-function expectRecord(records: Map<string, [string, string][]>, record: string, value: unknown, at: string, seen: Set<string>) {
-  const fields = records.get(record);
+/** Checks that `value` has exactly `record`'s fields, each of its §3 type (a record nested in
+ * it checked the same way), adding each record it checks to `seen`. */
+function expectRecord(c: Contract, record: string, value: unknown, at: string, seen: Set<string>) {
+  const fields = c.records.get(record);
   expect(fields, `${at}: ${record} in §3`).toBeDefined();
   expect(Object.keys(value as object).sort(), at).toEqual(fields!.map(([f]) => camel(f)).sort());
   seen.add(record);
   for (const [field, type] of fields!) {
-    const [, list, nested] = type.match(/^(?:Option<)?(Vec<)?(\w+)>?>?$/) ?? [];
-    if (!nested || !records.has(nested)) continue;
-    const inner = (value as Record<string, unknown>)[camel(field)];
-    if (inner === null && type.startsWith("Option<")) continue;
-    expect(Array.isArray(inner), `${at}.${camel(field)}`).toBe(list !== undefined);
-    for (const [i, v] of (list ? (inner as unknown[]) : [inner]).entries()) {
-      expectRecord(records, nested, v, `${at}.${camel(field)}[${i}]`, seen);
+    expectValue(c, type, (value as Record<string, unknown>)[camel(field)], `${at}.${camel(field)}`, seen);
+  }
+}
+
+/** Checks that `value` is of the §3 type `type`: `null` for a `None`, an array for a `Vec`. */
+function expectValue(c: Contract, type: string, value: unknown, at: string, seen: Set<string>) {
+  const [, option, list, leaf] = type.match(/^(Option<)?(Vec<)?(\w+)>?>?$/) ?? [];
+  expect(leaf, `${at}: ${type} parses`).toBeDefined();
+  if (option && value === null) return;
+  expect(Array.isArray(value), at).toBe(list !== undefined);
+  for (const [i, v] of (list ? (value as unknown[]) : [value]).entries()) {
+    const there = list ? `${at}[${i}]` : at;
+    if (c.records.has(leaf)) expectRecord(c, leaf, v, there, seen);
+    else if (c.enums.has(leaf)) expect(c.enums.get(leaf), `${there}: ${leaf}`).toContain(v);
+    else {
+      expect(JSON_TYPES[leaf], `${there}: ${leaf} is a §3 record, enum or JSON leaf`).toBeDefined();
+      expect(typeof v, `${there}: ${leaf}`).toBe(JSON_TYPES[leaf]);
+      if (leaf !== "f64" && JSON_TYPES[leaf] === "number") expect(Number.isInteger(v), `${there}: ${leaf}`).toBe(true);
     }
   }
 }
@@ -168,8 +196,21 @@ describe("governance contract", () => {
     expect(calls).toContainEqual(["governance_voting_masternodes", { walletId: "ab".repeat(32), proposal: hash }]);
   });
 
-  it("returns exactly the §3 records, camelCased", () => {
-    const records = contractRecords();
+  it("mirrors each §3 enum of a record field, variant for variant", () => {
+    const c: Contract = { records: contractRecords(), enums: contractEnums() };
+    const used = new Set([...c.records.values()].flat().map(([, t]) => t.match(/(\w+)>*$/)![1]).filter((t) => !(t in JSON_TYPES) && !c.records.has(t)));
+    expect([...used].sort()).toEqual(["GovernanceSyncPhase", "MasternodeType", "ProposalScope", "ProposalStatus", "VoteOutcome", "VoteSignal"]);
+    for (const e of used) {
+      // dw-app's mirror, `<Enum>Name`, as ts-rs writes it.
+      const ts = readFileSync(new URL(`./generated/${e}Name.ts`, import.meta.url), "utf8");
+      const union = [...(ts.match(/^export type \w+ = (.*);$/m)?.[1] ?? "").matchAll(/"(\w+)"/g)].map((m) => m[1]);
+      expect(union, e).toEqual(c.enums.get(e));
+    }
+  });
+
+  it("returns exactly the §3 records, camelCased and typed", () => {
+    const c: Contract = { records: contractRecords(), enums: contractEnums() };
+    const { records } = c;
     const returns = contractReturns();
     const seen = new Set<string>();
     const r = VECTORS.results;
@@ -183,7 +224,7 @@ describe("governance contract", () => {
       else {
         const values = list ? (value as unknown[]) : [value];
         expect(values.length, name).toBeGreaterThan(0);
-        for (const [i, v] of values.entries()) expectRecord(records, type, v, `${name}[${i}]`, seen);
+        for (const [i, v] of values.entries()) expectRecord(c, type, v, `${name}[${i}]`, seen);
       }
     }
     // Every record a bound command can return was checked, none skipped for being absent.

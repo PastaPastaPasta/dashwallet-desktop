@@ -88,7 +88,8 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       }
     case "coinJoin":
       return [keys.coinjoinStatus(event.walletId)];
-    // The store, the sync state or the list's voting keys changed (≤ 1 Hz, mg-engine §5).
+    // The store, the sync state or the list's voting keys changed (≤ 1 Hz, mg-engine §5). A new
+    // block sends none, so the tip-derived clock and statuses go stale until the next (MG-02 D96).
     case "governance":
       return [keys.governanceAll];
     // No screen reads these yet (the notice and masternode views come with their tasks).

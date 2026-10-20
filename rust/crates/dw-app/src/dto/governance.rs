@@ -1,7 +1,10 @@
 //! The governance facade's records (`docs/contracts/mg-engine.md` §3), as
 //! the renderer sees them (BL-232). Hashes are 64-character lower-case hex
 //! in Core's display order; outpoints are `"<txid>-<n>"`; amounts are duffs;
-//! times are Unix seconds. The engine records carry no binding derives
+//! times are Unix seconds. The epochs, `createdAt` and the vote times are
+//! i64s a peer chose, unbounded below or above, so they may pass 2^53 and
+//! reach JS rounded: MG-09 range-checks them (MG-02 D97(b)). The engine
+//! records carry no binding derives
 //! (mg-engine §1), so each has its twin here, converted field by field.
 
 use dw_engine::governance as engine;

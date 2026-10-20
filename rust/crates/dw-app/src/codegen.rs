@@ -22,8 +22,10 @@ pub fn generated_dir() -> PathBuf {
 }
 
 fn config(dir: &Path) -> Config {
-    // Duff amounts and UNIX times fit a JSON number exactly (< 2^53); credit
-    // amounts, which may not, are strings (`dto::credits`).
+    // Duff amounts and the wallet's own UNIX times fit a JSON number exactly
+    // (< 2^53); credit amounts, which may not, are strings (`dto::credits`).
+    // Governance times a peer chose may pass it too and cross rounded
+    // (MG-02 D97(b)).
     Config::new().with_out_dir(dir).with_large_int("number")
 }
 
