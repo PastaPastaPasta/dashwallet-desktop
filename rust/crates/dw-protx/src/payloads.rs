@@ -138,6 +138,11 @@ pub enum RegistrationSigner {
         secret: Zeroizing<[u8; 32]>,
         network: Network,
     },
+    /// Existing collateral whose key signed the message elsewhere (the
+    /// vault, or another wallet for `register_submit`): the 65-byte compact
+    /// signature over [`registration_sign_message`] of
+    /// [`registration_with_inputs`].
+    Signed([u8; 65]),
 }
 
 /// The ProRegTx finalizer: commits to the inputs, names a fund-new
@@ -147,16 +152,7 @@ pub fn finalize_registration(
     unsigned: &Transaction,
     signer: &RegistrationSigner,
 ) -> Result<TransactionPayload, PayloadError> {
-    if unsigned.output.is_empty() {
-        return Err(PayloadError::NoOutputs);
-    }
-    let Some(TransactionPayload::ProviderRegistrationPayloadType(placeholder)) =
-        &unsigned.special_transaction_payload
-    else {
-        return Err(PayloadError::MissingPlaceholder("ProRegTx"));
-    };
-    let mut payload = placeholder.clone();
-    payload.inputs_hash = unsigned.hash_inputs();
+    let mut payload = registration_with_inputs(unsigned)?;
     match signer {
         RegistrationSigner::FundNew { script, amount } => {
             let index = unsigned
@@ -174,8 +170,30 @@ pub fn finalize_registration(
             let message = registration_sign_message(&payload, *network)?;
             payload.signature = sign_message_compact(secret, &message)?.to_vec();
         }
+        RegistrationSigner::Signed(signature) => payload.signature = signature.to_vec(),
     }
     Ok(TransactionPayload::ProviderRegistrationPayloadType(payload))
+}
+
+/// The placeholder of `unsigned` with `inputsHash` committed to its inputs
+/// and no signature: the payload `protx register_prepare` returns, whose
+/// [`registration_sign_message`] the collateral key signs
+/// (`providertx_service.cpp:591-597`).
+pub fn registration_with_inputs(
+    unsigned: &Transaction,
+) -> Result<ProviderRegistrationPayload, PayloadError> {
+    if unsigned.output.is_empty() {
+        return Err(PayloadError::NoOutputs);
+    }
+    let Some(TransactionPayload::ProviderRegistrationPayloadType(placeholder)) =
+        &unsigned.special_transaction_payload
+    else {
+        return Err(PayloadError::MissingPlaceholder("ProRegTx"));
+    };
+    let mut payload = placeholder.clone();
+    payload.inputs_hash = unsigned.hash_inputs();
+    payload.signature = Vec::new();
+    Ok(payload)
 }
 
 /// `CProRegTx::MakeSignString`: what the collateral key signs
