@@ -239,9 +239,10 @@ impl NetworkSession {
             if !kept.is_empty() {
                 tracing::warn!(wallet_id = %id, proposals = kept.len(), "keeping the paid proposals of a removed wallet");
             }
-            let wallet_id = id.to_string();
-            this.appdb_op(move |db| db.keep_proposals(&wallet_id, &kept))
-                .await?;
+            // On the blocking pool as the deletion below is, not through
+            // `appdb_op`: the tests' first-job hold is the deletion's.
+            let (appdb, wallet_id) = (Arc::clone(&live.appdb), id.to_string());
+            tokio::task::spawn_blocking(move || appdb.keep_proposals(&wallet_id, &kept)).await??;
             let vault = this.vault.clone();
             // The grant is redeemed (consumed) before anything is deleted. Its
             // token carries the key of a passphrase grant on a locked vault.

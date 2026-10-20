@@ -1114,9 +1114,21 @@ fn a_resend_refuses_a_coin_another_payment_holds() {
     assert_eq!(p.lib.sent.lock().unwrap().len(), 2, "no resend");
 }
 
+/// D10: after a restart a resend claims the fee's coins again, so no
+/// payment prepared since can take them.
+#[test]
+fn a_resend_after_a_restart_claims_the_fees_coins() {
+    let p = props(Mode::Accept);
+    let (hash, fee) = p.restarted();
+    let (wallet, owner) = (p.f.wallet, crate::send::SpendOwner::Tx(fee.txid()));
+    assert!(p.f.session.spends.held_by(&wallet, owner).is_empty());
+    p.submit(&hash).unwrap();
+    let coins: std::collections::HashSet<_> = fee.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(p.f.session.spends.held_by(&wallet, owner), coins);
+}
+
 /// Validator r1 Major-1: an asset lock's hold outlives a restart, so after
-/// one a resend refuses a coin a tracked lock spends; untracked, the coin
-/// is free and the resend holds the fee's coins.
+/// one a resend refuses a coin a tracked `Built` or `Broadcast` lock spends.
 #[test]
 fn a_resend_refuses_a_coin_an_asset_lock_holds() {
     let p = props(Mode::Unconfirmed);
