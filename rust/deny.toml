@@ -8,4 +8,26 @@ ignore = [
     # Linux (gtk, libappindicator, tray-icon), so it never runs in the app. Drop this entry
     # when tauri moves to gtk4 or a glib that no longer uses it.
     { id = "RUSTSEC-2024-0370", reason = "unmaintained build-time proc-macro in the gtk3/tauri stack, no safe upgrade" },
+    # zip 8.6.0: `ZipArchive::extract` keeps SUID/SGID bits, writes symlinks that point outside
+    # the destination, and applies permissions through them. Our own log export (dw-desktop)
+    # is on zip 9 and only writes archives. The 8.x copy left is a build-dependency of
+    # tenderdash-proto-compiler 1.8.0 (tenderdash-proto <- dapi-grpc <- dash-sdk, the platform
+    # pin), which requires zip ^8.5: its build script extracts the pinned dashpay/tenderdash
+    # GitHub source archive, fetched over HTTPS, into a temp dir and copies out the .proto files.
+    # Nothing at run time extracts a zip. Drop these when tenderdash-proto-compiler moves to zip 9.
+    { id = "RUSTSEC-2026-0367", reason = "zip 8 extract runs only in tenderdash-proto-compiler's build script on the pinned tenderdash archive; it requires zip ^8.5" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 8 extract runs only in tenderdash-proto-compiler's build script on the pinned tenderdash archive; it requires zip ^8.5" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 8 extract runs only in tenderdash-proto-compiler's build script on the pinned tenderdash archive; it requires zip ^8.5" },
+    # zvariant, zbus_names and zvariant_derive are unmaintained because zbus 6 absorbed them.
+    # They come in with zbus 5, which dw-app and dw-desktop use for the session bus and the
+    # screen-capture portal on Linux, and which tauri-plugin-single-instance requires (^5.9,
+    # still in 3.0.0-alpha.3). No security issue is reported. Drop these when the plugin
+    # supports zbus 6 and we move to it.
+    { id = "RUSTSEC-2026-0370", reason = "unmaintained, merged into zbus 6; tauri-plugin-single-instance still requires zbus 5" },
+    { id = "RUSTSEC-2026-0371", reason = "unmaintained, merged into zbus 6; tauri-plugin-single-instance still requires zbus 5" },
+    { id = "RUSTSEC-2026-0372", reason = "unmaintained, merged into zbus 6; tauri-plugin-single-instance still requires zbus 5" },
+    # basic-toml is unmaintained. It is a build-time dependency of askama_derive 0.16 (the latest),
+    # reached through uniffi_bindgen 0.32 (the latest) when dw-ffi and bin/uniffi-bindgen generate
+    # the Swift bindings, so it never runs in the app. Drop this when askama moves to `toml`.
+    { id = "RUSTSEC-2026-0374", reason = "unmaintained build-time dependency of askama (uniffi bindgen), no safe upgrade" },
 ]

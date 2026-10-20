@@ -204,7 +204,7 @@ mod tests {
                 let mut f = archive.by_index(i).unwrap();
                 let mut text = String::new();
                 f.read_to_string(&mut text).unwrap();
-                (f.name().to_string(), text)
+                (f.name().unwrap().to_string(), text)
             })
             .collect()
     }
