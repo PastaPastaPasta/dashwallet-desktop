@@ -8,4 +8,9 @@ export type MyProposal = { hash: string, name: string, url: string, paymentAddre
 /**
  * When a peer first fetched it (MG-06 D6).
  */
-submittedAt: number | null, state: MyProposalState, };
+submittedAt: number | null, state: MyProposalState,
+/**
+ * The last hand-off of its fee's failure, if it failed: why a fee
+ * reads unsent (MG-06 D10).
+ */
+lastError: string | null, };

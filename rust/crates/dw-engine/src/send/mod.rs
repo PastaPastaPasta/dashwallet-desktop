@@ -431,6 +431,32 @@ impl PendingSpends {
         }
     }
 
+    /// [`Self::reserve`] unless another owner holds one of `outpoints`:
+    /// then nothing is reserved, and the first such coin is the error.
+    pub(crate) fn reserve_unless_held(
+        &self,
+        wallet: WalletId,
+        owner: SpendOwner,
+        outpoints: &[OutPoint],
+    ) -> Result<(), OutPoint> {
+        let mut map = self.map();
+        if let Some(claims) = map.get(&wallet) {
+            let held = outpoints.iter().find(|o| {
+                claims
+                    .get(*o)
+                    .is_some_and(|owners| owners.iter().any(|w| *w != owner))
+            });
+            if let Some(o) = held {
+                return Err(*o);
+            }
+        }
+        let claims = map.entry(wallet).or_default();
+        for o in outpoints {
+            claims.entry(*o).or_default().insert(owner);
+        }
+        Ok(())
+    }
+
     /// Removes every claim of `owner`.
     pub(crate) fn release(&self, wallet: &WalletId, owner: SpendOwner) {
         self.release_where(wallet, owner, |_| true);
@@ -1623,30 +1649,7 @@ impl TxDraft {
         let Some(sent) = sent else {
             return Err(SendFailure::PreparedTxSpent.into());
         };
-        match sent {
-            Ok(txid) => Ok(BroadcastOutcome {
-                txid: txid.to_string(),
-            }),
-            Err(PlatformWalletError::TransactionBroadcastUnconfirmed(reason)) => {
-                Err(SendFailure::BroadcastUnknown { reason }.into())
-            }
-            // Whatever a repeat ran into, the first dispatch may have
-            // reached the network.
-            Err(other) if !first => Err(SendFailure::BroadcastUnknown {
-                reason: format!("not sent this time: {other}"),
-            }
-            .into()),
-            Err(PlatformWalletError::TransactionBroadcast(reason)) => {
-                Err(if reason_means_no_peers(&reason) {
-                    SendFailure::NoPeers
-                } else {
-                    SendFailure::BroadcastRejected { reason }
-                }
-                .into())
-            }
-            Err(PlatformWalletError::StaleReservation) => Err(SendFailure::PreparedTxSpent.into()),
-            Err(other) => Err(other.into()),
-        }
+        broadcast_result(sent, first)
     }
 
     /// Releases the inputs of `prepared`. Idempotent for a pending or
@@ -1672,6 +1675,37 @@ impl TxDraft {
                 Ok(())
             })
             .await
+    }
+}
+
+/// One library broadcast's result as the engine reports it. `first`: the
+/// bytes had never been handed to the network before this attempt; after
+/// that, whatever a repeat ran into, an earlier one may have reached it.
+pub(crate) fn broadcast_result(
+    sent: Result<dashcore::Txid, PlatformWalletError>,
+    first: bool,
+) -> Result<BroadcastOutcome, EngineError> {
+    match sent {
+        Ok(txid) => Ok(BroadcastOutcome {
+            txid: txid.to_string(),
+        }),
+        Err(PlatformWalletError::TransactionBroadcastUnconfirmed(reason)) => {
+            Err(SendFailure::BroadcastUnknown { reason }.into())
+        }
+        Err(other) if !first => Err(SendFailure::BroadcastUnknown {
+            reason: format!("not sent this time: {other}"),
+        }
+        .into()),
+        Err(PlatformWalletError::TransactionBroadcast(reason)) => {
+            Err(if reason_means_no_peers(&reason) {
+                SendFailure::NoPeers
+            } else {
+                SendFailure::BroadcastRejected { reason }
+            }
+            .into())
+        }
+        Err(PlatformWalletError::StaleReservation) => Err(SendFailure::PreparedTxSpent.into()),
+        Err(other) => Err(other.into()),
     }
 }
 

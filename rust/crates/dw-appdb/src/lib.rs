@@ -625,7 +625,8 @@ impl AppDb {
     ///
     /// Rows a removal that failed part-way left are deleted in the same
     /// transaction; if they cannot be, the wallet stays removed and the call
-    /// fails ([`AppDbError::RemovalUnfinished`]).
+    /// fails ([`AppDbError::RemovalUnfinished`]). Then the proposals its
+    /// last removal kept are back ([`Self::keep_proposals`]).
     pub fn readmit_wallet(&self, wallet_id: &str) -> Result<bool> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -634,15 +635,18 @@ impl AppDb {
             [wallet_id],
         )? > 0;
         if !(removed || unfinished(&self.unfinished).contains(wallet_id)) {
+            proposals::restore_kept(&tx, wallet_id)?;
             tx.commit()?;
             return Ok(false);
         }
-        (delete_wallet_rows(&tx, wallet_id).and_then(|()| tx.commit())).map_err(|source| {
-            AppDbError::RemovalUnfinished {
-                wallet: wallet_id.to_owned(),
-                source,
-            }
-        })?;
+        let unfinished_by = |source| AppDbError::RemovalUnfinished {
+            wallet: wallet_id.to_owned(),
+            source,
+        };
+        delete_wallet_rows(&tx, wallet_id).map_err(unfinished_by)?;
+        // Its own failure: the removal's rows are gone in this transaction.
+        proposals::restore_kept(&tx, wallet_id)?;
+        tx.commit().map_err(unfinished_by)?;
         unfinished(&self.unfinished).remove(wallet_id);
         Ok(true)
     }

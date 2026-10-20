@@ -514,7 +514,7 @@ mod tests {
         v
     }
 
-    /// MG-06 D17: "soon" is a cutoff at most two days away, inclusive.
+    /// MG-06 D13: "soon" is a cutoff at most two days away, inclusive.
     #[test]
     fn a_cutoff_is_soon_up_to_two_days_ahead() {
         assert!(cutoff_soon(NOW as u64, NOW as u64));

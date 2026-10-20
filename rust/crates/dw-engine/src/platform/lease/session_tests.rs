@@ -27,7 +27,7 @@ use crate::{
     DashNetwork, Engine, EngineConfig, EngineError, ImportOptions, NetworkSession, WalletId,
 };
 
-const PHRASE: &str =
+pub(crate) const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const FOREIGN: &str = "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n";
 const COIN: u64 = 100_000_000;
@@ -157,10 +157,31 @@ impl Fixture {
         })
     }
 
+    /// Takes the coin `outpoint` out of BIP44 account 0, as key-wallet does
+    /// once it sees a transaction spend it.
+    pub(crate) fn spend_coin(&self, outpoint: OutPoint) {
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        let inner = Arc::clone(&session);
+        self.engine
+            .block_on(session.on_runtime(async move {
+                let wallet = inner.wallet(&id).await?;
+                let removed = (wallet.state_mut().await.core_wallet.accounts)
+                    .standard_bip44_accounts
+                    .get_mut(&0)
+                    .expect("BIP44 account 0")
+                    .utxos
+                    .remove(&outpoint);
+                assert!(removed.is_some(), "not a coin of the wallet");
+                Ok(())
+            }))
+            .unwrap();
+    }
+
     /// Tracks asset lock `seed` of identity `identity_index` spending
     /// `inputs`, with `status`. key-wallet's coins stay unspent, as for a
     /// lock the wallet never saw sent.
-    fn track_lock(
+    pub(crate) fn track_lock(
         &self,
         seed: u8,
         identity_index: u32,
@@ -297,12 +318,12 @@ impl Fixture {
     /// [`Self::stuck`], the call having signed asset lock `seed` spending
     /// `inputs` (§2a.6): the step's own lock, recorded as the library's
     /// store of it would. Its row is not tracked.
-    fn stuck_signing(&self, step: &str, seed: u8, inputs: &[OutPoint]) {
+    pub(crate) fn stuck_signing(&self, step: &str, seed: u8, inputs: &[OutPoint]) {
         self.stuck_with(step, Some((seed, inputs)));
     }
 
     /// Reads the wallet's funding statuses again.
-    fn refresh(&self) {
+    pub(crate) fn refresh(&self) {
         let (leases, w) = (Arc::clone(&self.session.leases), self.wallet);
         let refreshed =
             (self.session).on_runtime(async move { Ok(leases.refresh_funding(w).await) });
@@ -490,7 +511,7 @@ impl Fixture {
         })
     }
 
-    fn draft_to(&self, address: String, amount: u64) -> Arc<crate::send::TxDraft> {
+    pub(crate) fn draft_to(&self, address: String, amount: u64) -> Arc<crate::send::TxDraft> {
         let d = self.session.new_tx_draft(self.wallet).unwrap();
         d.set_recipients(vec![Recipient {
             address,

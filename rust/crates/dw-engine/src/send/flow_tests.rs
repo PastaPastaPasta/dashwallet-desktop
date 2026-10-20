@@ -1806,6 +1806,37 @@ fn a_lock_held_past_a_removal_leaves_nothing() {
     });
 }
 
+/// Core's `RANDOM_CHANGE_POSITION` (review r1 nit): the change of a data
+/// transaction lands before or after the data output, by chance. 64
+/// prepares all alike would fail this once in 2^63.
+#[test]
+fn a_data_transactions_change_lands_at_a_random_position() {
+    let f = fixture(false);
+    f.credit(1, 3 * COIN);
+    let data = TxOut {
+        value: COIN,
+        script_pubkey: dashcore::ScriptBuf::new_op_return(&[7u8; 32]),
+    };
+    let draft = f.session.new_tx_draft(f.wallet).unwrap();
+    draft.set_data_output(data.clone()).unwrap();
+    let mut seen = [false; 2];
+    for _ in 0..64 {
+        let prepared = f
+            .engine
+            .block_on(draft.prepare(f.spend_grant(2 * COIN)))
+            .unwrap();
+        let tx: dashcore::Transaction =
+            dashcore::consensus::deserialize(&prepared.raw().unwrap()).unwrap();
+        assert_eq!(tx.output.len(), 2);
+        seen[tx.output.iter().position(|o| *o == data).unwrap()] = true;
+        f.engine.block_on(draft.abandon(prepared)).unwrap();
+        if seen == [true; 2] {
+            return;
+        }
+    }
+    panic!("the change always at one position: {seen:?}");
+}
+
 /// MG-06 D1: a proposal fee's change is automatic (a fresh BIP44 P2PKH
 /// address) and it takes no CoinJoin source, so every output but its data
 /// is P2PKH, as Core's collateral check needs.

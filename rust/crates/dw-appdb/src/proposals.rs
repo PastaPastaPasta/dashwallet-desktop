@@ -186,14 +186,71 @@ impl AppDb {
         Ok(())
     }
 
-    /// Deletes a proposal (a cancelled hand-off). Returns whether it was
-    /// there.
-    pub fn delete_proposal(&self, wallet_id: &str, hash: &[u8; 32]) -> Result<bool> {
-        Ok(self.conn().execute(
-            "DELETE FROM mg_proposals WHERE wallet_id = ?1 AND hash = ?2",
-            params![wallet_id, hash.as_slice()],
-        )? == 1)
+    /// Keeps the proposals `hashes` of `wallet_id` past its removal (MG-06
+    /// D23), durably, in place of what an earlier removal kept: its
+    /// readmission ([`AppDb::readmit_wallet`]) copies them back, so a fee
+    /// that may be out stays tied to its object.
+    pub fn keep_proposals(&self, wallet_id: &str, hashes: &[[u8; 32]]) -> Result<()> {
+        self.durably(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
+                "DELETE FROM mg_proposals_kept WHERE wallet_id = ?1",
+                [wallet_id],
+            )?;
+            let copy = format!(
+                "INSERT INTO mg_proposals_kept ({COLUMNS})
+                 SELECT {COLUMNS} FROM mg_proposals WHERE wallet_id = ?1 AND hash = ?2"
+            );
+            for hash in hashes {
+                tx.execute(&copy, params![wallet_id, hash.as_slice()])?;
+            }
+            Ok(tx.commit()?)
+        })
     }
+
+    /// Deletes the proposal `hash` paid by `fee_txid` whose fee was never
+    /// handed off (a cancelled hand-off), and the copy a removal racing it
+    /// kept (D23): a row with `fee_sent_at` set stays, checked in the same
+    /// transaction (MG-06 D4), and so does another create's row of the same
+    /// hash (its fee differs). Returns whether a row went.
+    pub fn delete_unsent_proposal(
+        &self,
+        wallet_id: &str,
+        hash: &[u8; 32],
+        fee_txid: &[u8; 32],
+    ) -> Result<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let mut deleted = 0;
+        for table in ["mg_proposals", "mg_proposals_kept"] {
+            deleted += tx.execute(
+                &format!(
+                    "DELETE FROM {table} WHERE wallet_id = ?1 AND hash = ?2
+                     AND fee_txid = ?3 AND fee_sent_at IS NULL"
+                ),
+                params![wallet_id, hash.as_slice(), fee_txid.as_slice()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(deleted > 0)
+    }
+}
+
+/// Copies back the proposals `wallet_id`'s removal kept, inside its
+/// readmission. The copies stay: a readmission rolled back by a removal
+/// finds them again.
+pub(crate) fn restore_kept(
+    tx: &rusqlite::Transaction<'_>,
+    wallet_id: &str,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        &format!(
+            "INSERT OR IGNORE INTO mg_proposals ({COLUMNS})
+             SELECT {COLUMNS} FROM mg_proposals_kept WHERE wallet_id = ?1"
+        ),
+        [wallet_id],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -202,6 +259,11 @@ mod tests {
 
     const W: &str = "aa";
 
+    /// The fee txid of `row(_, n, _)`.
+    fn fee_of(n: u8) -> [u8; 32] {
+        [n ^ 0xff; 32]
+    }
+
     fn row(wallet: &str, n: u8, created_at: u64) -> ProposalRow {
         ProposalRow {
             wallet_id: wallet.into(),
@@ -209,7 +271,7 @@ mod tests {
             revision: 1,
             time: 1_700_000_000 + i64::from(n),
             data: format!(r#"{{"name":"p{n}"}}"#).into_bytes(),
-            fee_txid: [n ^ 0xff; 32],
+            fee_txid: fee_of(n),
             fee_tx: vec![n, 1, 2, 3],
             created_at,
             fee_sent_at: None,
@@ -331,10 +393,57 @@ mod tests {
         let db = AppDb::open_in_memory().unwrap();
         db.insert_proposal(&row(W, 1, 10)).unwrap();
         db.insert_proposal(&row(W, 2, 10)).unwrap();
-        assert!(db.delete_proposal(W, &[1; 32]).unwrap());
-        assert!(!db.delete_proposal(W, &[1; 32]).unwrap());
-        assert!(!db.delete_proposal("bb", &[2; 32]).unwrap());
+        assert!(db.delete_unsent_proposal(W, &[1; 32], &fee_of(1)).unwrap());
+        assert!(!db.delete_unsent_proposal(W, &[1; 32], &fee_of(1)).unwrap());
+        assert!(
+            !db.delete_unsent_proposal("bb", &[2; 32], &fee_of(2))
+                .unwrap()
+        );
         assert_eq!(db.proposals(None).unwrap().len(), 1);
+    }
+
+    /// Review r1 M-1: a fee a resend handed out keeps its proposal.
+    #[test]
+    fn a_proposal_whose_fee_went_out_is_not_deleted() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.insert_proposal(&row(W, 1, 10)).unwrap();
+        assert!(db.mark_proposal_sent(W, &[1; 32], 11).unwrap());
+        assert!(!db.delete_unsent_proposal(W, &[1; 32], &fee_of(1)).unwrap());
+        assert_eq!(db.proposals(Some(W)).unwrap()[0].fee_sent_at, Some(11));
+    }
+
+    /// Review r1 validator Minor-4/-3: a cancelled hand-off deletes only its
+    /// own row (another create of the same hash pays another fee), and the
+    /// copy a racing removal kept of it.
+    #[test]
+    fn a_cancelled_hand_off_deletes_only_its_own_row_and_its_kept_copy() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.insert_proposal(&row(W, 1, 10)).unwrap();
+        assert!(!db.delete_unsent_proposal(W, &[1; 32], &[7; 32]).unwrap());
+        assert_eq!(db.proposals(Some(W)).unwrap().len(), 1);
+        db.keep_proposals(W, &[[1; 32]]).unwrap();
+        assert!(db.delete_unsent_proposal(W, &[1; 32], &fee_of(1)).unwrap());
+        assert!(db.proposals(Some(W)).unwrap().is_empty());
+        let kept: i64 = (db.conn())
+            .query_row("SELECT COUNT(*) FROM mg_proposals_kept", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 0, "the kept copy goes with it");
+    }
+
+    /// D4 (review r1 H2): the save survives a power cut right after it,
+    /// with nothing written since to sync it.
+    #[test]
+    fn a_saved_proposal_survives_power_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(crate::APP_DB_FILE);
+        drop(AppDb::open(&path).unwrap());
+        crate::durability_sim::arm(&path, false);
+        let db = AppDb::open(&path).unwrap();
+        db.insert_proposal(&row(W, 1, 10)).unwrap();
+        drop(db);
+        crate::durability_sim::power_loss(&path);
+        let db = AppDb::open(&path).unwrap();
+        assert_eq!(db.proposals(Some(W)).unwrap(), vec![row(W, 1, 10)]);
     }
 
     /// DEC-210: `delete_wallet` takes the rows, and a later save of the
@@ -352,6 +461,42 @@ mod tests {
             Err(AppDbError::WalletRemoved(w)) if w == W
         ));
         assert!(db.proposals(Some(W)).unwrap().is_empty());
+    }
+
+    /// D23: what a removal keeps comes back with the wallet's readmission,
+    /// whether the removal record is there or was forgotten, and a later
+    /// removal's choice replaces it.
+    #[test]
+    fn a_removal_keeps_the_chosen_proposals_for_the_readmission() {
+        let db = AppDb::open_in_memory().unwrap();
+        for n in 1..=3 {
+            db.insert_proposal(&row(W, n, 10)).unwrap();
+        }
+        db.insert_proposal(&row("bb", 1, 10)).unwrap();
+        db.keep_proposals(W, &[[1; 32], [3; 32]]).unwrap();
+        db.delete_wallet(W).unwrap();
+        assert!(db.proposals(Some(W)).unwrap().is_empty());
+        assert!(db.export_wallet_rows(W).unwrap().is_empty(), "not carried");
+        assert!(db.readmit_wallet(W).unwrap());
+        let hashes = |db: &AppDb| -> Vec<u8> {
+            db.proposals(Some(W))
+                .unwrap()
+                .iter()
+                .map(|r| r.hash[0])
+                .collect()
+        };
+        assert_eq!(hashes(&db), [1, 3]);
+        assert_eq!(db.proposals(Some("bb")).unwrap().len(), 1);
+
+        db.keep_proposals(W, &[[3; 32]]).unwrap();
+        db.delete_wallet(W).unwrap();
+        // A record forgotten (a lone open): the readmission is no
+        // readmission, and the rows still come back.
+        db.conn()
+            .execute("DELETE FROM removed_wallets", [])
+            .unwrap();
+        assert!(!db.readmit_wallet(W).unwrap());
+        assert_eq!(hashes(&db), [3]);
     }
 
     /// A `.dwbackup` carries the table: the fee is 1 DASH (MG-00 D18).

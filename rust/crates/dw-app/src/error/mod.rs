@@ -273,7 +273,8 @@ pub enum ErrorData {
     /// `send.broadcast_rejected`, `send.broadcast_unknown` and their `psbt.*` and
     /// `coinjoin.broadcast_rejected` twins: the peer's or library's reason;
     /// `governance.vote_rejected`: the check that failed;
-    /// `governance.submit_refused`: why (`public`, `expired`, `fee_failed`)
+    /// `governance.submit_refused`: why (`public`, `expired`, `fee_failed`,
+    /// `in_flight`)
     /// (mg-engine §4).
     Reason { reason: String },
     /// `tx_action_refused`: why the abandon or resend was refused.

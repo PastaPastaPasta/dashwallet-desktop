@@ -1,6 +1,6 @@
 # MG governance engine contract (`dw-engine` facade)
 
-Contract-Version: 6
+Contract-Version: 7
 
 Status: **draft**, 2026-10-16 (ROADMAP MG-02). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
 Code: `rust/crates/dw-engine/src/governance/` (§0). Design: [`MG-02-governance.md`](../design/MG-02-governance.md);
@@ -104,9 +104,9 @@ height, its estimate and `cutoff_soon` (at most two days away, MG-06 D13).
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
 | `preview_proposal(wallet: WalletId, draft: ProposalDraft)` | async | The review step: `ProposalPreview` with the proposal's data JSON and hex, epochs, its hash as if created now (the created object is stamped with its own creation time, so its hash differs; MG-06 D3), the 1 DASH fee and the fee transaction's estimated network fee. Reserves, signs and saves nothing. `governance.not_synced{phase}` before a tip is known; `governance.invalid_proposal{fields}` with every failing field (MG-06 D11); `invalid_argument` for a malformed coin. **Implemented.** | `GovernanceError` |
-| `create_proposal(wallet: WalletId, draft: ProposalDraft, grant: String)` | async | Validates as `preview_proposal`, then pays the fee under a `proposal` lease begun from `grant` (a `Spend` grant of `wallet` whose cap covers 1 DASH plus the network fee; MG-06 D10) and ended when the call returns. The fee is one `OP_RETURN <hash>` output of 1 DASH and P2PKH change (D1). The proposal and its signed fee are saved before the fee is broadcast (D4, MG-00 D18). Returns `MyProposal`. A save that fails broadcasts nothing; a hand-off that definitely did not send deletes the proposal and returns the send error; one that may have sent keeps it (`fee_unsent`). The wallet submits it on its own once the fee has a confirmation (D6). The lease's errors are `GovernanceError::Platform`; the draft's are `GovernanceError::Engine` (`send` with `grant_exceeded`, `insufficient_funds` and the rest of m1's send failures). **Implemented.** | `GovernanceError` |
-| `my_proposals(wallet: WalletId)` | sync | The wallet's own proposals, newest first, each a `MyProposal` with its derived state. Works with sync off. **Implemented.** | `GovernanceError` |
-| `submit_proposal(wallet: WalletId, hash: String)` | async | The [Submit] action: a `fee_unsent` or `fee_paid{0}` proposal's saved fee is broadcast again (no grant, MG-06 D10); a `no_peer_accepted` one is looked for by a new sync run at once (D7). Returns the `MyProposal` after. `invalid_argument` for a malformed hash; `governance.proposal_not_found{hash}` for a hash that is not the wallet's; `governance.submit_refused{reason}` for a `public`, `expired` or `fee_failed` proposal; `governance.sync_disabled` while sync is off (except for a resend). **Implemented.** | `GovernanceError` |
+| `create_proposal(wallet: WalletId, draft: ProposalDraft, grant: String)` | async | Validates as `preview_proposal`, then pays the fee under a `proposal` lease begun from `grant` (a `Spend` grant of `wallet` whose cap covers 1 DASH plus the network fee; MG-06 D10) and ended when the call returns. The fee is one `OP_RETURN <hash>` output of 1 DASH and P2PKH change (D1). The proposal and its signed fee are saved before the fee is broadcast (D4, MG-00 D18). Returns `MyProposal`. A save that fails broadcasts nothing; a hand-off that definitely did not send deletes the proposal and returns the send error; one that may have sent keeps it (`fee_unsent`). `governance.submit_refused{in_flight}` while the same proposal (the same draft in the same second) is being created. The wallet submits it on its own once the fee has a confirmation (D6). The lease's errors are `GovernanceError::Platform`; the draft's are `GovernanceError::Engine` (`send` with `grant_exceeded`, `insufficient_funds` and the rest of m1's send failures). **Implemented.** | `GovernanceError` |
+| `my_proposals(wallet: WalletId)` | sync | The wallet's own proposals, newest first, each a `MyProposal` with its derived state and `last_error`, the failure of its fee's last hand-off if it failed. Works with sync off. **Implemented.** | `GovernanceError` |
+| `submit_proposal(wallet: WalletId, hash: String)` | async | The [Submit] action: a `fee_unsent` or `fee_paid{0}` proposal's saved fee is broadcast again (no grant, MG-06 D10), its coins claimed first and the hand-off recorded before it; a `no_peer_accepted` one is looked for by a new sync run at once (D7). Returns the `MyProposal` after. `invalid_argument` for a malformed hash; `governance.proposal_not_found{hash}` for a hash that is not the wallet's; `governance.submit_refused{reason}` for a `public`, `expired` or `fee_failed` proposal, and `in_flight` while a create or another [Submit] hands its fee off; `send.outpoint_unavailable` for a fee coin another payment or an asset lock holds, or that the wallet reads spent by another transaction; a resend's broadcast failure as `send.broadcast_unknown` (kept as `last_error`); `governance.sync_disabled` while sync is off (except for a resend). **Implemented.** | `GovernanceError` |
 
 ## 3. Surface (generated)
 
@@ -114,7 +114,7 @@ Generated by `mg_governance_contract.rs` from the facade's source files; `DW_BLE
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: governance-surface -->
-<!-- surface-sha256: 0681a98b12696c030d3c4aea1640467a79709a995c568716d546f4ad01a9bc8b version: 6 -->
+<!-- surface-sha256: 17107b0ce6e6d382d68ad67ae0ede0842f31bbd7601c95b801fef99bbc176c82 version: 7 -->
 
 ```rust
 // src/governance/errors.rs
@@ -424,6 +424,7 @@ pub struct MyProposal {
     pub created_at: u64,
     pub submitted_at: Option<u64>,
     pub state: MyProposalState,
+    pub last_error: Option<String>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -449,6 +450,7 @@ pub enum SubmitRefusal {
     Public,
     Expired,
     FeeFailed,
+    InFlight,
 }
 impl SubmitRefusal {
     pub fn as_str(self) -> &'static str;
@@ -489,7 +491,7 @@ impl Governance {
   wizard order: `name`, `url`, `payment_address`, `payment_amount`, `payment_count`, `first_payment`, `payload`
   (MG-06 D11).
 - `governance.submit_refused{reason}`: `submit_proposal` on a proposal past submitting; `reason` is `public`,
-  `expired` or `fee_failed`.
+  `expired` or `fee_failed`, or `in_flight` while its fee is being handed off (MG-06 D10).
 - `governance.not_implemented{call}`: a stub (none now; MG-05 D17).
 - `Platform(PlatformError)`: a lease error of `vote` or `create_proposal`, with its `platform.*` code (m4 §4; MG-05 D12). The Swift host
   binds no governance call, so its `engineCodes` are unchanged.

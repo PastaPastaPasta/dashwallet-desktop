@@ -34,3 +34,23 @@ CREATE TABLE mg_proposals (
 CREATE TRIGGER mg_proposals_after_removal BEFORE INSERT ON mg_proposals
 WHEN EXISTS (SELECT 1 FROM removed_wallets WHERE wallet_id = NEW.wallet_id)
 BEGIN SELECT RAISE(IGNORE); END;
+
+-- The proposals a wallet's removal keeps (MG-06 D23): those whose fee is
+-- paid and that have not expired, as a removal keeps the dispatch records of
+-- a possibly sent asset lock (DP1-02 §3.1). Not a wallet table: it outlives
+-- the removal, and the wallet's readmission copies its rows back. The last
+-- removal's choice replaces an earlier one's.
+CREATE TABLE mg_proposals_kept (
+    wallet_id    TEXT    NOT NULL,
+    hash         BLOB    NOT NULL CHECK (length(hash) = 32),
+    revision     INTEGER NOT NULL,
+    time         INTEGER NOT NULL,
+    data         BLOB    NOT NULL,
+    fee_txid     BLOB    NOT NULL CHECK (length(fee_txid) = 32),
+    fee_tx       BLOB    NOT NULL,
+    created_at   INTEGER NOT NULL,
+    fee_sent_at  INTEGER,
+    submitted_at INTEGER,
+    last_error   TEXT,
+    PRIMARY KEY (wallet_id, hash)
+) STRICT;

@@ -23,7 +23,7 @@ codes! {
         /// field in wizard order.
         InvalidProposal = "governance.invalid_proposal",
         /// `submit_proposal` on a proposal past submitting: `data` gives the
-        /// reason (`public`, `expired`, `fee_failed`).
+        /// reason (`public`, `expired`, `fee_failed`, `in_flight`).
         SubmitRefused = "governance.submit_refused",
         /// No full node to talk to.
         NoPeers = "governance.no_peers",

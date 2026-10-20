@@ -742,6 +742,36 @@ fn error_codes_match_the_contract() {
     );
 }
 
+/// §4's `submit_refused` reasons are `SubmitRefusal`'s, every one of them
+/// (MG-06 review r1 m-3).
+#[test]
+fn submit_refused_reasons_match_the_contract() {
+    let doc = contract();
+    let bullet = doc
+        .lines()
+        .skip_while(|l| !l.starts_with("- `governance.submit_refused{reason}`"))
+        .take_while(|l| !l.starts_with("- `governance.not_implemented"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let listed: BTreeSet<&str> = bullet.split('`').skip(1).step_by(2).collect();
+    let reasons = [
+        SubmitRefusal::Public,
+        SubmitRefusal::Expired,
+        SubmitRefusal::FeeFailed,
+        SubmitRefusal::InFlight,
+    ];
+    for r in reasons {
+        // Exhaustive: a new reason fails to compile here until it is listed.
+        match r {
+            SubmitRefusal::Public
+            | SubmitRefusal::Expired
+            | SubmitRefusal::FeeFailed
+            | SubmitRefusal::InFlight => {}
+        }
+        assert!(listed.contains(r.as_str()), "§4 lacks {:?}", r.as_str());
+    }
+}
+
 /// The m1 codes come through `Engine` unchanged (MG-02 D8).
 #[test]
 fn engine_codes_pass_through() {

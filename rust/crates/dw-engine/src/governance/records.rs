@@ -423,6 +423,9 @@ pub struct MyProposal {
     /// When a peer first fetched it (MG-06 D6).
     pub submitted_at: Option<u64>,
     pub state: MyProposalState,
+    /// The last hand-off of its fee's failure, if it failed: why a fee
+    /// reads unsent (review r1 m-3).
+    pub last_error: Option<String>,
 }
 
 /// Where one of the wallet's proposals is (MG-06 §2.3, MG-00 D16).
@@ -464,6 +467,9 @@ pub enum SubmitRefusal {
     Public,
     Expired,
     FeeFailed,
+    /// Its fee is being handed to the network (a create's or another
+    /// [Submit]'s, MG-06 D10).
+    InFlight,
 }
 
 impl SubmitRefusal {
@@ -472,6 +478,7 @@ impl SubmitRefusal {
             Self::Public => "public",
             Self::Expired => "expired",
             Self::FeeFailed => "fee_failed",
+            Self::InFlight => "in_flight",
         }
     }
 }

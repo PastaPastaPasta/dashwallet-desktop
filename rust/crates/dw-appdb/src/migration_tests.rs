@@ -299,7 +299,7 @@ const CHECKSUM_REMOVED_WALLETS: u64 = 15219075048203792465;
 const CHECKSUM_DP_EVENTS_PAGE: u64 = 3406283282772175885;
 const CHECKSUM_LOCK_INPUTS: u64 = 5402975231604979268;
 const CHECKSUM_GOV_REGISTRATIONS: u64 = 16553696798211738698;
-const CHECKSUM_MG_PROPOSALS: u64 = 18205916535584301766;
+const CHECKSUM_MG_PROPOSALS: u64 = 6981014660522877648;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -816,7 +816,8 @@ fn an_installation_with_wallets_starts_latched() {
 fn wallet_scoped_tables(conn: &Connection) -> Vec<String> {
     conn.prepare(
         "SELECT m.name FROM sqlite_master m, pragma_table_info(m.name) c
-         WHERE m.type = 'table' AND c.name = 'wallet_id' AND m.name != 'removed_wallets'
+         WHERE m.type = 'table' AND c.name = 'wallet_id'
+           AND m.name NOT IN ('removed_wallets', 'mg_proposals_kept')
          ORDER BY m.name",
     )
     .unwrap()

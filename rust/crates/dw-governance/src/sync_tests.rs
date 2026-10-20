@@ -611,6 +611,22 @@ async fn own_objects_are_announced_once_per_round_and_their_fetchers_reported() 
         assert!(!announced_within(seen, hash, Duration::from_millis(500)).await);
     }
     assert_eq!(hx.shared.object_fetchers(&hash).len(), 2);
+    // Another item's pass announces that item alone: one announcement per
+    // round and connection (review r1 m-1).
+    let v = vote(hash, 1, VoteOutcome::Yes);
+    hx.shared.relay_vote(&v);
+    for seen in &mut hx.seen {
+        let inv = loop {
+            let s = tokio::time::timeout(Duration::from_secs(5), seen.recv());
+            match s.await.unwrap().unwrap() {
+                Seen::Inv(h) if h.contains(&v.hash()) => break h,
+                Seen::Inv(h) => assert!(!h.contains(&hash), "{h:?}"),
+                _ => {}
+            }
+        };
+        assert!(!inv.contains(&hash), "{inv:?}");
+        assert!(!announced_within(seen, hash, Duration::from_millis(500)).await);
+    }
 
     assert!(hx.shared.withdraw_object(&hash));
     assert!(!hx.shared.is_queued(&hash));

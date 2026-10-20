@@ -227,6 +227,7 @@ fn build() -> Value {
         created_at: 1_790_000_000,
         submitted_at: Some(1_790_000_120),
         state,
+        last_error: None,
     };
     let submitted = my_proposal(MyProposalState::ReadyToSubmit {
         reason: SubmitWait::NotSynced,
@@ -240,7 +241,10 @@ fn build() -> Value {
         my_proposal(MyProposalState::Public {
             status: Some(ProposalStatus::Voting),
         }),
-        my_proposal(MyProposalState::FeeUnsent),
+        MyProposal {
+            last_error: Some("the broadcast's outcome is unknown: no verdict yet".into()),
+            ..my_proposal(MyProposalState::FeeUnsent)
+        },
         my_proposal(MyProposalState::FeeFailed),
         my_proposal(MyProposalState::Expired),
     ];
@@ -262,6 +266,9 @@ fn build() -> Value {
         },
         GovernanceError::SubmitRefused {
             reason: SubmitRefusal::Public,
+        },
+        GovernanceError::SubmitRefused {
+            reason: SubmitRefusal::InFlight,
         },
         GovernanceError::NotImplemented {
             call: "Governance.vote".into(),

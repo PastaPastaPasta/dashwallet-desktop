@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashcore::hashes::Hash;
-use dashcore::{OutPoint, ScriptBuf, Transaction, TxOut};
+use dashcore::{OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 use dw_appdb::ProposalRow;
 use dw_governance::object::{GovernanceObject, display_hex, parse_display_hex};
 use dw_governance::params::PROPOSAL_FEE_CONFIRMATIONS;
@@ -38,7 +38,9 @@ use crate::events::unix_now;
 use crate::history::depth_of;
 use crate::platform::lease::{Outcome, lease_string};
 use crate::platform::{FlowKind, PlatformError};
-use crate::send::{CoinSource, TxDraft, attempt_outcome};
+use crate::send::{
+    CoinSource, SendFailure, SpendOwner, TxDraft, attempt_outcome, broadcast_result,
+};
 use crate::{EngineError, NetworkSession, WalletId};
 
 /// Confirmations a Core peer needs before it takes a proposal at all
@@ -143,7 +145,8 @@ impl Pace {
 pub(crate) struct Facts {
     /// The fee's depth; `None` while the wallet's history lacks it.
     pub depth: Option<u32>,
-    /// The fee was handed to the network (`fee_sent_at`).
+    /// The fee was handed to the network (`fee_sent_at`), and the last
+    /// hand-off did not fail.
     pub sent: bool,
     /// Another confirmed transaction spends one of the fee's coins.
     pub conflicted: bool,
@@ -217,28 +220,52 @@ impl Saved {
     }
 }
 
-/// The fee's depth at `tip` (`None`: not in the wallet's history) and
-/// whether another confirmed transaction spends one of its coins.
-fn fee_status(
+/// Each fee's depth at `tip` (`None`: not in the wallet's history) and
+/// whether another confirmed transaction spends one of its coins, from one
+/// pass over the wallet's history (review r1 m-2).
+fn fee_statuses(
     session: &NetworkSession,
     wallet: &WalletId,
-    fee: &Transaction,
+    fees: &[&Transaction],
     tip: u32,
-) -> (Option<u32>, bool) {
-    let txid = fee.txid();
-    let coins: HashSet<OutPoint> = fee.input.iter().map(|i| i.previous_output).collect();
+) -> Vec<(Option<u32>, bool)> {
+    #[cfg(test)]
+    session
+        .governance
+        .fee_scans
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let ids: Vec<Txid> = fees.iter().map(|fee| fee.txid()).collect();
+    let index: HashMap<Txid, usize> = ids.iter().copied().zip(0..).collect();
+    let mut payers: HashMap<OutPoint, Vec<usize>> = HashMap::new();
+    for (n, fee) in fees.iter().enumerate() {
+        for input in &fee.input {
+            payers.entry(input.previous_output).or_default().push(n);
+        }
+    }
+    let mut statuses = vec![(None, false); fees.len()];
     session.hub.history.read(wallet, |txs| {
-        let depth = txs.get(&txid).map(|e| depth_of(e, tip));
-        let conflicted = txs.iter().any(|(id, e)| {
-            *id != txid
-                && depth_of(e, tip) > 0
-                && e.tx
-                    .input
-                    .iter()
-                    .any(|i| coins.contains(&i.previous_output))
-        });
-        (depth, conflicted)
-    })
+        for (id, e) in txs.iter() {
+            let depth = depth_of(e, tip);
+            if let Some(&n) = index.get(id) {
+                statuses[n].0 = Some(depth);
+            }
+            if depth == 0 {
+                continue;
+            }
+            for input in &e.tx.input {
+                for &n in payers.get(&input.previous_output).into_iter().flatten() {
+                    statuses[n].1 |= ids[n] != *id;
+                }
+            }
+        }
+    });
+    statuses
+}
+
+/// Whether a proposal ending at `end_epoch` has expired at `now`: Core's
+/// `IsExpired` takes the end itself as past (governance/object.cpp).
+fn expired(end_epoch: Option<i64>, now: i64) -> bool {
+    end_epoch.is_some_and(|e| e <= now)
 }
 
 /// The facade's name of a failing draft field (kept out of `records.rs`,
@@ -385,6 +412,8 @@ impl Governance {
         fee_draft: &Arc<TxDraft>,
         lease: String,
     ) -> Result<[u8; 32], GovernanceError> {
+        // Before anything is reserved: its failure leaves nothing held.
+        let rt = self.runtime()?;
         let prepared = fee_draft.prepare(lease).await?;
         let raw = prepared
             .raw()
@@ -407,6 +436,15 @@ impl Governance {
             submitted_at: None,
             last_error: None,
         };
+        // [Submit] keeps off a row whose fee this call still hands off
+        // (review r1 M-1).
+        let Some(_flight) = rt.in_flight.begin((wallet, hash)) else {
+            // The same draft created twice in one second: one fee is paid.
+            let _ = fee_draft.abandon(prepared).await;
+            return Err(GovernanceError::SubmitRefused {
+                reason: SubmitRefusal::InFlight,
+            });
+        };
         // D4: saved, durably, before the broadcast, as Core writes the
         // object before committing the fee (rpc/governance.cpp:245-250).
         if let Err(e) = self
@@ -418,7 +456,7 @@ impl Governance {
             // A save that failed after its commit leaves nothing either.
             let wallet_id = wallet.to_string();
             let _ = (self.session)
-                .appdb_op(move |db| db.delete_proposal(&wallet_id, &hash))
+                .appdb_op(move |db| db.delete_unsent_proposal(&wallet_id, &hash, &fee_txid))
                 .await;
             return Err(e.into());
         }
@@ -426,24 +464,29 @@ impl Governance {
         let wallet_id = wallet.to_string();
         let outcome = attempt_outcome(&sent);
         let error = sent.as_ref().err().map(ToString::to_string);
+        // Whether the row was deleted.
         let recorded = (self.session)
             .appdb_op(move |db| match (error, outcome) {
                 (None, _) => db
                     .mark_proposal_sent(&wallet_id, &hash, unix_now())
-                    .map(drop),
-                // Nothing was paid: the proposal goes with it (D4).
-                (_, Outcome::NotSent) => db.delete_proposal(&wallet_id, &hash).map(drop),
+                    .map(|_| false),
+                // Nothing was paid: the proposal goes with it, unless a
+                // resend has handed the fee out since (D4).
+                (_, Outcome::NotSent) => db.delete_unsent_proposal(&wallet_id, &hash, &fee_txid),
                 // Maybe out: kept, `fee_unsent` until the wallet sees it.
-                (Some(e), _) => db.set_proposal_error(&wallet_id, &hash, Some(&e)),
+                (Some(e), _) => db
+                    .set_proposal_error(&wallet_id, &hash, Some(&e))
+                    .map(|()| false),
             })
             .await;
         // The fee's fate is the answer: a row left behind reads
         // `fee_unsent`, and a fee that went out still shows in history.
-        if let Err(e) = recorded {
+        let deleted = recorded.unwrap_or_else(|e| {
             tracing::warn!(error = %e, "recording a proposal fee's broadcast");
-        }
+            true
+        });
         match (sent, outcome) {
-            (Err(e), Outcome::NotSent) => Err(e.into()),
+            (Err(e), Outcome::NotSent) if deleted => Err(e.into()),
             _ => Ok(hash),
         }
     }
@@ -492,15 +535,26 @@ impl Governance {
     /// The [`Facts`] of `saved` now; `status`: with a public proposal's
     /// status (a read of the store's tally).
     fn facts(&self, saved: &Saved, status: bool) -> Facts {
-        let rt = self.runtime().ok();
         let tip = self.session.hub.tracker().tip_height().unwrap_or(0);
-        let (depth, conflicted) = fee_status(&self.session, &saved.wallet, &saved.fee, tip);
-        let confirmed = rt.is_some_and(|rt| {
-            (rt.shared.store())
-                .object(&saved.row.hash)
-                .is_some_and(|o| o.confirmed)
-        });
-        let public = confirmed.then(|| {
+        let fee = fee_statuses(&self.session, &saved.wallet, &[&saved.fee], tip)[0];
+        self.facts_with(saved, status, fee)
+    }
+
+    /// Whether peers made the proposal `hash` public (MG-02 D3).
+    fn confirmed(&self, hash: &[u8; 32]) -> bool {
+        self.runtime()
+            .is_ok_and(|rt| rt.shared.store().object(hash).is_some_and(|o| o.confirmed))
+    }
+
+    /// [`Self::facts`] with the fee's [`fee_statuses`] read.
+    fn facts_with(
+        &self,
+        saved: &Saved,
+        status: bool,
+        (depth, conflicted): (Option<u32>, bool),
+    ) -> Facts {
+        let rt = self.runtime().ok();
+        let public = self.confirmed(&saved.row.hash).then(|| {
             status
                 .then(|| self.proposal(display_hex(&saved.row.hash)).ok())
                 .flatten()
@@ -518,11 +572,12 @@ impl Governance {
         };
         Facts {
             depth,
-            sent: saved.row.fee_sent_at.is_some(),
+            // A failed resend recorded its hand-off first (D10).
+            sent: saved.row.fee_sent_at.is_some() && saved.row.last_error.is_none(),
             conflicted,
             submitted: saved.row.submitted_at.is_some() && !lost,
             public,
-            expired: saved.data.end_epoch.is_some_and(|e| e <= now()),
+            expired: expired(saved.data.end_epoch, now()),
             wait,
         }
     }
@@ -542,7 +597,29 @@ impl Governance {
             created_at: saved.row.created_at,
             submitted_at: saved.row.submitted_at,
             state: derive_state(self.facts(saved, true)),
+            last_error: saved.row.last_error.clone(),
         }
+    }
+
+    /// The proposals a removal of `wallet` keeps (D23): all but the
+    /// expired ones and those whose fee failed. As a removal keeps a
+    /// possibly sent asset lock's records (DP1-02 §3.1), importing the
+    /// wallet again brings them back. A failed read fails the removal.
+    pub(crate) fn kept_on_removal(&self, wallet: WalletId) -> Result<Vec<[u8; 32]>, EngineError> {
+        let mine = self.my_proposals(wallet).map_err(|e| match e {
+            GovernanceError::Engine(e) => e,
+            other => EngineError::Internal(format!("reading the proposals to keep: {other}")),
+        })?;
+        Ok(mine
+            .into_iter()
+            .filter(|p| {
+                !matches!(
+                    p.state,
+                    MyProposalState::Expired | MyProposalState::FeeFailed
+                )
+            })
+            .filter_map(|p| parse_display_hex(&p.hash))
+            .collect())
     }
 
     /// The [Submit] of a proposal that is not submitted (UX-SPEC §4.25.3):
@@ -559,6 +636,15 @@ impl Governance {
                 "not a proposal hash: {hash:?}"
             )))
         })?;
+        // The op gate is shared: two calls are not serialised by it, so a
+        // create still handing this fee off, or another [Submit], refuses
+        // this one (review r1 M-1).
+        let rt = self.runtime()?;
+        let Some(_flight) = rt.in_flight.begin((wallet, key)) else {
+            return Err(GovernanceError::SubmitRefused {
+                reason: SubmitRefusal::InFlight,
+            });
+        };
         let mine = {
             // Not held across the resend, which takes the wallet.
             let _op = self.session.enter().await?;
@@ -573,7 +659,6 @@ impl Governance {
         if let Some(reason) = reason {
             return Err(GovernanceError::SubmitRefused { reason });
         }
-        let rt = self.runtime()?;
         match mine.state {
             // Unseen, or seen unmined: dash-qt resends an unconfirmed
             // transaction too (QT-091).
@@ -599,22 +684,67 @@ impl Governance {
     }
 
     /// Hands the saved fee to the network again (dash-qt "Resend", QT-091).
+    /// Its coins are claimed for it first, as a restart dropped the claims
+    /// its first hand-off took: a coin another payment or an asset lock
+    /// holds, or that the wallet reads spent, refuses the resend
+    /// (`send.outpoint_unavailable`), and the claim stays, as for any fee
+    /// that may be out (D10). The hand-off is recorded before
+    /// the bytes go out, so nothing reads the row as unpaid while they may
+    /// be (review r1 M-1); the attempt's failure is its `last_error`.
     async fn resend_fee(&self, wallet: WalletId, hash: &[u8; 32]) -> Result<(), GovernanceError> {
         let saved = self.saved(wallet, hash)?;
         let handle = self.session.wallet(&wallet).await?;
-        handle
-            .core()
-            .broadcast_transaction(&saved.fee)
-            .await
-            .map_err(EngineError::from)?;
+        let inputs: Vec<OutPoint> = saved.fee.input.iter().map(|i| i.previous_output).collect();
+        {
+            let fence = self.session.coin_fence(wallet).await?;
+            let unavailable = |o: OutPoint| -> GovernanceError {
+                EngineError::Send(SendFailure::OutpointUnavailable(o)).into()
+            };
+            // Once the wallet has the fee, its coins are the fee's.
+            let tip = self.session.hub.tracker().tip_height().unwrap_or(0);
+            let (depth, _) = fee_statuses(&self.session, &wallet, &[&saved.fee], tip)[0];
+            if depth.is_none() {
+                // Each coin is unspent and held by no asset lock, whose
+                // holds outlive a restart (`coins.rs`; validator r1
+                // Major-1, Minor-1).
+                let snapshot = self.session.coin_snapshot(&fence, &handle).await?;
+                let free: HashSet<OutPoint> = (snapshot.coins.iter())
+                    .filter(|c| !c.lock_input && !c.unresolved_lock)
+                    .map(|c| c.utxo.outpoint)
+                    .collect();
+                if let Some(&o) = inputs.iter().find(|o| !free.contains(o)) {
+                    return Err(unavailable(o));
+                }
+            }
+            let owner = SpendOwner::Tx(saved.fee.txid());
+            (self.session.spends)
+                .reserve_unless_held(wallet, owner, &inputs)
+                .map_err(unavailable)?;
+        }
         let (at, hash) = (unix_now(), saved.row.hash);
         (self.session)
-            .appdb_op(move |db| {
-                db.mark_proposal_sent(&wallet.to_string(), &hash, at)?;
-                db.set_proposal_error(&wallet.to_string(), &hash, None)
-            })
+            .appdb_op(move |db| db.mark_proposal_sent(&wallet.to_string(), &hash, at))
             .await?;
-        Ok(())
+        #[cfg(test)]
+        let seam = self.runtime()?.fee_broadcaster.lock().unwrap().clone();
+        let sent = async {
+            #[cfg(test)]
+            if let Some(seam) = seam {
+                return seam.broadcast(&saved.fee, false).await;
+            }
+            handle.core().broadcast_transaction(&saved.fee).await
+        }
+        .await;
+        // A repeat: whatever it ran into, the bytes may be out already.
+        let sent = broadcast_result(sent, false);
+        let error = sent.as_ref().err().map(ToString::to_string);
+        let recorded = (self.session)
+            .appdb_op(move |db| db.set_proposal_error(&wallet.to_string(), &hash, error.as_deref()))
+            .await;
+        if let Err(e) = recorded {
+            tracing::warn!(error = %e, "recording a proposal fee's resend");
+        }
+        sent.map(drop).map_err(GovernanceError::from)
     }
 
     /// One pass over every wallet's unsettled proposals (MG-06 §2.2):
@@ -645,6 +775,10 @@ impl Governance {
         let run = synced.then_some(last_synced_at).flatten();
         let caught_up = self.session.hub.tracker().caught_up();
         let mut live_keys = HashSet::new();
+        // Settled ones first, from the row and the store: the history is
+        // read once per wallet for the rest (review r1 m-2).
+        let at = now();
+        let mut by_wallet: HashMap<WalletId, Vec<Saved>> = HashMap::new();
         for row in rows {
             let saved = match Saved::decode(row) {
                 Ok(s) => s,
@@ -653,8 +787,22 @@ impl Governance {
                     continue;
                 }
             };
+            if expired(saved.data.end_epoch, at) || self.confirmed(&saved.row.hash) {
+                rt.shared.withdraw_object(&saved.row.hash);
+                continue;
+            }
+            by_wallet.entry(saved.wallet).or_default().push(saved);
+        }
+        let tip = self.session.hub.tracker().tip_height().unwrap_or(0);
+        let mut live = Vec::new();
+        for (wallet, saved) in by_wallet {
+            let fees: Vec<&Transaction> = saved.iter().map(|s| &s.fee).collect();
+            let statuses = fee_statuses(&self.session, &wallet, &fees, tip);
+            live.extend(saved.into_iter().zip(statuses));
+        }
+        for (saved, fee) in live {
             let (key, hash) = (saved.key(), saved.row.hash);
-            let f = self.facts(&saved, false);
+            let f = self.facts_with(&saved, false, fee);
             if f.public.is_some() || f.expired || f.conflicted {
                 rt.shared.withdraw_object(&hash);
                 continue;

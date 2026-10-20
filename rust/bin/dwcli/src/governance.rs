@@ -86,6 +86,10 @@ fn line<T: Serialize>(kind: &str, value: &T) {
     );
 }
 
+/// The least margin `--propose`'s grant gives over the estimated network
+/// fee: about 60 more P2PKH inputs at the 1 duff/byte minimum relay fee.
+const PROPOSAL_FEE_MARGIN: u64 = 10_000;
+
 /// `name:url:address:amount-duffs:payment-count:first-superblock`; the URL
 /// may hold colons.
 fn parse_propose(text: &str) -> Result<ProposalDraft, String> {
@@ -200,11 +204,15 @@ pub fn run(
             .block_on(gov.preview_proposal(id, draft.clone()))
             .map_err(e)?;
         line("preview", &preview);
+        // A cap, not a charge: the create selects the coins again, and a
+        // coin that arrived since can take more inputs than the preview's
+        // (MG-06 D25). The lease charges what the fee spends.
+        let margin = preview.network_fee.max(PROPOSAL_FEE_MARGIN);
         let grant = session
             .vault()
             .authorize(
                 GrantPurpose::Spend {
-                    max_duffs: preview.fee + preview.network_fee,
+                    max_duffs: preview.fee + preview.network_fee + margin,
                 },
                 Some(&id.0),
                 credential(session, passphrase),

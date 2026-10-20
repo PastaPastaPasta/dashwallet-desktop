@@ -278,7 +278,8 @@
       "state": {
         "kind": "feePaid",
         "confirmations": 0
-      }
+      },
+      "lastError": null
     },
     "governance_my_proposals": [
       {
@@ -296,7 +297,8 @@
         "state": {
           "kind": "feePaid",
           "confirmations": 0
-        }
+        },
+        "lastError": null
       },
       {
         "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
@@ -313,7 +315,8 @@
         "state": {
           "kind": "readyToSubmit",
           "reason": "noPeerAccepted"
-        }
+        },
+        "lastError": null
       },
       {
         "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
@@ -330,7 +333,8 @@
         "state": {
           "kind": "confirming",
           "confirmations": 3
-        }
+        },
+        "lastError": null
       },
       {
         "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
@@ -347,7 +351,8 @@
         "state": {
           "kind": "public",
           "status": "voting"
-        }
+        },
+        "lastError": null
       },
       {
         "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
@@ -363,7 +368,8 @@
         "submittedAt": 1790000120,
         "state": {
           "kind": "feeUnsent"
-        }
+        },
+        "lastError": "the broadcast's outcome is unknown: no verdict yet"
       },
       {
         "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
@@ -379,7 +385,8 @@
         "submittedAt": 1790000120,
         "state": {
           "kind": "feeFailed"
-        }
+        },
+        "lastError": null
       },
       {
         "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
@@ -395,7 +402,8 @@
         "submittedAt": 1790000120,
         "state": {
           "kind": "expired"
-        }
+        },
+        "lastError": null
       }
     ],
     "governance_submit_proposal": {
@@ -413,7 +421,8 @@
       "state": {
         "kind": "readyToSubmit",
         "reason": "notSynced"
-      }
+      },
+      "lastError": null
     },
     "governance_voting_masternodes": [
       {
@@ -499,6 +508,14 @@
       "data": {
         "kind": "reason",
         "reason": "public"
+      }
+    },
+    {
+      "code": "governance.submit_refused",
+      "message": "submit refused: in_flight",
+      "data": {
+        "kind": "reason",
+        "reason": "in_flight"
       }
     },
     {

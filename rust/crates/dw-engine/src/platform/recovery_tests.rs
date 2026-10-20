@@ -3039,6 +3039,7 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
              ALTER TABLE dp_payment_lock DROP COLUMN inputs;
              DROP TABLE governance_registrations;
              DROP TABLE mg_proposals;
+             DROP TABLE mg_proposals_kept;
              DELETE FROM refinery_schema_history WHERE version >= 2026101101;
              DELETE FROM settings_kv WHERE key = 'trust.fallback_used_at';",
     )

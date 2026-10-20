@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dashcore::hashes::Hash;
-use dashcore::{BlockHash, Transaction, Txid};
+use dashcore::{BlockHash, OutPoint, Transaction, Txid};
 use dw_appdb::{AppDb, ProposalRow};
 use dw_governance::object::{GovernanceObject, display_hex};
 use dw_governance::sync::Phase;
@@ -53,7 +53,7 @@ enum Mode {
 struct Lib {
     appdb: Arc<AppDb>,
     wallet: String,
-    mode: Mode,
+    mode: Mutex<Mode>,
     entered: AtomicU32,
     saved_at_entry: Mutex<Vec<bool>>,
     sent: Mutex<Vec<Transaction>>,
@@ -61,7 +61,7 @@ struct Lib {
 
 impl crate::send::TestBroadcaster for Lib {
     fn before_entry(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        let wait = match self.mode {
+        let wait = match *self.mode.lock().unwrap() {
             Mode::Late => {
                 crate::platform::lease::LeaseConfig::default().permit_ttl + Duration::from_secs(1)
             }
@@ -82,7 +82,7 @@ impl crate::send::TestBroadcaster for Lib {
             .any(|r| r.fee_txid == txid.to_byte_array() && r.fee_sent_at.is_none());
         self.saved_at_entry.lock().unwrap().push(saved);
         self.sent.lock().unwrap().push(tx.clone());
-        let mode = self.mode;
+        let mode = *self.mode.lock().unwrap();
         Box::pin(async move {
             match mode {
                 Mode::Accept | Mode::Late => Ok(txid),
@@ -110,6 +110,7 @@ fn props(mode: Mode) -> Props {
     f.credit(1, 3 * COIN);
     f.session.hub.tracker().set_tip_height(TIP);
     let rt = &f.session.governance;
+    rt.manual_ticks.store(true, Ordering::SeqCst);
     rt.set_enabled_flag(true);
     {
         let mut p = rt.shared.progress();
@@ -119,7 +120,7 @@ fn props(mode: Mode) -> Props {
     let lib = Arc::new(Lib {
         appdb: f.session.live().unwrap().appdb,
         wallet: f.wallet.to_string(),
-        mode,
+        mode: Mutex::new(mode),
         entered: AtomicU32::new(0),
         saved_at_entry: Mutex::default(),
         sent: Mutex::default(),
@@ -157,6 +158,16 @@ impl Props {
     fn created(&self) -> [u8; 32] {
         let p = self.create(self.spend(2 * COIN)).unwrap();
         dw_governance::object::parse_display_hex(&p.hash).unwrap()
+    }
+
+    /// Creates the draft's proposal with its fee unconfirmed and drops the
+    /// fee's claims, as a restart does; returns its hash and fee.
+    fn restarted(&self) -> ([u8; 32], Transaction) {
+        let hash = self.created();
+        let fee = self.fee(&hash);
+        let owner = crate::send::SpendOwner::Tx(fee.txid());
+        self.f.session.spends.release(&self.f.wallet, owner);
+        (hash, fee)
     }
 
     fn rows(&self) -> Vec<ProposalRow> {
@@ -252,11 +263,83 @@ impl Props {
             .unwrap();
     }
 
+    /// `peers` announce the proposal back, the store needing two.
+    fn echo_from(&self, hash: &[u8; 32], peers: &[u8]) {
+        let row = self.row(hash);
+        let mut object = GovernanceObject::new_proposal(row.revision, row.time, row.data);
+        object.collateral_hash = row.fee_txid;
+        let mut store = self.f.session.governance.shared.store();
+        store.set_confirmations(2);
+        let others: Vec<SocketAddr> = peers[1..].iter().map(|n| peer(*n)).collect();
+        store
+            .add_object_announced(object, Some(peer(peers[0])), &others, now())
+            .unwrap();
+    }
+
+    fn create_with(
+        &self,
+        draft: ProposalDraft,
+        grant: String,
+    ) -> Result<super::MyProposal, GovernanceError> {
+        self.f
+            .engine
+            .block_on(self.gov.create_proposal(self.f.wallet, draft, grant))
+    }
+
+    /// Saves a proposal whose end is one second past, with a fee mined 10
+    /// blocks deep; returns its hash.
+    fn expired(&self) -> [u8; 32] {
+        let fee = Transaction {
+            version: 3,
+            lock_time: 0,
+            input: Vec::new(),
+            output: Vec::new(),
+            special_transaction_payload: None,
+        };
+        let data = format!(
+            r#"{{"end_epoch":{},"name":"old","payment_address":"{PAYEE}","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}}"#,
+            now() - 1
+        );
+        let mut object = GovernanceObject::new_proposal(1, 1, data.into_bytes());
+        object.collateral_hash = fee.txid().to_byte_array();
+        let hash = object.hash();
+        self.lib
+            .appdb
+            .insert_proposal(&ProposalRow {
+                wallet_id: self.f.wallet.to_string(),
+                hash,
+                revision: 1,
+                time: 1,
+                data: object.data.clone(),
+                fee_txid: object.collateral_hash,
+                fee_tx: dashcore::consensus::serialize(&fee),
+                created_at: 1,
+                fee_sent_at: Some(1),
+                submitted_at: None,
+                last_error: None,
+            })
+            .unwrap();
+        self.confirm_tx(fee, 10);
+        hash
+    }
+
+    fn fee_scans(&self) -> usize {
+        self.f.session.governance.fee_scans.load(Ordering::SeqCst)
+    }
+
     fn submit(&self, hash: &[u8; 32]) -> Result<super::MyProposal, GovernanceError> {
         self.f
             .engine
             .block_on(self.gov.submit_proposal(self.f.wallet, display_hex(hash)))
     }
+}
+
+/// Asserts `e` refuses the resend naming `coin` (`send.outpoint_unavailable`).
+fn assert_unavailable(e: &GovernanceError, coin: OutPoint) {
+    assert!(
+        matches!(e.engine(), Some(EngineError::Send(SendFailure::OutpointUnavailable(o))) if *o == coin),
+        "{e:?}"
+    );
 }
 
 fn facts() -> Facts {
@@ -475,6 +558,15 @@ fn the_fee_needs_a_spend_grant_covering_it() {
             .code()
             .starts_with("platform.")
     );
+    // A masternode transaction's grant does not pay a proposal either.
+    let masternode = p.f.grant(
+        GrantPurpose::MasternodeOp {
+            max_duffs: 2 * COIN,
+        },
+        Credential::None,
+    );
+    let e = p.create(masternode).unwrap_err();
+    assert!(e.code().starts_with("platform."), "{e:?}");
     assert_eq!(p.lib.entered.load(Ordering::SeqCst), 0);
     assert!(p.rows().is_empty());
     assert_eq!(p.f.reserved(), 0);
@@ -852,10 +944,7 @@ fn a_proposal_whose_row_is_gone_is_withdrawn() {
     p.confirm(&hash, 1);
     let t = p.announce(Instant::now());
     assert!(p.queued(&hash));
-    p.lib
-        .appdb
-        .delete_proposal(&p.f.wallet.to_string(), &hash)
-        .unwrap();
+    p.lib.appdb.delete_wallet(&p.f.wallet.to_string()).unwrap();
     p.tick(t);
     assert!(!p.queued(&hash));
 }
@@ -868,49 +957,205 @@ fn submit_resends_an_unmined_fee() {
     let hash = p.created();
     p.confirm(&hash, 0);
     p.f.session.governance.set_enabled_flag(false);
-    // The fixture has no SPV client: reaching its broadcast is the resend.
+    let fee = p.fee(&hash);
+    // The wallet has the fee, so it reads the fee's coins spent: by the fee.
+    for input in &fee.input {
+        p.f.spend_coin(input.previous_output);
+    }
+    let mine = p.submit(&hash).unwrap();
+    assert_eq!(mine.state, MyProposalState::FeePaid { confirmations: 0 });
+    assert_eq!(*p.lib.sent.lock().unwrap(), vec![fee.clone(), fee]);
+}
+
+/// Review r1 m-1: a resend records the hand-off before the bytes go out,
+/// keeps its failure as the row's `last_error` (shown, m-3), and clears it
+/// once a resend goes out.
+#[test]
+fn a_resend_records_the_hand_off_and_its_failure() {
+    let p = props(Mode::Unconfirmed);
+    let mine = p.create(p.spend(2 * COIN)).unwrap();
+    assert_eq!(mine.state, MyProposalState::FeeUnsent);
+    assert!(mine.last_error.is_some());
+    let hash = dw_governance::object::parse_display_hex(&mine.hash).unwrap();
     let e = p.submit(&hash).unwrap_err();
     assert!(
-        matches!(e.engine(), Some(EngineError::Wallet(m)) if m.contains("broadcast")),
+        matches!(
+            e.engine(),
+            Some(EngineError::Send(SendFailure::BroadcastUnknown { .. }))
+        ),
         "{e:?}"
     );
+    let row = p.row(&hash);
+    assert!(row.fee_sent_at.is_some(), "recorded before the hand-off");
+    assert_eq!(row.last_error, Some(e.engine().unwrap().to_string()));
+    // Not paid as far as anyone knows (validator r1 Minor-2).
+    assert_eq!(p.state(&hash), MyProposalState::FeeUnsent);
+
+    *p.lib.mode.lock().unwrap() = Mode::Accept;
+    let mine = p.submit(&hash).unwrap();
+    assert_eq!(mine.last_error, None);
+    assert_eq!(mine.state, MyProposalState::FeePaid { confirmations: 0 });
+    assert_eq!(p.row(&hash).fee_sent_at, row.fee_sent_at, "set once");
+    // Unsent at the create's entry; marked sent at each resend's.
+    assert_eq!(*p.lib.saved_at_entry.lock().unwrap(), [true, false, false]);
+}
+
+/// The library's broadcast of a fee: the first is held until released, its
+/// entry signalled, and every one answers a definite rejection (review r1
+/// M-1).
+struct HeldLib {
+    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl crate::send::TestBroadcaster for HeldLib {
+    fn before_entry(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async {})
+    }
+
+    fn broadcast(
+        &self,
+        _tx: &Transaction,
+        _first: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<Txid, PlatformWalletError>> + Send>> {
+        let first = self.entered.lock().unwrap().take();
+        let held = first.is_some();
+        if let Some(tx) = first {
+            let _ = tx.send(());
+        }
+        let release = Arc::clone(&self.release);
+        Box::pin(async move {
+            while held && !release.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(PlatformWalletError::TransactionBroadcast(
+                "txn-already-in-mempool".into(),
+            ))
+        })
+    }
+}
+
+/// Review r1 M-1 (the reviewer's race test, adapted): a [Submit] while the
+/// create still hands the fee off is refused `in_flight`, sends nothing, and
+/// the create's definite `NotSent` then takes the row with nothing out. On
+/// 1af1515d the [Submit] resent the fee and the row was deleted anyway.
+#[test]
+fn a_submit_during_the_create_hand_off_is_refused_in_flight() {
+    let p = props(Mode::Accept);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let held = Arc::new(HeldLib {
+        entered: Mutex::new(Some(tx)),
+        release: Arc::clone(&release),
+    });
+    *p.f.session.governance.fee_broadcaster.lock().unwrap() = Some(held);
+    let gov = p.f.session.governance();
+    let (wallet, grant) = (p.f.wallet, p.spend(2 * COIN));
+    let create =
+        (p.f.session.rt).spawn(async move { gov.create_proposal(wallet, draft(), grant).await });
+    rx.recv_timeout(Duration::from_secs(120))
+        .expect("the hand-off is entered");
+    let row = p.rows().pop().expect("saved before the hand-off");
+    assert_eq!(p.state(&row.hash), MyProposalState::FeeUnsent);
+    assert!(matches!(
+        p.submit(&row.hash).unwrap_err(),
+        GovernanceError::SubmitRefused {
+            reason: SubmitRefusal::InFlight
+        }
+    ));
+    assert!(p.row(&row.hash).fee_sent_at.is_none(), "nothing resent");
+    release.store(true, Ordering::SeqCst);
+    let created = p.f.engine.block_on(create).unwrap();
+    assert!(created.is_err(), "{created:?}");
+    assert!(p.rows().is_empty());
+    // The mark goes with the call: a [Submit] now finds no proposal.
+    assert_eq!(
+        p.submit(&row.hash).unwrap_err().code(),
+        "governance.proposal_not_found"
+    );
+}
+
+/// Review r1 M-2: after a restart the fee's claims are gone. A payment
+/// prepared since on one of its coins holds it: the resend is refused
+/// naming the coin, takes no claim, and the payment still goes out. With
+/// the coin free again, the resend claims the fee's coins.
+#[test]
+fn a_resend_refuses_a_coin_another_payment_holds() {
+    let p = props(Mode::Unconfirmed);
+    let (hash, fee) = p.restarted();
+    let (wallet, spends) = (p.f.wallet, &p.f.session.spends);
+    let owner = crate::send::SpendOwner::Tx(fee.txid());
+    let coin = fee.input[0].previous_output;
+    let other = p.f.draft_to(PAYEE.into(), COIN / 2);
+    other
+        .set_source(crate::send::CoinSource::Outpoints(vec![coin]))
+        .unwrap();
+    *other.broadcaster.lock().unwrap() = Some(p.lib.clone());
+    let prepared = p.f.engine.block_on(other.prepare(p.spend(COIN))).unwrap();
+    assert_unavailable(&p.submit(&hash).unwrap_err(), coin);
+    assert!(spends.held_by(&wallet, owner).is_empty());
+    assert!(p.row(&hash).fee_sent_at.is_none(), "nothing handed off");
+    *p.lib.mode.lock().unwrap() = Mode::Accept;
+    p.f.engine.block_on(other.broadcast(prepared)).unwrap();
+    assert_eq!(
+        p.lib.sent.lock().unwrap().len(),
+        2,
+        "the fee once, the payment"
+    );
+
+    // The payment seen, its claim goes with the coin: the resend would
+    // double-spend it (validator r1 Minor-1).
+    spends.release(
+        &wallet,
+        crate::send::SpendOwner::Tx(p.lib.sent.lock().unwrap()[1].txid()),
+    );
+    p.f.spend_coin(coin);
+    assert_unavailable(&p.submit(&hash).unwrap_err(), coin);
+    assert_eq!(p.lib.sent.lock().unwrap().len(), 2, "no resend");
+}
+
+/// Validator r1 Major-1: an asset lock's hold outlives a restart, so after
+/// one a resend refuses a coin a tracked lock spends; untracked, the coin
+/// is free and the resend holds the fee's coins.
+#[test]
+fn a_resend_refuses_a_coin_an_asset_lock_holds() {
+    let p = props(Mode::Unconfirmed);
+    let (hash, fee) = p.restarted();
+    let (wallet, spends) = (p.f.wallet, &p.f.session.spends);
+    let owner = crate::send::SpendOwner::Tx(fee.txid());
+    let coin = fee.input[0].previous_output;
+    for status in [
+        platform_wallet::AssetLockStatus::Built,
+        platform_wallet::AssetLockStatus::Broadcast,
+    ] {
+        p.f.track_lock(9, 0, &[coin], status);
+        assert_unavailable(&p.submit(&hash).unwrap_err(), coin);
+        assert!(spends.held_by(&wallet, owner).is_empty());
+        assert!(p.row(&hash).fee_sent_at.is_none(), "nothing handed off");
+    }
+    assert_eq!(p.lib.sent.lock().unwrap().len(), 1, "the create's only");
+}
+
+/// Validator r1 Major-1: the inputs of a lock a funding call signed, whose
+/// step is unresolved and its row gone, are held durably too: a resend
+/// refuses them.
+#[test]
+fn a_resend_refuses_a_coin_an_unresolved_lock_signed() {
+    let p = props(Mode::Unconfirmed);
+    let (hash, fee) = p.restarted();
+    let coin = fee.input[0].previous_output;
+    p.f.stuck_signing("registration/1/funding", 70, &[coin]);
+    p.f.refresh();
+    assert_unavailable(&p.submit(&hash).unwrap_err(), coin);
+    assert!(p.row(&hash).fee_sent_at.is_none(), "nothing handed off");
+    assert_eq!(p.lib.sent.lock().unwrap().len(), 1, "the create's only");
 }
 
 /// D5: past its end the proposal is expired, never announced.
 #[test]
 fn an_expired_proposal_is_settled() {
     let p = props(Mode::Accept);
-    let fee = Transaction {
-        version: 3,
-        lock_time: 0,
-        input: Vec::new(),
-        output: Vec::new(),
-        special_transaction_payload: None,
-    };
-    let data = format!(
-        r#"{{"end_epoch":{},"name":"old","payment_address":"{PAYEE}","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}}"#,
-        now() - 1
-    );
-    let mut object = GovernanceObject::new_proposal(1, 1, data.into_bytes());
-    object.collateral_hash = fee.txid().to_byte_array();
-    let hash = object.hash();
-    p.lib
-        .appdb
-        .insert_proposal(&ProposalRow {
-            wallet_id: p.f.wallet.to_string(),
-            hash,
-            revision: 1,
-            time: 1,
-            data: object.data.clone(),
-            fee_txid: object.collateral_hash,
-            fee_tx: dashcore::consensus::serialize(&fee),
-            created_at: 1,
-            fee_sent_at: Some(1),
-            submitted_at: None,
-            last_error: None,
-        })
-        .unwrap();
-    p.confirm_tx(fee, 10);
+    let hash = p.expired();
     assert_eq!(p.state(&hash), MyProposalState::Expired);
     p.tick(Instant::now());
     assert!(!p.queued(&hash));
@@ -939,4 +1184,192 @@ fn the_proposal_is_in_the_wallets_backup_rows() {
             .iter()
             .any(|v| *v == dw_appdb::SqlValue::Blob(hash.to_vec()))
     );
+}
+
+/// Core's `IsExpired`: the end itself is past (review r1 nit).
+#[test]
+fn a_proposal_expires_at_its_end() {
+    assert!(super::expired(Some(100), 100));
+    assert!(super::expired(Some(100), 101));
+    assert!(!super::expired(Some(100), 99));
+    assert!(!super::expired(None, i64::MAX));
+}
+
+/// Review r1 m-1: a run that is not synced counts no wait. Ticks a fetch
+/// wait apart start no run, and neither do ticks an echo wait apart once
+/// it is fetched at six confirmations.
+#[test]
+fn no_wait_counts_while_not_synced() {
+    let p = props(Mode::Accept);
+    let hash = p.created();
+    p.confirm(&hash, 1);
+    let t = p.announce(Instant::now());
+    p.f.session.governance.shared.progress().phase = Phase::SyncingObjects;
+    p.tick(t);
+    p.tick(t + FETCH_WAIT);
+    p.tick(t + FETCH_WAIT * 3);
+    assert_eq!(p.resyncs(), 0);
+    p.f.session.governance.shared.progress().phase = Phase::Synced;
+    assert_eq!(
+        p.state(&hash),
+        MyProposalState::FeePaid { confirmations: 1 },
+        "no peer refused it yet"
+    );
+    p.f.session.governance.shared.progress().phase = Phase::SyncingObjects;
+    p.fetch(&hash, 1);
+    p.confirm(&hash, 6);
+    let t = t + FETCH_WAIT * 3;
+    p.tick(t);
+    p.tick(t + ECHO_WAIT);
+    p.tick(t + ECHO_WAIT * 3);
+    assert_eq!(p.resyncs(), 0);
+}
+
+/// D5 (review r1 m-1): a rival spend still in the mempool does not fail the
+/// fee; only a confirmed one does.
+#[test]
+fn a_rival_in_the_mempool_does_not_fail_the_fee() {
+    let p = props(Mode::Accept);
+    let hash = p.created();
+    let mut rival = p.fee(&hash);
+    rival.output.truncate(1);
+    rival.output[0].script_pubkey = dashcore::ScriptBuf::new();
+    p.confirm_tx(rival, 0);
+    assert_eq!(
+        p.state(&hash),
+        MyProposalState::FeePaid { confirmations: 0 }
+    );
+}
+
+/// MG-02 D3 (review r1 m-1): one announcing peer does not make the
+/// proposal public; a second does.
+#[test]
+fn one_announcing_peer_does_not_make_it_public() {
+    let p = props(Mode::Accept);
+    let hash = p.created();
+    p.confirm(&hash, 6);
+    p.echo_from(&hash, &[1]);
+    assert_eq!(
+        p.state(&hash),
+        MyProposalState::FeePaid { confirmations: 6 }
+    );
+    p.echo_from(&hash, &[2, 3]);
+    assert!(matches!(p.state(&hash), MyProposalState::Public { .. }));
+}
+
+/// mg-engine §2.5 (review r1 m-1): the draft's coins, as `<txid>-<n>`, are
+/// the fee's only inputs.
+#[test]
+fn the_fee_spends_the_chosen_coins() {
+    let p = props(Mode::Accept);
+    let chosen = p.f.credit(2, 2 * COIN);
+    let d = ProposalDraft {
+        coins: vec![format!("{}-{}", chosen.txid, chosen.vout)],
+        ..draft()
+    };
+    let mine = p.create_with(d, p.spend(2 * COIN)).unwrap();
+    let hash = dw_governance::object::parse_display_hex(&mine.hash).unwrap();
+    let inputs: Vec<_> = (p.fee(&hash).input.iter())
+        .map(|i| i.previous_output)
+        .collect();
+    assert_eq!(inputs, vec![chosen]);
+}
+
+/// D18 (plan item 8): a `.dwbackup` round trip carries the row, and the
+/// restored wallet, its history found again, reports the same proposal.
+#[test]
+fn a_backup_round_trip_restores_the_proposal_as_it_was() {
+    let p = props(Mode::Unconfirmed);
+    let hash = p.created();
+    p.confirm(&hash, 2);
+    let before = p.gov.my_proposals(p.f.wallet).unwrap();
+    assert!(before[0].last_error.is_some());
+    let (s, wallet) = (&p.f.session, p.f.wallet);
+    let dir = dw_testutil::private_tempdir();
+    let backup = dir.path().join("proposal.dwbackup");
+    let pass = || Some(zeroize::Zeroizing::new(b"bk".to_vec()));
+    (p.f.engine)
+        .block_on(s.backup_wallet(wallet, backup.clone(), pass()))
+        .unwrap();
+    let wipe = p.f.grant(GrantPurpose::Wipe, Credential::None);
+    p.f.engine.block_on(s.remove_wallet(wallet, wipe)).unwrap();
+    // Only the backup brings it back: nothing kept past the removal.
+    p.lib
+        .appdb
+        .keep_proposals(&wallet.to_string(), &[])
+        .unwrap();
+    assert_eq!(
+        p.f.engine
+            .block_on(s.restore_backup(backup, pass()))
+            .unwrap(),
+        vec![wallet]
+    );
+    p.confirm(&hash, 2);
+    assert_eq!(p.gov.my_proposals(wallet).unwrap(), before);
+}
+
+/// D23 (review r1 nit): removing the wallet keeps a paid proposal that has
+/// not expired (and logs it, as a removal keeps a possibly sent asset
+/// lock's records), drops an expired one, and importing the wallet again
+/// brings the kept one back.
+#[test]
+fn a_removal_keeps_a_paid_proposal_for_the_wallets_return() {
+    let p = props(Mode::Accept);
+    let hash = p.created();
+    p.expired();
+    assert_eq!(p.rows().len(), 2);
+    let (s, wallet) = (&p.f.session, p.f.wallet);
+    let wipe = p.f.grant(GrantPurpose::Wipe, Credential::None);
+    p.f.engine.block_on(s.remove_wallet(wallet, wipe)).unwrap();
+    assert!(p.rows().is_empty());
+    let again =
+        p.f.engine
+            .block_on(
+                s.import_wallet(
+                    zeroize::Zeroizing::new(
+                        crate::platform::lease::session_tests::PHRASE
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    zeroize::Zeroizing::new(Vec::new()),
+                    crate::ImportOptions {
+                        birth_height: Some(0),
+                        core_compat: false,
+                        ..Default::default()
+                    },
+                ),
+            )
+            .unwrap();
+    assert_eq!(again, wallet);
+    let hashes: Vec<_> = p.rows().into_iter().map(|r| r.hash).collect();
+    assert_eq!(hashes, vec![hash]);
+    assert_eq!(
+        p.state(&hash),
+        MyProposalState::FeePaid { confirmations: 0 }
+    );
+}
+
+/// Review r1 m-2: a tick reads each wallet's history once for all its live
+/// proposals, and not at all for settled (expired, public) ones.
+#[test]
+fn a_tick_reads_the_history_once_and_never_for_settled_proposals() {
+    let p = props(Mode::Accept);
+    let a = p.created();
+    p.f.credit(2, 3 * COIN);
+    let other = ProposalDraft {
+        name: "dw-proposal-2".into(),
+        ..draft()
+    };
+    let b = p.create_with(other, p.spend(2 * COIN)).unwrap();
+    let b = dw_governance::object::parse_display_hex(&b.hash).unwrap();
+    assert_ne!(a, b);
+    p.expired();
+    let n = p.fee_scans();
+    p.tick(Instant::now());
+    assert_eq!(p.fee_scans(), n + 1);
+    p.echo(&a);
+    p.echo(&b);
+    let n = p.fee_scans();
+    p.tick(Instant::now());
+    assert_eq!(p.fee_scans(), n);
 }

@@ -781,6 +781,9 @@ pub struct MyProposal {
     /// When a peer first fetched it (MG-06 D6).
     pub submitted_at: Option<u64>,
     pub state: MyProposalState,
+    /// The last hand-off of its fee's failure, if it failed: why a fee
+    /// reads unsent (MG-06 D10).
+    pub last_error: Option<String>,
 }
 
 impl From<engine::MyProposal> for MyProposal {
@@ -798,6 +801,7 @@ impl From<engine::MyProposal> for MyProposal {
             created_at,
             submitted_at,
             state,
+            last_error,
         } = p;
         MyProposal {
             hash,
@@ -812,6 +816,7 @@ impl From<engine::MyProposal> for MyProposal {
             created_at,
             submitted_at,
             state: state.into(),
+            last_error,
         }
     }
 }
