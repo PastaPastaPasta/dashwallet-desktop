@@ -241,6 +241,10 @@ pub struct SyncConfig {
     /// Votes recovered and not kept, past which a peer's vote copies are
     /// refused before recovery, at no penalty (D63).
     pub max_unkept: u32,
+    /// Operator signatures that failed their check, past which a peer's
+    /// operator vote copies are refused before the check, at no penalty: a
+    /// BLS check costs a pairing, some 20 to 40 compact recoveries (D89).
+    pub max_failed_operator_checks: u32,
     /// Hashes one peer may announce that the wallet has not fetched (Core
     /// `MAX_PEER_OBJECT_ANNOUNCEMENTS`).
     pub max_announcements: usize,
@@ -279,6 +283,7 @@ impl SyncConfig {
             max_misbehaviour: 1000,
             max_suspect: 10_000,
             max_unkept: 25_000,
+            max_failed_operator_checks: 1_000,
             max_announcements: 100_000,
             max_refetches: MAX_REFUSED_PER_PROPOSAL,
             max_parent_fetches: 100,
@@ -376,6 +381,8 @@ struct PeerState {
     suspect: u32,
     /// Its votes recovered and not kept (D63).
     unkept: u32,
+    /// Its operator votes whose signature failed the check (D89).
+    failed_checks: u32,
     /// Hashes it announced that are not fetched or given up yet.
     announced: usize,
     /// Objects phase: `ssc(10)`'s count and the object invs since.
@@ -433,6 +440,7 @@ impl PeerState {
             misbehaviour: 0,
             suspect: 0,
             unkept: 0,
+            failed_checks: 0,
             announced: 0,
             full_sync: None,
             vote_asked: Vec::new(),
@@ -1330,15 +1338,31 @@ impl Run {
             self.refused(item, from, taken);
             return;
         }
-        self.recovered += 1;
         let parent = vote.parent_hash;
         let result = if SentinelSignal::from_code(vote.signal).is_some() {
-            // An operator vote, checked without the store's lock (D89).
+            // An operator vote, checked without the store's lock (D89);
+            // past its budget of failed checks, the sender's copies go to
+            // the next announcer unchecked.
             let key = self.shared.store().operator_key(&vote.masternode_outpoint);
-            let v = OperatorVote::checked(vote, outcome, key);
+            if key.is_some()
+                && self
+                    .peer(from)
+                    .is_some_and(|p| p.failed_checks >= self.cfg.max_failed_operator_checks)
+            {
+                self.refused(item, from, taken);
+                return;
+            }
+            self.recovered += 1;
+            let v = OperatorVote::checked(vote, key);
+            if matches!(v.checked, Some((_, false)))
+                && let Some(p) = self.peer_mut(from)
+            {
+                p.failed_checks += 1;
+            }
             self.shared.store().add_operator_vote(v, addr, now)
         } else {
             // Recovered without the store's lock.
+            self.recovered += 1;
             let checked = match recover(vote, outcome, self.shared.network) {
                 Ok(c) => c,
                 Err(_) => {
@@ -1548,9 +1572,6 @@ impl Run {
             .filter(|(_, r)| r.peer == id)
             .map(|(h, r)| (*h, r.untried.clone()))
             .collect();
-        for (hash, _) in &refetched {
-            self.refetches.out.remove(hash);
-        }
         self.ask_refetches(refetched);
         for item in pending {
             let r = self.requests.pending.remove(&item).expect("listed");
@@ -1659,14 +1680,7 @@ impl Run {
                 self.retry(item, None, r.into(), false);
             }
         }
-        let batch = self.cfg.getdata_batch.max(1);
-        for (peer, items) in again {
-            if let Some(p) = self.peer(peer) {
-                for chunk in items.chunks(batch) {
-                    p.peer.send_getdata(chunk);
-                }
-            }
-        }
+        self.send_batched(again);
         let late: Vec<([u8; 32], Vec<usize>)> = self
             .refetches
             .out
@@ -1674,9 +1688,6 @@ impl Run {
             .filter(|(_, r)| now.duration_since(r.sent) >= timeout)
             .map(|(h, r)| (*h, r.untried.clone()))
             .collect();
-        for (hash, _) in &late {
-            self.refetches.out.remove(hash);
-        }
         self.ask_refetches(late);
         self.refetch_votes();
         self.refill();
@@ -1707,7 +1718,7 @@ impl Run {
                 .operator_key(&v.vote.masternode_outpoint);
             let v = OperatorVote {
                 held: v.held,
-                ..OperatorVote::checked(v.vote, v.outcome, key)
+                ..OperatorVote::checked(v.vote, key)
             };
             stored |= self.shared.store().add_operator_vote(v, from, now).is_ok();
         }
@@ -1767,11 +1778,12 @@ impl Run {
     }
 
     /// Asks the next connected peer of each hash's `untried` for it, in
-    /// batches per peer (BL-230, D87); a hash with none left the store
-    /// keeps uncertain (D72, D76).
+    /// batches per peer (BL-230, D87), ending a refetch already out for
+    /// it; a hash with none left the store keeps uncertain (D72, D76).
     fn ask_refetches(&mut self, asks: Vec<([u8; 32], Vec<usize>)>) {
         let mut by_peer: HashMap<usize, Vec<InvItem>> = HashMap::new();
         for (hash, mut untried) in asks {
+            self.refetches.out.remove(&hash);
             untried.retain(|id| self.peer(*id).is_some());
             if untried.is_empty() {
                 continue;
@@ -1789,6 +1801,12 @@ impl Run {
                 .or_default()
                 .push(InvItem { kind, hash });
         }
+        self.send_batched(by_peer);
+    }
+
+    /// Sends each connected peer its items, in `getdata`s of up to the
+    /// batch size.
+    fn send_batched(&self, by_peer: HashMap<usize, Vec<InvItem>>) {
         let batch = self.cfg.getdata_batch.max(1);
         for (peer, items) in by_peer {
             if let Some(p) = self.peer(peer) {

@@ -74,7 +74,7 @@ use crate::tally::{CurrentVote, KeyWeights, RangedTally, delete_threshold, range
 use crate::validate::{MAX_TIME_FUTURE_DEVIATION, ObjectRejection, ValidObject, check_object};
 use crate::vote::{
     BLS_SIG_SIZE, COMPACT_SIG_SIZE, GovernanceVote, SIGNAL_FUNDING, SentinelSignal, VoteOutcome,
-    canonical_compact,
+    canonical_compact, same_operator_key,
 };
 
 /// Votes kept for objects that have not arrived, in all.
@@ -141,6 +141,10 @@ const MAX_OUTCOME: i32 = 3;
 /// operator key, in all and from one peer; the oldest is evicted (D89).
 pub const MAX_PARKED_VOTES: usize = 10_000;
 pub const MAX_PARKED_PER_PEER: u32 = 2_000;
+/// Doubted outpoints kept per proposal and in all (D85): past either, the
+/// proposal is doubted as a whole until it leaves.
+pub const MAX_DOUBTS_PER_PROPOSAL: usize = MAX_PARKED_PER_PEER as usize;
+pub const MAX_DOUBTS: usize = MAX_PARKED_VOTES;
 
 /// What an object's data says.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,7 +291,6 @@ pub struct ResolvedMasternode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperatorVote {
     pub vote: GovernanceVote,
-    pub outcome: VoteOutcome,
     pub checked: Option<([u8; 48], bool)>,
     /// Taken as held by the sync when it was parked: no other announcer's
     /// copy was asked for (D89).
@@ -297,30 +300,32 @@ pub struct OperatorVote {
 impl OperatorVote {
     /// `vote`, not held, checked against `operator_key`, its outpoint's
     /// ([`GovernanceStore::operator_key`]), if resolved.
-    pub fn checked(
-        vote: GovernanceVote,
-        outcome: VoteOutcome,
-        operator_key: Option<[u8; 48]>,
-    ) -> Self {
+    pub fn checked(vote: GovernanceVote, operator_key: Option<[u8; 48]>) -> Self {
         let checked = operator_key.map(|k| (k, vote.verify_operator(&k)));
         Self {
             vote,
-            outcome,
             checked,
             held: false,
         }
     }
+
+    /// A held `delete` NO, perhaps its masternode's (D85).
+    fn held_delete_no(&self) -> bool {
+        self.held && is_delete_no(&self.vote)
+    }
 }
 
-/// An operator vote waiting to be checked (D89).
+fn is_delete_no(vote: &GovernanceVote) -> bool {
+    vote.signal == SentinelSignal::Delete.code() && vote.vote_outcome() == Some(VoteOutcome::No)
+}
+
+/// An operator vote waiting to be checked (D89), unchecked.
 #[derive(Debug, Clone)]
 struct Parked {
-    vote: GovernanceVote,
-    outcome: VoteOutcome,
+    vote: OperatorVote,
     /// The operator key it failed under; `None` while its outpoint is
     /// unresolved.
     failed_under: Option<[u8; 48]>,
-    held: bool,
     from: Option<SocketAddr>,
 }
 
@@ -517,8 +522,12 @@ pub struct GovernanceStore {
     max_parked: usize,
     parked_per_peer: HashMap<SocketAddr, u32>,
     /// Proposal → outpoints whose `delete` NO the sync held but the wallet
-    /// could not check → the NO's time (D85).
+    /// could not check → the NO's time (D85); `doubt_count` entries in all.
     doubts: HashMap<[u8; 32], HashMap<OutPoint, i64>>,
+    doubt_count: usize,
+    /// Proposals doubted as a whole: past [`MAX_DOUBTS_PER_PROPOSAL`] or
+    /// [`MAX_DOUBTS`], until they leave (D85).
+    doubted: HashSet<[u8; 32]>,
     /// Proposals whose votes a completed sync covered (D84).
     votes_synced: HashSet<[u8; 32]>,
     /// Proposals marked deleted by vote → when (D84).
@@ -586,6 +595,18 @@ fn copy_digest(hash: &[u8; 32], signature: &[u8]) -> [u8; 32] {
     sha256::Hash::from_engine(engine).to_byte_array()
 }
 
+/// Frees one of `peer`'s slots in a per-peer count.
+fn release(per_peer: &mut HashMap<SocketAddr, u32>, peer: Option<SocketAddr>) {
+    if let Some(p) = peer
+        && let Some(n) = per_peer.get_mut(&p)
+    {
+        *n -= 1;
+        if *n == 0 {
+            per_peer.remove(&p);
+        }
+    }
+}
+
 /// Whether `key` may sign for `outpoint`: its resolved masternode's key, or
 /// any key of the list if unresolved.
 fn check_key(
@@ -647,6 +668,8 @@ impl GovernanceStore {
             max_parked: MAX_PARKED_VOTES,
             parked_per_peer: HashMap::new(),
             doubts: HashMap::new(),
+            doubt_count: 0,
+            doubted: HashSet::new(),
             votes_synced: HashSet::new(),
             deleted: HashMap::new(),
             seen_votes: HashMap::new(),
@@ -885,13 +908,22 @@ impl GovernanceStore {
             .flat_map(|m| m.iter().map(|((signal, _), v)| (*signal, v)))
     }
 
+    /// The current votes of `signal` on `hash` (D82).
+    pub fn signal_votes_of(
+        &self,
+        hash: &[u8; 32],
+        signal: SentinelSignal,
+    ) -> impl Iterator<Item = &CurrentVote> {
+        self.signal_votes_on(hash)
+            .filter(move |(s, _)| *s == signal)
+            .map(|(_, v)| v)
+    }
+
     /// `hash`'s tally of `signal` (D82): its operator votes, each counted
     /// with its resolved masternode's weight, so the range is exact (D89).
     pub fn signal_tally(&self, hash: &[u8; 32], signal: SentinelSignal) -> RangedTally {
         ranged_tally(
-            self.signal_votes_on(hash)
-                .filter(|(s, _)| *s == signal)
-                .map(|(_, v)| v),
+            self.signal_votes_of(hash, signal),
             |k| self.key_weights(k),
             |op| self.resolved.get(op).map(|r| r.weight),
         )
@@ -1238,12 +1270,8 @@ impl GovernanceStore {
         let waiting: HashSet<[u8; 32]> = self
             .parked
             .values()
-            .filter(|p| {
-                p.held
-                    && p.vote.signal == SentinelSignal::Delete.code()
-                    && p.outcome == VoteOutcome::No
-            })
-            .map(|p| p.vote.parent_hash)
+            .filter(|p| p.vote.held_delete_no())
+            .map(|p| p.vote.vote.parent_hash)
             .collect();
         let marked: Vec<[u8; 32]> = self
             .signal_votes
@@ -1252,6 +1280,7 @@ impl GovernanceStore {
                 self.votes_synced.contains(*h)
                     && !self.deleted.contains_key(*h)
                     && !self.doubts.contains_key(*h)
+                    && !self.doubted.contains(*h)
                     && !waiting.contains(*h)
                     && matches!(
                         self.object(h).map(|o| &o.kind),
@@ -1284,11 +1313,12 @@ impl GovernanceStore {
             self.seen_votes.remove(&v.vote_hash);
             self.vote_count -= 1;
         }
-        self.doubts.remove(hash);
+        self.forget_doubts(hash);
+        self.doubted.remove(hash);
         let parked: Vec<[u8; 32]> = self
             .parked
             .iter()
-            .filter(|(_, p)| &p.vote.parent_hash == hash)
+            .filter(|(_, p)| &p.vote.vote.parent_hash == hash)
             .map(|(c, _)| *c)
             .collect();
         for c in parked {
@@ -1331,14 +1361,7 @@ impl GovernanceStore {
                 self.orphans_by_parent.remove(&v.parent_hash);
             }
         }
-        if let Some(peer) = o.from
-            && let Some(n) = self.orphans_per_peer.get_mut(&peer)
-        {
-            *n -= 1;
-            if *n == 0 {
-                self.orphans_per_peer.remove(&peer);
-            }
-        }
+        release(&mut self.orphans_per_peer, o.from);
         Some(o)
     }
 
@@ -1573,32 +1596,51 @@ impl GovernanceStore {
     fn drop_changed_operator_votes(&mut self, previous: &HashMap<OutPoint, ResolvedMasternode>) {
         let all_resolved = self.all_resolved();
         let resolved = &self.resolved;
-        let changed = |o: &OutPoint| {
-            previous.get(o).is_some_and(|old| {
-                resolved
-                    .get(o)
-                    .is_none_or(|new| new.operator_key != old.operator_key)
-            })
-        };
+        // A key compares as Core's does: the same key re-encoded (a version-1
+        // entry moved to version 2) is no change (D98).
+        let mut changed = HashSet::new();
+        let mut reencoded = HashMap::new();
+        for (o, old) in previous {
+            match resolved.get(o) {
+                Some(new) if new.operator_key == old.operator_key => {}
+                Some(new) if same_operator_key(&new.operator_key, &old.operator_key) => {
+                    reencoded.insert(*o, old.operator_key);
+                }
+                _ => {
+                    changed.insert(*o);
+                }
+            }
+        }
         let dropped: Vec<([u8; 32], SignalSlot)> = self
             .signal_votes
             .iter()
             .flat_map(|(h, m)| {
                 m.keys()
-                    .filter(|(_, o)| changed(o))
+                    .filter(|(_, o)| changed.contains(o))
                     .map(move |slot| (*h, *slot))
             })
             .collect();
+        // A vote that failed under a key now re-encoded is not tried again.
+        for p in self.parked.values_mut() {
+            let o = p.vote.vote.masternode_outpoint;
+            if p.failed_under.is_some() && reencoded.get(&o) == p.failed_under.as_ref() {
+                p.failed_under = resolved.get(&o).map(|r| r.operator_key);
+            }
+        }
         let known =
             |o: &OutPoint| resolved.contains_key(o) || !(all_resolved || previous.contains_key(o));
+        let mut gone = 0;
         self.doubts.retain(|_, d| {
+            let before = d.len();
             d.retain(|o, _| known(o));
+            gone += before - d.len();
             !d.is_empty()
         });
+        self.doubt_count -= gone;
         let stale: Vec<[u8; 32]> = self
             .parked
             .iter()
-            .filter(|(_, p)| !known(&p.vote.masternode_outpoint))
+            .filter(|(_, p)| !known(&p.vote.vote.masternode_outpoint))
             .map(|(c, _)| *c)
             .collect();
         for (h, slot) in dropped {
@@ -2005,8 +2047,7 @@ impl GovernanceStore {
         let outcome = self.precheck(&vote, now)?;
         if SentinelSignal::from_code(vote.signal).is_some() {
             let key = self.operator_key(&vote.masternode_outpoint);
-            let v = OperatorVote::checked(vote, outcome, key);
-            return self.add_operator_vote(v, from, now);
+            return self.add_operator_vote(OperatorVote::checked(vote, key), from, now);
         }
         let checked = recover(vote, outcome, self.network)?;
         self.add_checked(checked, from, now)
@@ -2092,14 +2133,7 @@ impl GovernanceStore {
 
     fn remove_suspect(&mut self, slot: &([u8; 32], [u8; 20])) -> Option<Orphan> {
         let o = self.suspects.remove(slot)?;
-        if let Some(p) = o.from
-            && let Some(n) = self.suspects_per_peer.get_mut(&p)
-        {
-            *n -= 1;
-            if *n == 0 {
-                self.suspects_per_peer.remove(&p);
-            }
-        }
+        release(&mut self.suspects_per_peer, o.from);
         Some(o)
     }
 
@@ -2250,8 +2284,9 @@ impl GovernanceStore {
     /// failed under its masternode's key is parked until that key changes
     /// (the wallet's list may lag the sender's) but not held:
     /// `Unverifiable`, so another announcer's copy is asked for. A `delete`
-    /// NO held parked that fails is a NO the wallet misses: a doubt on its
-    /// proposal (D85), asked for again.
+    /// NO the wallet misses is a doubt on its proposal (D85), asked for
+    /// again: one held parked that fails, or one refused for its sender's
+    /// bound (perhaps its only announcer's copy).
     pub fn add_operator_vote(
         &mut self,
         v: OperatorVote,
@@ -2265,12 +2300,13 @@ impl GovernanceStore {
         let outpoint = v.vote.masternode_outpoint;
         let resolved = self.resolved.get(&outpoint).copied();
         match (resolved, v.checked) {
-            (Some(r), Some((key, true))) if key == r.operator_key => {
+            (Some(r), Some((key, true))) if same_operator_key(&key, &r.operator_key) => {
                 self.place_signal(&v.vote, outcome, signal, &r)
             }
-            (Some(r), Some((key, false))) if key == r.operator_key => {
+            (Some(r), Some((key, false))) if same_operator_key(&key, &r.operator_key) => {
+                let key = r.operator_key;
                 if v.held {
-                    self.lose_held(&v.vote, outcome);
+                    self.lose_held(&v.vote);
                 }
                 self.park(v, Some(key), from);
                 Err(VoteRejection::Unverifiable)
@@ -2279,24 +2315,25 @@ impl GovernanceStore {
             // is no masternode's (Core: unknown masternode).
             (None, _) if self.all_resolved() => Err(VoteRejection::Unverifiable),
             _ => {
-                let (vote, outcome) = (v.vote.clone(), v.outcome);
+                let vote = v.vote.clone();
                 if self.park(v, None, from) {
                     Err(VoteRejection::Parked)
                 } else {
                     // Its sender's bound is full: perhaps its only
                     // announcer's copy, lost as one held that fails.
-                    self.lose_held(&vote, outcome);
+                    self.lose_held(&vote);
                     Err(VoteRejection::Unverifiable)
                 }
             }
         }
     }
 
-    /// An operator vote the sync took as held (no other announcer's copy
-    /// asked for) but the wallet could not keep: asked for again, and a
-    /// `delete` NO is a doubt on its proposal until then (D85).
-    fn lose_held(&mut self, vote: &GovernanceVote, outcome: VoteOutcome) {
-        if vote.signal == SentinelSignal::Delete.code() && outcome == VoteOutcome::No {
+    /// An operator vote the wallet could not keep and may get from no other
+    /// announcer (held parked, or refused for its sender's bound): asked
+    /// for again, and a `delete` NO is a doubt on its proposal until then
+    /// (D85).
+    fn lose_held(&mut self, vote: &GovernanceVote) {
+        if is_delete_no(vote) {
             self.doubt(vote.parent_hash, vote.masternode_outpoint, vote.time);
         }
         self.refetch.push(vote.hash());
@@ -2318,7 +2355,7 @@ impl GovernanceStore {
             .filter(|c| {
                 self.parked.get(*c).is_some_and(|p| {
                     self.resolved
-                        .get(&p.vote.masternode_outpoint)
+                        .get(&p.vote.vote.masternode_outpoint)
                         .is_some_and(|r| p.failed_under != Some(r.operator_key))
                 })
             })
@@ -2328,15 +2365,7 @@ impl GovernanceStore {
         ready
             .iter()
             .filter_map(|c| self.unpark(c))
-            .map(|p| {
-                let v = OperatorVote {
-                    vote: p.vote,
-                    outcome: p.outcome,
-                    checked: None,
-                    held: p.held,
-                };
-                (v, p.from)
-            })
+            .map(|p| (p.vote, p.from))
             .collect()
     }
 
@@ -2345,7 +2374,7 @@ impl GovernanceStore {
     /// goes past [`MAX_PARKED_VOTES`]: one held so is lost (D85).
     fn park(
         &mut self,
-        v: OperatorVote,
+        mut v: OperatorVote,
         failed_under: Option<[u8; 48]>,
         from: Option<SocketAddr>,
     ) -> bool {
@@ -2353,7 +2382,7 @@ impl GovernanceStore {
         let copy = copy_digest(&v.vote.hash(), &v.vote.signature);
         if let Some(p) = self.parked.get_mut(&copy) {
             p.failed_under = failed_under;
-            p.held |= held;
+            p.vote.held |= held;
             return true;
         }
         if let Some(peer) = from
@@ -2366,21 +2395,22 @@ impl GovernanceStore {
                 break;
             };
             if let Some(p) = self.unpark(&old)
-                && p.held
+                && p.vote.held
             {
-                self.lose_held(&p.vote, p.outcome);
+                self.lose_held(&p.vote.vote);
             }
         }
         if let Some(peer) = from {
             *self.parked_per_peer.entry(peer).or_default() += 1;
         }
+        // Not always the vote's own `held`: one held that failed under its
+        // masternode's key is parked unheld.
+        (v.checked, v.held) = (None, held);
         self.parked.insert(
             copy,
             Parked {
-                vote: v.vote,
-                outcome: v.outcome,
+                vote: v,
                 failed_under,
-                held,
                 from,
             },
         );
@@ -2394,14 +2424,7 @@ impl GovernanceStore {
 
     fn unpark(&mut self, copy: &[u8; 32]) -> Option<Parked> {
         let p = self.parked.remove(copy)?;
-        if let Some(peer) = p.from
-            && let Some(n) = self.parked_per_peer.get_mut(&peer)
-        {
-            *n -= 1;
-            if *n == 0 {
-                self.parked_per_peer.remove(&peer);
-            }
-        }
+        release(&mut self.parked_per_peer, p.from);
         Some(p)
     }
 
@@ -2409,15 +2432,29 @@ impl GovernanceStore {
     /// sync held but the wallet could not check: the proposal is not marked
     /// until a checked `delete` vote of that outpoint as new is stored, or
     /// the outpoint is no masternode's (D85).
+    /// Past [`MAX_DOUBTS_PER_PROPOSAL`] outpoints on the proposal, or
+    /// [`MAX_DOUBTS`] in all, the proposal is doubted as a whole instead,
+    /// until it leaves: the same refusal to mark, in bounded memory.
     fn doubt(&mut self, object: [u8; 32], outpoint: OutPoint, time: i64) {
-        if self.objects.contains_key(&object) {
-            let t = self
-                .doubts
-                .entry(object)
-                .or_default()
-                .entry(outpoint)
-                .or_insert(time);
+        if !self.objects.contains_key(&object) || self.doubted.contains(&object) {
+            return;
+        }
+        let d = self.doubts.entry(object).or_default();
+        if let Some(t) = d.get_mut(&outpoint) {
             *t = (*t).max(time);
+        } else if d.len() < MAX_DOUBTS_PER_PROPOSAL && self.doubt_count < MAX_DOUBTS {
+            d.insert(outpoint, time);
+            self.doubt_count += 1;
+        } else {
+            self.forget_doubts(&object);
+            self.doubted.insert(object);
+        }
+    }
+
+    /// Drops the proposal's doubted outpoints.
+    fn forget_doubts(&mut self, object: &[u8; 32]) {
+        if let Some(d) = self.doubts.remove(object) {
+            self.doubt_count -= d.len();
         }
     }
 
@@ -2454,7 +2491,9 @@ impl GovernanceStore {
         if signal == SentinelSignal::Delete
             && let Some(d) = self.doubts.get_mut(&parent)
         {
+            let before = d.len();
             d.retain(|o, t| *o != outpoint || *t > vote.time);
+            self.doubt_count -= before - d.len();
             if d.is_empty() {
                 self.doubts.remove(&parent);
             }
@@ -4241,17 +4280,22 @@ mod tests {
         v: GovernanceVote,
         verifies: bool,
     ) -> Result<(), VoteRejection> {
-        let outcome = v.vote_outcome().unwrap();
         let checked = s
             .operator_key(&v.masternode_outpoint)
             .map(|k| (k, verifies));
         let v = OperatorVote {
             vote: v,
-            outcome,
             checked,
             held: false,
         };
         s.add_operator_vote(v, peer(1), NOW)
+    }
+
+    /// The doubted outpoints in all, checked against `doubt_count` (D85).
+    fn doubts_counted(s: &GovernanceStore) -> usize {
+        let held: usize = s.doubts.values().map(HashMap::len).sum();
+        assert_eq!(s.doubt_count, held, "doubt_count tracks the doubts");
+        held
     }
 
     /// The sync's tick: checks the ready parked votes, those of outpoints
@@ -4514,7 +4558,6 @@ mod tests {
         let v3 = signal_vote(h, 2, Valid, VoteOutcome::No, 11);
         let stale = OperatorVote {
             vote: v3,
-            outcome: VoteOutcome::No,
             checked: Some((op_key(2), true)),
             held: false,
         };
@@ -4527,7 +4570,6 @@ mod tests {
         let v4 = signal_vote(h, 2, Valid, VoteOutcome::No, 12);
         let failed = OperatorVote {
             vote: v4.clone(),
-            outcome: VoteOutcome::No,
             checked: Some((op_key(2), false)),
             held: false,
         };
@@ -4535,7 +4577,7 @@ mod tests {
             s.add_operator_vote(failed, peer(1), NOW),
             Err(VoteRejection::Parked)
         );
-        assert!(s.parked.values().any(|p| p.vote == v4 && p.held));
+        assert!(s.parked.values().any(|p| p.vote.vote == v4 && p.vote.held));
         assert_eq!(check_parked(&mut s, &[]), 0);
         assert_eq!(signal_estimates(&s, &h, Valid), (1, 1));
     }
@@ -4765,6 +4807,7 @@ mod tests {
             resolve(s, &[(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7)]);
             assert_eq!(check_parked(s, &[]), 0);
             assert_eq!(s.take_refetch(), [v.hash()]);
+            assert_eq!(doubts_counted(s), 1);
         };
         assert!(!marks(&|s, h| failed(s, h)));
         assert!(!marks(&|s, h| {
@@ -4776,11 +4819,13 @@ mod tests {
             failed(s, h);
             let newer = signal_vote(h, 7, SentinelSignal::Delete, VoteOutcome::Yes, 10);
             assert_eq!(add_signal(s, newer, true), Ok(()));
+            assert_eq!(doubts_counted(s), 0);
         }));
         // ...or its masternode leaves the list.
         assert!(marks(&|s, h| {
             failed(s, h);
             resolve(s, &[(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)]);
+            assert_eq!(doubts_counted(s), 0);
         }));
         // A funding NO is funding's.
         assert!(marks(&|s, h| {
@@ -4808,7 +4853,6 @@ mod tests {
             v.masternode_outpoint.vout = 1_000 + i;
             let o = OperatorVote {
                 vote: v,
-                outcome,
                 checked: None,
                 held: false,
             };
@@ -4844,7 +4888,11 @@ mod tests {
             );
         }
         assert_eq!(s.parked.len(), MAX_PARKED_PER_PEER as usize + 1);
-        assert!(s.parked.values().all(|p| p.outcome == VoteOutcome::Yes));
+        assert!(
+            s.parked
+                .values()
+                .all(|p| p.vote.vote.vote_outcome() == Some(VoteOutcome::Yes))
+        );
         assert_eq!(
             s.take_refetch().len(),
             MAX_PARKED_PER_PEER as usize + 1,
@@ -4892,7 +4940,11 @@ mod tests {
         assert_eq!(s.parked_per_peer[&peer(1).unwrap()], 2);
         s.remove_object(&a.hash());
         assert_eq!(s.parked.len(), 1);
-        assert!(s.parked.values().all(|p| p.vote.parent_hash == b.hash()));
+        assert!(
+            s.parked
+                .values()
+                .all(|p| p.vote.vote.parent_hash == b.hash())
+        );
         assert_eq!(s.parked_per_peer[&peer(1).unwrap()], 1);
     }
 
@@ -4922,7 +4974,6 @@ mod tests {
             v.masternode_outpoint.vout = 1_000 + i;
             let o = OperatorVote {
                 vote: v,
-                outcome,
                 checked: None,
                 held: false,
             };
@@ -4938,9 +4989,140 @@ mod tests {
             parked(&mut s, MAX_PARKED_PER_PEER, VoteOutcome::No),
             Err(VoteRejection::Unverifiable)
         );
-        assert!(s.parked.values().all(|p| p.outcome == VoteOutcome::Yes));
+        assert!(
+            s.parked
+                .values()
+                .all(|p| p.vote.vote.vote_outcome() == Some(VoteOutcome::Yes))
+        );
         s.prune(NOW);
         assert_eq!(s.deletion_mark(&h), None);
+    }
+
+    #[test]
+    fn doubts_are_bounded_per_proposal_and_in_all() {
+        // Opus r1 M1: one peer inventing outpoints, its parked bound full,
+        // makes a doubt of each `delete` NO it sends. Past the bounds the
+        // proposal is doubted as a whole, until it leaves: the mark stays
+        // refused in bounded memory.
+        let objs: Vec<GovernanceObject> = (0..7).map(|i| proposal(&format!("p{i}"))).collect();
+        let mut s = deletion_store(&objs[0]);
+        for o in &objs[1..] {
+            assert_eq!(s.add_object(o.clone(), peer(1), NOW), Ok(true));
+        }
+        let list: Vec<ListEntry> = (1..=7).map(|k| entry(k, 1)).collect();
+        s.set_masternode_list(&list);
+        let send = |s: &mut GovernanceStore, h: [u8; 32], i: u32, outcome| {
+            let mut v = signal_vote(h, 0, SentinelSignal::Delete, outcome, 10);
+            v.masternode_outpoint.vout = 1_000 + i;
+            let o = OperatorVote {
+                vote: v,
+                checked: None,
+                held: false,
+            };
+            s.add_operator_vote(o, peer(1), NOW)
+        };
+        let first = objs[0].hash();
+        for i in 0..MAX_PARKED_PER_PEER {
+            assert_eq!(
+                send(&mut s, first, i, VoteOutcome::Yes),
+                Err(VoteRejection::Parked)
+            );
+        }
+        let mut i = MAX_PARKED_PER_PEER;
+        let mut no = |s: &mut GovernanceStore, h| {
+            i += 1;
+            send(s, h, i, VoteOutcome::No)
+        };
+        // Per proposal: the next outpoint past the bound dooms it whole.
+        for _ in 0..MAX_DOUBTS_PER_PROPOSAL {
+            assert_eq!(no(&mut s, first), Err(VoteRejection::Unverifiable));
+        }
+        assert_eq!(s.doubt_count, MAX_DOUBTS_PER_PROPOSAL);
+        assert!(s.doubted.is_empty());
+        no(&mut s, first).unwrap_err();
+        assert_eq!((s.doubt_count, s.doubts.len()), (0, 0));
+        assert!(s.doubted.contains(&first));
+        for _ in 0..1_000 {
+            no(&mut s, first).unwrap_err();
+        }
+        assert_eq!(s.doubt_count, 0, "a proposal doubted whole adds none");
+        // In all: five proposals fill it, and the sixth is doubted whole.
+        for o in &objs[1..6] {
+            for _ in 0..MAX_DOUBTS / 5 {
+                no(&mut s, o.hash()).unwrap_err();
+            }
+        }
+        assert_eq!(s.doubt_count, MAX_DOUBTS);
+        let sixth = objs[6].hash();
+        no(&mut s, sixth).unwrap_err();
+        assert_eq!(s.doubt_count, MAX_DOUBTS);
+        assert!(s.doubted.contains(&sixth));
+        assert_eq!(doubts_counted(&s), MAX_DOUBTS);
+        // Neither kind of doubt lets a mark through.
+        for h in [first, sixth] {
+            s.set_synced(&[h]);
+            for op in 1..=6 {
+                delete(&mut s, h, op, VoteOutcome::Yes);
+            }
+        }
+        s.prune(NOW);
+        assert_eq!(
+            (s.deletion_mark(&first), s.deletion_mark(&sixth)),
+            (None, None)
+        );
+        // A proposal that leaves takes its doubts along.
+        s.remove_object(&objs[1].hash());
+        s.remove_object(&first);
+        assert_eq!(s.doubt_count, MAX_DOUBTS - MAX_DOUBTS / 5);
+        assert!(!s.doubted.contains(&first));
+    }
+
+    #[test]
+    fn a_reencoded_operator_key_keeps_its_votes() {
+        // Opus r1 m2: Core compares operator keys as points
+        // (`CBLSLazyWrapper::operator==`), so a version-1 entry's legacy key
+        // moved to the basic encoding is the same key (D98). The vector key
+        // of vote.rs, in both encodings.
+        use SentinelSignal::Delete;
+        let key = |s: &str| <[u8; 48]>::try_from(hex::decode(s).unwrap()).unwrap();
+        let basic = key(
+            "b5b99c967e4c69822f427db1f6871dd119afb95ab9646ba2e707990a3db31777a59b66f69e89c2055699b0ade7357eae",
+        );
+        let legacy = key(
+            "95b99c967e4c69822f427db1f6871dd119afb95ab9646ba2e707990a3db31777a59b66f69e89c2055699b0ade7357eae",
+        );
+        let obj = proposal("a");
+        let h = obj.hash();
+        let mut s = store(&obj, &[entry(1, 1)]);
+        let set = |s: &mut GovernanceStore, operator_key| {
+            let r = ResolvedMasternode {
+                pro_tx_hash: [1; 32],
+                voting_key_id: key_id(1),
+                operator_key,
+                weight: 1,
+            };
+            s.set_resolved(HashMap::from([(outpoint(1), r)]));
+        };
+        set(&mut s, legacy);
+        let no = signal_vote(h, 1, Delete, VoteOutcome::No, 10);
+        assert_eq!(add_signal(&mut s, no, true), Ok(()));
+        set(&mut s, basic);
+        assert_eq!(s.signal_votes_on(&h).count(), 1, "the same key re-encoded");
+        // One that failed under the key is not tried again for that alone.
+        let yes = signal_vote(h, 1, Delete, VoteOutcome::Yes, 20);
+        assert_eq!(
+            add_signal(&mut s, yes, false),
+            Err(VoteRejection::Unverifiable)
+        );
+        set(&mut s, legacy);
+        assert!(s.take_parked_ready(usize::MAX).is_empty());
+        assert_eq!(s.signal_votes_on(&h).count(), 1);
+        // Another key drops the vote; the parked one is tried under it.
+        let mut other = basic;
+        other[47] ^= 1;
+        set(&mut s, other);
+        assert_eq!(s.signal_votes_on(&h).count(), 0);
+        assert_eq!(s.take_parked_ready(usize::MAX).len(), 1);
     }
 
     #[test]
