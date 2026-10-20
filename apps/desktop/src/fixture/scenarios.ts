@@ -327,6 +327,41 @@ function attributePayments(w: World) {
   attribute(first("sendToAddress")!, "dave", "sent");
 }
 
+/** `dashpay-registered` with Alice's avatar published and verified (DP4-02). */
+function withAvatar(t: ThemeName | null): World {
+  const w = base(t);
+  const world = registered();
+  const alice = world.identities.find((i) => i.identity === IDENTITY.alice)!;
+  alice.profile = {
+    ...alice.profile!,
+    avatarUrl: "https://example.org/alice.png",
+    avatarHash: "ab".repeat(32),
+    avatarFingerprint: "cd".repeat(8),
+  };
+  w.dashpay = { ...world, avatars: { [IDENTITY.alice]: AVATAR_PNG } };
+  return w;
+}
+
+/** Solid 8 x 8 PNGs (green, red, purple, orange): the other users' thumbnails (DP4-03). */
+const PICTURES = [
+  "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR42mPQqzXCihiGlgQAlgM3QYr963wAAAAASUVORK5CYII=",
+  "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR42mM4pqGBFTEMLQkAT91FgcmWcpUAAAAASUVORK5CYII=",
+  "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR42mPIkp6FFTEMLQkA/V1HwaOKzf8AAAAASUVORK5CYII=",
+  "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR42mN4n8OAFTEMLQkAIYZWwaEHDpcAAAAASUVORK5CYII=",
+];
+
+/** `dashpay-avatar` with the history's counterparties (DP3-07) and everyone's picture but
+ * Carol's; Erin's bytes do not decode. `on`: "Load contact pictures". */
+function withPictures(t: ThemeName | null, on: boolean): World {
+  const w = withAvatar(t);
+  attributeMore(w);
+  const others = Object.entries(IDENTITY).filter(([name]) => name !== "alice" && name !== "carol");
+  const avatars = Object.fromEntries(others.map(([name, id], i) => [id, name === "erin" ? "bm90IGEgcGljdHVyZQ==" : PICTURES[i % PICTURES.length]]));
+  w.dashpay.avatars = { ...w.dashpay.avatars, ...avatars };
+  w.loadContactPictures = on;
+  return w;
+}
+
 /** DP3-07 D10: besides Bob's and Dave's, the newest payment from Marta (no relation to the main
  * identity), "Coffee refund" from Bob (a label over the contact), an older payment whose
  * counterparty's names have not landed yet, and the oldest payment, to Judy (hidden). */
@@ -524,17 +559,23 @@ const SCENARIOS = {
     return w;
   },
   /** DP4-02: `dashpay-registered` with Alice's avatar published and verified. */
-  "dashpay-avatar": (t) => {
+  "dashpay-avatar": (t) => withAvatar(t),
+  /** DP4-03: `dashpay-avatar` with a picture for nearly everyone the lists show (contacts,
+   * requests, history counterparties, the frequent strip, the bell, the search): Carol has
+   * none (her initials), and Erin's thumbnail is not a PNG (the initials after it fails). */
+  "dashpay-avatars": (t) => withPictures(t, true),
+  /** DP4-03 D13: `dashpay-avatars` with "Load contact pictures" off: only Alice's own picture. */
+  "dashpay-pictures-off": (t) => withPictures(t, false),
+  /** DP4-03 D5: `dashpay-registered` with an upload host, so a picture from a file can be set. */
+  "dashpay-avatar-upload": (t) => {
     const w = base(t);
-    const world = registered();
-    const alice = world.identities.find((i) => i.identity === IDENTITY.alice)!;
-    alice.profile = {
-      ...alice.profile!,
-      avatarUrl: "https://example.org/alice.png",
-      avatarHash: "ab".repeat(32),
-      avatarFingerprint: "cd".repeat(8),
-    };
-    w.dashpay = { ...world, avatars: { [IDENTITY.alice]: AVATAR_PNG } };
+    w.dashpay = { ...registered(), pictures: { upload: true, candidates: [], prepares: [] } };
+    return w;
+  },
+  /** DP4-03: `dashpay-avatar` whose first profile save fails with `platform.unavailable`. */
+  "dashpay-profile-save-error": (t) => {
+    const w = withAvatar(t);
+    w.dashpay.profileSaveFailures = 1;
     return w;
   },
   /** DP3-03b: `dashpay-registered` with "Include my username in payment requests" off: the

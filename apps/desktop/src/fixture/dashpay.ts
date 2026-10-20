@@ -13,6 +13,7 @@ import type { ContactQueryArgs } from "../api/generated/ContactQueryArgs";
 import type { ContactSectionName } from "../api/generated/ContactSectionName";
 import type { ContactSortName } from "../api/generated/ContactSortName";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
+import type { AvatarSourceArgs } from "../api/generated/AvatarSourceArgs";
 import type { DashPayProfile } from "../api/generated/DashPayProfile";
 import type { DashPayStartupInfo } from "../api/generated/DashPayStartupInfo";
 import type { DashPayEventInfo } from "../api/generated/DashPayEventInfo";
@@ -62,6 +63,18 @@ export interface DashPayWorld {
   /** DP4-02: the verified thumbnails `dashpay_avatar` hands over, base64 PNG by identity; an
    * identity not here shows its initials. None unless a scenario sets them. */
   avatars?: Record<string, string>;
+  /** DP4-03: Edit Profile's picture pipeline; none until a handler or a scenario sets it. */
+  pictures?: FixturePictures;
+  /** DP4-03: this many next profile saves fail with `platform.unavailable`. */
+  profileSaveFailures?: number;
+}
+
+/** Whether an upload host is configured, the candidates `dashpay_prepare_avatar` made, and every
+ * source it was given (a file's with its crop), oldest first. */
+export interface FixturePictures {
+  upload: boolean;
+  candidates: { id: string; url: string | null; png: string; hash: string; fingerprint: string }[];
+  prepares: AvatarSourceArgs[];
 }
 
 /** A kept `dapk` scan: its id, whom it reaches, and when it expires (UNIX seconds). */
