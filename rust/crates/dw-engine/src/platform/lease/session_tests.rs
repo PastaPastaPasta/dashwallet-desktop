@@ -504,8 +504,16 @@ impl Fixture {
     }
 
     /// Waits up to 5 s for `f`.
-    fn eventually(&self, what: &str, mut f: impl FnMut() -> bool) {
-        for _ in 0..250 {
+    fn eventually(&self, what: &str, f: impl FnMut() -> bool) {
+        self.eventually_for(what, Duration::from_secs(5), f);
+    }
+
+    /// Waits up to `limit` for `f`: a bound only on how long a real failure
+    /// takes to show, so loaded gates do not fail a step that is merely
+    /// slow.
+    fn eventually_for(&self, what: &str, limit: Duration, mut f: impl FnMut() -> bool) {
+        let start = std::time::Instant::now();
+        while start.elapsed() < limit {
             if f() {
                 return;
             }
@@ -3512,6 +3520,22 @@ fn mg05_a_contacts_address_is_charged_as_foreign() {
     f.engine.block_on(d.abandon(p)).unwrap();
 }
 
+/// D19 (validator r2): the wallet signs no message for a contact's
+/// address, which it lists but does not own; its own address signs.
+#[test]
+fn mg05_a_contacts_address_signs_no_message() {
+    let f = fixture(false);
+    let contact = f.contact_address();
+    let sign = |address: String| {
+        let g = f.grant(GrantPurpose::SignMessage, Credential::None);
+        f.engine
+            .block_on(f.session.sign_message(f.wallet, address, b"m".to_vec(), g))
+    };
+    let r = sign(contact.to_string());
+    assert!(matches!(r, Err(EngineError::AddressNotMine(_))), "{r:?}");
+    sign(f.own_address()).unwrap();
+}
+
 /// A prepare that fails after its charge, before it signed (a lock while
 /// it waits to sign), refunds the charge to the budget it was taken from:
 /// the Masternode budget's spent returns to 0 (review r1 F3, mutant E11).
@@ -3529,7 +3553,9 @@ fn mg05_a_failed_prepare_refunds_the_masternode_budget() {
         let (d, id) = (Arc::clone(&d), l.id_string());
         async move { d.prepare(id).await }
     });
-    f.eventually("the prepare's pause", || pause.reached.load(SeqCst));
+    f.eventually_for("the prepare's pause", Duration::from_secs(120), || {
+        pause.reached.load(SeqCst)
+    });
     let charged = spent(&l, BudgetPurpose::Masternode).unwrap();
     assert!(charged > 1_000_000, "{charged}");
     f.session.lock_vault_sync().unwrap();

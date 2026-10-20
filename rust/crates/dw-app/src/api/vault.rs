@@ -380,9 +380,10 @@ impl From<CredentialSpec> for OwnedCredential {
 /// it is on, an unlocked encrypted vault issues `spend`, `platformOp`,
 /// `masternodeOp` and `governance` grants only against the passphrase or
 /// the quick-unlock key, never `unencrypted`, so a compromised renderer
-/// cannot obtain a payment or voting grant without a prompt (MG-05 D11). The vault itself takes `Credential::None` for them
-/// once unlocked (dash-qt behaviour, the setting off); a locked vault
-/// refuses it itself (`vault.locked`).
+/// cannot obtain a payment or voting grant without a prompt (MG-05 D11).
+/// The vault itself takes `Credential::None` for them once unlocked
+/// (dash-qt behaviour, the setting off); a locked vault refuses it itself
+/// (`vault.locked`).
 fn check_payment_auth(
     vault: &dw_vault::Vault,
     credential: &OwnedCredential,

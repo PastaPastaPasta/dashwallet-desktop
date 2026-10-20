@@ -127,7 +127,8 @@ sighash signable by any digest signer at that path. So `MasternodeVoting` is not
 - **Keys.** It tries the keychain voting key first, at indexes 0–19 (`VOTING_KEY_INDEXES`, as `voting_masternodes`
   uses), then the masternode's attached `voting` key. Each must hash to the list's voting key id. A keychain the
   vault cannot read, other than a lock, leaves the attached key to try (D20).
-- **Time.** Each vote is stamped with `now` (tests pin the clock, so a repeated batch is the same vote). Core's per-masternode limits on vote time stay the store's to enforce.
+- **Time.** Each vote is stamped with `now` (tests pin the clock, so a repeated batch is the same vote). Core's
+  per-masternode limits on vote time stay the store's to enforce.
 
 ## 6. Left to other rows
 
@@ -174,9 +175,8 @@ Where they are: `dw-vault/tests/masternode_signers.rs` and the scope tests in `s
 `dw-engine/src/platform/lease/session_tests.rs` (`mg05_*`), `platform/lease/tests.rs`
 (`the_fence_refuses_an_unleased_vote`), `send/flow_tests.rs` (`psbt_a_contacts_address_is_not_the_wallets`),
 `governance/voting.rs` (`the_vaults_vote_digest_is_the_governance_digest`, the key choice) and
-`governance/voting_tests.rs`. A lock between two votes is
-tested at the hand-off: signing runs before the first hand-off, so a lock mid-batch reaches the rest there, as
-`cancelled`.
+`governance/voting_tests.rs`. A lock between two votes is tested at the hand-off: signing runs before the first
+hand-off, so a lock mid-batch reaches the rest there, as `cancelled`.
 
 ## D-rows
 
@@ -200,7 +200,7 @@ tested at the hand-off: signing runs before the first hand-off, so a lock mid-ba
 | D16 | A vote's fence admission needs the dispatch journal's backend, as every leased artifact's does; without it the vote is `cancelled`. A taken vote ends `Sent` and emits `DispatchResolved`, as other artifacts do. | One admission rule for every kind. The journal is open whenever a session is (E0-04 §6.4), so this refuses only in a broken session. |
 | D17 | MG-02's `stub` helper is removed with its last caller; `GovernanceError::NotImplemented` stays. | MG-06's calls arrive as stubs again and need the variant; a helper with no caller is dead code. |
 | D18 | dw-app's `MAX_LEASE_BUDGETS` is 6, the number of `BudgetPurpose` variants. | A lease view's budget list is bounded by the purposes; the DTO cap test pins it. |
-| D19 | `wallet_owns` leaves out contact-owned accounts (the library's `is_contact_owned`: a DashPay contact's external account). A payment to a contact's address, or change sent there, is foreign to every cap: `Spend`, `Masternode`, the PSBT cap, and the address book's "mine". The PSBT derivation lookups use the same helper (`own_address_info`): an output to a contact gets no derivation record of this wallet, and an input from one is not counted signable. | Review r1 H1: those addresses are derived from the contact's xpub and listed among the wallet's accounts, so a draft paying one counted as a self-payment, and a `MasternodeOp{fee}` grant could empty the wallet to a contact. DP3-01 D3 worked around it for contact payments only. Tested by `mg05_a_contacts_address_is_charged_as_foreign` and `psbt_a_contacts_address_is_not_the_wallets`. A derivation record on a contact output named this wallet's fingerprint with the contact's key, which a co-signer could read as change (review r1 F2). |
+| D19 | `wallet_owns` leaves out contact-owned accounts (the library's `is_contact_owned`: a DashPay contact's external account). A payment to a contact's address, or change sent there, is foreign to every cap: `Spend`, `Masternode`, the PSBT cap, and the address book's "mine". The PSBT derivation lookups and `sign_message` use the same helper (`own_address_info`): an output to a contact gets no derivation record of this wallet, and an input from one is not counted signable. | Review r1 H1: those addresses are derived from the contact's xpub and listed among the wallet's accounts, so a draft paying one counted as a self-payment, and a `MasternodeOp{fee}` grant could empty the wallet to a contact. DP3-01 D3 worked around it for contact payments only. Tested by `mg05_a_contacts_address_is_charged_as_foreign` and `psbt_a_contacts_address_is_not_the_wallets`. A derivation record on a contact output named this wallet's fingerprint with the contact's key, which a co-signer could read as change (review r1 F2). |
 | D20 | Attached-key voting needs a wallet with a seed (a vote signer is the wallet's), and `voting_masternodes` lists keychain keys only; a host votes with an attached key by naming a tracked masternode (MG-03's list). A keychain the vault cannot read, other than locked, falls through to the attached key. | MG-00 asks that `MasternodeVoting` cover attached keys, which it does for any wallet with a seed. A watch-only wallet signs nothing (MG-00 D37). Listing attached-key masternodes in `voting_masternodes` is MG-09's UI call (review r1 L3). |
 | D21 | Attaching a key needs the full-scope data key and no grant (MG-01's open question to MG-05); using it to vote needs a `Governance` grant. | Storing a secret the user typed signs nothing and reveals nothing; every use is behind a grant (review r1 L8). |
 | D22 | Accepted, not changed: secp256k1 0.33 takes a secret's bytes by value, so one unerased copy passes through its constructor; `with_attached_key` erases the key on drop, panics included. | The crate has no by-reference constructor; `masternode_key_id` already shared the pattern (review r1 L9). |

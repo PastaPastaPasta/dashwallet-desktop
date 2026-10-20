@@ -762,14 +762,11 @@ impl NetworkSession {
                 .get_wallet(&wallet_id.0)
                 .await
                 .ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
+            // Not a DashPay contact's address: the wallet does not own it
+            // (MG-05 D19).
             let path = {
                 let state = wallet.state().await;
-                state
-                    .core_wallet
-                    .all_managed_accounts()
-                    .into_iter()
-                    .find_map(|account| account.get_address_info(&parsed))
-                    .map(|info| info.path)
+                crate::coins::own_address_info(&state.core_wallet, &parsed).map(|info| info.path)
             }
             .ok_or_else(|| EngineError::AddressNotMine(address.clone()))?;
 
