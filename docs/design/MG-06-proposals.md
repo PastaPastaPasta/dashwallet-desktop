@@ -94,8 +94,8 @@ yet public is handled as follows:
   retries at once (UX [Submit]).
 - **Public.** Once the store holds the object confirmed (two distinct peers announced it, MG-02 D3), the row is
   public and its status is the public row's. A peer never announces back what the wallet announced to it, so the
-  echo comes from a fresh run's sync: 120 s after the sixth confirmation with no echo, a new run looks for it, on
-  the same backoff (D20).
+  echo comes from a fresh run's sync: 120 s after the sixth confirmation with no echo, a new run looks for it, backing off
+  from 30 min to 24 h apart until the proposal ends (D20).
 
 ### 2.3 States (MG-00 D16 f1)
 
@@ -248,6 +248,7 @@ Asserts along the way:
 - the withdrawal at 0 confirmations after a reorg removed;
 - a retry below 6 confirmations once fetched;
 - the `cutoff_soon` boundary;
+- the echo backoff uncapped, or at D7's pace (D20);
 - the propagation wait (D21) removed, and the caught-up condition ignored;
 - the waits not keyed to the synced run (D7);
 - `lost` set for a fee missing from history (D7);
@@ -281,6 +282,6 @@ Asserts along the way:
 | D17 | `dwcli governance --propose name:url:address:amount:count:first-superblock` (with `--passphrase-file`) drives the regtest check. The full `gov` command set stays MG-08's. | The T1 acceptance needs a creator. Keeping it to one option leaves MG-08's command design open. |
 | D18 | MG-05 r2's N1 and N2 are folded in. | The manager's request: both are cheap and test-only or a one-line route. |
 | D19 | A peer holds a proposal postponed at 1–5 fee confirmations: "submitted" (fetched) can happen at 1, "public" not before 6. A fetched proposal below 6 waits with no retry and no error. Announcements go once per queuing round and connection, so a peer holding it postponed is not sent it again; a new connection's single `inv` is ignored by that peer. | `fMissingConfirmations` puts it in `mapPostponedObjects` (`governance.cpp:262-266`); `CheckPostponedObjects` adds and relays it at 6 or erases it (`:856-887`); `ConfirmInventoryRequest` does not request an object held postponed (`:622`). Fee confirmations: 6 for the fee, 1 to relay (`object.h:87-89`, `object.cpp:863-866`). The manager's MG-06 approval. |
-| D20 | "Public" comes from a fresh connection: 120 s after the fee's sixth confirmation with no echo, a new sync run looks for the proposal, on D7's backoff. | Core marks every inventory a peer announced as known (`AddKnownInv`, `net_processing.cpp:4561`) and skips known inventory when it relays (`:1247-1249`), so a peer the wallet announced to never announces it back on that connection. A fresh run's inventory sync asks every peer anew (MG-02). |
+| D20 | "Public" comes from a fresh connection: 120 s after the fee's sixth confirmation with no echo, a new sync run looks for the proposal; with still no echo, the next looks back off from 30 min, doubling, to 24 h apart, until the proposal ends. The state stays `confirming{confirmations}` with no error meanwhile; only `expired` ends it. | Core marks every inventory a peer announced as known (`AddKnownInv`, `net_processing.cpp:4561`) and skips known inventory when it relays (`:1247-1249`), so a peer the wallet announced to never announces it back on that connection. A fresh run's inventory sync asks every peer anew (MG-02). On mainnet each look is a full object sync, so a proposal the network never takes must not cost one every 30 min until its end: the manager's cap (10-20). |
 | D21 | The wallet announces a proposal only once its chain sync is caught up and it has seen the fee's first confirmation for 15 s. While not caught up, the wait does not start. | A peer that lacks the fee's block finds no collateral: "Can't find collateral tx" (or "not mined yet") returns invalid with no `fMissingConfirmations` (`object.cpp:801-813`), which scores the wallet 20 points (`net_governance.cpp:197`), not a postponement. A wallet that sees a block first, or whose view leads, could announce before its peers have it. 15 s covers a block's relay to the peers of a caught-up node; the cost is a 15 s later "submitted". The regtest check fails on either log line from any node. |
 | D22 | Once the fee is broadcast, a failure to record that (sent, deleted or the error) is logged and the call still answers by the fee's outcome. A save that fails, or whose task fails, abandons the signed fee and deletes the row as far as it can (a commit may have landed before the error). A row left behind reads `fee_unsent`, and its [Submit] broadcasts the saved fee. Each tick also withdraws any announced proposal whose row is gone (its wallet removed). | The fee's fate decides the answer: a row left unrecorded reads `fee_unsent`, and a fee that went out shows in history. Failing the call would invite a second proposal for a fee that was paid. |

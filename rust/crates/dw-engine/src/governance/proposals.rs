@@ -54,10 +54,15 @@ const FETCH_WAIT: Duration = Duration::from_secs(60);
 /// How long after the fee's sixth confirmation the proposal may stay
 /// unannounced by peers before a fresh run looks for it (D20).
 const ECHO_WAIT: Duration = Duration::from_secs(120);
-/// The first retry's delay; each retry doubles it up to [`MAX_RETRY`]. A
-/// retry is a new sync run, with new connections (D7).
+/// The first retry's delay for an unfetched proposal; each retry doubles
+/// it up to [`MAX_RETRY`]. A retry is a new sync run, with new connections
+/// (D7).
 const FIRST_RETRY: Duration = Duration::from_secs(60);
 const MAX_RETRY: Duration = Duration::from_secs(30 * 60);
+/// The delay after the first look for a missing echo; each later look
+/// doubles it up to [`MAX_ECHO_RETRY`], until the proposal ends (D20).
+const FIRST_ECHO_RETRY: Duration = Duration::from_secs(30 * 60);
+const MAX_ECHO_RETRY: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// One own proposal's submission pace in this session (not stored: a
 /// restart starts it again).
@@ -78,31 +83,42 @@ pub(crate) struct Pace {
     /// Since when, in this synced run, the fee has six confirmations
     /// without the proposal being public.
     six_since: Option<Instant>,
-    next_retry: Option<Instant>,
-    backoff: Duration,
+    /// Looks for a fetch (D7).
+    fetch_retry: Backoff,
+    /// Looks for the echo (D20).
+    echo_retry: Backoff,
     no_peer_accepted: bool,
 }
 
-impl Pace {
-    /// Whether a retry is due now; if so, schedules the next one.
-    fn retry_due(&mut self, now: Instant) -> bool {
-        if self.next_retry.is_some_and(|t| now < t) {
+/// An exponential backoff of retries.
+#[derive(Debug, Default)]
+struct Backoff {
+    next: Option<Instant>,
+    delay: Duration,
+}
+
+impl Backoff {
+    /// Whether a retry is due at `now`; if so, schedules the next one
+    /// `first` on, doubling each time up to `max`.
+    fn due(&mut self, now: Instant, first: Duration, max: Duration) -> bool {
+        if self.next.is_some_and(|t| now < t) {
             return false;
         }
-        self.backoff = if self.backoff.is_zero() {
-            FIRST_RETRY
+        self.delay = if self.delay.is_zero() {
+            first
         } else {
-            (self.backoff * 2).min(MAX_RETRY)
+            (self.delay * 2).min(max)
         };
-        self.next_retry = Some(now + self.backoff);
+        self.next = Some(now + self.delay);
         true
     }
+}
 
+impl Pace {
     fn progressed(&mut self) {
         self.unfetched_since = None;
         self.no_peer_accepted = false;
-        self.next_retry = None;
-        self.backoff = Duration::ZERO;
+        self.fetch_retry = Backoff::default();
     }
 
     /// Keys the waits to `run` (`None`: not synced), restarting them when
@@ -570,7 +586,7 @@ impl Governance {
             } => {
                 // The new run's wait starts once it is synced (D7).
                 rt.with_pace((wallet, key), |p| {
-                    p.next_retry = None;
+                    p.fetch_retry.next = None;
                     p.unfetched_since = None;
                     p.no_peer_accepted = false;
                 });
@@ -697,15 +713,17 @@ impl Governance {
                     let since = *p.unfetched_since.get_or_insert(instant);
                     if instant.duration_since(since) >= FETCH_WAIT {
                         p.no_peer_accepted = true;
-                        return p.retry_due(instant);
+                        return p.fetch_retry.due(instant, FIRST_RETRY, MAX_RETRY);
                     }
                 }
                 // Before six confirmations no peer relays it: waiting is
                 // normal there (D19). After, peers that did not hear it
-                // from the wallet announce it, on a new connection (D20).
+                // from the wallet announce it, on a new connection; with
+                // none, the looks back off to a day apart (D20).
                 if depth >= PROPOSAL_FEE_CONFIRMATIONS && synced {
                     let since = *p.six_since.get_or_insert(instant);
-                    return instant.duration_since(since) >= ECHO_WAIT && p.retry_due(instant);
+                    return instant.duration_since(since) >= ECHO_WAIT
+                        && p.echo_retry.due(instant, FIRST_ECHO_RETRY, MAX_ECHO_RETRY);
                 }
                 false
             });

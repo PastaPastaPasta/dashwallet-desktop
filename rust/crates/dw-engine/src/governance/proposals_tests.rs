@@ -638,6 +638,36 @@ fn a_fetched_proposal_waits_for_six_confirmations_without_retrying() {
     );
 }
 
+/// D20: with no echo six confirmations on, the looks for it back off from
+/// 30 minutes, doubling, to a day apart, and the state stays `confirming`
+/// with no error until the proposal ends.
+#[test]
+fn echo_retries_back_off_to_a_day() {
+    let p = props(Mode::Accept);
+    let hash = p.created();
+    p.confirm(&hash, 6);
+    let t = p.announce(Instant::now());
+    p.fetch(&hash, 1);
+    p.tick(t);
+    p.tick(t + ECHO_WAIT);
+    assert_eq!(p.resyncs(), 1);
+    let mut at = t + ECHO_WAIT;
+    // Literal, not the constants: the test pins the policy (D20).
+    let day = Duration::from_secs(24 * 60 * 60);
+    let mut delay = Duration::from_secs(30 * 60);
+    for n in 2..=10 {
+        p.tick(at + delay - Duration::from_secs(1));
+        assert_eq!(p.resyncs(), n - 1, "not before {delay:?}");
+        at += delay;
+        p.tick(at);
+        assert_eq!(p.resyncs(), n, "after {delay:?}");
+        delay = (delay * 2).min(day);
+    }
+    assert_eq!(delay, day, "capped at a day");
+    let mine = &p.gov.my_proposals(p.f.wallet).unwrap()[0];
+    assert_eq!(mine.state, MyProposalState::Confirming { confirmations: 6 });
+}
+
 /// D6: a reorg that takes the fee's confirmation back makes the peers
 /// drop their postponed copies: confirmed again, a fetch is expected again.
 #[test]
