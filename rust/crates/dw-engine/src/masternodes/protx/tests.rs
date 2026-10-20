@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Transaction, TxOut, Txid};
-use dw_protx::params::MASTERNODE_COLLATERAL;
+use dw_protx::params::{EVONODE_COLLATERAL, MASTERNODE_COLLATERAL};
 use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use key_wallet::Utxo;
 use platform_wallet::PlatformWalletError;
@@ -21,8 +21,9 @@ use zeroize::Zeroizing;
 use super::ops::{CrashPoint, Seam};
 use crate::masternodes::records::MasternodeType;
 use crate::masternodes::{
-    CollateralChoice, Masternodes, MasternodesError, OperatorChoice, PayoutChoice, ProTxOperation,
-    ProTxOperationState, RegistrationRequest, VotingChoice,
+    CollateralChoice, EvonodeTerms, Masternodes, MasternodesError, OperatorChoice, PayoutChoice,
+    PlatformFacts, PlatformNodeChoice, ProTxOperation, ProTxOperationState, RegistrationRequest,
+    VotingChoice,
 };
 use crate::send::{SendFailure, SpendOwner, TestBroadcaster};
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
@@ -412,6 +413,20 @@ fn request(collateral: CollateralChoice) -> RegistrationRequest {
         voting: VotingChoice::NextUnused,
         payout: PayoutChoice::NewAddress,
         evonode: None,
+    }
+}
+
+/// An evonode registration of `collateral` with `node` and the network's
+/// default ports.
+fn evonode(collateral: CollateralChoice, node: PlatformNodeChoice) -> RegistrationRequest {
+    RegistrationRequest {
+        kind: MasternodeType::Evonode,
+        evonode: Some(EvonodeTerms {
+            node,
+            p2p_port: None,
+            http_port: None,
+        }),
+        ..request(collateral)
     }
 }
 
@@ -1003,4 +1018,284 @@ fn mg04_a_confirmed_registration_settles_and_its_collateral_lock_follows_the_use
         .block_on(f.mn().release_collateral(f.wallet, "11".repeat(32)))
         .unwrap_err();
     assert_eq!(unknown.code(), "masternodes.not_found");
+}
+
+/// The payload's evonode fields as the terms show them.
+fn platform_of(tx: &Transaction) -> Option<PlatformFacts> {
+    let p = payload(tx);
+    assert_eq!(p.masternode_type as u16 == 1, p.platform_node_id.is_some());
+    Some(PlatformFacts {
+        node_id: hex::encode(&p.platform_node_id?[..]),
+        p2p_port: p.platform_p2p_port?,
+        http_port: p.platform_http_port?,
+    })
+}
+
+/// D18: an evonode's `FundNew` funds 4,000 DASH, and its platform fields
+/// are the keychain's next node id and the network's default ports.
+#[test]
+fn mg04_evonode_fund_new_carries_the_keychains_node_and_default_ports() {
+    let f = fx(Library::Accept);
+    let keys = f
+        .engine
+        .block_on(f.mn().registration_keys(f.wallet, MasternodeType::Evonode))
+        .unwrap();
+    let node = keys.platform_node.clone().expect("an evonode's node key");
+    assert_eq!(node.index, 0);
+    let regular = f
+        .engine
+        .block_on(f.mn().registration_keys(f.wallet, MasternodeType::Regular))
+        .unwrap();
+    assert!(regular.platform_node.is_none());
+
+    // A regular collateral's worth doesn't fund an evonode.
+    f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    let req = evonode(CollateralChoice::FundNew, PlatformNodeChoice::NextUnused);
+    let short = f
+        .engine
+        .block_on(f.mn().preview_registration(f.wallet, req.clone()))
+        .unwrap_err();
+    assert_eq!(send_code(&short), "send.amount_exceeds_balance");
+
+    f.credit(2, EVONODE_COLLATERAL);
+    let preview = f
+        .engine
+        .block_on(f.mn().preview_registration(f.wallet, req.clone()))
+        .unwrap();
+    assert_eq!(preview.collateral_amount, EVONODE_COLLATERAL);
+    let op = f.register(req, f.grant(preview.fee)).unwrap();
+    assert_eq!(op.state, ProTxOperationState::Sent);
+    let tx = f.lib.sent().pop().unwrap();
+    let p = payload(&tx);
+    assert_eq!((p.version, p.masternode_type as u16), (2, 1), "D1");
+    let collateral = &tx.output[p.collateral_outpoint.vout as usize];
+    assert_eq!(collateral.value, EVONODE_COLLATERAL);
+    let facts = PlatformFacts {
+        node_id: node.node_id.clone().unwrap(),
+        p2p_port: 22_200,
+        http_port: 22_201,
+    };
+    assert_eq!(
+        platform_of(&tx),
+        Some(facts.clone()),
+        "chainparams' regtest"
+    );
+    assert_eq!(op.terms.platform, Some(facts));
+    assert_eq!(op.terms.platform_node_index, Some(0));
+    assert_eq!(op.terms.masternode_type, MasternodeType::Evonode);
+    dw_protx::rules::check_registration(&tx, p, None, &[], dashcore::Network::Regtest).unwrap();
+    // The node key is in use now: the next default moves on (D13).
+    let next = f
+        .engine
+        .block_on(f.mn().registration_keys(f.wallet, MasternodeType::Evonode))
+        .unwrap();
+    assert_eq!(next.platform_node.unwrap().index, 1);
+}
+
+/// An existing evonode collateral is exactly 4,000 DASH; the node id and
+/// ports given are carried as given.
+#[test]
+fn mg04_evonode_existing_collateral_carries_the_fields_given() {
+    let f = fx(Library::Accept);
+    let regular = f.credit(1, MASTERNODE_COLLATERAL);
+    let collateral = f.credit(2, EVONODE_COLLATERAL);
+    f.credit(3, COIN);
+    let node_id = "ab".repeat(20);
+    let given = |outpoint: OutPoint| RegistrationRequest {
+        evonode: Some(EvonodeTerms {
+            node: PlatformNodeChoice::Given {
+                node_id: node_id.clone(),
+            },
+            p2p_port: Some(26_000),
+            http_port: Some(26_001),
+        }),
+        ..evonode(
+            CollateralChoice::ExistingUtxo {
+                outpoint: format!("{}-0", outpoint.txid),
+            },
+            PlatformNodeChoice::NextUnused,
+        )
+    };
+    let refused = f.register(given(regular), f.grant(COIN)).unwrap_err();
+    assert_eq!(refused.code(), "masternodes.collateral_unavailable");
+
+    let op = f.register(given(collateral), f.grant(COIN)).unwrap();
+    let tx = f.lib.sent().pop().unwrap();
+    let p = payload(&tx);
+    assert_eq!(p.collateral_outpoint, collateral);
+    assert!(tx.input.iter().all(|i| i.previous_output != collateral));
+    let facts = PlatformFacts {
+        node_id: node_id.clone(),
+        p2p_port: 26_000,
+        http_port: 26_001,
+    };
+    assert_eq!(platform_of(&tx), Some(facts.clone()));
+    assert_eq!(op.terms.platform, Some(facts));
+    assert_eq!(
+        op.terms.platform_node_index, None,
+        "given, not the keychain's"
+    );
+    let script = f.engine.block_on(async {
+        let w = f.session.wallet(&f.wallet).await.unwrap();
+        let state = w.state().await;
+        crate::coins::read_coins(&state.core_wallet)
+            .coins
+            .into_iter()
+            .find(|c| c.utxo.outpoint == collateral)
+            .unwrap()
+            .utxo
+            .txout
+            .script_pubkey
+    });
+    dw_protx::rules::check_registration(
+        &tx,
+        p,
+        Some((&script, Some(EVONODE_COLLATERAL))),
+        &[],
+        dashcore::Network::Regtest,
+    )
+    .unwrap();
+    assert!(f.locked().contains(&collateral), "D9");
+}
+
+/// `register_prepare_evo`'s flow: the platform fields are in the prepared
+/// payload, so in the message the collateral's key signs.
+#[test]
+fn mg04_evonode_external_signs_over_its_platform_fields() {
+    let f = fx(Library::Accept);
+    f.credit(1, COIN);
+    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
+    let public = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let address = dashcore::Address::p2pkh(&public, dashcore::Network::Regtest);
+    let outpoint = OutPoint::new(Txid::from_byte_array([0x78; 32]), 0);
+    let req = evonode(
+        CollateralChoice::External {
+            outpoint: format!("{}-0", outpoint.txid),
+            address: address.to_string(),
+        },
+        PlatformNodeChoice::Keychain { index: 3 },
+    );
+    let op = f
+        .engine
+        .block_on(f.mn().prepare_external_registration(f.wallet, req))
+        .unwrap();
+    assert_eq!(op.terms.platform_node_index, Some(3));
+    let unsigned: Transaction =
+        dashcore::consensus::deserialize(f.rows().pop().unwrap().unsigned_tx.as_ref().unwrap())
+            .unwrap();
+    assert_eq!(platform_of(&unsigned), op.terms.platform);
+    let ask = op.sign_request.unwrap();
+    assert_eq!(
+        ask.message,
+        dw_protx::payloads::registration_sign_message(
+            payload(&unsigned),
+            dashcore::Network::Regtest
+        )
+        .unwrap()
+    );
+    let sig = dw_protx::payloads::sign_message_compact(&EXTERNAL_KEY, &ask.message).unwrap();
+    let done = f
+        .engine
+        .block_on(f.mn().submit_external_registration(
+            f.wallet,
+            op.id,
+            {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD.encode(sig)
+            },
+            f.grant(COIN),
+        ))
+        .unwrap();
+    assert_eq!(done.state, ProTxOperationState::Sent);
+    let tx = f.lib.sent().pop().unwrap();
+    assert_eq!(payload(&tx).masternode_type as u16, 1);
+    assert_eq!(platform_of(&tx), done.terms.platform);
+    assert_eq!(payload(&tx).signature, sig.to_vec());
+}
+
+/// The evonode refusals, before anything is signed (D18): terms only for
+/// an evonode, a node id of 40 hex, Core's port rules and its duplicate
+/// node id; `NextUnused` skips a listed node id.
+#[test]
+fn mg04_evonode_requests_are_refused_before_signing() {
+    let f = fx(Library::Accept);
+    f.credit(1, EVONODE_COLLATERAL + COIN);
+    let preview = |req: RegistrationRequest| {
+        f.engine
+            .block_on(f.mn().preview_registration(f.wallet, req))
+    };
+    let next = || evonode(CollateralChoice::FundNew, PlatformNodeChoice::NextUnused);
+    let mut no_terms = next();
+    no_terms.evonode = None;
+    assert_eq!(preview(no_terms).unwrap_err().code(), "invalid_argument");
+    let mut regular_with_terms = next();
+    regular_with_terms.kind = MasternodeType::Regular;
+    assert_eq!(
+        preview(regular_with_terms).unwrap_err().code(),
+        "invalid_argument"
+    );
+    let bad_id = evonode(
+        CollateralChoice::FundNew,
+        PlatformNodeChoice::Given {
+            node_id: "ab".repeat(19),
+        },
+    );
+    assert_eq!(preview(bad_id).unwrap_err().code(), "invalid_argument");
+    let null_id = evonode(
+        CollateralChoice::FundNew,
+        PlatformNodeChoice::Given {
+            node_id: "00".repeat(20),
+        },
+    );
+    assert!(
+        matches!(preview(null_id).unwrap_err(), MasternodesError::ProtxRefused { reason } if reason == "bad-protx-platform-nodeid")
+    );
+    let mut same_ports = next();
+    same_ports.evonode.as_mut().unwrap().http_port = Some(22_200);
+    assert!(
+        matches!(preview(same_ports).unwrap_err(), MasternodesError::ProtxRefused { reason } if reason == "bad-protx-platform-dup-ports")
+    );
+    let mut mainnet_core = next();
+    mainnet_core.evonode.as_mut().unwrap().p2p_port = Some(9_999);
+    assert!(
+        matches!(preview(mainnet_core).unwrap_err(), MasternodesError::ProtxRefused { reason } if reason == "bad-protx-platform-p2p-port")
+    );
+    let mut core_port = next();
+    core_port.evonode.as_mut().unwrap().p2p_port = Some(19_899);
+    assert!(
+        matches!(preview(core_port).unwrap_err(), MasternodesError::ProtxRefused { reason } if reason == "bad-protx-platform-dup-ports")
+    );
+
+    // The keychain's first node id, listed: given, it is Core's duplicate;
+    // by default the next one is picked.
+    let first = f
+        .engine
+        .block_on(f.mn().registration_keys(f.wallet, MasternodeType::Evonode))
+        .unwrap()
+        .platform_node
+        .unwrap()
+        .node_id
+        .unwrap();
+    let mut listed = [0u8; 20];
+    hex::decode_to_slice(&first, &mut listed).unwrap();
+    *f.seam.list.lock().unwrap() = Some(vec![platform_wallet::masternode::MasternodeListSummary {
+        pro_tx_hash: [9; 32],
+        service_address: Some("1.2.3.5:19899".parse().unwrap()),
+        platform_http_port: Some(22_201),
+        operator_public_key: [0x99; 48],
+        voting_key_id: [9; 20],
+        platform_node_id: Some(listed),
+        is_valid: true,
+        is_evonode: true,
+        has_extended_net_info: false,
+    }]);
+    let dup = evonode(
+        CollateralChoice::FundNew,
+        PlatformNodeChoice::Given { node_id: first },
+    );
+    assert!(
+        matches!(preview(dup).unwrap_err(), MasternodesError::ProtxRefused { reason } if reason == "bad-protx-dup-platformnodeid")
+    );
+    let ok = preview(next()).unwrap();
+    assert_eq!(ok.terms.platform_node_index, Some(1));
 }
