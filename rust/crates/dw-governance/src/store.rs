@@ -4291,6 +4291,13 @@ mod tests {
         s.add_operator_vote(v, peer(1), NOW)
     }
 
+    /// The doubted outpoints in all, checked against `doubt_count` (D85).
+    fn doubts_counted(s: &GovernanceStore) -> usize {
+        let held: usize = s.doubts.values().map(HashMap::len).sum();
+        assert_eq!(s.doubt_count, held, "doubt_count tracks the doubts");
+        held
+    }
+
     /// The sync's tick: checks the ready parked votes, those of outpoints
     /// in `good` verifying. Returns how many were stored.
     fn check_parked(s: &mut GovernanceStore, good: &[u8]) -> usize {
@@ -4800,6 +4807,7 @@ mod tests {
             resolve(s, &[(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7)]);
             assert_eq!(check_parked(s, &[]), 0);
             assert_eq!(s.take_refetch(), [v.hash()]);
+            assert_eq!(doubts_counted(s), 1);
         };
         assert!(!marks(&|s, h| failed(s, h)));
         assert!(!marks(&|s, h| {
@@ -4811,11 +4819,13 @@ mod tests {
             failed(s, h);
             let newer = signal_vote(h, 7, SentinelSignal::Delete, VoteOutcome::Yes, 10);
             assert_eq!(add_signal(s, newer, true), Ok(()));
+            assert_eq!(doubts_counted(s), 0);
         }));
         // ...or its masternode leaves the list.
         assert!(marks(&|s, h| {
             failed(s, h);
             resolve(s, &[(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)]);
+            assert_eq!(doubts_counted(s), 0);
         }));
         // A funding NO is funding's.
         assert!(marks(&|s, h| {
@@ -5047,8 +5057,7 @@ mod tests {
         no(&mut s, sixth).unwrap_err();
         assert_eq!(s.doubt_count, MAX_DOUBTS);
         assert!(s.doubted.contains(&sixth));
-        let held: usize = s.doubts.values().map(HashMap::len).sum();
-        assert_eq!(held, s.doubt_count);
+        assert_eq!(doubts_counted(&s), MAX_DOUBTS);
         // Neither kind of doubt lets a mark through.
         for h in [first, sixth] {
             s.set_synced(&[h]);

@@ -4050,6 +4050,12 @@ async fn an_object_only_run_prunes_stale_full_syncs() {
 /// then replaced by key 2's newer vote in its slot; peer 1's inv of the
 /// NO was skipped as known. Returns the honest NO's inv.
 fn lose_honest_no(run: &mut Run, p: &GovernanceObject) -> InvItem {
+    vote_inv(&lose_honest(run, p))
+}
+
+/// [`lose_honest_no`], returning the honest NO itself: built once, as a
+/// vote rebuilt a second later has another time and hash.
+fn lose_honest(run: &mut Run, p: &GovernanceObject) -> GovernanceVote {
     list_keys(run, [1, 2]);
     let honest = vote(p.hash(), 1, VoteOutcome::No);
     let item = vote_inv(&honest);
@@ -4069,7 +4075,7 @@ fn lose_honest_no(run: &mut Run, p: &GovernanceObject) -> InvItem {
     run.handle(0, PeerEvent::Vote(own.encode()));
     assert!(!run.shared.store().has_vote(&honest.hash()));
     assert_eq!(run.shared.store().tally(&p.hash()).uncounted, 1);
-    item
+    honest
 }
 
 /// Sol r4 Major 1 (DEC-257, D77): of three peers asked for the lost NO
@@ -4294,9 +4300,8 @@ async fn refetches_stay_within_the_run_budget() {
 async fn a_refetched_vote_is_taken_only_from_the_peer_asked() {
     let p = proposal("p-d77-asked");
     let mut run = two_peer_run(&p).await;
-    let item = lose_honest_no(&mut run, &p);
-    let honest = vote(p.hash(), 1, VoteOutcome::No);
-    assert_eq!(honest.hash(), item.hash);
+    let honest = lose_honest(&mut run, &p);
+    let item = vote_inv(&honest);
     run.expire();
     assert_eq!(run.refetches.out[&item.hash].peer, 0);
     run.handle(1, PeerEvent::Vote(honest.encode()));
@@ -4593,8 +4598,8 @@ async fn a_parked_copy_does_not_end_a_refetch() {
 async fn a_vote_stored_from_its_announcement_ends_its_refetch() {
     let p = proposal("p-bl230-stored");
     let mut run = two_peer_run(&p).await;
-    let item = lose_honest_no(&mut run, &p);
-    let honest = vote(p.hash(), 1, VoteOutcome::No);
+    let honest = lose_honest(&mut run, &p);
+    let item = vote_inv(&honest);
     run.expire();
     assert_eq!(run.refetches.out[&item.hash].peer, 0);
     open_vote_sync(&mut run.peers[1], p.hash());

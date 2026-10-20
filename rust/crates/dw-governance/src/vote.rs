@@ -394,8 +394,10 @@ mod canonical_tests;
 /// The basic-scheme keys the list's operator key bytes may be (D89, MG-02
 /// D98): the list writes a version-1 entry's key in the legacy encoding and
 /// a later one's in the basic, and carries no version here, so the bytes are
-/// read both ways. One reading, or two when the legacy bytes are also a
-/// basic key (that of the point's negation); none for bytes that are no key.
+/// read both ways. One reading, or two for bytes valid in both encodings
+/// (top byte `0x80`–`0x9F`, basic keys with the sign clear as well as legacy
+/// ones with it set; the second is the point's negation); none for bytes
+/// that are no key.
 pub fn operator_key_readings(key: &[u8; 48]) -> Vec<[u8; 48]> {
     let bytes = BlsPkBytes::from_bytes(*key);
     let mut readings = Vec::with_capacity(2);
