@@ -21,9 +21,13 @@ Registrations, all version 2 (MG-04 D1):
      key the keychain's next unused; the payout another wallet's address (Core's); a reward.
   X  `External`: Core's coin of 1,000 DASH; the wallet prepares, Core's `signmessage` signs the
      message, the wallet submits.
+  W  an evonode, `ExistingUtxo`: a wallet coin of exactly 4,000 DASH, the node id and ports given.
+  V  an evonode, `FundNew` (4,000 DASH): the keychain's platform node id, the network's default
+     Platform ports.
 
 Refusals before anything is signed: the collateral already in use, a listed service, a listed
-operator key, a version-3 service; and a wrong external signature.
+operator key, a version-3 service; and a wrong external signature. For the evonode: a regular
+collateral, Platform ports equal to the Core port, and a listed platform node id.
 
 Run (DWCLI = a built dwcli):
   DWCLI=<target>/debug/dwcli DWD_PYTHON=<venv>/bin/python DASHCORE_DIR=<dashcore> \\
@@ -37,6 +41,10 @@ import time
 
 from dwd_masternodes import (COIN, COLLATERAL, OWNER, PHRASE, SPORK_OFF, VOTING, DwdMasternodes, Dwcli,
                              address, provider_key)
+
+EVO_COLLATERAL = 4_000 * COIN
+# chainparams.cpp:873-874 (rc.3): regtest's nDefaultPlatformP2PPort / nDefaultPlatformHTTPPort.
+PLATFORM_PORTS = (22_200, 22_201)
 from test_framework.util import assert_equal, p2p_port
 
 
@@ -69,7 +77,7 @@ class DwdProtx(DwdMasternodes):
         info = self.nodes[0].protx("info", pro_tx_hash)
         return info, info["state"]
 
-    def check_listed(self, pro_tx_hash, terms, collateral):
+    def check_listed(self, pro_tx_hash, terms, collateral, kind="Regular"):
         """Core's list entry for `pro_tx_hash` carries the terms the wallet reported."""
         info, st = self.core_info(pro_tx_hash)
         assert_equal(f"{info['collateralHash']}-{info['collateralIndex']}", collateral)
@@ -79,20 +87,40 @@ class DwdProtx(DwdMasternodes):
         assert_equal(st["pubKeyOperator"], terms["operator_public_key"])
         assert_equal(round(info["operatorReward"] * 100), terms["operator_reward"])
         assert terms["service"] in json.dumps(st), (terms["service"], st)
-        assert_equal(info["type"], "Regular")
+        assert_equal(info["type"], kind)
+        platform = terms.get("platform")
+        if kind == "Evo":
+            # A version-2 state's ports, at the Core address (evo/dmnstate.cpp:146-168, rc.3).
+            port = lambda purpose: int(st["addresses"][purpose][0].rsplit(":", 1)[1])
+            assert_equal((st["platformNodeID"], port("platform_p2p"), port("platform_https")),
+                         (platform["node_id"], platform["p2p_port"], platform["http_port"]))
+        else:
+            assert platform is None and "platformNodeID" not in st, (terms, st)
         return info
+
+    def fund_node(self, duffs):
+        """Mines until node0 can spend `duffs` (each coinbase matures after 100 blocks)."""
+        node = self.nodes[0]
+        for _ in range(30):
+            if node.getbalance() * COIN >= duffs:
+                return self.tip()
+            self.mine(20)
+        raise AssertionError(f"node0 holds {node.getbalance()} DASH, short of {duffs / COIN}")
 
     def run_test(self):
         node = self.nodes[0]
         dw = Dwcli(os.environ["DWCLI"], os.path.join(self.options.tmpdir, "dwcli"), p2p_port(0), self.log)
         evidence = os.environ.get("DWD_MG04_EVIDENCE")
         self.prepare_network()
+        self.fund_node(2 * EVO_COLLATERAL + 3 * COLLATERAL + 100 * COIN)
 
         dw.run("init-vault")
         dw.run("import", "--birth-height", "0", stdin=PHRASE)
         funds = dw.run("receive", "--next").stdout.split()[1]
         existing_addr = dw.run("receive", "--next").stdout.split()[1]
+        evo_addr = dw.run("receive", "--next").stdout.split()[1]
         node.sendtoaddress(funds, COLLATERAL // COIN + 10)
+        node.sendtoaddress(funds, EVO_COLLATERAL // COIN + 500)
         node.sendtoaddress(funds, 5)
         existing = node.sendtoaddress(existing_addr, COLLATERAL // COIN)
         external_addr = node.getnewaddress()
@@ -114,6 +142,10 @@ class DwdProtx(DwdMasternodes):
         refused("invalid_argument", "--collateral", "fund-new", "--service", "127.0.0.1:30001",
                 "--operator-reward", "10001")
         refused("masternodes.collateral_unavailable", "--collateral", external, "--service", "127.0.0.1:30001")
+        refused("masternodes.collateral_unavailable", "--evonode", "--collateral", existing,
+                "--service", "127.0.0.1:30001")
+        refused("masternodes.protx_refused", "--evonode", "--collateral", "fund-new",
+                "--service", "127.0.0.1:30001", "--platform-p2p-port", "30001")
 
         self.log.info("2. F: FundNew, the operator key given")
         operator_f = node.bls("generate")["public"]
@@ -183,25 +215,75 @@ class DwdProtx(DwdMasternodes):
         self.check_listed(x["pro_tx_hash"], x["terms"], external)
         assert_equal(x["terms"]["operator_index"], 1)
 
-        self.log.info("5. The wallet's view: every operation confirmed, every masternode its own")
+        # The coin arrives now and W runs before V: until it is registered, coin selection may spend
+        # a collateral-sized coin, largest first, as Core's does (D37).
+        self.log.info("5. W: an evonode, ExistingUtxo of 4,000 DASH, the node id and ports given")
+        evo_existing = node.sendtoaddress(evo_addr, EVO_COLLATERAL // COIN)
+        h = self.mine()
+        evo_existing = f"{evo_existing}-{self.outpoint_of(evo_existing, evo_addr, EVO_COLLATERAL)}"
+        node_w = "0123456789abcdef0123456789abcdef01234567"  # asymmetric: Core shows uint160 reversed
+        self.start_miner()
+        try:
+            w = dw.mn(h, "register", "--evonode", "--collateral", evo_existing,
+                      "--service", f"127.0.0.1:{p2p_port(18)}", "--platform-node-id", node_w,
+                      "--platform-p2p-port", "26100", "--platform-http-port", "26101")
+        finally:
+            self.stop_miner()
+        assert handed_off(w)
+        self.wait_until(lambda: node.getrawtransaction(w["txid"], True).get("confirmations", 0) > 0, timeout=60)
+        h = self.mine()
+        assert_equal(w["terms"]["platform"], {"node_id": node_w, "p2p_port": 26100, "http_port": 26101})
+        assert_equal(w["terms"]["platform_node_index"], None)
+        self.check_listed(w["pro_tx_hash"], w["terms"], evo_existing, kind="Evo")
+
+        self.log.info("6. V: an evonode, FundNew, the keychain's node id and the default ports")
+        service_v = f"127.0.0.1:{p2p_port(17)}"
+        preview = dw.mn(h, "register", "--preview", "--evonode", "--collateral", "fund-new",
+                        "--service", service_v)
+        assert_equal(preview["collateral_amount"], EVO_COLLATERAL)
+        assert_equal(preview["terms"]["platform_node_index"], 0)
+        node_v = {"index": 0, "node_id": preview["terms"]["platform"]["node_id"]}
+        self.start_miner()
+        try:
+            v = dw.mn(h, "register", "--evonode", "--collateral", "fund-new", "--service", service_v)
+        finally:
+            self.stop_miner()
+        assert handed_off(v)
+        self.wait_until(lambda: node.getrawtransaction(v["txid"], True).get("confirmations", 0) > 0, timeout=60)
+        h = self.mine()
+        terms = v["terms"]
+        assert_equal((terms["masternode_type"], terms["version"]), ("evonode", 2))
+        assert_equal(terms["platform"], {"node_id": node_v["node_id"], "p2p_port": PLATFORM_PORTS[0],
+                                         "http_port": PLATFORM_PORTS[1]})
+        assert_equal(terms["platform_node_index"], node_v["index"])
+        decoded = node.getrawtransaction(v["txid"], True)
+        assert_equal((decoded["proRegTx"]["version"], decoded["proRegTx"]["type"]), (2, 1))
+        self.check_listed(v["pro_tx_hash"], terms, terms["collateral_outpoint"], kind="Evo")
+        # Its node id is listed now: given again, it is Core's duplicate.
+        refused("masternodes.protx_refused", "--evonode", "--collateral", "fund-new",
+                "--service", "127.0.0.1:30003", "--platform-node-id", node_v["node_id"])
+
+        self.log.info("7. The wallet's view: every operation confirmed, every masternode its own")
         ops = {o["id"]: o for o in dw.mn(h, "operations")}
-        assert_equal(len(ops), 3)
+        assert_equal(len(ops), 5)
         assert all(state(o) == "confirmed" for o in ops.values()), ops
         overview = dw.mn(h, "list")
         mine = {r["pro_tx_hash"]: r for r in overview["masternodes"] if r["mine"]}
-        assert {f["pro_tx_hash"], e["pro_tx_hash"], x["pro_tx_hash"]} <= set(mine)
+        ours = {f["pro_tx_hash"], e["pro_tx_hash"], x["pro_tx_hash"], v["pro_tx_hash"], w["pro_tx_hash"]}
+        assert ours <= set(mine)
         assert all(mine[f["pro_tx_hash"]]["roles"][k] for k in ("owner", "voting", "payout", "collateral"))
         assert mine[e["pro_tx_hash"]]["roles"]["collateral"] and not mine[e["pro_tx_hash"]]["roles"]["payout"]
         assert mine[x["pro_tx_hash"]]["roles"]["owner"] and not mine[x["pro_tx_hash"]]["roles"]["collateral"]
+        assert all(mine[h_]["roles"][k] for h_ in (v["pro_tx_hash"], w["pro_tx_hash"])
+                   for k in ("owner", "voting", "collateral")), mine
         listed = {m["proTxHash"] for m in node.protx("list", "registered", True)}
-        assert {f["pro_tx_hash"], e["pro_tx_hash"], x["pro_tx_hash"]} <= listed
+        assert ours <= listed
 
         if evidence:
             os.makedirs(evidence, exist_ok=True)
             with open(os.path.join(evidence, "protx-operations.json"), "w", encoding="utf8") as out:
                 json.dump({"operations": list(ops.values()),
-                           "core": {h_: node.protx("info", h_) for h_ in
-                                    (f["pro_tx_hash"], e["pro_tx_hash"], x["pro_tx_hash"])}},
+                           "core": {h_: node.protx("info", h_) for h_ in sorted(ours)}},
                           out, indent=1, default=str)
             shutil.copy(os.path.join(self.options.tmpdir, "test_framework.log"), evidence)
         self.log.info("ProTx suite passed")
