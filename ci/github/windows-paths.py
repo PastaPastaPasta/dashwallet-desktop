@@ -30,11 +30,10 @@ def problem(component: str) -> str | None:
 
 
 def main() -> int:
-    paths = subprocess.run(
-        ["git", "ls-files", "-z"], check=True, capture_output=True
-    ).stdout.decode("utf-8", "surrogateescape").split("\0")
+    listed = subprocess.run(["git", "ls-files", "-z"], check=True, capture_output=True).stdout
+    paths = [p for p in listed.decode("utf-8", "surrogateescape").split("\0") if p]
     failures = []
-    for path in filter(None, paths):
+    for path in paths:
         for component in path.split("/"):
             reason = problem(component)
             if reason:
@@ -44,7 +43,7 @@ def main() -> int:
         print(f"Windows-invalid path: {failure}", file=sys.stderr)
     if failures:
         return 1
-    print(f"{len(list(filter(None, paths)))} tracked paths are valid on Windows")
+    print(f"{len(paths)} tracked paths are valid on Windows")
     return 0
 
 

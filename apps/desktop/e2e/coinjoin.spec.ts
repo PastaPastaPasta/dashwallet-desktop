@@ -33,32 +33,34 @@ async function openSettings(page: Page, scenario: string, theme: Theme = "light"
   return errors;
 }
 
-/** Records every value the page gives the checkbox `testId` from now on. The returned read waits
- * until the settings were read again after the last write, and a task more for that read's render
- * (the query notifies on a timeout). */
+/** Records every value the page gives the checkbox `testId` from now on, through the setter React
+ * already wraps on it. The returned read waits until the settings were read again after the last
+ * write, then one more task so that read's render has run (the query notifies on a timeout). The
+ * fixture answers without a timer here (no `delay`), so once the read is called its answer and
+ * that timeout are already queued. */
 async function recordChecked(page: Page, testId: string) {
-  await page.evaluate((testId) => {
-    const el = document.querySelector<HTMLInputElement & { shown?: boolean[] }>(`[data-testid="${testId}"]`)!;
-    const { get, set } = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked")!;
-    const shown: boolean[] = (el.shown = []);
+  const shown = await page.evaluateHandle((testId) => {
+    const el = document.querySelector<HTMLInputElement>(`[data-testid="${testId}"]`)!;
+    const { get, set } = Object.getOwnPropertyDescriptor(el, "checked") ?? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked")!;
+    const shown: boolean[] = [];
     Object.defineProperty(el, "checked", {
-      get() {
-        return get!.call(this);
-      },
+      configurable: true,
+      get,
       set(v: boolean) {
         shown.push(v);
         set!.call(this, v);
       },
     });
+    return shown;
   }, testId);
   return async () => {
     await expect
       .poll(() => page.evaluate(() => window.__dwFixture!.calls.lastIndexOf("coinjoin_settings") > window.__dwFixture!.calls.lastIndexOf("set_coinjoin_settings")))
       .toBe(true);
-    return page.evaluate(async (testId) => {
+    return shown.evaluate(async (s) => {
       await new Promise((r) => setTimeout(r, 0));
-      return document.querySelector<HTMLInputElement & { shown?: boolean[] }>(`[data-testid="${testId}"]`)!.shown!;
-    }, testId);
+      return s;
+    });
   };
 }
 
