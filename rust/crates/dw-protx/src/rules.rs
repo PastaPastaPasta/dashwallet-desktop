@@ -192,19 +192,20 @@ pub fn check_network_fields(
     if p.masternode_type != ProviderMasternodeType::HighPerformance {
         return Ok(());
     }
-    if p.platform_node_id.is_none_or(|id| id.to_byte_array() == [0; 20]) {
+    if p.platform_node_id
+        .is_none_or(|id| id.to_byte_array() == [0; 20])
+    {
         return Err("bad-protx-platform-nodeid");
     }
     let (Some(p2p), Some(http)) = (p.platform_p2p_port, p.platform_http_port) else {
         return Err("bad-protx-platform-p2p-port");
     };
-    service::check_platform_ports(network, p.service_address.port(), p2p, http).map_err(
-        |e| match e {
-            ServiceError::BadPlatformPort("P2P", _) => "bad-protx-platform-p2p-port",
-            ServiceError::BadPlatformPort(_, _) => "bad-protx-platform-http-port",
-            _ => "bad-protx-platform-dup-ports",
-        },
-    )
+    service::check_platform_ports(network, p.service_address.port(), p2p, http).map_err(|e| match e
+    {
+        ServiceError::BadPlatformPort("P2P", _) => "bad-protx-platform-p2p-port",
+        ServiceError::BadPlatformPort(_, _) => "bad-protx-platform-http-port",
+        _ => "bad-protx-platform-dup-ports",
+    })
 }
 
 /// `IsPayoutListKeySafe` at version 2: the collateral's key is neither the
@@ -274,7 +275,11 @@ pub fn check_external_collateral(
     let message = p
         .payload_collateral_string(network)
         .map_err(|_| "bad-protx-payee-dest")?;
-    if !signed_by(&p.signature, signed_msg_hash(&message).to_byte_array(), key_id) {
+    if !signed_by(
+        &p.signature,
+        signed_msg_hash(&message).to_byte_array(),
+        key_id,
+    ) {
         return Err("bad-protx-sig");
     }
     Ok(())
@@ -315,7 +320,8 @@ pub fn check_registration_list(
     collateral: OutPoint,
     list: &[ListedMasternode],
 ) -> Result<(), Reject> {
-    let service = (!service::is_no_service(&p.service_address)).then(|| normalized(p.service_address));
+    let service =
+        (!service::is_no_service(&p.service_address)).then(|| normalized(p.service_address));
     let operator: [u8; 48] = *p.operator_public_key.as_ref();
     let scheme = operator_scheme(p.version);
     for e in list {
@@ -326,7 +332,10 @@ pub fn check_registration_list(
             return Err("bad-protx-dup-netinfo-entry");
         }
     }
-    if list.iter().any(|e| holds_operator_key(e, &operator, scheme)) {
+    if list
+        .iter()
+        .any(|e| holds_operator_key(e, &operator, scheme))
+    {
         return Err("bad-protx-dup-key");
     }
     if p.masternode_type == ProviderMasternodeType::HighPerformance
@@ -499,13 +508,22 @@ mod tests {
         p.platform_node_id = Some(dashcore::platform_node_id::PlatformNodeId::from_byte_array(
             [0; 20],
         ));
-        assert_eq!(check_network_fields(&p, r), Err("bad-protx-platform-nodeid"));
+        assert_eq!(
+            check_network_fields(&p, r),
+            Err("bad-protx-platform-nodeid")
+        );
         let mut p = payload(true);
         p.platform_p2p_port = Some(9_999);
-        assert_eq!(check_network_fields(&p, r), Err("bad-protx-platform-p2p-port"));
+        assert_eq!(
+            check_network_fields(&p, r),
+            Err("bad-protx-platform-p2p-port")
+        );
         let mut p = payload(true);
         p.platform_http_port = Some(22_200);
-        assert_eq!(check_network_fields(&p, r), Err("bad-protx-platform-dup-ports"));
+        assert_eq!(
+            check_network_fields(&p, r),
+            Err("bad-protx-platform-dup-ports")
+        );
         let mut p = payload(false);
         p.service_address = "127.0.0.1:9999".parse().unwrap();
         assert_eq!(check_network_fields(&p, r), Err("bad-protx-netinfo-port"));
@@ -539,7 +557,10 @@ mod tests {
             Err("bad-protx-collateral-index")
         );
         tx.output[0].value -= 1;
-        assert_eq!(check_internal_collateral(&tx, &p), Err("bad-protx-collateral"));
+        assert_eq!(
+            check_internal_collateral(&tx, &p),
+            Err("bad-protx-collateral")
+        );
         tx.output[0].value += 1;
         tx.output[0].script_pubkey = script(1);
         assert_eq!(

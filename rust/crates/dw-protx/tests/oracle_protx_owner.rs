@@ -79,10 +79,7 @@ fn s<'a>(c: &'a Value, key: &str) -> &'a str {
 }
 
 fn address(text: &str) -> Address {
-    Address::from_str(text)
-        .unwrap()
-        .require_network(N)
-        .unwrap()
+    Address::from_str(text).unwrap().require_network(N).unwrap()
 }
 
 fn key_id(text: &str) -> [u8; 20] {
@@ -192,7 +189,12 @@ fn test_MG04_registrations_equal_dashd() {
         let tx = tx_of(s(&c, "tx_hex"));
         assert_eq!(tx.txid().to_string(), s(&c, "pro_tx_hash"));
         let want = registration_of(&tx);
-        assert_eq!(want.version, 2, "{}: dashd builds version 2 here", s(&c, "kind"));
+        assert_eq!(
+            want.version,
+            2,
+            "{}: dashd builds version 2 here",
+            s(&c, "kind")
+        );
         let t = terms(&c);
         let got = finalize_registration(&with_placeholder(&tx, &t), &signer_of(&c, &t)).unwrap();
         assert_eq!(
@@ -245,7 +247,12 @@ fn test_MG04_prepare_sign_message_equals_register_prepare() {
             Ok(())
         );
         let submitted = registration_of(&tx_of(s(&c, "tx_hex")));
-        assert_eq!(signed, submitted, "{}: register_submit only inserts the signature", s(&c, "kind"));
+        assert_eq!(
+            signed,
+            submitted,
+            "{}: register_submit only inserts the signature",
+            s(&c, "kind")
+        );
     }
 }
 
@@ -263,7 +270,11 @@ fn test_MG04_rules_accept_dashd_and_name_mutants() {
             .as_ref()
             .map(|_| (c["collateral_value"].as_f64().unwrap() * 1e8).round() as u64);
         let existing = existing_script.as_ref().map(|s| (s, value));
-        assert_eq!(check_registration(&tx, &p, existing, &[], N), Ok(()), "{kind}");
+        assert_eq!(
+            check_registration(&tx, &p, existing, &[], N),
+            Ok(()),
+            "{kind}"
+        );
 
         // The payee swapped for the owner's address.
         let mut m = p.clone();
@@ -275,12 +286,18 @@ fn test_MG04_rules_accept_dashd_and_name_mutants() {
         );
         if kind.starts_with("fund_new") {
             // The collateral index off by one.
-            for vout in [p.collateral_outpoint.vout + 1, p.collateral_outpoint.vout ^ 1] {
+            for vout in [
+                p.collateral_outpoint.vout + 1,
+                p.collateral_outpoint.vout ^ 1,
+            ] {
                 let mut m = p.clone();
                 m.collateral_outpoint.vout = vout;
                 let r = check_registration(&tx, &m, existing, &[], N);
                 assert!(
-                    matches!(r, Err("bad-protx-collateral-index" | "bad-protx-collateral")),
+                    matches!(
+                        r,
+                        Err("bad-protx-collateral-index" | "bad-protx-collateral")
+                    ),
                     "{kind}: {r:?}"
                 );
             }
@@ -334,7 +351,12 @@ fn test_MG04_update_registrars_equal_dashd() {
     let kinds: Vec<&str> = cases.iter().map(|c| s(c, "kind")).collect();
     assert_eq!(
         kinds,
-        ["voting_regular", "payout_regular", "operator_regular", "all_evo"]
+        [
+            "voting_regular",
+            "payout_regular",
+            "operator_regular",
+            "all_evo"
+        ]
     );
     for c in cases {
         let tx = tx_of(s(&c, "tx_hex"));
@@ -342,15 +364,14 @@ fn test_MG04_update_registrars_equal_dashd() {
         assert_eq!(want.version, 2);
         assert_eq!(want.pro_tx_hash.to_string(), s(&c, "pro_tx_hash"));
         let mut unsigned = tx.clone();
-        unsigned.special_transaction_payload =
-            Some(TransactionPayload::ProviderUpdateRegistrarPayloadType(
-                update_registrar_placeholder(
-                    want.pro_tx_hash,
-                    parse_public_hex(s(&c, "operator_public")).unwrap(),
-                    key_id(s(&c, "voting_address")),
-                    address(s(&c, "payout_address")).script_pubkey(),
-                ),
-            ));
+        unsigned.special_transaction_payload = Some(
+            TransactionPayload::ProviderUpdateRegistrarPayloadType(update_registrar_placeholder(
+                want.pro_tx_hash,
+                parse_public_hex(s(&c, "operator_public")).unwrap(),
+                key_id(s(&c, "voting_address")),
+                address(s(&c, "payout_address")).script_pubkey(),
+            )),
+        );
         let owner = secret_of(s(&c, "owner_wif"));
         let got = finalize_update_registrar(&unsigned, &owner).unwrap();
         assert_eq!(
@@ -369,9 +390,8 @@ fn test_MG04_update_registrars_equal_dashd() {
         let mut m = want.clone();
         let mut over_sig = want.clone();
         over_sig.payload_sig = vec![0; 65];
-        let hash = dashcore::hashes::sha256d::Hash::hash(&dashcore::consensus::serialize(
-            &over_sig,
-        ));
+        let hash =
+            dashcore::hashes::sha256d::Hash::hash(&dashcore::consensus::serialize(&over_sig));
         m.payload_sig = dw_protx::payloads::sign_hash_compact(&owner, hash.as_byte_array())
             .unwrap()
             .to_vec();
