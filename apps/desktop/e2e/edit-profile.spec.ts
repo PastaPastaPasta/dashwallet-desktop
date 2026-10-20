@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
+import { fileDialogAnswers, ROTATED_JPEG, WIDE_PNG } from "./editProfile";
 import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // DP4-03: Edit Profile over My Profile on the fixture backend, by parity ID: IOS-076 (edit the
@@ -7,10 +8,6 @@ import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme 
 // prompt), AND-096 (the picture sources: public URL, Gravatar, a file with its square crop) and
 // AND-097 (a shared image; here a dropped or pasted one). The design note's states: E1–E10,
 // U1–U3, G1–G2, K1–K3 and Q1.
-
-/** A 60 × 40 PNG, blue on the left half and orange on the right: the crop's file. */
-const WIDE_PNG =
-  "iVBORw0KGgoAAAANSUhEUgAAADwAAAAoCAIAAAAt2Q6oAAAAQUlEQVR42u3OMQ0AMAwDsAApxL1jN06lMBT5LBmAM/eV7ElJpKWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlm+kPlHd0NRnvUxsAAAAASUVORK5CYII=";
 
 async function openEditor(page: Page, scenario = "dashpay-avatar", theme: Theme = "light", extra = "") {
   const errors = trackPageErrors(page);
@@ -28,10 +25,6 @@ const sheet = (page: Page) => page.getByTestId("edit-profile-sheet");
 const name = (page: Page) => page.getByTestId("edit-profile-name");
 const save = (page: Page) => page.getByTestId("edit-profile-save");
 const calls = (page: Page, cmd: string) => page.evaluate((c) => window.__dwFixture!.calls.filter((x) => x === c).length, cmd);
-
-/** Puts the file the next native dialog answers with. */
-const fileDialogAnswers = (page: Page, data: string) =>
-  page.evaluate((data) => (window.__dwFixture!.world.tools.files.open = { name: "me.png", data }), data);
 
 /** Each sheet state and how to reach it from the open form. */
 const STATES: Record<string, { scenario?: string; extra?: string; reach: (page: Page) => Promise<void> }> = {
@@ -200,7 +193,8 @@ test("AND-095 Q1: closing with changes asks; Keep Editing keeps them, Discard dr
   await page.getByTestId("edit-profile-cancel").click();
   await page.getByTestId("edit-profile-keep").click();
   await expect(name(page)).toHaveValue("Alice");
-  await expect(name(page)).toBeVisible();
+  // Keep Editing returns focus to the form's first field (on a frame: late in WebKit, BL-165).
+  await expect(name(page)).toBeFocused();
   await page.keyboard.press("Escape");
   await page.getByTestId("edit-profile-discard-confirm").click();
   await expect(sheet(page)).toHaveCount(0);
@@ -302,6 +296,18 @@ test("AND-097 D2: a picture dropped on the picture block opens the crop", async 
     for (const type of ["dragover", "drop"]) el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: data }));
   }, WIDE_PNG);
   await expect(page.getByTestId("edit-profile-crop-frame")).toHaveAttribute("data-crop", "10,0,40");
+});
+
+test("D4 a JPEG's EXIF orientation is the crop's: the frame and the rectangle are the rotated picture's", async ({ page }) => {
+  await openEditor(page, "dashpay-avatar-upload");
+  await fileDialogAnswers(page, ROTATED_JPEG);
+  await page.getByTestId("edit-profile-file").click();
+  // Stored 60 × 40, shown 40 × 60: the whole width, centred vertically.
+  await expect(page.getByTestId("edit-profile-crop-frame")).toHaveAttribute("data-crop", "0,10,40");
+  await page.getByTestId("edit-profile-crop-use").click();
+  await expect(page.getByTestId("edit-profile-picture")).toHaveAttribute("data-choice", "new");
+  const prepared = await page.evaluate(() => window.__dwFixture!.world.dashpay.pictures!.prepares);
+  expect(prepared.at(-1)).toMatchObject({ crop: { x: 0, y: 10, width: 40, height: 40 } });
 });
 
 test("D16 a file that is not a picture is refused in the form, before any crop", async ({ page }) => {

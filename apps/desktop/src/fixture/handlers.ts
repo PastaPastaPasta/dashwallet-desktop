@@ -94,6 +94,15 @@ function sameProfile(a: DashPayProfile | null, b: DashPayProfile | null): boolea
   return JSON.stringify(norm(a)) === JSON.stringify(norm(b));
 }
 
+/** A PNG's or GIF's width and height from its header; `null` (unchecked) for a JPEG, whose size
+ * as the engine crops it needs its EXIF orientation, and for a header cut short. */
+function pictureSize(bytes: string): [number, number] | null {
+  const at = (i: number) => bytes.charCodeAt(i);
+  if (bytes.startsWith("\x89PNG") && bytes.length >= 24) return [((at(16) << 24) | (at(17) << 16) | (at(18) << 8) | at(19)) >>> 0, ((at(20) << 24) | (at(21) << 16) | (at(22) << 8) | at(23)) >>> 0];
+  if (bytes.startsWith("GIF8") && bytes.length >= 10) return [at(6) | (at(7) << 8), at(8) | (at(9) << 8)];
+  return null;
+}
+
 /** A candidate an edit may set (DP4-02): one this wallet prepared, with a URL. */
 function published(dp: DashPayWorld, candidate: string) {
   const c = dp.pictures?.candidates.find((x) => x.id === candidate);
@@ -1132,7 +1141,7 @@ export const HANDLERS: Handlers = {
     const text = (field: ProfileFieldName, value: string | null, max: number) => {
       const t = value?.trim() ?? "";
       const length = Array.from(t).length;
-      if (length > max) throw fail("profile.too_long", `${field} too long`, { kind: "profileTooLong", field, length, max });
+      if (length > max) throw fail("profile.too_long", `fixture: ${field} over its maxLength`, { kind: "profileTooLong", field, length, max });
       return t || null;
     };
     const displayName = text("displayName", edit.displayName, PROFILE_LIMITS.displayNameMax);
@@ -1167,15 +1176,16 @@ export const HANDLERS: Handlers = {
     return null;
   },
   // DashPay::prepare_avatar (DP4-02) as DP4-03 D19 plays it: every source is recorded (with its
-  // crop); a URL with `missing` is not there, `.webp` is not a format, `huge` is too large; a
-  // Gravatar for `nobody@…` has none; a file is sniffed and sized. Each preview is AVATAR_PNG.
+  // crop); only https URLs are fetched, and one with `missing` is not there, `.webp` is not a
+  // format, `huge` is too large; a Gravatar for `nobody@…` has none; a file is sniffed and sized,
+  // and a PNG's or GIF's crop must lie inside it. Each preview is AVATAR_PNG.
   dashpay_prepare_avatar: ({ walletId, source }, { world }) => {
     const dp = dashpay(world, walletId);
     const pictures = (dp.pictures ??= { upload: false, candidates: [], prepares: [] });
     pictures.prepares.push(source);
     let url: string | null = null;
     if (source.kind === "url") {
-      if (!/^https?:\/\/[^/\s]+/.test(source.url)) throw fail("invalid_argument", "url: not a URL");
+      if (!/^https:\/\/[^/\s]+/.test(source.url)) throw fail("invalid_argument", "url: not https");
       if (source.url.includes("missing")) throw fail("avatar.fetch_failed", "fetch failed: 404");
       if (source.url.endsWith(".webp")) throw fail("avatar.unsupported", "unsupported image format");
       if (source.url.includes("huge")) throw fail("avatar.too_large", "image too large");
@@ -1190,6 +1200,10 @@ export const HANDLERS: Handlers = {
       const head = Array.from(bytes.slice(0, 4), (c) => c.charCodeAt(0));
       const known = [[0x89, 0x50, 0x4e, 0x47], [0xff, 0xd8, 0xff], [0x47, 0x49, 0x46, 0x38]].some((m) => m.every((b, i) => head[i] === b));
       if (!known) throw fail("avatar.unsupported", "unsupported image format");
+      const size = pictureSize(bytes);
+      const c = source.crop;
+      if (size && c && !(c.width > 0 && c.height > 0 && c.x + c.width <= size[0] && c.y + c.height <= size[1]))
+        throw fail("invalid_argument", `the crop is outside the ${size[0]} x ${size[1]} picture`);
     }
     const n = pictures.candidates.length + 1;
     const id = `avatar-${n}`;

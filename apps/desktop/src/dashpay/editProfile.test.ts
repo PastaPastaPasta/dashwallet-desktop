@@ -88,12 +88,16 @@ describe("EditProfileModel: the form (D7, D8)", () => {
     expect(m.picture).toEqual({ kind: "keep" });
   });
 
-  it("removing needs a picture to remove", () => {
+  it("removing needs a picture to remove; one whose URL the library dropped still counts", () => {
     const { m } = setup();
+    m.close();
+    m.begin(ME, { ...PROFILE, avatarUrl: null, avatarHash: null, avatarFingerprint: null });
+    m.removePicture();
+    expect(m.picture).toEqual({ kind: "keep" });
     m.close();
     m.begin(ME, { ...PROFILE, avatarUrl: null });
     m.removePicture();
-    expect(m.picture).toEqual({ kind: "keep" });
+    expect(m.picture).toEqual({ kind: "remove" });
   });
 });
 
@@ -171,13 +175,12 @@ describe("EditProfileModel: saving (D8–D10)", () => {
   });
 
   it("maps the engine's refusals to their copy (D9)", () => {
-    expect(saveErrorText(appError("profile.too_long", { kind: "profileTooLong", field: "publicMessage", length: 141, max: 140 }), false)).toBe(
+    expect(saveErrorText(appError("profile.too_long", { kind: "profileTooLong", field: "publicMessage", length: 141, max: 140 }))).toBe(
       "About me can be at most 140 characters.",
     );
-    expect(saveErrorText(appError("profile.empty"), false)).toBe(EDIT_COPY.empty);
-    expect(saveErrorText(appError("invalid_argument"), true)).toBe(EDIT_COPY.errors.candidateGone);
-    expect(saveErrorText(appError("platform.insufficient_credits"), false)).toBe(EDIT_COPY.errors.credits);
-    expect(saveErrorText(appError("internal", null, "boom"), false)).toBe("boom");
+    expect(saveErrorText(appError("profile.empty"))).toBe(EDIT_COPY.empty);
+    expect(saveErrorText(appError("platform.insufficient_credits"))).toBe(EDIT_COPY.errors.credits);
+    expect(saveErrorText(appError("internal", null, "boom"))).toBe("boom");
     expect(prepareErrorText(appError("avatar.fetch_failed"), "gravatar")).toBe(EDIT_COPY.errors.gravatarFailed);
     expect(prepareErrorText(appError("avatar.fetch_failed"), "url")).toBe(EDIT_COPY.errors.urlFailed);
     expect(prepareErrorText(appError("invalid_argument"), "url")).toBe(EDIT_COPY.errors.urlInvalid);
@@ -355,6 +358,47 @@ describe("EditProfileModel: pictures (D2–D5, D13, D15)", () => {
     await done;
     expect(api.dashpayUploadAvatar).toHaveBeenCalledOnce();
     expect(update.mock.calls[1][2].avatar).toEqual({ kind: "set", candidate: "c-1" });
+  });
+
+  it("a candidate the engine no longer knows goes back to the published picture, once", async () => {
+    const update = vi.fn(async () => Promise.reject(appError("invalid_argument")));
+    const { m, authorize } = setup({ dashpayUpdateProfile: update });
+    m.openStep("url");
+    m.setUrl("https://example.org/a.png");
+    await m.fetchUrl();
+    m.setDisplayName("Alice");
+    const done = m.save();
+    await authorize();
+    await done;
+    expect(m).toMatchObject({ picture: { kind: "keep" }, error: EDIT_COPY.errors.candidateGone, displayName: "Alice", canSave: true });
+  });
+
+  it("an expired file candidate's upload refusal says to choose it again, not to retry", async () => {
+    const { api, m } = setup({ dashpayUploadAvatar: vi.fn(async () => Promise.reject(appError("invalid_argument"))) });
+    m.setAvailability(true, true);
+    await m.chooseFile();
+    m.pictureLoaded(10, 10);
+    await m.useCrop();
+    await m.save();
+    expect(api.grantRequest).not.toHaveBeenCalled();
+    expect(m).toMatchObject({ picture: { kind: "keep" }, error: EDIT_COPY.errors.candidateGone, saving: null });
+  });
+
+  it("D11 a navigation during the upload cancels the passphrase prompt to come; the edits stay", async () => {
+    let uploaded: (url: string) => void = () => undefined;
+    const { api, m } = setup({ dashpayUploadAvatar: vi.fn(() => new Promise<string>((r) => (uploaded = r))) });
+    m.setAvailability(true, true);
+    await m.chooseFile();
+    m.pictureLoaded(10, 10);
+    await m.useCrop();
+    const done = m.save();
+    expect(m.saving).toBe("upload");
+    expect(m.requestLeave(() => undefined)).toBe(false);
+    uploaded("https://i.imgur.com/up.png");
+    await done;
+    expect(m.grants.pending).toBeNull();
+    expect(api.dashpayUpdateProfile).not.toHaveBeenCalled();
+    expect(m).toMatchObject({ open: true, saving: null, error: null, picture: { kind: "new", candidate: { url: "https://i.imgur.com/up.png" } } });
   });
 
   it("a failed upload publishes nothing and says so", async () => {

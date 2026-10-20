@@ -46,7 +46,7 @@ const MAX_OTHER_BYTES: u64 = 16 * 1024 * 1024;
 
 /// The largest picture `prepare_avatar` takes from a file (DP4-02: 5 MiB, `avatar.too_large`
 /// above it), so a larger one is refused before it is read.
-pub const MAX_AVATAR_FILE_BYTES: u64 = 5 << 20;
+const MAX_AVATAR_FILE_BYTES: u64 = 5 << 20;
 
 impl FilePurpose {
     pub fn spec(self) -> PurposeSpec {

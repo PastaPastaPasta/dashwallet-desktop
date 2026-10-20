@@ -73,7 +73,7 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
   const aside = contactAside(row, title);
   const leading =
     decor?.leading ??
-    (letters !== null ? <Avatar letters={letters} identity={row.counterparty!.identity} /> : <Icon id={TX_ICON[txIcon(row.txType, row.status, row.amount)]} size={30} className="tx-row-icon" />);
+    (letters !== null ? <Avatar letters={letters} identity={row.counterparty?.identity} /> : <Icon id={TX_ICON[txIcon(row.txType, row.status, row.amount)]} size={30} className="tx-row-icon" />);
   return (
     <li className="tx-row-item">
       <button type="button" className="tx-row" data-testid={rowTestId(row)} data-txid={row.txid} onClick={() => onOpen(row)}>

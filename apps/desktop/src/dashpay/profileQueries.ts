@@ -21,6 +21,8 @@ export const profileKeys = {
   avatarAll: ["dashpay", "avatar"] as const,
   /** DP4-03: the contract's lengths; they change with a contract version only. */
   limits: (walletId: string) => ["dashpay", "profileLimits", walletId] as const,
+  /** DP4-03 D5: whether a file's picture can be uploaded (B1). */
+  avatarUpload: (walletId: string) => ["dashpay", "avatarUpload", walletId] as const,
   /** DP4-03 D14: "Load contact pictures", per network; not a DashPay read (no signal moves it). */
   contactPictures: ["contactPictures"] as const,
   /** D18 */
@@ -124,7 +126,7 @@ export function useProfileLimits(walletId: string) {
 
 export function useAvatarUploadAvailable(walletId: string) {
   const b = useBackend();
-  return useQuery({ queryKey: ["dashpay", "avatarUpload", walletId], queryFn: () => b.dashpayAvatarUploadAvailable(walletId), staleTime: Infinity });
+  return useQuery({ queryKey: profileKeys.avatarUpload(walletId), queryFn: () => b.dashpayAvatarUploadAvailable(walletId), staleTime: Infinity });
 }
 
 export function useTopUpQuote(walletId: string, identity: string | null, duffs: number | null) {

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { STATES as COINJOIN, pressStart } from "./coinjoin";
 import { CARDS, CHIP_TEXT, CHIPS } from "./dashpay";
+import { fileDialogAnswers, WIDE_PNG } from "./editProfile";
 import { authorize, fixtureUrl, fontsReady, SCREENS, show, THEMES, type Theme } from "./helpers";
 import { showSettingsView, type SettingsView } from "./settings";
 import { showWalletView, type WalletView } from "./wallet";
@@ -478,9 +479,6 @@ for (const theme of THEMES) {
 }
 
 // DP4-03: Edit Profile's steps over My Profile, and each list with avatars (D21).
-const WIDE_PNG =
-  "iVBORw0KGgoAAAANSUhEUgAAADwAAAAoCAIAAAAt2Q6oAAAAQUlEQVR42u3OMQ0AMAwDsAApxL1jN06lMBT5LBmAM/eV7ElJpKWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlm+kPlHd0NRnvUxsAAAAASUVORK5CYII=";
-
 const EDIT_PROFILE: Record<string, { scenario: string; reach: (page: Page) => Promise<void> }> = {
   form: { scenario: "dashpay-avatar", reach: (p) => p.getByTestId("edit-profile-remove").waitFor() },
   changed: {
@@ -510,7 +508,7 @@ const EDIT_PROFILE: Record<string, { scenario: string; reach: (page: Page) => Pr
   crop: {
     scenario: "dashpay-avatar-upload",
     reach: async (p) => {
-      await p.evaluate((data) => (window.__dwFixture!.world.tools.files.open = { name: "me.png", data }), WIDE_PNG);
+      await fileDialogAnswers(p, WIDE_PNG);
       await p.getByTestId("edit-profile-file").click();
       await expect(p.getByTestId("edit-profile-crop-frame")).toHaveAttribute("data-crop", "10,0,40");
     },

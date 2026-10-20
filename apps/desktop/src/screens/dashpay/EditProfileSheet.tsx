@@ -44,6 +44,7 @@ function Counted({
 }) {
   const id = useId();
   const props = {
+    id,
     value,
     placeholder,
     disabled,
@@ -52,23 +53,46 @@ function Counted({
     "data-testid": testId,
     onChange: (e: { target: { value: string } }) => onChange(e.target.value),
   };
+  // The counter describes the field rather than naming it, so it sits outside the label.
   return (
-    <label className="form-field edit-profile-field">
-      {label}
+    <div className="form-field edit-profile-field">
+      <label htmlFor={id}>{label}</label>
       {multiline ? <textarea rows={3} {...props} /> : <input type="text" autoComplete="off" {...props} />}
       <span className={over ? "field-hint edit-profile-count is-over" : "field-hint edit-profile-count"} id={`${id}-count`} data-testid={`${testId}-count`}>
         {C.count(charCount(value), max)}
         {over && `. ${C.tooLong(max)}`}
       </span>
-    </label>
+    </div>
   );
 }
 
+/** A step's progress line. */
+function Progress({ text, testId }: { text: string; testId: string }) {
+  return (
+    <p className="edit-profile-saving" role="status" data-testid={testId}>
+      {text}
+      <span className="spinner" aria-hidden="true" />
+    </p>
+  );
+}
+
+/** The picture the save would publish: the new one's preview, none, or the current one. */
+function ChosenPicture({ m, letters }: { m: EditProfileModel; letters: string }) {
+  const p = m.picture;
+  switch (p.kind) {
+    case "new":
+      return <Avatar letters={letters} size="pane" png={p.candidate.preview.png} />;
+    case "remove":
+      return <Avatar letters={letters} size="pane" />;
+    case "keep":
+      return <Avatar letters={letters} size="pane" identity={m.identity} own />;
+  }
+}
+
 /** The picture block of the form (E1, E2, E4, E9, E10). */
-function Picture({ m, letters, identity }: { m: EditProfileModel; letters: string; identity: string }) {
+function Picture({ m, letters }: { m: EditProfileModel; letters: string }) {
   const p = m.picture;
   const busy = m.saving !== null;
-  const shown = p.kind === "new" ? <Avatar letters={letters} size="pane" png={p.candidate.preview.png} /> : p.kind === "remove" ? <Avatar letters={letters} size="pane" /> : <Avatar letters={letters} size="pane" identity={identity} own />;
   const take = (file: File | null) => {
     if (file) void m.takeFile(file);
   };
@@ -95,11 +119,11 @@ function Picture({ m, letters, identity }: { m: EditProfileModel; letters: strin
         take(file);
       }}
     >
-      {shown}
+      <ChosenPicture m={m} letters={letters} />
       <div className="edit-profile-picture-side">
         {p.kind !== "keep" && (
-          <p className="edit-profile-picture-state" role="status" data-testid="edit-profile-picture-state">
-            {p.kind === "new" ? C.picture.isNew : C.picture.isRemoved}{" "}
+          <p className="edit-profile-picture-state" data-testid="edit-profile-picture-state">
+            <span role="status">{p.kind === "new" ? C.picture.isNew : C.picture.isRemoved}</span>{" "}
             <DashButton variant="plainBlue" size="small" data-testid="edit-profile-undo" disabled={busy} onClick={() => m.undoPicture()}>
               {C.picture.undo}
             </DashButton>
@@ -149,7 +173,7 @@ function Form({ m, letters, username }: { m: EditProfileModel; letters: string; 
   const busy = m.saving !== null;
   return (
     <>
-      <Picture m={m} letters={letters} identity={m.identity!} />
+      <Picture m={m} letters={letters} />
       <Counted
         label={C.displayName}
         value={m.displayName}
@@ -175,12 +199,7 @@ function Form({ m, letters, username }: { m: EditProfileModel; letters: string; 
           {C.empty}
         </p>
       )}
-      {m.saving && (
-        <p className="edit-profile-saving" role="status" data-testid="edit-profile-saving">
-          {m.saving === "upload" ? C.uploading : C.saving}
-          <span className="spinner" aria-hidden="true" />
-        </p>
-      )}
+      {m.saving && <Progress text={m.saving === "upload" ? C.uploading : C.saving} testId="edit-profile-saving" />}
       {m.error && !m.saving && (
         <p className="form-problem" role="alert" data-testid="edit-profile-error">
           {m.error}
@@ -191,16 +210,21 @@ function Form({ m, letters, username }: { m: EditProfileModel; letters: string; 
           {C.cancel}
         </DashButton>
         <DashButton variant="filledBlue" size="large" data-testid="edit-profile-save" disabled={!m.canSave} onClick={() => void m.save()}>
-          {busy ? C.saving : C.save}
+          {C.save}
         </DashButton>
       </div>
     </>
   );
 }
 
+const SOURCES = {
+  url: { copy: C.url, type: "url", placeholder: "https://" },
+  gravatar: { copy: C.gravatar, type: "email", placeholder: C.gravatar.placeholder },
+} as const;
+
 /** U1–U3 and G1–G2: one field, its fetch and its refusal. */
 function SourceStep({ m, kind }: { m: EditProfileModel; kind: "url" | "gravatar" }) {
-  const copy = kind === "url" ? C.url : C.gravatar;
+  const { copy, type, placeholder } = SOURCES[kind];
   const value = kind === "url" ? m.url : m.email;
   const fetch = () => void (kind === "url" ? m.fetchUrl() : m.fetchGravatar());
   return (
@@ -210,12 +234,12 @@ function SourceStep({ m, kind }: { m: EditProfileModel; kind: "url" | "gravatar"
       <label className="form-field">
         {copy.field}
         <input
-          type={kind === "url" ? "url" : "email"}
+          type={type}
           data-autofocus
           autoComplete="off"
           spellCheck={false}
           value={value}
-          placeholder={kind === "gravatar" ? C.gravatar.placeholder : "https://"}
+          placeholder={placeholder}
           disabled={m.preparing}
           aria-invalid={m.pictureError ? true : undefined}
           data-testid={`edit-profile-${kind}-field`}
@@ -228,12 +252,7 @@ function SourceStep({ m, kind }: { m: EditProfileModel; kind: "url" | "gravatar"
         />
       </label>
       {kind === "gravatar" && <p className="field-hint">{C.gravatar.disclaimer}</p>}
-      {m.preparing && (
-        <p className="edit-profile-saving" role="status" data-testid="edit-profile-fetching">
-          {copy.fetching}
-          <span className="spinner" aria-hidden="true" />
-        </p>
-      )}
+      {m.preparing && <Progress text={copy.fetching} testId="edit-profile-fetching" />}
       {m.pictureError && (
         <p className="form-problem" role="alert" data-testid="edit-profile-step-error">
           {m.pictureError}
@@ -262,13 +281,16 @@ function CropStep({ m }: { m: EditProfileModel }) {
     e.currentTarget.setPointerCapture(e.pointerId);
     drag.current = { x: e.clientX, y: e.clientY };
   };
+  // The handlers read the model's view, not the render's: two moves between renders both count.
   const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
     const from = drag.current;
+    const view = m.crop;
     if (!from || !view) return;
     drag.current = { x: e.clientX, y: e.clientY };
     m.setCrop(panBy(view, e.clientX - from.x, e.clientY - from.y, FRAME));
   };
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const view = m.crop;
     if (!view) return;
     const step = FRAME * PAN_STEP;
     const moves: Record<string, [number, number]> = { ArrowLeft: [step, 0], ArrowRight: [-step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] };
@@ -286,7 +308,7 @@ function CropStep({ m }: { m: EditProfileModel }) {
       <div
         className="crop-frame"
         tabIndex={0}
-        role="img"
+        role="group"
         aria-label={C.crop.frame}
         data-autofocus
         data-testid="edit-profile-crop-frame"
@@ -324,12 +346,7 @@ function CropStep({ m }: { m: EditProfileModel }) {
           onChange={(e) => view && m.setCrop(zoomTo(view, Number(e.target.value)))}
         />
       </label>
-      {m.preparing && (
-        <p className="edit-profile-saving" role="status" data-testid="edit-profile-fetching">
-          {C.crop.preparing}
-          <span className="spinner" aria-hidden="true" />
-        </p>
-      )}
+      {m.preparing && <Progress text={C.crop.preparing} testId="edit-profile-fetching" />}
       <div className="sheet-actions">
         <DashButton variant="tintedGray" size="large" data-testid="edit-profile-back" disabled={m.preparing} onClick={() => m.back()}>
           {C.back}
@@ -342,10 +359,11 @@ function CropStep({ m }: { m: EditProfileModel }) {
   );
 }
 
-/** Q1 (D11). */
-function DiscardSheet({ m }: { m: EditProfileModel }) {
+/** Q1 (D11). `back`: where Keep Editing returns focus (the opener may be gone, or none: WebKit
+ * does not focus a clicked button). */
+function DiscardSheet({ m, back }: { m: EditProfileModel; back: () => HTMLElement | null }) {
   return (
-    <Sheet title={C.discard.title} width="small" testId="edit-profile-discard" onClose={() => m.keepEditing()}>
+    <Sheet title={C.discard.title} width="small" testId="edit-profile-discard" returnFocus={back} onClose={() => m.keepEditing()}>
       <p className="sheet-text">{C.discard.text}</p>
       <div className="sheet-actions">
         <DashButton variant="tintedGray" data-autofocus data-testid="edit-profile-keep" onClick={() => m.keepEditing()}>
@@ -359,19 +377,23 @@ function DiscardSheet({ m }: { m: EditProfileModel }) {
   );
 }
 
+/** The step's first field, or its crop frame. */
+const FIRST_FIELD = "input:not(:disabled), textarea:not(:disabled), [data-autofocus]";
+
 export function EditProfileSheet({ model, letters, username }: { model: EditProfileModel; letters: string; username: string | null }) {
   const m = useModel(model);
+  const body = useRef<HTMLDivElement>(null);
   if (!m.open || m.identity === null) return <GrantSheet grants={m.grants} />;
   return (
     <>
       <Sheet title={C.title} width="medium" testId="edit-profile-sheet" focusKey={m.step} closable={m.saving === null} onClose={() => m.requestClose()}>
-        <div className="edit-profile-body" data-testid="edit-profile-body" data-step={m.step} data-saving={m.saving ?? undefined}>
+        <div ref={body} className="edit-profile-body" data-testid="edit-profile-body" data-step={m.step} data-saving={m.saving ?? undefined}>
           {m.step === "form" && <Form m={m} letters={letters} username={username} />}
           {(m.step === "url" || m.step === "gravatar") && <SourceStep m={m} kind={m.step} />}
           {m.step === "crop" && <CropStep m={m} />}
         </div>
       </Sheet>
-      {m.asking && <DiscardSheet m={m} />}
+      {m.asking && <DiscardSheet m={m} back={() => body.current?.querySelector<HTMLElement>(FIRST_FIELD) ?? null} />}
       <GrantSheet grants={m.grants} />
     </>
   );

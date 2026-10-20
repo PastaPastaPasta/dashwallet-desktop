@@ -122,6 +122,7 @@ describe("dashpay_prepare_avatar and the upload (DP4-02's calls, DP4-03 D19)", (
     const f = install("dashpay-registered");
     const prep = (s: Parameters<typeof cmd.dashpayPrepareAvatar>[1]) => code(cmd.dashpayPrepareAvatar(W, s));
     expect(await prep({ kind: "url", url: "not a url" })).toBe("invalid_argument");
+    expect(await prep({ kind: "url", url: "http://example.org/a.png" })).toBe("invalid_argument");
     expect(await prep({ kind: "url", url: "https://example.org/missing.png" })).toBe("avatar.fetch_failed");
     expect(await prep({ kind: "url", url: "https://example.org/a.webp" })).toBe("avatar.unsupported");
     expect(await prep({ kind: "url", url: "https://example.org/huge.png" })).toBe("avatar.too_large");
@@ -134,8 +135,18 @@ describe("dashpay_prepare_avatar and the upload (DP4-02's calls, DP4-03 D19)", (
     const j = await cmd.dashpayPrepareAvatar(W, file([0xff, 0xd8, 0xff, 0xe0]));
     expect(j.id).not.toBe(g.id);
     const prepares = f.world.dashpay.pictures!.prepares;
-    expect(prepares).toHaveLength(9);
+    expect(prepares).toHaveLength(10);
     expect(prepares.at(-1)).toMatchObject({ kind: "file", crop: { x: 1, y: 2, width: 3, height: 3 } });
+  });
+
+  it("refuses a PNG's crop outside the picture", async () => {
+    install("dashpay-registered");
+    // A 4 x 4 PNG.
+    const bytes = Array.from(atob(AVATAR_PNG), (c) => c.charCodeAt(0));
+    const crop = (x: number, width: number) => ({ kind: "file" as const, bytes: bytesToBase64(new Uint8Array(bytes)), crop: { x, y: 0, width, height: width } });
+    expect(await code(cmd.dashpayPrepareAvatar(W, crop(0, 4)))).toBeNull();
+    expect(await code(cmd.dashpayPrepareAvatar(W, crop(1, 4)))).toBe("invalid_argument");
+    expect(await code(cmd.dashpayPrepareAvatar(W, crop(0, 0)))).toBe("invalid_argument");
   });
 
   it("no upload host: unavailable and upload_unconfigured", async () => {

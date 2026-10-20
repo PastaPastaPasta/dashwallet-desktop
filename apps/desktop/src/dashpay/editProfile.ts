@@ -58,7 +58,7 @@ export const EDIT_COPY = {
     isRemoved: "Picture removed",
     drop: "Drop or paste a picture here",
     noUpload: "Pictures from this computer need an upload service this version does not have yet. Use a public URL or Gravatar.",
-    off: "Profile pictures are off. Turn on “Load contact pictures” in Settings ▸ Privacy to choose a new picture.",
+    off: "Profile pictures are off. Turn on “Load contact pictures” in Settings to choose a new picture.",
     openSettings: "Open Settings",
   },
   url: {
@@ -116,13 +116,11 @@ export const EDIT_COPY = {
 } as const;
 
 /** What the save does to the picture. */
-export type PictureChoice =
-  | { kind: "keep" }
-  | { kind: "remove" }
-  | { kind: "new"; source: "file" | "url" | "gravatar"; candidate: AvatarCandidateInfo };
+export type PictureSource = "file" | "url" | "gravatar";
+
+export type PictureChoice = { kind: "keep" } | { kind: "remove" } | { kind: "new"; source: PictureSource; candidate: AvatarCandidateInfo };
 
 export type EditStep = "form" | "url" | "gravatar" | "crop";
-export type PictureSource = "file" | "url" | "gravatar";
 
 /** A file being cropped (D4, D16): its bytes for the engine, a `data:` URL for the frame. */
 export interface CropFile {
@@ -147,6 +145,13 @@ export function sniffImage(bytes: Uint8Array): "image/png" | "image/jpeg" | "ima
   return null;
 }
 
+/** D9: a fetch's and an argument's refusal, by where the picture came from. */
+const BY_SOURCE = {
+  file: { fetch: EDIT_COPY.errors.unreadable, invalid: EDIT_COPY.errors.unreadable },
+  url: { fetch: EDIT_COPY.errors.urlFailed, invalid: EDIT_COPY.errors.urlInvalid },
+  gravatar: { fetch: EDIT_COPY.errors.gravatarFailed, invalid: EDIT_COPY.errors.emailInvalid },
+} as const;
+
 /** D9: why a picture could not be prepared, by where it came from. */
 export function prepareErrorText(e: unknown, source: PictureSource): string {
   const E = EDIT_COPY.errors;
@@ -154,13 +159,13 @@ export function prepareErrorText(e: unknown, source: PictureSource): string {
   if (hasCode(e, "avatar.unsupported")) return E.unsupported;
   if (hasCode(e, "app.file_dialog")) return E.dialog;
   if (hasCode(e, "app.file_read")) return E.fileRead;
-  if (hasCode(e, "avatar.fetch_failed")) return source === "gravatar" ? E.gravatarFailed : source === "url" ? E.urlFailed : E.unreadable;
-  if (hasCode(e, "invalid_argument")) return source === "gravatar" ? E.emailInvalid : source === "url" ? E.urlInvalid : E.unreadable;
+  if (hasCode(e, "avatar.fetch_failed")) return BY_SOURCE[source].fetch;
+  if (hasCode(e, "invalid_argument")) return BY_SOURCE[source].invalid;
   return errorMessage(e);
 }
 
-/** D9: why a save was refused; the edits stay. `settingPicture`: the edit sets a new picture. */
-export function saveErrorText(e: unknown, settingPicture: boolean): string {
+/** D9: why a save was refused; the edits stay. */
+export function saveErrorText(e: unknown): string {
   const E = EDIT_COPY.errors;
   if (hasCode(e, "profile.too_long") && e.data?.kind === "profileTooLong")
     return e.data.field === "displayName" ? `The display name can be at most ${e.data.max} characters.` : `About me can be at most ${e.data.max} characters.`;
@@ -173,14 +178,7 @@ export function saveErrorText(e: unknown, settingPicture: boolean): string {
   if (hasCode(e, "platform.context_unavailable")) return E.context;
   if (hasCode(e, "platform.trust_mismatch")) return E.trust;
   if (hasCode(e, "platform.grant_exceeded")) return E.grant;
-  if (hasCode(e, "avatar.upload_unconfigured")) return E.uploadUnconfigured;
-  if (hasCode(e, "invalid_argument") && settingPicture) return E.candidateGone;
   return errorMessage(e);
-}
-
-/** Thrown by the upload step: its refusal reads as Android's upload error unless its code says more. */
-class UploadFailed {
-  constructor(readonly cause: unknown) {}
 }
 
 /** The discard question (D11): from the sheet's own close, or a navigation it holds. */
@@ -242,8 +240,9 @@ export class EditProfileModel extends Model {
     this.changed();
   }
 
+  /** A published picture, even one whose URL the library dropped (its hash stays). */
   get hasPicture(): boolean {
-    return !!this.baseline?.avatarUrl;
+    return !!(this.baseline?.avatarUrl || this.baseline?.avatarHash);
   }
 
   /** D11: something differs from the baseline. */
@@ -331,7 +330,7 @@ export class EditProfileModel extends Model {
     this.changed();
   }
 
-  openStep(step: "url" | "gravatar") {
+  openStep(step: Exclude<PictureSource, "file">) {
     if (!this.canUse(step)) return;
     this.#toStep(step);
   }
@@ -345,14 +344,12 @@ export class EditProfileModel extends Model {
   async chooseFile(): Promise<void> {
     if (!this.canUse("file")) return;
     const seq = this.#seq;
-    this.pictureError = null;
+    this.#refuse(null);
     try {
       const file = await this.api.openFile("avatarImage");
       if (file && seq === this.#seq) this.#crop(base64ToBytes(file.data));
     } catch (e) {
-      if (seq !== this.#seq) return;
-      this.pictureError = prepareErrorText(e, "file");
-      this.changed();
+      if (seq === this.#seq) this.#refuse(prepareErrorText(e, "file"));
     }
   }
 
@@ -360,19 +357,13 @@ export class EditProfileModel extends Model {
   async takeFile(file: Pick<Blob, "size" | "arrayBuffer">): Promise<void> {
     if (!this.canUse("file")) return;
     const seq = this.#seq;
-    this.pictureError = null;
-    if (file.size > MAX_FILE_BYTES) {
-      this.pictureError = EDIT_COPY.errors.tooLarge;
-      this.changed();
-      return;
-    }
+    if (file.size > MAX_FILE_BYTES) return this.#refuse(EDIT_COPY.errors.tooLarge);
+    this.#refuse(null);
     try {
       const buffer = await file.arrayBuffer();
       if (seq === this.#seq) this.#crop(new Uint8Array(buffer));
     } catch {
-      if (seq !== this.#seq) return;
-      this.pictureError = EDIT_COPY.errors.fileRead;
-      this.changed();
+      if (seq === this.#seq) this.#refuse(EDIT_COPY.errors.fileRead);
     }
   }
 
@@ -387,8 +378,7 @@ export class EditProfileModel extends Model {
   pictureFailed() {
     if (this.step !== "crop") return;
     this.#toStep("form");
-    this.pictureError = EDIT_COPY.errors.unreadable;
-    this.changed();
+    this.#refuse(EDIT_COPY.errors.unreadable);
   }
 
   setCrop(view: CropView) {
@@ -398,24 +388,24 @@ export class EditProfileModel extends Model {
   }
 
   /** Use Photo (K1): the cropped square goes to the engine, which re-encodes it (D4). */
-  useCrop(): Promise<void> {
+  async useCrop(): Promise<void> {
     const { file, crop } = this;
-    if (this.step !== "crop" || !file || !crop) return Promise.resolve();
-    return this.#prepare("file", { kind: "file", bytes: file.bytes, crop: cropRect(crop) });
+    if (this.step !== "crop" || !file || !crop) return;
+    await this.#prepare("file", { kind: "file", bytes: file.bytes, crop: cropRect(crop) });
   }
 
-  fetchUrl(): Promise<void> {
+  async fetchUrl(): Promise<void> {
     const url = this.url.trim();
-    if (this.step !== "url" || !url) return Promise.resolve();
-    return this.#prepare("url", { kind: "url", url });
+    if (this.step !== "url" || !url) return;
+    await this.#prepare("url", { kind: "url", url });
   }
 
   /** D15: the address leaves the model as the call starts. */
-  fetchGravatar(): Promise<void> {
+  async fetchGravatar(): Promise<void> {
     const email = this.email.trim();
-    if (this.step !== "gravatar" || !email) return Promise.resolve();
+    if (this.step !== "gravatar" || !email || this.preparing || !this.canUse("gravatar")) return;
     this.email = "";
-    return this.#prepare("gravatar", { kind: "gravatar", email });
+    await this.#prepare("gravatar", { kind: "gravatar", email });
   }
 
   /** Save Changes (D8): the upload a file's picture needs (D5), then the whole profile under a
@@ -423,13 +413,14 @@ export class EditProfileModel extends Model {
   async save(): Promise<void> {
     if (!this.canSave || this.identity === null) return;
     const identity = this.identity;
-    this.saving = "publish";
+    // A leave while uploading or sizing the grant cancels the passphrase prompt to come (D11).
+    const since = this.grants.epoch;
+    this.saving = this.#uploadNeeded() ? "upload" : "publish";
     this.error = null;
     this.changed();
     try {
-      await this.#upload();
+      if (!(await this.#upload())) return;
       const edit = this.#edit();
-      const since = this.grants.epoch;
       const { maxDuffs, maxCredits } = await this.api.grantRequest(this.walletId, identity, { kind: "updateProfile" });
       const got = await this.grants.withGrant(
         { kind: "platformOp", maxDuffs, maxCredits },
@@ -448,13 +439,9 @@ export class EditProfileModel extends Model {
       this.#reset();
       this.notify(EDIT_COPY.saved);
     } catch (e) {
-      if (e instanceof UploadFailed) {
-        this.error = hasCode(e.cause, "avatar.upload_unconfigured") ? EDIT_COPY.errors.uploadUnconfigured : EDIT_COPY.errors.uploadFailed;
-      } else {
-        // D10: the other device's profile is what the next save is made against.
-        if (hasCode(e, "profile.conflict") && e.data?.kind === "profileConflict") this.baseline = e.data.current;
-        this.error = saveErrorText(e, this.picture.kind === "new");
-      }
+      // D10: the other device's profile is what the next save is made against.
+      if (hasCode(e, "profile.conflict") && e.data?.kind === "profileConflict") this.baseline = e.data.current;
+      if (!this.#candidateGone(e)) this.error = saveErrorText(e);
     } finally {
       this.saving = null;
       this.changed();
@@ -475,8 +462,9 @@ export class EditProfileModel extends Model {
   requestLeave(go: () => void): boolean {
     if (!this.open) return false;
     if (this.saving) {
-      // A passphrase still asked for would wait unseen: the save ends there, its edits kept.
-      if (this.grants.pending) this.grants.cancel();
+      // A passphrase asked for now or later would wait unseen: the save ends there, its edits
+      // kept; a publish already sent goes on.
+      this.grants.cancel();
       return false;
     }
     if (!this.dirty) {
@@ -538,18 +526,16 @@ export class EditProfileModel extends Model {
     this.changed();
   }
 
+  /** Says why a picture was refused (`null`: clears it). */
+  #refuse(text: string | null) {
+    this.pictureError = text;
+    this.changed();
+  }
+
   #crop(bytes: Uint8Array) {
-    if (bytes.byteLength > MAX_FILE_BYTES) {
-      this.pictureError = EDIT_COPY.errors.tooLarge;
-      this.changed();
-      return;
-    }
+    if (bytes.byteLength > MAX_FILE_BYTES) return this.#refuse(EDIT_COPY.errors.tooLarge);
     const type = sniffImage(bytes);
-    if (!type) {
-      this.pictureError = EDIT_COPY.errors.unsupported;
-      this.changed();
-      return;
-    }
+    if (!type) return this.#refuse(EDIT_COPY.errors.unsupported);
     const b64 = bytesToBase64(bytes);
     this.#toStep("crop");
     this.file = { bytes: b64, src: `data:${type};base64,${b64}` };
@@ -577,21 +563,38 @@ export class EditProfileModel extends Model {
     this.changed();
   }
 
-  /** D5: a file's candidate is uploaded once; the URL it gets is kept for a retry. */
-  async #upload() {
+  #uploadNeeded(): boolean {
     const p = this.picture;
-    if (p.kind !== "new" || !p.candidate.needsUpload || p.candidate.url !== null) return;
-    this.saving = "upload";
-    this.changed();
+    return p.kind === "new" && p.candidate.needsUpload && p.candidate.url === null;
+  }
+
+  /** D5: a file's candidate is uploaded once; the URL it gets is kept for a retry. `false`
+   * when the upload was refused (said in `error`). */
+  async #upload(): Promise<boolean> {
+    const p = this.picture;
+    if (p.kind !== "new" || !this.#uploadNeeded()) return true;
     let url: string;
     try {
       url = await this.api.dashpayUploadAvatar(this.walletId, p.candidate.id);
     } catch (e) {
-      throw new UploadFailed(e);
+      if (!this.#candidateGone(e))
+        this.error = hasCode(e, "avatar.upload_unconfigured") ? EDIT_COPY.errors.uploadUnconfigured : EDIT_COPY.errors.uploadFailed;
+      return false;
     }
     this.picture = { ...p, candidate: { ...p.candidate, url, needsUpload: false } };
     this.saving = "publish";
     this.changed();
+    return true;
+  }
+
+  /** A new picture's candidate the engine no longer knows (it lives 30 minutes): the choice
+   * goes back to the published picture and the form says to choose it again; no retry could
+   * use it. */
+  #candidateGone(e: unknown): boolean {
+    if (this.picture.kind !== "new" || !hasCode(e, "invalid_argument")) return false;
+    this.picture = { kind: "keep" };
+    this.error = EDIT_COPY.errors.candidateGone;
+    return true;
   }
 
   #edit(): ProfileEditArgs {
@@ -599,7 +602,7 @@ export class EditProfileModel extends Model {
     return {
       displayName: norm(this.displayName) || null,
       publicMessage: norm(this.publicMessage) || null,
-      avatar: p.kind === "new" ? { kind: "set", candidate: p.candidate.id } : p.kind === "remove" ? { kind: "remove" } : { kind: "keep" },
+      avatar: p.kind === "new" ? { kind: "set", candidate: p.candidate.id } : { kind: p.kind },
       baseline: { profile: this.baseline },
     };
   }
