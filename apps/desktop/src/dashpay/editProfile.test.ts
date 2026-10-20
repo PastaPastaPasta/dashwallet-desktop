@@ -9,7 +9,7 @@ import type { DashPayProfile } from "../api/generated/DashPayProfile";
 import { bytesToBase64 } from "../app/files";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { charCount, EDIT_COPY, EditProfileModel, MAX_FILE_BYTES, prepareErrorText, saveErrorText, sniffImage, type EditProfileApi } from "./editProfile";
+import { CANDIDATE_GONE, charCount, EDIT_COPY, EditProfileModel, MAX_FILE_BYTES, prepareErrorText, saveErrorText, sniffImage, type EditProfileApi } from "./editProfile";
 
 const ME = "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF";
 const PROFILE: DashPayProfile = {
@@ -134,6 +134,9 @@ describe("EditProfileModel: saving (D8–D10)", () => {
     expect(m).toMatchObject({ displayName: "Alice", asking: null, open: true });
     await authorize();
     await first;
+    // The second call stopped at save()'s own guard, not at a passphrase prompt nobody answered.
+    expect(api.grantRequest).toHaveBeenCalledTimes(1);
+    expect(m.grants.pending).toBeNull();
     expect(api.dashpayUpdateProfile).toHaveBeenCalledTimes(1);
   });
 
@@ -172,6 +175,16 @@ describe("EditProfileModel: saving (D8–D10)", () => {
     await done;
     expect(update.mock.calls[1][2].baseline).toEqual({ profile: current });
     expect(m.open).toBe(false);
+  });
+
+  it("a conflict whose profile already is the user's says so, not to save again", async () => {
+    const current = { ...PROFILE, displayName: "Alice", updatedAt: null };
+    const { m, authorize } = setup({ dashpayUpdateProfile: vi.fn(async () => Promise.reject(appError("profile.conflict", { kind: "profileConflict", current }))) });
+    m.setDisplayName("Alice");
+    const done = m.save();
+    await authorize();
+    await done;
+    expect(m).toMatchObject({ baseline: current, dirty: false, canSave: false, error: EDIT_COPY.errors.conflictMatches });
   });
 
   it("maps the engine's refusals to their copy (D9)", () => {
@@ -341,6 +354,18 @@ describe("EditProfileModel: pictures (D2–D5, D13, D15)", () => {
     expect(m).toMatchObject({ step: "form", pictureError: EDIT_COPY.errors.unreadable });
   });
 
+  it("a picture over the engine's 4096 pixels a side goes back to the form before it is framed", async () => {
+    const { api, m } = setup();
+    m.setAvailability(true, true);
+    await m.takeFile({ size: PNG.length, arrayBuffer: async () => PNG.buffer });
+    m.pictureLoaded(4096, 4097);
+    expect(m).toMatchObject({ step: "form", crop: null, pictureError: EDIT_COPY.errors.tooManyPixels });
+    await m.takeFile({ size: PNG.length, arrayBuffer: async () => PNG.buffer });
+    m.pictureLoaded(4096, 4096);
+    expect(m).toMatchObject({ step: "crop", pictureError: null });
+    expect(api.dashpayPrepareAvatar).not.toHaveBeenCalled();
+  });
+
   it("D5 a file's picture is uploaded once, before the publish; a retry keeps the URL", async () => {
     const update = vi.fn().mockRejectedValueOnce(appError("platform.unavailable")).mockResolvedValueOnce(null);
     const { api, m, authorize } = setup({ dashpayUpdateProfile: update });
@@ -361,7 +386,7 @@ describe("EditProfileModel: pictures (D2–D5, D13, D15)", () => {
   });
 
   it("a candidate the engine no longer knows goes back to the published picture, once", async () => {
-    const update = vi.fn(async () => Promise.reject(appError("invalid_argument")));
+    const update = vi.fn(async () => Promise.reject(appError("invalid_argument", null, `invalid argument: ${CANDIDATE_GONE[0]}`)));
     const { m, authorize } = setup({ dashpayUpdateProfile: update });
     m.openStep("url");
     m.setUrl("https://example.org/a.png");
@@ -373,8 +398,27 @@ describe("EditProfileModel: pictures (D2–D5, D13, D15)", () => {
     expect(m).toMatchObject({ picture: { kind: "keep" }, error: EDIT_COPY.errors.candidateGone, displayName: "Alice", canSave: true });
   });
 
+  it("any other invalid_argument keeps the new picture and shows the engine's text", async () => {
+    const watchOnly = appError("invalid_argument", null, "invalid argument: the wallet only watches this identity; it cannot publish");
+    const noUrl = appError("invalid_argument", null, `invalid argument: ${CANDIDATE_GONE[1]}`);
+    const update = vi.fn().mockRejectedValueOnce(watchOnly).mockRejectedValueOnce(noUrl);
+    const { m, authorize } = setup({ dashpayUpdateProfile: update });
+    m.openStep("url");
+    m.setUrl("https://example.org/a.png");
+    await m.fetchUrl();
+    let done = m.save();
+    await authorize();
+    await done;
+    expect(m).toMatchObject({ picture: { kind: "new", candidate: { id: "c-1" } }, error: watchOnly.message, canSave: true });
+    // The candidate's own refusal, the second of the two, still goes back to the published picture.
+    done = m.save();
+    await authorize();
+    await done;
+    expect(m).toMatchObject({ picture: { kind: "keep" }, error: EDIT_COPY.errors.candidateGone });
+  });
+
   it("an expired file candidate's upload refusal says to choose it again, not to retry", async () => {
-    const { api, m } = setup({ dashpayUploadAvatar: vi.fn(async () => Promise.reject(appError("invalid_argument"))) });
+    const { api, m } = setup({ dashpayUploadAvatar: vi.fn(async () => Promise.reject(appError("invalid_argument", null, `invalid argument: ${CANDIDATE_GONE[0]}`))) });
     m.setAvailability(true, true);
     await m.chooseFile();
     m.pictureLoaded(10, 10);

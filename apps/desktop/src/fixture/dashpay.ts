@@ -63,6 +63,8 @@ export interface DashPayWorld {
   /** DP4-02: the verified thumbnails `dashpay_avatar` hands over, base64 PNG by identity; an
    * identity not here shows its initials. None unless a scenario sets them. */
   avatars?: Record<string, string>;
+  /** DP4-03 D13: how many times `dashpay_avatar` was asked for each identity. */
+  avatarReads?: Record<string, number>;
   /** DP4-03: Edit Profile's picture pipeline; none until a handler or a scenario sets it. */
   pictures?: FixturePictures;
   /** DP4-03: this many next profile saves fail with `platform.unavailable`. */

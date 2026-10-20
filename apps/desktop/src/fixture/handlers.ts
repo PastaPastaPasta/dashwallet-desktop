@@ -36,7 +36,7 @@ import type { EligibilityName } from "../api/generated/EligibilityName";
 import type { UserHit } from "../api/generated/UserHit";
 import type { ScannedContactInfo } from "../api/generated/ScannedContactInfo";
 import { userLinkText } from "../contacts/add";
-import { MAX_FILE_BYTES } from "../dashpay/editProfile";
+import { CANDIDATE_GONE, MAX_FILE_BYTES } from "../dashpay/editProfile";
 import { activityPage, contactList, eventOf, relationOf, type DashPayWorld, type FixtureScan } from "./dashpay";
 import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
@@ -106,8 +106,10 @@ function pictureSize(bytes: string): [number, number] | null {
 /** A candidate an edit may set (DP4-02): one this wallet prepared, with a URL. */
 function published(dp: DashPayWorld, candidate: string) {
   const c = dp.pictures?.candidates.find((x) => x.id === candidate);
-  if (!c) throw fail("invalid_argument", "avatar: unknown candidate");
-  if (c.url === null) throw fail("invalid_argument", "avatar: the candidate needs an upload");
+  // The engine's own texts: the renderer tells these from its other `invalid_argument`s.
+  const [unknown, noUrl] = CANDIDATE_GONE;
+  if (!c) throw fail("invalid_argument", `invalid argument: ${unknown}`);
+  if (c.url === null) throw fail("invalid_argument", `invalid argument: ${noUrl}`);
   return { ...c, url: c.url };
 }
 
@@ -1124,8 +1126,11 @@ export const HANDLERS: Handlers = {
   dashpay_profile: ({ walletId, identity }, { world }) =>
     dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!.profile,
   // DP4-02: an own identity's picture shows with the toggle off too (from the engine's cache).
+  // Each read is counted by identity, so a spec can tell the renderer asked nothing (D13).
   dashpay_avatar: ({ walletId, identity, size }, { world }) => {
     const dp = dashpay(world, walletId);
+    const reads = (dp.avatarReads ??= {});
+    reads[identity] = (reads[identity] ?? 0) + 1;
     const own = dp.identities.some((i) => i.identity === identity);
     const shown = (world.loadContactPictures ?? true) || own;
     const png = shown ? dp.avatars?.[identity] : undefined;
@@ -1217,7 +1222,8 @@ export const HANDLERS: Handlers = {
     const pictures = dashpay(world, walletId).pictures;
     if (!pictures?.upload) throw fail("avatar.upload_unconfigured", "no upload service configured");
     const c = pictures.candidates.find((x) => x.id === candidate);
-    if (!c || c.url !== null) throw fail("invalid_argument", "candidate: unknown or already uploaded");
+    if (!c) throw fail("invalid_argument", `invalid argument: ${CANDIDATE_GONE[0]}`);
+    if (c.url !== null) throw fail("invalid_argument", "invalid argument: the avatar candidate already has a URL");
     c.url = `https://i.imgur.com/fixture-${c.id}.png`;
     return c.url;
   },

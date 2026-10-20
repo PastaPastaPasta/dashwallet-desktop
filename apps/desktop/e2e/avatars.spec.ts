@@ -61,17 +61,40 @@ test("F15 the bell's requests and events show pictures; the chip shows the own o
   await expect(pictured(popover.getByTestId("bell-event")).first()).toBeVisible();
 });
 
-test("D13 with Load contact pictures off only the wallet's own picture shows", async ({ page }) => {
+/** Who `dashpay_avatar` was asked for, split into the wallet's own identities and the rest. */
+async function avatarReads(page: Page) {
+  return page.evaluate(() => {
+    const dp = window.__dwFixture!.world.dashpay;
+    const own = new Set(dp.identities.map((i) => i.identity));
+    const ids = Object.keys(dp.avatarReads ?? {});
+    return { own: ids.filter((id) => own.has(id)), others: ids.filter((id) => !own.has(id)) };
+  });
+}
+
+test("D13 with Load contact pictures off only the wallet's own picture shows, and no other is read", async ({ page }) => {
   const errors = await open(page, "dashpay-pictures-off");
   await expect(pictured(page.getByTestId("toolbar-chip"))).toHaveCount(1);
+  await page.getByTestId("hero").waitFor();
+  await expect(page.getByTestId("home-frequent-chip").first()).toBeVisible();
+  await page.getByTestId("sidebar-activity").click();
+  await expect(page.getByTestId("tx-list")).toBeVisible();
   await go(page, "contacts");
   await expect(page.getByTestId("contact-row").first()).toBeVisible();
   await expect(pictured(page.getByTestId("page-contacts"))).toHaveCount(0);
+  await contactRow(page, "Bob Builder").click();
+  await expect(page.getByTestId("contact-detail")).toBeVisible();
   await go(page, "pay");
   await expect(page.getByTestId("pay-picker-row").first()).toBeVisible();
   await expect(pictured(page.getByTestId("pay-contact"))).toHaveCount(0);
+  await page.getByTestId("toolbar-bell").click();
+  await expect(page.getByTestId("bell-request").first()).toBeVisible();
+  await page.keyboard.press("Escape");
   await go(page, "profile");
   await expect(pictured(page.getByTestId("profile-header"))).toHaveCount(1);
+  // Nothing was shown because nothing was asked for, not because the engine said no.
+  const reads = await avatarReads(page);
+  expect(reads.others).toEqual([]);
+  expect(reads.own.length).toBeGreaterThan(0);
   expect(errors).toEqual([]);
 });
 
@@ -84,6 +107,8 @@ test("D14 the Settings switch shows and hides the pictures at once", async ({ pa
   await expect(toggle).toBeChecked();
   await go(page, "contacts");
   await expect(pictured(contactRow(page, "Bob Builder"))).toHaveCount(1);
+  // The positive control for D13's count: with the switch on, others are read.
+  expect((await avatarReads(page)).others).not.toEqual([]);
   await go(page, "settings");
   await page.getByTestId("settings-contact-pictures").uncheck();
   await go(page, "contacts");

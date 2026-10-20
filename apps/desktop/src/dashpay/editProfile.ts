@@ -34,6 +34,8 @@ export type EditProfileApi = Pick<
 export const DEFAULT_LIMITS: DashPayProfileLimits = { displayNameMax: 25, publicMessageMax: 140 };
 /** DP4-02: the largest file `prepare_avatar` takes (D16). */
 export const MAX_FILE_BYTES = 5 << 20;
+/** DP4-02's decoder refuses a picture wider or higher than this (`avatar_image.rs`). */
+export const MAX_PICTURE_SIDE = 4096;
 
 export const EDIT_COPY = {
   title: "Edit Profile",
@@ -93,6 +95,7 @@ export const EDIT_COPY = {
   },
   errors: {
     tooLarge: "This picture is too large. Choose one under 5 MB.",
+    tooManyPixels: `This picture is too large. Choose one at most ${MAX_PICTURE_SIDE} pixels wide and high.`,
     unsupported: "Use a PNG, JPEG or GIF picture.",
     unreadable: "This picture could not be read.",
     urlFailed: "Unable to fetch image. Please enter a valid image URL.",
@@ -103,6 +106,7 @@ export const EDIT_COPY = {
     uploadUnconfigured: "Uploading pictures is not available in this version.",
     candidateGone: "The picture you chose is no longer ready. Choose it again.",
     conflict: "Your profile was changed on another device since you opened it. Save again to replace it with your changes, or cancel to keep the new one.",
+    conflictMatches: "Your profile was changed on another device since you opened it, and it now matches your changes.",
     unsupportedContract: "This version cannot edit profiles on the network's DashPay contract. Update Dash Wallet.",
     credits: "Not enough credits. Top up your credits and try again.",
     unavailable: "Could not reach Dash Platform. Try again.",
@@ -163,6 +167,13 @@ export function prepareErrorText(e: unknown, source: PictureSource): string {
   if (hasCode(e, "invalid_argument")) return BY_SOURCE[source].invalid;
   return errorMessage(e);
 }
+
+/** The engine's refusals of a picture it no longer holds ready (DP4-02 `avatar.rs`: a candidate
+ * kept 30 minutes, or one that never got its upload); any other `invalid_argument` is the
+ * engine's own text, the choice kept (D9). */
+export const CANDIDATE_GONE = ["unknown avatar candidate", "the avatar candidate has no URL; upload it first"] as const;
+
+const candidateGone = (e: unknown): boolean => hasCode(e, "invalid_argument") && CANDIDATE_GONE.some((detail) => e.message.endsWith(detail));
 
 /** D9: why a save was refused; the edits stay. */
 export function saveErrorText(e: unknown): string {
@@ -370,6 +381,12 @@ export class EditProfileModel extends Model {
   /** The crop step's picture has loaded: its frame starts at the whole shorter side. */
   pictureLoaded(width: number, height: number) {
     if (this.step !== "crop" || this.crop || width < 1 || height < 1) return;
+    // The engine would refuse it at Use Photo, after the user framed it.
+    if (width > MAX_PICTURE_SIDE || height > MAX_PICTURE_SIDE) {
+      this.#toStep("form");
+      this.#refuse(EDIT_COPY.errors.tooManyPixels);
+      return;
+    }
     this.crop = initialView(width, height);
     this.changed();
   }
@@ -440,8 +457,12 @@ export class EditProfileModel extends Model {
       this.notify(EDIT_COPY.saved);
     } catch (e) {
       // D10: the other device's profile is what the next save is made against.
-      if (hasCode(e, "profile.conflict") && e.data?.kind === "profileConflict") this.baseline = e.data.current;
-      if (!this.#candidateGone(e)) this.error = saveErrorText(e);
+      if (hasCode(e, "profile.conflict") && e.data?.kind === "profileConflict") {
+        this.baseline = e.data.current;
+        // Nothing is left to save when the other device's profile is already the user's.
+        if (!this.dirty) this.error = EDIT_COPY.errors.conflictMatches;
+      }
+      if (!this.error && !this.#candidateGone(e)) this.error = saveErrorText(e);
     } finally {
       this.saving = null;
       this.changed();
@@ -578,7 +599,11 @@ export class EditProfileModel extends Model {
       url = await this.api.dashpayUploadAvatar(this.walletId, p.candidate.id);
     } catch (e) {
       if (!this.#candidateGone(e))
-        this.error = hasCode(e, "avatar.upload_unconfigured") ? EDIT_COPY.errors.uploadUnconfigured : EDIT_COPY.errors.uploadFailed;
+        this.error = hasCode(e, "avatar.upload_unconfigured")
+          ? EDIT_COPY.errors.uploadUnconfigured
+          : hasCode(e, "invalid_argument")
+            ? errorMessage(e)
+            : EDIT_COPY.errors.uploadFailed;
       return false;
     }
     this.picture = { ...p, candidate: { ...p.candidate, url, needsUpload: false } };
@@ -591,7 +616,7 @@ export class EditProfileModel extends Model {
    * goes back to the published picture and the form says to choose it again; no retry could
    * use it. */
   #candidateGone(e: unknown): boolean {
-    if (this.picture.kind !== "new" || !hasCode(e, "invalid_argument")) return false;
+    if (this.picture.kind !== "new" || !candidateGone(e)) return false;
     this.picture = { kind: "keep" };
     this.error = EDIT_COPY.errors.candidateGone;
     return true;
