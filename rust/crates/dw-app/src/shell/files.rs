@@ -27,6 +27,8 @@ pub enum FilePurpose {
     CoreExport,
     /// An image holding a QR code (DP2-08 D9): what dw-desktop's decoder reads.
     QrImage,
+    /// A profile picture (DP4-03): the formats the avatar pipeline decodes (DP4-02 D8).
+    AvatarImage,
 }
 
 /// A dialog's words and filter.
@@ -41,6 +43,10 @@ pub struct PurposeSpec {
 
 /// Files other than PSBTs that `open_file` reads: far above any real one.
 const MAX_OTHER_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The largest picture `prepare_avatar` takes from a file (DP4-02: 5 MiB, `avatar.too_large`
+/// above it), so a larger one is refused before it is read.
+pub const MAX_AVATAR_FILE_BYTES: u64 = 5 << 20;
 
 impl FilePurpose {
     pub fn spec(self) -> PurposeSpec {
@@ -87,6 +93,13 @@ impl FilePurpose {
                 filter: "Images",
                 extensions: &["png", "jpg", "jpeg", "bmp"],
                 max_bytes: dw_desktop::qr::MAX_IMAGE_BYTES as u64 + 1,
+            },
+            FilePurpose::AvatarImage => PurposeSpec {
+                open_title: "Choose a Profile Picture",
+                save_title: "Save Image",
+                filter: "Images",
+                extensions: &["png", "jpg", "jpeg", "gif"],
+                max_bytes: MAX_AVATAR_FILE_BYTES + 1,
             },
         }
     }

@@ -233,6 +233,12 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_picture_may_be_as_large_as_the_avatar_pipeline_takes() {
+        // DP4-02: a `File` source of at most 5 MiB; `max_bytes` is the first size refused.
+        assert_eq!(FilePurpose::AvatarImage.spec().max_bytes, 5 * 1024 * 1024 + 1);
+    }
+
+    #[test]
     fn saved_files_are_the_users_alone_and_replace_whole() {
         let dir = dw_testutil::private_tempdir();
         let path = dir.path().join("tx.psbt");
