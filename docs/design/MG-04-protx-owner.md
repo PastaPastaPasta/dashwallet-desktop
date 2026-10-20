@@ -126,10 +126,10 @@ pub enum CollateralChoice {
     ExistingUtxo { outpoint: String },              // "<txid>-<n>", a wallet coin
     External { outpoint: String, address: String }, // another wallet's coin and its P2PKH address
 }
-pub enum OperatorChoice { Given { public_key: String }, Keychain { index: u32 } }
-pub enum VotingChoice { Keychain { index: u32 }, Address { address: String } }
+pub enum OperatorChoice { Given { public_key: String }, Keychain { index: u32 }, NextUnused }
+pub enum VotingChoice { Keychain { index: u32 }, Address { address: String }, NextUnused }
 pub enum PayoutChoice { NewAddress, Address { address: String } }
-pub enum PlatformNodeChoice { Given { node_id: String }, Keychain { index: u32 } }
+pub enum PlatformNodeChoice { Given { node_id: String }, Keychain { index: u32 }, NextUnused }
 pub struct EvonodeTerms { pub node: PlatformNodeChoice, pub p2p_port: Option<u16>, pub http_port: Option<u16> }
 
 pub struct RegistrationRequest {
@@ -156,10 +156,8 @@ pub struct ProTxKeys { pub owner: KeyPick, pub voting: KeyPick, pub operator: Ke
 pub struct KeyPick { pub index: u32, pub address: Option<String>, pub public_key: Option<String>, pub node_id: Option<String> }
 
 pub struct RegistrationPreview {
-    pub version: u16, pub fee: u64, pub total_debit: u64, pub collateral_amount: u64,
-    pub collateral_address: Option<String>, pub owner_address: String, pub voting_address: String,
-    pub payout_address: String, pub operator_public_key: String, pub operator_reward: u16,
-    pub service: String, pub platform: Option<PlatformFacts>,
+    pub terms: ProTxTerms,                // a NewAddress payout and a FundNew address are empty (D29)
+    pub fee: u64, pub total_debit: u64, pub collateral_amount: u64,
 }
 pub struct UpdateRegistrarPreview {
     pub version: u16, pub fee: u64, pub total_debit: u64, pub owner_key: OwnerKeySource,
@@ -179,13 +177,13 @@ pub enum ProTxOperationState {
 }
 pub struct SignRequest { pub address: String, pub message: String }
 pub struct ProTxOperation {
-    pub id: String, pub kind: ProTxOperationKind, pub masternode_type: MasternodeType,
-    pub collateral: Option<CollateralKind>, // FundNew | ExistingUtxo | External, registrations only
+    pub id: String, pub kind: ProTxOperationKind,
     pub pro_tx_hash: Option<String>,      // a registration's once signed (its txid); an update's target
     pub txid: Option<String>, pub state: ProTxOperationState, pub sign_request: Option<SignRequest>,
     pub fee: u64, pub created_at: u64, pub signed_at: Option<u64>, pub sent_at: Option<u64>,
     pub last_error: Option<String>,       // a code (§6), never a message quoting input
-    pub terms: ProTxTerms,                // what it registers or changes, for display
+    pub terms: ProTxTerms,                // what it registers or changes, for display; its masternode_type
+                                          // and collateral (FundNew | ExistingUtxo | External) are here
 }
 ```
 
@@ -271,7 +269,7 @@ New `MasternodesError` variants, with their §4 codes:
 
 | Variant | Code | When |
 |---|---|---|
-| `ProTxRefused { reason }` | `masternodes.protx_refused` | a Core rule of §1 fails; `reason` is Core's reject reason verbatim (`bad-protx-dup-key`, `bad-protx-dup-netinfo-entry`, `bad-protx-payee-reuse`, `bad-protx-collateral-reuse`, `bad-protx-platform-p2p-port`, …), which the UI phrases (MG-00's MG-04 row) |
+| `ProtxRefused { reason }` | `masternodes.protx_refused` | a Core rule of §1 fails; `reason` is Core's reject reason verbatim (`bad-protx-dup-key`, `bad-protx-dup-netinfo-entry`, `bad-protx-payee-reuse`, `bad-protx-collateral-reuse`, `bad-protx-platform-p2p-port`, …), which the UI phrases (MG-00's MG-04 row) |
 | `CollateralUnavailable` | `masternodes.collateral_unavailable` | `ExistingUtxo`: not an unspent, spendable wallet coin of exactly the type's amount at a P2PKH address, or already the collateral of one of the wallet's masternodes or operations (D23) |
 | `SignatureMismatch` | `masternodes.signature_mismatch` | `External`: the signature isn't base64 of a 65-byte compact signature by the collateral address over the saved message |
 | `OperationNotFound` | `masternodes.operation_not_found` | |
@@ -339,9 +337,9 @@ secret type or an `update_service` builder added). Each must fail a test.
 | Slice | Content | Checkpoint |
 |---|---|---|
 | 1 | This document and the contract delta (§9) | now |
-| 2 | ProRegTx regular: `dw-protx::rules`; the vault owner signer (needed by the build path's signer plumbing); `build.rs`, `ops.rs`, `keys.rs`; the migration; `registration_keys`, `preview_registration`, `register`, the three External calls, `operations`, `resend_operation`, `discard_operation`, `release_collateral`, `lock_collateral`; dwcli `mn register` and `mn register-submit`; regular oracle vectors; the regular legs of `dwd_protx.py` | report |
+| 2 | ProRegTx regular: `dw-protx::rules`; `build.rs`, `ops.rs`, `keys.rs`; the migration; `registration_keys`, `preview_registration`, `register`, the three External calls, `operations`, `resend_operation`, `discard_operation`, `release_collateral`, `lock_collateral`; dwcli `mn register` and `mn register-submit`; regular oracle vectors; the regular legs of `dwd_protx.py` | report |
 | 3 | ProRegTx evonode: platform fields through every collateral kind; evonode vectors; regtest legs | report |
-| 4 | ProUpRegTx: `preview_update_registrar`, `update_registrar` (keychain and attached owner keys); dwcli `mn update-registrar`; vectors; the regtest legs with dashd's operator | report |
+| 4 | ProUpRegTx: the vault owner signer (D11, D12; D31); `preview_update_registrar`, `update_registrar` (keychain and attached owner keys); dwcli `mn update-registrar`; vectors; the regtest legs with dashd's operator | report |
 | 5 | The v24-active regtest run, mutants, the desktop gate, code-simplifier, code-review-validator | READY |
 
 ## 9. Contract delta (mn-engine.md)
@@ -379,7 +377,7 @@ commit. That test fails an orphan §2 row, so the rows can't land before the cal
 | D13 | Keys picked by default: the lowest owner (and voting) keychain index 0–19 whose key id is in none of the wallet's registrations and operations, nor (voting) in the synced list. The lowest operator and platform-node index whose key isn't in the list, the wallet's registrations or its operations. Voting never shares the owner's key. More than 20 owners is `masternodes.keys_exhausted`. | MG-03 scans indexes 0–19 for roles (`VOTING_KEY_INDEXES`). A key beyond them would make a masternode the wallet can't see as its own. UX-SPEC §4.25.5 wants a new owner keypair per masternode and a separate voting key. |
 | D14 | "Operator key from the keychain" is the keychain operator **public** key at an index (`masternode_keys(Operator)`, from the xpub, no seed). The registration never derives or touches the secret. The user reveals it later through the existing reveal flow (MG-00 D27). | §5a: the wallet generates no operator secret outside the reveal flow and never signs as operator. |
 | D15 | A pasted 64-hex string (a BLS or secp256k1 secret's shape) where a public key or node id is expected is `invalid_argument` with "looks like a secret key". The input is never echoed. | MG-00's MG-04 row; mn-engine D23 (no error repeats a secret-shaped argument). |
-| D16 | `operator_reward` is in basis points (u16, at most 10,000). The UI converts the percent. | Core's payload unit (`nOperatorReward`, hundredths of a percent: `rpc/evo.cpp:83` divides by 100; `providertx_service.cpp:526`); MG-00's MG-04 row. |
+| D16 | `operator_reward` is in basis points (u16, at most 10,000). The UI converts the percent. | Core's payload unit (`nOperatorReward`, hundredths of a percent): rc.3 `rpc/evo.cpp:909-916` parses the RPC's percent with two decimals (`ParseFixedPoint(…, 2, …)`) and refuses outside 0–10,000; `rpc/evo.cpp:83` divides by 100 for display; `providertx_service.cpp:526`. MG-00's MG-04 row. |
 | D17 | The service address is required. | MG-00 D26. Core accepts none (the masternode starts PoSe-banned, `specialtxman.cpp:1171-1176`); that flow stays on the CLI of a node. |
 | D18 | Evonode v2 fields: the platform node id given (40 hex) or from the keychain (`PlatformNode`); the ports given or the network's defaults (`dw-protx::params::default_ports`). Core's rules: the mainnet defaults on mainnet, never 9999, all three ports different, the node id non-null and not in the list. | `CheckProviderNetworkFields` (`providertx.cpp:212-263`), `CheckProRegTx` (`specialtxman.cpp:1276-1281`). UX-SPEC §4.25.5: "as the operator gives them", or filled for a self-operator. |
 | D19 | `prepare_external_registration` needs no grant: it signs nothing, and locks coins as the user's coin control may. `submit_external_registration` needs the `MasternodeOp` grant: it signs the inputs, and is charged. | MG-05 §1: a grant is needed to sign. UX-SPEC §4.25.5 asks for the passphrase on the Prove step, not on Review. |
@@ -387,3 +385,15 @@ commit. That test fails an orphan §2 row, so the rows can't land before the cal
 | D21 | T2 stays read-only. The program has no 4,000 tDASH and no testnet masternode host. The evonode is proven by payload equality against dashd's `register_evo` / `register_prepare_evo` / `register_fund_evo` on regtest, and by regtest acceptance. T2 would add an evonode registered on testnet, with its Platform identity created and its credits claimable (MG-03's T2 read). | The brief. |
 | D22 | The fee rate is `TxDraft`'s (the relay minimum, 1,000 duffs/kB). | Fee rate isn't a payload field. It changes nothing the oracle compares. |
 | D23 | An `ExistingUtxo` coin that is already the collateral of one of the wallet's masternodes, or of an open operation, is `masternodes.collateral_unavailable`. | Core would let a new ProRegTx with the same collateral *replace* the masternode (`specialtxman.cpp:1234-1246`, `:389-394`). Replacing an operator is ProUpRegTx's job (UX-SPEC §4.25.6). UX-SPEC §4.25.5 shows such a coin as "In use". |
+| D24 | `masternode_ops` is not carried by `.dwbackup` (dw-appdb `rows.rs` `NOT_EXPORTED`). | A row is this installation's working state: its locks are this `app.sqlite`'s, and a restored wallet re-derives its masternodes from the provider transactions in its history (MG-03). Importing a `sent` row elsewhere would lock coins another installation may have spent. |
+| D25 | Every row's inputs are locked with the persistent coin locks (`lock_manual`) from its save until it is `confirmed` or `conflicted` (released by `operations()` and the follower) or discarded; this extends D8 to every row. The locktime is the tip height, without Core's 1-in-10 earlier height. | Memory reservations end with the call and the process: after a restart, a row whose bytes may be out must keep its coins from the next send, or two transactions spend them (the manager's slice-2 crash tests). Core keeps them through its own mempool and wallet, which the SPV wallet doesn't have. The user can still unlock a coin in coin control; a second spend then conflicts at the mempool, and nothing is lost. Locktime: rc.3 `wallet/spend.cpp:722-766, 1031` (`DiscourageFeeSniping`); the random earlier height is a fingerprinting measure only, and a fixed one keeps the transaction reproducible for the oracle and the mutants. |
+| D26 | A transaction without outputs (`ExistingUtxo`, `External`) is funded with a 0-value `OP_RETURN` output, which is dropped again when change is added. | Core's `fundTransaction` does exactly this (rc.3 `wallet/interfaces.cpp:460-462, 501-505`), so a payload's `inputsHash` and the transaction's shape match dashd's for the same coins. |
+| D27 | The funding planner is the wallet's own: largest coin first over the automatic-selection candidates (`CoinSource::Any`: not locked, reserved, immature or mixed-only) whose keys the `MasternodeOwner` signer may sign, adding coins until amount and fee are covered; change below dust goes to the fee. | Core's `fundTransaction` is also largest-first (rc.3 `wallet/interfaces.cpp:486-497`), over one address's coins (D2 is the deviation). `TxDraft`'s selector can't take a special payload's size or the dummy output into account. |
+| D28 | The follower locks the collateral of each of the wallet's masternodes it holds unspent, every pass, unless the user released it (`masternodes.collateral_released:<txid>-<n>`, wallet scope); `lock_collateral` clears the release. | Core locks every masternode collateral the wallet holds at load and again when a spend of it is abandoned (rc.3 `wallet/wallet.cpp:2515-2525` `AutoLockMasternodeCollaterals`, `:1218-1220`, `LockProTxCoins` at `:2867`); its `lockunspent` unlock lasts until the restart, which the release outlives (MG-00 D38: a released coin stays spendable). |
+| D29 | `preview_registration` issues nothing: a `NewAddress` payout and a `FundNew` collateral address are empty in its terms, and planned with a stand-in P2PKH script of the same size. | A preview the user cancels must not use up receive addresses (gap limit). The fee doesn't change: both are 25-byte P2PKH scripts. |
+| D30 | A given operator key is refused when the list holds it under either BLS scheme (the key, or its legacy serialization), also before v24. | Core compares `pubKeyOperator` as stored (rc.3 `evo/specialtxman.cpp:1250-1264`, `HasUniqueProperty`); a legacy and a basic serialization of one key are the same secret. Refusing both is stricter, and only ever refuses a key someone else's masternode already uses. |
+| D31 | The vault's owner signer for ProUpRegTx (D11, D12) moves from slice 2 to slice 4, with MG-05's row update and the refusal test. | Slice 2 signs only the collateral message and the inputs, which the `MasternodeOwner` scope already allows. The signer lands with its first caller. |
+| D32 | Slice 2's crash tests (manager, checkpoint 1): the hand-off stops after the sign, after the save, and after the library returned but before the outcome is recorded; the session closes and reopens on the same data. After the restart: no row and no lock (after the sign), a `signed` row with its inputs locked (after the save), a `sent` row that `discard_operation` refuses (after the hand-off); a new registration doesn't spend the first row's inputs, and a resend of the first sends its same bytes once more. | The brief's "nothing is sent twice; nothing is lost; no row whose transaction may be out is deleted", tested in `masternodes/protx/tests.rs` against a fake library. |
+| D33 | A request's own checks run before the list is read: `invalid_argument`, `masternodes.unsupported{protx_v3}` and a port Core refuses come before `masternodes.list_unavailable`; an operation id that isn't 32 lower-case hex is `invalid_argument`; `wallet_not_found` doesn't repeat the id. | mn-engine §2's order for MG-03's calls ("arguments are checked first") and MG-03 D23. |
+| D34 | `last_error` keeps a send failure's `send.*` code (`send.no_peers`, `send.broadcast_unknown`, …), the strings of dw-ffi's and dw-app's `SendCode`, mapped in the engine by an exhaustive match. | The engine's own `code()` of a send failure is `send`, which says nothing about whether to resend. |
+| D35 | dwcli also gets `mn operations`, `mn resend`, `mn discard`, `mn register-refresh`, `mn release-collateral` and `mn lock-collateral`, each one facade call. Its grant is `MasternodeOp` capped at the previewed fee (`register`) or the row's fee. A send failure's code is `send.<variant>`. | The regtest suite and a user without the UI need to see and finish what `register` started. They're thin; MG-08 can restyle them. |
