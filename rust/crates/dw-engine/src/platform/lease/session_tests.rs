@@ -33,15 +33,17 @@ const FOREIGN: &str = "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n";
 const COIN: u64 = 100_000_000;
 const PASS: &[u8] = b"pass phrase";
 
-struct Fixture {
+/// A regtest session with a plain or encrypted vault and one wallet (also
+/// the governance vote tests').
+pub(crate) struct Fixture {
     _dir: tempfile::TempDir,
-    engine: Engine,
+    pub(crate) engine: Engine,
     rec: Arc<Recorder>,
-    session: Arc<NetworkSession>,
-    wallet: WalletId,
+    pub(crate) session: Arc<NetworkSession>,
+    pub(crate) wallet: WalletId,
 }
 
-fn fixture(encrypted: bool) -> Fixture {
+pub(crate) fn fixture(encrypted: bool) -> Fixture {
     let dir = dw_testutil::private_tempdir();
     let rec = Arc::new(Recorder::default());
     let engine = Engine::new(
@@ -93,7 +95,7 @@ fn fixture(encrypted: bool) -> Fixture {
 }
 
 impl Fixture {
-    fn grant(&self, purpose: GrantPurpose, credential: Credential<'_>) -> String {
+    pub(crate) fn grant(&self, purpose: GrantPurpose, credential: Credential<'_>) -> String {
         self.session
             .vault()
             .authorize(purpose, Some(&self.wallet.0), credential)
@@ -111,7 +113,7 @@ impl Fixture {
         )
     }
 
-    fn lease(&self, flow: FlowKind, grants: &[String]) -> Result<Lease, LeaseError> {
+    pub(crate) fn lease(&self, flow: FlowKind, grants: &[String]) -> Result<Lease, LeaseError> {
         self.engine
             .block_on(self.session.begin_lease(self.wallet, flow, grants))
     }
@@ -447,9 +449,30 @@ impl Fixture {
     }
 
     fn draft(&self, amount: u64) -> Arc<crate::send::TxDraft> {
+        self.draft_to(FOREIGN.into(), amount)
+    }
+
+    /// A fresh receive address of the wallet.
+    fn own_address(&self) -> String {
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        let inner = Arc::clone(&session);
+        self.engine.block_on(async move {
+            session
+                .on_runtime(async move {
+                    let wallet = inner.wallet(&id).await?;
+                    let address = wallet.core().next_receive_address_for_account(0).await?;
+                    Ok(address.to_string())
+                })
+                .await
+                .unwrap()
+        })
+    }
+
+    fn draft_to(&self, address: String, amount: u64) -> Arc<crate::send::TxDraft> {
         let d = self.session.new_tx_draft(self.wallet).unwrap();
         d.set_recipients(vec![Recipient {
-            address: FOREIGN.into(),
+            address,
             amount,
             subtract_fee_from_amount: false,
             label: None,
@@ -472,11 +495,15 @@ impl Fixture {
 }
 
 fn spend_of(lease: &Lease) -> Option<u64> {
+    spent(lease, BudgetPurpose::Spend)
+}
+
+fn spent(lease: &Lease, purpose: BudgetPurpose) -> Option<u64> {
     lease
         .view()?
         .budgets
         .iter()
-        .find(|b| b.purpose == BudgetPurpose::Spend)
+        .find(|b| b.purpose == purpose)
         .map(|b| b.spent)
 }
 
@@ -3295,4 +3322,197 @@ fn mode_b_a_mixed_sweep_skips_an_unresolved_locks_input() {
         COIN,
         "the step resolved, the coin is free"
     );
+}
+
+// MARK: MG-05 (docs/design/MG-05-authorization.md §2–§4, §7)
+
+fn masternode_lease(f: &Fixture, flow: FlowKind, max_duffs: u64) -> Lease {
+    let g = f.grant(GrantPurpose::MasternodeOp { max_duffs }, Credential::None);
+    f.lease(flow, &[g]).unwrap()
+}
+
+/// The acceptance's first half: a voting lease carries a vote signer and
+/// no transaction signer, so `TxDraft::prepare` under it signs nothing.
+#[test]
+fn mg05_a_voting_lease_cannot_sign_a_transaction() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let g = f.grant(GrantPurpose::Governance, Credential::None);
+    let l = f.lease(FlowKind::Voting, &[g]).unwrap();
+    l.vote_signer().unwrap();
+    assert_eq!(l.tx_purpose(), None);
+    for purpose in [BudgetPurpose::Spend, BudgetPurpose::Masternode] {
+        assert_eq!(
+            l.check_tx_signer(purpose).unwrap_err(),
+            LeaseError::NeedsGrant(purpose)
+        );
+        assert_eq!(
+            l.charge_tx_signer(purpose, 1).unwrap_err(),
+            LeaseError::NeedsGrant(purpose)
+        );
+    }
+    assert!(l.uncounted_funding_signer().is_err());
+    assert!(l.identity_signer(&[0]).is_err());
+    assert!(l.contact_crypto().is_err());
+    let d = f.draft(1_000_000);
+    assert_eq!(
+        send_failure(f.engine.block_on(d.prepare(l.id_string()))),
+        SendFailure::GrantInvalid
+    );
+    assert_eq!(f.reserved(), 0);
+    // It lists no budget: a vote is never charged.
+    assert!(l.view().unwrap().budgets.is_empty());
+
+    // Each flow takes its own grant only.
+    let gov = || f.grant(GrantPurpose::Governance, Credential::None);
+    let op = || {
+        f.grant(
+            GrantPurpose::MasternodeOp { max_duffs: 1 },
+            Credential::None,
+        )
+    };
+    for (flow, wrong) in [
+        (FlowKind::Voting, op()),
+        (FlowKind::Voting, f.platform_op(1, 1)),
+        (FlowKind::MasternodeRegistration, gov()),
+        (FlowKind::KeyChange, gov()),
+        (
+            FlowKind::KeyChange,
+            f.grant(GrantPurpose::Spend { max_duffs: 1 }, Credential::None),
+        ),
+        (FlowKind::ContactRequest, gov()),
+        (FlowKind::AcceptAndPay, op()),
+    ] {
+        assert_eq!(
+            f.lease(flow, &[wrong]).unwrap_err(),
+            LeaseError::Invalid,
+            "{flow:?}"
+        );
+    }
+    let l = f.lease(FlowKind::MasternodeRegistration, &[op()]).unwrap();
+    assert!(l.vote_signer().is_err());
+    assert_eq!(l.tx_purpose(), Some(BudgetPurpose::Masternode));
+}
+
+/// The acceptance's second half: a `FundNew`-shaped transaction (its
+/// collateral paid to the wallet itself) is charged its fee alone, at the
+/// cap exactly, and one duff under it refuses; a foreign output is charged
+/// with the fee.
+#[test]
+fn mg05_a_fund_new_collateral_is_not_charged_and_its_fee_is() {
+    let f = fixture(false);
+    f.credit(1, 1_001 * COIN);
+    let collateral = f.draft_to(f.own_address(), 1_000 * COIN);
+    // The fee, from a reference prepare under a roomy cap.
+    let roomy = masternode_lease(&f, FlowKind::MasternodeRegistration, COIN);
+    let p = f
+        .engine
+        .block_on(collateral.prepare(roomy.id_string()))
+        .unwrap();
+    let fee = p.summary().fee;
+    assert!(fee > 0);
+    assert_eq!(p.summary().total_debit, fee);
+    assert_eq!(spent(&roomy, BudgetPurpose::Masternode), Some(fee));
+    f.engine.block_on(collateral.abandon(p)).unwrap();
+    assert_eq!(spent(&roomy, BudgetPurpose::Masternode), Some(0));
+
+    let under = masternode_lease(&f, FlowKind::MasternodeRegistration, fee - 1);
+    assert!(matches!(
+        send_failure(f.engine.block_on(collateral.prepare(under.id_string()))),
+        SendFailure::GrantExceeded { outflow, .. } if outflow == fee
+    ));
+    assert_eq!(spent(&under, BudgetPurpose::Masternode), Some(0));
+    assert_eq!(f.reserved(), 0);
+    let exact = masternode_lease(&f, FlowKind::MasternodeRegistration, fee);
+    let p = f
+        .engine
+        .block_on(collateral.prepare(exact.id_string()))
+        .unwrap();
+    assert_eq!(spent(&exact, BudgetPurpose::Masternode), Some(fee));
+    assert_eq!(spend_of(&exact), None);
+    f.engine.block_on(collateral.abandon(p)).unwrap();
+
+    // A foreign output is charged with the fee (a key change's lease).
+    let paid = f.draft(1_000_000);
+    let kc = masternode_lease(&f, FlowKind::KeyChange, COIN);
+    let p = f.engine.block_on(paid.prepare(kc.id_string())).unwrap();
+    let debit = p.summary().total_debit;
+    assert_eq!(debit, 1_000_000 + p.summary().fee);
+    assert_eq!(spent(&kc, BudgetPurpose::Masternode), Some(debit));
+    // A definite NotSent (SPV is not running) refunds the Masternode budget.
+    assert_eq!(
+        send_failure(f.engine.block_on(paid.broadcast(p))),
+        SendFailure::NoPeers
+    );
+    assert_eq!(spent(&kc, BudgetPurpose::Masternode), Some(0));
+    assert_eq!(f.reserved(), 0);
+
+    // A lock revokes the lease: it prepares nothing more.
+    f.session.lock_vault_sync().unwrap();
+    assert_eq!(
+        send_failure(f.engine.block_on(paid.prepare(kc.id_string()))),
+        SendFailure::Cancelled
+    );
+}
+
+/// MG-05 D19 (review H1): a contact's DIP-15 address is in the wallet's
+/// account list (its external account) but is the contact's, so a draft
+/// paying it, or sending its change there, is charged amount and fee.
+#[test]
+fn mg05_a_contacts_address_is_charged_as_foreign() {
+    use key_wallet::account::AccountType;
+    use key_wallet::bip32::{ChildNumber, ExtendedPrivKey, ExtendedPubKey};
+    use key_wallet::managed_account::ManagedCoreFundsAccount;
+
+    let f = fixture(false);
+    f.credit(1, 2 * COIN);
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[0x42; 32]).unwrap();
+    let xpub = ExtendedPubKey::from_priv(&master);
+    let child = xpub
+        .derive_pub(&[ChildNumber::Normal { index: 0 }])
+        .unwrap();
+    let contact = dashcore::Address::p2pkh(
+        &dashcore::PublicKey::new(child.public_key),
+        dashcore::Network::Regtest,
+    );
+    let session = Arc::clone(&f.session);
+    let id = f.wallet;
+    let target = contact.clone();
+    let listed = f.engine.block_on(session.clone().on_runtime(async move {
+        let wallet = session.wallet(&id).await?;
+        let mut state = wallet.state_mut().await;
+        let managed = ManagedCoreFundsAccount::from_account(&key_wallet::Account {
+            parent_wallet_id: Some(id.0),
+            account_type: AccountType::DashpayExternalAccount {
+                index: 0,
+                user_identity_id: [1; 32],
+                friend_identity_id: [2; 32],
+            },
+            network: dashcore::Network::Regtest,
+            account_xpub: xpub,
+            is_watch_only: true,
+        });
+        let accounts = &mut state.core_wallet.accounts;
+        accounts.insert_funds_bearing_account(managed).unwrap();
+        let info = &state.core_wallet;
+        let listed = info
+            .all_managed_accounts()
+            .into_iter()
+            .any(|a| a.get_address_info(&target).is_some());
+        Ok((listed, crate::coins::wallet_owns(info, &target)))
+    }));
+    assert_eq!(listed.unwrap(), (true, false), "listed, not owned");
+
+    let d = f.draft_to(contact.to_string(), 1_000_000);
+    let l = masternode_lease(&f, FlowKind::MasternodeRegistration, COIN);
+    let p = f.engine.block_on(d.prepare(l.id_string())).unwrap();
+    let debit = 1_000_000 + p.summary().fee;
+    assert_eq!(p.summary().total_debit, debit);
+    assert_eq!(spent(&l, BudgetPurpose::Masternode), Some(debit));
+    f.engine.block_on(d.abandon(p)).unwrap();
+    let under = masternode_lease(&f, FlowKind::MasternodeRegistration, debit - 1);
+    assert!(matches!(
+        send_failure(f.engine.block_on(d.prepare(under.id_string()))),
+        SendFailure::GrantExceeded { .. }
+    ));
 }

@@ -20,7 +20,7 @@
 //! module doc, "Release").
 
 use async_trait::async_trait;
-use dashcore::secp256k1::{Message, PublicKey, ecdsa};
+use dashcore::secp256k1::{Message, PublicKey, SecretKey, ecdsa};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use key_wallet::{ExtendedPubKeySigner, Network, Signer, SignerMethod};
 use zeroize::Zeroizing;
@@ -29,6 +29,7 @@ use crate::SignerError;
 use crate::paths::{self, is_bip44_path, is_coinjoin_path};
 use crate::types::{KeySource, WalletId};
 use crate::vault::Vault;
+use crate::vault::masternode::ROLE_VOTING;
 
 /// Which derivations a signer may use, and for what.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -67,6 +68,22 @@ pub enum SignerScope {
     /// cannot see the debit, so the engine checks it before the transaction
     /// leaves the process (E0-04 design §3.4, §4.2).
     PlatformFunding { max_duffs: u64 },
+    /// Governance votes (MG-05 §3, D1): the keychain voting keys
+    /// `m/9'/coin'/3'/1'/i` and the `voting` key attached to a tracked
+    /// masternode, for [`KeyUse::Vote`] only, which no [`VaultSigner`]
+    /// method makes. Only a [`crate::VoteSigner`] reaches these keys, and it
+    /// signs the digest of a funding vote it builds itself, never one it is
+    /// given: no transaction sighash, so coins sent to a voting key's
+    /// address stay out of a vote signer's reach.
+    MasternodeVoting,
+    /// Masternode Core transactions (MG-05 §1): signatures and public keys
+    /// of BIP44 and BIP32 addresses (inputs, change) and of the keychain
+    /// owner keys `m/9'/coin'/3'/2'/i` (a ProUpRegTx's payload signature),
+    /// and `signmessage` with an address key (an existing collateral's
+    /// proof). Like `PlatformFunding`, the vault cannot see what it signs;
+    /// the engine checks the debit against the grant's cap first (MG-05
+    /// §2). No operator or platform-node key is in reach.
+    MasternodeOwner,
 }
 
 /// What a derived key is used for.
@@ -87,6 +104,9 @@ pub(crate) enum KeyUse {
     ContactInfo,
     /// The raw key leaves the vault (the DIP-15 auto-accept key).
     Export,
+    /// A governance vote's key id, or a signature over the digest of a
+    /// funding vote the vault builds ([`crate::VoteSigner`]).
+    Vote,
 }
 
 impl SignerScope {
@@ -116,7 +136,7 @@ impl SignerScope {
                 sign_or_public_key && paths::identity_auth_key(path, network).is_some()
             }
             SignerScope::DashPayCrypto => match key_use {
-                KeyUse::Sign | KeyUse::Message => false,
+                KeyUse::Sign | KeyUse::Message | KeyUse::Vote => false,
                 KeyUse::PublicKey | KeyUse::ExtendedPublicKey => {
                     paths::is_dashpay_receiving_account(path, network)
                         || paths::is_auto_accept_key(path, network)
@@ -136,7 +156,29 @@ impl SignerScope {
                 KeyUse::ExtendedPublicKey => paths::is_identity_top_up_account(path, network),
                 _ => false,
             },
+            SignerScope::MasternodeVoting => {
+                key_use == KeyUse::Vote && paths::is_voting_key(path, network)
+            }
+            SignerScope::MasternodeOwner => {
+                let address =
+                    paths::is_bip44_address(path, network) || paths::is_bip32_address(path);
+                match key_use {
+                    KeyUse::Sign | KeyUse::PublicKey => {
+                        address || paths::is_owner_key(path, network)
+                    }
+                    KeyUse::Message => address,
+                    _ => false,
+                }
+            }
         }
+    }
+
+    /// Whether this scope may use the key attached for `role` to a tracked
+    /// masternode for `key_use` (MG-01 D7): the `voting` key, for
+    /// [`KeyUse::Vote`] under [`SignerScope::MasternodeVoting`]. Nothing
+    /// else; MG-04 adds the owner key with its first caller.
+    pub(crate) fn allows_attached(&self, key_use: KeyUse, role: &str) -> bool {
+        *self == SignerScope::MasternodeVoting && key_use == KeyUse::Vote && role == ROLE_VOTING
     }
 }
 
@@ -242,6 +284,46 @@ impl VaultSigner {
                 signer: self,
                 master,
             })
+        })
+    }
+
+    /// Runs `f` on the key attached for `role` to the tracked masternode
+    /// `pro_tx_hash`, in an operation of its own, then erases the key. The
+    /// scope check ([`SignerScope::allows_attached`]) comes before the
+    /// record is read; inside the gate the signer's epoch must still be the
+    /// vault's, as for a seed ([`Self::run`]). `NoSecret` when no key is
+    /// attached for `role`, or the record is no secp256k1 secret.
+    pub(crate) fn with_attached_key<T>(
+        &self,
+        pro_tx_hash: &[u8; 32],
+        role: &str,
+        key_use: KeyUse,
+        f: impl FnOnce(&SecretKey) -> T,
+    ) -> Result<T, SignerError> {
+        if !self.scope.allows_attached(key_use, role) {
+            return Err(SignerError::PathNotAllowed(format!(
+                "the attached {role} key"
+            )));
+        }
+        self.vault.gated(SignerError::Locked, |gate| {
+            /// Erases the secret when dropped, so a panicking `f` erases it
+            /// too.
+            struct Erased(SecretKey);
+            impl Drop for Erased {
+                fn drop(&mut self) {
+                    self.0.non_secure_erase();
+                }
+            }
+            let secret = Erased(self.vault.attached_secret(
+                gate,
+                self.epoch,
+                &self.key,
+                pro_tx_hash,
+                role,
+            )?);
+            #[cfg(test)]
+            test_hook::opened();
+            Ok(f(&secret.0))
         })
     }
 
@@ -417,7 +499,7 @@ mod tests {
     }
 
     const T: Network = Network::Testnet;
-    const ALL_USES: [KeyUse; 7] = [
+    const ALL_USES: [KeyUse; 8] = [
         KeyUse::Sign,
         KeyUse::Message,
         KeyUse::PublicKey,
@@ -425,6 +507,7 @@ mod tests {
         KeyUse::Agreement,
         KeyUse::ContactInfo,
         KeyUse::Export,
+        KeyUse::Vote,
     ];
 
     fn uses(scope: SignerScope, p: &str) -> Vec<KeyUse> {
@@ -529,6 +612,85 @@ mod tests {
             "m/9'/1'/4'/0'/0/1",
             "m/9'/1'/5'/0'/0'/0'/0'",
             "m/9'/1'/16'/1'",
+            "m/44'/1'/0'",
+            "m/44'/5'/0'/0/0",
+            "m",
+        ] {
+            assert!(uses(s, other).is_empty(), "{other}");
+        }
+    }
+
+    /// A voting key is reached for votes only (MG-05 D1), and no other scope
+    /// but `Full` reaches it at all.
+    #[test]
+    fn masternode_voting_votes_with_voting_keys_only() {
+        let s = SignerScope::MasternodeVoting;
+        assert_eq!(uses(s, "m/9'/1'/3'/1'/0"), vec![KeyUse::Vote]);
+        assert_eq!(uses(s, "m/9'/1'/3'/1'/19"), vec![KeyUse::Vote]);
+        for other in [
+            "m/9'/1'/3'/2'/0",
+            "m/9'/1'/3'/3'/0",
+            "m/9'/1'/3'/4'/0'",
+            "m/9'/1'/3'/1'/0'",
+            "m/9'/5'/3'/1'/0",
+            "m/44'/1'/0'/0/0",
+            "m/0'/1/3",
+            "m",
+        ] {
+            assert!(uses(s, other).is_empty(), "{other}");
+        }
+        for other in [
+            SignerScope::CoinJoinOnly,
+            SignerScope::CoinJoinFunding,
+            SignerScope::PlatformIdentity,
+            SignerScope::DashPayCrypto,
+            SignerScope::PlatformFunding { max_duffs: 1 },
+            SignerScope::MasternodeOwner,
+        ] {
+            assert!(uses(other, "m/9'/1'/3'/1'/0").is_empty(), "{other:?}");
+            for path in ["m/44'/1'/0'/0/0", "m/9'/1'/3'/2'/0"] {
+                assert!(
+                    !other.allows(KeyUse::Vote, &self::path(path), T),
+                    "{other:?}"
+                );
+            }
+        }
+        assert!(s.allows_attached(KeyUse::Vote, "voting"));
+        for (scope, key_use, role) in [
+            (s, KeyUse::Sign, "voting"),
+            (s, KeyUse::PublicKey, "voting"),
+            (s, KeyUse::Vote, "owner"),
+            (s, KeyUse::Vote, "payout"),
+            (SignerScope::Full, KeyUse::Vote, "voting"),
+            (SignerScope::MasternodeOwner, KeyUse::Sign, "owner"),
+            (SignerScope::MasternodeOwner, KeyUse::Vote, "voting"),
+        ] {
+            assert!(
+                !scope.allows_attached(key_use, role),
+                "{scope:?} {key_use:?} {role}"
+            );
+        }
+    }
+
+    #[test]
+    fn masternode_owner_signs_addresses_and_owner_keys() {
+        let s = SignerScope::MasternodeOwner;
+        let address = vec![KeyUse::Sign, KeyUse::Message, KeyUse::PublicKey];
+        assert_eq!(uses(s, "m/44'/1'/0'/0/0"), address);
+        assert_eq!(uses(s, "m/44'/1'/3'/1/9"), address);
+        assert_eq!(uses(s, "m/0'/1/3"), address);
+        assert_eq!(
+            uses(s, "m/9'/1'/3'/2'/4"),
+            vec![KeyUse::Sign, KeyUse::PublicKey]
+        );
+        for other in [
+            "m/9'/1'/3'/1'/0",  // voting
+            "m/9'/1'/3'/3'/0",  // operator
+            "m/9'/1'/3'/4'/0'", // platform node
+            "m/9'/1'/3'/2'/0'",
+            "m/9'/1'/4'/0'/0/1",
+            "m/9'/1'/5'/1'/0",
+            "m/9'/1'/5'/0'/0'/0'/0'",
             "m/44'/1'/0'",
             "m/44'/5'/0'/0/0",
             "m",

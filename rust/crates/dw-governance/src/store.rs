@@ -944,6 +944,15 @@ impl GovernanceStore {
         self.resolved.get(outpoint).copied()
     }
 
+    /// The collateral outpoint resolved to the masternode `pro_tx_hash`, if
+    /// any: what its votes name.
+    pub fn resolved_collateral(&self, pro_tx_hash: &[u8; 32]) -> Option<OutPoint> {
+        self.resolved
+            .iter()
+            .find(|(_, r)| &r.pro_tx_hash == pro_tx_hash)
+            .map(|(o, _)| *o)
+    }
+
     /// Weight of the valid masternodes of the tip list (Core
     /// `m_valid_weighted`, for the passing threshold).
     pub fn valid_weight(&self) -> u32 {

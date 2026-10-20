@@ -5,6 +5,7 @@
 //! unchanged, so no m1–m3 table gains a code (MG-02 D8).
 
 use crate::error::EngineError;
+use crate::platform::PlatformError;
 
 use super::records::GovernanceSyncPhase;
 
@@ -34,6 +35,9 @@ pub enum GovernanceError {
     NotImplemented { call: String },
     #[error(transparent)]
     Engine(#[from] EngineError),
+    /// The grant's lease refused (`vote`, MG-05 §5): its `platform.*` code.
+    #[error(transparent)]
+    Platform(#[from] PlatformError),
 }
 
 impl GovernanceError {
@@ -47,6 +51,7 @@ impl GovernanceError {
             Self::ListUnavailable => "governance.list_unavailable",
             Self::NotImplemented { .. } => "governance.not_implemented",
             Self::Engine(e) => e.code(),
+            Self::Platform(e) => e.code(),
         }
     }
 

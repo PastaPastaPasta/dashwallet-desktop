@@ -169,6 +169,23 @@ pub fn outpoint_short(o: &OutPoint) -> String {
     format!("{}-{}", o.txid, o.vout)
 }
 
+/// Core's `LocaleIndependentAtoi<uint32_t>`: whitespace trimmed, one `+`
+/// allowed, the leading digits read, saturating at `u32::MAX`; anything
+/// else is 0.
+pub fn atoi_u32(text: &str) -> u32 {
+    let s = text.trim_matches([' ', '\x0c', '\n', '\r', '\t', '\x0b']);
+    let s = match s.strip_prefix('+') {
+        Some(rest) if rest.starts_with('-') => return 0,
+        Some(rest) => rest,
+        None => s,
+    };
+    let digits = s.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return 0;
+    }
+    s[..digits].parse().unwrap_or(u32::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

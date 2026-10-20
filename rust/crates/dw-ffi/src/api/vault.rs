@@ -363,6 +363,11 @@ impl From<dw_vault::GrantPurpose> for GrantPurpose {
             // only `PlatformOp{0, 0}` (above) and never the engine-only scan
             // grant, so every purpose it requests round-trips exactly.
             P::PlatformOp { .. } | P::IdentityScan => Self::PlatformOp,
+            // The frozen enum has no masternode purposes (MG-05), which a
+            // host here cannot request: a `MasternodeOp` shows as the spend
+            // it caps, a `Governance` grant as the signature it makes.
+            P::MasternodeOp { max_duffs } => Self::Spend { max_duffs },
+            P::Governance => Self::SignMessage,
         }
     }
 }

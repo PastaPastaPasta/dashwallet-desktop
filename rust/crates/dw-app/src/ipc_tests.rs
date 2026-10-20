@@ -554,8 +554,9 @@ fn vault_and_wallet_flows_over_ipc() {
 }
 
 /// "Require authentication for every payment" is enforced in Rust (Sol r1
-/// F1): on an encrypted, unlocked vault, `spend` and `platformOp` grants
-/// need a credential while it is on, and turning it either way needs one.
+/// F1): on an encrypted, unlocked vault, `spend`, `platformOp`,
+/// `masternodeOp` and `governance` grants (MG-05 D11) need a credential
+/// while it is on, and turning it either way needs one.
 #[test]
 fn payment_authentication_is_enforced_over_ipc() {
     let demo = Demo::new();
@@ -566,10 +567,12 @@ fn payment_authentication_is_enforced_over_ipc() {
     let pw = json!({ "kind": "passphrase", "passphrase": "pw" });
     let spend = json!({ "kind": "spend", "maxDuffs": 1000 });
     let platform = json!({ "kind": "platformOp", "maxDuffs": 1000, "maxCredits": "1000" });
+    let masternode = json!({ "kind": "masternodeOp", "maxDuffs": 1000 });
+    let governance = json!({ "kind": "governance" });
     let change = json!({ "kind": "changeCredential" });
     let authorize = |purpose: &Value, wallet: &Value, credential: &Value| json!({ "purpose": purpose, "walletId": wallet, "credential": credential });
     let refused = |demo: &Demo| {
-        for purpose in [&spend, &platform] {
+        for purpose in [&spend, &platform, &masternode, &governance] {
             demo.err(
                 "authorize",
                 authorize(purpose, &wallet, &none),
@@ -588,6 +591,9 @@ fn payment_authentication_is_enforced_over_ipc() {
     refused(&demo);
     demo.ok("authorize", authorize(&spend, &wallet, &pw));
     demo.ok("authorize", authorize(&platform, &wallet, &pw));
+    // MG-05 D11: masternode transactions and vote batches too.
+    demo.ok("authorize", authorize(&masternode, &wallet, &pw));
+    demo.ok("authorize", authorize(&governance, &wallet, &pw));
     // Other purposes keep the vault's own rules.
     demo.ok(
         "authorize",

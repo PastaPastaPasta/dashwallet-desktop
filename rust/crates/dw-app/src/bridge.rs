@@ -1011,7 +1011,7 @@ mod tests {
                     _ => None,
                 })
                 .unwrap();
-            assert_eq!(lease.budgets.len(), 4);
+            assert_eq!(lease.budgets.len(), crate::dto::platform::MAX_LEASE_BUDGETS);
             let sync = events
                 .iter()
                 .find_map(|e| match e {

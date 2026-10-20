@@ -329,6 +329,23 @@ pub struct VoteRelayed {
     pub peers: u32,
 }
 
+/// One masternode's vote of a `vote` batch (MG-05 §5, D6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoteCast {
+    /// The masternode, display order, lower case.
+    pub pro_tx_hash: String,
+    /// The vote's hash (display order) once the store took it.
+    pub hash: Option<String>,
+    /// The peers it was announced to: 0 with none connected, and the vote
+    /// is announced on the next connection (D7).
+    pub peers: u32,
+    /// Why no vote was cast or taken: `unknown_masternode`,
+    /// `collateral_unresolved`, `no_voting_key`, `cancelled` (a lock ended
+    /// the batch), `signer_unavailable`, or a store refusal in `relay_vote`'s
+    /// vocabulary (`too_often`, `same_timestamp`, …).
+    pub rejected: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuperblockDate {
     pub height: u32,

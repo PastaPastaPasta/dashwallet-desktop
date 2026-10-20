@@ -298,7 +298,9 @@ fn asset_lock(lease: &Lease, a: ArtifactId) -> AdmitRequest {
 /// `TxDraft.prepare` does.
 pub(super) fn draft(lease: &Lease, a: ArtifactId, amount: u64) {
     let c = lease.charge_spend(amount).unwrap();
-    lease.table.bind_spend(lease.id(), lease.wallet(), a, c);
+    lease
+        .table
+        .bind_spend(lease.id(), lease.wallet(), a, BudgetPurpose::Spend, c);
 }
 
 pub(super) fn first(v: Verdict) -> DispatchPermit {
@@ -1072,7 +1074,7 @@ async fn the_state_machine_transition_by_transition() {
     a.park();
     assert_eq!(a.state(), Some(LeaseState::Parked));
     assert_eq!(
-        a.spend_signer().unwrap_err(),
+        a.check_tx_signer(BudgetPurpose::Spend).unwrap_err(),
         LeaseError::Parked(BudgetPurpose::Spend)
     );
     a.park();
@@ -1270,7 +1272,7 @@ async fn a_rebind_caps_each_purpose_and_old_refunds_never_lift_it() {
         None,
         "never granted: stays 0"
     );
-    assert!(l.spend_signer().is_err());
+    assert!(l.check_tx_signer(BudgetPurpose::Spend).is_err());
 
     // A new 100-credit transition under the fresh 1-credit grant.
     assert!(matches!(
@@ -2164,7 +2166,7 @@ async fn a_parked_lease_rebinds_under_a_fresh_grant() {
     let l = begin(&t, W, 0, 1_000, 1_000).await.unwrap();
     l.park();
     assert_eq!(
-        l.spend_signer().unwrap_err(),
+        l.check_tx_signer(BudgetPurpose::Spend).unwrap_err(),
         LeaseError::Parked(BudgetPurpose::Spend)
     );
     l.rebind(move || Ok(issued(0, 400, 0, 0)), || 0)

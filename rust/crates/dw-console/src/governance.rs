@@ -398,22 +398,9 @@ fn get_int<T: TryFrom<i64>>(v: &serde_json::Value) -> Result<T, ConsoleFailure> 
         .ok_or_else(|| rpc(code::MISC_ERROR, "JSON integer out of range"))
 }
 
-/// Core's `LocaleIndependentAtoi<uint32_t>`: whitespace trimmed, one `+`
-/// allowed, the leading digits read, saturating at `u32::MAX`; anything
-/// else is 0.
-pub fn atoi_u32(text: &str) -> u32 {
-    let s = text.trim_matches([' ', '\x0c', '\n', '\r', '\t', '\x0b']);
-    let s = match s.strip_prefix('+') {
-        Some(rest) if rest.starts_with('-') => return 0,
-        Some(rest) => rest,
-        None => s,
-    };
-    let digits = s.bytes().take_while(u8::is_ascii_digit).count();
-    if digits == 0 {
-        return 0;
-    }
-    s[..digits].parse().unwrap_or(u32::MAX)
-}
+/// Core's `LocaleIndependentAtoi<uint32_t>`, shared with the facade's
+/// `current_votes` (MG-05 D10).
+pub use dw_governance::object::atoi_u32;
 
 /// The error of a governance command while governance sync is off. Core has
 /// no such RPC error (`-disablegovernance` leaves an empty manager); the
@@ -458,6 +445,8 @@ fn failure(e: GovernanceError, unknown_object: &str) -> ConsoleFailure {
             "The vote is stored, but no governance peer is connected. It will be relayed when a peer connects.",
         ),
         GovernanceError::Engine(e) => crate::exec::engine_failure(e),
+        // Only `vote` takes a grant, and the console never casts votes.
+        GovernanceError::Platform(e) => rpc(code::MISC_ERROR, e.to_string()),
     }
 }
 

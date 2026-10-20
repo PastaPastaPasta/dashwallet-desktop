@@ -35,6 +35,15 @@ pub enum FlowKind {
     /// (DP3-01): `prepare` makes one from a plain grant, so the payment
     /// goes through the dispatch fence.
     ContactPayment,
+    /// A batch of governance votes under one `Governance` grant
+    /// (MG-05 §4, MG-00 D35 "Voting").
+    Voting,
+    /// A ProRegTx's `TxDraft.prepare` under a `MasternodeOp` grant
+    /// (MG-05 §4, "Masternode registration").
+    MasternodeRegistration,
+    /// A ProUpRegTx's `TxDraft.prepare` under a `MasternodeOp` grant
+    /// (MG-05 §4, "Key change").
+    KeyChange,
 }
 
 /// A lease's budgets (E0-04 §4.2).
@@ -49,6 +58,12 @@ pub enum BudgetPurpose {
     Spend,
     /// DashPay crypto; never hands anything off.
     Crypto,
+    /// Core duffs for a masternode transaction (`MasternodeOp`): its
+    /// outputs to scripts the wallet does not own plus the fee (MG-05 §2).
+    Masternode,
+    /// Governance votes (`Governance`); a vote moves nothing, so it is
+    /// never charged (MG-05 §4).
+    Voting,
 }
 
 /// Why a lease was revoked.

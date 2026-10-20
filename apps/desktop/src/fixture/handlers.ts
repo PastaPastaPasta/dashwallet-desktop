@@ -166,7 +166,7 @@ function leaseKey(id: string): string | null {
 function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
   if (w.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
   // E0-13 D11 (`check_payment_auth`): a locked vault answers `vault.locked` below instead.
-  const pays = purposes.some((p) => p.kind === "spend" || p.kind === "platformOp");
+  const pays = purposes.some((p) => p.kind === "spend" || p.kind === "platformOp" || p.kind === "masternodeOp" || p.kind === "governance");
   if (credential.kind === "unencrypted" && w.lock.encrypted && w.lock.state !== "locked" && w.paymentAuth && pays)
     throw fail("vault.credential_required", "every payment needs authentication");
   switch (credential.kind) {
@@ -250,11 +250,12 @@ function setLease(ctx: Ctx, lease: Lease): Lease {
   return lease;
 }
 
-const BUDGET_ORDER: Budget["purpose"][] = ["funding", "credits", "spend"];
+const BUDGET_ORDER: Budget["purpose"][] = ["funding", "credits", "spend", "masternode"];
 
 /** Redeems `grants` into a new active lease of `flow` (lease/session.rs `issue`), listed and
  * signalled; returns its full id. Budgets: a `platformOp`'s `maxDuffs` funds, its `maxCredits`
- * credits, a `spend`'s `maxDuffs` spends; an empty one is not listed. */
+ * credits, a `spend`'s `maxDuffs` spends, a `masternodeOp`'s `maxDuffs` is the masternode
+ * budget (MG-05); a `governance` grant lists none; an empty one is not listed. */
 function newLease(ctx: Ctx, walletId: string, flow: FlowKindName, grants: FixtureGrant[]): [string, Lease] {
   const { world } = ctx;
   const budgets: Budget[] = [];
@@ -265,6 +266,7 @@ function newLease(ctx: Ctx, walletId: string, flow: FlowKindName, grants: Fixtur
       budget("funding", String(grant.purpose.maxDuffs));
       budget("credits", grant.purpose.maxCredits);
     } else if (grant.purpose.kind === "spend") budget("spend", String(grant.purpose.maxDuffs));
+    else if (grant.purpose.kind === "masternodeOp") budget("masternode", String(grant.purpose.maxDuffs));
   }
   budgets.sort((a, b) => BUDGET_ORDER.indexOf(a.purpose) - BUDGET_ORDER.indexOf(b.purpose));
   const id = `lease-${freshId(world, "1ea5")}`;
@@ -739,12 +741,21 @@ export const HANDLERS: Handlers = {
   },
   // NetworkSession::begin_flow: every grant checked before any is redeemed (lease/session.rs
   // `issue`): unused, the wallet's, usable by a key, one per kind, of a kind the flow allows (a
-  // `platformOp`, and for "Accept and pay" a `spend` too; a contact payment's only a `spend`).
+  // `platformOp`, and for "Accept and pay" a `spend` too; a contact payment's only a `spend`; the
+  // masternode flows' one `governance` or `masternodeOp`, MG-05).
   begin_flow: ({ walletId, flow, grants }, ctx) => {
     const { world } = ctx;
     wallet(world, walletId);
     const kinds: GrantPurposeSpec["kind"][] =
-      flow === "acceptAndPay" ? ["platformOp", "spend"] : flow === "contactPayment" ? ["spend"] : ["platformOp"];
+      flow === "acceptAndPay"
+        ? ["platformOp", "spend"]
+        : flow === "contactPayment"
+          ? ["spend"]
+          : flow === "voting"
+            ? ["governance"]
+            : flow === "masternodeRegistration" || flow === "keyChange"
+              ? ["masternodeOp"]
+              : ["platformOp"];
     const found = grants.map((id) => checkGrant(world, id, walletId, kinds));
     const purposes = new Set(found.map((g) => g?.grant.purpose.kind));
     if (!found.length || found.some((g) => !g) || purposes.size !== found.length) throw grantInvalid();

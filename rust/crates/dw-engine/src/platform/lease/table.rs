@@ -10,7 +10,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
-use dw_vault::{KeyHold, VaultSigner};
+use dw_vault::{KeyHold, VaultSigner, VoteSigner};
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 use tokio::task::AbortHandle;
@@ -66,6 +66,10 @@ pub(crate) struct Signers {
     pub(crate) identity: Option<VaultSigner>,
     pub(crate) crypto: Option<VaultSigner>,
     pub(crate) spend: Option<VaultSigner>,
+    /// `MasternodeOwner` (MG-05 §1).
+    pub(crate) masternode: Option<VaultSigner>,
+    /// The vote signer (MG-05 §3): no `VaultSigner`, so no transaction.
+    pub(crate) vote: Option<VoteSigner>,
 }
 
 /// What a redemption produced (§4.1 step 2): the caps per purpose, the one
@@ -75,7 +79,9 @@ pub(crate) struct Issued {
     pub(crate) funding: u64,
     pub(crate) credits: u64,
     pub(crate) spend: u64,
+    pub(crate) masternode: u64,
     pub(crate) crypto: bool,
+    pub(crate) voting: bool,
     pub(crate) key: Option<KeyHold>,
     pub(crate) signers: Signers,
     /// The vault epoch before the first redemption and after the last
@@ -91,7 +97,10 @@ pub(crate) struct Entry {
     pub(crate) funding: Budget,
     pub(crate) credits: Budget,
     pub(crate) spend: Budget,
+    pub(crate) masternode: Budget,
     pub(crate) crypto: bool,
+    /// Carries the vote signer; never charged (MG-05 §4).
+    pub(crate) voting: bool,
     pub(crate) key: Option<KeyHold>,
     pub(crate) key_until: Option<Instant>,
     /// Issued on a vault without its full-scope key (§4.4).
@@ -122,7 +131,8 @@ impl Entry {
             BudgetPurpose::Funding => Some(&mut self.funding),
             BudgetPurpose::Credits => Some(&mut self.credits),
             BudgetPurpose::Spend => Some(&mut self.spend),
-            BudgetPurpose::Crypto => None,
+            BudgetPurpose::Masternode => Some(&mut self.masternode),
+            BudgetPurpose::Crypto | BudgetPurpose::Voting => None,
         }
     }
 
@@ -545,7 +555,9 @@ impl LeaseTable {
                 funding: Budget::new(issued.funding),
                 credits: Budget::new(issued.credits),
                 spend: Budget::new(issued.spend),
+                masternode: Budget::new(issued.masternode),
                 crypto: issued.crypto,
+                voting: issued.voting,
                 key: issued.key,
                 key_until: own_key.then(|| now + config.key_ttl),
                 own_key,
@@ -758,6 +770,7 @@ fn view_of(inner: &Inner, id: &LeaseId, now: Instant) -> Option<LeaseView> {
         (BudgetPurpose::Funding, &e.funding),
         (BudgetPurpose::Credits, &e.credits),
         (BudgetPurpose::Spend, &e.spend),
+        (BudgetPurpose::Masternode, &e.masternode),
     ]
     .into_iter()
     .filter(|(_, b)| b.granted())
@@ -974,37 +987,80 @@ impl Lease {
         VaultContactCrypto::new(signer).map_err(|_| LeaseError::Vault("crypto signer scope"))
     }
 
-    /// The `Spend` signer for `TxDraft` (DP3-01).
-    pub(crate) fn spend_signer(&self) -> Result<VaultSigner, LeaseError> {
-        self.signer(
-            BudgetPurpose::Spend,
-            |s| s.spend.as_ref(),
-            |e| e.spend.available() > 0,
-        )
-    }
-
     /// Whether the lease carries a `Spend` grant at all.
     pub(crate) fn has_spend(&self) -> bool {
-        self.table
-            .with_j(|i, _| i.leases.get(&self.id).is_some_and(|e| e.spend.granted()))
+        self.tx_purpose() == Some(BudgetPurpose::Spend)
     }
 
-    /// Charges `amount` to the Spend budget and hands out the Spend signer
-    /// in one J step (§4.2): a charge up to the cap, inclusive, signs, and
-    /// a lease without the signer is charged nothing. The charge is bound
-    /// to the txid with `fence::bind_spend` once signed.
-    pub(crate) fn charge_spend_signer(
+    /// The vote signer of a `voting` lease (MG-05 §3); never charged.
+    pub(crate) fn vote_signer(&self) -> Result<VoteSigner, LeaseError> {
+        self.with_entry(BudgetPurpose::Voting, |e| {
+            (e.signers.vote.clone())
+                .filter(|_| e.voting)
+                .ok_or(LeaseError::NeedsGrant(BudgetPurpose::Voting))
+        })
+    }
+
+    /// The budget a `TxDraft` under this lease is charged to: `Spend`
+    /// (DP3-01), else `Masternode` (MG-05 §2); `None` for a lease that
+    /// carries neither, which signs no transaction (a voting lease).
+    pub(crate) fn tx_purpose(&self) -> Option<BudgetPurpose> {
+        self.table.with_j(|i, _| {
+            let e = i.leases.get(&self.id)?;
+            if e.spend.granted() {
+                Some(BudgetPurpose::Spend)
+            } else if e.masternode.granted() {
+                Some(BudgetPurpose::Masternode)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Whether the lease holds the transaction signer of `purpose`
+    /// ([`Self::tx_purpose`]) with budget left: a check before the plan. It
+    /// hands out no signer: only [`Self::charge_tx_signer`] does, charged.
+    pub(crate) fn check_tx_signer(&self, purpose: BudgetPurpose) -> Result<(), LeaseError> {
+        self.with_entry(purpose, |e| {
+            let budget = e.budget_mut(purpose).map(|b| b.available());
+            let signer = Self::pick_tx_signer(&e.signers, purpose);
+            match (budget, signer) {
+                (Some(b), Some(_)) if b > 0 => Ok(()),
+                _ => Err(LeaseError::NeedsGrant(purpose)),
+            }
+        })
+    }
+
+    fn pick_tx_signer(signers: &Signers, purpose: BudgetPurpose) -> Option<&VaultSigner> {
+        match purpose {
+            BudgetPurpose::Spend => signers.spend.as_ref(),
+            BudgetPurpose::Masternode => signers.masternode.as_ref(),
+            BudgetPurpose::Funding
+            | BudgetPurpose::Credits
+            | BudgetPurpose::Crypto
+            | BudgetPurpose::Voting => None,
+        }
+    }
+
+    /// Charges `amount` to the `purpose` budget (`Spend` or `Masternode`)
+    /// and hands out its transaction signer in one J step (§4.2): a charge
+    /// up to the cap, inclusive, signs, and a lease without the signer is
+    /// charged nothing. The charge is bound to the txid with
+    /// `fence::bind_spend` once signed.
+    pub(crate) fn charge_tx_signer(
         &self,
+        purpose: BudgetPurpose,
         amount: u64,
     ) -> Result<(Charge, VaultSigner), LeaseError> {
-        let charged = self.with_entry(BudgetPurpose::Spend, |e| {
-            let signer = e
-                .signers
-                .spend
-                .clone()
-                .ok_or(LeaseError::NeedsGrant(BudgetPurpose::Spend))?;
-            let charge = e.spend.charge(amount).map_err(|x| LeaseError::Exceeded {
-                purpose: BudgetPurpose::Spend,
+        let charged = self.with_entry(purpose, |e| {
+            let signer = Self::pick_tx_signer(&e.signers, purpose)
+                .cloned()
+                .ok_or(LeaseError::NeedsGrant(purpose))?;
+            let budget = e
+                .budget_mut(purpose)
+                .ok_or(LeaseError::NeedsGrant(purpose))?;
+            let charge = budget.charge(amount).map_err(|x| LeaseError::Exceeded {
+                purpose,
                 needed: x.needed,
                 remaining: x.remaining,
             })?;
@@ -1147,7 +1203,9 @@ impl Lease {
             e.funding.rebind(issued.funding);
             e.credits.rebind(issued.credits);
             e.spend.rebind(issued.spend);
+            e.masternode.rebind(issued.masternode);
             e.crypto = e.crypto && issued.crypto;
+            e.voting = e.voting && issued.voting;
             let old = std::mem::replace(&mut e.signers, issued.signers);
             fx.drop_later(old);
             if let Some(old) = std::mem::replace(&mut e.key, issued.key) {

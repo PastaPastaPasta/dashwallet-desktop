@@ -40,7 +40,7 @@ mod mode_b_tests;
 #[cfg(test)]
 mod resume_tests;
 #[cfg(test)]
-mod session_tests;
+pub(crate) mod session_tests;
 #[cfg(test)]
 mod stress_tests;
 #[cfg(test)]

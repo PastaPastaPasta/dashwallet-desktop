@@ -1,8 +1,9 @@
 //! The read calls (mg-engine §2.2, §2.3): the clock and the budget from the
 //! tip, proposal rows and votes from the store. Memory only.
 
+use dashcore::hashes::Hash;
 use dw_governance::clock;
-use dw_governance::object::{display_hex, outpoint_short, parse_display_hex};
+use dw_governance::object::{atoi_u32, display_hex, outpoint_short, parse_display_hex};
 use dw_governance::params::{GovernanceParams, PROPOSAL_FEE_CONFIRMATIONS, governance_params};
 use dw_governance::store::{GovernanceStore, ObjectKind};
 use dw_governance::tally::{self, RangedCandidate, StatusInput};
@@ -70,6 +71,15 @@ impl Governance {
 
     /// `governance.not_synced{phase}` until a run reached `synced` (MG-00
     /// D21).
+    /// The runtime of a call that stores and relays votes: sync on, and a
+    /// run reached `synced` (D40).
+    pub(super) fn require_relaying(&self) -> Result<&GovernanceRuntime, GovernanceError> {
+        if !self.runtime()?.enabled() {
+            return Err(GovernanceError::SyncDisabled);
+        }
+        self.require_synced()
+    }
+
     pub(super) fn require_synced(&self) -> Result<&GovernanceRuntime, GovernanceError> {
         let rt = self.runtime()?;
         let p = rt.shared.progress();
@@ -222,7 +232,8 @@ impl Governance {
 
     /// Core's `gobject getcurrentvotes`: the current votes of every signal
     /// on a proposal (MG-02 D86), optionally of one outpoint
-    /// (`"<txid>-<n>"`), each with its weight range.
+    /// (`"<txid>-<n>"`, read as Core reads its txid and vout arguments,
+    /// MG-05 D10), each with its weight range.
     pub fn current_votes(
         &self,
         hash: String,
@@ -230,11 +241,13 @@ impl Governance {
     ) -> Result<Vec<CurrentVoteRow>, GovernanceError> {
         let rt = self.require_synced()?;
         let key = parse_hash(&hash)?;
+        let outpoint = outpoint
+            .as_deref()
+            .map(parse_vote_outpoint)
+            .transpose()?
+            .flatten();
         let store = rt.shared.store();
-        if !store
-            .object(&key)
-            .is_some_and(|o| matches!(o.kind, ObjectKind::Proposal(_)))
-        {
+        if !is_proposal(&store, &key) {
             return Err(GovernanceError::ProposalNotFound { hash });
         }
         Ok(vote_rows(&store, &key)
@@ -281,6 +294,32 @@ fn vote_rows(store: &GovernanceStore, key: &[u8; 32]) -> Vec<CurrentVoteRow> {
             exact: c.exact,
         })
         .collect()
+}
+
+/// Whether `hash` is a proposal the store holds (not a trigger).
+pub(super) fn is_proposal(store: &GovernanceStore, hash: &[u8; 32]) -> bool {
+    store
+        .object(hash)
+        .is_some_and(|o| matches!(o.kind, ObjectKind::Proposal(_)))
+}
+
+/// `current_votes`' outpoint `"<txid>-<n>"` as Core's `getcurrentvotes`
+/// reads its two arguments (MG-05 D10): the txid by `ParseHashV` (64 hex
+/// characters, any case), the index by `LocaleIndependentAtoi<uint32_t>`
+/// (so `"<txid>-x"` is index 0). In `outpoint_short` form, which every
+/// vote row uses, so the filter compares values. `None` for the null
+/// outpoint (a zero txid, index `u32::MAX`), which Core's
+/// `GetCurrentVotes` takes as no filter.
+fn parse_vote_outpoint(text: &str) -> Result<Option<String>, GovernanceError> {
+    let bad = || {
+        GovernanceError::from(crate::EngineError::InvalidArgument(format!(
+            "not an outpoint \"<txid>-<n>\": {text:?}"
+        )))
+    };
+    let (txid, vout) = text.split_once('-').ok_or_else(bad)?;
+    let txid = parse_display_hex(txid).ok_or_else(bad)?;
+    let outpoint = dashcore::OutPoint::new(dashcore::Txid::from_byte_array(txid), atoi_u32(vout));
+    Ok((!outpoint.is_null()).then(|| outpoint_short(&outpoint)))
 }
 
 pub(super) fn parse_hash(hash: &str) -> Result<[u8; 32], GovernanceError> {
@@ -418,7 +457,7 @@ fn build_table(network: &crate::DashNetwork, store: &GovernanceStore, tip: u32, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dashcore::hashes::{Hash, hash160};
+    use dashcore::hashes::hash160;
     use dashcore::secp256k1::{Message, PublicKey, SecretKey};
     use dashcore::{Network, OutPoint, Txid};
     use dw_governance::object::GovernanceObject;
@@ -884,5 +923,65 @@ mod tests {
         assert_eq!(status("later"), ProposalStatus::Passing);
         assert_eq!(status("ending"), ProposalStatus::Lapsed);
         assert_eq!(t.allocated, 2 * 100_000_000);
+    }
+
+    /// BL-246 (MG-05 D10): the outpoint filter reads its txid as
+    /// `ParseHashV` and its index as `LocaleIndependentAtoi<uint32_t>`, and
+    /// matches the rows' own form.
+    #[test]
+    fn current_votes_outpoints_parse_as_cores_getcurrentvotes() {
+        let o = OutPoint::new(Txid::from_byte_array([0xab; 32]), 7);
+        let row = outpoint_short(&o);
+        let txid = row.split_once('-').unwrap().0.to_string();
+        for text in [
+            format!("{txid}-7"),
+            format!("{}-7", txid.to_ascii_uppercase()),
+            format!("{txid}-+7"),
+            format!("{txid}- 7"),
+            format!("{txid}-7abc"),
+            format!("{txid}-007"),
+        ] {
+            assert_eq!(
+                parse_vote_outpoint(&text).unwrap(),
+                Some(row.clone()),
+                "{text}"
+            );
+        }
+        let zero = outpoint_short(&OutPoint::new(o.txid, 0));
+        for text in [
+            format!("{txid}-x"),
+            format!("{txid}-"),
+            format!("{txid}--1"),
+        ] {
+            assert_eq!(
+                parse_vote_outpoint(&text).unwrap(),
+                Some(zero.clone()),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            parse_vote_outpoint(&format!("{txid}-99999999999")).unwrap(),
+            Some(outpoint_short(&OutPoint::new(o.txid, u32::MAX)))
+        );
+        // The null outpoint is no filter, as in Core's `GetCurrentVotes`,
+        // however its index is written.
+        let null = "0".repeat(64);
+        for text in [format!("{null}-4294967295"), format!("{null}-99999999999")] {
+            assert_eq!(parse_vote_outpoint(&text).unwrap(), None, "{text}");
+        }
+        assert!(parse_vote_outpoint(&format!("{null}-0")).unwrap().is_some());
+        for bad in [
+            String::new(),
+            txid.clone(),
+            format!("{}-1", &txid[1..]),
+            format!("{}g-1", &txid[1..]),
+            "x-1".to_string(),
+        ] {
+            assert_eq!(
+                parse_vote_outpoint(&bad).unwrap_err().code(),
+                "invalid_argument",
+                "{bad}"
+            );
+        }
     }
 }

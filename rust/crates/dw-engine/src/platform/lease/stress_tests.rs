@@ -21,7 +21,7 @@ use super::{
     Outcome, UnleasedKind, Verdict,
 };
 use crate::WalletId;
-use crate::platform::flows::RevokeCause;
+use crate::platform::flows::{BudgetPurpose, RevokeCause};
 
 /// How an attempt was granted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -826,7 +826,8 @@ impl Run {
                     let Ok(charge) = lease.charge_spend(10) else {
                         continue;
                     };
-                    self.t.bind_spend(lease.id(), W, a, charge);
+                    self.t
+                        .bind_spend(lease.id(), W, a, BudgetPurpose::Spend, charge);
                     core(&lease, a)
                 }
                 1 => transition(&lease, a, 1),

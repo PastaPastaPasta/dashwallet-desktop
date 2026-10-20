@@ -111,11 +111,12 @@ use crate::types::{
     QuickUnlockPolicy, RevealedMnemonic, SeedDerivation, UnlockScope, VaultConfig, VaultStatus,
     WalletId, WalletSecret,
 };
+use crate::vote::VoteSigner;
 use crate::{SignerError, VaultError};
 
 mod compat;
 mod links;
-mod masternode;
+pub(crate) mod masternode;
 use compat::BackupKek;
 pub use compat::{CoreMnemonicCheck, WalletBackupBundle, reads_bundle_version};
 pub use links::{
@@ -1152,8 +1153,8 @@ impl Vault {
     /// - `None`: accepted on an unencrypted vault, and on a vault unlocked
     ///   with scope Full except for [`GrantPurpose::requires_credential`]
     ///   purposes, which need the passphrase whenever slot P exists.
-    /// - `QuickUnlock`: the slot B wrap key. Issues `Spend`, `PlatformOp`
-    ///   and `SignMessage` grants whose value
+    /// - `QuickUnlock`: the slot B wrap key. Issues `Spend`, `PlatformOp`,
+    ///   `SignMessage`, `Governance` and `MasternodeOp` grants whose value
     ///   ([`GrantPurpose::quick_unlock_value`]) is within the spending limit
     ///   (`QuickUnlockLimitExceeded` above it), only while the passphrase was
     ///   entered within [`PASSPHRASE_MAX_AGE_SECS`] (`PassphraseStale`).
@@ -2079,6 +2080,83 @@ impl Vault {
         scope: SignerScope,
     ) -> Result<VaultSigner, VaultError> {
         self.scoped_signer(wallet, Some(hold), token, scope)
+    }
+
+    /// The vote signer of `wallet` (MG-05 §3, scope
+    /// [`SignerScope::MasternodeVoting`]), authorized by a redeemed
+    /// `Governance` grant for that wallet whose key is the vault's; any other
+    /// grant is `GrantPurposeMismatch`. A token with its own key issues one
+    /// only through its hold ([`Self::vote_signer_held`]). It signs funding
+    /// votes and nothing else, and stops when the vault locks or changes
+    /// unlock scope.
+    pub fn vote_signer(
+        &self,
+        wallet: &WalletId,
+        token: &GrantToken,
+    ) -> Result<VoteSigner, VaultError> {
+        self.governance_signer(wallet, None, token)
+    }
+
+    /// [`Self::vote_signer`] for a token whose key `hold` holds: the signer
+    /// stops when the hold drops.
+    pub fn vote_signer_held(
+        &self,
+        wallet: &WalletId,
+        hold: &KeyHold,
+        token: &GrantToken,
+    ) -> Result<VoteSigner, VaultError> {
+        self.governance_signer(wallet, Some(hold), token)
+    }
+
+    fn governance_signer(
+        &self,
+        wallet: &WalletId,
+        hold: Option<&KeyHold>,
+        token: &GrantToken,
+    ) -> Result<VoteSigner, VaultError> {
+        if token.purpose.kind() != GrantKind::Governance {
+            return Err(VaultError::GrantPurposeMismatch);
+        }
+        let signer = self.token_signer(wallet, token, SignerScope::MasternodeVoting, hold)?;
+        Ok(VoteSigner::new(signer))
+    }
+
+    /// A [`SignerScope::MasternodeOwner`] signer of `wallet` (MG-05 §1),
+    /// authorized by a redeemed `MasternodeOp` grant for that wallet whose
+    /// key is the vault's; any other grant is `GrantPurposeMismatch`. A
+    /// token with its own key issues one only through its hold
+    /// ([`Self::masternode_signer_held`]). The vault cannot see the debit of
+    /// what it signs: the engine charges it against the grant's cap first
+    /// (MG-05 §2).
+    pub fn masternode_signer(
+        &self,
+        wallet: &WalletId,
+        token: &GrantToken,
+    ) -> Result<VaultSigner, VaultError> {
+        self.owner_signer(wallet, None, token)
+    }
+
+    /// [`Self::masternode_signer`] for a token whose key `hold` holds: the
+    /// signer stops when the hold drops.
+    pub fn masternode_signer_held(
+        &self,
+        wallet: &WalletId,
+        hold: &KeyHold,
+        token: &GrantToken,
+    ) -> Result<VaultSigner, VaultError> {
+        self.owner_signer(wallet, Some(hold), token)
+    }
+
+    fn owner_signer(
+        &self,
+        wallet: &WalletId,
+        hold: Option<&KeyHold>,
+        token: &GrantToken,
+    ) -> Result<VaultSigner, VaultError> {
+        if token.purpose.kind() != GrantKind::MasternodeOp {
+            return Err(VaultError::GrantPurposeMismatch);
+        }
+        self.token_signer(wallet, token, SignerScope::MasternodeOwner, hold)
     }
 
     fn scoped_signer(

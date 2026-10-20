@@ -67,7 +67,8 @@ pub enum Credential<'a> {
     /// mixing-only vault the unwrapped key serves the issued grant only.
     Passphrase(&'a [u8]),
     /// The 32-byte wrap key the OS biometric store released (slot B). Issues
-    /// `Spend`, `PlatformOp` and `SignMessage` grants whose combined value
+    /// `Spend`, `PlatformOp`, `SignMessage`, `Governance` and `MasternodeOp`
+    /// grants whose combined value
     /// ([`GrantPurpose::quick_unlock_value`]) is within the quick-unlock
     /// spending limit, only while the passphrase was entered within
     /// [`PASSPHRASE_MAX_AGE_SECS`]. Like `Passphrase`, it does not change the
@@ -113,6 +114,18 @@ pub enum GrantPurpose {
     /// The identity scan (E0-04 design §3.2): the only grant that releases
     /// the wallet's master key ([`crate::Vault::scan_key`]). Uncapped.
     IdentityScan,
+    /// Governance votes cast with the wallet's masternode voting keys
+    /// (MG-05 §1): yields a [`crate::VoteSigner`], which signs funding votes
+    /// and nothing else. Moves no funds, so it has no cap.
+    Governance,
+    /// Masternode Core transactions (ProRegTx, ProUpRegTx; MG-05 §1, §2):
+    /// `max_duffs` caps what each one takes out of the wallet, the outputs
+    /// to scripts it does not own plus the fee. Yields a
+    /// [`crate::SignerScope::MasternodeOwner`] signer
+    /// ([`crate::Vault::masternode_signer`]).
+    MasternodeOp {
+        max_duffs: u64,
+    },
 }
 
 /// [`GrantPurpose`] without its payload; what a call expects.
@@ -125,6 +138,8 @@ pub enum GrantKind {
     Wipe,
     PlatformOp,
     IdentityScan,
+    Governance,
+    MasternodeOp,
 }
 
 /// Platform's fixed rate: credits per duff.
@@ -140,6 +155,8 @@ impl GrantPurpose {
             GrantPurpose::Wipe => GrantKind::Wipe,
             GrantPurpose::PlatformOp { .. } => GrantKind::PlatformOp,
             GrantPurpose::IdentityScan => GrantKind::IdentityScan,
+            GrantPurpose::Governance => GrantKind::Governance,
+            GrantPurpose::MasternodeOp { .. } => GrantKind::MasternodeOp,
         }
     }
 
@@ -160,25 +177,30 @@ impl GrantPurpose {
     }
 
     /// Whether a redeemed grant of this purpose may obtain a full signer.
-    /// `PlatformOp` gets scoped signers (`Vault::platform_signer`) and
-    /// `IdentityScan` the identity-scan key (`Vault::scan_key`) instead.
+    /// `PlatformOp` gets scoped signers (`Vault::platform_signer`),
+    /// `IdentityScan` the identity-scan key (`Vault::scan_key`),
+    /// `Governance` a vote signer (`Vault::vote_signer`) and `MasternodeOp`
+    /// a `MasternodeOwner` signer (`Vault::masternode_signer`) instead.
     pub(crate) fn signs(&self) -> bool {
         matches!(self, GrantPurpose::Spend { .. } | GrantPurpose::SignMessage)
     }
 
     /// What this grant counts against the quick-unlock spending limit, in
-    /// duffs (E0-04 design §3.7): `max_duffs` for `Spend`;
-    /// `max_duffs + ceil(max_credits / CREDITS_PER_DUFF)` for `PlatformOp`;
-    /// 0 for `SignMessage`; `None` for a purpose quick unlock never issues.
+    /// duffs (E0-04 design §3.7): `max_duffs` for `Spend` and
+    /// `MasternodeOp`; `max_duffs + ceil(max_credits / CREDITS_PER_DUFF)`
+    /// for `PlatformOp`; 0 for `SignMessage` and `Governance` (MG-05 D2);
+    /// `None` for a purpose quick unlock never issues.
     /// Saturates at `u64::MAX`, which is above every spending limit.
     pub fn quick_unlock_value(&self) -> Option<u64> {
         match *self {
-            GrantPurpose::Spend { max_duffs } => Some(max_duffs),
+            GrantPurpose::Spend { max_duffs } | GrantPurpose::MasternodeOp { max_duffs } => {
+                Some(max_duffs)
+            }
             GrantPurpose::PlatformOp {
                 max_duffs,
                 max_credits,
             } => Some(max_duffs.saturating_add(max_credits.div_ceil(CREDITS_PER_DUFF))),
-            GrantPurpose::SignMessage => Some(0),
+            GrantPurpose::SignMessage | GrantPurpose::Governance => Some(0),
             _ => None,
         }
     }
@@ -345,12 +367,12 @@ impl GrantToken {
         self.wallet
     }
 
-    /// The duff cap of a `Spend` or `PlatformOp` grant.
+    /// The duff cap of a `Spend`, `PlatformOp` or `MasternodeOp` grant.
     pub fn max_duffs(&self) -> Option<u64> {
         match self.purpose {
-            GrantPurpose::Spend { max_duffs } | GrantPurpose::PlatformOp { max_duffs, .. } => {
-                Some(max_duffs)
-            }
+            GrantPurpose::Spend { max_duffs }
+            | GrantPurpose::PlatformOp { max_duffs, .. }
+            | GrantPurpose::MasternodeOp { max_duffs } => Some(max_duffs),
             _ => None,
         }
     }

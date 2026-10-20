@@ -468,10 +468,12 @@ impl Rowless {
     }
 }
 
-/// A `TxDraft`'s Spend charge, bound to its txid at signing (§4.2).
+/// A `TxDraft`'s charge, bound to its txid at signing (§4.2): to the Spend
+/// budget, or a masternode transaction's to the Masternode one (MG-05 §2).
 #[derive(Debug, Clone, Copy)]
 struct SpendCharge {
     lease: LeaseId,
+    purpose: BudgetPurpose,
     charge: Charge,
 }
 
@@ -677,14 +679,20 @@ pub enum ArtifactKind {
         credits: u64,
         slot: Option<NonceSlot>,
     },
+    /// A governance vote, keyed by its hash (MG-05 §4, D5): handed off when
+    /// it enters the governance store. Row-less and never charged; a
+    /// `voting` lease is its authority.
+    Vote,
 }
 
 impl ArtifactKind {
-    /// What a definitely-unsent artifact of this kind leaves behind.
+    /// What a definitely-unsent artifact of this kind leaves behind. A vote
+    /// the store refused may be cast again: a new one has a new time, so a
+    /// new hash.
     fn tombstone(self) -> RowlessState {
         match self {
             ArtifactKind::CoreTx { .. } => RowlessState::Revoked,
-            ArtifactKind::Transition { .. } => RowlessState::NotSent,
+            ArtifactKind::Transition { .. } | ArtifactKind::Vote => RowlessState::NotSent,
         }
     }
 }
@@ -2323,7 +2331,7 @@ impl LeaseTable {
         });
     }
 
-    /// Binds a `TxDraft`'s Spend charge to its txid (§4.2). A prepare that
+    /// Binds a `TxDraft`'s charge of `purpose` to its txid (§4.2). A prepare that
     /// signs the same bytes as a draft that settled definitely unsent is a
     /// new draft: its inputs are reserved again and the earlier holder was
     /// released, so the tombstone gives way to it. A `Resolving` entry
@@ -2334,6 +2342,7 @@ impl LeaseTable {
         lease: LeaseId,
         wallet: WalletId,
         txid: ArtifactId,
+        purpose: BudgetPurpose,
         charge: Charge,
     ) {
         self.with_j(|i, _| {
@@ -2345,7 +2354,14 @@ impl LeaseTable {
             {
                 i.fence.rowless.remove(&key);
             }
-            i.fence.spend.insert(key, SpendCharge { lease, charge });
+            i.fence.spend.insert(
+                key,
+                SpendCharge {
+                    lease,
+                    purpose,
+                    charge,
+                },
+            );
         });
     }
 
@@ -2359,7 +2375,7 @@ impl LeaseTable {
                 && let Some(s) = i.fence.spend.remove(&key)
                 && let Some(e) = i.leases.get_mut(&s.lease)
             {
-                e.refund(BudgetPurpose::Spend, s.charge);
+                e.refund(s.purpose, s.charge);
                 fx.changed(s.lease);
             }
         });
@@ -2978,6 +2994,7 @@ impl LeaseTable {
                         ArtifactKind::Transition { .. } => {
                             i.leases.get(&lease).is_some_and(|e| e.credits.granted())
                         }
+                        ArtifactKind::Vote => i.leases.get(&lease).is_some_and(|e| e.voting),
                     };
                 // Credits are charged with the permit, in the same step.
                 let charge = match (authority, req.kind) {
@@ -2986,14 +3003,16 @@ impl LeaseTable {
                         .get_mut(&lease)
                         .and_then(|e| e.credits.charge(credits).ok())
                         .map(|c| Some((lease, BudgetPurpose::Credits, c))),
-                    // The Spend charge moves to the row-less entry, whose
-                    // settlement refunds it.
+                    // The Spend (or Masternode) charge moves to the
+                    // row-less entry, whose settlement refunds it.
                     (true, ArtifactKind::CoreTx { .. }) => Some(
                         i.fence
                             .spend
                             .remove(&rkey)
-                            .map(|s| (lease, BudgetPurpose::Spend, s.charge)),
+                            .map(|s| (lease, s.purpose, s.charge)),
                     ),
+                    // A vote moves nothing.
+                    (true, ArtifactKind::Vote) => Some(None),
                     (false, _) => None,
                 };
                 let Some(charge) = charge else {
@@ -3068,7 +3087,7 @@ impl LeaseTable {
         if let Some(s) = i.fence.spend.remove(&key)
             && let Some(e) = i.leases.get_mut(&s.lease)
         {
-            e.refund(BudgetPurpose::Spend, s.charge);
+            e.refund(s.purpose, s.charge);
             fx.changed(s.lease);
         }
         let cleanup = first && matches!(req.kind, ArtifactKind::CoreTx { .. });

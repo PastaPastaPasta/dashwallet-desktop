@@ -25,6 +25,12 @@ use key_wallet::dip9::{
 
 /// BIP44 purpose.
 const BIP44: u32 = 44;
+/// DIP9 feature of the DIP3 provider keys, `m/9'/coin'/3'` (dash-qt's
+/// keychain; key-wallet's `dip9` names no constant for it).
+const FEATURE_PURPOSE_PROVIDER_KEYS: u32 = 3;
+/// Provider key families under [`FEATURE_PURPOSE_PROVIDER_KEYS`].
+const PROVIDER_VOTING_KEYS: u32 = 1;
+const PROVIDER_OWNER_KEYS: u32 = 2;
 /// DIP-13 key type of ECDSA identity keys (`KeyDerivationType::ECDSA`).
 const ECDSA_KEY_TYPE: u32 = 0;
 
@@ -59,6 +65,44 @@ fn has_dip9_feature(p: &[ChildNumber], network: Network, feature: u32) -> bool {
         && is_hardened(&p[0], FEATURE_PURPOSE)
         && is_hardened(&p[1], coin_type(network))
         && is_hardened(&p[2], feature)
+}
+
+/// A keychain voting key `m/9'/coin'/3'/1'/index`, `index` non-hardened.
+pub fn is_voting_key(path: &DerivationPath, network: Network) -> bool {
+    is_provider_key(path, network, PROVIDER_VOTING_KEYS)
+}
+
+/// A keychain owner key `m/9'/coin'/3'/2'/index`, `index` non-hardened.
+pub fn is_owner_key(path: &DerivationPath, network: Network) -> bool {
+    is_provider_key(path, network, PROVIDER_OWNER_KEYS)
+}
+
+/// The path of keychain voting key `index` ([`is_voting_key`]); key
+/// `index`'s path whatever the index, which the scope check then judges.
+pub(crate) fn voting_key_path(network: Network, index: u32) -> DerivationPath {
+    DerivationPath::from(vec![
+        ChildNumber::Hardened {
+            index: FEATURE_PURPOSE,
+        },
+        ChildNumber::Hardened {
+            index: coin_type(network),
+        },
+        ChildNumber::Hardened {
+            index: FEATURE_PURPOSE_PROVIDER_KEYS,
+        },
+        ChildNumber::Hardened {
+            index: PROVIDER_VOTING_KEYS,
+        },
+        ChildNumber::Normal { index },
+    ])
+}
+
+fn is_provider_key(path: &DerivationPath, network: Network, family: u32) -> bool {
+    let p: &[ChildNumber] = path.as_ref();
+    p.len() == 5
+        && has_dip9_feature(p, network, FEATURE_PURPOSE_PROVIDER_KEYS)
+        && is_hardened(&p[3], family)
+        && is_normal(&p[4])
 }
 
 /// Whether `path` lies inside the CoinJoin account branch of `network`.
@@ -393,7 +437,7 @@ mod tests {
         let bip32: Shape = |p, _| is_bip32_address(p);
         let identity: Shape = |p, n| identity_auth_key(p, n).is_some();
         // (shape, a matching path, the dynamic steps, hardened?)
-        let cases: [(&str, Shape, DerivationPath, &[usize], bool); 13] = [
+        let cases: [(&str, Shape, DerivationPath, &[usize], bool); 15] = [
             (
                 "identity",
                 identity,
@@ -473,6 +517,20 @@ mod tests {
                 &[4],
                 true,
             ),
+            (
+                "voting key",
+                is_voting_key,
+                path("m/9'/1'/3'/1'/4"),
+                &[4],
+                false,
+            ),
+            (
+                "owner key",
+                is_owner_key,
+                path("m/9'/1'/3'/2'/4"),
+                &[4],
+                false,
+            ),
         ];
         for (name, shape, base, steps, hardened) in cases {
             assert!(shape(&base, t), "{name}: base");
@@ -541,5 +599,33 @@ mod tests {
         ] {
             assert!(!is_identity_top_up_account(&path(bad), t), "{bad}");
         }
+    }
+
+    #[test]
+    fn provider_key_shapes() {
+        let t = Network::Testnet;
+        assert!(is_voting_key(&path("m/9'/1'/3'/1'/0"), t));
+        assert!(is_voting_key(&path("m/9'/5'/3'/1'/19"), Network::Mainnet));
+        assert!(is_owner_key(&path("m/9'/1'/3'/2'/7"), t));
+        assert_eq!(voting_key_path(t, 6), path("m/9'/1'/3'/1'/6"));
+        assert_eq!(
+            voting_key_path(Network::Mainnet, 0),
+            path("m/9'/5'/3'/1'/0")
+        );
+        for bad in [
+            "m/9'/1'/3'/1'/0'", // hardened leaf
+            "m/9'/1'/3'/1'",
+            "m/9'/1'/3'/1'/0/0",
+            "m/9'/1'/3'/3'/0",  // operator
+            "m/9'/1'/3'/4'/0'", // platform node
+            "m/9'/5'/3'/1'/0",  // mainnet coin type
+            "m/9'/1'/4'/1'/0",
+            "m/9/1'/3'/1'/0",
+        ] {
+            assert!(!is_voting_key(&path(bad), t), "{bad}");
+            assert!(!is_owner_key(&path(bad), t), "{bad}");
+        }
+        assert!(!is_voting_key(&path("m/9'/1'/3'/2'/0"), t));
+        assert!(!is_owner_key(&path("m/9'/1'/3'/1'/0"), t));
     }
 }

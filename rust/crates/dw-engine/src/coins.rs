@@ -94,11 +94,16 @@ pub(crate) fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Whether `address` is one of the wallet's derived addresses.
+/// Whether `address` is one of the wallet's derived addresses. A DashPay
+/// contact's external account holds the contact's addresses, derived from
+/// the contact's xpub (the library's `is_contact_owned`): they are not the
+/// wallet's, so a payment to one leaves it and every cap counts it (MG-05
+/// D19).
 pub(crate) fn wallet_owns(info: &ManagedWalletInfo, address: &Address) -> bool {
-    info.all_managed_accounts()
-        .into_iter()
-        .any(|account| account.get_address_info(address).is_some())
+    info.all_managed_accounts().into_iter().any(|account| {
+        !account.managed_account_type().is_contact_owned()
+            && account.get_address_info(address).is_some()
+    })
 }
 
 /// One unspent output of the wallet with what coin control shows about it.

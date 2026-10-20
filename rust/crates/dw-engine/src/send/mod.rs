@@ -241,19 +241,25 @@ fn lease_failure(e: LeaseError, outflow: u64) -> EngineError {
     .into()
 }
 
-/// A lease's Spend charge made before signing (E0-04 §4.2): refunded on
-/// drop unless bound to the signed txid.
+/// A lease's charge made before signing (E0-04 §4.2), to its Spend or
+/// Masternode budget (MG-05 §2): refunded on drop unless bound to the
+/// signed txid.
 struct SpendCharge {
     lease: Lease,
+    purpose: crate::platform::BudgetPurpose,
     charge: Option<crate::platform::lease::budget::Charge>,
 }
 
 impl SpendCharge {
     fn bind(mut self, txid: ArtifactId) {
         if let Some(charge) = self.charge.take() {
-            self.lease
-                .table
-                .bind_spend(self.lease.id(), self.lease.wallet(), txid, charge);
+            self.lease.table.bind_spend(
+                self.lease.id(),
+                self.lease.wallet(),
+                txid,
+                self.purpose,
+                charge,
+            );
         }
     }
 }
@@ -261,8 +267,7 @@ impl SpendCharge {
 impl Drop for SpendCharge {
     fn drop(&mut self) {
         if let Some(charge) = self.charge.take() {
-            self.lease
-                .refund(crate::platform::BudgetPurpose::Spend, charge);
+            self.lease.refund(self.purpose, charge);
         }
     }
 }
@@ -1004,11 +1009,13 @@ impl TxDraft {
             .transpose()
             .map_err(|e| lease_failure(e, 0))?;
         if let Some(lease) = &lease {
-            if !lease.has_spend() {
-                return Err(SendFailure::GrantInvalid.into());
-            }
-            lease.spend_signer().map_err(|e| lease_failure(e, 0))?;
-            return self.prepare_leased(lease.clone(), fence).await;
+            // A lease that carries neither a Spend nor a Masternode budget
+            // (a voting lease) holds no transaction signer (MG-05 §3).
+            let purpose = lease.tx_purpose().ok_or(SendFailure::GrantInvalid)?;
+            lease
+                .check_tx_signer(purpose)
+                .map_err(|e| lease_failure(e, 0))?;
+            return self.prepare_leased(lease.clone(), purpose, fence).await;
         }
         // No key to sign with (locked or mixing-only vault, and the grant
         // does not carry its own key) fails before the plan. A grant that is
@@ -1052,11 +1059,15 @@ impl TxDraft {
         .await
     }
 
-    /// `prepare` under a lease: the plan, then the Spend charge before
-    /// signing (E0-04 §4.2: "a lease cannot sign a spend above its cap").
+    /// `prepare` under a lease: the plan, then the charge to `purpose`'s
+    /// budget before signing (E0-04 §4.2: "a lease cannot sign a spend
+    /// above its cap"). Under a `MasternodeOp` lease that is the net debit
+    /// plus the fee: an output paying the wallet, a `FundNew` collateral
+    /// included, is not charged (MG-05 §2, D4).
     async fn prepare_leased(
         self: &Arc<Self>,
         lease: Lease,
+        purpose: crate::platform::BudgetPurpose,
         fence: CoinFence,
     ) -> Result<Arc<PreparedTx>, EngineError> {
         let r = self.resolve(&fence).await?;
@@ -1065,10 +1076,11 @@ impl TxDraft {
         let outflow = external_sent.saturating_add(r.plan.fee);
         // One J step: a payment exactly at the cap is charged and signs.
         let (charge, signer) = lease
-            .charge_spend_signer(outflow)
+            .charge_tx_signer(purpose, outflow)
             .map_err(|e| lease_failure(e, outflow))?;
         let charge = SpendCharge {
             lease: lease.clone(),
+            purpose,
             charge: Some(charge),
         };
         self.sign_and_reserve(

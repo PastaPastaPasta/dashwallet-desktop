@@ -23,12 +23,23 @@ use crate::{EngineError, NetworkSession, WalletId};
 
 /// Which vault grant kinds a flow's lease may carry: a `PlatformOp`, plus a
 /// `Spend` for "Accept and pay"'s payment (§16.1); a contact payment's own
-/// lease only the `Spend` (DP3-01).
+/// lease only the `Spend` (DP3-01); the masternode flows their own grant
+/// alone (MG-05 §4).
 fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
     match flow {
         FlowKind::AcceptAndPay => &[GrantKind::PlatformOp, GrantKind::Spend],
         FlowKind::ContactPayment => &[GrantKind::Spend],
-        _ => &[GrantKind::PlatformOp],
+        FlowKind::Voting => &[GrantKind::Governance],
+        FlowKind::MasternodeRegistration | FlowKind::KeyChange => &[GrantKind::MasternodeOp],
+        FlowKind::Registration
+        | FlowKind::TopUp
+        | FlowKind::Withdraw
+        | FlowKind::NameRegistration
+        | FlowKind::ProfileEdit
+        | FlowKind::ContactRequest
+        | FlowKind::Accept
+        | FlowKind::PrivateDetails
+        | FlowKind::EnableDashPayKeys => &[GrantKind::PlatformOp],
     }
 }
 
@@ -137,6 +148,22 @@ pub(crate) fn issue(
                     None => vault.signer(&wallet.0, token),
                 };
                 out.signers.spend = Some(signer.map_err(issuing)?);
+            }
+            GrantPurpose::MasternodeOp { max_duffs } => {
+                out.masternode = max_duffs;
+                let signer = match &key {
+                    Some(hold) => vault.masternode_signer_held(&wallet.0, hold, token),
+                    None => vault.masternode_signer(&wallet.0, token),
+                };
+                out.signers.masternode = Some(signer.map_err(issuing)?);
+            }
+            GrantPurpose::Governance => {
+                out.voting = true;
+                let signer = match &key {
+                    Some(hold) => vault.vote_signer_held(&wallet.0, hold, token),
+                    None => vault.vote_signer(&wallet.0, token),
+                };
+                out.signers.vote = Some(signer.map_err(issuing)?);
             }
             _ => return Err(LeaseError::Invalid),
         }

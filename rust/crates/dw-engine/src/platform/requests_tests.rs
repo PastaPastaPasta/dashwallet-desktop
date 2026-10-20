@@ -1071,7 +1071,7 @@ fn accept_and_pay_keeps_its_spend_part_across_the_accept() {
     );
     let lease = f.s.lease_for(&f.wallet, &lease_id).unwrap().unwrap();
     assert!(lease.has_spend());
-    lease.spend_signer().unwrap();
+    lease.check_tx_signer(BudgetPurpose::Spend).unwrap();
 }
 
 /// A document flow's key is one that may sign its DashPay document now, as
@@ -1580,6 +1580,8 @@ mod accept_vectors {
             BudgetPurpose::Credits => "credits",
             BudgetPurpose::Spend => "spend",
             BudgetPurpose::Crypto => "crypto",
+            BudgetPurpose::Masternode => "masternode",
+            BudgetPurpose::Voting => "voting",
         }
     }
 

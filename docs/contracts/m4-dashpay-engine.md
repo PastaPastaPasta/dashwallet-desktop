@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 31
+Contract-Version: 32
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -565,7 +565,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: ed988a4e8fa7dbdb7c3a2420dd1c243151f4d29a0ac40c84f51392890a39c48a version: 31 -->
+<!-- surface-sha256: dc38b642b6f0122a40f07813b3a359428431a6c335670a828a32cdfa2cec4df1 version: 32 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -973,6 +973,9 @@ pub enum FlowKind {
     PrivateDetails,
     EnableDashPayKeys,
     ContactPayment,
+    Voting,
+    MasternodeRegistration,
+    KeyChange,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -981,6 +984,8 @@ pub enum BudgetPurpose {
     Credits,
     Spend,
     Crypto,
+    Masternode,
+    Voting,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1701,7 +1706,8 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   | an unknown, used or other-wallet grant or lease id | `platform.grant_invalid` |
   | the dispatch journal is unavailable, or its schema is newer (E0-04 §6.4) | `storage`, with `Notice{DispatchJournalUnavailable}` |
 
-  `purpose` is the budget (`Funding`, `Credits`, `Spend`, `Crypto`); `needed` and `remaining` are in its unit.
+  `purpose` is the budget (`Funding`, `Credits`, `Spend`, `Crypto`, `Masternode`, `Voting`); `needed` and `remaining`
+  are in its unit.
   **The UI's reading of `lease_revoked{cause: Lock}`** (and of `cancelled`): nothing was sent by this call; unlock and
   start the flow again. After "Accept and pay" whose accept was `Sent`, that is E0-04's C8: "Accepted — payment
   cancelled. Pay now?". **Lock stops new signatures; a write already signed when Lock lands may still broadcast until
@@ -1912,7 +1918,7 @@ The shapes are in §3. What they mean, where the name does not say:
   engine charges no more than it quoted; a quote that went stale (a fee change) is `platform.grant_exceeded`, and the
   host quotes again.
 - **`FlowKind`** names what a lease is for; `AcceptAndPay` carries both the `PlatformOp` grant and the payment's
-  `Spend` grant. **`DispatchState`** and **`DispatchResolved`** are the journal's view of a handed-off artifact (§2.11,
+  `Spend` grant. `Voting`, `MasternodeRegistration` and `KeyChange` are the masternode flows (item 59). **`DispatchState`** and **`DispatchResolved`** are the journal's view of a handed-off artifact (§2.11,
   §6). **`LeaseView`**, `LeaseStateView` (`Active`, `AwaitingProof`, `Parked{reason}`, `NeedsGrant`,
   `Revoked{cause}`, `Ended`) and `BudgetView{purpose, ceiling, spent}` are E0-04 §4.6's view, owned here
   (E0-04 §16.1); `AwaitingProof`'s deadline is `key_expires_in_secs`. **`RevokeCause`**: `Lock`, `Close`,
@@ -2939,3 +2945,19 @@ renames or reshapes them takes the next version bump:
       instead of failing the rebuild, and keeps them for history only: they are never paid. The stamp survives a
       relaunch.
     - **One sync per in-flight pass.** A refusal on the paying account starts no DashPay sync while a pass runs.
+
+**From MG-05** (version 32):
+
+59. **Masternode leases (MG-05 D4, D5, D8, D14, D19, version 32).** `FlowKind` gains `Voting` (one `Governance` grant),
+    `MasternodeRegistration` and `KeyChange` (one `MasternodeOp{max_duffs}` grant each); `BudgetPurpose` gains
+    `Masternode` and `Voting`. Decisions in `docs/design/MG-05-authorization.md`.
+    - **`Masternode`** is charged as `Spend` is: a `TxDraft` prepared under a masternode lease charges the
+      transaction's net debit (its foreign outputs plus the fee) to it at `prepare`, the fence moves the charge to
+      the hand-off, and a definite `NotSent` or an `abandon` refunds it. An output to the wallet itself, a
+      `FundNew` collateral, is not charged. `platform.grant_exceeded{purpose: Masternode, …}` names it.
+    - **`Voting`** is never charged and lists no budget view, as `Crypto`. A voting lease holds a vote signer only:
+      a `TxDraft` prepared under it is `send.grant_invalid`, and it takes no other grant (`platform.grant_invalid`).
+      Each vote is a row-less fence artifact admitted only under a live voting lease; a lock before its hand-off
+      refuses it.
+    - **Ownership.** An output to a DashPay contact's address is foreign, not the wallet's (D19), for `Spend` and
+      `Masternode` alike, and for the PSBT cap.
