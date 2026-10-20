@@ -183,6 +183,13 @@ export class IpcBackend implements Backend {
   identityRefreshBalance = cmd.identityRefreshBalance;
   contestStatus = cmd.contestStatus;
   dashpayAvatar = cmd.dashpayAvatar;
+  dashpayProfileLimits = cmd.dashpayProfileLimits;
+  dashpayUpdateProfile = cmd.dashpayUpdateProfile;
+  dashpayPrepareAvatar = cmd.dashpayPrepareAvatar;
+  dashpayAvatarUploadAvailable = cmd.dashpayAvatarUploadAvailable;
+  dashpayUploadAvatar = cmd.dashpayUploadAvatar;
+  loadContactPictures = () => cmd.loadContactPictures();
+  setLoadContactPictures = cmd.setLoadContactPictures;
   creditsTopUpQuote = cmd.creditsTopUpQuote;
   creditsTopUp = cmd.creditsTopUp;
   creditsPendingTopUps = cmd.creditsPendingTopUps;

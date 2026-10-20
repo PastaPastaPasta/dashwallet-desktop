@@ -165,9 +165,23 @@ export const ui = {
   },
 };
 
+/** A view holding unsaved work (DP4-03 D11): asked before `navigate` leaves for `route`; `true`
+ * when it holds the navigation, which it runs with `go` once the user agrees. */
+export type LeaveGuard = (route: Route, go: () => void) => boolean;
+let leaveGuard: LeaveGuard | null = null;
+
+/** Installs `guard` until the returned function removes it. */
+export function setLeaveGuard(guard: LeaveGuard): () => void {
+  leaveGuard = guard;
+  return () => {
+    if (leaveGuard === guard) leaveGuard = null;
+  };
+}
+
 /** Opens `route`, closing the detail sheet. */
 export function navigate(route: Route, patch: Partial<UiState> = {}) {
-  ui.set({ route, detail: null, ...patch });
+  const go = () => ui.set({ route, detail: null, ...patch });
+  if (!leaveGuard?.(route, go)) go();
 }
 
 /** Opens a fresh Pay ▸ To an address form (each call starts a new one), with what a link or a

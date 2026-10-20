@@ -12,7 +12,7 @@ describe("identity chip (DASHPAY §4, U-01 D1)", () => {
     expect(chipState({ kind: "noIdentity", reason: "waitingForSync" }, undefined)).toEqual({ kind: "join" });
     expect(chipState({ kind: "registering", draft: "1" }, undefined)).toEqual({ kind: "registering", label: null });
     expect(chipState({ kind: "contestPending", identity: "A", label: "alice", endsAt: null }, alice("alice007"))).toEqual({ kind: "contest", label: "alice" });
-    expect(chipState({ kind: "ready", main: "A" }, alice("alice"))).toEqual({ kind: "identity", username: "alice", names: "named" });
+    expect(chipState({ kind: "ready", main: "A" }, alice("alice"))).toEqual({ kind: "identity", identity: "A", username: "alice", names: "named" });
     // DashPay starting, or a status that cannot be read: no chip.
     expect(chipState({ kind: "startupIncomplete", startup: "notRun" }, undefined)).toBeNull();
     expect(chipState(undefined, undefined)).toBeNull();
@@ -20,11 +20,11 @@ describe("identity chip (DASHPAY §4, U-01 D1)", () => {
 
   it("BL-153 D12, DP1-08 D23: a nameless identity says so only once its names were fetched", () => {
     const ready = { kind: "ready", main: "A" } as const;
-    expect(chipState(ready, alice(null))).toEqual({ kind: "identity", username: null, names: "none" });
-    expect(chipState(ready, alice(null, true))).toEqual({ kind: "identity", username: null, names: "updating" });
-    expect(chipState(ready, undefined)).toEqual({ kind: "identity", username: null, names: "updating" });
-    expect(chipState(ready, alice(null, false, "pending"))).toEqual({ kind: "identity", username: null, names: "updating" });
-    expect(chipState(ready, alice(null, false, "failed"))).toEqual({ kind: "identity", username: null, names: "unknown" });
+    expect(chipState(ready, alice(null))).toEqual({ kind: "identity", identity: "A", username: null, names: "none" });
+    expect(chipState(ready, alice(null, true))).toEqual({ kind: "identity", identity: "A", username: null, names: "updating" });
+    expect(chipState(ready, undefined)).toEqual({ kind: "identity", identity: "A", username: null, names: "updating" });
+    expect(chipState(ready, alice(null, false, "pending"))).toEqual({ kind: "identity", identity: "A", username: null, names: "updating" });
+    expect(chipState(ready, alice(null, false, "failed"))).toEqual({ kind: "identity", identity: "A", username: null, names: "unknown" });
   });
 
   it("DP1-08: a watch-only wallet has no chip; a registration names its username once its row is read", () => {

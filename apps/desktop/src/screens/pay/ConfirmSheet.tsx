@@ -300,7 +300,7 @@ export function ConfirmSheet({
             <DetailRow label="Pay to" testId="pay-confirm-contact">
               {contact && (
                 <span className="pay-payee">
-                  <Avatar letters={contact.payee.letters} />
+                  <Avatar letters={contact.payee.letters} identity={contact.payee.contact} />
                   <span className="pay-payee-names">
                     <span className="confirm-label">{contact.payee.name}</span>
                     {contact.payee.sub && <span className="contact-row-username">{contact.payee.sub}</span>}
