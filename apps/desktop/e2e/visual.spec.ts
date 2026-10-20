@@ -477,6 +477,122 @@ for (const theme of THEMES) {
   });
 }
 
+// DP4-03: Edit Profile's steps over My Profile, and each list with avatars (D21).
+const WIDE_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAADwAAAAoCAIAAAAt2Q6oAAAAQUlEQVR42u3OMQ0AMAwDsAApxL1jN06lMBT5LBmAM/eV7ElJpKWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlm+kPlHd0NRnvUxsAAAAASUVORK5CYII=";
+
+const EDIT_PROFILE: Record<string, { scenario: string; reach: (page: Page) => Promise<void> }> = {
+  form: { scenario: "dashpay-avatar", reach: (p) => p.getByTestId("edit-profile-remove").waitFor() },
+  changed: {
+    scenario: "dashpay-avatar",
+    reach: async (p) => {
+      await p.getByTestId("edit-profile-remove").click();
+      await p.getByTestId("edit-profile-name").fill("Alice Pleasance Liddell of Oxford");
+      await p.getByTestId("edit-profile-name-count").filter({ hasText: "At most" }).waitFor();
+    },
+  },
+  url: {
+    scenario: "dashpay-avatar",
+    reach: async (p) => {
+      await p.getByTestId("edit-profile-url").click();
+      await p.getByTestId("edit-profile-url-field").fill("https://example.org/missing.png");
+      await p.getByTestId("edit-profile-url-fetch").click();
+      await p.getByTestId("edit-profile-step-error").waitFor();
+    },
+  },
+  gravatar: {
+    scenario: "dashpay-avatar",
+    reach: async (p) => {
+      await p.getByTestId("edit-profile-gravatar").click();
+      await p.getByTestId("edit-profile-gravatar-field").waitFor();
+    },
+  },
+  crop: {
+    scenario: "dashpay-avatar-upload",
+    reach: async (p) => {
+      await p.evaluate((data) => (window.__dwFixture!.world.tools.files.open = { name: "me.png", data }), WIDE_PNG);
+      await p.getByTestId("edit-profile-file").click();
+      await expect(p.getByTestId("edit-profile-crop-frame")).toHaveAttribute("data-crop", "10,0,40");
+    },
+  },
+  "new-picture": {
+    scenario: "dashpay-registered",
+    reach: async (p) => {
+      await p.getByTestId("edit-profile-url").click();
+      await p.getByTestId("edit-profile-url-field").fill("https://example.org/me.png");
+      await p.getByTestId("edit-profile-url-fetch").click();
+      await p.getByTestId("edit-profile-undo").waitFor();
+    },
+  },
+  error: {
+    scenario: "dashpay-profile-save-error",
+    reach: async (p) => {
+      await p.getByTestId("edit-profile-name").fill("Alice");
+      await p.getByTestId("edit-profile-save").click();
+      await authorize(p);
+      await p.getByTestId("edit-profile-error").waitFor();
+    },
+  },
+  discard: {
+    scenario: "dashpay-avatar",
+    reach: async (p) => {
+      await p.getByTestId("edit-profile-name").fill("Alice");
+      await p.getByTestId("edit-profile-cancel").click();
+      await p.getByTestId("edit-profile-keep").waitFor();
+    },
+  },
+  "pictures-off": { scenario: "dashpay-pictures-off", reach: (p) => p.getByTestId("edit-profile-pictures-off").waitFor() },
+};
+
+/** Where each list with avatars is, in `dashpay-avatars`. */
+const AVATAR_LISTS: Record<string, (page: Page) => Promise<void>> = {
+  home: (p) => p.getByTestId("home-frequent-chip").first().locator(".contact-avatar[data-picture]").waitFor(),
+  activity: async (p) => {
+    await p.getByTestId("sidebar-activity").click();
+    await p.getByTestId("tx-list").locator(".contact-avatar[data-picture]").first().waitFor();
+  },
+  contacts: async (p) => {
+    await p.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "contacts" }));
+    await p.getByTestId("contact-row").filter({ hasText: "Bob Builder" }).click();
+    await p.getByTestId("contact-detail").locator(".contact-avatar[data-picture]").first().waitFor();
+  },
+  pay: async (p) => {
+    await p.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+    await p.getByTestId("pay-picker-row").first().locator(".contact-avatar[data-picture]").waitFor();
+  },
+  bell: async (p) => {
+    await p.getByTestId("home-frequent").waitFor();
+    await p.getByTestId("toolbar-bell").click();
+    await p.getByTestId("bell-request").first().locator(".contact-avatar[data-picture]").waitFor();
+  },
+  notifications: async (p) => {
+    await p.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "notifications" }));
+    await p.getByTestId("notifications-earlier").waitFor();
+    await p.getByTestId("bell-event").first().waitFor();
+  },
+};
+
+for (const theme of THEMES) {
+  for (const [name, { scenario, reach }] of Object.entries(EDIT_PROFILE)) {
+    test(`visual edit-profile-${name} ${theme}`, async ({ page }) => {
+      await openProfile(page, scenario, theme);
+      await page.getByTestId("profile-edit").click();
+      await reach(page);
+      await page.mouse.move(0, 0);
+      await shoot(page, `edit-profile-${name}`, theme);
+    });
+  }
+  for (const [name, reach] of Object.entries(AVATAR_LISTS)) {
+    test(`visual avatars-${name} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl("dashpay-avatars", theme));
+      await page.getByTestId("toolbar").waitFor();
+      await reach(page);
+      await page.mouse.move(0, 0);
+      await shoot(page, `avatars-${name}`, theme);
+    });
+  }
+}
+
 // DP5-01: "Links you opened" over Home, as a launch offers it.
 for (const theme of THEMES) {
   test(`visual saved-links ${theme}`, async ({ page }) => {
