@@ -22,7 +22,7 @@ use crate::platform::PlatformError;
 use crate::platform::flows::{
     BudgetPurpose, DispatchResolution, DispatchState, FlowKind, LeaseStateView, RevokeCause,
 };
-use crate::send::{CoinSource, Recipient, SendFailure};
+use crate::send::{ChangePolicy, CoinSource, Recipient, SendFailure};
 use crate::{
     DashNetwork, Engine, EngineConfig, EngineError, ImportOptions, NetworkSession, WalletId,
 };
@@ -33,15 +33,17 @@ const FOREIGN: &str = "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n";
 const COIN: u64 = 100_000_000;
 const PASS: &[u8] = b"pass phrase";
 
-struct Fixture {
+/// A regtest session with a plain or encrypted vault and one wallet (also
+/// the governance vote tests').
+pub(crate) struct Fixture {
     _dir: tempfile::TempDir,
-    engine: Engine,
+    pub(crate) engine: Engine,
     rec: Arc<Recorder>,
-    session: Arc<NetworkSession>,
-    wallet: WalletId,
+    pub(crate) session: Arc<NetworkSession>,
+    pub(crate) wallet: WalletId,
 }
 
-fn fixture(encrypted: bool) -> Fixture {
+pub(crate) fn fixture(encrypted: bool) -> Fixture {
     let dir = dw_testutil::private_tempdir();
     let rec = Arc::new(Recorder::default());
     let engine = Engine::new(
@@ -93,7 +95,7 @@ fn fixture(encrypted: bool) -> Fixture {
 }
 
 impl Fixture {
-    fn grant(&self, purpose: GrantPurpose, credential: Credential<'_>) -> String {
+    pub(crate) fn grant(&self, purpose: GrantPurpose, credential: Credential<'_>) -> String {
         self.session
             .vault()
             .authorize(purpose, Some(&self.wallet.0), credential)
@@ -111,7 +113,7 @@ impl Fixture {
         )
     }
 
-    fn lease(&self, flow: FlowKind, grants: &[String]) -> Result<Lease, LeaseError> {
+    pub(crate) fn lease(&self, flow: FlowKind, grants: &[String]) -> Result<Lease, LeaseError> {
         self.engine
             .block_on(self.session.begin_lease(self.wallet, flow, grants))
     }
@@ -447,9 +449,51 @@ impl Fixture {
     }
 
     fn draft(&self, amount: u64) -> Arc<crate::send::TxDraft> {
+        self.draft_to(FOREIGN.into(), amount)
+    }
+
+    /// A fresh receive address of the wallet.
+    fn own_address(&self) -> String {
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        let inner = Arc::clone(&session);
+        self.engine.block_on(async move {
+            session
+                .on_runtime(async move {
+                    let wallet = inner.wallet(&id).await?;
+                    let address = wallet.core().next_receive_address_for_account(0).await?;
+                    Ok(address.to_string())
+                })
+                .await
+                .unwrap()
+        })
+    }
+
+    /// A DashPay contact's address, listed by the wallet's accounts but not
+    /// the wallet's ([`crate::coins::insert_contact_account`]).
+    fn contact_address(&self) -> dashcore::Address {
+        let session = Arc::clone(&self.session);
+        let id = self.wallet;
+        let inner = Arc::clone(&session);
+        self.engine.block_on(async move {
+            session
+                .on_runtime(async move {
+                    let wallet = inner.wallet(&id).await?;
+                    let mut state = wallet.state_mut().await;
+                    Ok(crate::coins::insert_contact_account(
+                        &mut state.core_wallet,
+                        id.0,
+                    ))
+                })
+                .await
+                .unwrap()
+        })
+    }
+
+    fn draft_to(&self, address: String, amount: u64) -> Arc<crate::send::TxDraft> {
         let d = self.session.new_tx_draft(self.wallet).unwrap();
         d.set_recipients(vec![Recipient {
-            address: FOREIGN.into(),
+            address,
             amount,
             subtract_fee_from_amount: false,
             label: None,
@@ -460,8 +504,16 @@ impl Fixture {
     }
 
     /// Waits up to 5 s for `f`.
-    fn eventually(&self, what: &str, mut f: impl FnMut() -> bool) {
-        for _ in 0..250 {
+    fn eventually(&self, what: &str, f: impl FnMut() -> bool) {
+        self.eventually_for(what, Duration::from_secs(5), f);
+    }
+
+    /// Waits up to `limit` for `f`: a bound only on how long a real failure
+    /// takes to show, so loaded gates do not fail a step that is merely
+    /// slow.
+    fn eventually_for(&self, what: &str, limit: Duration, mut f: impl FnMut() -> bool) {
+        let start = std::time::Instant::now();
+        while start.elapsed() < limit {
             if f() {
                 return;
             }
@@ -472,11 +524,15 @@ impl Fixture {
 }
 
 fn spend_of(lease: &Lease) -> Option<u64> {
+    spent(lease, BudgetPurpose::Spend)
+}
+
+fn spent(lease: &Lease, purpose: BudgetPurpose) -> Option<u64> {
     lease
         .view()?
         .budgets
         .iter()
-        .find(|b| b.purpose == BudgetPurpose::Spend)
+        .find(|b| b.purpose == purpose)
         .map(|b| b.spent)
 }
 
@@ -3295,4 +3351,218 @@ fn mode_b_a_mixed_sweep_skips_an_unresolved_locks_input() {
         COIN,
         "the step resolved, the coin is free"
     );
+}
+
+// MARK: MG-05 (docs/design/MG-05-authorization.md §2–§4, §7)
+
+fn masternode_lease(f: &Fixture, flow: FlowKind, max_duffs: u64) -> Lease {
+    let g = f.grant(GrantPurpose::MasternodeOp { max_duffs }, Credential::None);
+    f.lease(flow, &[g]).unwrap()
+}
+
+/// The acceptance's first half: a voting lease carries a vote signer and
+/// no transaction signer, so `TxDraft::prepare` under it signs nothing.
+#[test]
+fn mg05_a_voting_lease_cannot_sign_a_transaction() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let g = f.grant(GrantPurpose::Governance, Credential::None);
+    let l = f.lease(FlowKind::Voting, &[g]).unwrap();
+    l.vote_signer().unwrap();
+    assert_eq!(l.tx_purpose(), None);
+    for purpose in [BudgetPurpose::Spend, BudgetPurpose::Masternode] {
+        assert_eq!(
+            l.check_tx_signer(purpose).unwrap_err(),
+            LeaseError::NeedsGrant(purpose)
+        );
+        assert_eq!(
+            l.charge_tx_signer(purpose, 1).unwrap_err(),
+            LeaseError::NeedsGrant(purpose)
+        );
+    }
+    assert!(l.uncounted_funding_signer().is_err());
+    assert!(l.identity_signer(&[0]).is_err());
+    assert!(l.contact_crypto().is_err());
+    let d = f.draft(1_000_000);
+    assert_eq!(
+        send_failure(f.engine.block_on(d.prepare(l.id_string()))),
+        SendFailure::GrantInvalid
+    );
+    assert_eq!(f.reserved(), 0);
+    // It lists no budget: a vote is never charged.
+    assert!(l.view().unwrap().budgets.is_empty());
+
+    // Each flow takes its own grant only.
+    let gov = || f.grant(GrantPurpose::Governance, Credential::None);
+    let op = || {
+        f.grant(
+            GrantPurpose::MasternodeOp { max_duffs: 1 },
+            Credential::None,
+        )
+    };
+    for (flow, wrong) in [
+        (FlowKind::Voting, op()),
+        (FlowKind::Voting, f.platform_op(1, 1)),
+        (FlowKind::MasternodeRegistration, gov()),
+        (FlowKind::KeyChange, gov()),
+        (
+            FlowKind::KeyChange,
+            f.grant(GrantPurpose::Spend { max_duffs: 1 }, Credential::None),
+        ),
+        (FlowKind::ContactRequest, gov()),
+        (FlowKind::AcceptAndPay, op()),
+    ] {
+        assert_eq!(
+            f.lease(flow, &[wrong]).unwrap_err(),
+            LeaseError::Invalid,
+            "{flow:?}"
+        );
+    }
+    let l = f.lease(FlowKind::MasternodeRegistration, &[op()]).unwrap();
+    assert!(l.vote_signer().is_err());
+    assert_eq!(l.tx_purpose(), Some(BudgetPurpose::Masternode));
+}
+
+/// The acceptance's second half: a `FundNew`-shaped transaction (its
+/// collateral paid to the wallet itself) is charged its fee alone, at the
+/// cap exactly, and one duff under it refuses; a foreign output is charged
+/// with the fee.
+#[test]
+fn mg05_a_fund_new_collateral_is_not_charged_and_its_fee_is() {
+    let f = fixture(false);
+    f.credit(1, 1_001 * COIN);
+    let collateral = f.draft_to(f.own_address(), 1_000 * COIN);
+    // The fee, from a reference prepare under a roomy cap.
+    let roomy = masternode_lease(&f, FlowKind::MasternodeRegistration, COIN);
+    let p = f
+        .engine
+        .block_on(collateral.prepare(roomy.id_string()))
+        .unwrap();
+    let fee = p.summary().fee;
+    assert!(fee > 0);
+    assert_eq!(p.summary().total_debit, fee);
+    assert_eq!(spent(&roomy, BudgetPurpose::Masternode), Some(fee));
+    f.engine.block_on(collateral.abandon(p)).unwrap();
+    assert_eq!(spent(&roomy, BudgetPurpose::Masternode), Some(0));
+
+    let under = masternode_lease(&f, FlowKind::MasternodeRegistration, fee - 1);
+    assert!(matches!(
+        send_failure(f.engine.block_on(collateral.prepare(under.id_string()))),
+        SendFailure::GrantExceeded { outflow, .. } if outflow == fee
+    ));
+    assert_eq!(spent(&under, BudgetPurpose::Masternode), Some(0));
+    assert_eq!(f.reserved(), 0);
+    let exact = masternode_lease(&f, FlowKind::MasternodeRegistration, fee);
+    let p = f
+        .engine
+        .block_on(collateral.prepare(exact.id_string()))
+        .unwrap();
+    assert_eq!(spent(&exact, BudgetPurpose::Masternode), Some(fee));
+    assert_eq!(spend_of(&exact), None);
+    f.engine.block_on(collateral.abandon(p)).unwrap();
+
+    // A foreign output is charged with the fee (a key change's lease).
+    let paid = f.draft(1_000_000);
+    let kc = masternode_lease(&f, FlowKind::KeyChange, COIN);
+    let p = f.engine.block_on(paid.prepare(kc.id_string())).unwrap();
+    let debit = p.summary().total_debit;
+    assert_eq!(debit, 1_000_000 + p.summary().fee);
+    assert_eq!(spent(&kc, BudgetPurpose::Masternode), Some(debit));
+    // A definite NotSent (SPV is not running) refunds the Masternode budget.
+    assert_eq!(
+        send_failure(f.engine.block_on(paid.broadcast(p))),
+        SendFailure::NoPeers
+    );
+    assert_eq!(spent(&kc, BudgetPurpose::Masternode), Some(0));
+    assert_eq!(f.reserved(), 0);
+
+    // A lock revokes the lease: it prepares nothing more.
+    f.session.lock_vault_sync().unwrap();
+    assert_eq!(
+        send_failure(f.engine.block_on(paid.prepare(kc.id_string()))),
+        SendFailure::Cancelled
+    );
+}
+
+/// MG-05 D19 (review H1): a contact's DIP-15 address is in the wallet's
+/// account list (its external account) but is the contact's, so a draft
+/// paying it, or sending its change there, is charged amount and fee.
+#[test]
+fn mg05_a_contacts_address_is_charged_as_foreign() {
+    let f = fixture(false);
+    f.credit(1, 2 * COIN);
+    let contact = f.contact_address();
+
+    let d = f.draft_to(contact.to_string(), 1_000_000);
+    let l = masternode_lease(&f, FlowKind::MasternodeRegistration, COIN);
+    let p = f.engine.block_on(d.prepare(l.id_string())).unwrap();
+    let debit = 1_000_000 + p.summary().fee;
+    assert_eq!(p.summary().total_debit, debit);
+    assert_eq!(spent(&l, BudgetPurpose::Masternode), Some(debit));
+    f.engine.block_on(d.abandon(p)).unwrap();
+    let under = masternode_lease(&f, FlowKind::MasternodeRegistration, debit - 1);
+    assert!(matches!(
+        send_failure(f.engine.block_on(d.prepare(under.id_string()))),
+        SendFailure::GrantExceeded { .. }
+    ));
+
+    // Change sent to the contact leaves the wallet too: paying the wallet
+    // itself from the one 2 DASH coin, all but the payment is charged
+    // (review r1 F3).
+    let d = f.draft_to(f.own_address(), 1_000_000);
+    d.set_change(ChangePolicy::Address(contact.to_string()))
+        .unwrap();
+    let l = masternode_lease(&f, FlowKind::MasternodeRegistration, 2 * COIN);
+    let p = f.engine.block_on(d.prepare(l.id_string())).unwrap();
+    let debit = 2 * COIN - 1_000_000;
+    assert_eq!(p.summary().total_debit, debit);
+    assert_eq!(spent(&l, BudgetPurpose::Masternode), Some(debit));
+    f.engine.block_on(d.abandon(p)).unwrap();
+}
+
+/// D19 (validator r2): the wallet signs no message for a contact's
+/// address, which it lists but does not own; its own address signs.
+#[test]
+fn mg05_a_contacts_address_signs_no_message() {
+    let f = fixture(false);
+    let contact = f.contact_address();
+    let sign = |address: String| {
+        let g = f.grant(GrantPurpose::SignMessage, Credential::None);
+        f.engine
+            .block_on(f.session.sign_message(f.wallet, address, b"m".to_vec(), g))
+    };
+    let r = sign(contact.to_string());
+    assert!(matches!(r, Err(EngineError::AddressNotMine(_))), "{r:?}");
+    sign(f.own_address()).unwrap();
+}
+
+/// A prepare that fails after its charge, before it signed (a lock while
+/// it waits to sign), refunds the charge to the budget it was taken from:
+/// the Masternode budget's spent returns to 0 (review r1 F3, mutant E11).
+#[test]
+fn mg05_a_failed_prepare_refunds_the_masternode_budget() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let d = f.draft(1_000_000);
+    let l = masternode_lease(&f, FlowKind::KeyChange, COIN);
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.coin_fences.pause_prepare.lock().unwrap() = Some(Arc::clone(&pause));
+    let prepare = f.session.rt.spawn({
+        let (d, id) = (Arc::clone(&d), l.id_string());
+        async move { d.prepare(id).await }
+    });
+    f.eventually_for("the prepare's pause", Duration::from_secs(120), || {
+        pause.reached.load(SeqCst)
+    });
+    let charged = spent(&l, BudgetPurpose::Masternode).unwrap();
+    assert!(charged > 1_000_000, "{charged}");
+    f.session.lock_vault_sync().unwrap();
+    pause.release.notify_one();
+    let failed = f.engine.block_on(prepare).unwrap();
+    assert!(failed.is_err(), "{failed:?}");
+    assert_eq!(spent(&l, BudgetPurpose::Masternode), Some(0));
+    assert_eq!(spend_of(&l), None);
+    assert_eq!(f.reserved(), 0);
 }

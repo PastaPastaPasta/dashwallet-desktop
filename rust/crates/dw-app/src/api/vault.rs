@@ -165,6 +165,22 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: Platform signers are built by the lease table",
     ),
     (
+        "Vault::vote_signer",
+        "internal: the vote signer is built by the engine under a Governance grant (MG-05)",
+    ),
+    (
+        "Vault::vote_signer_held",
+        "internal: the vote signer is built by the lease table (MG-05)",
+    ),
+    (
+        "Vault::masternode_signer",
+        "internal: masternode signers are built by the engine under a MasternodeOp grant (MG-05)",
+    ),
+    (
+        "Vault::masternode_signer_held",
+        "internal: masternode signers are built by the lease table (MG-05)",
+    ),
+    (
         "Vault::dashpay_crypto_signer",
         "internal: the DashPay signer is built by the engine's bring-up and leases",
     ),
@@ -261,6 +277,11 @@ pub enum GrantPurposeSpec {
     },
     /// The identity scan, the only grant that releases the wallet's master key.
     IdentityScan,
+    /// Governance votes with the wallet's voting keys; signs no transaction.
+    Governance,
+    /// Masternode transactions (ProRegTx, ProUpRegTx): each may take at most
+    /// `max_duffs` out of the wallet, fee included.
+    MasternodeOp { max_duffs: u64 },
 }
 
 impl From<GrantPurposeSpec> for GrantPurpose {
@@ -280,6 +301,8 @@ impl From<GrantPurposeSpec> for GrantPurpose {
                 max_credits,
             },
             S::IdentityScan => GrantPurpose::IdentityScan,
+            S::Governance => GrantPurpose::Governance,
+            S::MasternodeOp { max_duffs } => GrantPurpose::MasternodeOp { max_duffs },
         }
     }
 }
@@ -301,6 +324,8 @@ impl From<GrantPurpose> for GrantPurposeSpec {
                 max_credits,
             },
             P::IdentityScan => Self::IdentityScan,
+            P::Governance => Self::Governance,
+            P::MasternodeOp { max_duffs } => Self::MasternodeOp { max_duffs },
         }
     }
 }
@@ -352,12 +377,13 @@ impl From<CredentialSpec> for OwnedCredential {
 }
 
 /// "Require authentication for every payment" at the IPC boundary: while
-/// it is on, an unlocked encrypted vault issues `spend` and `platformOp`
-/// grants only against the passphrase or the quick-unlock key, never
-/// `unencrypted`, so a compromised renderer cannot obtain a payment grant
-/// without a prompt. The vault itself takes `Credential::None` for them
-/// once unlocked (dash-qt behaviour, the setting off); a locked vault
-/// refuses it itself (`vault.locked`).
+/// it is on, an unlocked encrypted vault issues `spend`, `platformOp`,
+/// `masternodeOp` and `governance` grants only against the passphrase or
+/// the quick-unlock key, never `unencrypted`, so a compromised renderer
+/// cannot obtain a payment or voting grant without a prompt (MG-05 D11).
+/// The vault itself takes `Credential::None` for them once unlocked
+/// (dash-qt behaviour, the setting off); a locked vault refuses it itself
+/// (`vault.locked`).
 fn check_payment_auth(
     vault: &dw_vault::Vault,
     credential: &OwnedCredential,
@@ -426,11 +452,19 @@ async fn issue_grants(
     Ok(grants)
 }
 
-/// Whether the setting applies: a `spend` or `platformOp` among `purposes`.
+/// Whether the setting applies: a purpose that moves funds (`spend`,
+/// `platformOp`, `masternodeOp`) among `purposes`, or casts votes
+/// (`governance`: MG-00's "N votes, one passphrase", MG-05 D11).
 fn pays(purposes: &[GrantPurpose]) -> bool {
-    purposes
-        .iter()
-        .any(|p| matches!(p, GrantPurpose::Spend { .. } | GrantPurpose::PlatformOp { .. }))
+    purposes.iter().any(|p| {
+        matches!(
+            p,
+            GrantPurpose::Spend { .. }
+                | GrantPurpose::PlatformOp { .. }
+                | GrantPurpose::MasternodeOp { .. }
+                | GrantPurpose::Governance
+        )
+    })
 }
 
 impl OwnedCredential {

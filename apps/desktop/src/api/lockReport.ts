@@ -42,6 +42,10 @@ export const FLOW_NAME: Record<FlowKindName, string> = {
   privateDetails: "Private contact details",
   enableDashPayKeys: "Enabling DashPay keys",
   contactPayment: "Contact payment",
+  // MG-00 D35's lease names (MG-05).
+  voting: "Voting",
+  masternodeRegistration: "Masternode registration",
+  keyChange: "Key change",
 };
 
 const PENDING: ReadonlySet<FlowOutcomeName> = new Set(["maybeSent", "willBeSent"]);

@@ -129,7 +129,7 @@ engine and FFI tests (review H2).
 **Credential requirements** (Rust enforces these in `dw_vault::Vault::authorize`, review M5; Swift's
 `AuthenticationGate.requirement(for:)` must ask for at least as much):
 
-| Vault state | `RevealSecret`, `Wipe`, `ChangeCredential` | `Spend`, `SignMessage`, `PlatformOp`, `IdentityScan` (E0-04) |
+| Vault state | `RevealSecret`, `Wipe`, `ChangeCredential` | `Spend`, `SignMessage`, `PlatformOp`, `IdentityScan` (E0-04), `Governance`, `MasternodeOp` (MG-05) |
 |---|---|---|
 | `NoVault` | `vault.no_vault` | `vault.no_vault` |
 | `NoKeys`, `Unencrypted` | none (`Unencrypted`); a passphrase gives `vault.not_encrypted` | none (`Unencrypted`); a passphrase gives `vault.not_encrypted` |
@@ -140,7 +140,8 @@ engine and FFI tests (review H2).
 `QuickUnlock` stands in for the passphrase where slot B is enrolled (M2); without it, it returns
 `vault.quick_unlock_unavailable`. It issues `Spend`, `SignMessage` and, since E0-04 (P1), `PlatformOp`, capped at the
 spend limit: a grant's value is `max_duffs` for `Spend`, `max_duffs + ceil(max_credits / 1000)` for `PlatformOp`
-(`dw_vault::CREDITS_PER_DUFF` = 1000 credits per duff) and 0 for `SignMessage`. `authorize_set` checks one sum over
+(`dw_vault::CREDITS_PER_DUFF` = 1000 credits per duff) and 0 for `SignMessage`. Since MG-05 (D2) it also issues
+`MasternodeOp`, valued at its `max_duffs`, and `Governance`, valued at 0 (a vote moves no funds). `authorize_set` checks one sum over
 the whole set, `Spend` grants included, and the passphrase must be fresh, as for `Spend`
 (`vault.passphrase_stale`; DEC-67; E0-04 design §3.7). Anything above the limit is
 `vault.quick_unlock_limit_exceeded`, and the host asks for the passphrase. `RevealSecret`, `Wipe`,
@@ -177,6 +178,20 @@ engine asks for the funding budget left), `PlatformIdentity` a token `max_credit
 `DashPayCrypto` comes with any `PlatformOp`. The identity-scan key (`Vault::scan_key`, below), which is the master
 key, has its own grant, `IdentityScan`: `scan_key` refuses a `PlatformOp` token (`vault.grant_purpose_mismatch`),
 so a capped flow token cannot release it (E0-04 design §3.2).
+
+**Masternode signers** (MG-05, `docs/design/MG-05-authorization.md` §1–§3; engine-internal, not on the FFI). A
+redeemed `Governance` grant yields a `VoteSigner` (`Vault::vote_signer`, `vote_signer_held`), and a redeemed
+`MasternodeOp{max_duffs}` grant a `MasternodeOwner` signer (`Vault::masternode_signer`, `masternode_signer_held`);
+each refuses a token of any other purpose (`vault.grant_purpose_mismatch`). The `VoteSigner` is not a `VaultSigner`: it
+takes a funding vote's fields, computes Core's vote digest itself and signs only that, so no voting key signs a
+transaction (D1). `MasternodeOp`'s cap is the engine's, charged at `TxDraft.prepare` (MG-05 §2). dw-ffi's frozen
+`GrantPurpose` cannot request either, and lists a `MasternodeOp` grant as `Spend{max_duffs}` and a `Governance`
+grant as `SignMessage` (D15).
+
+| Scope | Uses | Paths |
+|---|---|---|
+| `MasternodeVoting` | the voting key id; a compact signature over a funding vote's digest (no `Signer`, no message) | keychain voting keys `m/9'/coin'/3'/1'/i` (non-hardened `i`); the `voting` key attached to any tracked masternode (MG-01 D7) |
+| `MasternodeOwner` | sign, public key; message signing on addresses | BIP44 and BIP32 addresses; keychain owner keys `m/9'/coin'/3'/2'/i` (sign and public key only) |
 
 | Scope | Uses | Paths |
 |---|---|---|
@@ -222,8 +237,8 @@ finishes with its copy and every later call of a held signer is `vault.locked` (
 its hold is gone: only that hold issues for it). **Which tokens may issue directly:** a
 vault-key token (an unlocked vault), and an own-key token only for `Spend` and `SignMessage`. That is the M1
 exception: send, PSBT, message and CoinJoin drop their token as soon as they hold the signer, which keeps its own
-copy, until E0-04 P5 moves them onto holds. An own-key `PlatformOp` or `IdentityScan` token issues nothing directly
-(`invalid_argument`). `Vault::epoch()` (not secret) changes on every lock, every unlock that changes the lock state
+copy, until E0-04 P5 moves them onto holds. An own-key `PlatformOp`, `IdentityScan`, `Governance` or `MasternodeOp` token issues
+nothing directly (`invalid_argument`). `Vault::epoch()` (not secret) changes on every lock, every unlock that changes the lock state
 or scope, and every passphrase change, encrypt, recover and destroy, each of which ends every grant, token and
 signer of the old epoch, held ones included; the engine compares it around vault calls (E0-04 design §8.6).
 

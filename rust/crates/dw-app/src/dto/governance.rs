@@ -439,6 +439,16 @@ pub enum VoteOutcomeName {
 
 mirror_enum!(engine::VoteOutcome => VoteOutcomeName { Yes, No, Abstain });
 
+impl From<VoteOutcomeName> for engine::VoteOutcome {
+    fn from(o: VoteOutcomeName) -> Self {
+        match o {
+            VoteOutcomeName::Yes => Self::Yes,
+            VoteOutcomeName::No => Self::No,
+            VoteOutcomeName::Abstain => Self::Abstain,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CurrentVoteRow {
@@ -529,6 +539,35 @@ impl From<engine::VotingMasternode> for VotingMasternode {
             key_holders,
             key_last_vote: key_last_vote.map(Into::into),
             key_last_vote_time,
+        }
+    }
+}
+
+/// One masternode's result of `governance_vote` (MG-05 §5): `hash` and
+/// `peers` when its vote was taken (0 peers: kept and announced on the next
+/// connection), else the `rejected` reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct VoteCast {
+    pub pro_tx_hash: String,
+    pub hash: Option<String>,
+    pub peers: u32,
+    pub rejected: Option<String>,
+}
+
+impl From<engine::VoteCast> for VoteCast {
+    fn from(c: engine::VoteCast) -> Self {
+        let engine::VoteCast {
+            pro_tx_hash,
+            hash,
+            peers,
+            rejected,
+        } = c;
+        VoteCast {
+            pro_tx_hash,
+            hash,
+            peers,
+            rejected,
         }
     }
 }

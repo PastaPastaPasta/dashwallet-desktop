@@ -13,7 +13,7 @@ use dw_engine::EngineError;
 use dw_engine::governance::{
     CurrentVoteRow, GovernanceClock, GovernanceError, GovernanceInfo, GovernanceSyncPhase,
     GovernanceSyncState, MasternodeType, ProposalCounts, ProposalDetail, ProposalRow,
-    ProposalStatus, SignalTallies, SuperblockDate, VoteOutcome, VoteSignal, VoteTally,
+    ProposalStatus, SignalTallies, SuperblockDate, VoteCast, VoteOutcome, VoteSignal, VoteTally,
     VotingMasternode, WeightRange,
 };
 use serde_json::{Value, json};
@@ -172,6 +172,20 @@ fn build() -> Value {
             key_last_vote_time: Some(1_789_200_000),
         },
     ];
+    let cast = vec![
+        VoteCast {
+            pro_tx_hash: "a1".repeat(32),
+            hash: Some("7e".repeat(32)),
+            peers: 0,
+            rejected: None,
+        },
+        VoteCast {
+            pro_tx_hash: "b2".repeat(32),
+            hash: None,
+            peers: 0,
+            rejected: Some("too_often".into()),
+        },
+    ];
     let superblocks = vec![
         SuperblockDate {
             height: 2_354_256,
@@ -200,6 +214,7 @@ fn build() -> Value {
         GovernanceError::NotImplemented {
             call: "Governance.vote".into(),
         },
+        GovernanceError::Platform(dw_engine::platform::PlatformError::GrantInvalid),
         GovernanceError::Engine(EngineError::InvalidArgument(
             "not a 64-character hex hash".into(),
         )),
@@ -225,6 +240,9 @@ fn build() -> Value {
             "governance_proposal": to_json(dto::ProposalDetail::from(detail)),
             "governance_current_votes": to_json(
                 votes.into_iter().map(dto::CurrentVoteRow::from).collect::<Vec<_>>()
+            ),
+            "governance_vote": to_json(
+                cast.into_iter().map(dto::VoteCast::from).collect::<Vec<_>>()
             ),
             "governance_voting_masternodes": to_json(
                 masternodes.into_iter().map(dto::VotingMasternode::from).collect::<Vec<_>>()

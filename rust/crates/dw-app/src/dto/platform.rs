@@ -30,19 +30,27 @@ pub enum FlowKindName {
     EnableDashPayKeys,
     /// One payment to a contact, under a `Spend` grant only (DP3-01).
     ContactPayment,
+    /// A batch of governance votes under one `governance` grant (MG-05).
+    Voting,
+    /// A ProRegTx under a `masternodeOp` grant (MG-05).
+    MasternodeRegistration,
+    /// A ProUpRegTx under a `masternodeOp` grant (MG-05).
+    KeyChange,
 }
 
 mirror_enum!(FlowKind => FlowKindName {
     Registration, TopUp, Withdraw, NameRegistration, ProfileEdit, ContactRequest, Accept,
-    AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment
+    AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment, Voting,
+    MasternodeRegistration, KeyChange
 });
 mirror_enum!(FlowKindName => FlowKind {
     Registration, TopUp, Withdraw, NameRegistration, ProfileEdit, ContactRequest, Accept,
-    AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment
+    AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment, Voting,
+    MasternodeRegistration, KeyChange
 });
 
-/// A lease budget: `funding` and `spend` are duffs, `credits` credits;
-/// `crypto` hands nothing off.
+/// A lease budget: `funding`, `spend` and `masternode` are duffs, `credits`
+/// credits; `crypto` and `voting` hand nothing off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum BudgetPurposeName {
@@ -50,9 +58,13 @@ pub enum BudgetPurposeName {
     Credits,
     Spend,
     Crypto,
+    Masternode,
+    Voting,
 }
 
-mirror_enum!(BudgetPurpose => BudgetPurposeName { Funding, Credits, Spend, Crypto });
+mirror_enum!(BudgetPurpose => BudgetPurposeName {
+    Funding, Credits, Spend, Crypto, Masternode, Voting
+});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -282,7 +294,7 @@ pub const MAX_ID_BYTES: usize = 128;
 /// (`walletsWithSecretsOmitted`), and `lockStatus` lists them all.
 pub const MAX_REPORT_WALLETS: usize = 16;
 /// Budgets a lease lists: the engine keeps one per purpose.
-pub const MAX_LEASE_BUDGETS: usize = 4;
+pub const MAX_LEASE_BUDGETS: usize = 6;
 
 /// The first `max` of `items`, the ones a reader must not miss first: an
 /// outcome nobody knows (`maybeSent`), then one still going out

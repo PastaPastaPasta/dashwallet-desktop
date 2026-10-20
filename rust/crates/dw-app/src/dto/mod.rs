@@ -527,7 +527,7 @@ mod tests {
         };
         assert_eq!(MAX_SYNC_PHASES, phases(P::Headers));
         let budgets = |b: B| match b {
-            B::Funding | B::Credits | B::Spend | B::Crypto => 4,
+            B::Funding | B::Credits | B::Spend | B::Crypto | B::Masternode | B::Voting => 6,
         };
         assert_eq!(MAX_LEASE_BUDGETS, budgets(B::Funding));
     }

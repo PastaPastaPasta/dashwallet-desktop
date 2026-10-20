@@ -234,6 +234,20 @@
         "exact": false
       }
     ],
+    "governance_vote": [
+      {
+        "proTxHash": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "hash": "7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e",
+        "peers": 0,
+        "rejected": null
+      },
+      {
+        "proTxHash": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "hash": null,
+        "peers": 0,
+        "rejected": "too_often"
+      }
+    ],
     "governance_voting_masternodes": [
       {
         "proTxHash": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
@@ -308,6 +322,11 @@
         "kind": "call",
         "call": "Governance.vote"
       }
+    },
+    {
+      "code": "platform.grant_invalid",
+      "message": "grant invalid",
+      "data": null
     },
     {
       "code": "invalid_argument",

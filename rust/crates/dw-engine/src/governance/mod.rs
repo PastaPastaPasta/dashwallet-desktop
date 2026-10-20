@@ -19,8 +19,8 @@ pub use errors::GovernanceError;
 pub use records::{
     CurrentVoteRow, GovernanceClock, GovernanceInfo, GovernanceSyncPhase, GovernanceSyncState,
     MasternodeType, ProposalCounts, ProposalDetail, ProposalQuery, ProposalRow, ProposalScope,
-    ProposalStatus, RawVote, SignalTallies, SuperblockDate, VoteOutcome, VoteRelayed, VoteSignal,
-    VoteTally, VotingMasternode, WeightRange,
+    ProposalStatus, RawVote, SignalTallies, SuperblockDate, VoteCast, VoteOutcome, VoteRelayed,
+    VoteSignal, VoteTally, VotingMasternode, WeightRange,
 };
 
 use crate::{DashNetwork, EngineError, NetworkSession};
@@ -102,9 +102,4 @@ impl Governance {
 /// superblock at `height`, 0 for a height that is not one.
 pub fn superblock_budget(network: &DashNetwork, height: u32) -> u64 {
     dw_governance::clock::superblock_budget(network.core_network(), height)
-}
-
-/// A contract stub's body (`governance.not_implemented{call}`).
-fn stub<T>(call: &str) -> Result<T, GovernanceError> {
-    Err(GovernanceError::NotImplemented { call: call.into() })
 }

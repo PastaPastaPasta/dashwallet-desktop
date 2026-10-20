@@ -153,6 +153,8 @@ import type { Utxo } from "./Utxo";
 import type { UtxoFilter } from "./UtxoFilter";
 import type { VaultRecovery } from "./VaultRecovery";
 import type { VerifyMessageResult } from "./VerifyMessageResult";
+import type { VoteCast } from "./VoteCast";
+import type { VoteOutcomeName } from "./VoteOutcomeName";
 import type { VotingMasternode } from "./VotingMasternode";
 import type { WalletFileInfo } from "./WalletFileInfo";
 import type { WalletLoadStatus } from "./WalletLoadStatus";
@@ -2201,9 +2203,8 @@ export function governanceProposal(hash: string): Promise<ProposalDetail> {
 
 /**
  * Core's `gobject getcurrentvotes`: every current vote on the proposal,
- * of one collateral outpoint (`"<txid>-<n>"`, lower-case hex) when
- * given. The engine matches the string as written, so an outpoint in
- * another form finds no votes (MG-02 D97).
+ * of one collateral outpoint (`"<txid>-<n>"`, parsed as Core does: 64
+ * hex characters in any case, then the index; MG-05 D10) when given.
  */
 export function governanceCurrentVotes(hash: string, outpoint: string | null): Promise<Array<CurrentVoteRow>> {
   return invoke<Array<CurrentVoteRow>>("governance_current_votes", { hash, outpoint });
@@ -2216,6 +2217,16 @@ export function governanceCurrentVotes(hash: string, outpoint: string | null): P
  */
 export function governanceVotingMasternodes(walletId: string, proposal: string): Promise<Array<VotingMasternode>> {
   return invoke<Array<VotingMasternode>>("governance_voting_masternodes", { walletId, proposal });
+}
+
+/**
+ * Signs and relays a funding vote on `proposal` with each masternode
+ * (proTxHash) under one `Governance` grant of the wallet: one result per
+ * masternode, in order (MG-05 §5). Argument and sync errors fail the
+ * call before the grant is used; lease errors are `platform.*`.
+ */
+export function governanceVote(walletId: string, proposal: string, outcome: VoteOutcomeName, masternodes: Array<string>, grant: string): Promise<Array<VoteCast>> {
+  return invoke<Array<VoteCast>>("governance_vote", { walletId, proposal, outcome, masternodes, grant });
 }
 
 /**
@@ -2527,6 +2538,7 @@ export type CommandArgs = {
   governance_proposal: { hash: string };
   governance_current_votes: { hash: string; outpoint: string | null };
   governance_voting_masternodes: { walletId: string; proposal: string };
+  governance_vote: { walletId: string; proposal: string; outcome: VoteOutcomeName; masternodes: Array<string>; grant: string };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
@@ -2790,6 +2802,7 @@ export type CommandResults = {
   governance_proposal: ProposalDetail;
   governance_current_votes: Array<CurrentVoteRow>;
   governance_voting_masternodes: Array<VotingMasternode>;
+  governance_vote: Array<VoteCast>;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
@@ -3055,6 +3068,7 @@ export const COMMANDS: Record<CommandName, string> = {
   governance_proposal: "governance",
   governance_current_votes: "governance",
   governance_voting_masternodes: "governance",
+  governance_vote: "governance",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",

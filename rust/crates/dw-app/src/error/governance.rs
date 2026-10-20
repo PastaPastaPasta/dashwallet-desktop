@@ -1,7 +1,8 @@
 //! The governance facade's error (mg-engine §4, BL-232). The strings are the
 //! engine's `code()`s; `tests::codes_match_the_engine` holds them equal. The
 //! common codes (`network_not_open`, `invalid_argument`, …) come through
-//! `Engine` as every domain's do.
+//! `Engine` as every domain's do, and a `vote` grant's refusals through
+//! `Platform` as `platform.*` (MG-05 §5).
 
 use dw_engine::governance::GovernanceError;
 
@@ -33,6 +34,7 @@ impl From<GovernanceError> for AppError {
         let message = e.to_string();
         let (code, data) = match e {
             G::Engine(e) => return e.into(),
+            G::Platform(e) => return e.into(),
             G::SyncDisabled => (GovernanceCode::SyncDisabled, None),
             G::NotSynced { phase } => (
                 GovernanceCode::NotSynced,
@@ -83,6 +85,7 @@ mod tests {
             GovernanceError::ListUnavailable,
             GovernanceError::NotImplemented { call: s() },
             GovernanceError::Engine(EngineError::NetworkNotOpen("regtest".into())),
+            GovernanceError::Platform(dw_engine::platform::PlatformError::GrantInvalid),
         ]
     }
 

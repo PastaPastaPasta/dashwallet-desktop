@@ -29,7 +29,6 @@ const NOT_BOUND: Record<string, string> = {
   governance: "the handle: every command takes it from the open session",
   superblock_budget: "a free function of a height; governance_upcoming_superblocks gives each budget",
   relay_vote: "Core's voteraw, which the console runs",
-  vote: "a stub until MG-05's voting grant",
 };
 
 /** The text of the `##`-level section that starts with `heading`. */
@@ -173,6 +172,7 @@ describe("governance contract", () => {
     const r = VECTORS.results;
     const hash = r.governance_proposal.row.hash;
     const outpoint = r.governance_current_votes[1].outpoint;
+    const mn = r.governance_voting_masternodes[0].proTxHash;
     // Typed by command, so a command added without a call here fails tsc.
     const run: { [K in GovernanceCommand]: () => Promise<CommandResults[K]> } = {
       governance_sync_enabled: () => cmd.governanceSyncEnabled(),
@@ -186,6 +186,7 @@ describe("governance contract", () => {
       governance_proposal: () => cmd.governanceProposal(hash),
       governance_current_votes: () => cmd.governanceCurrentVotes(hash, outpoint),
       governance_voting_masternodes: () => cmd.governanceVotingMasternodes("ab".repeat(32), hash),
+      governance_vote: () => cmd.governanceVote("ab".repeat(32), hash, "no", [mn], "grant-1"),
     };
     for (const call of Object.values(run)) await call();
     expect(calls.map(([name]) => name).sort()).toEqual(Object.keys(run).sort());
@@ -194,6 +195,7 @@ describe("governance contract", () => {
     expect(calls).toContainEqual(["governance_proposals", { query: { scope: "current", text: "wallet" } }]);
     expect(calls).toContainEqual(["governance_current_votes", { hash, outpoint }]);
     expect(calls).toContainEqual(["governance_voting_masternodes", { walletId: "ab".repeat(32), proposal: hash }]);
+    expect(calls).toContainEqual(["governance_vote", { walletId: "ab".repeat(32), proposal: hash, outcome: "no", masternodes: [mn], grant: "grant-1" }]);
   });
 
   it("mirrors each §3 enum of a record field, variant for variant", () => {

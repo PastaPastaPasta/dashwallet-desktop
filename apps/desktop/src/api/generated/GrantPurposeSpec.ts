@@ -3,4 +3,4 @@
 /**
  * What a grant authorizes (E0-04 design §3.1).
  */
-export type GrantPurposeSpec = { "kind": "spend", maxDuffs: number, } | { "kind": "revealSecret" } | { "kind": "signMessage" } | { "kind": "changeCredential" } | { "kind": "wipe" } | { "kind": "platformOp", maxDuffs: number, maxCredits: string, } | { "kind": "identityScan" };
+export type GrantPurposeSpec = { "kind": "spend", maxDuffs: number, } | { "kind": "revealSecret" } | { "kind": "signMessage" } | { "kind": "changeCredential" } | { "kind": "wipe" } | { "kind": "platformOp", maxDuffs: number, maxCredits: string, } | { "kind": "identityScan" } | { "kind": "governance" } | { "kind": "masternodeOp", maxDuffs: number, };

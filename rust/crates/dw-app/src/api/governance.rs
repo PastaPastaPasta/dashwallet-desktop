@@ -6,7 +6,7 @@
 
 use crate::dto::governance::{
     CurrentVoteRow, GovernanceClock, GovernanceInfo, GovernanceSyncState, ProposalDetail,
-    ProposalQuery, ProposalRow, SuperblockDate, VotingMasternode,
+    ProposalQuery, ProposalRow, SuperblockDate, VoteCast, VoteOutcomeName, VotingMasternode,
 };
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
@@ -17,12 +17,8 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: every governance command obtains it via state.governance",
     ),
     (
-        "Governance::vote",
-        "deferred (MG-05): a stub until the `Governance` grant purpose exists; it is bound with that grant (mg-engine §2.4)",
-    ),
-    (
         "Governance::relay_vote",
-        "internal: reached through the console's `voteraw` (`console_execute`); the UI votes with `vote` once MG-05 binds it (BL-232)",
+        "internal: reached through the console's `voteraw` (`console_execute`); the UI votes with `governance_vote` (MG-05)",
     ),
 ];
 
@@ -89,9 +85,8 @@ commands! {
     }
 
     /// Core's `gobject getcurrentvotes`: every current vote on the proposal,
-    /// of one collateral outpoint (`"<txid>-<n>"`, lower-case hex) when
-    /// given. The engine matches the string as written, so an outpoint in
-    /// another form finds no votes (MG-02 D97).
+    /// of one collateral outpoint (`"<txid>-<n>"`, parsed as Core does: 64
+    /// hex characters in any case, then the index; MG-05 D10) when given.
     #[facade("Governance::current_votes")]
     fn governance_current_votes(
         state,
@@ -118,5 +113,27 @@ commands! {
             .voting_masternodes(wallet, proposal)
             .await?;
         Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Signs and relays a funding vote on `proposal` with each masternode
+    /// (proTxHash) under one `Governance` grant of the wallet: one result per
+    /// masternode, in order (MG-05 §5). Argument and sync errors fail the
+    /// call before the grant is used; lease errors are `platform.*`.
+    #[facade("Governance::vote")]
+    fn governance_vote(
+        state,
+        wallet_id: String,
+        proposal: String,
+        outcome: VoteOutcomeName,
+        masternodes: Vec<String>,
+        grant: String,
+    ) -> Vec<VoteCast> {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let cast = state
+            .governance()
+            .await?
+            .vote(wallet, proposal, outcome.into(), masternodes, grant)
+            .await?;
+        Ok(cast.into_iter().map(Into::into).collect())
     }
 }

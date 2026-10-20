@@ -28,16 +28,19 @@ use dashcore::hashes::{Hash, HashEngine, Hmac, HmacEngine, hash160, sha256};
 use dashcore::secp256k1::{PublicKey, SecretKey};
 use zeroize::Zeroizing;
 
-use super::{KEY_LOAD_ATTEMPTS, REC_SEED, Vault, WriteGuard, decode_seed, record_id};
-use crate::VaultError;
+use super::{KEY_LOAD_ATTEMPTS, OpGuard, REC_SEED, Vault, WriteGuard, decode_seed, record_id};
 use crate::crypto::Key32;
-use crate::types::{GrantKind, WalletId};
+use crate::types::{GrantKind, KeySource, WalletId};
+use crate::{SignerError, VaultError};
 
 /// Record id prefix of attached masternode keys.
 const MN_KEY_PREFIX: &str = "mnkey/";
 /// The roles a key may be attached for: the owner and voting keys and the
 /// payout address's key. `operator` and `platform` are refused.
-pub const MASTERNODE_KEY_ROLES: [&str; 3] = ["owner", "voting", "payout"];
+pub const MASTERNODE_KEY_ROLES: [&str; 3] = ["owner", ROLE_VOTING, "payout"];
+
+/// The role of an attached voting key, the one a vote signer reads (MG-05).
+pub(crate) const ROLE_VOTING: &str = "voting";
 /// Longest key a caller may attach (a WIF is 52 characters).
 pub const MAX_MASTERNODE_KEY_BYTES: usize = 256;
 
@@ -218,11 +221,7 @@ impl Vault {
             let Some(secret) = self.read_record(dek, &mn_record_id(dek, pro_tx_hash, role))? else {
                 return Ok(None);
             };
-            let Some(secret) = <[u8; 32]>::try_from(&secret[..])
-                .ok()
-                .map(Zeroizing::new)
-                .and_then(|bytes| SecretKey::from_secret_bytes(*bytes).ok())
-            else {
+            let Some(secret) = secret_of(&secret) else {
                 return Ok(None);
             };
             std::fs::File::open(&self.shared.dir)?.sync_all()?;
@@ -231,6 +230,32 @@ impl Vault {
                 hash160::Hash::hash(&public.serialize()).to_byte_array(),
             ))
         })
+    }
+
+    /// The secret attached for `role` of `pro_tx_hash`, for a signer issued
+    /// at `epoch` whose data key is `key` (MG-05 §3): read inside the
+    /// operation `op`, which must have started in that epoch, as
+    /// [`Vault::signing_seed`] reads a seed. `NoSecret` when none is
+    /// attached or the record is no secp256k1 secret. The caller erases it.
+    pub(crate) fn attached_secret(
+        &self,
+        op: &OpGuard<'_>,
+        epoch: u64,
+        key: &KeySource,
+        pro_tx_hash: &[u8; 32],
+        role: &str,
+    ) -> Result<SecretKey, SignerError> {
+        if op.epoch != epoch {
+            return Err(SignerError::Locked);
+        }
+        let dek = match key.copy()? {
+            Some(key) => key,
+            None => Zeroizing::new(**self.inner().dek.as_ref().ok_or(SignerError::Locked)?),
+        };
+        let record = self
+            .read_record(&dek, &mn_record_id(&dek, pro_tx_hash, role))?
+            .ok_or(SignerError::NoSecret)?;
+        secret_of(&record).ok_or(SignerError::NoSecret)
     }
 
     fn roles_under(&self, dek: &Key32, pro_tx_hash: &[u8; 32]) -> Vec<String> {
@@ -271,4 +296,12 @@ impl Vault {
             Ok(changes.len())
         })
     }
+}
+
+/// The secp256k1 secret a 32-byte record holds, if it is one. secp256k1
+/// takes the bytes by value, so one unerased copy passes through its
+/// constructor (MG-05 review L9).
+fn secret_of(record: &[u8]) -> Option<SecretKey> {
+    let bytes = Zeroizing::new(<[u8; 32]>::try_from(record).ok()?);
+    SecretKey::from_secret_bytes(*bytes).ok()
 }

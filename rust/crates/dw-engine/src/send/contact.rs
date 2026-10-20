@@ -21,6 +21,7 @@ use super::{
     EngineError, Phase, PreparedTx, Recipient, SendFailure, SpendCharge, TxDraft, lease_failure,
     validate_recipients, vault_failure,
 };
+use crate::platform::BudgetPurpose;
 use crate::platform::contacts_model::Payee;
 use crate::platform::lease::Lease;
 #[cfg(test)]
@@ -144,7 +145,7 @@ impl TxDraft {
                 if !flow || !lease.has_spend() {
                     return Err(SendFailure::GrantInvalid.into());
                 }
-                lease.spend_signer().map_err(|e| lease_failure(e, 0))?;
+                (lease.check_tx_signer(BudgetPurpose::Spend)).map_err(|e| lease_failure(e, 0))?;
             }
             None => {
                 if let Err(
@@ -180,9 +181,11 @@ impl TxDraft {
         };
         let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await;
         let outflow = external_sent.saturating_add(r.plan.fee);
+        let purpose = BudgetPurpose::Spend;
         let (charge, signer) =
-            (lease.charge_spend_signer(outflow)).map_err(|e| lease_failure(e, outflow))?;
+            (lease.charge_tx_signer(purpose, outflow)).map_err(|e| lease_failure(e, outflow))?;
         let charge = SpendCharge {
+            purpose,
             lease,
             charge: Some(charge),
         };

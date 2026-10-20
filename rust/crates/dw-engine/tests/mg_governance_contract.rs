@@ -49,6 +49,7 @@ const IMPLEMENTED: &[&str] = &[
     "Governance.current_votes",
     "Governance.voting_masternodes",
     "Governance.relay_vote",
+    "Governance.vote",
 ];
 
 /// The facade's files in `src/governance/` (mg-engine.md §0). A new file
@@ -56,8 +57,14 @@ const IMPLEMENTED: &[&str] = &[
 const FACADE: &[&str] = &["errors.rs", "mod.rs", "reads.rs", "records.rs", "voting.rs"];
 
 /// Files of `src/governance/` that are not part of the facade: the sync
-/// task and its tracker, and the collateral resolver (D80) with its tests.
-const NOT_FACADE: &[&str] = &["collateral.rs", "collateral_tests.rs", "sync.rs"];
+/// task and its tracker, the collateral resolver (D80) with its tests, and
+/// `vote`'s tests (MG-05).
+const NOT_FACADE: &[&str] = &[
+    "collateral.rs",
+    "collateral_tests.rs",
+    "sync.rs",
+    "voting_tests.rs",
+];
 
 const BEGIN: &str = "<!-- BEGIN GENERATED: governance-surface -->";
 const END: &str = "<!-- END GENERATED: governance-surface -->";
@@ -796,6 +803,8 @@ struct Calls(BTreeSet<String>);
 
 impl Calls {
     /// Records the call a stub reported in its `NotImplemented { call }`.
+    /// No call is a stub since MG-05; MG-06's calls will be.
+    #[allow(dead_code)]
     fn stub<T: std::fmt::Debug>(&mut self, r: Result<T, GovernanceError>) {
         let e = r.expect_err("stubs never succeed");
         let GovernanceError::NotImplemented { call } = e else {
@@ -894,7 +903,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         signature: String::new(),
     };
 
-    let mut c = Calls::default();
+    let c = Calls::default();
     engine.block_on(async {
         // The sync setting is off by default, and the state says so.
         assert!(!gov.sync_enabled().unwrap());
@@ -953,7 +962,8 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             }
         }
 
-        c.stub(
+        // MG-05: whole-call errors come before the grant is redeemed.
+        assert_eq!(
             gov.vote(
                 wallet,
                 hash.clone(),
@@ -961,7 +971,10 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
                 vec![hash.clone()],
                 "grant".into(),
             )
-            .await,
+            .await
+            .unwrap_err()
+            .code(),
+            "governance.sync_disabled"
         );
     });
 

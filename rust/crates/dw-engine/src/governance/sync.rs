@@ -192,6 +192,12 @@ impl GovernanceRuntime {
         self.enabled.load(Ordering::SeqCst)
     }
 
+    /// Turns the setting on or off without starting the task.
+    #[cfg(test)]
+    pub(super) fn set_enabled_flag(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::SeqCst);
+    }
+
     pub fn list(&self) -> Arc<ListSnapshot> {
         Arc::clone(&self.list.read().unwrap_or_else(|p| p.into_inner()))
     }
