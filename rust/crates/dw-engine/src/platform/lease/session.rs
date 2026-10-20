@@ -23,12 +23,12 @@ use crate::{EngineError, NetworkSession, WalletId};
 
 /// Which vault grant kinds a flow's lease may carry: a `PlatformOp`, plus a
 /// `Spend` for "Accept and pay"'s payment (§16.1); a contact payment's own
-/// lease only the `Spend` (DP3-01); the masternode flows their own grant
-/// alone (MG-05 §4).
+/// lease only the `Spend` (DP3-01), as a proposal's fee (MG-06 D10); the
+/// masternode flows their own grant alone (MG-05 §4).
 fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
     match flow {
         FlowKind::AcceptAndPay => &[GrantKind::PlatformOp, GrantKind::Spend],
-        FlowKind::ContactPayment => &[GrantKind::Spend],
+        FlowKind::ContactPayment | FlowKind::Proposal => &[GrantKind::Spend],
         FlowKind::Voting => &[GrantKind::Governance],
         FlowKind::MasternodeRegistration | FlowKind::KeyChange => &[GrantKind::MasternodeOp],
         FlowKind::Registration

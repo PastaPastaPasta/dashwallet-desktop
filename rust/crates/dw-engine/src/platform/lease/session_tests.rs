@@ -119,7 +119,7 @@ impl Fixture {
     }
 
     /// Credits a confirmed coin of `value` to a fresh receive address.
-    fn credit(&self, seed: u8, value: u64) -> OutPoint {
+    pub(crate) fn credit(&self, seed: u8, value: u64) -> OutPoint {
         let session = Arc::clone(&self.session);
         let id = self.wallet;
         let inner = Arc::clone(&session);
@@ -433,7 +433,7 @@ impl Fixture {
             .unwrap()
     }
 
-    fn reserved(&self) -> usize {
+    pub(crate) fn reserved(&self) -> usize {
         self.engine
             .block_on(self.session.utxos(
                 self.wallet,
@@ -504,7 +504,7 @@ impl Fixture {
     }
 
     /// Waits up to 5 s for `f`.
-    fn eventually(&self, what: &str, f: impl FnMut() -> bool) {
+    pub(crate) fn eventually(&self, what: &str, f: impl FnMut() -> bool) {
         self.eventually_for(what, Duration::from_secs(5), f);
     }
 
@@ -3411,6 +3411,9 @@ fn mg05_a_voting_lease_cannot_sign_a_transaction() {
         ),
         (FlowKind::ContactRequest, gov()),
         (FlowKind::AcceptAndPay, op()),
+        (FlowKind::Proposal, gov()),
+        (FlowKind::Proposal, op()),
+        (FlowKind::Proposal, f.platform_op(1, 1)),
     ] {
         assert_eq!(
             f.lease(flow, &[wrong]).unwrap_err(),

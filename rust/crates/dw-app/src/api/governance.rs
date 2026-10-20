@@ -5,8 +5,9 @@
 //! `governance.*` codes.
 
 use crate::dto::governance::{
-    CurrentVoteRow, GovernanceClock, GovernanceInfo, GovernanceSyncState, ProposalDetail,
-    ProposalQuery, ProposalRow, SuperblockDate, VoteCast, VoteOutcomeName, VotingMasternode,
+    CurrentVoteRow, GovernanceClock, GovernanceInfo, GovernanceSyncState, MyProposal,
+    ProposalDetail, ProposalDraft, ProposalPreview, ProposalQuery, ProposalRow, SuperblockDate,
+    VoteCast, VoteOutcomeName, VotingMasternode,
 };
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
@@ -135,5 +136,69 @@ commands! {
             .vote(wallet, proposal, outcome.into(), masternodes, grant)
             .await?;
         Ok(cast.into_iter().map(Into::into).collect())
+    }
+
+    /// The review step of the Create Proposal wizard: the proposal's hash,
+    /// data, epochs and fees as if created now. Reserves, signs and saves
+    /// nothing. `governance.invalid_proposal` lists every failing field
+    /// (wizard order); `governance.not_synced` before a tip is known.
+    #[facade("Governance::preview_proposal")]
+    fn governance_preview_proposal(
+        state,
+        wallet_id: String,
+        draft: ProposalDraft,
+    ) -> ProposalPreview {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let preview = state
+            .governance()
+            .await?
+            .preview_proposal(wallet, draft.into())
+            .await?;
+        Ok(preview.into())
+    }
+
+    /// Creates the proposal under one `Spend` grant of the wallet covering
+    /// the proposal fee and its network fee: pays the fee and saves the
+    /// proposal, which then waits for its fee to confirm before peers are
+    /// offered it (MG-06). Argument errors fail the call before the grant
+    /// is used; lease errors are `platform.*`.
+    #[facade("Governance::create_proposal")]
+    fn governance_create_proposal(
+        state,
+        wallet_id: String,
+        draft: ProposalDraft,
+        grant: String,
+    ) -> MyProposal {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let created = state
+            .governance()
+            .await?
+            .create_proposal(wallet, draft.into(), grant)
+            .await?;
+        Ok(created.into())
+    }
+
+    /// The wallet's own proposals with where each is (mg-engine §2.5).
+    #[facade("Governance::my_proposals")]
+    fn governance_my_proposals(state, wallet_id: String) -> Vec<MyProposal> {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let rows = state.governance().await?.my_proposals(wallet)?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// The Submit action: resends the saved fee of a `feeUnsent` proposal or
+    /// an unmined `feePaid` one, or has a `readyToSubmit` one looked for by
+    /// a new sync run at once. Returns the
+    /// proposal after; `governance.submit_refused` for a public, expired or
+    /// fee-failed one.
+    #[facade("Governance::submit_proposal")]
+    fn governance_submit_proposal(state, wallet_id: String, hash: String) -> MyProposal {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let submitted = state
+            .governance()
+            .await?
+            .submit_proposal(wallet, hash)
+            .await?;
+        Ok(submitted.into())
     }
 }

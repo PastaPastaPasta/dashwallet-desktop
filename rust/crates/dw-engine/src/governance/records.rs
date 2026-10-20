@@ -351,4 +351,127 @@ pub struct SuperblockDate {
     pub height: u32,
     pub estimated_time: u64,
     pub budget: u64,
+    /// The height votes count to for this superblock: its height minus the
+    /// maturity window, the clock's cutoff (MG-06 D13).
+    pub voting_cutoff_height: u32,
+    pub voting_cutoff_estimate: u64,
+    /// The estimated cutoff is at most two days away: the proposal wizard
+    /// offers the next superblock first (UX-SPEC §4.25.3).
+    pub cutoff_soon: bool,
+}
+
+/// The Create Proposal wizard's input (mg-engine §2.5, MG-06 §2.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProposalDraft {
+    pub name: String,
+    pub url: String,
+    /// P2PKH or P2SH of the session's network (MG-06 D12).
+    pub payment_address: String,
+    /// Per payment, duffs.
+    pub payment_amount: u64,
+    pub payment_count: u32,
+    /// One of the next 12 superblocks (`upcoming_superblocks(12)`).
+    pub first_superblock_height: u32,
+    /// Coin control for the fee, `"<txid>-<n>"`: exactly these coins; empty
+    /// for automatic selection.
+    pub coins: Vec<String>,
+}
+
+/// A field of a [`ProposalDraft`] that failed validation, in wizard order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalField {
+    Name,
+    Url,
+    PaymentAddress,
+    PaymentAmount,
+    PaymentCount,
+    FirstPayment,
+    /// The JSON exceeds Core's 512 bytes, or Core's checks refuse the
+    /// built object.
+    Payload,
+}
+
+/// What the review step shows before the fee is paid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProposalPreview {
+    /// The object hash, as it would be if created now.
+    pub hash: String,
+    pub data_json: String,
+    pub data_hex: String,
+    pub start_epoch: i64,
+    pub end_epoch: i64,
+    /// The proposal fee (`proposal_fee`).
+    pub fee: u64,
+    /// The fee transaction's own network fee, estimated.
+    pub network_fee: u64,
+}
+
+/// One of the wallet's own proposals (mg-engine §2.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MyProposal {
+    pub hash: String,
+    pub name: String,
+    pub url: String,
+    pub payment_address: String,
+    pub payment_amount: u64,
+    pub payment_count: u32,
+    pub start_epoch: i64,
+    pub end_epoch: i64,
+    pub fee_txid: String,
+    pub created_at: u64,
+    /// When a peer first fetched it (MG-06 D6).
+    pub submitted_at: Option<u64>,
+    pub state: MyProposalState,
+}
+
+/// Where one of the wallet's proposals is (MG-06 §2.3, MG-00 D16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum MyProposalState {
+    /// Saved, and the wallet has not seen its fee on the network.
+    FeeUnsent,
+    /// The fee is out; not submitted yet.
+    FeePaid { confirmations: u32 },
+    /// The fee has a confirmation, and no peer took the proposal yet.
+    ReadyToSubmit { reason: SubmitWait },
+    /// A peer took it; public once the fee has 6 confirmations.
+    Confirming { confirmations: u32 },
+    /// Peers announce it (MG-02 D3). `status` once governance is synced.
+    Public { status: Option<ProposalStatus> },
+    /// Its fee's coins were spent by another confirmed transaction.
+    FeeFailed,
+    /// Its end epoch passed before it went public.
+    Expired,
+}
+
+/// Why a proposal whose fee confirmed is not submitted (yet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmitWait {
+    /// Announced to a synced run's peers, and none fetched it in 60 s.
+    NoPeerAccepted,
+    /// Governance sync is off (MG-06 D9).
+    SyncDisabled,
+    /// No run is synced, so nothing is announced yet (MG-02 D24).
+    NotSynced,
+}
+
+/// Why `submit_proposal` refused (`governance.submit_refused{reason}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmitRefusal {
+    Public,
+    Expired,
+    FeeFailed,
+}
+
+impl SubmitRefusal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Expired => "expired",
+            Self::FeeFailed => "fee_failed",
+        }
+    }
 }

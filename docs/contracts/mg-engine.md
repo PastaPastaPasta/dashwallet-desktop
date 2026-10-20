@@ -1,6 +1,6 @@
 # MG governance engine contract (`dw-engine` facade)
 
-Contract-Version: 5
+Contract-Version: 6
 
 Status: **draft**, 2026-10-16 (ROADMAP MG-02). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
 Code: `rust/crates/dw-engine/src/governance/` (§0). Design: [`MG-02-governance.md`](../design/MG-02-governance.md);
@@ -90,13 +90,31 @@ Kind is `sync`, `async` or `free, pure`. Each row says whether the call is imple
 | `relay_vote(vote: RawVote)` | async | A vote signed elsewhere (Core `voteraw`): checked as a peer's vote is (§4.1 of the design), stored, announced to the connected peers and served on `getdata`. Returns `VoteRelayed { hash, peers }`. `governance.sync_disabled` while sync is off (checked first); `governance.not_synced{phase}` until a run reached `synced`, as its checks need every current vote; `invalid_argument` for a malformed proposal hash, collateral outpoint or signature; `governance.vote_rejected{reason}` if a check fails; `governance.no_peers` if no peer is connected (the vote is kept and announced on the next connection). **Implemented.** | `GovernanceError` |
 | `vote(wallet: WalletId, proposal: String, outcome: VoteOutcome, masternodes: Vec<String>, grant: String)` | async | Signs and relays a funding vote on `proposal` per masternode (proTxHash), under one `voting` lease begun from `grant` (a `Governance` grant of `wallet`; MG-05 §4) and ended when the call returns. Returns `Vec<VoteCast>`, one per masternode in the given order (MG-05 D6). The key is the wallet's keychain voting key at indexes 0–19, else the masternode's attached `voting` key, whichever hashes to the list's voting key id; each vote is stamped with the time it is signed. **Whole-call errors**, before the grant is redeemed: `governance.sync_disabled`, `governance.not_synced`, `governance.list_unavailable`, `governance.proposal_not_found`, and `invalid_argument` for no masternodes, more than the list holds, a malformed or repeated proTxHash. The lease's errors are `GovernanceError::Platform` (`platform.grant_invalid` for a grant of another purpose or wallet, or one used; MG-05 D12). **Per masternode**, `rejected` is `unknown_masternode` (not in the tip list), `collateral_unresolved` (MG-02 D80), `no_voting_key`, `cancelled` (a lock), `signer_unavailable` (a vault error, an unreadable keychain included; MG-05 D23), `in_flight` (the same vote in flight), or a store refusal with `vote_rejected`'s reasons (§4); else `hash` is set and `peers` counts the peers it went to, 0 with none connected: kept and announced on the next connection, no error (MG-05 D7, D13). | `GovernanceError` |
 
+### 2.5 The wallet's own proposals (MG-06)
+
+Design: [`MG-06-proposals.md`](../design/MG-06-proposals.md), cited as "MG-06 D1" and so on. A `ProposalDraft` is the
+wizard's input: name, URL, payment address, the amount per payment in duffs, the payment count, the first
+superblock's height (one of `upcoming_superblocks(12)`) and optional coin control (`coins`, outpoints as
+`<txid>-<n>`, as `getcurrentvotes` prints them). `MyProposalState` is derived on every read (MG-06 §2.3):
+`fee_unsent`, `fee_paid{confirmations}`,
+`ready_to_submit{reason}` (`no_peer_accepted`, `sync_disabled`, `not_synced`), `confirming{confirmations}`,
+`public{status}`, `fee_failed`, `expired`. `SuperblockDate` (from `upcoming_superblocks`) carries the voting cutoff's
+height, its estimate and `cutoff_soon` (at most two days away, MG-06 D13).
+
+| Call | Kind | Semantics | Errors |
+|---|---|---|---|
+| `preview_proposal(wallet: WalletId, draft: ProposalDraft)` | async | The review step: `ProposalPreview` with the proposal's data JSON and hex, epochs, its hash as if created now (the created object is stamped with its own creation time, so its hash differs; MG-06 D3), the 1 DASH fee and the fee transaction's estimated network fee. Reserves, signs and saves nothing. `governance.not_synced{phase}` before a tip is known; `governance.invalid_proposal{fields}` with every failing field (MG-06 D11); `invalid_argument` for a malformed coin. **Implemented.** | `GovernanceError` |
+| `create_proposal(wallet: WalletId, draft: ProposalDraft, grant: String)` | async | Validates as `preview_proposal`, then pays the fee under a `proposal` lease begun from `grant` (a `Spend` grant of `wallet` whose cap covers 1 DASH plus the network fee; MG-06 D10) and ended when the call returns. The fee is one `OP_RETURN <hash>` output of 1 DASH and P2PKH change (D1). The proposal and its signed fee are saved before the fee is broadcast (D4, MG-00 D18). Returns `MyProposal`. A save that fails broadcasts nothing; a hand-off that definitely did not send deletes the proposal and returns the send error; one that may have sent keeps it (`fee_unsent`). The wallet submits it on its own once the fee has a confirmation (D6). The lease's errors are `GovernanceError::Platform`; the draft's are `GovernanceError::Engine` (`send` with `grant_exceeded`, `insufficient_funds` and the rest of m1's send failures). **Implemented.** | `GovernanceError` |
+| `my_proposals(wallet: WalletId)` | sync | The wallet's own proposals, newest first, each a `MyProposal` with its derived state. Works with sync off. **Implemented.** | `GovernanceError` |
+| `submit_proposal(wallet: WalletId, hash: String)` | async | The [Submit] action: a `fee_unsent` or `fee_paid{0}` proposal's saved fee is broadcast again (no grant, MG-06 D10); a `no_peer_accepted` one is looked for by a new sync run at once (D7). Returns the `MyProposal` after. `invalid_argument` for a malformed hash; `governance.proposal_not_found{hash}` for a hash that is not the wallet's; `governance.submit_refused{reason}` for a `public`, `expired` or `fee_failed` proposal; `governance.sync_disabled` while sync is off (except for a resend). **Implemented.** | `GovernanceError` |
+
 ## 3. Surface (generated)
 
 Generated by `mg_governance_contract.rs` from the facade's source files; `DW_BLESS=1` rewrites it after
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: governance-surface -->
-<!-- surface-sha256: acbb625066ccc3411d570aa0763bef4f216bc587ca43fa5574c8d127fa288613 version: 5 -->
+<!-- surface-sha256: 0681a98b12696c030d3c4aea1640467a79709a995c568716d546f4ad01a9bc8b version: 6 -->
 
 ```rust
 // src/governance/errors.rs
@@ -108,6 +126,8 @@ pub enum GovernanceError {
     VoteRejected { reason: String },
     NoPeers,
     ListUnavailable,
+    InvalidProposal { fields: Vec<ProposalField> },
+    SubmitRefused { reason: SubmitRefusal },
     NotImplemented { call: String },
     Engine(EngineError),
     Platform(PlatformError),
@@ -118,7 +138,7 @@ impl GovernanceError {
 }
 // src/governance/mod.rs
 pub use errors::GovernanceError;
-pub use records::{ CurrentVoteRow, GovernanceClock, GovernanceInfo, GovernanceSyncPhase, GovernanceSyncState, MasternodeType, ProposalCounts, ProposalDetail, ProposalQuery, ProposalRow, ProposalScope, ProposalStatus, RawVote, SignalTallies, SuperblockDate, VoteCast, VoteOutcome, VoteRelayed, VoteSignal, VoteTally, VotingMasternode, WeightRange, };
+pub use records::{ CurrentVoteRow, GovernanceClock, GovernanceInfo, GovernanceSyncPhase, GovernanceSyncState, MasternodeType, MyProposal, MyProposalState, ProposalCounts, ProposalDetail, ProposalDraft, ProposalField, ProposalPreview, ProposalQuery, ProposalRow, ProposalScope, ProposalStatus, RawVote, SignalTallies, SubmitRefusal, SubmitWait, SuperblockDate, VoteCast, VoteOutcome, VoteRelayed, VoteSignal, VoteTally, VotingMasternode, WeightRange, };
 #[derive(Clone)]
 pub struct Governance {
     ..
@@ -133,6 +153,13 @@ impl Governance {
     pub fn resync(&self) -> Result<(), GovernanceError>;
 }
 pub fn superblock_budget(network: &DashNetwork, height: u32) -> u64;
+// src/governance/proposals.rs
+impl Governance {
+    pub async fn preview_proposal(&self, wallet: WalletId, draft: ProposalDraft) -> Result<ProposalPreview, GovernanceError>;
+    pub async fn create_proposal(&self, wallet: WalletId, draft: ProposalDraft, grant: String) -> Result<MyProposal, GovernanceError>;
+    pub fn my_proposals(&self, wallet: WalletId) -> Result<Vec<MyProposal>, GovernanceError>;
+    pub async fn submit_proposal(&self, wallet: WalletId, hash: String) -> Result<MyProposal, GovernanceError>;
+}
 // src/governance/reads.rs
 pub const MAX_UPCOMING_SUPERBLOCKS: u32;
 impl Governance {
@@ -348,6 +375,83 @@ pub struct SuperblockDate {
     pub height: u32,
     pub estimated_time: u64,
     pub budget: u64,
+    pub voting_cutoff_height: u32,
+    pub voting_cutoff_estimate: u64,
+    pub cutoff_soon: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProposalDraft {
+    pub name: String,
+    pub url: String,
+    pub payment_address: String,
+    pub payment_amount: u64,
+    pub payment_count: u32,
+    pub first_superblock_height: u32,
+    pub coins: Vec<String>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalField {
+    Name,
+    Url,
+    PaymentAddress,
+    PaymentAmount,
+    PaymentCount,
+    FirstPayment,
+    Payload,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProposalPreview {
+    pub hash: String,
+    pub data_json: String,
+    pub data_hex: String,
+    pub start_epoch: i64,
+    pub end_epoch: i64,
+    pub fee: u64,
+    pub network_fee: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MyProposal {
+    pub hash: String,
+    pub name: String,
+    pub url: String,
+    pub payment_address: String,
+    pub payment_amount: u64,
+    pub payment_count: u32,
+    pub start_epoch: i64,
+    pub end_epoch: i64,
+    pub fee_txid: String,
+    pub created_at: u64,
+    pub submitted_at: Option<u64>,
+    pub state: MyProposalState,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum MyProposalState {
+    FeeUnsent,
+    FeePaid { confirmations: u32 },
+    ReadyToSubmit { reason: SubmitWait },
+    Confirming { confirmations: u32 },
+    Public { status: Option<ProposalStatus> },
+    FeeFailed,
+    Expired,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmitWait {
+    NoPeerAccepted,
+    SyncDisabled,
+    NotSynced,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmitRefusal {
+    Public,
+    Expired,
+    FeeFailed,
+}
+impl SubmitRefusal {
+    pub fn as_str(self) -> &'static str;
 }
 // src/governance/voting.rs
 pub const VOTING_KEY_INDEXES: u32;
@@ -367,7 +471,7 @@ impl Governance {
 
 | Error enum | Codes |
 |---|---|
-| `GovernanceError` | `governance.sync_disabled`, `governance.not_synced`, `governance.proposal_not_found`, `governance.vote_rejected`, `governance.no_peers`, `governance.list_unavailable`, `governance.not_implemented` |
+| `GovernanceError` | `governance.sync_disabled`, `governance.not_synced`, `governance.proposal_not_found`, `governance.vote_rejected`, `governance.no_peers`, `governance.list_unavailable`, `governance.invalid_proposal`, `governance.submit_refused`, `governance.not_implemented` |
 
 - `governance.sync_disabled`: a call that needs the sync task while it is off (`resync`, `relay_vote`).
 - `governance.not_synced{phase}`: no run reached `synced` yet (or no tip, for the clock); `phase` is the current one.
@@ -381,8 +485,13 @@ impl Governance {
   bad-signal or bad-outcome reason.
 - `governance.no_peers`: no full node to talk to.
 - `governance.list_unavailable`: the call needs the masternode list and SPV has none yet.
-- `governance.not_implemented{call}`: a stub (none now; MG-06's calls; MG-05 D17).
-- `Platform(PlatformError)`: a lease error of `vote`, with its `platform.*` code (m4 §4; MG-05 D12). The Swift host
+- `governance.invalid_proposal{fields}`: a proposal draft failed validation; `fields` lists every failing one in
+  wizard order: `name`, `url`, `payment_address`, `payment_amount`, `payment_count`, `first_payment`, `payload`
+  (MG-06 D11).
+- `governance.submit_refused{reason}`: `submit_proposal` on a proposal past submitting; `reason` is `public`,
+  `expired` or `fee_failed`.
+- `governance.not_implemented{call}`: a stub (none now; MG-05 D17).
+- `Platform(PlatformError)`: a lease error of `vote` or `create_proposal`, with its `platform.*` code (m4 §4; MG-05 D12). The Swift host
   binds no governance call, so its `engineCodes` are unchanged.
 - `Engine(EngineError)`: `network_not_open`, `wallet_not_found`, `invalid_argument`, `storage`, `internal` and the
   rest of m1 §4, unchanged. These are not new §4 codes for the m1–m3 tables, so the Swift `engineCodes` are

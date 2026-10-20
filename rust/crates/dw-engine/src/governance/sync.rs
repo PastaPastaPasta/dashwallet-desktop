@@ -131,12 +131,22 @@ pub(crate) struct GovernanceRuntime {
     /// The resolver found collaterals: the follower hands them over.
     pub(super) resolved_changed: Arc<Notify>,
     applied: Mutex<Applied>,
+    /// The wallet's own proposals' submission paces (MG-06 §2.2).
+    pub(super) paces: super::proposals::Paces,
+    /// One proposal pass at a time.
+    pub(super) proposal_tick: tokio::sync::Mutex<()>,
+    /// The proposal fee's broadcast, faked (tests).
+    #[cfg(test)]
+    pub(super) fee_broadcaster: Mutex<Option<Arc<dyn crate::send::TestBroadcaster>>>,
     /// `set_resolved` calls, for the tests.
     #[cfg(test)]
     pub(super) resolved_sets: AtomicUsize,
     /// `changed` calls, for the tests.
     #[cfg(test)]
     pub(super) changes: AtomicUsize,
+    /// `resync` calls, for the tests.
+    #[cfg(test)]
+    pub(super) resyncs: AtomicUsize,
 }
 
 impl GovernanceRuntime {
@@ -181,10 +191,16 @@ impl GovernanceRuntime {
             collaterals: Arc::default(),
             resolved_changed: Arc::default(),
             applied: Mutex::default(),
+            paces: Default::default(),
+            proposal_tick: Default::default(),
+            #[cfg(test)]
+            fee_broadcaster: Mutex::default(),
             #[cfg(test)]
             resolved_sets: AtomicUsize::new(0),
             #[cfg(test)]
             changes: AtomicUsize::new(0),
+            #[cfg(test)]
+            resyncs: AtomicUsize::new(0),
         }
     }
 
@@ -216,6 +232,7 @@ impl GovernanceRuntime {
             loop {
                 let Some(s) = weak.upgrade() else { return };
                 s.governance.refresh(&s).await;
+                s.governance().tick().await;
                 let resolved = Arc::clone(&s.governance.resolved_changed);
                 drop(s);
                 tokio::select! {
@@ -274,6 +291,8 @@ impl GovernanceRuntime {
 
     /// Ends the current run or backoff and starts a new run.
     pub fn resync(&self) {
+        #[cfg(test)]
+        self.resyncs.fetch_add(1, Ordering::SeqCst);
         self.resync.notify_one();
     }
 

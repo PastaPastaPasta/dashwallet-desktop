@@ -72,22 +72,30 @@ Paths are relative to Core's `src/`.
 A per-session task, woken by tip and wallet-history changes, walks each wallet's proposal rows. A row that is not
 yet public is handled as follows:
 
-- **Fee confirmations ≥ 1** (from the wallet's history, block-only like Core's count): store the object as the
-  wallet's own (`add_object(obj, None)`, which runs Core's checks again), queue it in the governance outbox
-  (`INV_GOVERNANCE_OBJECT`) and announce it to the connected peers of a synced run (MG-02 D24). It is served on
+- **Fee confirmations ≥ 1** (from the wallet's history, block-only like Core's count), seen for 15 s by a wallet
+  whose chain sync is caught up, so that its peers have the block too (D21): queue the object in the
+  governance outbox (`INV_GOVERNANCE_OBJECT`) and announce it to the connected peers of a synced run (MG-02 D24),
+  once per queuing round and connection (D19). It is not put in the store: the store takes the wallet's own
+  objects as confirmed, and "public" must come from peers (D8). It is served on
   `getdata` through the existing `on_get_data`/`send_object`. The first `getdata` for it marks the row
   `submitted_at`: the protocol has no acceptance message, and a Core peer asks for an object only to process it
   (D6).
 - **Never at 0 confirmations.** A Core peer would refuse it and score the wallet 20 points
   (`net_governance.cpp:197`) (D6).
-- **Retry.** Each new peer or run is announced to anyway (the existing whole-outbox announce). When the fee's
-  confirmations rise from 0 again after a reorg, every connected peer is re-announced to, because Core erased the
-  postponed copy (D7). If no peer has fetched the object 60 s after an announce, the row reports
-  `ready_to_submit{no_peer_accepted}`. Retries continue at 30 s, doubling to 5 min, while the app runs.
-  `submit_proposal` retries at once (UX [Submit]).
-- **Public.** Once the store holds the object confirmed (two distinct peers announced it back, MG-02 D3), the row is
-  public and its status is the public row's. Core relays a proposal only from 6 confirmations (postponed until
-  then), so the public state follows the sixth confirmation by about one relay round (D8).
+- **Postponed at 1–5 confirmations.** A Core peer that fetched it holds it postponed and neither lists nor relays
+  it until the fee's sixth confirmation (D19). A fetched proposal below 6 confirmations is waiting normally: no
+  retry, no error.
+- **Retry.** A fetch is expected while none was recorded, or after a reorg took the fee back to the mempool
+  (Core erased the postponed copy; the object is withdrawn and queued again as a new round, announced to every
+  peer). A fee missing from the wallet's history only withdraws the object: that may be a stale read, not a
+  reorg. The waits below belong to one synced run and start again with each new run, whose peers are new
+  connections; a run that is not synced counts none. With no fetch 60 s into a synced run, the row reports `ready_to_submit{no_peer_accepted}` and a new sync
+  run (new connections) looks again, at 60 s doubling to 30 min, while the app runs (D7). `submit_proposal`
+  retries at once (UX [Submit]).
+- **Public.** Once the store holds the object confirmed (two distinct peers announced it, MG-02 D3), the row is
+  public and its status is the public row's. A peer never announces back what the wallet announced to it, so the
+  echo comes from a fresh run's sync: 120 s after the sixth confirmation with no echo, a new run looks for it, on
+  the same backoff (D20).
 
 ### 2.3 States (MG-00 D16 f1)
 
@@ -98,16 +106,15 @@ correctly (D5).
 | State | When | UX (§4.25.3 Mine) |
 |---|---|---|
 | `fee_unsent` | The row exists, but the wallet has never seen the fee: the hand-off was `MaybeSent`, or the backup was restored before the broadcast. | `Ready to submit`; [Submit] broadcasts the saved bytes again |
-| `fee_paid{confirmations: 0}` | The fee is in the mempool or the wallet, 0 confirmations | `Fee paid 0 of 1` |
+| `fee_paid{confirmations}` | 0 confirmations (mempool); or ≥ 1 and announced, no peer fetched it yet and no wait reason | `Fee paid 0 of 1`; at ≥ 1 `Submitting` |
 | `ready_to_submit{reason}` | ≥ 1 confirmation, not submitted: `no_peer_accepted`, `sync_disabled`, `not_synced` | `Ready to submit`, [Submit], the error |
-| `confirming{confirmations}` | Submitted, not yet public; `confirmations` is 1–6+ | `Confirming 4 of 6` |
+| `confirming{confirmations}` | Submitted, not yet public; `confirmations` is 1–6+. Below 6 this is normal waiting (D19). | `Confirming 4 of 6` |
 | `public{status}` | The store confirmed it | the public chip (MG-00 D17) |
 | `fee_failed` | An input of the fee was spent by another confirmed transaction | terminal, error |
 | `expired` | `end_epoch` passed before it went public | terminal (Core refuses it, D11) |
 
 Resending the saved fee (`fee_unsent`) needs no grant and no signature: the bytes were signed and charged once. The
-fence treats them as a second copy of the same txid (a resend, or `FirstUnleased` after a restore), and an unleased
-plain `CoreTx` is not refused (D10).
+saved bytes go to the library's broadcast directly, as dash-qt's Resend does (QT-091), not through the fence (D10).
 
 ### 2.4 Persistence and backups (MG-00 D18)
 
@@ -197,12 +204,16 @@ The wizard asks for 12 (`PAYMENT_DATE_CHOICES`), and `validate` takes a first su
    - a lock before the hand-off is cancelled and the row deleted.
 5. Auto-submit:
    - nothing is announced at 0 confirmations;
-   - at 1 confirmation the object is announced;
+   - at 1 confirmation the object is announced after 15 s, and only while the chain sync is caught up (D21);
    - `getdata` makes the state `confirming`;
    - two announcing peers make it `public`;
-   - with no fetch, the state becomes `ready_to_submit{no_peer_accepted}`, then a retry follows;
-   - `submit_proposal` retries at once.
-6. A reorg to 0 confirmations gives `fee_paid`; the return to 1 re-announces to every peer.
+   - with no fetch, the state becomes `ready_to_submit{no_peer_accepted}`, then a new run follows, on the backoff;
+   - a fetched proposal at 1–5 confirmations stays `confirming` with no retry; at 6, no echo within 120 s starts
+     one new run (D19, D20);
+   - `submit_proposal` retries at once, and resends a fee seen unmined;
+   - the waits start again with each synced run, and count nothing while not synced.
+6. A reorg to 0 confirmations gives `fee_paid` and withdraws the object; the return to 1 queues it again and a
+   fetch is expected again. A fee missing from history withdraws it but expects no new fetch.
 7. Terminal states:
    - `expired` past `end_epoch`;
    - `fee_failed` on a conflicting confirmed spend;
@@ -216,24 +227,31 @@ The wizard asks for 12 (`PAYMENT_DATE_CHOICES`), and `validate` takes a first su
 
 **Regtest T1** (the acceptance), check 7 of `regtest/functional/dwd_governance.py`:
 1. dwcli, with a funded regtest wallet, runs `--propose` and pays the fee.
-2. One block is mined. dwcli submits on its own, with no submit command.
-3. Mine to 6 confirmations. Every Core node's `gobject list` holds the proposal with dwcli's hash, and its
+2. One block is mined. dwcli submits on its own, with no submit command: a Core node fetched it.
+3. At 1–5 confirmations no Core node's `gobject list` holds the proposal (postponed, D19).
+4. Mine to 6 confirmations. Every Core node's `gobject list` holds the proposal with dwcli's hash, and its
    `collateralHash` is dwcli's fee txid.
-4. The masternodes `vote-many yes`.
-5. dwcli, synced again, lists the proposal public with Core's counts.
+5. The masternodes `vote-many yes`.
+6. dwcli, synced again, lists the proposal public with Core's counts.
 
 Asserts along the way:
 - Core's `gobject check` accepts dwcli's data hex;
 - the fee transaction has no non-P2PKH output;
-- the `debug.log` of each Core node has no "Governance object is invalid" line for it.
+- the `debug.log` of each Core node has no "Governance object is invalid", "Can't find collateral tx" or
+  "not mined yet" line (D6, D21).
 
 **Mutants** (by hand, as in MG-05):
 - the broadcast before the save;
 - the announcement at 0 confirmations;
-- the P2PKH check removed;
-- `>=` instead of `==` for the fee value;
-- the re-announcement after a reorg removed;
-- the `cutoff_soon` boundary.
+- the P2PKH check removed, and the automatic-change refusal removed;
+- the fee output's value other than `proposal_fee` (no code compares it: the engine sets it);
+- the withdrawal at 0 confirmations after a reorg removed;
+- a retry below 6 confirmations once fetched;
+- the `cutoff_soon` boundary;
+- the propagation wait (D21) removed, and the caught-up condition ignored;
+- the waits not keyed to the synced run (D7);
+- `lost` set for a fee missing from history (D7);
+- no resend of a fee seen unmined (D10).
 
 **Also in this branch:** the MG-05 r2 nits.
 - **N1:** `coinjoin.rs` `path_of` goes through `own_address_info`.
@@ -244,16 +262,16 @@ Asserts along the way:
 
 | # | Decision | Why |
 |---|---|---|
-| D1 | The fee transaction is Core's `GenBudgetSystemCollateralTx`: one `OP_RETURN <hash>` output of exactly `proposal_fee`, and change to a fresh BIP44 internal (P2PKH) address. It takes no recipient and no custom change address. Before signing, every non-`OP_RETURN` output is checked to be P2PKH; a failure is `internal`, because the API cannot produce one. | Core refuses the fee if any output is not P2PKH or unspendable (`object.cpp:833-844`), and a P2SH change output would burn the 1 DASH (MG-00 hand-over row). Core accepts `≥` the fee; the wallet pays exactly the fee, as Core's own wallet does. |
+| D1 | The fee transaction is Core's `GenBudgetSystemCollateralTx`: one `OP_RETURN <hash>` output of exactly `proposal_fee`, and change to a fresh BIP44 internal (P2PKH) address at a random position, as Core's `RANDOM_CHANGE_POSITION` (`wallet/spend.cpp:1307`). It takes no recipient, no custom change address and no CoinJoin source. After signing, before anything is reserved or saved, every non-`OP_RETURN` output is checked to be P2PKH; a failure is `internal` (the charge is refunded), because the API cannot produce one. | Core refuses the fee if any output is not P2PKH or unspendable (`object.cpp:833-844`), and a P2SH change output would burn the 1 DASH (MG-00 hand-over row). Core accepts `≥` the fee; the wallet pays exactly the fee, as Core's own wallet does. |
 | D2 | The engine assembles the fee transaction itself: planner inputs and change, the `OP_RETURN` output, then P2PKH signing input by input, as the CoinJoin collateral is signed (`coinjoin.rs` `collateral_tx`). It does not use key-wallet's `TransactionBuilder`. | The pinned builder has only `add_op_return(data)` at value 0 (`transaction_builder.rs:264`) and no valued data output. A pin change to add one is out of scope. The plan, the cap check and the reservation stay the draft's. |
 | D3 | The object has parent zero, revision 1, and the wall clock at creation as its time. Its epochs come from the chosen first superblock (`proposal::epochs`). | dash-qt's `prepareProposal` hardcodes a null parent (`wallet/interfaces.cpp:864-881`). Core checks no proposal time except `end_epoch` (§1). |
 | D4 | The proposal row is saved before the broadcast, in app.sqlite `mg_proposals`, keyed by `wallet_id`. It is carried by `.dwbackup` unchanged and deleted with the wallet. A failed save broadcasts nothing; a cancelled hand-off deletes the row. | MG-00 D18, Core's order (`rpc/governance.cpp:245-250`). `rows.rs` already exports every `wallet_id` table. A row for a fee never sent would show a payment that did not happen. |
 | D5 | The state is derived on each read: the fee's history entry, the row's marks, the store and the clock. Only facts are stored. | A restore or crash at any point reads correctly, with no state to repair. |
 | D6 | The wallet submits at ≥ 1 confirmation by announcing the object (`inv`) to the peers of a synced run and serving it on `getdata`. A peer's `getdata` counts as "submitted". It never announces at 0 confirmations. | MG-00 D16. Core takes an object only if announced or requested (`net_governance.cpp:182-191`), and penalises an invalid one with 20 points (`:197`). A 0-confirmation fee is invalid without `fMissingConfirmations` (`object.cpp:798-808`). At 1–5 it is postponed (`governance.cpp:262-266`). The protocol has no acknowledgement. |
-| D7 | The wallet retries until the proposal is public: on every new peer or run; to every peer when the fee's confirmations return from 0; and with no fetch within 60 s it reports `ready_to_submit{no_peer_accepted}` and retries at 30 s doubling to 5 min, while the app runs. `submit_proposal` retries at once. | MG-00 D16 ("retrying while the app runs"). `CheckPostponedObjects` erases a postponed object whose fee went back to 0 confirmations (`governance.cpp:872-886`). The backoff is MG-02's run backoff. |
-| D8 | The proposal is public once the store has the object confirmed (two distinct peers announced it, MG-02 D3). The wallet's own copy is stored at submission, so Core's checks run locally, but it stays out of `proposals()` until then. | The wallet cannot check the fee itself (MG-02 D3: no txindex, BIP158 leaves out `OP_RETURN`). Peers relay the proposal only from 6 confirmations, so the public state means the network took it. |
+| D7 | The wallet retries until a peer fetched the proposal: every new run announces it; a fee back at 0 confirmations withdraws it, and its return queues it again as a new round to every peer; with no fetch 60 s into a synced run it reports `ready_to_submit{no_peer_accepted}` and starts a new sync run, at 60 s doubling to 30 min, while the app runs. `submit_proposal` starts one at once, its wait starting when that run is synced. Each wait (this one and D20's) is keyed to the synced run (`last_synced_at`, in seconds: two runs synced in the same second share a key, which only shortens one wait) and starts again with a new one. Only a fee seen back in the mempool after a fetch expects a new fetch; a fee missing from history withdraws the object and expects nothing new. | MG-00 D16 ("retrying while the app runs"). `CheckPostponedObjects` erases a postponed object whose fee went back to 0 confirmations (`governance.cpp:872-886`). Re-announcing on the same connection does nothing: Core skips known inventory (D20), so a retry needs new connections. |
+| D8 | The proposal is public once the store has the object confirmed (two distinct peers announced it, MG-02 D3). The wallet's own copy is not stored at submission (the store takes the wallet's own objects as confirmed); Core's checks run on it at creation (D11). | The wallet cannot check the fee itself (MG-02 D3: no txindex, BIP158 leaves out `OP_RETURN`). Peers relay the proposal only from 6 confirmations, so the public state means the network took it. |
 | D9 | Submitting needs governance sync on and a synced run. Without them the row reports `ready_to_submit{sync_disabled}` or `{not_synced}`. | The wallet's own items are announced only once a run is synced (MG-02 D24), and the governance peers are the sync's. Core's node submits on its own: a deviation of means, not of rules. |
-| D10 | The fee is signed under a "Proposal" lease (`FlowKind::Proposal`) from a `Spend` grant. The cap counts 1 DASH plus the network fee. The fee goes through the dispatch fence like a contact payment. A resend of the saved fee needs no grant. The object itself is not fenced. | MG-05 §6 and D8, MG-00 D35. The `OP_RETURN` value leaves the wallet. A resend is the same signed txid, a fence resend, and an unleased plain `CoreTx` is not refused. A proposal carries no key and moves no money. |
+| D10 | The fee is signed under a "Proposal" lease (`FlowKind::Proposal`) from a `Spend` grant. The cap counts 1 DASH plus the network fee. The fee goes through the dispatch fence like a contact payment. A resend of the saved fee (`fee_unsent`, or `fee_paid{0}`: seen but unmined) needs no grant and goes to the library's broadcast directly, unfenced. The object itself is not fenced. | MG-05 §6 and D8, MG-00 D35. The `OP_RETURN` value leaves the wallet. A resend is the same signed txid, as dash-qt's Resend (QT-091): it pays nothing new. Like QT-091 it checks no reservation: the fee's coins are already spent by those same bytes. A proposal carries no key and moves no money. |
 | D11 | A draft passes `proposal::validate` (every failing field, `invalid_proposal{fields}`) and then `check_object` on the built object, which is Core's `ValidateProposal` with the expiration check. The wizard limits stay: 1–12 payments, and a first payment among the next 12 superblocks. A proposal past `end_epoch` before going public is `expired`. | A draft Core would refuse must not cost a fee. Core's cleanup pass drops expired proposals (`governance.cpp:474-479`). The two wizard limits are UX-SPEC's (§4.25.3) beyond Core. |
 | D12 | The payment address may be P2PKH or P2SH. Only the fee's outputs must be P2PKH. | Core `ValidatePaymentAddress` with `fAllowScript = true` (`object.cpp:177-204`), as `proposal::payment_address_valid` already does. |
 | D13 | `SuperblockDate` gets `voting_cutoff_height`, `voting_cutoff_estimate`, and `cutoff_soon`, which is set when the estimated cutoff is within 172,800 s of now. The cutoff is the superblock height minus the maturity window. | The MG-00 hand-over row and UX-SPEC §4.25.3, which preselects the next superblock when the cutoff is within two days. It is the same cutoff the clock card shows (MG-02). |
@@ -262,3 +280,7 @@ Asserts along the way:
 | D16 | The fee is `proposal_fee` (1 DASH) on every network. | `GOVERNANCE_PROPOSAL_FEE_TX` is a compile-time constant with no per-network override (`object.h:87`). |
 | D17 | `dwcli governance --propose name:url:address:amount:count:first-superblock` (with `--passphrase-file`) drives the regtest check. The full `gov` command set stays MG-08's. | The T1 acceptance needs a creator. Keeping it to one option leaves MG-08's command design open. |
 | D18 | MG-05 r2's N1 and N2 are folded in. | The manager's request: both are cheap and test-only or a one-line route. |
+| D19 | A peer holds a proposal postponed at 1–5 fee confirmations: "submitted" (fetched) can happen at 1, "public" not before 6. A fetched proposal below 6 waits with no retry and no error. Announcements go once per queuing round and connection, so a peer holding it postponed is not sent it again; a new connection's single `inv` is ignored by that peer. | `fMissingConfirmations` puts it in `mapPostponedObjects` (`governance.cpp:262-266`); `CheckPostponedObjects` adds and relays it at 6 or erases it (`:856-887`); `ConfirmInventoryRequest` does not request an object held postponed (`:622`). Fee confirmations: 6 for the fee, 1 to relay (`object.h:87-89`, `object.cpp:863-866`). The manager's MG-06 approval. |
+| D20 | "Public" comes from a fresh connection: 120 s after the fee's sixth confirmation with no echo, a new sync run looks for the proposal, on D7's backoff. | Core marks every inventory a peer announced as known (`AddKnownInv`, `net_processing.cpp:4561`) and skips known inventory when it relays (`:1247-1249`), so a peer the wallet announced to never announces it back on that connection. A fresh run's inventory sync asks every peer anew (MG-02). |
+| D21 | The wallet announces a proposal only once its chain sync is caught up and it has seen the fee's first confirmation for 15 s. While not caught up, the wait does not start. | A peer that lacks the fee's block finds no collateral: "Can't find collateral tx" (or "not mined yet") returns invalid with no `fMissingConfirmations` (`object.cpp:801-813`), which scores the wallet 20 points (`net_governance.cpp:197`), not a postponement. A wallet that sees a block first, or whose view leads, could announce before its peers have it. 15 s covers a block's relay to the peers of a caught-up node; the cost is a 15 s later "submitted". The regtest check fails on either log line from any node. |
+| D22 | Once the fee is broadcast, a failure to record that (sent, deleted or the error) is logged and the call still answers by the fee's outcome. A save that fails, or whose task fails, abandons the signed fee and deletes the row as far as it can (a commit may have landed before the error). A row left behind reads `fee_unsent`, and its [Submit] broadcasts the saved fee. Each tick also withdraws any announced proposal whose row is gone (its wallet removed). | The fee's fate decides the answer: a row left unrecorded reads `fee_unsent`, and a fee that went out shows in history. Failing the call would invite a second proposal for a fee that was paid. |

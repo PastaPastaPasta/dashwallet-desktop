@@ -444,6 +444,11 @@ fn failure(e: GovernanceError, unknown_object: &str) -> ConsoleFailure {
             code::CLIENT_NOT_CONNECTED,
             "The vote is stored, but no governance peer is connected. It will be relayed when a peer connects.",
         ),
+        // The console has no proposal calls (`gobject prepare`/`submit` stay
+        // unavailable, MG-06 D14); worded for completeness.
+        e @ (GovernanceError::InvalidProposal { .. } | GovernanceError::SubmitRefused { .. }) => {
+            rpc(code::MISC_ERROR, e.to_string())
+        }
         GovernanceError::Engine(e) => crate::exec::engine_failure(e),
         // Only `vote` takes a grant, and the console never casts votes.
         GovernanceError::Platform(e) => rpc(code::MISC_ERROR, e.to_string()),

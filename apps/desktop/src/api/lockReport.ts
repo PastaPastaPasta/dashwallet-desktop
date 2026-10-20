@@ -46,6 +46,8 @@ export const FLOW_NAME: Record<FlowKindName, string> = {
   voting: "Voting",
   masternodeRegistration: "Masternode registration",
   keyChange: "Key change",
+  // MG-06: the proposal fee.
+  proposal: "Proposal fee",
 };
 
 const PENDING: ReadonlySet<FlowOutcomeName> = new Set(["maybeSent", "willBeSent"]);

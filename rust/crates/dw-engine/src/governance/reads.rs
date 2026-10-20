@@ -17,6 +17,14 @@ use super::sync::{GovernanceRuntime, ListSnapshot};
 use super::{Governance, GovernanceError, superblock_budget};
 use crate::events::unix_now;
 
+/// How far ahead an estimated cutoff counts as soon: two days (MG-06 D13).
+const CUTOFF_SOON_SECS: u64 = 2 * 24 * 60 * 60;
+
+/// Whether a cutoff estimated at `cutoff` is at most two days after `now`.
+fn cutoff_soon(cutoff: u64, now: u64) -> bool {
+    cutoff <= now.saturating_add(CUTOFF_SOON_SECS)
+}
+
 /// Now in the store's seconds.
 pub(super) fn now() -> i64 {
     i64::try_from(unix_now()).unwrap_or(i64::MAX)
@@ -27,10 +35,10 @@ pub const MAX_UPCOMING_SUPERBLOCKS: u32 = 24;
 
 /// The tip a read is answered for.
 #[derive(Debug, Clone, Copy)]
-struct Tip {
-    height: u32,
+pub(super) struct Tip {
+    pub height: u32,
     /// The ETA base: the tip's time, or now when that is older.
-    eta_base: u64,
+    pub eta_base: u64,
 }
 
 /// Every proposal row with what the counts need.
@@ -47,11 +55,11 @@ impl Governance {
         Ok(&self.session.governance)
     }
 
-    fn params(&self) -> GovernanceParams {
+    pub(super) fn params(&self) -> GovernanceParams {
         governance_params(self.session.network.core_network())
     }
 
-    fn tip(&self) -> Result<Tip, GovernanceError> {
+    pub(super) fn tip(&self) -> Result<Tip, GovernanceError> {
         let rt = self.runtime()?;
         let (height, time) = {
             let t = self.session.hub.tracker();
@@ -166,16 +174,22 @@ impl Governance {
         }
         let tip = self.tip()?;
         let network = &self.session.network;
-        Ok(
-            clock::upcoming_superblocks(&self.params(), tip.height, count)
-                .into_iter()
-                .map(|height| SuperblockDate {
+        let params = self.params();
+        Ok(clock::upcoming_superblocks(&params, tip.height, count)
+            .into_iter()
+            .map(|height| {
+                let cutoff = height.saturating_sub(params.maturity_window);
+                let cutoff_estimate = clock::estimated_time(tip.height, tip.eta_base, cutoff);
+                SuperblockDate {
                     height,
                     estimated_time: clock::estimated_time(tip.height, tip.eta_base, height),
                     budget: superblock_budget(network, height),
-                })
-                .collect(),
-        )
+                    voting_cutoff_height: cutoff,
+                    voting_cutoff_estimate: cutoff_estimate,
+                    cutoff_soon: cutoff_soon(cutoff_estimate, unix_now()),
+                }
+            })
+            .collect())
     }
 
     /// The confirmed proposals (MG-02 D3) in dash-qt's order.
@@ -498,6 +512,15 @@ mod tests {
             .unwrap()
             .to_vec();
         v
+    }
+
+    /// MG-06 D17: "soon" is a cutoff at most two days away, inclusive.
+    #[test]
+    fn a_cutoff_is_soon_up_to_two_days_ahead() {
+        assert!(cutoff_soon(NOW as u64, NOW as u64));
+        assert!(cutoff_soon(NOW as u64 + 172_800, NOW as u64));
+        assert!(!cutoff_soon(NOW as u64 + 172_801, NOW as u64));
+        assert!(cutoff_soon(0, u64::MAX));
     }
 
     /// MG-02 D86: Core's `GetCurrentVotes` walks `mapCurrentMNVotes` by
