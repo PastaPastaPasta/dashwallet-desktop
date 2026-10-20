@@ -50,10 +50,10 @@ use crate::send::{
 };
 use crate::{EngineError, NetworkSession, WalletId};
 
-/// `nSequence` of every input: `CTxIn::SEQUENCE_FINAL - 1`, which keeps
-/// the lock time in force, as Core's wallet sets it (rc.3
-/// `wallet/spend.cpp:1025-1029`).
-pub(crate) const SEQUENCE: u32 = 0xffff_fffe;
+/// `nSequence` of every input: final, as the wallet's ordinary send sets it
+/// (key-wallet `TransactionBuilder`), not Core's `SEQUENCE_FINAL - 1` (rc.3
+/// `wallet/spend.cpp:1025-1029`; D25).
+pub(crate) const SEQUENCE: u32 = 0xffff_ffff;
 
 /// What pays for a ProTx: the inputs, the fee, and the change (D2, D22).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,22 +161,21 @@ impl Reversed for dashcore::Txid {
 }
 
 /// The unsigned special transaction: inputs and outputs sorted BIP69 (D3),
-/// `nSequence` [`SEQUENCE`], and the lock time at `height`, the wallet's
-/// tip, as Core's `DiscourageFeeSniping` sets it (rc.3
-/// `wallet/spend.cpp:722-766,1031`), without its one-in-ten earlier
-/// height (D25).
+/// `nSequence` [`SEQUENCE`], and lock time 0, as the wallet's ordinary send
+/// builds them, so a ProTx looks like the wallet's other transactions; Core's
+/// wallet sets the tip height instead (`DiscourageFeeSniping`, rc.3
+/// `wallet/spend.cpp:722-766,1031`; D25).
 pub(crate) fn assemble(
     inputs: &[Utxo],
     mut outputs: Vec<TxOut>,
     payload: TransactionPayload,
-    height: u32,
 ) -> Transaction {
     let mut prevouts: Vec<OutPoint> = inputs.iter().map(|u| u.outpoint).collect();
     prevouts.sort_by(input_order);
     outputs.sort_by(output_order);
     Transaction {
         version: 3,
-        lock_time: height,
+        lock_time: 0,
         input: prevouts
             .into_iter()
             .map(|previous_output| TxIn {
@@ -708,9 +707,9 @@ impl NetworkSession {
         fence: &CoinFence,
         wallet: &PlatformWallet,
         exclude: &HashSet<OutPoint>,
-    ) -> Result<(Vec<(Utxo, DerivationPath)>, u32), MasternodesError> {
+    ) -> Result<Vec<(Utxo, DerivationPath)>, MasternodesError> {
         let network = self.network.core_network();
-        let (coins, height) = self
+        let (coins, _) = self
             .source_coins(fence, &CoinSource::Any, &HashSet::new())
             .await?;
         let state = wallet.state().await;
@@ -722,7 +721,7 @@ impl NetworkSession {
                 signable(&path, network).then_some((u, path))
             })
             .collect();
-        Ok((picked, height))
+        Ok(picked)
     }
 }
 
@@ -803,7 +802,6 @@ pub(crate) fn unsigned_registration(
     reg: &Registration,
     funding: &Funding,
     change: Option<&Address>,
-    height: u32,
 ) -> Result<Transaction, MasternodesError> {
     let mut outputs = reg.outputs();
     if let (Some(value), Some(address)) = (funding.change, change) {
@@ -818,7 +816,6 @@ pub(crate) fn unsigned_registration(
         &funding.inputs,
         outputs,
         TransactionPayload::ProviderRegistrationPayloadType(placeholder),
-        height,
     );
     let payload = match &reg.collateral {
         Collateral::FundNew { script, .. } => payloads::finalize_registration(

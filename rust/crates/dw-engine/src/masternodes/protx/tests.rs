@@ -467,7 +467,8 @@ fn mg04_fund_new_is_charged_its_fee_and_saved_before_the_hand_off() {
     assert_eq!(tx.input[0].previous_output, funding);
     assert_eq!(
         (tx.version, tx.lock_time, tx.input[0].sequence),
-        (3, tx.lock_time, 0xffff_fffe)
+        (3, 0, 0xffff_ffff),
+        "D25: as the wallet's ordinary send"
     );
     assert!(p.signature.is_empty());
     // The inputs and the new collateral stay locked (D9, D25).

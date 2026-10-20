@@ -92,7 +92,7 @@ impl Masternodes {
             let fence = s.coin_fence(wallet).await?;
             let w = s.wallet(&wallet).await?;
             let exclude = s.check_collateral(&fence, &w, &reg).await?;
-            let (coins, _) = s.protx_candidates(&fence, &w, &exclude).await?;
+            let coins = s.protx_candidates(&fence, &w, &exclude).await?;
             let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
             let funding = plan_funding(&utxos, &reg.outputs(), reg.sized_payload(), CHANGE_LEN)
                 .map_err(EngineError::from)?;
@@ -153,7 +153,7 @@ impl Masternodes {
                 };
                 let exclude: HashSet<OutPoint> =
                     existing.iter().map(|(u, _, _)| u.outpoint).collect();
-                let (coins, height) = s.protx_candidates(&fence, &w, &exclude).await?;
+                let coins = s.protx_candidates(&fence, &w, &exclude).await?;
                 let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
                 let funding = plan_funding(&utxos, &reg.outputs(), reg.sized_payload(), CHANGE_LEN)
                     .map_err(EngineError::from)?;
@@ -168,7 +168,7 @@ impl Masternodes {
                     ),
                     None => None,
                 };
-                let tx = unsigned_registration(&reg, &funding, change.as_ref(), height)?;
+                let tx = unsigned_registration(&reg, &funding, change.as_ref())?;
                 let signature = match &existing {
                     Some((_, path, _)) => {
                         let message = sign_message(&tx, network)?;
@@ -695,7 +695,7 @@ impl NetworkSession {
         };
         let network = self.network.core_network();
         let w = self.wallet(&wallet).await?;
-        let (coins, height) = self.protx_candidates(fence, &w, &HashSet::new()).await?;
+        let coins = self.protx_candidates(fence, &w, &HashSet::new()).await?;
         let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
         let funding = plan_funding(&utxos, &reg.outputs(), reg.sized_payload(), CHANGE_LEN)
             .map_err(EngineError::from)?;
@@ -705,7 +705,7 @@ impl NetworkSession {
             ),
             None => None,
         };
-        let tx = unsigned_registration(reg, &funding, change.as_ref(), height)?;
+        let tx = unsigned_registration(reg, &funding, change.as_ref())?;
         let message = sign_message(&tx, network)?;
         let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
         Ok(MasternodeOpRow {
