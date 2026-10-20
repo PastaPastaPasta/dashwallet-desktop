@@ -72,7 +72,10 @@ fn columns(conn: &rusqlite::Connection, table: &str) -> Result<Vec<(String, bool
 /// which the restore's own read of the `contactInfo` documents records.
 /// `removed_wallets` (DEC-210): which wallets were removed, forgotten by an
 /// open with no other instance of the database.
-const NOT_EXPORTED: [&str; 2] = ["dp_contact_info", "removed_wallets"];
+/// `masternode_ops` (MG-04 D24): this installation's ProTx attempts, whose
+/// fee inputs and locks are this machine's; a sent one is in the history a
+/// restore reads again.
+const NOT_EXPORTED: [&str; 3] = ["dp_contact_info", "masternode_ops", "removed_wallets"];
 
 /// Tables and the column that scopes their rows to a wallet.
 fn scoped_tables(conn: &rusqlite::Connection) -> Result<Vec<(String, &'static str)>> {

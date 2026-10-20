@@ -26,11 +26,13 @@ mod dashpay_journal;
 pub mod dispatch;
 #[cfg(all(debug_assertions, any(test, feature = "durability-sim")))]
 pub mod durability_sim;
+mod protx_ops;
 mod provenance;
 mod registration;
 mod rows;
 pub use avatar::AvatarRow;
 pub use dashpay_journal::{ContestWatch, JournalEntry, JournalPage, JournalRow};
+pub use protx_ops::{AttemptEnd, MasternodeOpRow};
 pub use registration::{
     Adoption, LockOutpoint, NewRegistration, RegistrationChange, RegistrationRow,
     RegistrationUpdate,
@@ -205,7 +207,7 @@ pub(crate) static CHILD_STARTS: std::sync::RwLock<()> = std::sync::RwLock::new((
 /// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
 /// with an insert trigger that skips rows of a removed wallet (migration
 /// `V2026101302`, DEC-210). Settings are cleared by scope.
-pub(crate) const WALLET_TABLES: [&str; 14] = [
+pub(crate) const WALLET_TABLES: [&str; 15] = [
     "wallets",
     "address_book",
     "labels",
@@ -220,6 +222,7 @@ pub(crate) const WALLET_TABLES: [&str; 14] = [
     "dp_trust_unverified",
     "dp_prefs",
     "dp_contact_info",
+    "masternode_ops",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -1523,7 +1526,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026101901);
+        assert_eq!(db.schema_version().unwrap(), 2026102101);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();
