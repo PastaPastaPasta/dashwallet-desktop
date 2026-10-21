@@ -9,8 +9,9 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use dpp::bls::native_bls::NativeBlsModule;
-use dpp::serialization::PlatformSerializable;
+use dpp::identity::KeyType;
+use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dpp::serialization::{PlatformSerializable, Signable};
 use dpp::state_transition::StateTransitionHasUserFeeIncrease;
 use dpp::state_transition::identity_credit_withdrawal_transition::accessors::IdentityCreditWithdrawalTransitionAccessorsV0;
 
@@ -536,9 +537,13 @@ fn the_transition_is_platforms_own_construction() {
     assert_eq!(t.pooling(), Pooling::Never);
     assert_eq!(t.core_fee_per_byte(), 1);
     assert_eq!(t.user_fee_increase(), 0);
-    signed
-        .verify_identity_signed_signature(key, &NativeBlsModule, PlatformVersion::latest())
-        .expect("the signature verifies with the TRANSFER key");
+    assert_eq!(key.key_type(), KeyType::ECDSA_SECP256K1);
+    dashcore::signer::verify_data_signature(
+        &signed.signable_bytes().unwrap(),
+        signed.signature().expect("signed").as_slice(),
+        key.data().as_slice(),
+    )
+    .expect("the signature verifies with the TRANSFER key");
 
     // dpp's construction, the SDK's call, by a signer of the same vault.
     let lease_id = w.f.flow(FlowKind::Withdraw, vec![w.f.grant(1)]);
