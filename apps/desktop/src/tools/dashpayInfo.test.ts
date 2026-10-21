@@ -97,7 +97,11 @@ describe("the card's state (D2)", () => {
     const lastPass = { startedAt: NOW - 8, finishedAt: NOW - 5, newRequests: 0, newContacts: 0, newPayments: 0, failureCode: "platform.unavailable" };
     expect(stateOf({ watchOnly: true, sync: sync({ lastPass }) })).toBe("watchOnly");
     expect(stateOf({ status: { kind: "noIdentity", reason: "watchOnly" }, sync: sync({ lastPass, startup: "notRun" }) })).toBe("watchOnly");
-    expect(stateOf({ status: { kind: "noIdentity", reason: null }, sync: sync({ lastPass, startup: "noIdentity" }) })).toBe("failed");
+    const absent = dashpayInfo(inputs({ status: { kind: "noIdentity", reason: null }, sync: sync({ lastPass, startup: "noIdentity" }) }));
+    expect(absent).toMatchObject({ state: "failed", syncNow: { disabled: true, note: INFO_COPY.heldNotSetUp } });
+    // n7: no identity known, nothing for a retry to sync.
+    const unknown = dashpayInfo(inputs({ status: { kind: "startupIncomplete", startup: "starting" }, sync: sync({ lastPass, startup: "starting" }) }));
+    expect(unknown).toMatchObject({ state: "failed", syncNow: { disabled: true, note: INFO_COPY.heldNoIdentityYet } });
   });
 
   it("D2: a failed bring-up is Failed while no identity is known", () => {

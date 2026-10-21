@@ -1,6 +1,6 @@
 // Tools ▸ Information's DashPay card (DP6-03, DASHPAY F23, iOS Sync Info): the `DashPaySyncInfoViewModel`
-// of DASHPAY §4 over `dashpay_sync_status` (the bring-up's verdict, the last pass, contacts waiting for
-// an unlock, the Platform loops, the quorum source) and BL-153's `dashpay_status`, which says whether
+// of DASHPAY §4 over `dashpay_sync_status` (the bring-up's verdict, the last pass, contact accounts
+// waiting to be built, the Platform loops, the quorum source) and BL-153's `dashpay_status`, which says whether
 // the wallet has an identity. Plain TypeScript, no React; the screen is screens/tools/DashPayInfo.tsx.
 
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
@@ -89,7 +89,7 @@ export const INFO_COPY = {
   heldNoIdentityYet: "Sync now waits until DashPay finds this wallet's identity.",
   heldNotSetUp: "Sync now waits until this wallet has a DashPay identity.",
   heldStartingUp: "Sync now waits until DashPay has started.",
-  requested: "A DashPay pass was asked for. It runs in the background. Passes don't report their results yet, so this card can't show when it ends.",
+  requested: "A DashPay pass was asked for. It runs in the background. Passes don't report their results yet, so this card may not show when it ends.",
   pendingContactsNote: "They're built after an unlock or the DIP-15 contact rescan.",
 } as const;
 
@@ -120,7 +120,8 @@ export const STARTUP_TEXT: Record<StartupStatus, { value: string; note?: string 
   noIdentity: { value: "Complete: no identity" },
   partialNoIdentity: { value: "Incomplete: no identity found so far", note: "It looks again the next time the wallet starts." },
   discoveryFailed: { value: "Failed: discovery did not finish", note: "It looks again the next time the wallet starts." },
-  partialAccountsPending: { value: "Incomplete: contact accounts wait for an unlock" },
+  // The library's count is what is certain, not why (an unlock, the DIP-15 rescan, or no DashPay pass yet).
+  partialAccountsPending: { value: "Incomplete: some contact accounts are not built yet" },
   seedBindingUnverified: { value: "Failed: keys not confirmed", note: COPY.unverified.message },
   identityScanIncomplete: { value: "Incomplete: the identity scan did not finish", note: "It looks again the next time the wallet starts." },
   identityUnsettled: { value: "Waiting for an unlock", note: COPY.unlockToLook.message },
@@ -235,7 +236,12 @@ export function dashpayInfo(i: DashPayInfoInputs): DashPayInfo {
 
   if (i.watchOnly || (status?.kind === "noIdentity" && status.reason === "watchOnly"))
     return at("watchOnly", "neutral", COPY.watchOnly.title, { syncNow: held(INFO_COPY.watchOnly) });
-  if (s.lastPass?.failureCode) return at("failed", "danger", INFO_COPY.passFailed.title, { line: INFO_COPY.passFailed.message(s.lastPass.failureCode) });
+  if (s.lastPass?.failureCode)
+    return at("failed", "danger", INFO_COPY.passFailed.title, {
+      line: INFO_COPY.passFailed.message(s.lastPass.failureCode),
+      // n7: without an identity a retry has nothing to sync.
+      ...(identity ? {} : { syncNow: held(absent ? INFO_COPY.heldNotSetUp : INFO_COPY.heldNoIdentityYet) }),
+    });
   if (!identity && !absent) {
     const look = (state: DashPayInfoState, tone: DashPayInfoTone, headline: string, rest: Partial<DashPayInfo> = {}) =>
       at(state, tone, headline, { syncNow: held(INFO_COPY.heldNoIdentityYet), ...rest });

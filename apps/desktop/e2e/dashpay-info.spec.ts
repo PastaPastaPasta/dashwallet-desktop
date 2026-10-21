@@ -74,7 +74,7 @@ test("D3: Sync now asks the engine for a pass, says so, and reads the card again
   const before = await calls(page, "dashpay_sync_status");
   await c.getByTestId("information-dashpay-sync-now").click();
   await expect(page.getByTestId("information-dashpay-outcome")).toHaveText(
-    "A DashPay pass was asked for. It runs in the background. Passes don't report their results yet, so this card can't show when it ends.",
+    "A DashPay pass was asked for. It runs in the background. Passes don't report their results yet, so this card may not show when it ends.",
   );
   expect(await calls(page, "dashpay_sync_soon")).toBe(1);
   await page.clock.runFor(4_900);
