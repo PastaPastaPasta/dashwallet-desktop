@@ -25,9 +25,17 @@ Registrations, all version 2 (MG-04 D1):
   V  an evonode, `FundNew` (4,000 DASH): the keychain's platform node id, the network's default
      Platform ports.
 
+ProUpRegTx of F, each signed by its keychain owner key (MG-04 slice 4):
+  U1 the voting key changed (keychain index 7), the operator key and payout kept;
+  U2 the payout changed to a new wallet address, the keys kept from the wallet's list;
+  U3 the operator key changed to one dashd generates: Core PoSe-bans F; dashd, the operator,
+     sends `protx update_service` with the new secret, and Core revives it.
+
 Refusals before anything is signed: the collateral already in use, a listed service, a listed
 operator key, a version-3 service; and a wrong external signature. For the evonode: a regular
-collateral, Platform ports equal to the Core port, and a listed platform node id.
+collateral, Platform ports equal to the Core port, and a listed platform node id. For an update:
+a hash not listed, a listed masternode without an owner key the wallet has, the owner address
+as payee, and another masternode's operator key.
 
 Run (DWCLI = a built dwcli):
   DWCLI=<target>/debug/dwcli DWD_PYTHON=<venv>/bin/python DASHCORE_DIR=<dashcore> \\
@@ -278,6 +286,96 @@ class DwdProtx(DwdMasternodes):
                    for k in ("owner", "voting", "collateral")), mine
         listed = {m["proTxHash"] for m in node.protx("list", "registered", True)}
         assert ours <= listed
+
+        hash_f = f["pro_tx_hash"]
+        payout_f = f["terms"]["payout_address"]
+
+        def kept_preview(*args):
+            """The preview once the wallet's list shows Core's current keys of F: a kept key is
+            the list's (D10, D43), and the list may trail the tip by a block."""
+            want = self.core_info(hash_f)[1]
+            kept = [(field, want[core]) for field, core, flag in
+                    (("voting_address", "votingAddress", "--voting"),
+                     ("operator_public_key", "pubKeyOperator", "--operator"))
+                    if not any(a.startswith(flag) for a in args)]
+            for _ in range(30):
+                p = dw.mn(h, "update-registrar", hash_f, "--preview", *args)
+                if all(p["terms"][field] == value for field, value in kept):
+                    return p
+                time.sleep(2)
+            raise AssertionError(f"the wallet's list never showed F's keys: {p['terms']}")
+
+        def update(*args):
+            self.start_miner()
+            try:
+                u = dw.mn(h, "update-registrar", hash_f, *args)
+            finally:
+                self.stop_miner()
+            assert handed_off(u)
+            assert_equal((u["kind"], u["pro_tx_hash"]), ("update_registrar", hash_f))
+            self.wait_until(lambda: node.getrawtransaction(u["txid"], True).get("confirmations", 0) > 0,
+                            timeout=60)
+            decoded = node.getrawtransaction(u["txid"], True)
+            assert_equal((decoded["version"], decoded["type"], decoded["proUpRegTx"]["version"]), (3, 3, 2))
+            return u
+
+        self.log.info("8. U1: F's voting key changed, signed by its keychain owner key")
+        refused_u = lambda code, *args: dw.mn(h, "update-registrar", *args, error=code)
+        refused_u("masternodes.not_found", "ab" * 32, "--payout", payout_f)
+        refused_u("masternodes.no_owner_key", self.mninfo[0].proTxHash, "--payout", payout_f)
+        refused_u("masternodes.protx_refused", hash_f, "--payout", f["terms"]["owner_address"])
+        refused_u("masternodes.protx_refused", hash_f, "--payout", payout_f, "--operator-key", listed_operator)
+        p = kept_preview("--voting-index", "7", "--payout", payout_f)
+        assert_equal(p["owner_key"], {"kind": "keychain", "index": 0})
+        assert_equal((p["voting_changes"], p["operator_changes"], p["payout_changes"], p["pose_bans"]),
+                     (True, False, False, False))
+        assert 0 < p["fee"] == p["total_debit"] < 100_000, p
+        u1 = update("--voting-index", "7", "--payout", payout_f)
+        assert_equal(u1["fee"], p["fee"])
+        h = self.mine()
+        st = self.core_info(hash_f)[1]
+        assert_equal(st["votingAddress"], address(provider_key(VOTING, 7)))
+        assert_equal((st["ownerAddress"], st["payoutAddress"], st["pubKeyOperator"]),
+                     (f["terms"]["owner_address"], payout_f, operator_f))
+
+        self.log.info("9. U2: F's payout changed to a new wallet address, the keys kept")
+        p = kept_preview("--payout", "new")
+        assert_equal((p["voting_changes"], p["operator_changes"], p["payout_changes"]), (False, False, True))
+        u2 = update("--payout", "new")
+        h = self.mine()
+        st = self.core_info(hash_f)[1]
+        assert_equal(st["payoutAddress"], u2["terms"]["payout_address"])
+        assert_equal((st["votingAddress"], st["pubKeyOperator"]),
+                     (address(provider_key(VOTING, 7)), operator_f))
+        payout_f = u2["terms"]["payout_address"]
+
+        self.log.info("10. U3: F's operator key changed to one dashd generates; dashd's operator revives it")
+        new_operator = node.bls("generate")
+        p = kept_preview("--operator-key", new_operator["public"], "--payout", payout_f)
+        assert_equal((p["operator_changes"], p["pose_bans"], p["voting_changes"], p["payout_changes"]),
+                     (True, True, False, False))
+        u3 = update("--operator-key", new_operator["public"], "--payout", payout_f)
+        h = self.mine()
+        st = self.core_info(hash_f)[1]
+        assert_equal(st["pubKeyOperator"], new_operator["public"])
+        assert st["PoSeBanHeight"] > 0, st
+        assert_equal((st["votingAddress"], st["payoutAddress"]), (address(provider_key(VOTING, 7)), payout_f))
+        # The operator (dashd, holding the new secret) restores the service, and with it the
+        # masternode; the wallet signs nothing as operator.
+        fee_source = node.getnewaddress()
+        node.sendtoaddress(fee_source, 1)
+        self.mine()
+        node.protx("update_service", hash_f, service_f, new_operator["secret"], "", fee_source)
+        h = self.mine()
+        st = self.core_info(hash_f)[1]
+        assert_equal(st["PoSeBanHeight"], -1)
+        assert st["PoSeRevivedHeight"] > 0, st
+        assert service_f in json.dumps(st["addresses"]), st
+
+        ops = {o["id"]: o for o in dw.mn(h, "operations")}
+        assert_equal(len(ops), 8)
+        assert all(state(o) == "confirmed" for o in ops.values()), ops
+        assert_equal(sorted(o["kind"] for o in ops.values()), ["registration"] * 5 + ["update_registrar"] * 3)
 
         if evidence:
             os.makedirs(evidence, exist_ok=True)
