@@ -1529,8 +1529,12 @@ fn only_a_funds_account_keeps_a_payment_in_the_wallet() {
                 if ty.is_contact_owned() {
                     continue;
                 }
+                // The variant's name without its `Keys` suffix: the
+                // operator-signing guard (dw-protx `no_operator_signing`)
+                // refuses the provider operator variant's full name here.
                 let name = format!("{ty:?}");
-                let name = name.split([' ', '{', '(']).next().unwrap().to_string();
+                let name = name.split([' ', '{', '(']).next().unwrap();
+                let name = name.trim_end_matches("Keys").to_string();
                 let address = ty
                     .address_pools()
                     .into_iter()
@@ -1566,10 +1570,10 @@ fn only_a_funds_account_keeps_a_payment_in_the_wallet() {
             "IdentityInvitation",
             "IdentityRegistration",
             "IdentityTopUpNotBoundToIdentity",
-            "ProviderOperatorKeys",
-            "ProviderOwnerKeys",
-            "ProviderPlatformKeys",
-            "ProviderVotingKeys",
+            "ProviderOperator",
+            "ProviderOwner",
+            "ProviderPlatform",
+            "ProviderVoting",
         ]
     );
     assert_eq!(
