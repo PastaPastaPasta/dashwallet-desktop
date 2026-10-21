@@ -794,9 +794,11 @@ pub(crate) fn registration_of(
 /// fence: an unspent, mature, unreserved coin of the wallet at a P2PKH
 /// address of a BIP44 or BIP32 account, of exactly the type's amount
 /// (`CollateralUnavailable` otherwise, §6). A coin the user locked may be
-/// a collateral, as in Core.
+/// a collateral, as in Core; one an unseen proposal fee spends
+/// (`fee_held`, D47) may not.
 pub(crate) fn existing_coin(
     snapshot: &CoinSnapshot,
+    fee_held: &HashSet<OutPoint>,
     info: &ManagedWalletInfo,
     outpoint: OutPoint,
     evo: bool,
@@ -809,6 +811,7 @@ pub(crate) fn existing_coin(
         .filter(|c| {
             c.send_account
                 && !c.reserved
+                && !fee_held.contains(&outpoint)
                 && c.utxo.is_spendable(snapshot.height)
                 && c.utxo.value() == collateral_amount(evo)
                 && c.utxo.txout.script_pubkey.is_p2pkh()

@@ -571,7 +571,8 @@ a hash's shape (D23).
 - `masternodes.protx_refused{reason}`: one of Core's rules refuses the ProTx; `reason` is Core's reject reason
   verbatim (`bad-protx-dup-key`, `bad-protx-netinfo-port`, …, MG-04 D5).
 - `masternodes.collateral_unavailable`: the collateral isn't an unspent wallet coin of the type's amount at a P2PKH
-  address, or is a collateral of the wallet's masternodes or saved operations already (MG-04 D23).
+  address, or is a collateral of the wallet's masternodes or saved operations already (MG-04 D23), or is a coin a
+  payment holds or one of a proposal fee the wallet hasn't seen spends (MG-04 D47).
 - `masternodes.signature_mismatch`: the external signature isn't the collateral address's over the saved message.
 - `masternodes.operation_not_found`: no such operation of the wallet.
 - `masternodes.operation_state{state}`: the call doesn't apply to the operation's state (§5's snake-case name).

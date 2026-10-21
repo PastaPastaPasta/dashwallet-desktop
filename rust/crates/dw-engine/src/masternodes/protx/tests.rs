@@ -1875,32 +1875,81 @@ fn mg04_an_update_resends_unless_a_later_one_exists() {
     assert_eq!(sent.state, ProTxOperationState::Sent);
 }
 
-/// MG-06 meets MG-04 in the coin claims: a coin a pending proposal fee
-/// claims (`reserve_unless_held`, as its resend does) isn't a collateral;
-/// once free, the registration takes it and user-locks it, which the fee's
-/// resend refuses (`governance::proposals_tests`).
+/// MG-06 meets MG-04 in the coins (D47). A proposal fee the wallet hasn't
+/// seen may be out, and its resend claims its coins again (MG-06 D10):
+/// neither the in-session claim nor, after a restart, the saved row lets a
+/// registration take one as a collateral, by preview or registration.
 #[test]
-fn mg04_a_coin_a_proposal_fee_claims_is_not_a_collateral() {
+fn mg04_a_coin_an_unseen_proposal_fee_spends_is_not_a_collateral() {
     let f = fx(Library::Accept);
     let collateral = f.credit(1, MASTERNODE_COLLATERAL);
     f.credit(2, COIN);
-    let fee = SpendOwner::Tx(Txid::from_byte_array([0x77; 32]));
-    (f.session.spends)
-        .reserve_unless_held(f.wallet, fee, &[collateral])
-        .unwrap();
     let req = request(CollateralChoice::ExistingUtxo {
         outpoint: format!("{}-0", collateral.txid),
     });
-    let refused = f.register(req.clone(), f.grant(COIN)).unwrap_err();
-    assert_eq!(refused.code(), "masternodes.collateral_unavailable");
-    assert!(f.lib.sent().is_empty());
+    let refused = |f: &Fx| {
+        let preview = f
+            .engine
+            .block_on(f.mn().preview_registration(f.wallet, req.clone()));
+        assert_eq!(
+            preview.unwrap_err().code(),
+            "masternodes.collateral_unavailable"
+        );
+        let e = f.register(req.clone(), f.grant(COIN)).unwrap_err();
+        assert_eq!(e.code(), "masternodes.collateral_unavailable");
+        assert!(f.lib.sent().is_empty());
+        assert!(f.rows().is_empty(), "no row");
+        let locked = f.engine.block_on(f.session.locked_outpoints(f.wallet));
+        assert!(locked.unwrap().is_empty(), "no lock");
+    };
 
-    f.session.spends.release(&f.wallet, fee);
+    // The fee's hand-off, in session: its claim.
+    let fee = Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: collateral,
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value: MASTERNODE_COLLATERAL - COIN,
+            script_pubkey: dashcore::ScriptBuf::new(),
+        }],
+        special_transaction_payload: None,
+    };
+    let owner = SpendOwner::Tx(fee.txid());
+    (f.session.spends)
+        .reserve_unless_held(f.wallet, owner, &[collateral])
+        .unwrap();
+    refused(&f);
+
+    // A restart drops the claim; the row, sent and unseen, stays.
+    f.session.spends.release(&f.wallet, owner);
+    let data = b"[]".to_vec();
+    let mut object = dw_governance::object::GovernanceObject::new_proposal(1, 1, data.clone());
+    object.collateral_hash = fee.txid().to_byte_array();
+    let row = dw_appdb::ProposalRow {
+        wallet_id: f.wallet.to_string(),
+        hash: object.hash(),
+        revision: 1,
+        time: 1,
+        data,
+        fee_txid: fee.txid().to_byte_array(),
+        fee_tx: dashcore::consensus::serialize(&fee),
+        created_at: 1,
+        fee_sent_at: Some(1),
+        submitted_at: None,
+        last_error: None,
+    };
+    let appdb = f.session.live().unwrap().appdb;
+    appdb.insert_proposal(&row).unwrap();
+    refused(&f);
+
+    // Another coin of the amount is still a collateral.
+    let other = f.credit(3, MASTERNODE_COLLATERAL);
+    let req = request(CollateralChoice::ExistingUtxo {
+        outpoint: format!("{}-0", other.txid),
+    });
     let op = f.register(req, f.grant(COIN)).unwrap();
     assert_eq!(op.state, ProTxOperationState::Sent);
-    let locked = f
-        .engine
-        .block_on(f.session.locked_outpoints(f.wallet))
-        .unwrap();
-    assert!(locked.contains(&collateral), "{locked:?}");
 }

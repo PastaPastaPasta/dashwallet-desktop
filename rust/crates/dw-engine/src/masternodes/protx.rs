@@ -95,7 +95,7 @@ impl Masternodes {
                 .await?;
             let fence = s.coin_fence(wallet).await?;
             let w = s.wallet(&wallet).await?;
-            let exclude = s.check_collateral(&fence, &w, &reg).await?;
+            let exclude = s.check_collateral(wallet, &fence, &w, &reg).await?;
             let coins = s.protx_candidates(&fence, &w, &exclude).await?;
             let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
             let funding = plan_funding(&utxos, &reg.outputs(), reg.sized_payload(), CHANGE_LEN)
@@ -147,6 +147,7 @@ impl Masternodes {
                         let state = w.state().await;
                         Some(existing_coin(
                             &snapshot,
+                            &s.unseen_proposal_fee_inputs(&wallet)?,
                             &state.core_wallet,
                             *outpoint,
                             reg.evo(),
@@ -806,6 +807,7 @@ impl NetworkSession {
     /// plan doesn't spend it.
     async fn check_collateral(
         &self,
+        wallet: WalletId,
         fence: &crate::coins::CoinFence,
         w: &PlatformWallet,
         reg: &build::Registration,
@@ -817,6 +819,7 @@ impl NetworkSession {
         let state = w.state().await;
         let (coin, _, _) = existing_coin(
             &snapshot,
+            &self.unseen_proposal_fee_inputs(&wallet)?,
             &state.core_wallet,
             *outpoint,
             reg.evo(),
