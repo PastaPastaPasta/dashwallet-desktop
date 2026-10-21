@@ -249,6 +249,14 @@ describe("governance contract", () => {
     // `MyProposalState` carries fields, so `expectState` holds it (and the generated union below).
     expect([...used].sort()).toEqual(["GovernanceSyncPhase", "MasternodeType", "MyProposalState", "NameChoice", "NameVotingKey", "ProposalScope", "ProposalStatus", "VoteOutcome", "VoteSignal"]);
     used.delete("MyProposalState");
+    // An enum left unmirrored is carried only by records no bound command returns (review n3): a
+    // bound record carrying one fails here, not by skipping its mirror. MG-11 empties both lists.
+    for (const [record, fields] of c.records) {
+      for (const [field, type] of fields) {
+        const leaf = type.match(/(\w+)>*$/)![1];
+        if (NOT_MIRRORED.includes(leaf)) expect(NOT_RETURNED, `${record}.${field}: ${leaf}`).toContain(record);
+      }
+    }
     for (const e of NOT_MIRRORED) used.delete(e);
     for (const e of used) {
       // dw-app's mirror, `<Enum>Name`, as ts-rs writes it.
