@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use dw_appdb::{BookPurpose, LabelKind};
 
-use crate::coins::{now_secs, wallet_owns};
+use crate::coins::{now_secs, wallet_funds_address};
 use crate::send::l1_address;
 use crate::{EngineError, NetworkSession, WalletId};
 
@@ -82,7 +82,9 @@ fn check_txid(txid: &str) -> Result<(), EngineError> {
 }
 
 impl NetworkSession {
-    /// Whether `address` (already validated) is one of the wallet's.
+    /// Whether `address` (already validated) is one of the wallet's
+    /// funds addresses: a provider or identity key's is paid out of the
+    /// wallet, so it is a Send entry (MG-04 D55).
     async fn owns(
         &self,
         wallet_id: &WalletId,
@@ -90,7 +92,7 @@ impl NetworkSession {
     ) -> Result<bool, EngineError> {
         let wallet = self.wallet(wallet_id).await?;
         let state = wallet.state().await;
-        Ok(wallet_owns(&state.core_wallet, address))
+        Ok(wallet_funds_address(&state.core_wallet, address))
     }
 
     /// Entries of `wallet_id`, sorted by label (case-insensitive,
