@@ -23,7 +23,10 @@
 //! - the key upgrade at the version's `identity_update` minimum plus its
 //!   two keys' stored bytes at the version's per-byte rates (no estimator
 //!   prices an identity update; the byte bound is the engine's);
-//! - the top-up fee at dpp's own minimum for an `IdentityTopUp`.
+//! - the top-up fee at dpp's own minimum for an `IdentityTopUp`;
+//! - a withdrawal's metered fee (DP6-02) at the bound on its `withdrawal`
+//!   document of the withdrawals contract, the same way, plus the
+//!   network's threshold-signing charge and [`WITHDRAWAL_IDENTITY_OPS`].
 //!
 //! The write paths' grants (`flows.rs`) stay bounds above these figures;
 //! a test holds them above the table at every known protocol version.
@@ -37,6 +40,7 @@ use dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dpp::state_transition::StateTransitionEstimatedFeeValidation;
 use dpp::state_transition::identity_topup_transition::IdentityTopUpTransition;
 use dpp::state_transition::identity_topup_transition::v0::IdentityTopUpTransitionV0;
+use dpp::system_data_contracts::withdrawals_contract::v1::document_types::withdrawal::NAME as WITHDRAWAL;
 use dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dpp::version::PlatformVersion;
 use drive::drive::document::cost::{
@@ -65,6 +69,14 @@ const LOW_ACTIONS: u64 = 10;
 /// height (48) bounds every tree of up to 2^33 entries, past any DashPay
 /// document type's (module doc).
 pub(super) const MAX_TREE_ENTRIES: u64 = 1 << 48;
+/// What a withdrawal's identity operations cost at most besides its
+/// document, in credits: the balance and nonce replacements, the system
+/// credits update, the key fetch and the signature check. Each replaces
+/// or reads a fixed-size item of an existing tree; this bounds them at
+/// about 730 stored bytes at the rates of every known fee version, far
+/// past what they write (`withdrawal_tests.rs` holds the whole bound under
+/// dpp's minimum fee).
+const WITHDRAWAL_IDENTITY_OPS: u64 = 20_000_000;
 /// Drive's estimator holds the processing it estimates within this factor
 /// of Drive's charge (its `…within_a_factor_of_two` test).
 const ESTIMATED_PROCESSING_FACTOR: u64 = 2;
@@ -106,7 +118,7 @@ impl NetworkSession {
 fn compute(network: &PlatformVersion) -> Result<CostTable, PlatformError> {
     let contract =
         load_system_data_contract(SystemDataContract::Dashpay, network).map_err(internal)?;
-    let pricing = pricing_version(&contract, network)?;
+    let pricing = pricing_version(&contract, "profile", network)?;
     let document = |name| document_cost(&contract, name, &pricing);
     let (contact_request, profile_update, contact_info) = (
         document("contactRequest")?,
@@ -137,16 +149,29 @@ fn compute(network: &PlatformVersion) -> Result<CostTable, PlatformError> {
     })
 }
 
+/// A bound on the fee Platform meters for a withdrawal at `network`
+/// (module doc): its document, the threshold signing and the identity
+/// operations.
+pub(crate) fn withdrawal_metered_bound(network: &PlatformVersion) -> Result<u64, PlatformError> {
+    let contract =
+        load_system_data_contract(SystemDataContract::Withdrawals, network).map_err(internal)?;
+    let pricing = pricing_version(&contract, WITHDRAWAL, network)?;
+    let document = document_cost(&contract, WITHDRAWAL, &pricing)?;
+    Ok(document
+        .saturating_add(network.fee_version.processing.perform_network_threshold_signing)
+        .saturating_add(WITHDRAWAL_IDENTITY_OPS))
+}
+
 /// The version the estimator prices with: `network` when it follows its
-/// insert methods, else the first later version that does, carrying
-/// `network`'s `FeeVersion` (module doc).
+/// insert methods (asked of `contract`'s `probe` document type), else the
+/// first later version that does, carrying `network`'s `FeeVersion`
+/// (module doc).
 fn pricing_version(
     contract: &DataContract,
+    probe: &str,
     network: &PlatformVersion,
 ) -> Result<PlatformVersion, PlatformError> {
-    let probe = contract
-        .document_type_for_name("profile")
-        .map_err(internal)?;
+    let probe = contract.document_type_for_name(probe).map_err(internal)?;
     let accepts = |v: &PlatformVersion| {
         document_type_create_cost(
             contract,
@@ -275,7 +300,7 @@ mod tests {
             PlatformVersion::get(14).unwrap(),
         );
         let contract = load_system_data_contract(SystemDataContract::Dashpay, v13).unwrap();
-        let priced = pricing_version(&contract, v13).unwrap();
+        let priced = pricing_version(&contract, "profile", v13).unwrap();
         assert_eq!(priced.fee_version, v13.fee_version);
         let cost = |v: &PlatformVersion| document_cost(&contract, "contactRequest", v).unwrap();
         if v13.fee_version.storage == v14.fee_version.storage
@@ -352,7 +377,7 @@ mod tests {
         for v in known_versions() {
             let network = PlatformVersion::get(v).unwrap();
             let contract = load_system_data_contract(SystemDataContract::Dashpay, network).unwrap();
-            let pricing = pricing_version(&contract, network).unwrap();
+            let pricing = pricing_version(&contract, "profile", network).unwrap();
             let t = cost_table(v).unwrap();
             for (name, price) in [
                 ("contactRequest", t.contact_request),
@@ -400,7 +425,7 @@ mod tests {
         for v in known_versions() {
             let network = PlatformVersion::get(v).unwrap();
             let contract = load_system_data_contract(SystemDataContract::Dashpay, network).unwrap();
-            let pricing = pricing_version(&contract, network).unwrap();
+            let pricing = pricing_version(&contract, "profile", network).unwrap();
             let mut assumptions = CostAssumptions::new(&pricing);
             assumptions.existing_documents = MAX_TREE_ENTRIES;
             for name in ["contactRequest", "profile", "contactInfo"] {

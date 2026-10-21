@@ -86,6 +86,7 @@ mod trust_tests;
 mod users;
 #[cfg(test)]
 mod users_tests;
+mod withdrawal;
 
 pub use bringup::CREATED_HERE_BUDGET;
 pub use contacts::{
@@ -95,7 +96,7 @@ pub use contacts::{
 };
 pub use credits::{
     CostTable, CreditLevel, PendingTopUp, StuckTopUpFunding, TopUpOutcome, TopUpQuote, TopUpState,
-    WithdrawAmount, WithdrawOutcome, WithdrawQuote,
+    WithdrawAmount, WithdrawOutcome, WithdrawQuote, Withdrawal, WithdrawalStatus,
 };
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{

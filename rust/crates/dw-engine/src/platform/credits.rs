@@ -1,12 +1,13 @@
-//! Credits: the cost table, top-up and withdraw, each with a quote
-//! (DP1-06, DP6-02).
+//! Credits: the cost table, top-up and withdraw, each with a quote, and
+//! the recent withdrawals (DP1-06, DP6-02).
 
 use serde::{Deserialize, Serialize};
 
-use super::dashpay::{DashPay, stub};
+use super::dashpay::DashPay;
 use super::errors::CreditsError;
 use super::flows::{DispatchState, GrantRequest};
 use super::topup;
+use super::withdrawal::{self, SdkWithdrawals};
 
 /// Credit costs of the DashPay actions at the network's protocol version,
 /// for "≈ N contact requests" and the low-credit warnings (F8). Every
@@ -137,22 +138,32 @@ pub struct StuckTopUpFunding {
     pub state: DispatchState,
 }
 
+/// How much a withdrawal takes (DP6-02).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WithdrawAmount {
-    /// The balance less the fee reserve.
+    /// The balance less the fee reserve, in whole duffs.
     All,
     Credits {
         credits: u64,
     },
 }
 
-/// What a withdrawal of `amount` takes and pays out.
+/// What a withdrawal of `amount` takes and pays out, at the network's
+/// protocol version (`withdrawal.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WithdrawQuote {
+    /// What the identity's balance loses to the withdrawal itself.
     pub credits: u64,
+    /// The fee reserve the balance must hold besides: dpp's minimum fee
+    /// for a withdrawal, or a bound on the fee Platform meters if higher.
+    /// Platform charges what it meters, at most this.
     pub fee_credits: u64,
+    /// What reaches the address on Core: Platform's conversion of the
+    /// withdrawal (the credits in duffs, less the Core fee where the
+    /// protocol version carves it out).
     pub expected_duffs: u64,
+    /// `max_credits` = `credits + fee_credits`.
     pub grant: GrantRequest,
 }
 
@@ -160,7 +171,47 @@ pub struct WithdrawQuote {
 pub struct WithdrawOutcome {
     pub credits: u64,
     pub expected_duffs: Option<u64>,
+    /// The identity's balance after, proved; `None` when the withdrawal
+    /// was read back rather than answered.
     pub remaining_credits: Option<u64>,
+    /// The withdrawal's document (base58), as `withdrawals` lists it.
+    pub withdrawal: String,
+}
+
+/// Where a withdrawal stands on Platform (its document's `status`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WithdrawalStatus {
+    /// Waiting for Platform to sign its asset unlock.
+    Queued,
+    Pooled,
+    /// Its asset unlock was sent to Core.
+    Broadcasted,
+    /// Mined on Core: the duffs arrived.
+    Complete,
+    /// Core never took its asset unlock; Platform signs it again.
+    Expired,
+    /// Terminal: its payout can never be mined, and Platform keeps the
+    /// credits.
+    Failed,
+    /// A status this version does not know.
+    Unknown,
+}
+
+/// One of an identity's withdrawals, from its document on Platform.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Withdrawal {
+    /// The document's id (base58).
+    pub id: String,
+    pub credits: u64,
+    /// What reaches the address, by Platform's conversion of the document.
+    pub expected_duffs: Option<u64>,
+    /// The address paid, when its script reads as one of the network.
+    pub to: Option<String>,
+    pub status: WithdrawalStatus,
+    /// Unix milliseconds.
+    pub created_at: Option<u64>,
+    pub updated_at: Option<u64>,
 }
 
 impl DashPay {
@@ -244,16 +295,22 @@ impl DashPay {
         .await
     }
 
-    #[expect(unused_variables, reason = "stub until DP6-02")]
+    /// What a withdrawal of `amount` from `identity` takes and pays out,
+    /// with the same refusals as [`Self::withdraw`] short of the grant.
     pub async fn withdraw_quote(
         &self,
         identity: String,
         amount: WithdrawAmount,
     ) -> Result<WithdrawQuote, CreditsError> {
-        stub("DashPay.withdraw_quote")
+        self.on_wallet(move |_, manager, wallet| async move {
+            let net = SdkWithdrawals(manager.sdk_arc());
+            withdrawal::quote(&net, &wallet, &identity, amount).await
+        })
+        .await
     }
 
-    #[expect(unused_variables, reason = "stub until DP6-02")]
+    /// Withdraws `amount` of `identity`'s credits to `to`, a P2PKH or P2SH
+    /// address of the network (`withdrawal.rs`).
     pub async fn withdraw(
         &self,
         identity: String,
@@ -261,6 +318,23 @@ impl DashPay {
         amount: WithdrawAmount,
         grant: String,
     ) -> Result<WithdrawOutcome, CreditsError> {
-        stub("DashPay.withdraw")
+        let wallet_id = self.wallet_id;
+        self.on_wallet(move |session, manager, wallet| async move {
+            let net = SdkWithdrawals(manager.sdk_arc());
+            let what = (to.as_str(), amount);
+            withdrawal::withdraw(&net, &session, &wallet, (wallet_id, &identity), what, &grant)
+                .await
+        })
+        .await
+    }
+
+    /// `identity`'s recent withdrawals on Platform, the most recently
+    /// updated first, at most 20.
+    pub async fn withdrawals(&self, identity: String) -> Result<Vec<Withdrawal>, CreditsError> {
+        self.on_wallet(move |session, manager, wallet| async move {
+            let net = SdkWithdrawals(manager.sdk_arc());
+            withdrawal::recent(&net, &wallet, session.vault.network(), &identity).await
+        })
+        .await
     }
 }
