@@ -564,6 +564,17 @@ impl SessionHub {
         known_before != state.balances().is_some()
     }
 
+    /// Lowers a wallet's heights to `height` after a fork truncated it;
+    /// returns whether its balances became known or unknown.
+    fn lower_heights(&self, id: WalletId, height: u32) -> bool {
+        let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        let state = map.entry(id).or_default();
+        let known_before = state.balances().is_some();
+        state.synced_height = state.synced_height.min(height);
+        state.processed_height = state.processed_height.min(height);
+        known_before != state.balances().is_some()
+    }
+
     /// Marks history entries whose confirmation count changed with a new
     /// wallet tip.
     fn mark_young(&self, id: WalletId) {
@@ -626,6 +637,30 @@ impl SessionHub {
                 });
                 self.pump.mark_history(id, Some(txids));
                 if self.update_balance(id, balance, account_balances) {
+                    self.pump.mark_balances(id);
+                }
+            }
+            WalletEvent::ChainTruncated {
+                height,
+                txids,
+                unconfirmed_txids,
+                balance,
+                account_balances,
+                ..
+            } => {
+                // A fork replaced the blocks above `height`: the wallet
+                // dropped what they recorded, kept their InstantSend-locked
+                // transactions unconfirmed and lowered its heights. The
+                // history follows it.
+                let changed = self
+                    .history
+                    .with_wallet(id, |h| h.truncate(txids, unconfirmed_txids));
+                let flipped = self.lower_heights(id, *height);
+                if !changed.is_empty() {
+                    self.pump.mark_history(id, Some(&changed));
+                }
+                self.mark_young(id);
+                if self.update_balance(id, balance, account_balances) || flipped {
                     self.pump.mark_balances(id);
                 }
             }

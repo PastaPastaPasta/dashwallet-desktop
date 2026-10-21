@@ -151,6 +151,7 @@ pub(crate) mod fixtures {
     use dashcore::blockdata::transaction::special_transaction::provider_update_registrar::ProviderUpdateRegistrarPayload;
     use dashcore::bls_sig_utils::BLSPublicKey;
     use dashcore::hash_types::{InputsHash, PubkeyHash};
+    use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
     use dashcore::{ScriptBuf, TxIn, TxOut};
 
     pub(crate) fn payout(seed: u8) -> ScriptBuf {
@@ -182,7 +183,7 @@ pub(crate) mod fixtures {
             },
             masternode_mode: 0,
             collateral_outpoint: collateral,
-            service_address: "127.0.0.1:19899".parse().unwrap(),
+            service_address: MasternodeNetInfo::Legacy("127.0.0.1:19899".parse().unwrap()),
             owner_key_hash: PubkeyHash::from_byte_array([1; 20]),
             operator_public_key: BLSPublicKey::from([2; 48]),
             voting_key_hash: PubkeyHash::from_byte_array([3; 20]),
@@ -193,6 +194,8 @@ pub(crate) mod fixtures {
             platform_node_id: None,
             platform_p2p_port: None,
             platform_http_port: None,
+            payouts: None,
+            shared_collateral: None,
         };
         Transaction {
             version: 3,
@@ -219,6 +222,7 @@ pub(crate) mod fixtures {
             script_payout: payout(payout_seed),
             inputs_hash: InputsHash::all_zeros(),
             payload_sig: Vec::new(),
+            payouts: None,
         };
         Transaction {
             version: 3,

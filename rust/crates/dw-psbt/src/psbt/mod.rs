@@ -12,9 +12,11 @@
 //! Only the container is here: the data types, their BIP174 (de)serialization
 //! and the errors. Signing is `dw_psbt::sign`'s.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use dashcore::blockdata::transaction::Transaction;
+use dashcore::crypto::key::PublicKey;
 use key_wallet::bip32::{ExtendedPubKey, KeySource};
 
 #[macro_use]
@@ -28,6 +30,44 @@ pub use self::error::Error;
 mod map;
 pub use self::map::{Input, Output, PsbtSighashType};
 
+/// A [`PublicKey`] as a map key. rust-dashcore #1144 dropped the key's
+/// derived order; this is that order (`compressed`, then the key), so maps
+/// keep the order they serialize in.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct SigKey(pub PublicKey);
+
+impl Ord for SigKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.0.compressed, self.0.inner).cmp(&(other.0.compressed, other.0.inner))
+    }
+}
+
+impl PartialOrd for SigKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// An [`ExtendedPubKey`] as a map key, in the field order its derive had
+/// before rust-dashcore #1144 dropped it (see [`SigKey`]).
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct XpubKey(pub ExtendedPubKey);
+
+impl Ord for XpubKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let fields = |x: &ExtendedPubKey| {
+            (x.network, x.depth, x.parent_fingerprint, x.child_number, x.public_key, x.chain_code)
+        };
+        fields(&self.0).cmp(&fields(&other.0))
+    }
+}
+
+impl PartialOrd for XpubKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// A Partially Signed Transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PartiallySignedTransaction {
@@ -37,7 +77,7 @@ pub struct PartiallySignedTransaction {
     pub version: u32,
     /// A global map from extended public keys to the used key fingerprint and
     /// derivation path as defined by BIP 32.
-    pub xpub: BTreeMap<ExtendedPubKey, KeySource>,
+    pub xpub: BTreeMap<XpubKey, KeySource>,
     /// Global proprietary key-value pairs.
     pub proprietary: BTreeMap<raw::ProprietaryKey, Vec<u8>>,
     /// Unknown global key-value pairs.

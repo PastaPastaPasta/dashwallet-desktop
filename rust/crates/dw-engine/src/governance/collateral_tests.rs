@@ -11,6 +11,7 @@ use dashcore::blockdata::transaction::special_transaction::provider_registration
 use dashcore::bls_sig_utils::BLSPublicKey;
 use dashcore::hash_types::{InputsHash, PubkeyHash};
 use dashcore::hashes::Hash;
+use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
 use dashcore::transaction::TransactionPayload;
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dw_appdb::AppDb;
@@ -45,7 +46,7 @@ pub(in crate::governance) fn registration(
         },
         masternode_mode: 0,
         collateral_outpoint: collateral,
-        service_address: "127.0.0.1:19899".parse().unwrap(),
+        service_address: MasternodeNetInfo::Legacy("127.0.0.1:19899".parse().unwrap()),
         owner_key_hash: PubkeyHash::from_byte_array([1; 20]),
         operator_public_key: BLSPublicKey::from([2; 48]),
         voting_key_hash: PubkeyHash::from_byte_array([3; 20]),
@@ -56,6 +57,8 @@ pub(in crate::governance) fn registration(
         platform_node_id: evonode.then(|| [5; 20].into()),
         platform_p2p_port: evonode.then_some(26656),
         platform_http_port: evonode.then_some(443),
+        payouts: None,
+        shared_collateral: None,
     };
     Transaction {
         version: 3,

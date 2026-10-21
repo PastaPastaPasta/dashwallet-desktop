@@ -13,13 +13,12 @@ use dashcore::hashes::{self, hash160, ripemd160, sha256, sha256d};
 
 use crate::psbt::map::Map;
 use crate::psbt::serialize::Deserialize;
-use crate::psbt::{Error, error, raw};
+use crate::psbt::{Error, SigKey, error, raw};
 use dashcore::blockdata::script::ScriptBuf;
 use dashcore::blockdata::transaction::Transaction;
 use dashcore::blockdata::transaction::txout::TxOut;
 use dashcore::blockdata::witness::Witness;
 use dashcore::crypto::ecdsa;
-use dashcore::crypto::key::PublicKey;
 use dashcore::secp256k1;
 use dashcore::sighash::EcdsaSighashType;
 use key_wallet::bip32::KeySource;
@@ -68,7 +67,7 @@ pub struct Input {
     pub witness_utxo: Option<TxOut>,
     /// A map from public keys to their corresponding signature as would be
     /// pushed to the stack from a scriptSig or witness for a non-taproot inputs.
-    pub partial_sigs: BTreeMap<PublicKey, ecdsa::Signature>,
+    pub partial_sigs: BTreeMap<SigKey, ecdsa::Signature>,
     /// The sighash type to be used for this input. Signatures for this input
     /// must use the sighash type.
     pub sighash_type: Option<PsbtSighashType>,
@@ -173,7 +172,7 @@ impl Input {
             }
             PSBT_IN_PARTIAL_SIG => {
                 impl_psbt_insert_pair! {
-                    self.partial_sigs <= <raw_key: PublicKey>|<raw_value: ecdsa::Signature>
+                    self.partial_sigs <= <raw_key: SigKey>|<raw_value: ecdsa::Signature>
                 }
             }
             PSBT_IN_SIGHASH_TYPE => {

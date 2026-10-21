@@ -122,7 +122,10 @@ fn test_QT_123_rebuilt_registrations_equal_dashd() {
             } else {
                 CollateralSource::Existing(p.collateral_outpoint)
             },
-            service: p.service_address,
+            service: p
+                .service_address
+                .primary_service_address()
+                .expect("dashd's version-2 payload has a legacy service"),
             owner_key_hash: p.owner_key_hash.to_byte_array(),
             voting_key_hash: p.voting_key_hash.to_byte_array(),
             operator_public_key: parse_public_hex(str_of(&c, "operator_public")).unwrap(),
