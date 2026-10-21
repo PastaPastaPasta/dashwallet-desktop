@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 32
+Contract-Version: 33
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -565,7 +565,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: dc38b642b6f0122a40f07813b3a359428431a6c335670a828a32cdfa2cec4df1 version: 32 -->
+<!-- surface-sha256: 3bf37c8517c87e9fa44c3cb1e7cfe9026a1e9b247803e5299160a37b1e78a114 version: 33 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -976,6 +976,7 @@ pub enum FlowKind {
     Voting,
     MasternodeRegistration,
     KeyChange,
+    Proposal,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1918,7 +1919,7 @@ The shapes are in §3. What they mean, where the name does not say:
   engine charges no more than it quoted; a quote that went stale (a fee change) is `platform.grant_exceeded`, and the
   host quotes again.
 - **`FlowKind`** names what a lease is for; `AcceptAndPay` carries both the `PlatformOp` grant and the payment's
-  `Spend` grant. `Voting`, `MasternodeRegistration` and `KeyChange` are the masternode flows (item 59). **`DispatchState`** and **`DispatchResolved`** are the journal's view of a handed-off artifact (§2.11,
+  `Spend` grant. `Voting`, `MasternodeRegistration` and `KeyChange` are the masternode flows (item 59); `Proposal` pays a governance proposal's fee (item 60). **`DispatchState`** and **`DispatchResolved`** are the journal's view of a handed-off artifact (§2.11,
   §6). **`LeaseView`**, `LeaseStateView` (`Active`, `AwaitingProof`, `Parked{reason}`, `NeedsGrant`,
   `Revoked{cause}`, `Ended`) and `BudgetView{purpose, ceiling, spent}` are E0-04 §4.6's view, owned here
   (E0-04 §16.1); `AwaitingProof`'s deadline is `key_expires_in_secs`. **`RevokeCause`**: `Lock`, `Close`,
@@ -2962,3 +2963,12 @@ renames or reshapes them takes the next version bump:
     - **Ownership.** An output to a DashPay contact's address is foreign, not the wallet's (D19), for `Spend` and
       `Masternode` alike, and for the PSBT cap. `create_unsigned` writes no derivation record for it, and
       `analyze_psbt` does not count an input from one as signable.
+
+**From MG-06** (version 33):
+
+60. **The proposal fee's lease (MG-06 D10, version 33).** `FlowKind` gains `Proposal`: one `Spend` grant of the
+    wallet, charged as `ContactPayment` is. The fee transaction (one `OP_RETURN <hash>` output of 1 DASH and P2PKH
+    change) is a `TxDraft` prepared under it: its net debit, the `OP_RETURN` value plus the fee, is charged at
+    `prepare`, fenced at the hand-off and refunded on a definite `NotSent` or an `abandon`. Any other grant kind is
+    `platform.grant_invalid`. A resend of a saved fee (`Governance.submit_proposal`) takes no lease. Decisions in
+    `docs/design/MG-06-proposals.md`.

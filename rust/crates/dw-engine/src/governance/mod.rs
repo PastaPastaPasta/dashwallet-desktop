@@ -8,6 +8,7 @@
 
 pub(crate) mod collateral;
 mod errors;
+mod proposals;
 mod reads;
 mod records;
 pub(crate) mod sync;
@@ -18,9 +19,10 @@ use std::sync::Arc;
 pub use errors::GovernanceError;
 pub use records::{
     CurrentVoteRow, GovernanceClock, GovernanceInfo, GovernanceSyncPhase, GovernanceSyncState,
-    MasternodeType, ProposalCounts, ProposalDetail, ProposalQuery, ProposalRow, ProposalScope,
-    ProposalStatus, RawVote, SignalTallies, SuperblockDate, VoteCast, VoteOutcome, VoteRelayed,
-    VoteSignal, VoteTally, VotingMasternode, WeightRange,
+    MasternodeType, MyProposal, MyProposalState, ProposalCounts, ProposalDetail, ProposalDraft,
+    ProposalField, ProposalPreview, ProposalQuery, ProposalRow, ProposalScope, ProposalStatus,
+    RawVote, SignalTallies, SubmitRefusal, SubmitWait, SuperblockDate, VoteCast, VoteOutcome,
+    VoteRelayed, VoteSignal, VoteTally, VotingMasternode, WeightRange,
 };
 
 use crate::{DashNetwork, EngineError, NetworkSession};

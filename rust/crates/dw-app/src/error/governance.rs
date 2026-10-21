@@ -19,6 +19,12 @@ codes! {
         ProposalNotFound = "governance.proposal_not_found",
         /// A relayed vote failed a check: `data` gives the reason.
         VoteRejected = "governance.vote_rejected",
+        /// A proposal draft failed validation: `data` lists every failing
+        /// field in wizard order.
+        InvalidProposal = "governance.invalid_proposal",
+        /// `submit_proposal` on a proposal past submitting: `data` gives the
+        /// reason (`public`, `expired`, `fee_failed`, `in_flight`).
+        SubmitRefused = "governance.submit_refused",
         /// No full node to talk to.
         NoPeers = "governance.no_peers",
         /// The call needs the masternode list and SPV has none yet.
@@ -50,6 +56,18 @@ impl From<GovernanceError> for AppError {
                 GovernanceCode::VoteRejected,
                 Some(ErrorData::Reason { reason }),
             ),
+            G::InvalidProposal { fields } => (
+                GovernanceCode::InvalidProposal,
+                Some(ErrorData::ProposalFields {
+                    fields: fields.into_iter().map(Into::into).collect(),
+                }),
+            ),
+            G::SubmitRefused { reason } => (
+                GovernanceCode::SubmitRefused,
+                Some(ErrorData::Reason {
+                    reason: reason.as_str().into(),
+                }),
+            ),
             G::NoPeers => (GovernanceCode::NoPeers, None),
             G::ListUnavailable => (GovernanceCode::ListUnavailable, None),
             G::NotImplemented { call } => (
@@ -68,7 +86,7 @@ impl From<GovernanceError> for AppError {
 #[cfg(test)]
 mod tests {
     use dw_engine::EngineError;
-    use dw_engine::governance::GovernanceSyncPhase;
+    use dw_engine::governance::{GovernanceSyncPhase, ProposalField, SubmitRefusal};
 
     use super::*;
 
@@ -83,6 +101,12 @@ mod tests {
             GovernanceError::VoteRejected { reason: s() },
             GovernanceError::NoPeers,
             GovernanceError::ListUnavailable,
+            GovernanceError::InvalidProposal {
+                fields: vec![ProposalField::Name],
+            },
+            GovernanceError::SubmitRefused {
+                reason: SubmitRefusal::Public,
+            },
             GovernanceError::NotImplemented { call: s() },
             GovernanceError::Engine(EngineError::NetworkNotOpen("regtest".into())),
             GovernanceError::Platform(dw_engine::platform::PlatformError::GrantInvalid),
@@ -130,6 +154,21 @@ mod tests {
                 reason: "too_often".into()
             }),
             serde_json::json!({ "kind": "reason", "reason": "too_often" })
+        );
+        assert_eq!(
+            data(GovernanceError::InvalidProposal {
+                fields: vec![ProposalField::PaymentAddress, ProposalField::FirstPayment]
+            }),
+            serde_json::json!({
+                "kind": "proposalFields",
+                "fields": ["payment_address", "first_payment"]
+            })
+        );
+        assert_eq!(
+            data(GovernanceError::SubmitRefused {
+                reason: SubmitRefusal::FeeFailed
+            }),
+            serde_json::json!({ "kind": "reason", "reason": "fee_failed" })
         );
         assert_eq!(
             data(GovernanceError::NotImplemented {

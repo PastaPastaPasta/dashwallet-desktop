@@ -578,6 +578,12 @@ pub struct SuperblockDate {
     pub height: u32,
     pub estimated_time: u64,
     pub budget: u64,
+    /// The height votes count to for this superblock (MG-06 D13).
+    pub voting_cutoff_height: u32,
+    pub voting_cutoff_estimate: u64,
+    /// The estimated cutoff is at most two days away: the proposal wizard
+    /// offers the next superblock first (UX-SPEC §4.25.3).
+    pub cutoff_soon: bool,
 }
 
 impl From<engine::SuperblockDate> for SuperblockDate {
@@ -586,11 +592,231 @@ impl From<engine::SuperblockDate> for SuperblockDate {
             height,
             estimated_time,
             budget,
+            voting_cutoff_height,
+            voting_cutoff_estimate,
+            cutoff_soon,
         } = d;
         SuperblockDate {
             height,
             estimated_time,
             budget,
+            voting_cutoff_height,
+            voting_cutoff_estimate,
+            cutoff_soon,
+        }
+    }
+}
+
+/// The Create Proposal wizard's input (mg-engine §2.5, MG-06 §2.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposalDraft {
+    pub name: String,
+    pub url: String,
+    /// P2PKH or P2SH of the session's network (MG-06 D12).
+    pub payment_address: String,
+    /// Per payment, duffs.
+    pub payment_amount: u64,
+    pub payment_count: u32,
+    /// One of the next 12 superblocks (`governance_upcoming_superblocks`).
+    pub first_superblock_height: u32,
+    /// Coin control for the fee, `"<txid>-<n>"`: exactly these coins; empty
+    /// for automatic selection.
+    pub coins: Vec<String>,
+}
+
+impl From<ProposalDraft> for engine::ProposalDraft {
+    fn from(d: ProposalDraft) -> Self {
+        let ProposalDraft {
+            name,
+            url,
+            payment_address,
+            payment_amount,
+            payment_count,
+            first_superblock_height,
+            coins,
+        } = d;
+        engine::ProposalDraft {
+            name,
+            url,
+            payment_address,
+            payment_amount,
+            payment_count,
+            first_superblock_height,
+            coins,
+        }
+    }
+}
+
+/// A draft field that failed validation (`governance.invalid_proposal`),
+/// named as the contract names them (snake_case, mg-engine §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalFieldName {
+    Name,
+    Url,
+    PaymentAddress,
+    PaymentAmount,
+    PaymentCount,
+    FirstPayment,
+    /// The JSON exceeds Core's 512 bytes, or Core's checks refuse the
+    /// built object.
+    Payload,
+}
+
+mirror_enum!(engine::ProposalField => ProposalFieldName {
+    Name, Url, PaymentAddress, PaymentAmount, PaymentCount, FirstPayment, Payload,
+});
+
+/// What the review step shows before the fee is paid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposalPreview {
+    /// The object hash, as it would be if created now.
+    pub hash: String,
+    pub data_json: String,
+    pub data_hex: String,
+    pub start_epoch: i64,
+    pub end_epoch: i64,
+    /// The proposal fee, duffs.
+    pub fee: u64,
+    /// The fee transaction's own network fee, estimated.
+    pub network_fee: u64,
+}
+
+impl From<engine::ProposalPreview> for ProposalPreview {
+    fn from(p: engine::ProposalPreview) -> Self {
+        let engine::ProposalPreview {
+            hash,
+            data_json,
+            data_hex,
+            start_epoch,
+            end_epoch,
+            fee,
+            network_fee,
+        } = p;
+        ProposalPreview {
+            hash,
+            data_json,
+            data_hex,
+            start_epoch,
+            end_epoch,
+            fee,
+            network_fee,
+        }
+    }
+}
+
+/// Why a proposal whose fee confirmed is not submitted (yet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SubmitWaitName {
+    /// Announced to a synced run's peers, and none fetched it in 60 s.
+    NoPeerAccepted,
+    /// Governance sync is off (MG-06 D9).
+    SyncDisabled,
+    /// No run is synced, so nothing is announced yet (MG-02 D24).
+    NotSynced,
+}
+
+mirror_enum!(engine::SubmitWait => SubmitWaitName { NoPeerAccepted, SyncDisabled, NotSynced });
+
+/// Where one of the wallet's proposals is (MG-06 §2.3, MG-00 D16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum MyProposalState {
+    /// Saved, and the wallet has not seen its fee on the network.
+    FeeUnsent,
+    /// The fee is out; not submitted yet.
+    FeePaid { confirmations: u32 },
+    /// The fee has a confirmation, and no peer took the proposal yet.
+    ReadyToSubmit { reason: SubmitWaitName },
+    /// A peer took it; public once the fee has 6 confirmations.
+    Confirming { confirmations: u32 },
+    /// Peers announce it (MG-02 D3). `status` once governance is synced.
+    Public { status: Option<ProposalStatusName> },
+    /// Its fee's coins were spent by another confirmed transaction.
+    FeeFailed,
+    /// Its end epoch passed before it went public.
+    Expired,
+}
+
+impl From<engine::MyProposalState> for MyProposalState {
+    fn from(s: engine::MyProposalState) -> Self {
+        use engine::MyProposalState as E;
+        match s {
+            E::FeeUnsent => Self::FeeUnsent,
+            E::FeePaid { confirmations } => Self::FeePaid { confirmations },
+            E::ReadyToSubmit { reason } => Self::ReadyToSubmit {
+                reason: reason.into(),
+            },
+            E::Confirming { confirmations } => Self::Confirming { confirmations },
+            E::Public { status } => Self::Public {
+                status: status.map(Into::into),
+            },
+            E::FeeFailed => Self::FeeFailed,
+            E::Expired => Self::Expired,
+        }
+    }
+}
+
+/// One of the wallet's own proposals (mg-engine §2.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MyProposal {
+    pub hash: String,
+    pub name: String,
+    pub url: String,
+    pub payment_address: String,
+    pub payment_amount: u64,
+    pub payment_count: u32,
+    pub start_epoch: i64,
+    pub end_epoch: i64,
+    pub fee_txid: String,
+    pub created_at: u64,
+    /// When a peer first fetched it (MG-06 D6).
+    pub submitted_at: Option<u64>,
+    pub state: MyProposalState,
+    /// The last hand-off of its fee's failure, if it failed, while the
+    /// wallet has not seen the fee: why a fee reads unsent (MG-06 D10).
+    pub last_error: Option<String>,
+}
+
+impl From<engine::MyProposal> for MyProposal {
+    fn from(p: engine::MyProposal) -> Self {
+        let engine::MyProposal {
+            hash,
+            name,
+            url,
+            payment_address,
+            payment_amount,
+            payment_count,
+            start_epoch,
+            end_epoch,
+            fee_txid,
+            created_at,
+            submitted_at,
+            state,
+            last_error,
+        } = p;
+        MyProposal {
+            hash,
+            name,
+            url,
+            payment_address,
+            payment_amount,
+            payment_count,
+            start_epoch,
+            end_epoch,
+            fee_txid,
+            created_at,
+            submitted_at,
+            state: state.into(),
+            last_error,
         }
     }
 }

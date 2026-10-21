@@ -22,7 +22,7 @@ mod platform;
 use serde::Serialize;
 use ts_rs::TS;
 
-use crate::dto::governance::GovernanceSyncPhaseName;
+use crate::dto::governance::{GovernanceSyncPhaseName, ProposalFieldName};
 use crate::dto::platform::{
     BudgetPurposeName, DashPayProfile, DispatchStateName, EligibilityName, KeyPurposeName,
     ProfileFieldName, RevokeCauseName, UsernameRuleName,
@@ -264,12 +264,18 @@ pub enum ErrorData {
     GovernancePhase { phase: GovernanceSyncPhaseName },
     /// `governance.proposal_not_found`: the hash asked for.
     ProposalHash { hash: String },
+    /// `governance.invalid_proposal`: every draft field that failed, in
+    /// wizard order.
+    ProposalFields { fields: Vec<ProposalFieldName> },
     /// `platform.not_implemented`, `governance.not_implemented`,
     /// `not_implemented`: the call that is not.
     Call { call: String },
     /// `send.broadcast_rejected`, `send.broadcast_unknown` and their `psbt.*` and
     /// `coinjoin.broadcast_rejected` twins: the peer's or library's reason;
-    /// `governance.vote_rejected`: the check that failed (mg-engine §4).
+    /// `governance.vote_rejected`: the check that failed;
+    /// `governance.submit_refused`: why (`public`, `expired`, `fee_failed`,
+    /// `in_flight`)
+    /// (mg-engine §4).
     Reason { reason: String },
     /// `tx_action_refused`: why the abandon or resend was refused.
     TxAction { refusal: TxActionRefusalName },

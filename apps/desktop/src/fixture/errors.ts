@@ -60,6 +60,7 @@ const SAMPLES: Samples = {
   feature: { code: "platform.feature_off", data: { kind: "feature", feature: "platform" } },
   governancePhase: { code: "governance.not_synced", data: { kind: "governancePhase", phase: "syncingVotes" } },
   proposalHash: { code: "governance.proposal_not_found", data: { kind: "proposalHash", hash: "5c".repeat(32) } },
+  proposalFields: { code: "governance.invalid_proposal", data: { kind: "proposalFields", fields: ["name", "payment_address"] } },
   call: { code: "platform.not_implemented", data: { kind: "call", call: "create_invitation" } },
   reason: { code: "send.broadcast_rejected", data: { kind: "reason", reason: "bad-txns-inputs-missingorspent" } },
   txAction: { code: "tx_action_refused", data: { kind: "txAction", refusal: "instantLocked" } },

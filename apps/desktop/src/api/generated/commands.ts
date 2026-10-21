@@ -90,6 +90,7 @@ import type { MixedCoinsSweepPlan } from "./MixedCoinsSweepPlan";
 import type { MixedCoinsSweepResult } from "./MixedCoinsSweepResult";
 import type { MnemonicCheck } from "./MnemonicCheck";
 import type { MnemonicLanguageName } from "./MnemonicLanguageName";
+import type { MyProposal } from "./MyProposal";
 import type { NameAvailability } from "./NameAvailability";
 import type { NameOutcome } from "./NameOutcome";
 import type { NetworkData } from "./NetworkData";
@@ -109,6 +110,8 @@ import type { PreparedTxSummary } from "./PreparedTxSummary";
 import type { PrivateContactDetails } from "./PrivateContactDetails";
 import type { ProfileEditArgs } from "./ProfileEditArgs";
 import type { ProposalDetail } from "./ProposalDetail";
+import type { ProposalDraft } from "./ProposalDraft";
+import type { ProposalPreview } from "./ProposalPreview";
 import type { ProposalQuery } from "./ProposalQuery";
 import type { ProposalRow } from "./ProposalRow";
 import type { PsbtAnalysis } from "./PsbtAnalysis";
@@ -2230,6 +2233,45 @@ export function governanceVote(walletId: string, proposal: string, outcome: Vote
 }
 
 /**
+ * The review step of the Create Proposal wizard: the proposal's hash,
+ * data, epochs and fees as if created now. Reserves, signs and saves
+ * nothing. `governance.invalid_proposal` lists every failing field
+ * (wizard order); `governance.not_synced` before a tip is known.
+ */
+export function governancePreviewProposal(walletId: string, draft: ProposalDraft): Promise<ProposalPreview> {
+  return invoke<ProposalPreview>("governance_preview_proposal", { walletId, draft });
+}
+
+/**
+ * Creates the proposal under one `Spend` grant of the wallet covering
+ * the proposal fee and its network fee: pays the fee and saves the
+ * proposal, which then waits for its fee to confirm before peers are
+ * offered it (MG-06). Argument errors fail the call before the grant
+ * is used; lease errors are `platform.*`.
+ */
+export function governanceCreateProposal(walletId: string, draft: ProposalDraft, grant: string): Promise<MyProposal> {
+  return invoke<MyProposal>("governance_create_proposal", { walletId, draft, grant });
+}
+
+/**
+ * The wallet's own proposals with where each is (mg-engine §2.5).
+ */
+export function governanceMyProposals(walletId: string): Promise<Array<MyProposal>> {
+  return invoke<Array<MyProposal>>("governance_my_proposals", { walletId });
+}
+
+/**
+ * The Submit action: resends the saved fee of a `feeUnsent` proposal or
+ * an unmined `feePaid` one, or has a `readyToSubmit` one looked for by
+ * a new sync run at once. Returns the
+ * proposal after; `governance.submit_refused` for a public, expired or
+ * fee-failed one.
+ */
+export function governanceSubmitProposal(walletId: string, hash: string): Promise<MyProposal> {
+  return invoke<MyProposal>("governance_submit_proposal", { walletId, hash });
+}
+
+/**
  * `--selftest`: writes the renderer's report, and exits once the report
  * is final (`"final": false` is a checkpoint before a probe that could
  * end the page).
@@ -2539,6 +2581,10 @@ export type CommandArgs = {
   governance_current_votes: { hash: string; outpoint: string | null };
   governance_voting_masternodes: { walletId: string; proposal: string };
   governance_vote: { walletId: string; proposal: string; outcome: VoteOutcomeName; masternodes: Array<string>; grant: string };
+  governance_preview_proposal: { walletId: string; draft: ProposalDraft };
+  governance_create_proposal: { walletId: string; draft: ProposalDraft; grant: string };
+  governance_my_proposals: { walletId: string };
+  governance_submit_proposal: { walletId: string; hash: string };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
@@ -2803,6 +2849,10 @@ export type CommandResults = {
   governance_current_votes: Array<CurrentVoteRow>;
   governance_voting_masternodes: Array<VotingMasternode>;
   governance_vote: Array<VoteCast>;
+  governance_preview_proposal: ProposalPreview;
+  governance_create_proposal: MyProposal;
+  governance_my_proposals: Array<MyProposal>;
+  governance_submit_proposal: MyProposal;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
@@ -3069,6 +3119,10 @@ export const COMMANDS: Record<CommandName, string> = {
   governance_current_votes: "governance",
   governance_voting_masternodes: "governance",
   governance_vote: "governance",
+  governance_preview_proposal: "governance",
+  governance_create_proposal: "governance",
+  governance_my_proposals: "governance",
+  governance_submit_proposal: "governance",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",
@@ -3299,6 +3353,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "governance.not_synced",
   "governance.proposal_not_found",
   "governance.vote_rejected",
+  "governance.invalid_proposal",
+  "governance.submit_refused",
   "governance.no_peers",
   "governance.list_unavailable",
   "governance.not_implemented",

@@ -325,6 +325,19 @@ impl SyncTracker {
         (self.tip_time_height != Some(tip)).then_some(tip)
     }
 
+    /// Moves the header tip, as a progress report would, and reads as
+    /// running and caught up (tests only).
+    #[cfg(test)]
+    pub(crate) fn set_tip_height(&mut self, height: u32) {
+        self.readings.headers = Some(PhaseReading {
+            state: SyncState::Synced,
+            current: height,
+            target: height,
+        });
+        self.readings.overall = SyncState::Synced;
+        self.running = true;
+    }
+
     pub(crate) fn set_tip_time(&mut self, height: u32, time: Option<u64>) {
         self.tip_time_height = Some(height);
         self.tip_time = time;

@@ -7,7 +7,7 @@
 use crate::error::EngineError;
 use crate::platform::PlatformError;
 
-use super::records::GovernanceSyncPhase;
+use super::records::{GovernanceSyncPhase, ProposalField, SubmitRefusal};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GovernanceError {
@@ -30,6 +30,13 @@ pub enum GovernanceError {
     /// The call needs the masternode list and SPV has none yet.
     #[error("masternode list unavailable")]
     ListUnavailable,
+    /// A proposal draft failed validation: every failing field, in wizard
+    /// order (MG-06 D11).
+    #[error("invalid proposal: {fields:?}")]
+    InvalidProposal { fields: Vec<ProposalField> },
+    /// `submit_proposal` on a proposal past submitting.
+    #[error("submit refused: {}", reason.as_str())]
+    SubmitRefused { reason: SubmitRefusal },
     /// A contract stub (`call` is `"Governance.<method>"`).
     #[error("not implemented: {call}")]
     NotImplemented { call: String },
@@ -49,6 +56,8 @@ impl GovernanceError {
             Self::VoteRejected { .. } => "governance.vote_rejected",
             Self::NoPeers => "governance.no_peers",
             Self::ListUnavailable => "governance.list_unavailable",
+            Self::InvalidProposal { .. } => "governance.invalid_proposal",
+            Self::SubmitRefused { .. } => "governance.submit_refused",
             Self::NotImplemented { .. } => "governance.not_implemented",
             Self::Engine(e) => e.code(),
             Self::Platform(e) => e.code(),

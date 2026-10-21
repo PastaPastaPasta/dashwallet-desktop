@@ -431,6 +431,32 @@ impl PendingSpends {
         }
     }
 
+    /// [`Self::reserve`] unless another owner holds one of `outpoints`:
+    /// then nothing is reserved, and the first such coin is the error.
+    pub(crate) fn reserve_unless_held(
+        &self,
+        wallet: WalletId,
+        owner: SpendOwner,
+        outpoints: &[OutPoint],
+    ) -> Result<(), OutPoint> {
+        let mut map = self.map();
+        if let Some(claims) = map.get(&wallet) {
+            let held = outpoints.iter().find(|o| {
+                claims
+                    .get(*o)
+                    .is_some_and(|owners| owners.iter().any(|w| *w != owner))
+            });
+            if let Some(o) = held {
+                return Err(*o);
+            }
+        }
+        let claims = map.entry(wallet).or_default();
+        for o in outpoints {
+            claims.entry(*o).or_default().insert(owner);
+        }
+        Ok(())
+    }
+
     /// Removes every claim of `owner`.
     pub(crate) fn release(&self, wallet: &WalletId, owner: SpendOwner) {
         self.release_where(wallet, owner, |_| true);
@@ -572,6 +598,9 @@ struct DraftState {
     /// Set by `set_contact_recipient`: the one recipient is this contact,
     /// its address a placeholder until `prepare` (DP3-01).
     contact: Option<Pair>,
+    /// Set by `set_data_output`: an `OP_RETURN` output with a value, after
+    /// the recipients (a proposal's fee, MG-06 D1).
+    data: Option<TxOut>,
 }
 
 static NEXT_DRAFT_ID: AtomicU64 = AtomicU64::new(1);
@@ -633,6 +662,11 @@ struct Resolved {
     coinjoin: bool,
     /// A contact payment's pair (DP3-01): `recipients[0]` pays it.
     contact: Option<Pair>,
+    /// The draft's `OP_RETURN` output with a value (MG-06 D1): the
+    /// transaction is assembled and signed by the engine, as a CoinJoin
+    /// payment is, since key-wallet's builder gives data outputs no value
+    /// (MG-06 D2).
+    data: Option<TxOut>,
 }
 
 impl Resolved {
@@ -664,7 +698,7 @@ impl Resolved {
     /// change address, or for `Auto` the first input's P2PKH address, which
     /// has the length of the fresh change address `prepare` derives.
     fn dry_run(&self) -> Result<(), EngineError> {
-        if self.coinjoin {
+        if self.coinjoin || self.data.is_some() {
             return Ok(());
         }
         let change = match (&self.change, self.plan.inputs.first()) {
@@ -712,6 +746,7 @@ impl NetworkSession {
                 fee: FeeRate::new(MIN_FEE_PER_KB),
                 change: ChangeTarget::Auto,
                 contact: None,
+                data: None,
             }),
             exempt,
             #[cfg(test)]
@@ -852,6 +887,19 @@ impl TxDraft {
         Ok(())
     }
 
+    /// Adds `output`, an `OP_RETURN` script with a value, after the
+    /// recipients: a governance proposal's fee (MG-06 D1). Its change can
+    /// only be automatic, so every other output is P2PKH.
+    pub(crate) fn set_data_output(&self, output: TxOut) -> Result<(), EngineError> {
+        if !output.script_pubkey.is_op_return() || output.value == 0 {
+            return Err(EngineError::Internal(
+                "a data output is an OP_RETURN with a value".into(),
+            ));
+        }
+        self.state().data = Some(output);
+        Ok(())
+    }
+
     pub fn set_fee(&self, fee: FeeMode) -> Result<(), EngineError> {
         let rate = fee.rate()?;
         self.state().fee = rate;
@@ -873,8 +921,18 @@ impl TxDraft {
     /// `fence` (the draft's wallet's).
     async fn resolve(&self, fence: &CoinFence) -> Result<Resolved, EngineError> {
         let state = self.state().clone();
-        if state.recipients.is_empty() {
+        if state.recipients.is_empty() && state.data.is_none() {
             return Err(SendFailure::NoRecipients.into());
+        }
+        // A proposal's fee keeps every other output P2PKH (MG-06 D1): its
+        // change is automatic, and it is not a CoinJoin payment.
+        if state.data.is_some()
+            && (!matches!(state.change, ChangeTarget::Auto)
+                || state.source == CoinSource::FullyMixedOnly)
+        {
+            return Err(EngineError::InvalidArgument(
+                "a proposal fee takes automatic change and no CoinJoin source".into(),
+            ));
         }
         if let Some(pair) = &state.contact {
             self.session
@@ -891,14 +949,17 @@ impl TxDraft {
             .session
             .source_coins(fence, &state.source, &self.exempt)
             .await?;
-        let outputs: Vec<PlanOutput> = state
-            .recipients
-            .iter()
+        let outputs: Vec<PlanOutput> = (state.recipients.iter())
             .map(|r| PlanOutput {
                 script: r.address.script_pubkey(),
                 amount: r.amount,
                 subtract_fee: r.subtract_fee,
             })
+            .chain(state.data.iter().map(|d| PlanOutput {
+                script: d.script_pubkey.clone(),
+                amount: d.value,
+                subtract_fee: false,
+            }))
             .collect();
         let change_len = match &state.change {
             // BIP44 change addresses are P2PKH.
@@ -938,6 +999,7 @@ impl TxDraft {
             height,
             coinjoin,
             contact: state.contact,
+            data: state.data,
         };
         resolved.dry_run()?;
         Ok(resolved)
@@ -1121,7 +1183,9 @@ impl TxDraft {
                 0
             } else {
                 r.plan.change.unwrap_or(0)
-            };
+            }
+            // A data output's value leaves the wallet (MG-06 D10).
+            + r.data.as_ref().map_or(0, |d| d.value);
         (recipient_mine, change_mine, external_sent)
     }
 
@@ -1152,7 +1216,32 @@ impl TxDraft {
             .contact
             .map(|pair| (pair, r.recipients[0].address.clone()));
 
-        if r.coinjoin {
+        // Assembled and signed by the engine, input by input: a proposal's
+        // fee (MG-06 D1, D2), checked first so its data output is never
+        // dropped, or a CoinJoin payment.
+        let assembled = if let Some(data) = &r.data {
+            // The data output and the change to a fresh BIP44 internal
+            // address, at a random position.
+            let change = match r.plan.change {
+                Some(value) => Some(TxOut {
+                    value,
+                    script_pubkey: (wallet.core().next_change_address_for_account(0).await?)
+                        .script_pubkey(),
+                }),
+                None => None,
+            };
+            let change_script = change.as_ref().map(|c| c.script_pubkey.clone());
+            let mut outputs = vec![data.clone()];
+            if let Some(change) = change {
+                // Core's `RANDOM_CHANGE_POSITION` (wallet/spend.cpp:1307).
+                outputs.insert(usize::from(rand::random::<bool>()), change);
+            }
+            let tx = session
+                .sign_coinjoin_payment(wallet_id, &r.plan.inputs, outputs, &signer)
+                .await?;
+            check_fee_outputs(&tx)?;
+            Some((tx, change_script.unwrap_or_default(), Vec::new()))
+        } else if r.coinjoin {
             let outputs: Vec<TxOut> = r
                 .recipients
                 .iter()
@@ -1165,13 +1254,20 @@ impl TxDraft {
             let tx = session
                 .sign_coinjoin_payment(wallet_id, &r.plan.inputs, outputs, &signer)
                 .await?;
-            let first_input = r.plan.inputs[0].address.script_pubkey();
+            let records = (r.recipients.iter())
+                .map(|rc| (rc.address.to_string(), rc.label.clone(), rc.message.clone()))
+                .collect();
+            Some((tx, r.plan.inputs[0].address.script_pubkey(), records))
+        } else {
+            None
+        };
+        if let Some((tx, change_script, records)) = assembled {
             let summary = summarize(
                 &tx,
                 &r,
                 &recipient_mine,
                 change_mine,
-                first_input,
+                change_script,
                 external_sent,
                 network,
             );
@@ -1189,11 +1285,7 @@ impl TxDraft {
                 wallet_id,
                 draft_id: self.id,
                 summary,
-                records: r
-                    .recipients
-                    .iter()
-                    .map(|rc| (rc.address.to_string(), rc.label.clone(), rc.message.clone()))
-                    .collect(),
+                records,
                 owner,
                 signed: Mutex::new(None),
                 mixed: Some(tx),
@@ -1557,30 +1649,7 @@ impl TxDraft {
         let Some(sent) = sent else {
             return Err(SendFailure::PreparedTxSpent.into());
         };
-        match sent {
-            Ok(txid) => Ok(BroadcastOutcome {
-                txid: txid.to_string(),
-            }),
-            Err(PlatformWalletError::TransactionBroadcastUnconfirmed(reason)) => {
-                Err(SendFailure::BroadcastUnknown { reason }.into())
-            }
-            // Whatever a repeat ran into, the first dispatch may have
-            // reached the network.
-            Err(other) if !first => Err(SendFailure::BroadcastUnknown {
-                reason: format!("not sent this time: {other}"),
-            }
-            .into()),
-            Err(PlatformWalletError::TransactionBroadcast(reason)) => {
-                Err(if reason_means_no_peers(&reason) {
-                    SendFailure::NoPeers
-                } else {
-                    SendFailure::BroadcastRejected { reason }
-                }
-                .into())
-            }
-            Err(PlatformWalletError::StaleReservation) => Err(SendFailure::PreparedTxSpent.into()),
-            Err(other) => Err(other.into()),
-        }
+        broadcast_result(sent, first)
     }
 
     /// Releases the inputs of `prepared`. Idempotent for a pending or
@@ -1609,6 +1678,37 @@ impl TxDraft {
     }
 }
 
+/// One library broadcast's result as the engine reports it. `first`: the
+/// bytes had never been handed to the network before this attempt; after
+/// that, whatever a repeat ran into, an earlier one may have reached it.
+pub(crate) fn broadcast_result(
+    sent: Result<dashcore::Txid, PlatformWalletError>,
+    first: bool,
+) -> Result<BroadcastOutcome, EngineError> {
+    match sent {
+        Ok(txid) => Ok(BroadcastOutcome {
+            txid: txid.to_string(),
+        }),
+        Err(PlatformWalletError::TransactionBroadcastUnconfirmed(reason)) => {
+            Err(SendFailure::BroadcastUnknown { reason }.into())
+        }
+        Err(other) if !first => Err(SendFailure::BroadcastUnknown {
+            reason: format!("not sent this time: {other}"),
+        }
+        .into()),
+        Err(PlatformWalletError::TransactionBroadcast(reason)) => {
+            Err(if reason_means_no_peers(&reason) {
+                SendFailure::NoPeers
+            } else {
+                SendFailure::BroadcastRejected { reason }
+            }
+            .into())
+        }
+        Err(PlatformWalletError::StaleReservation) => Err(SendFailure::PreparedTxSpent.into()),
+        Err(other) => Err(other.into()),
+    }
+}
+
 /// The phase one broadcast attempt leaves a transaction in. `first`: it had
 /// never been handed to the network before this attempt. A transaction that
 /// may be on the network (a previous outcome was unknown) is never released.
@@ -1629,7 +1729,7 @@ fn settle(first: bool, outcome: &Result<BroadcastOutcome, EngineError>) -> Phase
 
 /// What one attempt says about its own bytes (E0-04 §5.5): only a
 /// rejection before the network took them is a definite `NotSent`.
-fn attempt_outcome(result: &Result<BroadcastOutcome, EngineError>) -> Outcome {
+pub(crate) fn attempt_outcome(result: &Result<BroadcastOutcome, EngineError>) -> Outcome {
     match result {
         Ok(_) => Outcome::Sent,
         // `Cancelled`: a First past its deadline, never dispatched (L5).
@@ -1682,6 +1782,21 @@ impl Mismatch {
                 EngineError::Internal(format!("built transaction differs from the plan: {d}"))
             }
         }
+    }
+}
+
+/// Core's collateral rule for a proposal fee (`IsCollateralValid`,
+/// governance/object.cpp:833-844): every output P2PKH or unspendable. A
+/// P2SH change output would burn the fee (MG-06 D1).
+fn check_fee_outputs(tx: &Transaction) -> Result<(), EngineError> {
+    match (tx.output.iter())
+        .find(|o| !o.script_pubkey.is_p2pkh() && !o.script_pubkey.is_op_return())
+    {
+        Some(o) => Err(EngineError::Internal(format!(
+            "a proposal fee output is neither P2PKH nor OP_RETURN: {}",
+            o.script_pubkey
+        ))),
+        None => Ok(()),
     }
 }
 
@@ -1767,7 +1882,11 @@ fn summarize(
             });
             let (is_change, is_mine, label) = match recipient {
                 Some(i) => (false, recipient_mine[i], r.recipients[i].label.clone()),
-                None => (o.script_pubkey == change_script, change_mine, None),
+                // A data output is neither change nor the wallet's.
+                None => {
+                    let is_change = o.script_pubkey == change_script;
+                    (is_change, is_change && change_mine, None)
+                }
             };
             if is_mine {
                 owned_out += o.value;
@@ -2011,6 +2130,27 @@ mod tests {
             label: None,
             message: None,
         }
+    }
+
+    /// MG-06 D1: Core's collateral rule, every output P2PKH or `OP_RETURN`.
+    #[test]
+    fn a_fee_with_a_p2sh_output_is_refused() {
+        let out = |script_pubkey| TxOut {
+            value: 1,
+            script_pubkey,
+        };
+        let data = out(ScriptBuf::new_op_return(&[7u8; 32]));
+        let p2pkh = out(ScriptBuf::new_p2pkh(&dashcore::PubkeyHash::all_zeros()));
+        let p2sh = out(ScriptBuf::new_p2sh(&dashcore::ScriptHash::all_zeros()));
+        let tx = |output| Transaction {
+            version: 3,
+            lock_time: 0,
+            input: Vec::new(),
+            output,
+            special_transaction_payload: None,
+        };
+        assert!(check_fee_outputs(&tx(vec![data.clone(), p2pkh])).is_ok());
+        assert!(check_fee_outputs(&tx(vec![data, p2sh])).is_err());
     }
 
     #[test]

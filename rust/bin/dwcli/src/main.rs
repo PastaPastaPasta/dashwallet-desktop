@@ -622,7 +622,11 @@ fn run_command(
             return finish(engine, &session, passphrase, result);
         }
         Command::Governance(args) => {
-            let result = governance::run(&engine, &session, args);
+            // Only a proposal needs the vault; the sync checks run with none.
+            if args.proposes() {
+                unlock_if_needed(&engine, &session, passphrase.as_ref())?;
+            }
+            let result = governance::run(&engine, &session, passphrase.as_ref(), args);
             return finish(engine, &session, passphrase, result);
         }
         Command::CoinJoin(cmd) => {
