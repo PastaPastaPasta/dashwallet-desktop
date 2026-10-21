@@ -16,8 +16,9 @@ use std::time::{Duration, Instant};
 
 use clap::{Args, Subcommand};
 use dw_engine::masternodes::{
-    AttachedKeyRole, CollateralChoice, EvonodeTerms, MasternodeType, Masternodes, MasternodesError,
-    OperatorChoice, PayoutChoice, PlatformNodeChoice, RegistrationRequest, VotingChoice,
+    AttachedKeyRole, CollateralChoice, EvonodeTerms, KeepOr, MasternodeType, Masternodes,
+    MasternodesError, OperatorChoice, PayoutChoice, PlatformNodeChoice, RegistrationRequest,
+    UpdateRegistrarRequest, VotingChoice,
 };
 use dw_engine::{Engine, NetworkSession, WalletId};
 use dw_vault::GrantPurpose;
@@ -152,6 +153,10 @@ enum MnCommand {
         #[arg(long)]
         wallet: Option<String>,
     },
+    /// Change a masternode's operator key, voting key or payout (a
+    /// version-2 ProUpRegTx signed by its owner key). A key not given is
+    /// kept from the list.
+    UpdateRegistrar(Box<UpdateRegistrarArgs>),
     /// The wallet's ProTx operations, newest first.
     Operations {
         #[arg(long)]
@@ -231,6 +236,55 @@ struct RegisterArgs {
     preview: bool,
     #[arg(long)]
     wallet: Option<String>,
+}
+
+#[derive(Args)]
+struct UpdateRegistrarArgs {
+    pro_tx_hash: String,
+    /// The new operator's BLS public key (96 hex).
+    #[arg(long, conflicts_with = "operator_index")]
+    operator_key: Option<String>,
+    /// The keychain's operator public key at this index.
+    #[arg(long)]
+    operator_index: Option<u32>,
+    /// Another wallet's voting address.
+    #[arg(long, conflicts_with = "voting_index")]
+    voting_address: Option<String>,
+    #[arg(long)]
+    voting_index: Option<u32>,
+    /// `new` (a new receive address of the wallet) or an address: always
+    /// named, the wallet doesn't know the current one for sure (MG-04 D10).
+    #[arg(long)]
+    payout: String,
+    /// Only preview: plan and check, sign nothing.
+    #[arg(long)]
+    preview: bool,
+    #[arg(long)]
+    wallet: Option<String>,
+}
+
+impl UpdateRegistrarArgs {
+    fn request(&self) -> UpdateRegistrarRequest {
+        UpdateRegistrarRequest {
+            pro_tx_hash: self.pro_tx_hash.clone(),
+            operator: match (&self.operator_key, self.operator_index) {
+                (Some(k), _) => KeepOr::Set(OperatorChoice::Given {
+                    public_key: k.clone(),
+                }),
+                (None, Some(index)) => KeepOr::Set(OperatorChoice::Keychain { index }),
+                (None, None) => KeepOr::Keep,
+            },
+            voting: match (&self.voting_address, self.voting_index) {
+                (Some(a), _) => KeepOr::Set(VotingChoice::Address { address: a.clone() }),
+                (None, Some(index)) => KeepOr::Set(VotingChoice::Keychain { index }),
+                (None, None) => KeepOr::Keep,
+            },
+            payout: match self.payout.as_str() {
+                "new" => PayoutChoice::NewAddress,
+                a => PayoutChoice::Address { address: a.into() },
+            },
+        }
+    }
 }
 
 impl RegisterArgs {
@@ -521,6 +575,16 @@ fn command(
         } => {
             let w = wallet(session, w)?;
             value(engine.block_on(mn.refresh_external_registration(w, operation))?)
+        }
+        MnCommand::UpdateRegistrar(a) => {
+            let w = wallet(session, a.wallet.clone())?;
+            let request = a.request();
+            let preview = engine.block_on(mn.preview_update_registrar(w, request.clone()))?;
+            if a.preview {
+                return value(preview);
+            }
+            let grant = masternode_grant(session, passphrase, w, preview.total_debit)?;
+            value(engine.block_on(mn.update_registrar(w, request, grant))?)
         }
         MnCommand::Operations { wallet: w } => {
             let w = wallet(session, w)?;

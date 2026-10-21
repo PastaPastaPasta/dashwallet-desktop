@@ -82,6 +82,13 @@ fn mn_failures_are_json_lines_that_never_quote_the_arguments() {
     let all = format!("{out:?}").to_lowercase();
     assert!(!all.contains(SECRET), "{all}");
 
+    // The payout of an update is always named (MG-04 D10).
+    let hash = "ab".repeat(32);
+    let out = dwcli(dir.path(), "pass", &["mn", "update-registrar", &hash], b"");
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let line: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(line["error"]["code"], "invalid_argument");
+
     // No subcommand is a refused command line too; a value `mn` elsewhere
     // doesn't make one an `mn` command line.
     let out = dwcli(dir.path(), "pass", &["mn"], b"");
@@ -113,6 +120,22 @@ fn mn_failures_are_json_lines_that_never_quote_the_arguments() {
         (&["mn", "payouts", SECRET], b""),
         (&["mn", "payouts", SECRET, "--wallet", SECRET], b""),
         (&["mn", "credits", SECRET], b""),
+        (&["mn", "update-registrar", SECRET, "--payout", "new"], b""),
+        (
+            &[
+                "mn",
+                "update-registrar",
+                SECRET,
+                "--payout",
+                SECRET,
+                "--operator-key",
+                SECRET,
+                "--voting-address",
+                SECRET,
+                "--preview",
+            ],
+            b"",
+        ),
         (
             &["mn", "--spv", "--sync-timeout", "1", "status", SECRET],
             b"",
