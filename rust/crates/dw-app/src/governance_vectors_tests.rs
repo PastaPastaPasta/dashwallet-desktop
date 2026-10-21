@@ -270,6 +270,15 @@ fn build() -> Value {
         GovernanceError::SubmitRefused {
             reason: SubmitRefusal::InFlight,
         },
+        GovernanceError::ContestNotFound {
+            label: "a11ce".into(),
+        },
+        GovernanceError::ContestClosed {
+            label: "a11ce".into(),
+        },
+        GovernanceError::NotAContender {
+            identity: "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P".into(),
+        },
         GovernanceError::NotImplemented {
             call: "Governance.vote".into(),
         },

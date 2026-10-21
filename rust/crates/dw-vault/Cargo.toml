@@ -46,6 +46,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 hex = { workspace = true }
 zeroize = { workspace = true }
+# Lays out and serializes the contested-name vote transitions the voting
+# keys sign (`vote.rs`, MG-07 D5).
+dpp = { workspace = true }
 
 [dev-dependencies]
 # The integration tests in tests/ use Argon2id parameters below the floor.
@@ -55,6 +58,5 @@ tempfile = { workspace = true }
 tokio = { workspace = true }
 # `dip15.rs` must stay byte-identical to the crate platform-wallet calls.
 platform-encryption = { workspace = true }
-# platform-wallet imports `dpp::ed25519_dalek`, a feature only the workspace's
-# `dpp` entry turns on: named here so `cargo test -p dw-vault` builds alone.
-dpp = { workspace = true }
+# Platform's own vote construction, which `sign_name_vote` must match.
+dpp = { workspace = true, features = ["state-transition-signing"] }

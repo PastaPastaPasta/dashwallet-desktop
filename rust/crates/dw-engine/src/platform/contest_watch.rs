@@ -96,10 +96,10 @@ const WON_FOR: u64 = 24 * 3600;
 /// Contenders on the one vote-state page a row's check reads while the
 /// poll is open (Drive's default; a contest may have 1,000). A resolved
 /// poll's answer is its stored result, every contender whatever the limit.
-pub(super) const POLL_PAGE: u16 = 100;
+pub(crate) const POLL_PAGE: u16 = 100;
 /// Polls on the one end-date page a pass reads: the soonest-ending from an
 /// hour ago on, which are the ones the 1-minute cadence needs.
-pub(super) const ENDS_PAGE: u16 = 100;
+pub(crate) const ENDS_PAGE: u16 = 100;
 
 /// A vote poll as the watch reads it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

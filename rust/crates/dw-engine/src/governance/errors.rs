@@ -37,6 +37,15 @@ pub enum GovernanceError {
     /// `submit_proposal` on a proposal past submitting.
     #[error("submit refused: {}", reason.as_str())]
     SubmitRefused { reason: SubmitRefusal },
+    /// No DPNS poll for the label: no contender and no stored result.
+    #[error("no contest for {label}")]
+    ContestNotFound { label: String },
+    /// The poll resolved, or its voting ended (MG-07 D8).
+    #[error("the contest for {label} is closed")]
+    ContestClosed { label: String },
+    /// A vote towards an identity the poll does not list (MG-07 D9).
+    #[error("{identity} is not a contender")]
+    NotAContender { identity: String },
     /// A contract stub (`call` is `"Governance.<method>"`).
     #[error("not implemented: {call}")]
     NotImplemented { call: String },
@@ -58,6 +67,9 @@ impl GovernanceError {
             Self::ListUnavailable => "governance.list_unavailable",
             Self::InvalidProposal { .. } => "governance.invalid_proposal",
             Self::SubmitRefused { .. } => "governance.submit_refused",
+            Self::ContestNotFound { .. } => "governance.contest_not_found",
+            Self::ContestClosed { .. } => "governance.contest_closed",
+            Self::NotAContender { .. } => "governance.not_a_contender",
             Self::NotImplemented { .. } => "governance.not_implemented",
             Self::Engine(e) => e.code(),
             Self::Platform(e) => e.code(),

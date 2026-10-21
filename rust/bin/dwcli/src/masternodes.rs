@@ -13,8 +13,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use clap::{Args, Subcommand};
+use dw_engine::governance::{GovernanceError, NameChoice};
 use dw_engine::masternodes::{AttachedKeyRole, Masternodes, MasternodesError};
-use dw_engine::{Engine, NetworkSession, WalletId};
+use dw_engine::{Engine, EngineError, NetworkSession, WalletId};
+use dw_vault::GrantPurpose;
 use serde::Serialize;
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
@@ -127,6 +129,25 @@ enum MnCommand {
     },
     /// An evonode's claimable credits (a proved Platform read).
     Credits { pro_tx_hash: String },
+    /// The open contested DPNS names and the wallet's masternodes that can
+    /// vote on them (proved Platform reads; MG-07).
+    Names {
+        #[arg(long)]
+        wallet: Option<String>,
+    },
+    /// Vote on a contested DPNS name with the voting keys of `--masternode`
+    /// (repeat it), under a `Governance` grant: the passphrase file unlocks
+    /// an encrypted vault (MG-07).
+    VoteName {
+        label: String,
+        /// `abstain`, `lock`, or `identity:<base58 id>` of a contender.
+        #[arg(long, value_parser = parse_choice)]
+        choice: NameChoice,
+        #[arg(long = "masternode", required = true)]
+        masternodes: Vec<String>,
+        #[arg(long)]
+        wallet: Option<String>,
+    },
 }
 
 impl MnArgs {
@@ -144,6 +165,19 @@ fn parse_role(s: &str) -> Result<AttachedKeyRole, String> {
     }
 }
 
+fn parse_choice(s: &str) -> Result<NameChoice, String> {
+    match s {
+        "abstain" => Ok(NameChoice::Abstain),
+        "lock" => Ok(NameChoice::Lock),
+        _ => match s.strip_prefix("identity:") {
+            Some(id) if !id.is_empty() => Ok(NameChoice::TowardsIdentity {
+                identity: id.into(),
+            }),
+            _ => Err("one of abstain, lock, identity:<base58 id>".into()),
+        },
+    }
+}
+
 /// A failed command: the facade's code and message.
 pub struct Failure {
     code: String,
@@ -155,6 +189,25 @@ impl From<MasternodesError> for Failure {
         Self {
             code: e.code().into(),
             message: e.to_string(),
+        }
+    }
+}
+
+/// The governance facade's codes. A contest's label and a contender's
+/// identity are public Platform data, quoted as dw-app quotes them (MG-07
+/// D19); an invalid argument, which may be a proTxHash, is worded without
+/// it (D32).
+impl From<GovernanceError> for Failure {
+    fn from(e: GovernanceError) -> Self {
+        let message = match &e {
+            GovernanceError::Engine(EngineError::InvalidArgument(_)) => {
+                "the label, --choice or a --masternode is invalid".into()
+            }
+            e => e.to_string(),
+        };
+        Self {
+            code: e.code().into(),
+            message,
         }
     }
 }
@@ -220,7 +273,12 @@ fn wait_for_list(
     Ok(())
 }
 
-fn command(engine: &Engine, session: &Arc<NetworkSession>, args: MnArgs) -> Result<Value, Failure> {
+fn command(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    passphrase: Option<&Zeroizing<Vec<u8>>>,
+    args: MnArgs,
+) -> Result<Value, Failure> {
     let mn = session.masternodes();
     if args.starts_spv() {
         let timeout = Duration::from_secs(args.sync_timeout);
@@ -275,6 +333,28 @@ fn command(engine: &Engine, session: &Arc<NetworkSession>, args: MnArgs) -> Resu
         MnCommand::Credits { pro_tx_hash } => {
             value(engine.block_on(mn.evonode_credits(pro_tx_hash))?)
         }
+        MnCommand::Names { wallet: w } => {
+            let w = wallet(session, w)?;
+            value(engine.block_on(session.governance().contested_names(w))?)
+        }
+        MnCommand::VoteName {
+            label,
+            choice,
+            masternodes,
+            wallet: w,
+        } => {
+            let w = wallet(session, w)?;
+            let grant = session
+                .vault()
+                .authorize(
+                    GrantPurpose::Governance,
+                    Some(&w.0),
+                    crate::pay::credential(session, passphrase),
+                )
+                .map_err(EngineError::from)?;
+            let gov = session.governance();
+            value(engine.block_on(gov.vote_name(w, label, choice, masternodes, grant.id))?)
+        }
     }
 }
 
@@ -289,7 +369,7 @@ pub fn run(
 ) -> Result<Value, Failure> {
     crate::unlock(engine, session, passphrase)
         .map_err(Failure::from)
-        .and_then(|()| command(engine, session, args))
+        .and_then(|()| command(engine, session, passphrase, args))
 }
 
 /// What a panic in the command answers; the payload may quote an argument.
@@ -321,5 +401,32 @@ pub fn report(result: Result<Value, Failure>, torn_down: bool) -> Result<(), Str
             print_line(&error_line(&f.code, &f.message));
             Err(f.message)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn governance_failures_quote_the_label_and_identity_only() {
+        let label = |e| Failure::from(e).message;
+        let closed = GovernanceError::ContestClosed {
+            label: "c0ntest".into(),
+        };
+        assert_eq!(label(closed), "the contest for c0ntest is closed");
+        let missing = GovernanceError::ContestNotFound {
+            label: "c0ntest".into(),
+        };
+        assert_eq!(label(missing), "no contest for c0ntest");
+        let id = "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P";
+        let other = GovernanceError::NotAContender {
+            identity: id.into(),
+        };
+        assert_eq!(label(other), format!("{id} is not a contender"));
+        let invalid = EngineError::InvalidArgument(format!("{:?} is not hex", "ab".repeat(32)));
+        let f = Failure::from(GovernanceError::Engine(invalid));
+        assert_eq!(f.code, "invalid_argument");
+        assert!(!f.message.contains("abab"), "{}", f.message);
     }
 }
