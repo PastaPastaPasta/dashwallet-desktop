@@ -39,6 +39,11 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.identities",
     "DashPay.set_main_identity",
     "DashPay.discover_identities",
+    // DP6-01: the Identities page.
+    "DashPay.identity_detail",
+    "DashPay.refresh_identity",
+    "DashPay.refresh_identities",
+    "DashPay.find_identity",
     "check_username",
     "DashPay.name_availability",
     "DashPay.register_name",
@@ -160,7 +165,8 @@ const FACADE: &[&str] = &[
 /// rules with their tests (BL-153), the profile reads and writes with
 /// their tests (DP4-01), the names checks (DP1-08), and the avatar
 /// pipeline's guard, decoder, cache and tests (DP4-02), and the mobile
-/// wallets' dHash (DP4-03 D27).
+/// wallets' dHash (DP4-03 D27), and the Identities page's reads with
+/// their tests (DP6-01).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -179,6 +185,8 @@ const NOT_FACADE: &[&str] = &[
     "contest_watch.rs",
     "contest_watch_tests.rs",
     "credit_costs.rs",
+    "identity_reads.rs",
+    "identity_tests.rs",
     "identity_writes.rs",
     "journal.rs",
     "journal_tests.rs",
@@ -1304,7 +1312,15 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         assert_eq!(dp.status().unwrap_err().code(), "wallet_not_found");
         assert_eq!(dp.sync_status().unwrap_err().code(), "wallet_not_found");
         c.stub(dp.sync_now().await);
-        c.stub(dp.identity_detail(s()).await);
+        // DP6-01's calls are implemented: an unknown wallet is refused.
+        for refused in [
+            dp.identity_detail(s()).await.map(drop),
+            dp.refresh_identity(s()).await.map(drop),
+            dp.refresh_identities().await.map(drop),
+            dp.find_identity(s()).await.map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
         assert_eq!(
             dp.refresh_balance(s()).await.unwrap_err().code(),
             "wallet_not_found"

@@ -4,6 +4,8 @@ import { STATES as COINJOIN, pressStart } from "./coinjoin";
 import { CARDS, CHIP_TEXT, CHIPS } from "./dashpay";
 import { fileDialogAnswers, WIDE_PNG } from "./editProfile";
 import { authorize, fixtureUrl, fontsReady, SCREENS, show, THEMES, type Theme } from "./helpers";
+import { openIdentities } from "./identities";
+import { IDENTITY } from "../src/fixture/dashpay";
 import { showSettingsView, type SettingsView } from "./settings";
 import { showWalletView, type WalletView } from "./wallet";
 
@@ -168,6 +170,33 @@ for (const theme of THEMES) {
     test(`visual settings-${view} ${theme}`, async ({ page }) => {
       await showSettingsView(page, view, theme);
       await expect(page).toHaveScreenshot(`${theme}-settings-${view}.png`, { animations: "disabled", caret: "hide" });
+    });
+  }
+}
+
+// DP6-01: Settings ▸ Advanced ▸ Identities: the list (L4), an identity's keys and a found identity.
+const IDENTITIES: Record<string, (page: Page) => Promise<void>> = {
+  list: async () => {},
+  detail: async (page) => {
+    await page.locator(`[data-testid=identity-row][data-identity="${IDENTITY.alice}"]`).getByTestId("identity-keys").click();
+    await page.getByTestId("identity-detail-keys").waitFor();
+  },
+  found: async (page) => {
+    await page.getByTestId("identities-look-up").click();
+    await page.getByTestId("identity-find-field").fill("bob");
+    await page.getByTestId("identity-find-submit").click();
+    await page.getByTestId("identity-found-keys").waitFor();
+  },
+};
+
+for (const theme of THEMES) {
+  for (const [view, go] of Object.entries(IDENTITIES)) {
+    test(`visual identities-${view} ${theme}`, async ({ page }) => {
+      await openIdentities(page, "dashpay-identities", theme);
+      await page.getByTestId("identity-row").first().waitFor();
+      await go(page);
+      await page.mouse.move(0, 0);
+      await shoot(page, `identities-${view}`, theme);
     });
   }
 }
