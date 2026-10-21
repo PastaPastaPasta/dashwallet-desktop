@@ -12,11 +12,28 @@
 //! The digest is a copy of `dw_governance::GovernanceVote::signing_digest`,
 //! which this crate cannot depend on (it pulls in the P2P stack); an engine
 //! test holds the two equal on every network.
+//!
+//! Its second use is a masternode's vote on a contested DPNS name (MG-07):
+//! [`VoteSigner::sign_name_vote`] lays out the whole Platform transition
+//! from a [`NameVote`]'s fields and signs only that (MG-07 D5).
 
 use dashcore::OutPoint;
 use dashcore::consensus::Encodable;
 use dashcore::hashes::{Hash, hash160, sha256d};
 use dashcore::secp256k1::{PublicKey, SecretKey};
+use dpp::identifier::MasternodeIdentifiers;
+use dpp::platform_value::{BinaryData, Identifier, Value};
+use dpp::serialization::{PlatformSerializable, Signable};
+use dpp::state_transition::StateTransition;
+use dpp::state_transition::masternode_vote_transition::MasternodeVoteTransition;
+use dpp::state_transition::masternode_vote_transition::v0::MasternodeVoteTransitionV0;
+use dpp::system_data_contracts::SystemDataContract;
+use dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+use dpp::voting::vote_polls::VotePoll;
+use dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
+use dpp::voting::votes::Vote;
+use dpp::voting::votes::resource_vote::ResourceVote;
+use dpp::voting::votes::resource_vote::v0::ResourceVoteV0;
 use key_wallet::Network;
 
 use crate::SignerError;
@@ -101,10 +118,11 @@ impl FundingVote {
     }
 }
 
-/// Signs funding votes for one wallet, valid until the vault locks or
-/// changes unlock scope, or the hold of its grant's key drops. Obtain it
-/// from [`crate::Vault::vote_signer`] under a `Governance` grant. It has no
-/// other method: no `Signer`, no message, no public key beyond the key id.
+/// Signs funding votes and contested-name votes (MG-07) for one wallet,
+/// valid until the vault locks or changes unlock scope, or the hold of its
+/// grant's key drops. Obtain it from [`crate::Vault::vote_signer`] under a
+/// `Governance` grant. It has no other method: no `Signer`, no message, no
+/// public key beyond the key id.
 #[derive(Clone)]
 pub struct VoteSigner {
     /// Scope [`crate::SignerScope::MasternodeVoting`]: what it reaches, and
@@ -139,10 +157,7 @@ impl VoteSigner {
     /// list entry names as its voting key id. `NoSecret` for an attached
     /// key that is missing or no secp256k1 secret.
     pub fn key_id(&self, key: &VotingKey) -> Result<[u8; 20], SignerError> {
-        self.with_secret(key, |secret| {
-            let public = PublicKey::from_secret_key(secret);
-            hash160::Hash::hash(&public.serialize()).to_byte_array()
-        })
+        self.with_secret(key, key_id_of)
     }
 
     /// The 65-byte compact signature of `vote` with `key`, over the
@@ -152,6 +167,46 @@ impl VoteSigner {
     pub fn sign_vote(&self, key: &VotingKey, vote: &FundingVote) -> Result<[u8; 65], SignerError> {
         let digest = vote.digest(self.network());
         self.with_secret(key, |secret| sign_compact(digest, secret))
+    }
+
+    /// A masternode's vote on a contested DPNS name: the signed
+    /// `MasternodeVoteTransition` Platform takes, laid out here from
+    /// `vote`'s fields (MG-07 §2, D5). The vault fills in the rest: the DPNS
+    /// poll of `vote.label`, the voter identity
+    /// (`create_voter_identifier(pro_tx_hash, hash160(key))`) and key id 0,
+    /// which Platform gives every voter identity's voting key. It signs dpp's
+    /// `signable_bytes()` as an `ECDSA_HASH160` signer does for
+    /// `sign_external` (the compact recoverable signature over their double
+    /// SHA-256), so the bytes equal rs-sdk's `PutVote` construction
+    /// (`MasternodeVoteTransition::try_from_vote_with_signer`, platform
+    /// `82fb33aff8`). A label that is not a contested normalized DPNS label
+    /// is [`SignerError::PathNotAllowed`], refused before the key is read.
+    pub fn sign_name_vote(
+        &self,
+        key: &VotingKey,
+        vote: &NameVote,
+    ) -> Result<SignedNameVote, SignerError> {
+        if !is_contested_label(&vote.label) {
+            return Err(SignerError::PathNotAllowed(format!(
+                "a name vote on {:?}, not a contested DPNS label",
+                vote.label
+            )));
+        }
+        let (voting_address, signature) = self.with_secret(key, |secret| {
+            let address = key_id_of(secret);
+            let unsigned = vote.transition(address, BinaryData::default());
+            let data = unsigned.signable_bytes().map_err(protocol)?;
+            let digest = sha256d::Hash::hash(&data).to_byte_array();
+            Ok::<_, SignerError>((address, sign_compact(digest, secret)))
+        })??;
+        let signed = vote.transition(voting_address, BinaryData::new(signature.to_vec()));
+        let bytes = signed.serialize_to_bytes().map_err(protocol)?;
+        let hash = signed.transaction_id().map_err(protocol)?;
+        Ok(SignedNameVote {
+            bytes,
+            hash,
+            voter_identity: voter_identity(&vote.pro_tx_hash, &voting_address),
+        })
     }
 
     fn with_secret<T>(
@@ -171,6 +226,107 @@ impl VoteSigner {
             }
         }
     }
+}
+
+/// The hash160 of `secret`'s compressed public key.
+fn key_id_of(secret: &SecretKey) -> [u8; 20] {
+    let public = PublicKey::from_secret_key(secret);
+    hash160::Hash::hash(&public.serialize()).to_byte_array()
+}
+
+fn protocol(e: dpp::ProtocolError) -> SignerError {
+    SignerError::Derivation(format!("name vote transition: {e}"))
+}
+
+/// A masternode's choice in a contested name's poll (dpp's
+/// `ResourceVoteChoice`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NameChoice {
+    /// For the contender with this identity id.
+    TowardsIdentity([u8; 32]),
+    Abstain,
+    /// Nobody gets the name.
+    Lock,
+}
+
+/// The fields of one contested-name vote: what
+/// [`VoteSigner::sign_name_vote`] signs (MG-07 §2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameVote {
+    /// The masternode's proTxHash in Platform's order: Core's display
+    /// order, the reverse of the transaction's wire bytes (rs-sdk
+    /// `PutVote`'s byte-order note).
+    pub pro_tx_hash: [u8; 32],
+    /// The contested normalized label (`a-hj-km-np-z01-`, 3–19).
+    pub label: String,
+    pub choice: NameChoice,
+    /// The voter identity's next nonce.
+    pub nonce: u64,
+}
+
+impl NameVote {
+    /// DPNS's poll for the label, as rs-sdk's DPNS queries name it.
+    fn poll(&self) -> VotePoll {
+        VotePoll::ContestedDocumentResourceVotePoll(ContestedDocumentResourceVotePoll {
+            contract_id: SystemDataContract::DPNS.id(),
+            document_type_name: "domain".into(),
+            index_name: "parentNameAndLabel".into(),
+            index_values: vec![Value::Text("dash".into()), Value::Text(self.label.clone())],
+        })
+    }
+
+    /// The transition voting from the key with hash160 `voting_address`,
+    /// carrying `signature`. Version 0 is the only one at the pin.
+    fn transition(&self, voting_address: [u8; 20], signature: BinaryData) -> StateTransition {
+        let resource_vote_choice = match self.choice {
+            NameChoice::TowardsIdentity(id) => ResourceVoteChoice::TowardsIdentity(id.into()),
+            NameChoice::Abstain => ResourceVoteChoice::Abstain,
+            NameChoice::Lock => ResourceVoteChoice::Lock,
+        };
+        let vote = Vote::ResourceVote(ResourceVote::V0(ResourceVoteV0 {
+            vote_poll: self.poll(),
+            resource_vote_choice,
+        }));
+        let transition = MasternodeVoteTransition::V0(MasternodeVoteTransitionV0 {
+            pro_tx_hash: self.pro_tx_hash.into(),
+            voter_identity_id: voter_identity(&self.pro_tx_hash, &voting_address).into(),
+            vote,
+            nonce: self.nonce,
+            signature_public_key_id: 0,
+            signature,
+        });
+        transition.into()
+    }
+}
+
+/// A signed contested-name vote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedNameVote {
+    /// The serialized state transition, as DAPI takes it.
+    pub bytes: Vec<u8>,
+    /// Its hash (dpp `transaction_id`: SHA-256 of `bytes`).
+    pub hash: [u8; 32],
+    /// The voter identity it votes as.
+    pub voter_identity: [u8; 32],
+}
+
+/// Platform's voter identity of a masternode (Platform order) and the
+/// hash160 of its voting key (Drive `create_voter_identity_v0`).
+fn voter_identity(pro_tx_hash: &[u8; 32], voting_address: &[u8; 20]) -> [u8; 32] {
+    Identifier::create_voter_identifier(pro_tx_hash, voting_address).to_buffer()
+}
+
+/// Whether `label` can be the label of a contested DPNS poll: DPNS's
+/// `normalizedLabel` pattern (`^[a-hj-km-np-z0-9][a-hj-km-np-z0-9-]{0,61}
+/// [a-hj-km-np-z0-9]$`) within its contested index's `^[a-zA-Z01-]{3,19}$`.
+pub fn is_contested_label(label: &str) -> bool {
+    let allowed = |c: char| {
+        (c.is_ascii_lowercase() && !matches!(c, 'i' | 'l' | 'o')) || matches!(c, '0' | '1' | '-')
+    };
+    (3..=19).contains(&label.len())
+        && label.chars().all(allowed)
+        && !label.starts_with('-')
+        && !label.ends_with('-')
 }
 
 #[cfg(test)]

@@ -446,9 +446,12 @@ fn failure(e: GovernanceError, unknown_object: &str) -> ConsoleFailure {
         ),
         // The console has no proposal calls (`gobject prepare`/`submit` stay
         // unavailable, MG-06 D14); worded for completeness.
-        e @ (GovernanceError::InvalidProposal { .. } | GovernanceError::SubmitRefused { .. }) => {
-            rpc(code::MISC_ERROR, e.to_string())
-        }
+        // Nor contested-name calls (MG-07); worded for completeness.
+        e @ (GovernanceError::InvalidProposal { .. }
+        | GovernanceError::SubmitRefused { .. }
+        | GovernanceError::ContestNotFound { .. }
+        | GovernanceError::ContestClosed { .. }
+        | GovernanceError::NotAContender { .. }) => rpc(code::MISC_ERROR, e.to_string()),
         GovernanceError::Engine(e) => crate::exec::engine_failure(e),
         // Only `vote` takes a grant, and the console never casts votes.
         GovernanceError::Platform(e) => rpc(code::MISC_ERROR, e.to_string()),

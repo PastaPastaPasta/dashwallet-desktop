@@ -21,6 +21,8 @@ import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { EventKindName } from "../api/generated/EventKindName";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
+import type { SyncLoopStatus } from "../api/generated/SyncLoopStatus";
+import type { SyncPassReport } from "../api/generated/SyncPassReport";
 import type { UserHit } from "../api/generated/UserHit";
 import type { UserRelation } from "../api/generated/UserRelation";
 import type { CreditsWorld } from "./topup";
@@ -69,6 +71,25 @@ export interface DashPayWorld {
   pictures?: FixturePictures;
   /** DP4-03: this many next profile saves fail with `platform.unavailable`. */
   profileSaveFailures?: number;
+  /** DP6-03: the pass `dashpay_sync_status` reports; absent: none (the engine's `last_pass` is
+   * `None` until passes report, E0-10b §7). */
+  lastPass?: SyncPassReport;
+}
+
+/** `platform_loops` as the engine lists them (runtime.rs): session-wide, running while SPV runs
+ * (bringup.rs starts them after every wallet's bring-up), DashPay last run 5 s before FIXTURE_NOW
+ * (every 15 s with a window visible), the contest watch every 10 minutes (DASHPAY §3.2); stopped,
+ * the last runs stay. Every scenario's loops have run once, even one whose bring-up did not run
+ * (`dashpay-not-started`): the card reads the loops apart from the outcome. */
+export function fixtureLoops(running: boolean): SyncLoopStatus[] {
+  const now = secs(FIXTURE_NOW);
+  const loop = (syncLoop: SyncLoopStatus["syncLoop"], every: number, ago: number): SyncLoopStatus => ({
+    syncLoop,
+    running,
+    lastRunAt: now - ago,
+    nextRunAt: running ? now - ago + every : null,
+  });
+  return [loop("identitySync", 60, 40), loop("dashPaySync", 15, 5), loop("dpnsSync", 600, 120)];
 }
 
 /** Whether an upload host is configured, the candidates `dashpay_prepare_avatar` made, and every

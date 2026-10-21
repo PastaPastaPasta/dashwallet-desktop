@@ -3357,5 +3357,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "governance.submit_refused",
   "governance.no_peers",
   "governance.list_unavailable",
+  "governance.contest_not_found",
+  "governance.contest_closed",
+  "governance.not_a_contender",
   "governance.not_implemented",
 ];

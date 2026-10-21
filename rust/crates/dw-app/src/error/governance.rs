@@ -29,6 +29,12 @@ codes! {
         NoPeers = "governance.no_peers",
         /// The call needs the masternode list and SPV has none yet.
         ListUnavailable = "governance.list_unavailable",
+        /// No DPNS poll for the label (MG-07; no call binds it before MG-11).
+        ContestNotFound = "governance.contest_not_found",
+        /// The DPNS poll resolved or its voting ended (MG-07).
+        ContestClosed = "governance.contest_closed",
+        /// A name vote towards an identity the poll does not list (MG-07).
+        NotAContender = "governance.not_a_contender",
         /// A contract stub: `data` names the call.
         NotImplemented = "governance.not_implemented",
     }
@@ -70,6 +76,11 @@ impl From<GovernanceError> for AppError {
             ),
             G::NoPeers => (GovernanceCode::NoPeers, None),
             G::ListUnavailable => (GovernanceCode::ListUnavailable, None),
+            // The label and identity are in `message`; MG-11 gives them
+            // `data` when it binds the calls (MG-07 D13).
+            G::ContestNotFound { .. } => (GovernanceCode::ContestNotFound, None),
+            G::ContestClosed { .. } => (GovernanceCode::ContestClosed, None),
+            G::NotAContender { .. } => (GovernanceCode::NotAContender, None),
             G::NotImplemented { call } => (
                 GovernanceCode::NotImplemented,
                 Some(ErrorData::Call { call }),
@@ -107,6 +118,9 @@ mod tests {
             GovernanceError::SubmitRefused {
                 reason: SubmitRefusal::Public,
             },
+            GovernanceError::ContestNotFound { label: s() },
+            GovernanceError::ContestClosed { label: s() },
+            GovernanceError::NotAContender { identity: s() },
             GovernanceError::NotImplemented { call: s() },
             GovernanceError::Engine(EngineError::NetworkNotOpen("regtest".into())),
             GovernanceError::Platform(dw_engine::platform::PlatformError::GrantInvalid),

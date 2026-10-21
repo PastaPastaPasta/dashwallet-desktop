@@ -49,6 +49,7 @@ fn reversed(hex_text: &str) -> String {
 
 #[test]
 fn mn_failures_are_json_lines_that_never_quote_the_arguments() {
+    const IDENTITY_SECRET: &str = "identity:<secret>";
     let dir = dw_testutil::private_tempdir();
     std::fs::write(dir.path().join("pass"), "dwcli mn passphrase\n").unwrap();
     std::fs::write(dir.path().join("wrong"), "not the passphrase\n").unwrap();
@@ -81,6 +82,26 @@ fn mn_failures_are_json_lines_that_never_quote_the_arguments() {
     assert_eq!(line["error"]["code"], "invalid_argument");
     let all = format!("{out:?}").to_lowercase();
     assert!(!all.contains(SECRET), "{all}");
+
+    // So does a refused `--choice`.
+    let out = dwcli(
+        dir.path(),
+        "pass",
+        &[
+            "mn",
+            "vote-name",
+            "c0ntest",
+            "--choice",
+            SECRET,
+            "--masternode",
+            SECRET,
+        ],
+        b"",
+    );
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let line: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(line["error"]["code"], "invalid_argument");
+    assert!(!format!("{out:?}").to_lowercase().contains(SECRET));
 
     // The payout of an update is always named (MG-04 D10).
     let hash = "ab".repeat(32);
@@ -136,6 +157,45 @@ fn mn_failures_are_json_lines_that_never_quote_the_arguments() {
             ],
             b"",
         ),
+        (&["mn", "names", "--wallet", SECRET], b""),
+        (
+            &[
+                "mn",
+                "vote-name",
+                SECRET,
+                "--choice",
+                "abstain",
+                "--masternode",
+                SECRET,
+            ],
+            b"",
+        ),
+        (
+            &[
+                "mn",
+                "vote-name",
+                "c0ntest",
+                "--choice",
+                IDENTITY_SECRET,
+                "--masternode",
+                SECRET,
+            ],
+            b"",
+        ),
+        (
+            &[
+                "mn",
+                "vote-name",
+                "c0ntest",
+                "--choice",
+                "lock",
+                "--masternode",
+                SECRET,
+                "--wallet",
+                SECRET,
+            ],
+            b"",
+        ),
         (
             &["mn", "--spv", "--sync-timeout", "1", "status", SECRET],
             b"",
@@ -143,6 +203,19 @@ fn mn_failures_are_json_lines_that_never_quote_the_arguments() {
     ];
     let back = reversed(SECRET);
     for (args, stdin) in commands {
+        // `IDENTITY_SECRET` is a placeholder: the secret as a contender id.
+        let choice = format!("identity:{SECRET}");
+        let args: Vec<&str> = args
+            .iter()
+            .map(|a| {
+                if *a == IDENTITY_SECRET {
+                    choice.as_str()
+                } else {
+                    a
+                }
+            })
+            .collect();
+        let args = &args[..];
         let out = dwcli(dir.path(), "pass", args, stdin);
         let (code, _) = error(&out);
         assert!(!code.is_empty());

@@ -1,6 +1,6 @@
 # MG governance engine contract (`dw-engine` facade)
 
-Contract-Version: 7
+Contract-Version: 8
 
 Status: **draft**, 2026-10-16 (ROADMAP MG-02). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
 Code: `rust/crates/dw-engine/src/governance/` (§0). Design: [`MG-02-governance.md`](../design/MG-02-governance.md);
@@ -9,7 +9,7 @@ the changes in §1 below.
 
 The facade is plain Rust in dw-engine. `dwcli` and the console drive it directly; dw-app binds it for the Tauri UI
 (`api/governance.rs`, BL-232), with binding derives in the binding crate only. MG-03 (masternodes), MG-05 (voting
-grants) and MG-06 (proposals) extend this file; **a change to a signature, a record or a code updates this file and
+grants), MG-06 (proposals) and MG-07 (contested names) extend this file; **a change to a signature, a record or a code updates this file and
 raises `Contract-Version` in the same change.** `rust/crates/dw-engine/tests/mg_governance_contract.rs` enforces it
 the way `m4_dashpay_contract.rs` enforces m4: the generated §3 listing with its SHA-256 (`DW_BLESS=1` to approve a
 raised version), one §2 row per call with matching Kind and Errors, the §4 codes per variant and the `vote_rejected`
@@ -34,6 +34,7 @@ handles may exist. After `close_network` every call returns `network_not_open`.
 | `governance/records.rs` | MG-02 | the records of §3 |
 | `governance/reads.rs` | MG-02 | the read calls of §2.2–§2.3 |
 | `governance/voting.rs` | MG-02, MG-05 | §2.4 |
+| `governance/contested.rs` | MG-07 | §2.6 (its Platform seam is not facade) |
 | `governance/errors.rs` | MG-02 | `GovernanceError` |
 
 ## 1. Conventions (changes to m1-engine.md §1)
@@ -108,15 +109,36 @@ height, its estimate and `cutoff_soon` (at most two days away, MG-06 D13).
 | `my_proposals(wallet: WalletId)` | sync | The wallet's own proposals, newest first, each a `MyProposal` with its derived state and `last_error`, the failure of its fee's last hand-off if it failed, reported while the wallet has not seen the fee (MG-06 D10). Works with sync off. **Implemented.** | `GovernanceError` |
 | `submit_proposal(wallet: WalletId, hash: String)` | async | The [Submit] action: a `fee_unsent` or `fee_paid{0}` proposal's saved fee is broadcast again (no grant, MG-06 D10), its coins claimed first and the hand-off recorded before it; a `no_peer_accepted` one is looked for by a new sync run at once (D7). Returns the `MyProposal` after. `invalid_argument` for a malformed hash; `governance.proposal_not_found{hash}` for a hash that is not the wallet's; `governance.submit_refused{reason}` for a `public`, `expired` or `fee_failed` proposal, and `in_flight` while a create or another [Submit] hands its fee off; `send.outpoint_unavailable` for a fee coin another payment or an asset lock holds, that was locked after the fee was built (coin control, dust, a masternode's, MG-04 D47), or that the wallet reads spent by another transaction; a resend's broadcast failure as `send.broadcast_unknown` (kept as `last_error`); `governance.sync_disabled` while sync is off (except for a resend). **Implemented.** | `GovernanceError` |
 
+### 2.6 Contested DPNS names (MG-07)
+
+Design: [`MG-07-contested-voting.md`](../design/MG-07-contested-voting.md), cited as "MG-07 D1" and so on. Both calls
+need the SPV masternode list and Platform, not governance sync (MG-07 D2). The voters are the SPV list's masternodes
+whose voting key the wallet holds: a keychain key at indexes 0–19, else an attached `voting` key whose recorded id is
+the list's (MG-07 D3). A label is normalized as DPNS does (lower case, `o`→`0`, `i` and `l`→`1`) and must then be a
+contested label: 3–19 of `a-hj-km-np-z01-`, no `-` at either end. Platform takes at most `votes_allowed` (5) votes per
+masternode and poll, one vote and its changes; `votes_used` counts the ones this app saw Platform take (MG-07 D6).
+
+| Call | Kind | Semantics | Errors |
+|---|---|---|---|
+| `contested_names(wallet: WalletId)` | async | `ContestedNames`: the open DPNS contests, soonest ending first (the first page of 100 of Platform's end-date index from now on, each with its first page of 100 contenders, `contenders_complete` false for a full page; MG-07 D9), the voters in list order, each with its key (`keychain{index}` or `attached`), Platform's weight (1, 4 for an evonode) and `current`: its proved choice (one votes-by-identity query per voter, MG-07 D4) and `votes_used` in each listed contest where it has either; and `votes_allowed`. | `GovernanceError` |
+| `vote_name(wallet: WalletId, label: String, choice: NameChoice, masternodes: Vec<String>, grant: String)` | async | Casts `choice` (`towards_identity{identity}` base58, `abstain`, `lock`) on DPNS's poll of `label` for each masternode (proTxHash), under one `voting` lease begun from `grant` (a `Governance` grant of `wallet`) and ended when the call returns. Each vote is a `MasternodeVoteTransition` the vault lays out and signs (MG-07 D5), admitted through the fence as a row-less vote keyed by its hash, broadcast and waited for (MG-07 D12). Returns `Vec<NameVoteCast>`, one per masternode in the given order. **Whole-call errors**, before the grant is redeemed, in this order: `invalid_argument` (a label that cannot be contested, a malformed identity, no masternodes, a malformed or repeated proTxHash), `governance.list_unavailable`, `invalid_argument` for more masternodes than the list holds, `platform.unavailable` (no Platform, or a poll read failed), `governance.contest_not_found`, `governance.contest_closed`, `governance.not_a_contender`, then `wallet_not_found`; then the lease's `platform.*` errors (MG-05 D12). **Per masternode**, `rejected` is `unknown_masternode`, `no_voting_key`, `cancelled`, `signer_unavailable`, `in_flight` (MG-05's meanings), `vote_limit` (this app saw it use `votes_allowed`, or Platform refused it as over the limit; at the local limit a choice that is already the masternode's present one is `already_voted`, as Drive answers, MG-07 D18), `platform_unavailable` (the nonce read failed, or the transition never left; no `transition` then), `unconfirmed` (it may have left: no answer or no proof came back, or the dispatch permit's deadline came during the broadcast; MG-07 D7, D16), or Platform's refusal: `already_voted`, `contest_closed`, `contest_not_found`, `masternode_not_found`, `wrong_voting_key`, `choice_not_allowed`, `no_voter_identity`, `voting_key_disabled`, `refused` (MG-07 D10), `already_voted` also when the broadcast is answered "already exists" and the present choice is the one cast (MG-07 D18); else `transition` is the transition's hash (hex) and the vote counts. `transition` is also set on every refusal after the broadcast. | `GovernanceError` |
+
 ## 3. Surface (generated)
 
 Generated by `mg_governance_contract.rs` from the facade's source files; `DW_BLESS=1` rewrites it after
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: governance-surface -->
-<!-- surface-sha256: 17107b0ce6e6d382d68ad67ae0ede0842f31bbd7601c95b801fef99bbc176c82 version: 7 -->
+<!-- surface-sha256: 7ff58ba738cb410bea0a752897d06f6d88710cebc24b73d25386fda3589799bc version: 8 -->
 
 ```rust
+// src/governance/contested.rs
+impl ContestNet for SdkNames;
+impl NameVoteNet for SdkNames;
+impl Governance {
+    pub async fn contested_names(&self, wallet: WalletId) -> Result<ContestedNames, GovernanceError>;
+    pub async fn vote_name(&self, wallet: WalletId, label: String, choice: NameChoice, masternodes: Vec<String>, grant: String) -> Result<Vec<NameVoteCast>, GovernanceError>;
+}
 // src/governance/errors.rs
 #[derive(Debug, thiserror::Error)]
 pub enum GovernanceError {
@@ -128,6 +150,9 @@ pub enum GovernanceError {
     ListUnavailable,
     InvalidProposal { fields: Vec<ProposalField> },
     SubmitRefused { reason: SubmitRefusal },
+    ContestNotFound { label: String },
+    ContestClosed { label: String },
+    NotAContender { identity: String },
     NotImplemented { call: String },
     Engine(EngineError),
     Platform(PlatformError),
@@ -138,6 +163,7 @@ impl GovernanceError {
 }
 // src/governance/mod.rs
 pub use errors::GovernanceError;
+pub use records::{ ContestedName, ContestedNames, NameChoice, NameContender, NameVoteCast, NameVoter, NameVoterState, NameVotingKey, };
 pub use records::{ CurrentVoteRow, GovernanceClock, GovernanceInfo, GovernanceSyncPhase, GovernanceSyncState, MasternodeType, MyProposal, MyProposalState, ProposalCounts, ProposalDetail, ProposalDraft, ProposalField, ProposalPreview, ProposalQuery, ProposalRow, ProposalScope, ProposalStatus, RawVote, SignalTallies, SubmitRefusal, SubmitWait, SuperblockDate, VoteCast, VoteOutcome, VoteRelayed, VoteSignal, VoteTally, VotingMasternode, WeightRange, };
 #[derive(Clone)]
 pub struct Governance {
@@ -370,6 +396,60 @@ pub struct VoteCast {
     pub peers: u32,
     pub rejected: Option<String>,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum NameChoice {
+    TowardsIdentity { identity: String },
+    Abstain,
+    Lock,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameContender {
+    pub identity: String,
+    pub votes: Option<u32>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContestedName {
+    pub label: String,
+    pub ends_at: u64,
+    pub contenders: Vec<NameContender>,
+    pub lock_votes: Option<u32>,
+    pub abstain_votes: Option<u32>,
+    pub contenders_complete: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum NameVotingKey {
+    Keychain { index: u32 },
+    Attached,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameVoterState {
+    pub label: String,
+    pub choice: Option<NameChoice>,
+    pub votes_used: u32,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameVoter {
+    pub pro_tx_hash: String,
+    pub kind: MasternodeType,
+    pub weight: u32,
+    pub valid: bool,
+    pub key: NameVotingKey,
+    pub current: Vec<NameVoterState>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContestedNames {
+    pub contests: Vec<ContestedName>,
+    pub voters: Vec<NameVoter>,
+    pub votes_allowed: u32,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameVoteCast {
+    pub pro_tx_hash: String,
+    pub transition: Option<String>,
+    pub rejected: Option<String>,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuperblockDate {
     pub height: u32,
@@ -473,7 +553,7 @@ impl Governance {
 
 | Error enum | Codes |
 |---|---|
-| `GovernanceError` | `governance.sync_disabled`, `governance.not_synced`, `governance.proposal_not_found`, `governance.vote_rejected`, `governance.no_peers`, `governance.list_unavailable`, `governance.invalid_proposal`, `governance.submit_refused`, `governance.not_implemented` |
+| `GovernanceError` | `governance.sync_disabled`, `governance.not_synced`, `governance.proposal_not_found`, `governance.vote_rejected`, `governance.no_peers`, `governance.list_unavailable`, `governance.invalid_proposal`, `governance.submit_refused`, `governance.contest_not_found`, `governance.contest_closed`, `governance.not_a_contender`, `governance.not_implemented` |
 
 - `governance.sync_disabled`: a call that needs the sync task while it is off (`resync`, `relay_vote`).
 - `governance.not_synced{phase}`: no run reached `synced` yet (or no tip, for the clock); `phase` is the current one.
@@ -492,8 +572,13 @@ impl Governance {
   (MG-06 D11).
 - `governance.submit_refused{reason}`: `submit_proposal` on a proposal past submitting; `reason` is `public`,
   `expired` or `fee_failed`, or `in_flight` while its fee is being handed off (MG-06 D10).
+- `governance.contest_not_found{label}`: no DPNS poll for the label: no contender and no stored result (MG-07).
+- `governance.contest_closed{label}`: the poll resolved (a winner, locked, or no winner), or its voting ended (MG-07
+  D8).
+- `governance.not_a_contender{identity}`: a vote towards an identity the poll's first page does not list (MG-07 D9).
 - `governance.not_implemented{call}`: a stub (none now; MG-05 D17).
-- `Platform(PlatformError)`: a lease error of `vote` or `create_proposal`, with its `platform.*` code (m4 §4; MG-05 D12). The Swift host
+- `Platform(PlatformError)`: a lease error of `vote`, `vote_name` or `create_proposal`, or `platform.unavailable` from
+  `contested_names` and `vote_name`, with its `platform.*` code (m4 §4; MG-05 D12). The Swift host
   binds no governance call, so its `engineCodes` are unchanged.
 - `Engine(EngineError)`: `network_not_open`, `wallet_not_found`, `invalid_argument`, `storage`, `internal` and the
   rest of m1 §4, unchanged. These are not new §4 codes for the m1–m3 tables, so the Swift `engineCodes` are

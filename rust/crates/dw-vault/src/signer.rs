@@ -220,6 +220,8 @@ const METHODS: &[SignerMethod] = &[SignerMethod::Digest];
 
 /// Core's `CKey::SignCompact` over `digest` for a compressed key:
 /// `27 + 4 + recid ‖ r ‖ s`, deterministic (RFC 6979).
+/// Also what `dashcore::signer::sign` makes for a Platform
+/// `ECDSA_HASH160` key (MG-07's name votes).
 pub(crate) fn sign_compact(digest: [u8; 32], secret: &SecretKey) -> [u8; 65] {
     let sig =
         ecdsa::RecoverableSignature::sign_ecdsa_recoverable(Message::from_digest(digest), secret);

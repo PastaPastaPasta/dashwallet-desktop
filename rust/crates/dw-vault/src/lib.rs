@@ -81,7 +81,10 @@ pub use vault::{
     OTHER_KIND, StashedLinkKind, StashedLinkMeta, Vault, WalletBackupBundle, reads_bundle_version,
     throttle_wait_secs,
 };
-pub use vote::{FundingOutcome, FundingVote, VoteSigner, VotingKey};
+pub use vote::{
+    FundingOutcome, FundingVote, NameChoice, NameVote, SignedNameVote, VoteSigner, VotingKey,
+    is_contested_label,
+};
 
 /// Directory of the vault inside a network data directory.
 pub const VAULT_DIR: &str = "vault";
