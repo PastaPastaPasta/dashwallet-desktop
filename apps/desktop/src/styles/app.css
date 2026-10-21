@@ -4076,6 +4076,12 @@ button.bell-row-open:focus-visible {
   margin: 0;
 }
 
+/* DP6-02: the destination in the withdraw quote. */
+.withdraw-to {
+  font-family: var(--dw-font-mono);
+  overflow-wrap: anywhere;
+}
+
 .topup-form {
   display: flex;
   flex-direction: column;

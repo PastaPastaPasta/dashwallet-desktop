@@ -26,8 +26,9 @@ import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
-import { newCreditsWorld, topUpStep, type CreditsWorld } from "./topup";
+import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
+import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
@@ -451,6 +452,15 @@ const topUpLock = (patch: Partial<PendingTopUp>): PendingTopUp => ({
   consumptionUnknown: false,
   ...patch,
 });
+
+/** Where "alice"'s past withdrawals paid (DP6-02). */
+const FIXTURE_PAYOUT_TO = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
+
+/** One of "alice"'s withdrawal documents (DP6-02), `hoursAgo` hours before the fixture's now. */
+function withdrawal(n: number, status: Withdrawal["status"], credits: number, hoursAgo: number): Withdrawal {
+  const at = FIXTURE_NOW.getTime() - hoursAgo * 3_600_000;
+  return { id: withdrawalId(n), credits: String(credits), expectedDuffs: withdrawPayout(BigInt(credits)), to: FIXTURE_PAYOUT_TO, status, createdAt: at, updatedAt: at };
+}
 
 /** The contested world with `contest_status` reading `state` (DP1-10 R3–R5). */
 function withContest(w: World, state: ContestStatus["state"]): World {
@@ -890,6 +900,21 @@ const SCENARIOS = {
     withCredits(base(t), { stuck: [{ step: topUpStep(0, 1), identityIndex: 0, identity: IDENTITY.alice, state: "maybeSent" }] }),
   /** The next top-up's funding outcome is unknown: the sheet routes to Repair (T8, D16, D22). */
   "dashpay-top-up-lost": (t) => withCredits(base(t), { next: "broadcastUnknown" }),
+  // DP6-02: withdrawals. Refusals the fixture does not model come from `&fail=credits_withdraw:<class>`.
+  /** "alice" with a withdrawal in each state My Profile shows (D11). */
+  "dashpay-withdrawals": (t) =>
+    withCredits(base(t), {
+      withdrawals: [
+        withdrawal(4, "queued", 50_000_000_000, 1),
+        withdrawal(3, "expired", 20_000_000_000, 5),
+        withdrawal(2, "complete", 100_000_000_000, 26),
+        withdrawal(1, "failed", 1_190_000, 50),
+      ],
+    }),
+  /** The next withdrawal's broadcast goes unanswered and its document is not found (§3). */
+  "dashpay-withdraw-lost": (t) => withCredits(base(t), { nextWithdraw: "unknown" }),
+  /** The next withdrawal's broadcast goes unanswered but its document is read back (§3). */
+  "dashpay-withdraw-landed": (t) => withCredits(base(t), { nextWithdraw: "landed" }),
   /** "alice" contested with no temporary name: Create instant username (R1, D13). */
   "dashpay-contest-no-temporary": (t) => {
     const w = contestPending(base(t), 1_900_000_000);

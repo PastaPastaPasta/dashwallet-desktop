@@ -24,6 +24,7 @@ const SAMPLES: Samples = {
   },
   duffs: { code: "send.amount_exceeds_balance", data: { kind: "duffs", needed: 5_000_000_000, available: 3_019_698_287 } },
   credits: { code: "platform.insufficient_credits", data: { kind: "credits", needed: "120000000", available: "4000000" } },
+  creditRange: { code: "credits.withdrawal_out_of_range", data: { kind: "creditRange", min: "1190000", max: "50000000000000" } },
   identityCredits: {
     code: "insufficient_credits",
     data: { kind: "identityCredits", identity: "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF", needed: "120000000", available: "4000000" },

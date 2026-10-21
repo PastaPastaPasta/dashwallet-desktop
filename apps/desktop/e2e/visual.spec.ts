@@ -495,6 +495,24 @@ for (const theme of THEMES) {
     await page.mouse.move(0, 0);
     await shoot(page, "profile-top-up-done", theme);
   });
+
+  // DP6-02: the withdraw sheet's form, quote and outcome.
+  test(`visual profile-withdraw ${theme}`, async ({ page }) => {
+    await openProfile(page, "dashpay-registered", theme);
+    await page.getByTestId("profile-withdraw").click();
+    await expect(page.getByTestId("withdraw-next")).toBeEnabled();
+    await page.mouse.move(0, 0);
+    await shoot(page, "profile-withdraw-form", theme);
+    await page.getByTestId("withdraw-next").click();
+    await page.getByTestId("withdraw-quote").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "profile-withdraw-confirm", theme);
+    await page.getByTestId("withdraw-go").click();
+    await authorize(page);
+    await page.getByTestId("withdraw-done").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "profile-withdraw-done", theme);
+  });
 }
 
 // DP4-03: Edit Profile's steps over My Profile, and each list with avatars (D21).
