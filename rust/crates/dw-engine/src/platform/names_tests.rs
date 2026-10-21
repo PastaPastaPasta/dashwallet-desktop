@@ -21,7 +21,7 @@ use platform_wallet::changeset::{DpnsNameSaleStatus, DpnsNameStateEntry};
 use super::*;
 use crate::platform::flows::{LeaseStateView, LeaseView};
 use crate::platform::recovery_tests::live_identities;
-use crate::{Engine, EngineConfig, EventSink, SessionOptions};
+use crate::{Engine, EngineConfig, EventSink, PlatformChange, SessionOptions};
 
 fn names(labels: &[&str]) -> Vec<DpnsNameInfo> {
     labels
@@ -468,10 +468,27 @@ fn the_main_name_survives_sync_and_a_restart() {
     let dir = dw_testutil::private_tempdir();
     let mut f = Fixture::new(dir.path(), &["carol", "alice"]);
     assert_eq!(f.main_name().as_deref(), Some("carol"));
+    *f.session.hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
     f.engine
         .block_on(f.dp().set_main_name(identity_id(), Some("A1ICE".into())))
         .unwrap();
     assert_eq!(f.main_name().as_deref(), Some("alice"));
+    // No changeset carries the pick: it signals itself (DP6-01 review B1).
+    let marks = f
+        .session
+        .hub
+        .pump
+        .platform_marks
+        .lock()
+        .unwrap()
+        .take()
+        .unwrap();
+    assert!(
+        marks
+            .iter()
+            .any(|(w, c)| *w == f.wallet && c.contains(&PlatformChange::Identities)),
+        "{marks:?}"
+    );
 
     f.sync_names(&["carol"], DpnsFetch::Partial);
     assert_eq!(f.main_name().as_deref(), Some("alice"));
@@ -486,6 +503,43 @@ fn the_main_name_survives_sync_and_a_restart() {
         .block_on(f.dp().set_main_name(identity_id(), None))
         .unwrap();
     assert_eq!(f.main_name().as_deref(), Some("carol"));
+}
+
+/// Every pref write signals itself, not only the main-name pick: none
+/// rides a changeset, and `identities()` reads them all (DP6-01 review N4).
+#[test]
+fn every_name_pref_write_signals_the_identities() {
+    let dir = dw_testutil::private_tempdir();
+    let f = Fixture::new(dir.path(), &["carol"]);
+    for key in [
+        PREF_TEMPORARY_NAME,
+        PREF_CONTESTED_NAME,
+        PREF_PENDING_NAME,
+        PREF_REFUSED_NAME,
+    ] {
+        *f.session.hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+        f.engine
+            .block_on(
+                f.session
+                    .set_name_pref(f.wallet, identity_id(), key, Some("carol".into())),
+            )
+            .unwrap();
+        let marks = f
+            .session
+            .hub
+            .pump
+            .platform_marks
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap();
+        assert!(
+            marks
+                .iter()
+                .any(|(w, c)| *w == f.wallet && c.contains(&PlatformChange::Identities)),
+            "{key}: {marks:?}"
+        );
+    }
 }
 
 #[test]

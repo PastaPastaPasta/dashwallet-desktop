@@ -48,7 +48,7 @@ impl crate::EventSink for NullSink {
     fn emit(&self, _: crate::EngineEvent) {}
 }
 
-fn options() -> crate::SessionOptions {
+pub(super) fn options() -> crate::SessionOptions {
     crate::SessionOptions {
         dapi_addresses: vec!["http://127.0.0.1:1".into()],
         quorum_url: Some("http://127.0.0.1:1".into()),

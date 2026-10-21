@@ -184,6 +184,13 @@ export class IpcBackend implements Backend {
   finishAssetLocks = cmd.finishAssetLocks;
   registerName = cmd.registerName;
   identityRefreshBalance = cmd.identityRefreshBalance;
+  identityDetail = cmd.identityDetail;
+  identityRefresh = cmd.identityRefresh;
+  identityRefreshAll = cmd.identityRefreshAll;
+  identityFind = cmd.identityFind;
+  setMainIdentity = cmd.setMainIdentity;
+  setMainName = cmd.setMainName;
+  discoverIdentities = cmd.discoverIdentities;
   contestStatus = cmd.contestStatus;
   dashpayAvatar = cmd.dashpayAvatar;
   dashpayProfileLimits = cmd.dashpayProfileLimits;

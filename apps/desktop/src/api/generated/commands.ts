@@ -64,6 +64,7 @@ import type { FeePolicy } from "./FeePolicy";
 import type { FilePurpose } from "./FilePurpose";
 import type { FinishReport } from "./FinishReport";
 import type { FlowKindName } from "./FlowKindName";
+import type { FoundIdentity } from "./FoundIdentity";
 import type { GovernanceClock } from "./GovernanceClock";
 import type { GovernanceInfo } from "./GovernanceInfo";
 import type { GovernanceSyncState } from "./GovernanceSyncState";
@@ -75,6 +76,7 @@ import type { HistoryRequest } from "./HistoryRequest";
 import type { HistoryRows } from "./HistoryRows";
 import type { HistorySortName } from "./HistorySortName";
 import type { IdentityDetail } from "./IdentityDetail";
+import type { IdentityRefresh } from "./IdentityRefresh";
 import type { IdentitySummary } from "./IdentitySummary";
 import type { ImportOptions } from "./ImportOptions";
 import type { InvitationStatus } from "./InvitationStatus";
@@ -1416,6 +1418,29 @@ export function identityDetail(walletId: string, identity: string): Promise<Iden
 }
 
 /**
+ * Re-reads the identity's keys and revision from Platform, then its
+ * balance; the detail after.
+ */
+export function identityRefresh(walletId: string, identity: string): Promise<IdentityDetail> {
+  return invoke<IdentityDetail>("identity_refresh", { walletId, identity });
+}
+
+/**
+ * `identityRefresh` for each of the wallet's identities, one at a time.
+ */
+export function identityRefreshAll(walletId: string): Promise<Array<IdentityRefresh>> {
+  return invoke<Array<IdentityRefresh>>("identity_refresh_all", { walletId });
+}
+
+/**
+ * Any identity by its id or a username, read-only; `null` when Platform
+ * has none.
+ */
+export function identityFind(walletId: string, query: string): Promise<FoundIdentity | null> {
+  return invoke<FoundIdentity | null>("identity_find", { walletId, query });
+}
+
+/**
  * Re-reads the identity's credit balance from Platform, as a decimal
  * string; `null` when unknown.
  */
@@ -2504,6 +2529,9 @@ export type CommandArgs = {
   discover_identities: { walletId: string; grant: string };
   identities: { walletId: string };
   identity_detail: { walletId: string; identity: string };
+  identity_refresh: { walletId: string; identity: string };
+  identity_refresh_all: { walletId: string };
+  identity_find: { walletId: string; query: string };
   identity_refresh_balance: { walletId: string; identity: string };
   set_main_identity: { walletId: string; identity: string };
   registration_quote: { walletId: string; request: RegistrationRequest };
@@ -2774,6 +2802,9 @@ export type CommandResults = {
   discover_identities: number;
   identities: Array<IdentitySummary>;
   identity_detail: IdentityDetail;
+  identity_refresh: IdentityDetail;
+  identity_refresh_all: Array<IdentityRefresh>;
+  identity_find: FoundIdentity | null;
   identity_refresh_balance: string | null;
   set_main_identity: null;
   registration_quote: RegistrationQuote;
@@ -3046,6 +3077,9 @@ export const COMMANDS: Record<CommandName, string> = {
   discover_identities: "identity",
   identities: "identity",
   identity_detail: "identity",
+  identity_refresh: "identity",
+  identity_refresh_all: "identity",
+  identity_find: "identity",
   identity_refresh_balance: "identity",
   set_main_identity: "identity",
   registration_quote: "identity",
