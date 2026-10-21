@@ -292,7 +292,10 @@ struct Rig {
     pipeline: Pipeline,
     pictures: Arc<Pictures>,
     db: Arc<AppDb>,
+    // Read only by the Unix tests (file modes, symlinks); `tmp` keeps the directory alive.
+    #[cfg_attr(not(unix), allow(dead_code))]
     dir: PathBuf,
+    #[cfg_attr(not(unix), allow(dead_code))]
     tmp: tempfile::TempDir,
 }
 
