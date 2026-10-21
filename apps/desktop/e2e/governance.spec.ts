@@ -118,3 +118,93 @@ test("the sidebar shows Masternodes only with the setting or a proposal in progr
   await page.getByTestId("settings-governance-turn-on").click();
   await expect(page.getByTestId("sidebar-masternodes")).toBeVisible();
 });
+
+for (const theme of THEMES) {
+  test(`create ${theme}: details, payments, review, then pay; Mine shows it`, async ({ page }) => {
+    const errors = await open(page, "governance", theme);
+    await page.getByTestId("governance-create").click();
+    const sheet = page.getByTestId("create-sheet");
+    await expect(sheet).toBeVisible();
+    // Step 1 checks the name locally.
+    await page.getByTestId("create-name").fill("Bad Name");
+    await page.getByTestId("create-continue").click();
+    await expect(page.getByTestId("create-error-name")).toBeVisible();
+    await expect(page.getByTestId("create-error-url")).toBeVisible();
+    await page.getByTestId("create-name").fill("desktop-translations");
+    await page.getByTestId("create-url").fill("https://www.dashcentral.org/p/desktop-translations");
+    await fontsReady(page);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("create-continue").click();
+    await expect(page.getByTestId("create-step-2")).toBeVisible();
+    await page.getByTestId("create-count").selectOption("3");
+    await page.getByTestId("create-amount").fill("12.5");
+    await expect(page.getByTestId("create-total")).toContainText("37.5");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("create-continue").click();
+    await expect(page.getByTestId("create-review")).toBeVisible();
+    await expect(page.getByTestId("create-review-payments")).toContainText("× 3");
+    await expect(page.getByTestId("create-fee-warning")).toBeVisible();
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("create-passphrase").fill("demo");
+    await page.getByTestId("create-pay").click();
+    await expect(sheet).toBeHidden();
+    await expect(page.getByTestId("mine-list")).toBeVisible();
+    await expect(page.getByTestId("mine-chip-desktop-translations")).toHaveText("Fee paid");
+    await expect(page.getByTestId("mine-submit-desktop-translations")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+}
+
+test("create: an address the engine refuses goes back to Payments with the field's message", async ({ page }) => {
+  await open(page, "governance");
+  await page.getByTestId("governance-create").click();
+  await page.getByTestId("create-name").fill("desktop-translations");
+  await page.getByTestId("create-url").fill("https://www.dashcentral.org/p/desktop-translations");
+  await page.getByTestId("create-continue").click();
+  await page.getByTestId("create-amount").fill("10");
+  await page.getByTestId("create-pay-to").selectOption("other");
+  await page.getByTestId("create-address").fill("Xnotatestnetaddress");
+  await page.getByTestId("create-continue").click();
+  await expect(page.getByTestId("create-step-2")).toBeVisible();
+  await expect(page.getByTestId("create-error-payment_address")).toHaveText("Enter a Dash address on testnet.");
+  await expect(page.getByTestId("create-address")).toHaveAttribute("aria-invalid", "true");
+});
+
+test("create: a failed payment keeps the review open and says why", async ({ page }) => {
+  await open(page, "governance");
+  await page.evaluate(() => window.__dwFixture!.fail("governance_create_proposal", "duffs"));
+  await page.getByTestId("governance-create").click();
+  await page.getByTestId("create-name").fill("desktop-translations");
+  await page.getByTestId("create-url").fill("https://www.dashcentral.org/p/desktop-translations");
+  await page.getByTestId("create-continue").click();
+  await page.getByTestId("create-amount").fill("10");
+  await page.getByTestId("create-continue").click();
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
+  await expect(page.getByTestId("create-error")).not.toBeEmpty();
+  await expect(page.getByTestId("create-step-3")).toBeVisible();
+  await expect(page.getByTestId("create-pay")).toBeEnabled();
+});
+
+test("Governance numbers and the status bar's voting item", async ({ page }) => {
+  await page.clock.setFixedTime(FIXTURE_NOW);
+  await page.goto(fixtureUrl("governance", "light"));
+  await page.getByTestId("toolbar").waitFor();
+  const item = page.getByTestId("status-governance");
+  await expect(item).toHaveText("Oct 10 votes: about 1 d 7 h left");
+  await item.click();
+  await expect(page.getByTestId("page-masternodes")).toBeVisible();
+  await page.getByTestId("governance-more").click();
+  await page.getByTestId("governance-more-numbers").click();
+  await expect(page.getByTestId("numbers-cycle")).toContainText("Block 2,375,048 · about Oct 10");
+  await expect(page.getByTestId("numbers-votes")).toContainText("2,850 masternodes and 180 evonodes");
+  await fontsReady(page);
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  await page.getByTestId("numbers-done").click();
+  await expect(page.getByTestId("numbers-sheet")).toBeHidden();
+  // No voting key in the wallet: no status item.
+  await page.goto(fixtureUrl("governance-no-masternodes", "light"));
+  await page.getByTestId("toolbar").waitFor();
+  await expect(page.getByTestId("sidebar-masternodes")).toBeVisible();
+  await expect(page.getByTestId("status-governance")).toHaveCount(0);
+});

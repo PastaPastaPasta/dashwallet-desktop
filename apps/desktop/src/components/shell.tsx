@@ -336,6 +336,7 @@ export function StatusBar({
   unitName,
   hd,
   onUnlock,
+  governance = null,
 }: {
   sync: SyncStatus | undefined;
   lock: LockStatus | undefined;
@@ -343,6 +344,8 @@ export function StatusBar({
   hd: boolean;
   /** Opens the unlock sheet: the lock state is a button while unlocked for mixing only (U-02 D12). */
   onUnlock: () => void;
+  /** Masternodes' voting item (MG-09 D7), before the sync state as in MG-00's frame. */
+  governance?: ReactNode;
 }) {
   const percent = sync && isSyncing(sync) ? syncPercent(sync) : null;
   return (
@@ -367,6 +370,7 @@ export function StatusBar({
           lock && <span>{LOCK_TEXT[lock.state]}</span>
         )}
         {sync && <span>{sync.connectedPeers === 1 ? "1 peer" : `${sync.connectedPeers} peers`}</span>}
+        {governance}
         {sync && <span>{!sync.running ? "Offline" : sync.caughtUp ? "Synced" : "Syncing"}</span>}
       </span>
     </footer>

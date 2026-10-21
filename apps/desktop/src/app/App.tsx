@@ -17,6 +17,7 @@ import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
 import { CoinJoinPage } from "../screens/coinjoin/CoinJoinPage";
 import { MasternodesPage } from "../screens/masternodes/MasternodesPage";
+import { GovernanceStatusItem } from "../screens/masternodes/StatusItem";
 import { ContactsPage, PayPage, Placeholder } from "../screens/Routes";
 import { JoinDashPayPage } from "../screens/dashpay/JoinDashPay";
 import { MyProfilePage } from "../screens/dashpay/MyProfile";
@@ -253,6 +254,7 @@ function Shell() {
           unitName={unitName}
           hd={wallet?.hd ?? false}
           onUnlock={() => ui.set({ dialog: "unlock" })}
+          governance={wallet && masternodesItem.shown ? <GovernanceStatusItem key={wallet.walletId} walletId={wallet.walletId} /> : null}
         />
         </SheetLayer.Provider>
       </div>

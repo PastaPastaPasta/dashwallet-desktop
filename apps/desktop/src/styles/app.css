@@ -5054,3 +5054,19 @@ button.bell-row-open:focus-visible {
 .mg-mine-error {
   color: var(--dw-role-warning);
 }
+
+/* Create a proposal: the total, the data JSON and the passphrase. */
+.mg-total {
+  padding: var(--dw-space-s) 0;
+  font-weight: var(--dw-type-footnote-weight);
+}
+
+.mg-json {
+  margin: var(--dw-space-s) 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.mg-create-credential {
+  max-width: 320px;
+}

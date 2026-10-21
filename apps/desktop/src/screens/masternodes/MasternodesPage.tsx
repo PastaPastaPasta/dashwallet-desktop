@@ -13,6 +13,7 @@ import { useBackend } from "../../api/queries";
 import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton, Icon } from "../../components/basics";
 import { EmptyState, LoadingState } from "../../components/history";
+import { showToast } from "../../components/toast";
 import { useDisplay, type Display } from "../../format/display";
 import {
   budgetView,
@@ -32,13 +33,17 @@ import {
 } from "../../governance/model";
 import { useGovernanceInfo, useGovernanceRefresh, useGovernanceSyncState, useMyProposals, useProposals, useTurnOnGovernance, useVotingByProposal } from "../../governance/queries";
 import { MoreMenu, Notice, StatusChip, useNowSecs, VoteBar } from "./common";
+import { CreateProposalSheet } from "./CreateProposalSheet";
 import { MineList } from "./Mine";
+import { NumbersSheet } from "./NumbersSheet";
 import { ProposalPane } from "./ProposalPane";
 
 const SEARCH_DEBOUNCE_MS = 200;
 
 export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; network: NetworkInfo }) {
   const [showEnded, setShowEnded] = useState(false);
+  const [filter, setFilter] = useState<ListFilter>("all");
+  const [sheet, setSheet] = useState<"create" | "numbers" | null>(null);
   const walletId = wallet.walletId;
   const sync = useGovernanceSyncState();
   const info = useGovernanceInfo();
@@ -93,7 +98,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
                 variant="filledBlue"
                 size="small"
                 data-testid="governance-retry"
-                onClick={() => void backend.governanceResync().finally(() => void refresh())}
+                onClick={() => void backend.governanceResync().catch(() => undefined).then(() => refresh())}
               >
                 {GovText.tryAgain}
               </DashButton>
@@ -102,7 +107,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
             {state.text}
           </Notice>
         )}
-        {state?.kind === "ready" && <ProposalsView wallet={wallet} network={network} info={info.data!} showEnded={showEnded} />}
+        {state?.kind === "ready" && <ProposalsView wallet={wallet} network={network} info={info.data!} showEnded={showEnded} filter={filter} setFilter={setFilter} />}
       </>
     );
 
@@ -116,7 +121,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
               testId="governance-more"
               items={[
                 { id: "ended", title: showEnded ? GovText.hideEnded : GovText.showEnded, onSelect: () => setShowEnded((s) => !s) },
-                { id: "numbers", title: GovText.numbers, onSelect: () => undefined },
+                ...(info.data ? [{ id: "numbers", title: GovText.numbers, onSelect: () => setSheet("numbers") }] : []),
               ]}
             />
             <DashButton
@@ -125,6 +130,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
               data-testid="governance-create"
               disabled={wallet.watchOnly}
               title={wallet.watchOnly ? GovText.createWatchOnly : undefined}
+              onClick={() => setSheet("create")}
             >
               {GovText.create}
             </DashButton>
@@ -132,6 +138,19 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
         </header>
         {body}
       </div>
+      {sheet === "numbers" && info.data && <NumbersSheet info={info.data} network={network} onClose={() => setSheet(null)} />}
+      {sheet === "create" && (
+        <CreateProposalSheet
+          wallet={wallet}
+          network={network}
+          onClose={() => setSheet(null)}
+          onCreated={(p) => {
+            setSheet(null);
+            setFilter("mine");
+            showToast(`${p.name}: fee paid. Mine shows its progress.`);
+          }}
+        />
+      )}
     </main>
   );
 }
@@ -205,12 +224,25 @@ const FILTERS: { id: ListFilter; title: string }[] = [
 ];
 
 /** The synced list: search, filter, sort, rows and the selected proposal's pane. */
-function ProposalsView({ wallet, network, info, showEnded }: { wallet: WalletSummary; network: NetworkInfo; info: GovernanceInfo; showEnded: boolean }) {
+function ProposalsView({
+  wallet,
+  network,
+  info,
+  showEnded,
+  filter,
+  setFilter,
+}: {
+  wallet: WalletSummary;
+  network: NetworkInfo;
+  info: GovernanceInfo;
+  showEnded: boolean;
+  filter: ListFilter;
+  setFilter: (f: ListFilter) => void;
+}) {
   const walletId = wallet.walletId;
   const shown = useDisplay(network);
   const [search, setSearch] = useState("");
   const text = useDebounced(search.trim(), SEARCH_DEBOUNCE_MS);
-  const [filter, setFilter] = useState<ListFilter>("all");
   const [sort, setSort] = useState<SortOrder>("closest");
   const [selected, setSelected] = useState<string | null>(null);
   const proposals = useProposals(showEnded ? "all" : "current", text, true);
