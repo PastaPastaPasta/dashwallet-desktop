@@ -10,6 +10,7 @@ mod keys;
 pub(crate) mod ops;
 #[cfg(test)]
 mod tests;
+mod update;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -26,7 +27,7 @@ use self::build::{
 use self::ops::{Delivery, encode_inputs, kind_name, operation_of, state_name, state_of};
 use super::protx_records::{
     CollateralChoice, ProTxKeys, ProTxOperation, ProTxOperationKind, ProTxOperationState,
-    RegistrationPreview, RegistrationRequest,
+    RegistrationPreview, RegistrationRequest, UpdateRegistrarPreview, UpdateRegistrarRequest,
 };
 use super::records::MasternodeType;
 use super::{Masternodes, MasternodesError, parse_pro_tx_hash};
@@ -499,6 +500,136 @@ impl Masternodes {
             }
             s.masternodes.local_change();
             s.operation(wallet, &operation).await
+        })
+        .await
+    }
+
+    /// Validates `request` against the synced list and the wallet and
+    /// plans its ProUpRegTx (§2): the fee, the owner key that would sign,
+    /// what changes. Issues, locks and signs nothing.
+    pub async fn preview_update_registrar(
+        &self,
+        wallet: WalletId,
+        request: UpdateRegistrarRequest,
+    ) -> Result<UpdateRegistrarPreview, MasternodesError> {
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            update::check_update_request(&request, s.network.core_network())?;
+            let ctx = s.protx_context(wallet).await?;
+            let up = s.resolve_update(wallet, &request, &ctx, false).await?;
+            let fence = s.coin_fence(wallet).await?;
+            let w = s.wallet(&wallet).await?;
+            let coins = s.protx_candidates(&fence, &w, &HashSet::new()).await?;
+            let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
+            let funding = plan_funding(&utxos, &up.outputs(), up.sized_payload(), CHANGE_LEN)
+                .map_err(EngineError::from)?;
+            Ok(UpdateRegistrarPreview {
+                version: up.placeholder.version,
+                fee: funding.fee,
+                total_debit: funding.fee,
+                owner_key: up.owner_source,
+                operator_changes: up.operator_changes,
+                voting_changes: up.voting_changes,
+                payout_changes: up.payout_changes,
+                // Core resets the operator's fields and bans the masternode
+                // when the operator key changes (rc.3
+                // `evo/specialtxman.cpp:538,557-561`).
+                pose_bans: up.operator_changes,
+                terms: up.display,
+            })
+        })
+        .await
+    }
+
+    /// A ProUpRegTx under a `key_change` lease from a `MasternodeOp` grant,
+    /// signed by the masternode's owner key (keychain or attached, D12) and
+    /// sent as [`Self::register`] sends: saved before the hand-off, through
+    /// the fence and its reservations. The lease is charged the fee.
+    pub async fn update_registrar(
+        &self,
+        wallet: WalletId,
+        request: UpdateRegistrarRequest,
+        grant: String,
+    ) -> Result<ProTxOperation, MasternodesError> {
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            update::check_update_request(&request, s.network.core_network())?;
+            let ctx = s.protx_context(wallet).await?;
+            let up = s.resolve_update(wallet, &request, &ctx, true).await?;
+            let lease = s
+                .begin_lease(wallet, FlowKind::KeyChange, &[grant])
+                .await
+                .map_err(PlatformError::from)?;
+            let id = ops::new_id();
+            let result = async {
+                let _flight = s.claim_operation(wallet, &id)?;
+                let fence = s.coin_fence(wallet).await?;
+                let w = s.wallet(&wallet).await?;
+                let coins = s.protx_candidates(&fence, &w, &HashSet::new()).await?;
+                let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
+                let funding = plan_funding(&utxos, &up.outputs(), up.sized_payload(), CHANGE_LEN)
+                    .map_err(EngineError::from)?;
+                let (charge, signer) = lease
+                    .charge_tx_signer(BudgetPurpose::Masternode, funding.fee)
+                    .map_err(|e| lease_failure(e, funding.fee))?;
+                let charge = SpendCharge::new(lease.clone(), BudgetPurpose::Masternode, charge);
+                let change = match funding.change {
+                    Some(_) => Some(
+                        (w.core().next_change_address_for_account(0).await)
+                            .map_err(EngineError::from)?,
+                    ),
+                    None => None,
+                };
+                let tx = update::unsigned_update(&up, &funding, change.as_ref())?;
+                let tx = update::finish_update(tx, &up, &coins, &ctx, &signer).await?;
+                #[cfg(test)]
+                ops::crash_at(&s, ops::CrashPoint::Signed)?;
+                let txid = tx.txid();
+                let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
+                let now = now_secs();
+                let row = MasternodeOpRow {
+                    id: id.clone(),
+                    kind: kind_name(ProTxOperationKind::UpdateRegistrar).into(),
+                    terms: json(&up.display)?,
+                    request: json(&request)?,
+                    unsigned_tx: None,
+                    sign_address: None,
+                    sign_message: None,
+                    fee_inputs: encode_inputs(&inputs),
+                    signed_tx: Some(dashcore::consensus::serialize(&tx)),
+                    txid: Some(txid.to_string()),
+                    pro_tx_hash: Some(up.placeholder.pro_tx_hash.to_string()),
+                    locked_collateral: false,
+                    fee: funding.fee,
+                    created_at: now,
+                    signed_at: Some(now),
+                    sent_at: None,
+                    last_error: None,
+                };
+                s.save_operation(wallet, row, inputs).await?;
+                #[cfg(test)]
+                ops::crash_at(&s, ops::CrashPoint::Saved)?;
+                let summary = s
+                    .summary_of(&w, &tx, &utxos, &funding, change.as_ref())
+                    .await;
+                s.deliver(
+                    wallet,
+                    Delivery {
+                        id: id.clone(),
+                        tx,
+                        summary,
+                        charge,
+                        fence,
+                        maybe_out: false,
+                        lock_after: None,
+                    },
+                )
+                .await?;
+                s.operation(wallet, &id).await
+            }
+            .await;
+            lease.end();
+            result
         })
         .await
     }

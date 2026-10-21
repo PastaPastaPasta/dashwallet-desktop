@@ -158,6 +158,55 @@ pub struct RegistrationPreview {
     pub collateral_amount: u64,
 }
 
+/// Keep the masternode's current value, or set another (D10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum KeepOr<T> {
+    Keep,
+    Set(T),
+}
+
+/// A ProUpRegTx to build (MG-04 §3): the operator and voting keys kept from
+/// the synced list or set; the payout always named (D10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateRegistrarRequest {
+    pub pro_tx_hash: String,
+    pub operator: KeepOr<OperatorChoice>,
+    pub voting: KeepOr<VotingChoice>,
+    pub payout: PayoutChoice,
+}
+
+/// Which owner key signs a ProUpRegTx (D12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OwnerKeySource {
+    Keychain {
+        index: u32,
+    },
+    /// The `owner` key attached to the tracked masternode.
+    Attached,
+}
+
+/// A ProUpRegTx's plan before anything is signed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateRegistrarPreview {
+    /// The masternode as it would read after the update (a `NewAddress`
+    /// payout empty, D29).
+    pub terms: ProTxTerms,
+    pub version: u16,
+    pub fee: u64,
+    /// The fee: a ProUpRegTx pays no other wallet.
+    pub total_debit: u64,
+    pub owner_key: OwnerKeySource,
+    pub operator_changes: bool,
+    pub voting_changes: bool,
+    /// `None` when the wallet holds no payout of the masternode (D10).
+    pub payout_changes: Option<bool>,
+    /// A new operator key bans the masternode until the operator's service
+    /// update (Core resets its state).
+    pub pose_bans: bool,
+}
+
 /// The keychain keys a registration would use by default (D13): public
 /// keys and addresses only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -55,6 +55,8 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.prepare_external_registration",
     "Masternodes.submit_external_registration",
     "Masternodes.refresh_external_registration",
+    "Masternodes.preview_update_registrar",
+    "Masternodes.update_registrar",
     "Masternodes.operations",
     "Masternodes.resend_operation",
     "Masternodes.discard_operation",
@@ -288,12 +290,12 @@ fn listing() -> String {
             match item {
                 syn::Item::Struct(s) if is_pub(&s.vis) => {
                     out.push_str(&attr_lines(&s.attrs, ""));
-                    out.push_str(&format!("pub struct {}", s.ident));
+                    out.push_str(&format!("pub struct {}{}", s.ident, tidy(&s.generics)));
                     out.push_str(&struct_body(&s.fields));
                 }
                 syn::Item::Enum(e) if is_pub(&e.vis) => {
                     out.push_str(&attr_lines(&e.attrs, ""));
-                    out.push_str(&format!("pub enum {} {{\n", e.ident));
+                    out.push_str(&format!("pub enum {}{} {{\n", e.ident, tidy(&e.generics)));
                     for v in &e.variants {
                         out.push_str(&attr_lines(&v.attrs, "    "));
                         out.push_str(&format!("    {}{},\n", v.ident, variant_fields(&v.fields)));
@@ -736,6 +738,7 @@ fn error_codes_match_the_contract() {
             MasternodesError::OperationState { state: hash() },
             MasternodesError::InFlight,
             MasternodesError::KeysExhausted { role: hash() },
+            MasternodesError::NoOwnerKey,
         ],
         MasternodesError::code,
     );
@@ -880,6 +883,16 @@ fn external() -> RegistrationRequest {
     }
 }
 
+/// A ProUpRegTx of `hash` that keeps its keys (MG-04 D10).
+fn update(hash: &str) -> UpdateRegistrarRequest {
+    UpdateRegistrarRequest {
+        pro_tx_hash: hash.into(),
+        operator: KeepOr::Keep,
+        voting: KeepOr::Keep,
+        payout: PayoutChoice::NewAddress,
+    }
+}
+
 /// Every call is implemented, and each refuses in §2's order on a session
 /// whose SPV never ran.
 #[test]
@@ -970,6 +983,12 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.refresh_external_registration(wallet, "zz".into())
                 .await
                 .map(drop),
+            mn.preview_update_registrar(wallet, update("zz"))
+                .await
+                .map(drop),
+            mn.update_registrar(wallet, update("zz"), "g".into())
+                .await
+                .map(drop),
             mn.resend_operation(wallet, "zz".into(), "g".into())
                 .await
                 .map(drop),
@@ -1003,6 +1022,12 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.preview_registration(wallet, request()).await.map(drop),
             mn.register(wallet, request(), "g".into()).await.map(drop),
             mn.prepare_external_registration(wallet, external())
+                .await
+                .map(drop),
+            mn.preview_update_registrar(wallet, update(&hash))
+                .await
+                .map(drop),
+            mn.update_registrar(wallet, update(&hash), "g".into())
                 .await
                 .map(drop),
         ] {
@@ -1171,6 +1196,26 @@ fn errors_never_quote_a_secret_shaped_argument() {
             (
                 "register",
                 mn.register(as_wallet, secret_request(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "preview_update_registrar",
+                mn.preview_update_registrar(
+                    as_wallet,
+                    UpdateRegistrarRequest {
+                        operator: KeepOr::Set(OperatorChoice::Given {
+                            public_key: SECRET.into(),
+                        }),
+                        ..update(&secret())
+                    },
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "update_registrar",
+                mn.update_registrar(as_wallet, update(&secret()), secret())
                     .await
                     .map(drop),
             ),

@@ -21,9 +21,10 @@ use zeroize::Zeroizing;
 use super::ops::{CrashPoint, Seam};
 use crate::masternodes::records::MasternodeType;
 use crate::masternodes::{
-    CollateralChoice, EvonodeTerms, Masternodes, MasternodesError, OperatorChoice, PayoutChoice,
-    PlatformFacts, PlatformNodeChoice, ProTxOperation, ProTxOperationState, RegistrationRequest,
-    VotingChoice,
+    AttachedKeyRole, CollateralChoice, EvonodeTerms, KeepOr, KeyCheck, Masternodes,
+    MasternodesError, OperatorChoice, OwnerKeySource, PayoutChoice, PlatformFacts,
+    PlatformNodeChoice, ProTxOperation, ProTxOperationKind, ProTxOperationState,
+    RegistrationRequest, UpdateRegistrarPreview, UpdateRegistrarRequest, VotingChoice,
 };
 use crate::send::{SendFailure, SpendOwner, TestBroadcaster};
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
@@ -1298,4 +1299,360 @@ fn mg04_evonode_requests_are_refused_before_signing() {
     );
     let ok = preview(next()).unwrap();
     assert_eq!(ok.terms.platform_node_index, Some(1));
+}
+
+// ---------------------------------------------------------------------------
+// ProUpRegTx (slice 4)
+// ---------------------------------------------------------------------------
+
+/// An attached owner key's secret (a masternode registered elsewhere).
+const OWNER_KEY: [u8; 32] = [0x6f; 32];
+
+fn address_of(key_id: [u8; 20]) -> String {
+    dashcore::Address::new(
+        dashcore::Network::Regtest,
+        dashcore::address::Payload::PubkeyHash(dashcore::PubkeyHash::from_byte_array(key_id)),
+    )
+    .to_string()
+}
+
+fn key_id_of(secret: [u8; 32]) -> [u8; 20] {
+    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes(secret).unwrap();
+    let public = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    public.pubkey_hash().to_byte_array()
+}
+
+/// The list entry of the ProRegTx `tx`, as its payload registered it.
+fn entry_of(tx: &Transaction) -> platform_wallet::masternode::MasternodeListSummary {
+    let p = payload(tx);
+    platform_wallet::masternode::MasternodeListSummary {
+        pro_tx_hash: tx.txid().to_byte_array(),
+        service_address: Some(p.service_address),
+        platform_http_port: None,
+        operator_public_key: *p.operator_public_key.as_ref(),
+        voting_key_id: p.voting_key_hash.to_byte_array(),
+        platform_node_id: None,
+        is_valid: true,
+        is_evonode: false,
+        has_extended_net_info: false,
+    }
+}
+
+fn up_payload(
+    tx: &Transaction,
+) -> &dashcore::blockdata::transaction::special_transaction::provider_update_registrar::ProviderUpdateRegistrarPayload{
+    super::update::update_payload(tx).expect("a ProUpRegTx")
+}
+
+fn keep(hash: &str) -> UpdateRegistrarRequest {
+    UpdateRegistrarRequest {
+        pro_tx_hash: hash.into(),
+        operator: KeepOr::Keep,
+        voting: KeepOr::Keep,
+        payout: PayoutChoice::NewAddress,
+    }
+}
+
+impl Fx {
+    /// A confirmed `FundNew` registration of the keychain's first keys, in
+    /// the synced list, and a coin to pay an update with. Returns the
+    /// ProRegTx and its operation.
+    fn registered(&self) -> (Transaction, ProTxOperation) {
+        let funding = self.credit(1, MASTERNODE_COLLATERAL + COIN);
+        let op = self
+            .register(request(CollateralChoice::FundNew), self.grant(COIN))
+            .unwrap();
+        let tx = self.lib.sent().pop().unwrap();
+        let vout = payload(&tx).collateral_outpoint.vout;
+        self.spend(funding);
+        self.hold(
+            OutPoint::new(tx.txid(), vout),
+            tx.output[vout as usize].clone(),
+        );
+        self.confirm(tx.clone(), 7);
+        *self.seam.list.lock().unwrap() = Some(vec![entry_of(&tx)]);
+        self.credit(2, COIN);
+        (tx, op)
+    }
+
+    fn preview_update(
+        &self,
+        req: UpdateRegistrarRequest,
+    ) -> Result<UpdateRegistrarPreview, MasternodesError> {
+        self.engine
+            .block_on(self.mn().preview_update_registrar(self.wallet, req))
+    }
+
+    fn update(
+        &self,
+        req: UpdateRegistrarRequest,
+        grant: String,
+    ) -> Result<ProTxOperation, MasternodesError> {
+        self.engine
+            .block_on(self.mn().update_registrar(self.wallet, req, grant))
+    }
+}
+
+/// D10, D11: kept keys come from the list, the payout is named, the
+/// keychain owner key signs the payload hash, the lease is charged the fee.
+#[test]
+fn mg04_update_registrar_keeps_or_sets_each_key_signed_by_the_keychain_owner() {
+    let f = fx(Library::Accept);
+    let (reg, op) = f.registered();
+    let hash = op.pro_tx_hash.clone().unwrap();
+    let rp = payload(&reg).clone();
+    let same_payout = PayoutChoice::Address {
+        address: op.terms.payout_address.clone(),
+    };
+
+    let unchanged = f
+        .preview_update(UpdateRegistrarRequest {
+            payout: same_payout.clone(),
+            ..keep(&hash)
+        })
+        .unwrap();
+    assert_eq!(unchanged.owner_key, OwnerKeySource::Keychain { index: 0 });
+    assert_eq!(unchanged.version, 2, "D1");
+    assert_eq!(
+        (
+            unchanged.operator_changes,
+            unchanged.voting_changes,
+            unchanged.payout_changes,
+            unchanged.pose_bans
+        ),
+        (false, false, Some(false), false)
+    );
+    assert_eq!(unchanged.total_debit, unchanged.fee);
+    assert_eq!(
+        unchanged.terms.operator_public_key,
+        op.terms.operator_public_key
+    );
+    assert_eq!(unchanged.terms.voting_address, op.terms.voting_address);
+    assert_eq!(unchanged.terms.owner_address, op.terms.owner_address);
+    assert_eq!(unchanged.terms.service, op.terms.service);
+    let fresh = f.preview_update(keep(&hash)).unwrap();
+    assert_eq!(fresh.payout_changes, Some(true));
+    assert_eq!(
+        fresh.terms.payout_address, "",
+        "issued only at the update (D29)"
+    );
+    let operator = f
+        .preview_update(UpdateRegistrarRequest {
+            operator: KeepOr::Set(OperatorChoice::NextUnused),
+            ..keep(&hash)
+        })
+        .unwrap();
+    assert!(operator.operator_changes && operator.pose_bans);
+    assert_eq!(operator.terms.operator_index, Some(1), "the next unused");
+
+    let req = UpdateRegistrarRequest {
+        voting: KeepOr::Set(VotingChoice::Keychain { index: 5 }),
+        payout: same_payout,
+        ..keep(&hash)
+    };
+    let preview = f.preview_update(req.clone()).unwrap();
+    assert!(preview.voting_changes && !preview.operator_changes && !preview.pose_bans);
+    let short = f.update(req.clone(), f.grant(preview.fee - 1)).unwrap_err();
+    assert_eq!(send_code(&short), "send.grant_exceeded");
+    assert_eq!(f.lib.sent().len(), 1, "nothing signed");
+
+    let up = f.update(req, f.grant(preview.fee)).unwrap();
+    assert_eq!(up.kind, ProTxOperationKind::UpdateRegistrar);
+    assert_eq!(up.state, ProTxOperationState::Sent);
+    assert_eq!(up.pro_tx_hash.as_deref(), Some(hash.as_str()));
+    assert_eq!(up.fee, preview.fee);
+    let tx = f.lib.sent().pop().unwrap();
+    assert_eq!(up.txid, Some(tx.txid().to_string()));
+    assert!(
+        *f.lib.saved_first.lock().unwrap().last().unwrap(),
+        "the row was durable first"
+    );
+    assert_eq!((tx.version, tx.lock_time), (3, 0), "D25");
+    let p = up_payload(&tx);
+    assert_eq!(p.version, 2);
+    assert_eq!(p.pro_tx_hash, reg.txid());
+    assert_eq!(p.operator_public_key, rp.operator_public_key, "kept");
+    assert_eq!(p.script_payout, rp.script_payout);
+    assert_ne!(p.voting_key_hash, rp.voting_key_hash);
+    assert_eq!(
+        address_of(p.voting_key_hash.to_byte_array()),
+        up.terms.voting_address
+    );
+    assert_eq!(up.terms.voting_index, Some(5));
+    assert_eq!(p.payload_sig.len(), 65);
+    dw_protx::rules::check_update_registrar(&tx, p, rp.owner_key_hash.to_byte_array(), None, &[])
+        .expect("signed by the owner key over the payload hash");
+    let row = f.rows().into_iter().find(|r| r.id == up.id).unwrap();
+    assert_eq!(row.kind, "update_registrar");
+    assert!(!row.locked_collateral);
+}
+
+/// D12: with no keychain owner key, an attached `owner` key matched to the
+/// ProRegTx signs, and only then.
+#[test]
+fn mg04_update_registrar_signs_with_an_attached_owner_key() {
+    let f = fx(Library::Accept);
+    let (reg, _) = f.registered();
+    // The same masternode, registered elsewhere with an owner key the
+    // keychain doesn't have.
+    let mut other = reg.clone();
+    if let Some(TransactionPayload::ProviderRegistrationPayloadType(p)) =
+        &mut other.special_transaction_payload
+    {
+        p.owner_key_hash = dashcore::PubkeyHash::from_byte_array(key_id_of(OWNER_KEY));
+        p.service_address = "1.2.3.9:19899".parse().unwrap();
+    }
+    f.confirm(other.clone(), 8);
+    let keys = f
+        .engine
+        .block_on(f.mn().registration_keys(f.wallet, MasternodeType::Regular))
+        .unwrap();
+    let mut entry = entry_of(&other);
+    entry.voting_key_id = [0x42; 20];
+    hex::decode_to_slice(
+        keys.operator.public_key.unwrap(),
+        &mut entry.operator_public_key,
+    )
+    .unwrap();
+    *f.seam.list.lock().unwrap() = Some(vec![entry_of(&reg), entry]);
+    let hash = other.txid().to_string();
+
+    let e = f.preview_update(keep(&hash)).unwrap_err();
+    assert_eq!(e.code(), "masternodes.no_owner_key");
+    let service = f.session.manager().unwrap().tracked_masternodes_service();
+    service
+        .track_blocking(other.txid().to_byte_array(), None)
+        .unwrap();
+    drop(service);
+    let attach = |secret: [u8; 32], role| {
+        f.engine.block_on(f.mn().attach_key(
+            hash.clone(),
+            role,
+            Zeroizing::new(hex::encode(secret)),
+        ))
+    };
+    // Another key isn't this masternode's owner key (MG-03 §4).
+    let e = attach([0x43; 32], AttachedKeyRole::Owner).unwrap_err();
+    assert_eq!(e.code(), "masternodes.key_mismatch");
+    let e = f.preview_update(keep(&hash)).unwrap_err();
+    assert_eq!(e.code(), "masternodes.no_owner_key");
+    assert_eq!(
+        attach(OWNER_KEY, AttachedKeyRole::Owner).unwrap(),
+        KeyCheck::Matched
+    );
+
+    let preview = f.preview_update(keep(&hash)).unwrap();
+    assert_eq!(preview.owner_key, OwnerKeySource::Attached);
+    assert_eq!(preview.terms.owner_index, None);
+    assert_eq!(preview.payout_changes, Some(true));
+    let up = f.update(keep(&hash), f.grant(preview.fee)).unwrap();
+    let tx = f.lib.sent().pop().unwrap();
+    let p = up_payload(&tx);
+    assert_eq!(p.pro_tx_hash, other.txid());
+    assert_eq!(p.voting_key_hash.to_byte_array(), [0x42; 20], "kept");
+    dw_protx::rules::check_update_registrar(&tx, p, key_id_of(OWNER_KEY), None, &[])
+        .expect("signed by the attached owner key");
+    assert_eq!(up.terms.owner_address, address_of(key_id_of(OWNER_KEY)));
+}
+
+/// D33, §6: offline checks first, then the list, the masternode, the owner
+/// key, Core's rules.
+#[test]
+fn mg04_update_registrar_requests_are_refused_in_order() {
+    let f = fx(Library::Accept);
+    let (reg, op) = f.registered();
+    let hash = op.pro_tx_hash.clone().unwrap();
+    let preview = |req: UpdateRegistrarRequest| f.preview_update(req).unwrap_err();
+
+    assert_eq!(preview(keep("zz")).code(), "invalid_argument");
+    let secret = preview(UpdateRegistrarRequest {
+        operator: KeepOr::Set(OperatorChoice::Given {
+            public_key: "ab".repeat(32),
+        }),
+        ..keep(&hash)
+    });
+    assert!(
+        secret.to_string().contains("secret") && !secret.to_string().contains(&"ab".repeat(32))
+    );
+    let voting = preview(UpdateRegistrarRequest {
+        voting: KeepOr::Set(VotingChoice::Address {
+            address: "not an address".into(),
+        }),
+        ..keep(&hash)
+    });
+    assert_eq!(voting.code(), "invalid_argument");
+    let payout = preview(UpdateRegistrarRequest {
+        payout: PayoutChoice::Address {
+            address: "1.2.3.4".into(),
+        },
+        ..keep(&hash)
+    });
+    assert_eq!(payout.code(), "invalid_argument");
+
+    *f.seam.list.lock().unwrap() = None;
+    assert_eq!(preview(keep(&hash)).code(), "masternodes.list_unavailable");
+    *f.seam.list.lock().unwrap() = Some(Vec::new());
+    assert_eq!(preview(keep(&hash)).code(), "masternodes.not_found");
+
+    // Listed, but no ProRegTx of it in a loaded wallet: no owner key id.
+    let mut stranger = entry_of(&reg);
+    stranger.pro_tx_hash = [0x99; 32];
+    let mut shared = entry_of(&reg);
+    shared.has_extended_net_info = true;
+    *f.seam.list.lock().unwrap() = Some(vec![stranger.clone(), shared]);
+    assert_eq!(
+        preview(keep(&"99".repeat(32))).code(),
+        "masternodes.no_owner_key"
+    );
+    let e = preview(keep(&hash));
+    assert!(
+        matches!(&e, MasternodesError::Unsupported { feature, .. } if feature == "shared_masternodes"),
+        "{e:?}"
+    );
+
+    // Core's rules: another masternode's operator key, the owner's address
+    // as the payee.
+    let keys = f
+        .engine
+        .block_on(f.mn().registration_keys(f.wallet, MasternodeType::Regular))
+        .unwrap();
+    let mut operator = [0u8; 48];
+    hex::decode_to_slice(keys.operator.public_key.as_ref().unwrap(), &mut operator).unwrap();
+    stranger.operator_public_key = operator;
+    *f.seam.list.lock().unwrap() = Some(vec![stranger, entry_of(&reg)]);
+    let dup = preview(UpdateRegistrarRequest {
+        operator: KeepOr::Set(OperatorChoice::Given {
+            public_key: hex::encode(operator),
+        }),
+        ..keep(&hash)
+    });
+    assert!(
+        matches!(&dup, MasternodesError::ProtxRefused { reason } if reason == "bad-protx-dup-key"),
+        "{dup:?}"
+    );
+    let reuse = preview(UpdateRegistrarRequest {
+        payout: PayoutChoice::Address {
+            address: op.terms.owner_address.clone(),
+        },
+        ..keep(&hash)
+    });
+    assert!(
+        matches!(&reuse, MasternodesError::ProtxRefused { reason } if reason == "bad-protx-payee-reuse"),
+        "{reuse:?}"
+    );
+    // A grant of another purpose signs nothing.
+    let spend = f
+        .session
+        .vault()
+        .authorize(
+            GrantPurpose::Spend { max_duffs: COIN },
+            Some(&f.wallet.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    let e = f.update(keep(&hash), spend).unwrap_err();
+    assert_eq!(e.code(), "platform.grant_invalid");
+    assert_eq!(f.lib.sent().len(), 1, "only the registration");
+    assert!(f.rows().iter().all(|r| r.kind == "registration"));
 }

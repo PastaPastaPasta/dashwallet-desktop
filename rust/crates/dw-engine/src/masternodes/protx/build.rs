@@ -7,7 +7,7 @@
 //! `MasternodeOwner` signer. Nothing here signs as operator.
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -28,16 +28,17 @@ use key_wallet::DerivationPath;
 use key_wallet::Utxo;
 use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 use key_wallet::wallet::managed_wallet_info::fee::FeeRate;
+use platform_wallet::masternode::MasternodeListSummary;
 use platform_wallet::wallet::platform_wallet::PlatformWallet;
 
 use super::super::aggregate::OwnedMasternode;
 use super::super::follow::{ListView, read_list, wallet_masternodes};
 use super::super::protx_records::{
-    CollateralChoice, EvonodeTerms, OperatorChoice, PayoutChoice, PlatformFacts,
+    CollateralChoice, CollateralKind, EvonodeTerms, OperatorChoice, PayoutChoice, PlatformFacts,
     PlatformNodeChoice, ProTxTerms, RegistrationRequest, VotingChoice,
 };
 use super::super::records::MasternodeType;
-use super::super::{MasternodesError, outpoint_string};
+use super::super::{MasternodesError, outpoint_string, parse_pro_tx_hash};
 use super::keys::{InUse, parse_outpoint};
 use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
 use crate::coins::{CoinFence, CoinSnapshot, own_address_info, read_coins, wallet_owns};
@@ -301,7 +302,12 @@ fn preview_script() -> ScriptBuf {
 /// What the wallet, the synced list and its operations hold (D5, D13, D23).
 pub(crate) struct Context {
     pub listed: Vec<ListedMasternode>,
+    /// The synced list's entries, which a ProUpRegTx keeps keys from (D10).
+    pub entries: Vec<MasternodeListSummary>,
     pub used: InUse,
+    /// The collateral scripts of the wallet's `External` registrations by
+    /// ProTx hash (wire order): a coin the wallet doesn't hold (D40).
+    pub external_collaterals: HashMap<[u8; 32], ScriptBuf>,
 }
 
 /// Where a resolved registration's collateral is.
@@ -357,7 +363,7 @@ impl Registration {
     }
 }
 
-fn refused(reason: rules::Reject) -> MasternodesError {
+pub(crate) fn refused(reason: rules::Reject) -> MasternodesError {
     MasternodesError::ProtxRefused {
         reason: reason.into(),
     }
@@ -498,6 +504,7 @@ impl NetworkSession {
         let w = wallet.to_string();
         let rows = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
         let mut used = InUse::default();
+        let mut external_collaterals = HashMap::new();
         for o in &owned {
             let r = &o.record;
             used.owner.extend(r.owner_key_hash);
@@ -512,13 +519,25 @@ impl NetworkSession {
             used.node_ids.extend(e.platform_node_id);
         }
         for row in &rows {
-            if let Ok(terms) = serde_json::from_str::<ProTxTerms>(&row.terms) {
-                used.add_terms(&terms, network);
+            let Ok(terms) = serde_json::from_str::<ProTxTerms>(&row.terms) else {
+                continue;
+            };
+            used.add_terms(&terms, network);
+            if let (Some(CollateralKind::External), Some(address), Some(hash)) = (
+                terms.collateral,
+                terms.collateral_address.as_deref(),
+                row.pro_tx_hash.as_deref(),
+            ) && let (Ok(address), Ok(hash)) =
+                (l1_address(address, network), parse_pro_tx_hash(hash))
+            {
+                external_collaterals.insert(hash, address.script_pubkey());
             }
         }
         Ok(Context {
             listed: listed(&list, &owned),
+            entries: list.entries,
             used,
+            external_collaterals,
         })
     }
 
@@ -690,7 +709,11 @@ impl NetworkSession {
     }
 
     /// A fresh receive address, never handed out before (D2's addresses).
-    async fn issued(&self, wallet: WalletId, label: &str) -> Result<Address, MasternodesError> {
+    pub(crate) async fn issued(
+        &self,
+        wallet: WalletId,
+        label: &str,
+    ) -> Result<Address, MasternodesError> {
         let info = self.issue_address(wallet, Some(label.into())).await?;
         Address::from_str(&info.address)
             .ok()

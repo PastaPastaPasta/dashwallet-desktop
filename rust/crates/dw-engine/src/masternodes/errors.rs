@@ -76,6 +76,10 @@ pub enum MasternodesError {
     /// (MG-04 D13).
     #[error("no unused {role} key")]
     KeysExhausted { role: String },
+    /// ProUpRegTx: no keychain owner key 0–19 nor attached `owner` key has
+    /// the masternode's owner key id, or the id isn't known (MG-04 D12).
+    #[error("no owner key of this masternode")]
+    NoOwnerKey,
     /// A lease refused (MG-05 D12).
     #[error(transparent)]
     Platform(#[from] PlatformError),
@@ -103,6 +107,7 @@ impl MasternodesError {
             Self::OperationState { .. } => "masternodes.operation_state",
             Self::InFlight => "masternodes.in_flight",
             Self::KeysExhausted { .. } => "masternodes.keys_exhausted",
+            Self::NoOwnerKey => "masternodes.no_owner_key",
             Self::Platform(e) => e.code(),
             Self::Engine(e) => e.code(),
         }

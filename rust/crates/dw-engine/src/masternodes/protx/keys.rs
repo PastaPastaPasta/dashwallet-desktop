@@ -202,6 +202,23 @@ impl NetworkSession {
         Err(exhausted("owner"))
     }
 
+    /// The keychain owner index 0–19 whose key id is `key_id` (D12).
+    pub(crate) async fn keychain_owner(
+        &self,
+        wallet: WalletId,
+        key_id: [u8; 20],
+    ) -> Result<Option<u32>, MasternodesError> {
+        let network = self.network.core_network();
+        let keys = self
+            .keys_of(wallet, MasternodeKeyRole::Owner, 0, KEY_INDEXES)
+            .await?;
+        Ok(keys
+            .iter()
+            .filter_map(|k| secp_pick(k, network))
+            .find(|p| p.key_id == key_id)
+            .and_then(|p| p.index))
+    }
+
     pub(crate) async fn pick_voting(
         &self,
         wallet: WalletId,

@@ -22,10 +22,10 @@ use std::sync::Arc;
 
 pub use errors::MasternodesError;
 pub use protx_records::{
-    CollateralChoice, CollateralKind, EvonodeTerms, KeyPick, OperatorChoice, PayoutChoice,
-    PlatformFacts, PlatformNodeChoice, ProTxKeys, ProTxOperation, ProTxOperationKind,
-    ProTxOperationState, ProTxTerms, RegistrationPreview, RegistrationRequest, SignRequest,
-    VotingChoice,
+    CollateralChoice, CollateralKind, EvonodeTerms, KeepOr, KeyPick, OperatorChoice,
+    OwnerKeySource, PayoutChoice, PlatformFacts, PlatformNodeChoice, ProTxKeys, ProTxOperation,
+    ProTxOperationKind, ProTxOperationState, ProTxTerms, RegistrationPreview, RegistrationRequest,
+    SignRequest, UpdateRegistrarPreview, UpdateRegistrarRequest, VotingChoice,
 };
 pub use records::{
     AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, KeyCheck,
