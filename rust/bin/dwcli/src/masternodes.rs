@@ -193,14 +193,13 @@ impl From<MasternodesError> for Failure {
     }
 }
 
-/// The governance facade's codes, worded without the label, identity or
-/// proTxHash given (D32).
+/// The governance facade's codes. A contest's label and a contender's
+/// identity are public Platform data, quoted as dw-app quotes them (MG-07
+/// D19); an invalid argument, which may be a proTxHash, is worded without
+/// it (D32).
 impl From<GovernanceError> for Failure {
     fn from(e: GovernanceError) -> Self {
         let message = match &e {
-            GovernanceError::ContestNotFound { .. } => "no DPNS contest for the label".into(),
-            GovernanceError::ContestClosed { .. } => "the contest is closed".into(),
-            GovernanceError::NotAContender { .. } => "the identity is not a contender".into(),
             GovernanceError::Engine(EngineError::InvalidArgument(_)) => {
                 "the label, --choice or a --masternode is invalid".into()
             }
@@ -402,5 +401,32 @@ pub fn report(result: Result<Value, Failure>, torn_down: bool) -> Result<(), Str
             print_line(&error_line(&f.code, &f.message));
             Err(f.message)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn governance_failures_quote_the_label_and_identity_only() {
+        let label = |e| Failure::from(e).message;
+        let closed = GovernanceError::ContestClosed {
+            label: "c0ntest".into(),
+        };
+        assert_eq!(label(closed), "the contest for c0ntest is closed");
+        let missing = GovernanceError::ContestNotFound {
+            label: "c0ntest".into(),
+        };
+        assert_eq!(label(missing), "no contest for c0ntest");
+        let id = "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P";
+        let other = GovernanceError::NotAContender {
+            identity: id.into(),
+        };
+        assert_eq!(label(other), format!("{id} is not a contender"));
+        let invalid = EngineError::InvalidArgument(format!("{:?} is not hex", "ab".repeat(32)));
+        let f = Failure::from(GovernanceError::Engine(invalid));
+        assert_eq!(f.code, "invalid_argument");
+        assert!(!f.message.contains("abab"), "{}", f.message);
     }
 }
