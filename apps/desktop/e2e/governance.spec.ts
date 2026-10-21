@@ -88,7 +88,7 @@ test("states: syncing, failed, no voting key, watch-only", async ({ page }) => {
   await expect(page.getByTestId("governance-browsing-only")).toBeVisible();
   await expect(page.getByTestId("proposal-vote")).toBeDisabled();
   await open(page, "governance-watch-only");
-  await expect(page.getByTestId("governance-watch-only")).toBeVisible();
+  await expect(page.getByTestId("governance-notice-watch-only")).toBeVisible();
   await expect(page.getByTestId("governance-create")).toBeDisabled();
   await expect(page.getByTestId("proposal-vote")).toBeDisabled();
 });

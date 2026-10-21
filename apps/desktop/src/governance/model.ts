@@ -418,6 +418,9 @@ export function selectionNote(rows: NodeRowView[], checked: ReadonlySet<string>)
   return `${plural(picked.length, "masternode")} · weight ${weight} · no fee`;
 }
 
+/** The engine's refusal of a PoSe-banned masternode's vote (`VoteRejection::Banned`, Core's wording). */
+export const BANNED_REJECTION = "masternode_not_found";
+
 const REJECTED: Record<string, string> = {
   unknown_masternode: "This masternode isn't in the current masternode list.",
   collateral_unresolved: "Its collateral isn't found yet, so it can't vote from this wallet yet.",
@@ -433,7 +436,7 @@ const REJECTED: Record<string, string> = {
   bad_signature: "The vote's signature didn't check out.",
   unknown_voting_key: "Its voting key changed, so the key in this wallet no longer matches.",
   wrong_voting_key: "Its voting key changed, so the key in this wallet no longer matches.",
-  masternode_not_found: "A banned masternode can't vote.",
+  [BANNED_REJECTION]: "A banned masternode can't vote.",
   obsolete: "A newer vote from this masternode is already known.",
   same_timestamp: "A vote with the same time is already known. Try again in a second.",
   too_often: "The network accepts one change per masternode per hour.",
@@ -660,7 +663,7 @@ export function fieldText(field: ProposalFieldName, chainName: string): string {
     case "name":
       return "Use 1 to 40 lower case letters, digits, - and _.";
     case "url":
-      return "Enter the page's address, like https://www.dashcentral.org/p/…";
+      return "Enter the page's address, starting with https://.";
     case "payment_address":
       return `Enter a Dash address on ${chainName}.`;
     case "payment_amount":

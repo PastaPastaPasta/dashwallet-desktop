@@ -184,7 +184,7 @@ export function CreateProposalSheet({
         </label>
         <label className={`mg-field mg-span ${errors.url ? "has-error" : ""}`}>
           Link
-          <input data-testid="create-url" value={url} placeholder="https://www.dashcentral.org/p/…" onChange={(e) => setUrl(e.target.value)} {...fieldProps("url")} />
+          <input data-testid="create-url" value={url} placeholder="https://" onChange={(e) => setUrl(e.target.value)} {...fieldProps("url")} />
           <span className="mg-field-help">{GovText.linkHelp}</span>
           {fieldError("url")}
           {fieldError("payload")}

@@ -8,6 +8,7 @@
 // `governance` as the engine's notifier would.
 
 import type { AppError } from "../api/generated/commands";
+import { BANNED_REJECTION } from "../governance/model";
 import type { GovernanceInfo } from "../api/generated/GovernanceInfo";
 import type { GovernanceSyncState } from "../api/generated/GovernanceSyncState";
 import type { MyProposal } from "../api/generated/MyProposal";
@@ -356,7 +357,7 @@ export function governanceHandlers({
         const refused = (rejected: string): VoteCast => ({ proTxHash, hash: null, peers: 0, rejected });
         if (!m) return refused("unknown_masternode");
         if (g.refuse[proTxHash]) return refused(g.refuse[proTxHash]);
-        if (!m.valid) return refused("masternode_not_found");
+        if (!m.valid) return refused(BANNED_REJECTION);
         const before = seen[proTxHash];
         if (before && NOW - before.time < 3600) return refused("too_often");
         seen[proTxHash] = { outcome, time: NOW };

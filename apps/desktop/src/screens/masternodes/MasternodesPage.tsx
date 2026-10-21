@@ -80,7 +80,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
       <>
         <ClockCard info={info.data!} shown={shown} synced={state?.kind === "ready"} />
         {wallet.watchOnly && (
-          <Notice tone="info" testId="governance-watch-only">
+          <Notice tone="info" testId="governance-notice-watch-only">
             <strong>{GovText.watchOnly}</strong> {GovText.watchOnlyText}
           </Notice>
         )}
