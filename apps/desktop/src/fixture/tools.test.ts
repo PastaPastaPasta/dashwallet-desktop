@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as cmd from "../api/generated/commands";
 import type { AppError } from "../api/generated/commands";
 import { installFixture, type FixtureHandle } from "./index";
-import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W } from "./scenarios";
+import { dashpayInfo, type DashPayInfoState } from "../tools/dashpayInfo";
+import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W, type ScenarioName } from "./scenarios";
 import { FIXTURE_PSBT } from "./tools";
 
 const PASS = { kind: "passphrase", passphrase: FIXTURE_PASSPHRASE } as const;
@@ -30,6 +31,55 @@ describe("fixture Information", () => {
     expect(info).toMatchObject({ mempoolTxCount: null, mempoolUsageBytes: null, connectionsOut: 8, network: { dirName: "testnet" } });
     expect(info.tipHeight).toBe((await cmd.syncStatus()).tipHeight);
     expect(await cmd.warnings()).toEqual([]);
+  });
+});
+
+describe("fixture DashPay card (DP6-03)", () => {
+  /** The card's state for a scenario, read as the screen reads it. */
+  async function cardState(scenario: ScenarioName) {
+    clearMocks();
+    installFixture({ scenario });
+    const [status, sync, trustedOnly] = await Promise.all([cmd.dashpayStatus(W), cmd.dashpaySyncStatus(W), cmd.trustedQuorumsOnly()]);
+    return dashpayInfo({ noWallet: false, status, sync, syncError: null, quorumSource: undefined, trustedOnly, now: 0 }).state;
+  }
+
+  it("each state has its scenario", async () => {
+    const expected: [ScenarioName, DashPayInfoState][] = [
+      ["dashpay-info-spv", "running"],
+      ["dashpay-registered", "degraded"],
+      ["dashpay-info-fallback", "degraded"],
+      ["dashpay-info-trusted-only", "degraded"],
+      ["dashpay-info-pass-failed", "failed"],
+      ["dashpay-look-failed", "failed"],
+      ["dashpay-starting", "starting"],
+      ["dashpay-identity-unsettled", "starting"],
+      ["dashpay-not-started", "notStarted"],
+      ["funded", "notSetUp"],
+      ["dashpay-waiting-for-sync", "notSetUp"],
+      ["dashpay-watch-only", "watchOnly"],
+      ["dashpay-info-stopped", "running"],
+    ];
+    for (const [scenario, state] of expected) expect(await cardState(scenario), scenario).toBe(state);
+  });
+
+  it("reports the engine's fields: the bring-up, its queue, the loops, the session's quorum source", async () => {
+    expect(await cmd.dashpaySyncStatus(W)).toMatchObject({ startup: "noIdentity", lastPass: null, pendingContactCrypto: 0, quorumSource: "trusted" });
+    expect(await cmd.quorumSource()).toBe("trusted");
+    expect(await cmd.trustedQuorumsOnly()).toBe(false);
+    const loops = (await cmd.dashpaySyncStatus(W)).loops;
+    expect(loops.map((l) => [l.syncLoop, l.running])).toEqual([
+      ["identitySync", true],
+      ["dashPaySync", true],
+      ["dpnsSync", true],
+    ]);
+    // No bring-up: nothing ran, nothing runs.
+    clearMocks();
+    installFixture({ scenario: "dashpay-not-started" });
+    expect((await cmd.dashpaySyncStatus(W)).loops.every((l) => !l.running && l.lastRunAt === null)).toBe(true);
+    // SPV stopped: the loops stop, and the card holds Sync now.
+    clearMocks();
+    installFixture({ scenario: "dashpay-info-stopped" });
+    expect((await cmd.dashpaySyncStatus(W)).loops.every((l) => !l.running && l.lastRunAt !== null)).toBe(true);
   });
 });
 

@@ -1,5 +1,6 @@
 // Tools ▸ Information (QT-143, QT-144, QT-040): dash-qt's Information tab over `nodeInfo`, read
-// again on every sync status change (D4); the warning banner shows the most severe warning.
+// again on every sync status change (D4); the warning banner shows the most severe warning. The
+// DashPay card is DP6-03's.
 
 import { useState } from "react";
 import { useBackend } from "../../api/queries";
@@ -9,6 +10,7 @@ import { LoadingState } from "../../components/history";
 import { useModel } from "../../onboarding/model";
 import { informationSections, InformationModel } from "../../tools/information";
 import { NotYet, Outcome, ToolCard, useReloadOnSync } from "./common";
+import { DashPayInfoCard } from "./DashPayInfo";
 
 export function InformationTab() {
   const b = useBackend();
@@ -37,9 +39,7 @@ export function InformationTab() {
           </dl>
         </ToolCard>
       ))}
-      <NotYet title="DashPay" owner="DP6-03" testId="information-dashpay-not-yet">
-        The DashPay sync loops, the last pass and the quorum source.
-      </NotYet>
+      <DashPayInfoCard />
       <NotYet title="Network traffic" owner="M6" testId="information-traffic-not-yet">
         The SPV client reports no byte counters yet.
       </NotYet>

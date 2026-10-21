@@ -24,6 +24,8 @@ export const dashpayKeys = {
   nameCredits: (walletId: string, identity: string, label: string) => ["dashpay", "nameCredits", walletId, identity, label] as const,
   /** Pure and offline (`check_username`): no signal changes it, so it is not under `dashpay`. */
   usernameCheck: (label: string) => ["usernameCheck", label] as const,
+  /** Tools ▸ Information's DashPay card (DP6-03). */
+  syncInfo: (walletId: string) => ["dashpay", "syncInfo", walletId] as const,
 };
 
 /** DP1-09 D15: a running registration's `waiting` changes without a Platform signal, so its
