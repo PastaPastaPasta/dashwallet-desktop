@@ -652,6 +652,17 @@ impl Masternodes {
             s.require_wallet(&wallet)?;
             let _flight = s.claim_operation(wallet, &operation)?;
             let row = s.op_row(wallet, &operation).await?;
+            // An update resends only while nothing later on its masternode
+            // is or may go out, held against a new update (D43).
+            let _updating = if row.kind == "update_registrar" {
+                let updating = s.masternodes.update_lock().await;
+                if let Some(later) = s.later_operation(&row).await? {
+                    return Err(MasternodesError::UpdateSuperseded { operation: later });
+                }
+                Some(updating)
+            } else {
+                None
+            };
             let state = s.op_state(wallet, &row).await?;
             if !matches!(
                 state,

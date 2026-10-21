@@ -1716,3 +1716,109 @@ fn mg04_a_keep_waits_until_the_list_shows_the_last_update() {
     assert!(!p.voting_changes && !p.operator_changes, "{p:?}");
     assert_eq!(p.terms.voting_address, first.terms.voting_address);
 }
+
+/// D43: a `not_sent` update can still go out, so it blocks a keep; an
+/// update saved after it blocks its resend, which would restore what the
+/// later one replaced.
+#[test]
+fn mg04_a_resendable_update_blocks_a_keep_and_a_later_update_blocks_its_resend() {
+    let f = fx(Library::Accept);
+    let (_, op) = f.registered();
+    let hash = op.pro_tx_hash.clone().unwrap();
+    let voting = |index| KeepOr::Set(VotingChoice::Keychain { index });
+    *f.lib.mode.lock().unwrap() = Library::NoPeers;
+    let first = f
+        .update(
+            UpdateRegistrarRequest {
+                voting: voting(5),
+                ..keep(&hash)
+            },
+            f.grant(COIN),
+        )
+        .unwrap();
+    assert_eq!(first.state, ProTxOperationState::NotSent);
+    f.credit(3, COIN);
+    let e = f.preview_update(keep(&hash)).unwrap_err();
+    assert!(
+        matches!(&e, MasternodesError::UpdatePending { operation } if *operation == first.id),
+        "{e:?}"
+    );
+
+    *f.lib.mode.lock().unwrap() = Library::Accept;
+    let second = f
+        .update(
+            UpdateRegistrarRequest {
+                operator: KeepOr::Set(OperatorChoice::Keychain { index: 0 }),
+                voting: voting(6),
+                ..keep(&hash)
+            },
+            f.grant(COIN),
+        )
+        .unwrap();
+    assert_eq!(second.state, ProTxOperationState::Sent);
+    let handed = f.lib.sent().len();
+    let e = f
+        .engine
+        .block_on(
+            f.mn()
+                .resend_operation(f.wallet, first.id.clone(), f.grant(COIN)),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&e, MasternodesError::UpdateSuperseded { operation } if *operation == second.id),
+        "{e:?}"
+    );
+    assert_eq!(e.code(), "masternodes.update_superseded");
+    assert_eq!(f.lib.sent().len(), handed, "nothing handed off");
+}
+
+/// D43: an attached owner key updates a masternode from any loaded wallet,
+/// so another loaded wallet's unlisted update blocks a keep too.
+#[test]
+fn mg04_a_keep_waits_for_another_loaded_wallets_update() {
+    let f = fx(Library::Accept);
+    let (_, op) = f.registered();
+    let hash = op.pro_tx_hash.clone().unwrap();
+    let first = f
+        .update(
+            UpdateRegistrarRequest {
+                voting: KeepOr::Set(VotingChoice::Keychain { index: 5 }),
+                ..keep(&hash)
+            },
+            f.grant(COIN),
+        )
+        .unwrap();
+    // This wallet's update is in a block the list has passed.
+    let tx = f.lib.sent().pop().unwrap();
+    f.confirm(tx.clone(), 50);
+    let mut entry = f.seam.list.lock().unwrap().as_ref().unwrap()[0].clone();
+    entry.voting_key_id = up_payload(&tx).voting_key_hash.to_byte_array();
+    *f.seam.list.lock().unwrap() = Some(vec![entry]);
+    f.credit(3, COIN);
+    f.preview_update(keep(&hash)).unwrap();
+
+    let other = f
+        .engine
+        .block_on(f.session.import_wallet(
+            Zeroizing::new(b"zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong".to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions {
+                birth_height: Some(0),
+                core_compat: false,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    let mut row = f.rows().into_iter().find(|r| r.id == first.id).unwrap();
+    row.id = "other-wallets-update".into();
+    row.sent_at = None;
+    row.last_error = None;
+    f.db()
+        .insert_masternode_op_durable(&other.to_string(), &row)
+        .unwrap();
+    let e = f.preview_update(keep(&hash)).unwrap_err();
+    assert!(
+        matches!(&e, MasternodesError::UpdatePending { operation } if operation == "other-wallets-update"),
+        "{e:?}"
+    );
+}

@@ -740,6 +740,7 @@ fn error_codes_match_the_contract() {
             MasternodesError::KeysExhausted { role: hash() },
             MasternodesError::NoOwnerKey,
             MasternodesError::UpdatePending { operation: hash() },
+            MasternodesError::UpdateSuperseded { operation: hash() },
         ],
         MasternodesError::code,
     );

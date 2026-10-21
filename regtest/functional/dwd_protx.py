@@ -290,6 +290,17 @@ class DwdProtx(DwdMasternodes):
         hash_f = f["pro_tx_hash"]
         payout_f = f["terms"]["payout_address"]
 
+        def mn_unless_pending(*args):
+            """`dw.mn` on F, or None while D43 refuses a kept key: the wallet's history shows an
+            update in a block the list hasn't reached yet (masternodes.update_pending)."""
+            p = dw.run("mn", "--sync-height", str(h), "--sync-timeout", "600", "update-registrar",
+                       hash_f, *args, check=False)
+            line = json.loads(p.stdout.strip().splitlines()[-1])
+            if not line["ok"] and line["error"]["code"] == "masternodes.update_pending":
+                return None
+            assert line["ok"] and p.returncode == 0, (line, p.stderr[-2000:])
+            return line["result"]
+
         def kept_preview(*args):
             """The preview once the wallet's list shows Core's current keys of F: a kept key is
             the list's (D10, D43), and the list may trail the tip by a block."""
@@ -298,17 +309,24 @@ class DwdProtx(DwdMasternodes):
                     (("voting_address", "votingAddress", "--voting"),
                      ("operator_public_key", "pubKeyOperator", "--operator"))
                     if not any(a.startswith(flag) for a in args)]
+            p = None
             for _ in range(30):
-                p = dw.mn(h, "update-registrar", hash_f, "--preview", *args)
-                if all(p["terms"][field] == value for field, value in kept):
+                p = mn_unless_pending("--preview", *args)
+                if p is not None and all(p["terms"][field] == value for field, value in kept):
                     return p
                 time.sleep(2)
-            raise AssertionError(f"the wallet's list never showed F's keys: {p['terms']}")
+            raise AssertionError(f"the wallet's list never showed F's keys: {p and p['terms']}")
 
         def update(*args):
             self.start_miner()
             try:
-                u = dw.mn(h, "update-registrar", hash_f, *args)
+                for _ in range(30):
+                    u = mn_unless_pending(*args)
+                    if u is not None:
+                        break
+                    time.sleep(2)
+                else:
+                    raise AssertionError("the update stayed refused as update_pending")
             finally:
                 self.stop_miner()
             assert handed_off(u)

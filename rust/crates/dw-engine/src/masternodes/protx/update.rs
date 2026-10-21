@@ -10,6 +10,7 @@ use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::blockdata::transaction::special_transaction::provider_update_registrar::ProviderUpdateRegistrarPayload;
 use dashcore::hashes::Hash;
 use dashcore::{Address, Network, PubkeyHash, ScriptBuf, Transaction, TxOut, Txid};
+use dw_appdb::MasternodeOpRow;
 use dw_protx::payloads;
 use dw_protx::rules;
 use dw_vault::{OwnerKey, VaultSigner};
@@ -99,28 +100,88 @@ fn key_address(key_id: [u8; 20], network: Network) -> Address {
 }
 
 impl NetworkSession {
-    /// The id of an operation of the wallet on masternode `hash` (wire
-    /// order) that the synced list at `list_height` may not show yet:
-    /// signed or sent, or confirmed above the list's height (D43).
+    /// Every loaded wallet's operations on masternode `shown` (display
+    /// order), newest first, with their states: an attached owner key
+    /// updates a masternode from any loaded wallet (D24, D43).
+    async fn ops_on(
+        &self,
+        shown: &str,
+    ) -> Result<Vec<(MasternodeOpRow, ProTxOperationState)>, MasternodesError> {
+        let mut out = Vec::new();
+        for id in self.manager()?.wallet_ids().await {
+            let wallet = WalletId(id);
+            let w = wallet.to_string();
+            let rows = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
+            let rows: Vec<_> = rows
+                .into_iter()
+                .filter(|r| r.pro_tx_hash.as_deref() == Some(shown))
+                .collect();
+            if rows.is_empty() {
+                continue;
+            }
+            let (history, unspent) = self.op_view(wallet).await?;
+            out.extend(rows.into_iter().map(|r| {
+                let state = state_of(&r, &history, &unspent);
+                (r, state)
+            }));
+        }
+        out.sort_by_key(|a| std::cmp::Reverse(a.0.created_at));
+        Ok(out)
+    }
+
+    /// The id of an operation on masternode `hash` (wire order) that the
+    /// synced list at `list_height` may not show yet: signed, not sent
+    /// (resendable) or sent, or confirmed above the list's height (D43).
     async fn unlisted_operation(
         &self,
-        wallet: WalletId,
         hash: [u8; 32],
         list_height: Option<u32>,
     ) -> Result<Option<String>, MasternodesError> {
-        let shown = display_hex(&hash);
-        let w = wallet.to_string();
-        let rows = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
-        let (history, unspent) = self.op_view(wallet).await?;
-        Ok(rows
+        Ok(self
+            .ops_on(&display_hex(&hash))
+            .await?
             .into_iter()
-            .filter(|r| r.pro_tx_hash.as_deref() == Some(shown.as_str()))
-            .find(|r| match state_of(r, &history, &unspent) {
-                ProTxOperationState::Signed | ProTxOperationState::Sent => true,
-                ProTxOperationState::Confirmed { height } => list_height.is_none_or(|l| l < height),
+            .find(|(_, state)| match state {
+                ProTxOperationState::Signed
+                | ProTxOperationState::NotSent
+                | ProTxOperationState::Sent => true,
+                ProTxOperationState::Confirmed { height } => {
+                    list_height.is_none_or(|l| l < *height)
+                }
                 _ => false,
             })
-            .map(|r| r.id))
+            .map(|(r, _)| r.id))
+    }
+
+    /// The id of another update of the masternode of the update `row`,
+    /// saved no earlier than it (`created_at` is in seconds: two updates of
+    /// one second block each other), that is or may still go out:
+    /// resending `row` after it would restore the keys and payout it
+    /// replaced (D43).
+    pub(crate) async fn later_operation(
+        &self,
+        row: &MasternodeOpRow,
+    ) -> Result<Option<String>, MasternodesError> {
+        let Some(shown) = row.pro_tx_hash.as_deref() else {
+            return Ok(None);
+        };
+        Ok(self
+            .ops_on(shown)
+            .await?
+            .into_iter()
+            .find(|(r, state)| {
+                r.id != row.id
+                    && r.kind == row.kind
+                    && r.created_at >= row.created_at
+                    && matches!(
+                        state,
+                        ProTxOperationState::Signed
+                            | ProTxOperationState::NotSent
+                            | ProTxOperationState::Sent
+                            | ProTxOperationState::Confirmed { .. }
+                    )
+            })
+            .map(|(r, _)| r.id))
     }
 
     /// Resolves `req` against the synced list and the wallet (§4 steps 1,
@@ -165,9 +226,7 @@ impl NetworkSession {
         // A kept key is the list's: refused while one of the wallet's own
         // operations on this masternode may not be in it yet (D43).
         if (req.operator == KeepOr::Keep || req.voting == KeepOr::Keep)
-            && let Some(operation) = self
-                .unlisted_operation(wallet, hash, ctx.list_height)
-                .await?
+            && let Some(operation) = self.unlisted_operation(hash, ctx.list_height).await?
         {
             return Err(MasternodesError::UpdatePending { operation });
         }

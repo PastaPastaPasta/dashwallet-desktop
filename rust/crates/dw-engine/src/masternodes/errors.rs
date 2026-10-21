@@ -87,6 +87,10 @@ pub enum MasternodesError {
         "operation {operation} may change this masternode's keys before the list shows it: give every key"
     )]
     UpdatePending { operation: String },
+    /// Resending a ProUpRegTx that `operation` (its id), saved no earlier,
+    /// would undo: discard that one first (MG-04 D43).
+    #[error("operation {operation} came after this update: resending it would undo that one")]
+    UpdateSuperseded { operation: String },
     /// A lease refused (MG-05 D12).
     #[error(transparent)]
     Platform(#[from] PlatformError),
@@ -116,6 +120,7 @@ impl MasternodesError {
             Self::KeysExhausted { .. } => "masternodes.keys_exhausted",
             Self::NoOwnerKey => "masternodes.no_owner_key",
             Self::UpdatePending { .. } => "masternodes.update_pending",
+            Self::UpdateSuperseded { .. } => "masternodes.update_superseded",
             Self::Platform(e) => e.code(),
             Self::Engine(e) => e.code(),
         }
