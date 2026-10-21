@@ -930,7 +930,18 @@ impl AppDb {
 
     /// Locks an outpoint by the user. Replaces a dust row (released or not).
     pub fn lock_manual(&self, wallet_id: &str, txid: &str, vout: u32, now: u64) -> Result<()> {
-        self.conn().execute(
+        Self::lock_manual_on(&self.conn(), wallet_id, txid, vout, now)
+    }
+
+    /// [`Self::lock_manual`] on `conn`, inside a caller's transaction.
+    pub(crate) fn lock_manual_on(
+        conn: &Connection,
+        wallet_id: &str,
+        txid: &str,
+        vout: u32,
+        now: u64,
+    ) -> Result<()> {
+        conn.execute(
             "INSERT INTO utxo_locks (wallet_id, txid, vout, reason, created_at, released_at)
              VALUES (?1, ?2, ?3, 'manual', ?4, NULL)
              ON CONFLICT (wallet_id, txid, vout)
@@ -956,6 +967,19 @@ impl AppDb {
     pub fn unlock(&self, wallet_id: &str, txid: &str, vout: u32, now: u64) -> Result<bool> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
+        let active = Self::unlock_on(&tx, wallet_id, txid, vout, now)?;
+        tx.commit()?;
+        Ok(active)
+    }
+
+    /// [`Self::unlock`] on `conn`, inside a caller's transaction.
+    pub(crate) fn unlock_on(
+        tx: &Connection,
+        wallet_id: &str,
+        txid: &str,
+        vout: u32,
+        now: u64,
+    ) -> Result<bool> {
         let deleted = tx.execute(
             "DELETE FROM utxo_locks
              WHERE wallet_id = ?1 AND txid = ?2 AND vout = ?3 AND reason = 'manual'",
@@ -967,7 +991,6 @@ impl AppDb {
                AND released_at IS NULL",
             params![wallet_id, txid, vout, now as i64],
         )?;
-        tx.commit()?;
         Ok(deleted + released > 0)
     }
 

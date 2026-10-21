@@ -1,9 +1,9 @@
 # MG masternodes engine contract (`dw-engine` facade)
 
-Contract-Version: 4
+Contract-Version: 5
 
 Status: **draft**, 2026-10-17 (ROADMAP MG-03; version 2 after the Sol r1 review: D23–D28; version 3 after Sol r2: D30–D32; version 4 adds MG-04's ProTx owner flows, §2.3, citing
-[`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
+[`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on; version 5, after MG-04's r2 review, adds `operation` to `masternodes.protx_refused`). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
 the changes in §1 below.
@@ -92,7 +92,9 @@ wallet's masternodes and its saved operations: keys in use (`masternodes.protx_r
 0–19 is in use), a voting address that is the owner key's (`invalid_argument`, MG-04 D52), a listed service
 (`bad-protx-dup-netinfo-entry`), the collateral (`masternodes.collateral_unavailable`, MG-04 D23), and an operator key,
 platform node id or service that one of the wallet's operations names while it may go out or is out and not in the
-list (`masternodes.protx_refused{reason: "protx-dup"}`, Core's mempool reason, MG-04 D51). An operation id is 32 lower-case hex (`invalid_argument` otherwise), then `masternodes.operation_not_found`,
+list (`masternodes.protx_refused{reason: "protx-dup", operation}`, Core's mempool reason, naming that operation,
+MG-04 D51; an update claims only its operator key). A `conflicted` operation holds no key and no collateral
+(MG-04 D54). An operation id is 32 lower-case hex (`invalid_argument` otherwise), then `masternodes.operation_not_found`,
 then `masternodes.in_flight` while another call on it runs, then `masternodes.operation_state{state}` when the call
 doesn't apply to its state, then (a resent update) `masternodes.update_superseded{operation}` for a later update, or `masternodes.update_pending{operation}` for an earlier one handed off and not in a block (MG-04 D43, D49). An `UpdateRegistrarRequest` is checked first on its own (`invalid_argument`, the ProTx
 hash among it), then against the synced list (`masternodes.list_unavailable`, `masternodes.not_found` when not
@@ -100,7 +102,7 @@ listed), then the masternode (`masternodes.unsupported{feature: "shared_masterno
 owner key (`masternodes.no_owner_key`, MG-04 D12), then any update while an operation of a loaded wallet on the
 masternode may not be in the list yet (`masternodes.update_pending{operation}`, MG-04 D43, D49), then a keychain key to pick
 (`masternodes.keys_exhausted`), a new voting address that is the owner key's (`invalid_argument`, MG-04 D52), a new
-operator key a pending operation of the wallet names (`protx-dup`, MG-04 D51), then Core's rules
+operator key a pending operation of the wallet names (`protx-dup` with its `operation`, MG-04 D51), then Core's rules
 (`masternodes.protx_refused`: `bad-protx-dup-key`, `bad-protx-payee-reuse`, `bad-protx-collateral-reuse`, …). A grant is the lease's: `MasternodeOp` for the wallet, its cap covering the fee
 (`send.grant_exceeded`, nothing signed); its refusals come through `Platform`/`Engine` unchanged (MG-05 D12). Each
 signing call saves its row durably, with its inputs locked (MG-04 D25), before the hand-off; then hands the bytes to
@@ -113,11 +115,11 @@ signing call saves its row durably, with its inputs locked (MG-04 D25), before t
 | `preview_registration(wallet: WalletId, request: RegistrationRequest)` | async | `RegistrationPreview`: the resolved terms, the fee and `total_debit` (the fee: a `FundNew` collateral stays in the wallet), and the collateral amount. Locks, reserves, issues and signs nothing; a `NewAddress` payout and a `FundNew` collateral address are issued at registration, so the preview leaves them empty. Refusals as above, then the funding's `send.*` (`send.amount_exceeds_balance`, …). **Implemented.** | `MasternodesError` |
 | `register(wallet: WalletId, request: RegistrationRequest, grant: String)` | async | A version-2 ProRegTx with a `FundNew` collateral (an output of the transaction to a fresh address) or an `ExistingUtxo` one (an unspent wallet coin of the type's amount at a P2PKH address, locked, MG-04 D9; its key signs Core's `MakeSignString`; a `FundNew` output is locked in the write that saves the row, MG-04 D53), regular or evonode, funded from the wallet's standard coins, BIP69-sorted (MG-04 D2, D3). Returns the `ProTxOperation`. `invalid_argument` for an `External` collateral. **Implemented.** | `MasternodesError` |
 | `prepare_external_registration(wallet: WalletId, request: RegistrationRequest)` | async | An `External` collateral (another wallet's coin, MG-04 D4): plans and saves the unsigned transaction with its fee inputs locked (MG-04 D8) and returns the operation as `needs_signature` with its `SignRequest`: the collateral address and Core's message, byte-identical to `protx register_prepare`'s `signMessage`. Takes no grant and signs nothing (MG-04 D19). `invalid_argument` for another collateral, or for a coin or address of this wallet. **Implemented.** | `MasternodesError` |
-| `submit_external_registration(wallet: WalletId, operation: String, signature: String, grant: String)` | async | Checks `signature` (base64, Core's `signmessage`) by the collateral address over the saved message (`masternodes.signature_mismatch`), refuses an operator key, platform node id or service another pending operation of the wallet names (`masternodes.protx_refused{reason: "protx-dup"}`, MG-04 D51), signs the inputs under the grant, saves and hands off as `register` does. Only from `needs_signature`. **Implemented.** | `MasternodesError` |
+| `submit_external_registration(wallet: WalletId, operation: String, signature: String, grant: String)` | async | Checks `signature` (base64, Core's `signmessage`) by the collateral address over the saved message (`masternodes.signature_mismatch`), refuses an operator key, platform node id or service another pending operation of the wallet names (`masternodes.protx_refused{reason: "protx-dup", operation}`, MG-04 D51), signs the inputs under the grant, saves and hands off as `register` does. Only from `needs_signature`. **Implemented.** | `MasternodesError` |
 | `refresh_external_registration(wallet: WalletId, operation: String)` | async | Plans a `needs_signature` or `inputs_spent` row again: new fee inputs, a new message, the same terms. The old inputs are unlocked and the new ones locked; a plan that fails keeps the old ones locked. **Implemented.** | `MasternodesError` |
 | `preview_update_registrar(wallet: WalletId, request: UpdateRegistrarRequest)` | async | `UpdateRegistrarPreview`: the masternode's terms as they read after the update (a `NewAddress` payout empty, MG-04 D41), the payload version, the fee and `total_debit` (the fee), the owner key that would sign (`OwnerKeySource`), which of the operator key, voting key and payout change (`payout_changes` is `None` when the wallet holds no payout of it, MG-04 D10), and `pose_bans` (a new operator key bans the masternode until the operator's service update). Issues, locks and signs nothing. Refusals as above, then the funding's `send.*`. **Implemented.** | `MasternodesError` |
 | `update_registrar(wallet: WalletId, request: UpdateRegistrarRequest, grant: String)` | async | A version-2 ProUpRegTx under a `key_change` lease: the operator and voting keys kept from the synced list or set (an operator public key given or the keychain's), the payout named (MG-04 D10), funded and sorted as `register`'s, the payload signed by the masternode's owner key (a keychain key 0–19, else an attached `owner` key matched to its ProRegTx, MG-04 D11, D12), saved and handed off as `register` does. Returns the `ProTxOperation` (`kind: update_registrar`, `pro_tx_hash` the masternode's). **Implemented.** | `MasternodesError` |
-| `operations(wallet: WalletId)` | async | Every `ProTxOperation` of the wallet, newest first, its state derived now (§5). Settled rows' input locks are released on the way (MG-04 D25). **Implemented.** | `MasternodesError` |
+| `operations(wallet: WalletId)` | async | Every `ProTxOperation` of the wallet, newest first, its state derived now (§5). Settled rows' input locks are released on the way (MG-04 D25); the follower also unlocks a `conflicted` row's collateral once no other operation names it (MG-04 D54). **Implemented.** | `MasternodesError` |
 | `resend_operation(wallet: WalletId, operation: String, grant: String)` | async | Hands a `signed`, `not_sent` or `sent` row's saved bytes to the fence again (MG-04 D7): under its own lease, charged the row's fee, its inputs reserved again (`send.outpoint_unavailable` when another owner holds one). The same txid, so a resend of bytes that may be out is the fence's resend. An `update_registrar` row is refused while another update of its masternode saved no earlier is `signed`, `not_sent`, `sent` or `confirmed` (`masternodes.update_superseded{operation}`, MG-04 D43), or an earlier one is `sent` and not in a block (`masternodes.update_pending{operation}`, MG-04 D49). **Implemented.** | `MasternodesError` |
 | `discard_operation(wallet: WalletId, operation: String)` | async | Deletes a `needs_signature`, `inputs_spent`, `signed` or `not_sent` row, unlocking its inputs and the collateral it locked (MG-04 D6). A row whose bytes may be out (`sent_at` set) is never deleted: `masternodes.operation_state`. **Implemented.** | `MasternodesError` |
 | `release_collateral(wallet: WalletId, pro_tx_hash: String)` | async | Unlocks the collateral coin of one of the wallet's masternodes and remembers the release, so the follower leaves it unlocked (MG-04 D9). Sends nothing. `invalid_argument`, `masternodes.not_found` (not the wallet's), `masternodes.collateral_unavailable` (no resolved collateral). **Implemented.** | `MasternodesError` |
@@ -129,7 +131,7 @@ Generated by `mn_masternodes_contract.rs` from the facade's source files; `DW_BL
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: masternodes-surface -->
-<!-- surface-sha256: 33eef91679e42928fd4ca6f1f274960d6592619432adbbd72bc614841d1c8da3 version: 4 -->
+<!-- surface-sha256: ffe566fdbc56779748fd75c858f2f760fc828ca62c0b22fda4f9975a9fdeaa44 version: 5 -->
 
 ```rust
 // src/masternodes/errors.rs
@@ -145,7 +147,7 @@ pub enum MasternodesError {
     PlatformUnavailable { detail: String },
     Unsupported { feature: String, field: Option<String> },
     NotImplemented { call: String },
-    ProtxRefused { reason: String },
+    ProtxRefused { reason: String, operation: Option<String> },
     CollateralUnavailable,
     SignatureMismatch,
     OperationNotFound,
@@ -571,10 +573,11 @@ a hash's shape (D23).
   MG-04 D1; BL-291) with `field` naming what needs it (`service`: a host name, IPv6 or several entries). `field` is
   `None` for the others.
 - `masternodes.not_implemented{call}`: reserved for stubs of later MG tasks; no MG-03 or MG-04 call returns it.
-- `masternodes.protx_refused{reason}`: one of Core's rules refuses the ProTx; `reason` is Core's reject reason
-  verbatim (`bad-protx-dup-key`, `bad-protx-netinfo-port`, …, MG-04 D5). `protx-dup` is Core's mempool refusal of
-  an operator key, platform node id or service another pending ProTx holds; the wallet refuses it against its own
-  pending operations before signing (MG-04 D51).
+- `masternodes.protx_refused{reason, operation}`: one of Core's rules refuses the ProTx; `reason` is Core's reject
+  reason verbatim (`bad-protx-dup-key`, `bad-protx-netinfo-port`, …, MG-04 D5). `protx-dup` is Core's mempool refusal
+  of an operator key, platform node id or service another pending ProTx holds; the wallet refuses it against its own
+  pending operations before signing (MG-04 D51), and `operation` names the one holding it (discard it if it was
+  never sent, else abandon its transaction). `operation` is `None` for every other reason.
 - `masternodes.collateral_unavailable`: the collateral isn't an unspent wallet coin of the type's amount at a P2PKH
   address, or is a collateral of the wallet's masternodes or saved operations already (MG-04 D23), or is a coin a
   payment or an asset lock holds, or one that a proposal fee spends that the wallet hasn't seen and that hasn't failed (MG-04 D47).

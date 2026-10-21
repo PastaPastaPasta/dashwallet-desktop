@@ -731,7 +731,10 @@ fn error_codes_match_the_contract() {
                 field: None,
             },
             MasternodesError::NotImplemented { call: hash() },
-            MasternodesError::ProtxRefused { reason: hash() },
+            MasternodesError::ProtxRefused {
+                reason: hash(),
+                operation: None,
+            },
             MasternodesError::CollateralUnavailable,
             MasternodesError::SignatureMismatch,
             MasternodesError::OperationNotFound,

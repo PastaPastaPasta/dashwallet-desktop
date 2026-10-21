@@ -325,15 +325,18 @@ impl Context {
     /// `txmempool.cpp:1601-1622` for a ProRegTx, `:1691-1692` for a
     /// ProUpRegTx). Core never tells an SPV wallet: the operation would sit
     /// `sent` until abandoned.
+    /// The refusal names the operation holding the key, so the user can
+    /// end it (discard it if never sent, else abandon its transaction).
     pub(crate) fn check_pending(&self, claim: &Claim) -> Result<(), MasternodesError> {
         let clash = (self.pending.iter())
             .filter(|p| p.id != claim.id)
-            .any(|p| p.clashes(claim));
+            .find(|p| p.clashes(claim));
         match clash {
-            true => Err(MasternodesError::ProtxRefused {
+            Some(p) => Err(MasternodesError::ProtxRefused {
                 reason: "protx-dup".into(),
+                operation: p.id.clone(),
             }),
-            false => Ok(()),
+            None => Ok(()),
         }
     }
 
@@ -409,6 +412,7 @@ pub(crate) fn shared_voting() -> MasternodesError {
 pub(crate) fn refused(reason: rules::Reject) -> MasternodesError {
     MasternodesError::ProtxRefused {
         reason: reason.into(),
+        operation: None,
     }
 }
 
@@ -575,16 +579,22 @@ impl NetworkSession {
             let Ok(terms) = serde_json::from_str::<ProTxTerms>(&row.terms) else {
                 continue;
             };
+            let state = state_of(row, &history, &unspent);
+            // A block spends a conflicted row's input: it never confirms,
+            // so its keys and collateral are free again, as Core frees a
+            // ProRegTx's when it leaves the mempool (D54).
+            if state == ProTxOperationState::Conflicted {
+                continue;
+            }
             used.add_terms(&terms, network);
             // Whatever may still go out, or is out and not in the list
             // (D43's window).
-            let unlisted = match state_of(row, &history, &unspent) {
-                ProTxOperationState::Conflicted => false,
+            let unlisted = match state {
                 ProTxOperationState::Confirmed { height } => list.height.is_none_or(|l| l < height),
                 _ => true,
             };
             if unlisted {
-                pending.push(Claim::of_terms(&row.id, &terms));
+                pending.push(Claim::of_row(row, &terms));
             }
             if let (Some(CollateralKind::External), Some(address), Some(hash)) = (
                 terms.collateral,

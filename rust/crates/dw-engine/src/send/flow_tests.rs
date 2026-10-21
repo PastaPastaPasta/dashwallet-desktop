@@ -1375,6 +1375,77 @@ fn psbt_an_owner_keys_coin_is_not_signed() {
     assert!(signed.inputs[0].partial_sigs.is_empty());
 }
 
+/// MG-04 D55 (review r2 m-1): a payment to one of the wallet's own
+/// provider-key addresses (owner, voting) leaves its funds: key-wallet
+/// tracks no coin there and the wallet signs none at an owner key. So the
+/// grant caps it and the send and a PSBT show it going out.
+#[test]
+fn a_payment_to_an_own_provider_key_leaves_the_wallet() {
+    use crate::masternode_keys::MasternodeKeyRole::{Owner, Voting};
+    let f = fixture(false);
+    let key = |role| {
+        f.engine
+            .block_on(f.session.derive_masternode_keys(f.wallet, role, 0, 1))
+            .unwrap()
+            .remove(0)
+            .address
+            .unwrap()
+    };
+    let (owner, voting) = (key(Owner), key(Voting));
+    let session = Arc::clone(&f.session);
+    let (id, inner) = (f.wallet, Arc::clone(&session));
+    let (o, v) = (owner.clone(), voting.clone());
+    let listed = f
+        .engine
+        .block_on(session.on_runtime(async move {
+            let wallet = inner.wallet(&id).await?;
+            let state = wallet.state().await;
+            let owns = |a: &str| {
+                let a = Address::from_str(a).unwrap().assume_checked();
+                crate::coins::wallet_owns(&state.core_wallet, &a)
+            };
+            Ok::<_, EngineError>((owns(&o), owns(&v)))
+        }))
+        .unwrap();
+    assert_eq!(listed, (true, true), "the wallet lists both keys");
+
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(&owner, 30_000_000), pay(&voting, 20_000_000)]);
+    let fee = f.engine.block_on(draft.estimate()).unwrap().fee;
+    let r = f.engine.block_on(draft.prepare(f.spend_grant(fee)));
+    assert_eq!(
+        send_failure(r),
+        SendFailure::GrantExceeded {
+            max_duffs: fee,
+            outflow: 50_000_000 + fee
+        }
+    );
+    let p = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(50_000_000 + fee)))
+        .unwrap();
+    let s = p.summary();
+    assert_eq!(s.external_sent, 50_000_000);
+    let paid: Vec<_> = s.outputs.iter().filter(|o| !o.is_change).collect();
+    assert_eq!(paid.len(), 2);
+    assert!(paid.iter().all(|o| !o.is_mine), "{paid:?}");
+
+    let prev = f.credit_with_prev(2, COIN);
+    let psbt = psbt_spending(&prev, &[(&owner, COIN / 2), (&voting, COIN / 2 - 10_000)]);
+    let a = f
+        .engine
+        .block_on(f.session.analyze_psbt(Some(f.wallet), psbt.clone()))
+        .unwrap();
+    assert!(a.outputs.iter().all(|o| !o.is_mine), "{:?}", a.outputs);
+    assert_eq!(a.external_sent, Some(COIN - 10_000));
+    assert_eq!(
+        psbt_failure(f.sign_psbt(&psbt, f.spend_grant(COIN / 2))),
+        PsbtFailure::GrantExceeded {
+            max_duffs: COIN / 2
+        }
+    );
+}
+
 /// MG-05 r2 N2: the same claim through `create_unsigned` itself: a draft
 /// paying a contact's address gets no derivation record for that output,
 /// while its own input and change get theirs.

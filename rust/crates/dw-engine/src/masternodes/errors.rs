@@ -51,9 +51,17 @@ pub enum MasternodesError {
     #[error("not implemented: {call}")]
     NotImplemented { call: String },
     /// A Core rule refuses the ProTx (MG-04 D5): `reason` is Core's reject
-    /// reason verbatim (`bad-protx-dup-key`, …).
-    #[error("refused by Core's rules: {reason}")]
-    ProtxRefused { reason: String },
+    /// reason verbatim (`bad-protx-dup-key`, …). `operation`: the wallet's
+    /// operation (its id) holding what the ProTx claims, for a `protx-dup`
+    /// the wallet finds itself (MG-04 D51); `None` otherwise.
+    #[error(
+        "refused by Core's rules: {reason}{}",
+        operation.as_deref().map(|o| format!(" (operation {o} holds it: end that one first)")).unwrap_or_default()
+    )]
+    ProtxRefused {
+        reason: String,
+        operation: Option<String>,
+    },
     /// An `ExistingUtxo` collateral isn't an unspent wallet coin of the
     /// type's amount at a P2PKH address, or is already a collateral of the
     /// wallet's masternodes or operations (MG-04 D23).

@@ -203,8 +203,10 @@ fn ownership(
         .output
         .iter()
         .map(|o| {
+            // A provider key's address of the wallet's is paid out of it
+            // (MG-04 D55).
             Address::from_script(&o.script_pubkey, network)
-                .is_ok_and(|a| crate::coins::wallet_owns(info, &a))
+                .is_ok_and(|a| crate::coins::wallet_funds_address(info, &a))
         })
         .collect();
     Ownership {

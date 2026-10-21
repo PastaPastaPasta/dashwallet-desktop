@@ -15,7 +15,7 @@ use dashcore::Address;
 use dw_uri::keyio::{Destination, decode_destination};
 use dw_vault::MnemonicError;
 use dw_vault::mnemonic;
-use dw_vault::{GrantKind, LockState, SignerError, Vault, VaultError, WalletSecret, WalletSigner};
+use dw_vault::{GrantKind, LockState, Vault, VaultError, WalletSecret, WalletSigner};
 use key_wallet::mnemonic::Language;
 use key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
@@ -770,13 +770,12 @@ impl NetworkSession {
             }
             .ok_or_else(|| EngineError::AddressNotMine(address.clone()))?;
             // A ProTx owner key signs owner payloads only, under a
-            // `MasternodeOp` grant (MG-04 D50). Refused before the grant is
-            // redeemed, so the refusal doesn't spend it; the vault enforces
-            // the same rule.
+            // `MasternodeOp` grant (MG-04 D50): no key to sign a message
+            // with, as Core says of an address whose key it lacks.
+            // Refused before the grant is redeemed, so the refusal doesn't
+            // spend it; the vault enforces the same rule.
             if dw_vault::paths::is_owner_key(&path, network) {
-                return Err(EngineError::Signer(SignerError::PathNotAllowed(format!(
-                    "{address} is a masternode owner key"
-                ))));
+                return Err(EngineError::AddressNoKey(address));
             }
 
             let vault = this.vault.clone();

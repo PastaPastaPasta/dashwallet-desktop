@@ -114,6 +114,30 @@ pub(crate) fn wallet_owns(info: &ManagedWalletInfo, address: &Address) -> bool {
     own_address_info(info, address).is_some()
 }
 
+/// Whether a payment to `address` stays in the wallet's funds: one of its
+/// addresses ([`own_address_info`]) other than a DIP-3 provider key's
+/// (owner, voting, operator, platform). key-wallet tracks no coin at those
+/// (its provider-key accounts hold keys, not funds), and since MG-04 D50
+/// the wallet signs none at an owner key, so a payment to one leaves the
+/// wallet: every cap counts it and a send shows it going out (MG-04 D55).
+pub(crate) fn wallet_funds_address(info: &ManagedWalletInfo, address: &Address) -> bool {
+    use key_wallet::managed_account::managed_account_type::ManagedAccountType as T;
+    info.all_managed_accounts()
+        .into_iter()
+        .filter(|account| {
+            let kind = account.managed_account_type();
+            !kind.is_contact_owned()
+                && !matches!(
+                    kind,
+                    T::ProviderVotingKeys { .. }
+                        | T::ProviderOwnerKeys { .. }
+                        | T::ProviderOperatorKeys { .. }
+                        | T::ProviderPlatformKeys { .. }
+                )
+        })
+        .any(|account| account.get_address_info(address).is_some())
+}
+
 /// Tests: adds a DashPay contact's external account (watch-only, from a
 /// fixed xpub) to the wallet `id` and returns the contact's first address,
 /// which the account lists and the wallet does not own (MG-05 D19).

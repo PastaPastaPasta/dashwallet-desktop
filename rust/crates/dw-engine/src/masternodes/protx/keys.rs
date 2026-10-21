@@ -9,11 +9,14 @@ use std::str::FromStr;
 use dashcore::address::Payload;
 use dashcore::hashes::Hash;
 use dashcore::{Address, Network, OutPoint};
+use dw_appdb::MasternodeOpRow;
 
 use super::super::MasternodesError;
 use super::super::protx_records::{
-    KeyPick, OperatorChoice, PlatformNodeChoice, ProTxKeys, ProTxTerms, VotingChoice,
+    KeyPick, OperatorChoice, PlatformNodeChoice, ProTxKeys, ProTxOperationKind, ProTxTerms,
+    VotingChoice,
 };
+use super::ops::kind_of;
 use crate::masternode_keys::{MasternodeKeyInfo, MasternodeKeyRole};
 use crate::{EngineError, NetworkSession, WalletId};
 
@@ -81,13 +84,24 @@ pub(crate) struct Claim {
 }
 
 impl Claim {
-    /// What row `id`'s `terms` claim.
-    pub fn of_terms(id: &str, terms: &ProTxTerms) -> Self {
-        Claim {
-            id: Some(id.to_string()),
-            operator: dw_protx::bls::parse_public_hex(&terms.operator_public_key).ok(),
-            node_id: terms.platform.as_ref().and_then(|p| hex20(&p.node_id).ok()),
-            service: Some(terms.service.clone()).filter(|s| !s.is_empty()),
+    /// What `row` claims, from its `terms`: a registration its operator
+    /// key, platform node id and service; an update only its operator key,
+    /// the one key Core's mempool indexes for a ProUpRegTx (rc.3
+    /// `txmempool.cpp:656-659`).
+    pub fn of_row(row: &MasternodeOpRow, terms: &ProTxTerms) -> Self {
+        let operator = dw_protx::bls::parse_public_hex(&terms.operator_public_key).ok();
+        let claim = Claim {
+            id: Some(row.id.clone()),
+            operator,
+            ..Claim::default()
+        };
+        match kind_of(&row.kind) {
+            ProTxOperationKind::UpdateRegistrar => claim,
+            ProTxOperationKind::Registration => Claim {
+                node_id: terms.platform.as_ref().and_then(|p| hex20(&p.node_id).ok()),
+                service: Some(terms.service.clone()).filter(|s| !s.is_empty()),
+                ..claim
+            },
         }
     }
 
@@ -230,6 +244,7 @@ impl NetworkSession {
             if index.is_some() {
                 return Err(MasternodesError::ProtxRefused {
                     reason: "bad-protx-dup-key".into(),
+                    operation: None,
                 });
             }
         }

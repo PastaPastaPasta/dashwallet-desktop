@@ -1186,12 +1186,13 @@ impl TxDraft {
         .await
     }
 
-    /// Which recipients and change the wallet owns, and what leaves it:
-    /// the outputs to scripts it does not own.
+    /// Which recipients and change stay in the wallet's funds, and what
+    /// leaves it: the outputs to any other script, a provider key's
+    /// address of the wallet's included (MG-04 D55).
     async fn outflow_of(&self, r: &Resolved, wallet: &PlatformWallet) -> (Vec<bool>, bool, u64) {
         let (recipient_mine, change_mine) = {
             let state = wallet.state().await;
-            let owns = |a: &Address| crate::coins::wallet_owns(&state.core_wallet, a);
+            let owns = |a: &Address| crate::coins::wallet_funds_address(&state.core_wallet, a);
             let recipients: Vec<bool> = r.recipients.iter().map(|rc| owns(&rc.address)).collect();
             let change = match &r.change {
                 ChangeTarget::Auto => true,
@@ -2162,7 +2163,7 @@ impl NetworkSession {
                     Address::from_str(a)
                         .ok()
                         .map(|a| a.assume_checked())
-                        .is_some_and(|a| crate::coins::wallet_owns(&state.core_wallet, &a))
+                        .is_some_and(|a| crate::coins::wallet_funds_address(&state.core_wallet, &a))
                 })
                 .collect()
         };

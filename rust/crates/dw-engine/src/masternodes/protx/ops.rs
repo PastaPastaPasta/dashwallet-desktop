@@ -42,7 +42,7 @@ pub(crate) fn kind_name(kind: ProTxOperationKind) -> &'static str {
     }
 }
 
-fn kind_of(name: &str) -> ProTxOperationKind {
+pub(crate) fn kind_of(name: &str) -> ProTxOperationKind {
     match name {
         "update_registrar" => ProTxOperationKind::UpdateRegistrar,
         _ => ProTxOperationKind::Registration,
@@ -337,9 +337,9 @@ impl NetworkSession {
         operation_of(&row, state)
     }
 
-    /// Saves a new row durably, after the coin locks it holds (its inputs,
-    /// and a collateral it locked), so a power loss never keeps the row
-    /// without them.
+    /// Saves a new row durably with the coin locks it holds (its inputs,
+    /// and a collateral it locked) in one transaction, so a power loss
+    /// never keeps the row without them, nor them without the row (D53).
     pub(crate) async fn save_operation(
         &self,
         wallet: WalletId,
@@ -347,14 +347,10 @@ impl NetworkSession {
         locks: Vec<OutPoint>,
     ) -> Result<(), MasternodesError> {
         let w = wallet.to_string();
-        self.appdb_op(move |db| {
-            let now = now_secs();
-            for o in &locks {
-                db.lock_manual(&w, &o.txid.to_string(), o.vout, now)?;
-            }
-            db.insert_masternode_op_durable(&w, &row)
-        })
-        .await?;
+        let locks: Vec<(String, u32)> =
+            locks.iter().map(|o| (o.txid.to_string(), o.vout)).collect();
+        self.appdb_op(move |db| db.insert_masternode_op_durable(&w, &row, &locks, now_secs()))
+            .await?;
         self.masternodes.local_change();
         Ok(())
     }
@@ -452,6 +448,49 @@ impl NetworkSession {
         Ok(())
     }
 
+    /// Unlocks the collateral each conflicted row locked (D54): its
+    /// transaction never confirms, and Core locks no collateral of a
+    /// ProRegTx outside its wallet's mempool or the list (rc.3
+    /// `wallet/wallet.cpp:1088,2867-2872`). A coin another row names stays
+    /// locked: that row registers it again. The caller holds the wallet's
+    /// coin fence, so no registration saves a row naming the coin meanwhile.
+    async fn release_conflicted_collaterals(
+        &self,
+        wallet: WalletId,
+    ) -> Result<(), MasternodesError> {
+        let w = wallet.to_string();
+        let rows = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
+        if !rows.iter().any(|r| r.locked_collateral) {
+            return Ok(());
+        }
+        let (history, unspent) = self.op_view(wallet).await?;
+        let (conflicted, live): (Vec<_>, Vec<_>) = rows
+            .iter()
+            .partition(|r| state_of(r, &history, &unspent) == ProTxOperationState::Conflicted);
+        let named: HashSet<OutPoint> = live.iter().filter_map(|r| row_collateral(r)).collect();
+        let release: Vec<(String, OutPoint)> = conflicted
+            .iter()
+            .filter(|r| r.locked_collateral)
+            .filter_map(|r| Some((r.id.clone(), row_collateral(r)?)))
+            .filter(|(_, o)| !named.contains(o))
+            .collect();
+        if release.is_empty() {
+            return Ok(());
+        }
+        let w = wallet.to_string();
+        self.appdb_op(move |db| {
+            let now = now_secs();
+            for (id, o) in &release {
+                db.release_masternode_op_collateral(&w, id, (&o.txid.to_string(), o.vout), now)?;
+            }
+            Ok(())
+        })
+        .await?;
+        self.hub.pump.mark_balances(wallet);
+        self.masternodes.local_change();
+        Ok(())
+    }
+
     /// Ends a row nothing of which may be out (D6) and unlocks what it
     /// locked. `OperationState` for any other state.
     pub(crate) async fn discard(
@@ -522,6 +561,7 @@ impl NetworkSession {
             let Some(_fence) = self.try_coin_fence(wallet).await? else {
                 continue;
             };
+            self.release_conflicted_collaterals(wallet).await?;
             let (m, hub) = (Arc::clone(&manager), Arc::clone(&self.hub));
             let collaterals: Vec<OutPoint> = tokio::task::spawn_blocking(move || {
                 super::super::follow::wallet_masternodes(&m, &hub.history, &wallet)

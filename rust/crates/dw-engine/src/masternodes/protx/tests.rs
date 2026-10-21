@@ -429,7 +429,7 @@ impl Fx {
         row.sent_at = None;
         row.last_error = Some("send.no_peers".into());
         let (db, w) = (self.db(), other.to_string());
-        db.insert_masternode_op_durable(&w, &row).unwrap();
+        db.insert_masternode_op_durable(&w, &row, &[], 1).unwrap();
         if sent {
             db.begin_masternode_op_attempt(&w, new_id, row.created_at)
                 .unwrap()
@@ -1040,7 +1040,7 @@ fn mg04_requests_are_refused_offline_first() {
     let mut port = request(CollateralChoice::FundNew);
     port.service = "1.2.3.4:9999".into();
     assert!(
-        matches!(preview(port), MasternodesError::ProtxRefused { reason } if reason == "bad-protx-netinfo-port")
+        matches!(preview(port), MasternodesError::ProtxRefused { reason, .. } if reason == "bad-protx-netinfo-port")
     );
 
     // A listed operator key is Core's duplicate (D5).
@@ -1066,12 +1066,12 @@ fn mg04_requests_are_refused_offline_first() {
         public_key: hex::encode(operator),
     };
     assert!(
-        matches!(preview(given), MasternodesError::ProtxRefused { reason } if reason == "bad-protx-dup-key")
+        matches!(preview(given), MasternodesError::ProtxRefused { reason, .. } if reason == "bad-protx-dup-key")
     );
     let mut dup_service = request(CollateralChoice::FundNew);
     dup_service.service = "1.2.3.5".into();
     assert!(
-        matches!(preview(dup_service), MasternodesError::ProtxRefused { reason } if reason == "bad-protx-dup-netinfo-entry")
+        matches!(preview(dup_service), MasternodesError::ProtxRefused { reason, .. } if reason == "bad-protx-dup-netinfo-entry")
     );
     // NextUnused skips the listed key.
     let ok = f
@@ -1375,22 +1375,22 @@ fn mg04_evonode_requests_are_refused_before_signing() {
         },
     );
     assert!(
-        matches!(preview(null_id).unwrap_err(), MasternodesError::ProtxRefused { reason } if reason == "bad-protx-platform-nodeid")
+        matches!(preview(null_id).unwrap_err(), MasternodesError::ProtxRefused { reason, .. } if reason == "bad-protx-platform-nodeid")
     );
     let mut same_ports = next();
     same_ports.evonode.as_mut().unwrap().http_port = Some(22_200);
     assert!(
-        matches!(preview(same_ports).unwrap_err(), MasternodesError::ProtxRefused { reason } if reason == "bad-protx-platform-dup-ports")
+        matches!(preview(same_ports).unwrap_err(), MasternodesError::ProtxRefused { reason, .. } if reason == "bad-protx-platform-dup-ports")
     );
     let mut mainnet_core = next();
     mainnet_core.evonode.as_mut().unwrap().p2p_port = Some(9_999);
     assert!(
-        matches!(preview(mainnet_core).unwrap_err(), MasternodesError::ProtxRefused { reason } if reason == "bad-protx-platform-p2p-port")
+        matches!(preview(mainnet_core).unwrap_err(), MasternodesError::ProtxRefused { reason, .. } if reason == "bad-protx-platform-p2p-port")
     );
     let mut core_port = next();
     core_port.evonode.as_mut().unwrap().p2p_port = Some(19_899);
     assert!(
-        matches!(preview(core_port).unwrap_err(), MasternodesError::ProtxRefused { reason } if reason == "bad-protx-platform-dup-ports")
+        matches!(preview(core_port).unwrap_err(), MasternodesError::ProtxRefused { reason, .. } if reason == "bad-protx-platform-dup-ports")
     );
 
     // The keychain's first node id, listed: given, it is Core's duplicate;
@@ -1421,7 +1421,7 @@ fn mg04_evonode_requests_are_refused_before_signing() {
         PlatformNodeChoice::Given { node_id: first },
     );
     assert!(
-        matches!(preview(dup).unwrap_err(), MasternodesError::ProtxRefused { reason } if reason == "bad-protx-dup-platformnodeid")
+        matches!(preview(dup).unwrap_err(), MasternodesError::ProtxRefused { reason, .. } if reason == "bad-protx-dup-platformnodeid")
     );
     let ok = preview(next()).unwrap();
     assert_eq!(ok.terms.platform_node_index, Some(1));
@@ -1753,7 +1753,7 @@ fn mg04_update_registrar_requests_are_refused_in_order() {
         ..keep(&hash)
     });
     assert!(
-        matches!(&dup, MasternodesError::ProtxRefused { reason } if reason == "bad-protx-dup-key"),
+        matches!(&dup, MasternodesError::ProtxRefused { reason, .. } if reason == "bad-protx-dup-key"),
         "{dup:?}"
     );
     let reuse = preview(UpdateRegistrarRequest {
@@ -1763,7 +1763,7 @@ fn mg04_update_registrar_requests_are_refused_in_order() {
         ..keep(&hash)
     });
     assert!(
-        matches!(&reuse, MasternodesError::ProtxRefused { reason } if reason == "bad-protx-payee-reuse"),
+        matches!(&reuse, MasternodesError::ProtxRefused { reason, .. } if reason == "bad-protx-payee-reuse"),
         "{reuse:?}"
     );
     // A grant of another purpose signs nothing.
@@ -1934,7 +1934,7 @@ fn mg04_a_keep_waits_for_another_loaded_wallets_update() {
     row.sent_at = None;
     row.last_error = None;
     f.db()
-        .insert_masternode_op_durable(&other.to_string(), &row)
+        .insert_masternode_op_durable(&other.to_string(), &row, &[], 1)
         .unwrap();
     let e = f.preview_update(keep(&hash)).unwrap_err();
     assert!(
@@ -2164,8 +2164,10 @@ fn mg04_a_coin_an_unseen_proposal_fee_spends_is_not_a_collateral() {
     assert_eq!(op.state, ProTxOperationState::Sent);
 }
 
-fn protx_dup(e: &MasternodesError) -> bool {
-    matches!(e, MasternodesError::ProtxRefused { reason } if reason == "protx-dup")
+/// D51's refusal, naming `operation`, the row holding the key (r2 n-6).
+fn protx_dup(e: &MasternodesError, operation: &str) -> bool {
+    matches!(e, MasternodesError::ProtxRefused { reason, operation: Some(o) }
+        if reason == "protx-dup" && o == operation)
 }
 
 /// D51 (review r1 m-2): an operator key, platform node id or service that
@@ -2221,9 +2223,9 @@ fn mg04_a_pending_operations_keys_and_service_are_refused_as_protx_dup() {
     };
     for (name, req) in &clashes {
         let e = preview(req).unwrap_err();
-        assert!(protx_dup(&e), "{name}: {e:?}");
+        assert!(protx_dup(&e, &first.id), "{name}: {e:?}");
         let e = f.register(req.clone(), f.grant(COIN)).unwrap_err();
-        assert!(protx_dup(&e), "{name}: {e:?}");
+        assert!(protx_dup(&e, &first.id), "{name}: {e:?}");
     }
     assert_eq!(f.lib.sent().len(), 1, "nothing else handed off");
     preview(&elsewhere(request(FundNew))).unwrap();
@@ -2273,13 +2275,13 @@ fn mg04_an_updates_operator_key_is_refused_while_another_registration_holds_it()
         ..keep(&hash)
     };
     let e = f.preview_update(take.clone()).unwrap_err();
-    assert!(protx_dup(&e), "{e:?}");
+    assert!(protx_dup(&e, &second.id), "{e:?}");
     let e = f.update(take.clone(), f.grant(COIN)).unwrap_err();
-    assert!(protx_dup(&e), "{e:?}");
+    assert!(protx_dup(&e, &second.id), "{e:?}");
     // Mined above the list's height: not in the list yet (D43's window).
     f.confirm(second_tx, 120);
     let e = f.preview_update(take.clone()).unwrap_err();
-    assert!(protx_dup(&e), "{e:?}");
+    assert!(protx_dup(&e, &second.id), "{e:?}");
     // The list reaches it: the list's own rules apply from here.
     *f.seam.list_height.lock().unwrap() = 150;
     f.preview_update(take).unwrap();
@@ -2309,7 +2311,7 @@ fn mg04_an_external_submit_is_refused_while_another_operation_holds_its_service(
     twin.id = super::ops::new_id();
     twin.fee_inputs = "[]".into();
     f.db()
-        .insert_masternode_op_durable(&f.wallet.to_string(), &twin)
+        .insert_masternode_op_durable(&f.wallet.to_string(), &twin, &[], 1)
         .unwrap();
     let ask = op.sign_request.clone().unwrap();
     let sig = dw_protx::payloads::sign_message_compact(&EXTERNAL_KEY, &ask.message).unwrap();
@@ -2326,12 +2328,103 @@ fn mg04_an_external_submit_is_refused_while_another_operation_holds_its_service(
         ))
     };
     let e = submit().unwrap_err();
-    assert!(protx_dup(&e), "{e:?}");
+    assert!(protx_dup(&e, &twin.id), "{e:?}");
     assert!(f.lib.sent().is_empty());
     f.engine
         .block_on(f.mn().discard_operation(f.wallet, twin.id))
         .unwrap();
     assert_eq!(submit().unwrap().state, ProTxOperationState::Sent);
+}
+
+/// D51 (review r2 n-5): an update claims only its operator key, the one
+/// key Core's mempool indexes for a ProUpRegTx: the service an update row
+/// carries from the list is the list's to judge, so once the operator moves
+/// it (ProUpServTx) a new registration may take it.
+#[test]
+fn mg04_an_updates_service_is_not_claimed() {
+    let f = fx(Library::Accept);
+    let (reg, op) = f.registered();
+    let update = f
+        .update(keep(op.pro_tx_hash.as_deref().unwrap()), f.grant(COIN))
+        .unwrap();
+    assert_eq!(update.state, ProTxOperationState::Sent);
+    assert_eq!(update.terms.service, "1.2.3.4:19899");
+    let mut moved = entry_of(&reg);
+    moved.service_address = Some("1.2.3.7:19899".parse().unwrap());
+    *f.seam.list.lock().unwrap() = Some(vec![moved]);
+    f.credit(3, MASTERNODE_COLLATERAL + COIN);
+    f.engine
+        .block_on(
+            f.mn()
+                .preview_registration(f.wallet, request(CollateralChoice::FundNew)),
+        )
+        .unwrap();
+}
+
+/// D54 (review r2 m-2): a conflicted registration never confirms, so its
+/// collateral and keys are free again. The same coin registers again with
+/// the same owner key, and the follower unlocks the coin once no other
+/// operation names it.
+#[test]
+fn mg04_a_conflicted_registration_frees_its_collateral_and_keys() {
+    let f = fx(Library::Accept);
+    let collateral = f.credit(1, MASTERNODE_COLLATERAL);
+    let req = request(CollateralChoice::ExistingUtxo {
+        outpoint: format!("{}-0", collateral.txid),
+    });
+    // Another device spends the operation's fee input in a block.
+    let conflict = |op: &ProTxOperation, height: u32| {
+        let tx = f.lib.sent().pop().unwrap();
+        assert_eq!(tx.txid().to_string(), op.txid.clone().unwrap());
+        let input = tx.input[0].previous_output;
+        f.confirm(
+            Transaction {
+                version: 2,
+                lock_time: 0,
+                input: vec![dashcore::TxIn {
+                    previous_output: input,
+                    ..Default::default()
+                }],
+                output: vec![TxOut {
+                    value: COIN,
+                    script_pubkey: dashcore::ScriptBuf::new(),
+                }],
+                special_transaction_payload: None,
+            },
+            height,
+        );
+        f.spend(input);
+        let state = |id: &str| {
+            f.operations()
+                .into_iter()
+                .find(|o| o.id == id)
+                .unwrap()
+                .state
+        };
+        assert_eq!(state(&op.id), ProTxOperationState::Conflicted);
+    };
+    f.credit(2, COIN);
+    let first = f.register(req.clone(), f.grant(COIN)).unwrap();
+    assert!(f.locked().contains(&collateral), "D9");
+    conflict(&first, 60);
+
+    // Before the follower runs: the coin, still locked, and the owner key
+    // are free for a new registration.
+    f.credit(3, COIN);
+    let second = f.register(req.clone(), f.grant(COIN)).unwrap();
+    assert_eq!(second.state, ProTxOperationState::Sent);
+    assert_eq!(second.terms.owner_index, first.terms.owner_index);
+    f.follow();
+    assert!(f.locked().contains(&collateral), "the second row names it");
+
+    // Once no operation that may confirm names it, it is unlocked.
+    conflict(&second, 61);
+    f.follow();
+    assert!(!f.locked().contains(&collateral), "D54");
+    assert!(f.rows().iter().all(|r| !r.locked_collateral));
+    f.credit(4, COIN);
+    f.register(req, f.grant(COIN)).unwrap();
+    assert!(f.locked().contains(&collateral), "locked by its new row");
 }
 
 /// D52 (review r1 n-3): a voting address that is the owner key's is

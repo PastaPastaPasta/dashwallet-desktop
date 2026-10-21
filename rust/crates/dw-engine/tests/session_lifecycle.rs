@@ -10,8 +10,8 @@ use dw_engine::{
     NetworkSession, SessionOptions, WalletId,
 };
 use dw_vault::{
-    Credential, GrantPurpose, KdfParams, KdfPolicy, LockState, MemoryOsStore, SignerError,
-    UnlockScope, VaultConfig, VaultError,
+    Credential, GrantPurpose, KdfParams, KdfPolicy, LockState, MemoryOsStore, UnlockScope,
+    VaultConfig, VaultError,
 };
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
 use zeroize::Zeroizing;
@@ -510,14 +510,12 @@ fn imported_wallet_signs_after_restart_and_unlock() {
         }))
         .unwrap();
     // MG-04 D50: no message signature by a ProTx owner key, which the
-    // wallet lists; the grant survives the refusal.
+    // wallet lists: no key for it (r2 n-3); the grant survives the refusal.
     let owner = address_at(ABANDON_12, "m/9'/1'/3'/2'/0");
-    let refused = engine.block_on(s.sign_message(id, owner, b"m".to_vec(), grant.id.clone()));
+    let refused =
+        engine.block_on(s.sign_message(id, owner.clone(), b"m".to_vec(), grant.id.clone()));
     assert!(
-        matches!(
-            refused,
-            Err(EngineError::Signer(SignerError::PathNotAllowed(_)))
-        ),
+        matches!(&refused, Err(EngineError::AddressNoKey(a)) if *a == owner),
         "{refused:?}"
     );
     let address = first_receive_address(ABANDON_12);

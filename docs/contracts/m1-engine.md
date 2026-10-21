@@ -383,7 +383,8 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
   that cannot become change goes to the fee and is paid by the wallet. A recipient left below its dust threshold
   is `send.amount_too_small_after_fee{index}` (review M-5).
 - **Spend cap (H-3, H-4 option A).** `external_sent` = value paid to scripts the wallet does not own (recipients
-  and a foreign custom change address); `total_debit` = inputs − outputs back to the wallet = `external_sent +
+  and a foreign custom change address; one of the wallet's own masternode provider-key addresses, owner, voting,
+  operator or platform, counts as not owned: the wallet tracks no coin there, MG-04 D55); `total_debit` = inputs − outputs back to the wallet = `external_sent +
   fee`. A `Spend{max_duffs}` grant caps `total_debit`, fee included (fix-review L4: `sign_psbt` caps the same
   outflow, so a quick-unlock spending limit means the same in Send and PSBT); the fee alone is also bounded by
   `send.absurd_fee` (fee > 0.1 DASH, dash-qt `-maxtxfee`). The host authorizes `max_duffs = Σ recipient amounts +
@@ -493,7 +494,7 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
 | Call | Kind | Semantics | Errors | Serves | Status |
 |---|---|---|---|---|---|
 | `verify_message(network, address, message, signature)` | sync, free | `Ok(())` when valid. dash-qt result texts map 1:1 from the codes. | `message.invalid_address`, `message.address_no_key`, `message.malformed_signature`, `message.pubkey_not_recovered`, `message.not_signed` | QT-100 | **works** |
-| `NetworkSession.sign_message(id, address, message, grant_id)` | async | Base64 65-byte compact signature, magic `"DarkCoin Signed Message:\n"`. `SignMessage` grant, redeemed only after the address checks pass. Signs through dw-vault's `VaultSigner`. A masternode owner key's address is refused before the grant is redeemed (`EngineError::Signer(PathNotAllowed)`: the app's `signer.path_not_allowed`, the FFI's `message.vault_locked` as for any path refusal): an owner key signs owner payloads only, under a `MasternodeOp` grant (MG-04 D50). | `message.address_not_mine`, `message.address_no_key`, `message.watch_only`, `message.vault_locked`, `message.grant_invalid` | QT-099 | **works** |
+| `NetworkSession.sign_message(id, address, message, grant_id)` | async | Base64 65-byte compact signature, magic `"DarkCoin Signed Message:\n"`. `SignMessage` grant, redeemed only after the address checks pass. Signs through dw-vault's `VaultSigner`. A masternode owner key's address is refused before the grant is redeemed as one without a key (`EngineError::AddressNoKey`: the app's `address_no_key`, the FFI's `message.address_no_key`, as Core says of an address whose key it lacks): an owner key signs owner payloads only, under a `MasternodeOp` grant (MG-04 D50). | `message.address_not_mine`, `message.address_no_key`, `message.watch_only`, `message.vault_locked`, `message.grant_invalid` | QT-099 | **works** |
 
 ### 2.11 URI and QR (`uri.rs`) — owner E2
 

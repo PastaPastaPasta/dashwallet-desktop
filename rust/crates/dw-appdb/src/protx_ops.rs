@@ -78,17 +78,26 @@ fn sql_u64(v: u64) -> i64 {
 }
 
 impl AppDb {
-    /// Inserts a new operation, synced: an External row before its fee
-    /// inputs are reported locked, a signed row before any hand-off (save
-    /// before broadcast). The row's `sent_at` must be null.
+    /// Inserts a new operation with the coin locks it holds (`locks`,
+    /// `(txid, vout)`, locked by the user), in one synced transaction: an
+    /// External row before its fee inputs are reported locked, a signed
+    /// row before any hand-off (save before broadcast). Neither the row nor
+    /// a lock is ever kept without the other (MG-04 D53). The row's
+    /// `sent_at` must be null.
     pub fn insert_masternode_op_durable(
         &self,
         wallet_id: &str,
         row: &MasternodeOpRow,
+        locks: &[(String, u32)],
+        now: u64,
     ) -> Result<()> {
         debug_assert!(row.sent_at.is_none());
         self.durably(|conn| {
-            conn.execute(
+            let tx = conn.unchecked_transaction()?;
+            for (txid, vout) in locks {
+                Self::lock_manual_on(&tx, wallet_id, txid, *vout, now)?;
+            }
+            tx.execute(
                 &format!(
                     "INSERT INTO masternode_ops (wallet_id, {COLUMNS})
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
@@ -114,7 +123,7 @@ impl AppDb {
                     row.last_error,
                 ],
             )?;
-            Ok(())
+            Ok(tx.commit()?)
         })
     }
 
@@ -266,6 +275,26 @@ impl AppDb {
         )? == 1)
     }
 
+    /// Unlocks the collateral `(txid, vout)` operation `id` locked and
+    /// forgets that it did, in one transaction: its transaction is
+    /// conflicted, so it never confirms (MG-04 D54).
+    pub fn release_masternode_op_collateral(
+        &self,
+        wallet_id: &str,
+        id: &str,
+        (txid, vout): (&str, u32),
+        now: u64,
+    ) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        Self::unlock_on(&tx, wallet_id, txid, vout, now)?;
+        tx.execute(
+            "UPDATE masternode_ops SET locked_collateral = 0 WHERE wallet_id = ?1 AND id = ?2",
+            params![wallet_id, id],
+        )?;
+        Ok(tx.commit()?)
+    }
+
     /// Forgets the inputs an operation locked, once the engine unlocked
     /// them (its transaction is in a block or conflicted).
     pub fn clear_masternode_op_inputs(&self, wallet_id: &str, id: &str) -> Result<()> {
@@ -308,7 +337,8 @@ mod tests {
     #[test]
     fn a_row_that_may_be_out_is_never_deleted() {
         let db = AppDb::open_in_memory().unwrap();
-        db.insert_masternode_op_durable(W, &row("a", true)).unwrap();
+        db.insert_masternode_op_durable(W, &row("a", true), &[], 1)
+            .unwrap();
         assert_eq!(
             db.begin_masternode_op_attempt(W, "a", 5).unwrap(),
             Some(false)
@@ -338,7 +368,8 @@ mod tests {
     #[test]
     fn a_first_attempt_definitely_unsent_can_be_discarded() {
         let db = AppDb::open_in_memory().unwrap();
-        db.insert_masternode_op_durable(W, &row("a", true)).unwrap();
+        db.insert_masternode_op_durable(W, &row("a", true), &[], 1)
+            .unwrap();
         db.begin_masternode_op_attempt(W, "a", 5).unwrap();
         db.end_masternode_op_attempt(
             W,
@@ -361,7 +392,7 @@ mod tests {
     #[test]
     fn an_external_row_is_signed_once_and_only_unsigned_rows_reprepare() {
         let db = AppDb::open_in_memory().unwrap();
-        db.insert_masternode_op_durable(W, &row("e", false))
+        db.insert_masternode_op_durable(W, &row("e", false), &[], 1)
             .unwrap();
         assert_eq!(db.begin_masternode_op_attempt(W, "e", 1).unwrap(), None);
         assert!(
@@ -400,5 +431,70 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn active_locks(db: &AppDb) -> Vec<(String, u32)> {
+        let mut locks: Vec<_> = (db.locks(W).unwrap().into_iter())
+            .filter(|r| r.is_locked())
+            .map(|r| (r.txid, r.vout))
+            .collect();
+        locks.sort();
+        locks
+    }
+
+    /// MG-04 D53 (r2 n-2): a row and its locks are one write. A failure
+    /// writing either leaves neither, so no crash keeps a row without its
+    /// locks, or locks with no row to settle them.
+    #[test]
+    fn a_row_and_its_locks_are_written_together() {
+        let db = AppDb::open_in_memory().unwrap();
+        let locks = [("t".to_string(), 0), ("u".to_string(), 1)];
+        db.conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_lock BEFORE INSERT ON utxo_locks
+                 BEGIN SELECT RAISE(ABORT, 'lock refused'); END;",
+            )
+            .unwrap();
+        assert!(
+            db.insert_masternode_op_durable(W, &row("a", true), &locks, 1)
+                .is_err()
+        );
+        assert!(
+            db.masternode_op(W, "a").unwrap().is_none(),
+            "no row without its locks"
+        );
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER no_lock;
+                 CREATE TEMP TRIGGER no_row BEFORE INSERT ON masternode_ops
+                 BEGIN SELECT RAISE(ABORT, 'row refused'); END;",
+            )
+            .unwrap();
+        assert!(
+            db.insert_masternode_op_durable(W, &row("a", true), &locks, 1)
+                .is_err()
+        );
+        assert!(active_locks(&db).is_empty(), "no lock without its row");
+        db.conn().execute_batch("DROP TRIGGER no_row;").unwrap();
+        db.insert_masternode_op_durable(W, &row("a", true), &locks, 1)
+            .unwrap();
+        assert!(db.masternode_op(W, "a").unwrap().is_some());
+        assert_eq!(active_locks(&db), locks);
+    }
+
+    /// MG-04 D54: a conflicted operation's collateral lock goes with its
+    /// flag, and nothing else of the row or the wallet's locks.
+    #[test]
+    fn a_released_collateral_is_unlocked_and_forgotten() {
+        let db = AppDb::open_in_memory().unwrap();
+        let mut r = row("a", true);
+        r.locked_collateral = true;
+        let locks = [("c".to_string(), 0), ("f".to_string(), 2)];
+        db.insert_masternode_op_durable(W, &r, &locks, 1).unwrap();
+        db.release_masternode_op_collateral(W, "a", ("c", 0), 2)
+            .unwrap();
+        let after = db.masternode_op(W, "a").unwrap().unwrap();
+        assert!(!after.locked_collateral);
+        assert_eq!(active_locks(&db), [("f".to_string(), 2)]);
     }
 }
