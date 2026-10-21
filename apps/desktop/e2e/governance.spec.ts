@@ -301,6 +301,26 @@ test("create: a background re-read never changes the figures the review shows; P
   expect(await createCalls(page)).toBe(0);
 });
 
+test("create: a first superblock that passes on the review takes a fresh preview and says so (D33)", async ({ page }) => {
+  await open(page, "governance");
+  await toReview(page);
+  const json = page.getByTestId("create-json");
+  const before = JSON.parse((await json.textContent())!).start_epoch as number;
+  // The chosen superblock (the second, the first's cutoff being near: MG-06 D13) leaves the
+  // upcoming list: the wizard moves the first payment on.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.world.governance.superblocksPassed = 2;
+    f.emit({ kind: "governance", network: f.world.launch.network.dirName });
+  });
+  await expect(page.getByTestId("create-first-moved")).toContainText("The first payment moved to Dec");
+  await expect.poll(async () => JSON.parse((await json.textContent())!).start_epoch as number).toBeGreaterThan(before);
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
+  await expect(page.getByTestId("create-sheet")).toBeHidden();
+  expect(await createCalls(page)).toBe(1);
+});
+
 test("create: a call that fails after the fee went out never offers Pay again; Mine resumes it (D34)", async ({ page }) => {
   await open(page, "governance");
   await page.evaluate(() => (window.__dwFixture!.world.governance.createFailsAfterPaying = true));

@@ -89,10 +89,12 @@ export function CreateProposalSheet({
   const [errors, setErrors] = useState<FieldErrors>({});
   const [general, setGeneral] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  /** The fee figures the review shows: the first preview, then only Pay's own re-read moves them,
-   *  never a background one (an engine event re-reads every query), so what the user confirms is
-   *  what they saw (D33). */
-  const [reviewed, setReviewed] = useState<ProposalPreview | null>(null);
+  /** The preview the review shows, for the draft it was read for: the first one, then only Pay's
+   *  own re-read moves it, never a background one (an engine event re-reads every query), so what
+   *  the user confirms is what they saw (D33). A draft that changes on the review (its first
+   *  superblock passed) takes its own first preview, and says so. */
+  const [reviewed, setReviewed] = useState<{ key: string; p: ProposalPreview } | null>(null);
+  const [firstMoved, setFirstMoved] = useState(false);
   /** Pay's re-read found other figures than the review showed: they need a fresh confirm (D33). */
   const [feeChanged, setFeeChanged] = useState(false);
   const mine = useMyProposals(wallet.walletId);
@@ -118,10 +120,14 @@ export function CreateProposalSheet({
     retry: false,
     gcTime: 0,
   });
+  // `preview.data` is always the current key's: gcTime 0 and no placeholder data.
+  const draftKey = draft && JSON.stringify(draft);
   useEffect(() => {
-    if (step === 3 && reviewed === null && preview.data) setReviewed(preview.data);
-  }, [step, reviewed, preview.data]);
-  const figures = reviewed ?? preview.data;
+    if (!draftKey || !preview.data || reviewed?.key === draftKey) return;
+    if (reviewed) setFirstMoved(true);
+    setReviewed({ key: draftKey, p: preview.data });
+  }, [draftKey, preview.data, reviewed]);
+  const figures = reviewed?.key === draftKey ? reviewed.p : undefined;
 
   /** An engine refusal of the draft's fields: back to the first failing field's step. */
   const refuseFields = (e: unknown): boolean => {
@@ -140,6 +146,7 @@ export function CreateProposalSheet({
   const next = async () => {
     setGeneral(null);
     setReviewed(null);
+    setFirstMoved(false);
     setFeeChanged(false);
     if (step === 1) {
       const p = detailsProblems(name, url);
@@ -182,8 +189,8 @@ export function CreateProposalSheet({
 
   const create = async () => {
     // The figures the review shows as Pay is pressed: the ones the user confirms.
-    const confirmed = reviewed;
-    if (busy || after || !draft || !confirmed || !credential.ready) return;
+    const confirmed = figures;
+    if (busy || after || !draft || !draftKey || !confirmed || !credential.ready) return;
     const known = new Set((mine.data ?? []).map((p) => p.hash));
     setBusy(true);
     setGeneral(null);
@@ -192,7 +199,7 @@ export function CreateProposalSheet({
       if (r.isError || !r.data) return; // the preview's effect says why
       if (!sameFee(r.data, confirmed)) {
         // The review now shows the new figures; the next press confirms them.
-        setReviewed(r.data);
+        setReviewed({ key: draftKey, p: r.data });
         setFeeChanged(true);
         return;
       }
@@ -375,6 +382,11 @@ export function CreateProposalSheet({
                 <AmountText text={shown.full(feeTotal(figures))} unitName={shown.name} />
               </DetailRow>
             </dl>
+            {firstMoved && firstSb && (
+              <p className="mg-notice mg-notice-warning" role="alert" data-testid="create-first-moved">
+                The first payment moved to {shortDate(firstSb.estimatedTime)}: the one you chose has passed. Check the dates before you pay.
+              </p>
+            )}
             {feeChanged && (
               <p className="mg-notice mg-notice-warning" role="alert" data-testid="create-fee-changed">
                 The network fee changed to {shown.withUnit(figures.networkFee)}, so you pay {shown.withUnit(feeTotal(figures))} in all. Nothing was paid: check

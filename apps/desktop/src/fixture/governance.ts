@@ -78,6 +78,9 @@ export interface GovernanceWorld {
   /** `create_proposal` pays the fee and keeps the proposal, then fails (its read after the
    *  payment, or IPC): MG-09 D34. */
   createFailsAfterPaying: boolean;
+  /** Superblocks a test moved out of the upcoming list (their dates passed for the renderer);
+   *  a draft may still name one, as it was reviewed (MG-09 D33). */
+  superblocksPassed: number;
 }
 
 const range = (estimate: number, slack = 0): WeightRange => ({ min: Math.max(0, estimate - slack), max: estimate + slack, estimate });
@@ -171,6 +174,7 @@ export const newGovernanceWorld = (): GovernanceWorld => ({
   submitFails: false,
   networkFee: FEE_NETWORK,
   createFailsAfterPaying: false,
+  superblocksPassed: 0,
 });
 
 /** A synced governance world with the sample proposals (the base of every governance scenario). */
@@ -193,9 +197,9 @@ function find(w: GovernanceWorld, hash: string): ProposalDetail {
   return p;
 }
 
-function upcoming(count: number): SuperblockDate[] {
+function upcoming(count: number, passed = 0): SuperblockDate[] {
   return Array.from({ length: count }, (_, i) => {
-    const height = NEXT + i * CYCLE;
+    const height = NEXT + (passed + i) * CYCLE;
     const cutoff = height - MATURITY;
     return {
       height,
@@ -323,9 +327,9 @@ export function governanceHandlers({
     },
     governance_clock: (_, { world }) => governanceInfo(world.governance).clock,
     governance_info: (_, { world }) => governanceInfo(world.governance),
-    governance_upcoming_superblocks: ({ count }) => {
+    governance_upcoming_superblocks: ({ count }, { world }) => {
       if (count > 24) throw fail("invalid_argument", "count above 24");
-      return upcoming(count);
+      return upcoming(count, world.governance.superblocksPassed);
     },
     governance_proposals: ({ query }, { world }) => {
       const g = world.governance;
