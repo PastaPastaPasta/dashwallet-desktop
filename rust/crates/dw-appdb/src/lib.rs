@@ -27,12 +27,14 @@ pub mod dispatch;
 #[cfg(all(debug_assertions, any(test, feature = "durability-sim")))]
 pub mod durability_sim;
 mod proposals;
+mod protx_ops;
 mod provenance;
 mod registration;
 mod rows;
 pub use avatar::AvatarRow;
 pub use dashpay_journal::{ContestWatch, JournalEntry, JournalPage, JournalRow};
 pub use proposals::ProposalRow;
+pub use protx_ops::{AttemptEnd, MasternodeOpRow};
 pub use registration::{
     Adoption, LockOutpoint, NewRegistration, RegistrationChange, RegistrationRow,
     RegistrationUpdate,
@@ -207,7 +209,7 @@ pub(crate) static CHILD_STARTS: std::sync::RwLock<()> = std::sync::RwLock::new((
 /// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
 /// with an insert trigger that skips rows of a removed wallet (migration
 /// `V2026101302`, DEC-210). Settings are cleared by scope.
-pub(crate) const WALLET_TABLES: [&str; 15] = [
+pub(crate) const WALLET_TABLES: [&str; 16] = [
     "wallets",
     "address_book",
     "labels",
@@ -223,6 +225,7 @@ pub(crate) const WALLET_TABLES: [&str; 15] = [
     "dp_prefs",
     "dp_contact_info",
     "mg_proposals",
+    "masternode_ops",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -927,7 +930,18 @@ impl AppDb {
 
     /// Locks an outpoint by the user. Replaces a dust row (released or not).
     pub fn lock_manual(&self, wallet_id: &str, txid: &str, vout: u32, now: u64) -> Result<()> {
-        self.conn().execute(
+        Self::lock_manual_on(&self.conn(), wallet_id, txid, vout, now)
+    }
+
+    /// [`Self::lock_manual`] on `conn`, inside a caller's transaction.
+    pub(crate) fn lock_manual_on(
+        conn: &Connection,
+        wallet_id: &str,
+        txid: &str,
+        vout: u32,
+        now: u64,
+    ) -> Result<()> {
+        conn.execute(
             "INSERT INTO utxo_locks (wallet_id, txid, vout, reason, created_at, released_at)
              VALUES (?1, ?2, ?3, 'manual', ?4, NULL)
              ON CONFLICT (wallet_id, txid, vout)
@@ -953,6 +967,19 @@ impl AppDb {
     pub fn unlock(&self, wallet_id: &str, txid: &str, vout: u32, now: u64) -> Result<bool> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
+        let active = Self::unlock_on(&tx, wallet_id, txid, vout, now)?;
+        tx.commit()?;
+        Ok(active)
+    }
+
+    /// [`Self::unlock`] on `conn`, inside a caller's transaction.
+    pub(crate) fn unlock_on(
+        tx: &Connection,
+        wallet_id: &str,
+        txid: &str,
+        vout: u32,
+        now: u64,
+    ) -> Result<bool> {
         let deleted = tx.execute(
             "DELETE FROM utxo_locks
              WHERE wallet_id = ?1 AND txid = ?2 AND vout = ?3 AND reason = 'manual'",
@@ -964,7 +991,6 @@ impl AppDb {
                AND released_at IS NULL",
             params![wallet_id, txid, vout, now as i64],
         )?;
-        tx.commit()?;
         Ok(deleted + released > 0)
     }
 
@@ -1532,7 +1558,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026102001);
+        assert_eq!(db.schema_version().unwrap(), 2026102101);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();

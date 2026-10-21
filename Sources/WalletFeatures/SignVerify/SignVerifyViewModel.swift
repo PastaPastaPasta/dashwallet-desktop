@@ -164,8 +164,11 @@ public final class SignVerifyViewModel {
     static func signText(_ code: ServiceErrorCode) -> String {
         switch code {
         case EngineCode.messageInvalidAddress: L10n.SignVerify.invalidAddress
-        case EngineCode.messageAddressNoKey: L10n.SignVerify.addressNoKey
-        case EngineCode.messageAddressNotMine, EngineCode.messageWatchOnly, .vaultNoSecret:
+        // `sign` refuses a P2SH address before asking, so the engine's
+        // `address_no_key` here is one of the wallet's owner keys, which it
+        // holds but never signs with (MG-04 D50).
+        case EngineCode.messageAddressNoKey, EngineCode.messageAddressNotMine, EngineCode.messageWatchOnly,
+            .vaultNoSecret:
             L10n.SignVerify.privateKeyUnavailable
         case .vaultWrongPassphrase: L10n.Common.wrongPassphrase
         case .vaultLocked, .vaultMixingOnly, .vaultGrantInvalid, EngineCode.messageVaultLocked,

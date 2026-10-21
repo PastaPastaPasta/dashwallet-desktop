@@ -106,7 +106,8 @@ pub enum EngineError {
     /// Not a Dash address of this network.
     #[error("invalid address: {0}")]
     InvalidAddress(String),
-    /// A valid address that does not refer to a key (P2SH).
+    /// A valid address the wallet holds no signing key for here: a P2SH
+    /// address, or one of its DIP-3 owner keys (MG-04 D50).
     #[error("address does not refer to a key: {0}")]
     AddressNoKey(String),
     /// The address is not one of the wallet's addresses.

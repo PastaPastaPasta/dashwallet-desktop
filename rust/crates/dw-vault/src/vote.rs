@@ -20,7 +20,7 @@
 use dashcore::OutPoint;
 use dashcore::consensus::Encodable;
 use dashcore::hashes::{Hash, hash160, sha256d};
-use dashcore::secp256k1::{Message, PublicKey, SecretKey, ecdsa};
+use dashcore::secp256k1::{PublicKey, SecretKey};
 use dpp::identifier::MasternodeIdentifiers;
 use dpp::platform_value::{BinaryData, Identifier, Value};
 use dpp::serialization::{PlatformSerializable, Signable};
@@ -38,7 +38,7 @@ use key_wallet::Network;
 
 use crate::SignerError;
 use crate::paths::voting_key_path;
-use crate::signer::{KeyUse, VaultSigner, WalletSigner};
+use crate::signer::{KeyUse, VaultSigner, WalletSigner, sign_compact};
 use crate::types::WalletId;
 use crate::vault::masternode::ROLE_VOTING;
 
@@ -165,8 +165,8 @@ impl VoteSigner {
     /// `27 + recid + 4` (a compressed key), as Core's `SignCompact`, and
     /// signing is deterministic (RFC 6979).
     pub fn sign_vote(&self, key: &VotingKey, vote: &FundingVote) -> Result<[u8; 65], SignerError> {
-        let digest = Message::from_digest(vote.digest(self.network()));
-        self.with_secret(key, |secret| compact(digest, secret))
+        let digest = vote.digest(self.network());
+        self.with_secret(key, |secret| sign_compact(digest, secret))
     }
 
     /// A masternode's vote on a contested DPNS name: the signed
@@ -196,8 +196,8 @@ impl VoteSigner {
             let address = key_id_of(secret);
             let unsigned = vote.transition(address, BinaryData::default());
             let data = unsigned.signable_bytes().map_err(protocol)?;
-            let digest = Message::from_digest(sha256d::Hash::hash(&data).to_byte_array());
-            Ok::<_, SignerError>((address, compact(digest, secret)))
+            let digest = sha256d::Hash::hash(&data).to_byte_array();
+            Ok::<_, SignerError>((address, sign_compact(digest, secret)))
         })??;
         let signed = vote.transition(voting_address, BinaryData::new(signature.to_vec()));
         let bytes = signed.serialize_to_bytes().map_err(protocol)?;
@@ -232,18 +232,6 @@ impl VoteSigner {
 fn key_id_of(secret: &SecretKey) -> [u8; 20] {
     let public = PublicKey::from_secret_key(secret);
     hash160::Hash::hash(&public.serialize()).to_byte_array()
-}
-
-/// Core's `SignCompact` of `digest`: the header `27 + recid + 4` (a
-/// compressed key), then r and s; deterministic (RFC 6979). Also what
-/// `dashcore::signer::sign` makes for a Platform `ECDSA_HASH160` key.
-fn compact(digest: Message, secret: &SecretKey) -> [u8; 65] {
-    let sig = ecdsa::RecoverableSignature::sign_ecdsa_recoverable(digest, secret);
-    let (recid, rs) = sig.serialize_compact();
-    let mut out = [0u8; 65];
-    out[0] = 27 + recid.to_u8() + 4;
-    out[1..].copy_from_slice(&rs);
-    out
 }
 
 fn protocol(e: dpp::ProtocolError) -> SignerError {

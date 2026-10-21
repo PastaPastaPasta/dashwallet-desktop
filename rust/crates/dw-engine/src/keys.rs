@@ -769,6 +769,12 @@ impl NetworkSession {
                 crate::coins::own_address_info(&state.core_wallet, &parsed).map(|info| info.path)
             }
             .ok_or_else(|| EngineError::AddressNotMine(address.clone()))?;
+            // A ProTx owner key signs owner payloads only (MG-04 D50): no
+            // key for a message. Refused before the grant is redeemed, so
+            // it isn't spent; the vault enforces the same rule.
+            if dw_vault::paths::is_owner_key(&path, network) {
+                return Err(EngineError::AddressNoKey(address));
+            }
 
             let vault = this.vault.clone();
             let signer = tokio::task::spawn_blocking(move || {

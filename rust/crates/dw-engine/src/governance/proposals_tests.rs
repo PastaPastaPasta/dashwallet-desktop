@@ -2,6 +2,7 @@
 //! under a "Proposal" lease and saved before its broadcast, and the
 //! submission pace against Core's postponed-object rules (D6, D19, D20).
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -1183,6 +1184,49 @@ fn a_resend_refuses_a_coin_another_payment_holds() {
     p.f.spend_coin(coin);
     assert_unavailable(&p.submit(&hash).unwrap_err(), coin);
     assert_eq!(p.lib.sent.lock().unwrap().len(), 2, "no resend");
+}
+
+/// MG-04 D47: an unseen fee's coins are held from a masternode collateral
+/// until the wallet has the fee.
+#[test]
+fn an_unseen_fees_coins_are_held_from_a_collateral() {
+    let p = props(Mode::Unconfirmed);
+    let (hash, fee) = p.restarted();
+    let held = |p: &Props| p.f.session.unseen_proposal_fee_inputs(&p.f.wallet).unwrap();
+    let inputs: HashSet<OutPoint> = fee.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(held(&p), inputs);
+    p.confirm(&hash, 0);
+    assert!(held(&p).is_empty(), "the wallet reads them spent");
+}
+
+/// A failed fee has no resend, so it holds none of its coins.
+#[test]
+fn a_failed_fees_coins_are_not_held() {
+    let p = props(Mode::Unconfirmed);
+    let (hash, fee) = p.restarted();
+    let mut rival = fee.clone();
+    rival.output.truncate(1);
+    rival.output[0].script_pubkey = dashcore::ScriptBuf::new();
+    p.confirm_tx(rival, 1);
+    assert_eq!(p.state(&hash), MyProposalState::FeeFailed);
+    let held = p.f.session.unseen_proposal_fee_inputs(&p.f.wallet);
+    assert!(held.unwrap().is_empty());
+}
+
+/// MG-04 D47: a coin locked since the restart (a masternode's collateral
+/// takes a user lock) is not the resend's to spend.
+#[test]
+fn a_resend_refuses_a_user_locked_coin() {
+    let p = props(Mode::Unconfirmed);
+    let (hash, fee) = p.restarted();
+    let coin = fee.input[0].previous_output;
+    let session = &p.f.session;
+    (p.f.engine)
+        .block_on(session.lock_outpoints(p.f.wallet, vec![coin]))
+        .unwrap();
+    assert_unavailable(&p.submit(&hash).unwrap_err(), coin);
+    assert!(p.row(&hash).fee_sent_at.is_none(), "nothing handed off");
+    assert_eq!(p.lib.sent.lock().unwrap().len(), 1, "no resend");
 }
 
 /// D10: after a restart a resend claims the fee's coins again, so no

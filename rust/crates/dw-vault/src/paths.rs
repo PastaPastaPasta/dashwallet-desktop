@@ -80,6 +80,16 @@ pub fn is_owner_key(path: &DerivationPath, network: Network) -> bool {
 /// The path of keychain voting key `index` ([`is_voting_key`]); key
 /// `index`'s path whatever the index, which the scope check then judges.
 pub(crate) fn voting_key_path(network: Network, index: u32) -> DerivationPath {
+    provider_key_path(network, PROVIDER_VOTING_KEYS, index)
+}
+
+/// The path of keychain owner key `index` ([`is_owner_key`]), as
+/// [`voting_key_path`].
+pub(crate) fn owner_key_path(network: Network, index: u32) -> DerivationPath {
+    provider_key_path(network, PROVIDER_OWNER_KEYS, index)
+}
+
+fn provider_key_path(network: Network, family: u32, index: u32) -> DerivationPath {
     DerivationPath::from(vec![
         ChildNumber::Hardened {
             index: FEATURE_PURPOSE,
@@ -90,9 +100,7 @@ pub(crate) fn voting_key_path(network: Network, index: u32) -> DerivationPath {
         ChildNumber::Hardened {
             index: FEATURE_PURPOSE_PROVIDER_KEYS,
         },
-        ChildNumber::Hardened {
-            index: PROVIDER_VOTING_KEYS,
-        },
+        ChildNumber::Hardened { index: family },
         ChildNumber::Normal { index },
     ])
 }

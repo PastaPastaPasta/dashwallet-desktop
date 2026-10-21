@@ -369,9 +369,12 @@ async fn operation_shapes_hold_even_for_a_full_signer() {
     let full = full_signer(&v);
     for (name, p) in all_paths(1, 5) {
         let identity = name == "identity key";
+        // No signature at a ProTx owner key but the owner payload's, which
+        // a `MasternodeOp` grant makes (MG-04 D50).
+        let owner = name == "provider owner key";
         let want = Uses {
-            sign: true,
-            message: true,
+            sign: !owner,
+            message: !owner,
             public: true,
             xpub: true,
             identity_sign: identity,

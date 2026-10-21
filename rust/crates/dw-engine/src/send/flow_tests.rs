@@ -1331,6 +1331,283 @@ fn psbt_a_contacts_address_is_not_the_wallets() {
     assert_eq!(a.signability, PsbtSignability::CanSign);
 }
 
+/// MG-04 D50 (validator r1 m-1): a coin paid to one of the wallet's ProTx
+/// owner keys is not the wallet's to sign in a PSBT, so a PSBT spending it
+/// is reported unsignable and leaves that input unsigned, as another
+/// wallet's would be, instead of failing at the vault.
+#[test]
+fn psbt_an_owner_keys_coin_is_not_signed() {
+    let f = fixture(false);
+    let owner = f
+        .engine
+        .block_on(f.session.derive_masternode_keys(
+            f.wallet,
+            crate::masternode_keys::MasternodeKeyRole::Owner,
+            0,
+            1,
+        ))
+        .unwrap()
+        .remove(0)
+        .address
+        .unwrap();
+    let prev = Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: OutPoint::new(Txid::from_byte_array([8; 32]), 0),
+            script_sig: dashcore::ScriptBuf::new(),
+            sequence: u32::MAX,
+            witness: dashcore::Witness::default(),
+        }],
+        output: vec![TxOut {
+            value: COIN,
+            script_pubkey: script_of(&owner),
+        }],
+        special_transaction_payload: None,
+    };
+    let psbt = psbt_spending(&prev, &[(FOREIGN, COIN - 10_000)]);
+    let a = f
+        .engine
+        .block_on(f.session.analyze_psbt(Some(f.wallet), psbt.clone()))
+        .unwrap();
+    assert_eq!(a.signability, PsbtSignability::NoMatchingKeys);
+    let signed = f.sign_psbt(&psbt, f.spend_grant(COIN)).unwrap();
+    assert!(signed.inputs[0].partial_sigs.is_empty());
+}
+
+/// MG-04 D55 (review r2 m-1): a payment to one of the wallet's own
+/// provider-key addresses (owner, voting) leaves its funds: key-wallet
+/// tracks no coin there and the wallet signs none at an owner key. So the
+/// grant caps it, as a recipient or as custom change; the send and a PSBT
+/// show it going out, an unsigned PSBT records no derivation for it, and
+/// the address book takes it as a Send entry only.
+#[test]
+fn a_payment_to_an_own_provider_key_leaves_the_wallet() {
+    use crate::masternode_keys::MasternodeKeyRole::{Owner, Voting};
+    let f = fixture(false);
+    let key = |role| {
+        f.engine
+            .block_on(f.session.derive_masternode_keys(f.wallet, role, 0, 1))
+            .unwrap()
+            .remove(0)
+            .address
+            .unwrap()
+    };
+    let (owner, voting) = (key(Owner), key(Voting));
+    let session = Arc::clone(&f.session);
+    let (id, inner) = (f.wallet, Arc::clone(&session));
+    let (o, v) = (owner.clone(), voting.clone());
+    let listed = f
+        .engine
+        .block_on(session.on_runtime(async move {
+            let wallet = inner.wallet(&id).await?;
+            let state = wallet.state().await;
+            let fp = Some(key_wallet::bip32::Fingerprint::default());
+            let seen = |a: &str| {
+                let a = Address::from_str(a).unwrap().assume_checked();
+                let owned = crate::coins::wallet_owns(&state.core_wallet, &a);
+                let derived = super::psbt::derivation_of(&state.core_wallet, &a, fp).is_some();
+                (owned, derived)
+            };
+            Ok::<_, EngineError>((seen(&o), seen(&v)))
+        }))
+        .unwrap();
+    assert_eq!(
+        listed,
+        ((true, false), (true, false)),
+        "the wallet lists both keys; no derivation record for either"
+    );
+
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(&owner, 30_000_000), pay(&voting, 20_000_000)]);
+    let fee = f.engine.block_on(draft.estimate()).unwrap().fee;
+    let r = f.engine.block_on(draft.prepare(f.spend_grant(fee)));
+    assert_eq!(
+        send_failure(r),
+        SendFailure::GrantExceeded {
+            max_duffs: fee,
+            outflow: 50_000_000 + fee
+        }
+    );
+    let p = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(50_000_000 + fee)))
+        .unwrap();
+    let s = p.summary();
+    assert_eq!(s.external_sent, 50_000_000);
+    let paid: Vec<_> = s.outputs.iter().filter(|o| !o.is_change).collect();
+    assert_eq!(paid.len(), 2);
+    assert!(paid.iter().all(|o| !o.is_mine), "{paid:?}");
+
+    // Custom change to the owner key leaves the wallet too.
+    f.credit(3, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 30_000_000)]);
+    draft
+        .set_change(ChangePolicy::Address(owner.clone()))
+        .unwrap();
+    let estimate = f.engine.block_on(draft.estimate()).unwrap();
+    let r = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(30_000_000 + estimate.fee)));
+    assert_eq!(
+        send_failure(r),
+        SendFailure::GrantExceeded {
+            max_duffs: 30_000_000 + estimate.fee,
+            outflow: COIN
+        }
+    );
+
+    // The address book: a Send entry, never a Receive one.
+    let save = |purpose| {
+        f.engine.block_on(f.session.save_address_book_entry(
+            f.wallet,
+            owner.clone(),
+            "owner".into(),
+            purpose,
+            false,
+        ))
+    };
+    let r = save(dw_appdb::BookPurpose::Receive);
+    assert!(matches!(r, Err(EngineError::InvalidArgument(_))), "{r:?}");
+    save(dw_appdb::BookPurpose::Send).unwrap();
+
+    let prev = f.credit_with_prev(2, COIN);
+    let psbt = psbt_spending(&prev, &[(&owner, COIN / 2), (&voting, COIN / 2 - 10_000)]);
+    let a = f
+        .engine
+        .block_on(f.session.analyze_psbt(Some(f.wallet), psbt.clone()))
+        .unwrap();
+    assert!(a.outputs.iter().all(|o| !o.is_mine), "{:?}", a.outputs);
+    assert_eq!(a.external_sent, Some(COIN - 10_000));
+    assert_eq!(
+        psbt_failure(f.sign_psbt(&psbt, f.spend_grant(COIN / 2))),
+        PsbtFailure::GrantExceeded {
+            max_duffs: COIN / 2
+        }
+    );
+}
+
+/// MG-04 D55 (review r3 m-1), across every account the wallet derives: a
+/// payment to any keys-only account's address (identity, asset-lock,
+/// provider) leaves the wallet, so a fee-only grant refuses it; one to a
+/// funds account's address (BIP44/BIP32, CoinJoin, DashPay receiving) stays,
+/// so the same grant takes it and the output shows as the wallet's.
+#[test]
+fn only_a_funds_account_keeps_a_payment_in_the_wallet() {
+    use key_wallet::account::AccountType;
+    use key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
+    let f = fixture(false);
+    let (id, inner) = (f.wallet, Arc::clone(&f.session));
+    let accounts = f
+        .engine
+        .block_on(f.session.on_runtime(async move {
+            let wallet = inner.wallet(&id).await?;
+            // The fixture derives no DashPay account: add a receiving one
+            // (a contact pays the wallet there).
+            let network = dashcore::Network::Regtest;
+            let master = ExtendedPrivKey::new_master(network, &[7; 32]).unwrap();
+            let receiving = key_wallet::managed_account::ManagedCoreFundsAccount::from_account(
+                &key_wallet::Account {
+                    parent_wallet_id: None,
+                    account_type: AccountType::DashpayReceivingFunds {
+                        index: 0,
+                        user_identity_id: [1; 32],
+                        friend_identity_id: [2; 32],
+                    },
+                    network,
+                    account_xpub: ExtendedPubKey::from_priv(&master),
+                    is_watch_only: true,
+                },
+            );
+            (wallet.state_mut().await.core_wallet.accounts)
+                .insert_funds_bearing_account(receiving)
+                .unwrap();
+            let state = wallet.state().await;
+            let mut accounts = Vec::new();
+            for account in state.core_wallet.all_managed_accounts() {
+                let ty = account.managed_account_type();
+                if ty.is_contact_owned() {
+                    continue;
+                }
+                // The variant's name without its `Keys` suffix: the
+                // operator-signing guard (dw-protx `no_operator_signing`)
+                // refuses the provider operator variant's full name here.
+                let name = format!("{ty:?}");
+                let name = name.split([' ', '{', '(']).next().unwrap();
+                let name = name.trim_end_matches("Keys").to_string();
+                let address = ty
+                    .address_pools()
+                    .into_iter()
+                    .flat_map(|pool| pool.addresses.values())
+                    .map(|info| info.address.clone())
+                    .next()
+                    .unwrap_or_else(|| panic!("{name} has no address"));
+                assert!(
+                    crate::coins::wallet_owns(&state.core_wallet, &address),
+                    "{name}"
+                );
+                let funds = crate::coins::wallet_funds_address(&state.core_wallet, &address);
+                accounts.push((name, address.to_string(), funds));
+            }
+            Ok::<_, EngineError>(accounts)
+        }))
+        .unwrap();
+    let names = |funds: bool| {
+        let mut n: Vec<_> = accounts
+            .iter()
+            .filter(|(_, _, f)| *f == funds)
+            .map(|(name, _, _)| name.as_str())
+            .collect();
+        n.sort_unstable();
+        n.dedup();
+        n
+    };
+    assert_eq!(
+        names(false),
+        [
+            "AssetLockAddressTopUp",
+            "AssetLockShieldedAddressTopUp",
+            "IdentityInvitation",
+            "IdentityRegistration",
+            "IdentityTopUpNotBoundToIdentity",
+            "ProviderOperator",
+            "ProviderOwner",
+            "ProviderPlatform",
+            "ProviderVoting",
+        ]
+    );
+    assert_eq!(
+        names(true),
+        ["CoinJoin", "DashpayReceivingFunds", "Standard"]
+    );
+
+    for (seed, (name, address, funds)) in (10u8..).zip(&accounts) {
+        f.credit(seed, COIN);
+        let draft = f.draft(vec![pay(address, 10_000_000)]);
+        let fee = f.engine.block_on(draft.estimate()).unwrap().fee;
+        let r = f.engine.block_on(draft.prepare(f.spend_grant(fee)));
+        if *funds {
+            let p = r.unwrap_or_else(|e| panic!("{name}: a self-transfer is capped: {e:?}"));
+            let s = p.summary();
+            assert_eq!(s.external_sent, 0, "{name}");
+            assert!(
+                s.outputs.iter().all(|o| o.is_mine),
+                "{name}: {:?}",
+                s.outputs
+            );
+        } else {
+            assert_eq!(
+                send_failure(r),
+                SendFailure::GrantExceeded {
+                    max_duffs: fee,
+                    outflow: 10_000_000 + fee
+                },
+                "{name}"
+            );
+        }
+    }
+}
+
 /// MG-05 r2 N2: the same claim through `create_unsigned` itself: a draft
 /// paying a contact's address gets no derivation record for that output,
 /// while its own input and change get theirs.
