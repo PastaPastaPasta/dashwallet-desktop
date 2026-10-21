@@ -102,6 +102,9 @@ pub(crate) struct FakeNames {
     pending: Mutex<Option<Cast>>,
     /// Accepted broadcasts get no proof.
     unproved: AtomicBool,
+    /// Broadcasts DAPI takes are answered "already exists".
+    duplicate: AtomicBool,
+    waits: AtomicUsize,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -198,7 +201,10 @@ impl NameVoteNet for FakeNames {
         match lock(&self.casts).pop_front().unwrap_or(Cast::Counted) {
             c @ (Cast::Counted | Cast::Refused { executed: true, .. }) => {
                 *lock(&self.pending) = Some(c);
-                Broadcast::Accepted
+                match self.duplicate.load(Ordering::SeqCst) {
+                    true => Broadcast::Duplicate,
+                    false => Broadcast::Accepted,
+                }
             }
             Cast::Refused { refusal, .. } => Broadcast::Refused(refusal),
             Cast::NotSent => Broadcast::NotSent,
@@ -207,6 +213,7 @@ impl NameVoteNet for FakeNames {
     }
 
     async fn wait(&self, _: Vec<u8>) -> Cast {
+        self.waits.fetch_add(1, Ordering::SeqCst);
         let answer = lock(&self.pending).take().unwrap_or(Cast::Counted);
         match self.unproved.load(Ordering::SeqCst) {
             true => Cast::Unknown,
@@ -809,6 +816,49 @@ fn an_unproved_vote_is_sent_but_unconfirmed() {
     assert_eq!(super::votes_used(&appdb, &B, LABEL).unwrap(), 0);
 }
 
+/// Review r3 m2, n4: a repeat is told by Platform's present choice, as
+/// Drive tells it. At the local limit, the present choice again is
+/// `already_voted` (Drive checks it before the count). "Already exists"
+/// with the present choice again is `already_voted` at once, not a wait
+/// for a proof that never comes; with another choice the proof is waited
+/// for, and the vote counts.
+#[test]
+fn a_repeat_reads_platforms_present_choice() {
+    let n = names();
+    let appdb = n.f.session.live().unwrap().appdb;
+    // A's present choice is towards ID1.
+    set_votes_used(&appdb, &A, LABEL, 5).unwrap();
+    let cast = n.vote(LABEL, towards(ID1), &[A], n.grant()).unwrap();
+    assert_eq!(
+        reasons(&cast),
+        vec![(display_hex(&A), Some("already_voted"))]
+    );
+    assert!(cast[0].transition.is_none());
+    assert!(lock(&n.net.sent).is_empty());
+    set_votes_used(&appdb, &A, LABEL, 0).unwrap();
+
+    n.net.duplicate.store(true, Ordering::SeqCst);
+    // No proof for A's bytes: a wait would make it `unconfirmed`.
+    n.net.unproved.store(true, Ordering::SeqCst);
+    let cast = n.vote(LABEL, towards(ID1), &[A], n.grant()).unwrap();
+    assert_eq!(
+        reasons(&cast),
+        vec![(display_hex(&A), Some("already_voted"))]
+    );
+    let t = cast[0].transition.as_deref().expect("broadcast");
+    assert_eq!(n.status(t), Some(DispatchState::Sent));
+    assert_eq!(n.net.waits.load(Ordering::SeqCst), 0);
+    assert_eq!(super::votes_used(&appdb, &A, LABEL).unwrap(), 0);
+
+    // B has no present vote: its duplicate may still execute.
+    n.net.unproved.store(false, Ordering::SeqCst);
+    let cast = n.vote(LABEL, NameChoice::Abstain, &[B], n.grant()).unwrap();
+    assert_eq!(reasons(&cast), vec![(display_hex(&B), None)]);
+    assert_eq!(n.net.waits.load(Ordering::SeqCst), 1);
+    assert_eq!(super::votes_used(&appdb, &B, LABEL).unwrap(), 1);
+    assert_eq!(n.leases(), 0);
+}
+
 /// Review m1, m4: the SDK's answers as the fence and the caller see them.
 #[test]
 fn broadcast_and_proof_answers_classify() {
@@ -842,7 +892,7 @@ fn broadcast_and_proof_answers_classify() {
     assert_eq!(broadcast_outcome(Ok(())), Broadcast::Accepted);
     assert_eq!(
         broadcast_outcome(Err(dash_sdk::Error::AlreadyExists("same bytes".into()))),
-        Broadcast::Accepted
+        Broadcast::Duplicate
     );
     assert_eq!(
         broadcast_outcome(Err(at_check_tx())),

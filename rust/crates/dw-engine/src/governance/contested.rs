@@ -83,8 +83,8 @@ pub(crate) trait NameVoteNet: ContestNet {
     /// Broadcasts a signed transition: one attempt, no retry on another
     /// node (D12). A First runs under its permit's deadline (D16).
     fn broadcast(&self, bytes: Vec<u8>) -> impl Future<Output = Broadcast> + Send;
-    /// Waits for the proof of a transition [`Broadcast::Accepted`] took
-    /// (D12), after the permit ended.
+    /// Waits for the proof of a transition DAPI took (D12), after the
+    /// permit ended.
     fn wait(&self, bytes: Vec<u8>) -> impl Future<Output = Cast> + Send;
     /// Why Platform refused the voting key: one identity fetch, only
     /// after such a refusal (D10). `None` when the fetch says nothing.
@@ -98,9 +98,11 @@ pub(crate) trait NameVoteNet: ContestNet {
 /// What the one broadcast attempt of a transition came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Broadcast {
-    /// DAPI took it, or already held the same bytes: its proof is waited
-    /// for.
+    /// DAPI took it: its proof is waited for.
     Accepted,
+    /// DAPI already held the same bytes (rs-sdk's "already exists"): the
+    /// present vote is read, as `PutVote` does (D18).
+    Duplicate,
     /// Platform's CheckTx refused it.
     Refused(Refusal),
     /// The request never left (a local error).
@@ -172,17 +174,16 @@ fn consensus(e: &dash_sdk::Error) -> Option<&ConsensusError> {
     }
 }
 
-/// The broadcast's answer as [`Broadcast`]. `AlreadyExists` (the same
-/// bytes in the mempool) goes on to the wait, as rs-sdk's identity put
-/// does. A `Protocol` error with no consensus error is DAPI's refusal in
-/// a form this client cannot decode (rs-sdk `Error::from(DapiClientError)`):
-/// refused, not unsent.
+/// The broadcast's answer as [`Broadcast`]. `AlreadyExists` is the same
+/// bytes in a node's cache (D18). A `Protocol` error with no consensus
+/// error is DAPI's refusal in a form this client cannot decode (rs-sdk
+/// `Error::from(DapiClientError)`): refused, not unsent.
 fn broadcast_outcome(answer: Result<(), dash_sdk::Error>) -> Broadcast {
     let Err(e) = answer else {
         return Broadcast::Accepted;
     };
     match (&e, consensus(&e)) {
-        (dash_sdk::Error::AlreadyExists(_), _) => Broadcast::Accepted,
+        (dash_sdk::Error::AlreadyExists(_), _) => Broadcast::Duplicate,
         (_, Some(c)) => Broadcast::Refused(refusal(c)),
         (dash_sdk::Error::Protocol(_), None) => Broadcast::Refused(Refusal::Reason("refused")),
         (_, None) => {
@@ -787,8 +788,13 @@ impl<N: NameVoteNet> Batch<'_, N> {
                 .map_err(unavailable)?
                 .map_err(unavailable)?
         };
+        let platform = platform_order(&t.wire);
         if used >= self.allowed {
-            return Err(no_hash("vote_limit"));
+            // Drive refuses a repeated choice before it counts votes (D18).
+            return Err(no_hash(match self.already_cast(platform).await {
+                Some(true) => "already_voted",
+                _ => "vote_limit",
+            }));
         }
         let key = {
             let (signer, keychain, mn) =
@@ -798,7 +804,6 @@ impl<N: NameVoteNet> Batch<'_, N> {
                 .map_err(unavailable)?
                 .map_err(no_hash)?
         };
-        let platform = platform_order(&t.wire);
         let nonce = (self.net)
             .nonce(voter_identity(&platform, &id))
             .await
@@ -817,7 +822,7 @@ impl<N: NameVoteNet> Batch<'_, N> {
                 .map_err(|e: SignerError| no_hash(refused(e)))?
         };
         let hash = signed.hash;
-        let outcome = self.hand_off(signed.bytes, hash).await?;
+        let outcome = self.hand_off(signed.bytes, hash, platform).await?;
         let rejected = match outcome {
             Cast::Counted => {
                 self.record_used(t.wire, used + 1).await;
@@ -847,10 +852,17 @@ impl<N: NameVoteNet> Batch<'_, N> {
 
     /// One signed transition through the dispatch fence (MG-05 §4, MG-07
     /// §2): admitted under the lease's scope, broadcast under a First's
-    /// permit deadline (so nothing leaves after a lock's drain), then
-    /// waited for after the permit ended. A refusal of the fence, or a
-    /// deadline that came first, is `Err` with no hash.
-    async fn hand_off(&self, bytes: Vec<u8>, hash: [u8; 32]) -> Result<Cast, Rejection> {
+    /// permit deadline (so nothing it signed leaves after a lock's drain),
+    /// then waited for after the permit ended. A Resend or an unleased
+    /// First has no deadline: its bytes were signed before (D16). A refusal of the fence, or a
+    /// deadline that came first, is `Err` with no hash. `platform` is the
+    /// masternode's proTxHash in Platform order.
+    async fn hand_off(
+        &self,
+        bytes: Vec<u8>,
+        hash: [u8; 32],
+        platform: [u8; 32],
+    ) -> Result<Cast, Rejection> {
         let wallet = self.lease.wallet();
         let table = Arc::clone(&self.lease.table);
         let verdict = self
@@ -869,7 +881,7 @@ impl<N: NameVoteNet> Batch<'_, N> {
             .await;
         // A single attempt refused at CheckTx never entered a block.
         let outcome = |b: &Broadcast| match b {
-            Broadcast::Accepted => Outcome::Sent,
+            Broadcast::Accepted | Broadcast::Duplicate => Outcome::Sent,
             Broadcast::Refused(_) | Broadcast::NotSent => Outcome::NotSent,
             Broadcast::Unknown => Outcome::MaybeSent,
         };
@@ -910,6 +922,16 @@ impl<N: NameVoteNet> Batch<'_, N> {
         };
         Ok(match sent {
             Broadcast::Accepted => self.net.wait(bytes).await,
+            // The same bytes carry the nonce Platform gave this run, so
+            // they have not executed: a present choice equal to this one
+            // is Drive's `already_voted`, else they may still (D18).
+            Broadcast::Duplicate => match self.already_cast(platform).await {
+                Some(true) => Cast::Refused {
+                    refusal: Refusal::Reason("already_voted"),
+                    executed: false,
+                },
+                _ => self.net.wait(bytes).await,
+            },
             Broadcast::Refused(refusal) => Cast::Refused {
                 refusal,
                 executed: false,
@@ -917,6 +939,15 @@ impl<N: NameVoteNet> Batch<'_, N> {
             Broadcast::NotSent => Cast::NotSent,
             Broadcast::Unknown => Cast::Unknown,
         })
+    }
+
+    /// Whether Platform's proved present choice of masternode `platform`
+    /// on this poll is the one being cast (D18); `None` when the read
+    /// fails.
+    async fn already_cast(&self, platform: [u8; 32]) -> Option<bool> {
+        let present = self.net.votes_of(platform).await.ok()?;
+        let choice = present.get(self.label).map(vault_choice);
+        Some(matches!(choice, Some(Ok(c)) if c == self.choice))
     }
 
     /// Records the votes Platform took; a failed write only lowers the
