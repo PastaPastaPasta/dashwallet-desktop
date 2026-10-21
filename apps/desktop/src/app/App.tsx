@@ -204,7 +204,7 @@ function Shell() {
     else if (route === "masternodes") content = <MasternodesPage key={wallet.walletId} wallet={wallet} network={network} />;
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
   } else if (route === "tools") content = <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} />;
-  else if (route === "settings") content = <SettingsPage />;
+  else if (route === "settings") content = <SettingsPage network={network} />;
   else content = <Placeholder route={route} />;
 
   // The bell's popover once the main identity is known; before that the bell opens its page.

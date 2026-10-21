@@ -25,6 +25,7 @@ import type { SyncLoopStatus } from "../api/generated/SyncLoopStatus";
 import type { SyncPassReport } from "../api/generated/SyncPassReport";
 import type { UserHit } from "../api/generated/UserHit";
 import type { UserRelation } from "../api/generated/UserRelation";
+import type { IdentitiesWorld } from "./identities";
 import type { CreditsWorld } from "./topup";
 import { FIXTURE_NOW, secs } from "./wallet";
 
@@ -71,6 +72,8 @@ export interface DashPayWorld {
   pictures?: FixturePictures;
   /** DP4-03: this many next profile saves fail with `platform.unavailable`. */
   profileSaveFailures?: number;
+  /** DP6-01: keys, revisions, refresh failures and Find my identities' finds (identities.ts). */
+  identityState?: IdentitiesWorld;
   /** DP6-03: the pass `dashpay_sync_status` reports; absent: none (the engine's `last_pass` is
    * `None` until passes report, E0-10b §7). */
   lastPass?: SyncPassReport;

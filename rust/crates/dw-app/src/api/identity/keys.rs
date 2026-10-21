@@ -184,3 +184,94 @@ impl From<engine::IdentityDetail> for IdentityDetail {
         }
     }
 }
+
+/// One identity's outcome of `identityRefreshAll`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityRefresh {
+    /// Base58.
+    pub identity: String,
+    /// The error code of a failed refresh; `null` when it succeeded.
+    pub failure_code: Option<String>,
+}
+
+impl From<engine::IdentityRefresh> for IdentityRefresh {
+    fn from(r: engine::IdentityRefresh) -> Self {
+        let engine::IdentityRefresh {
+            identity,
+            failure_code,
+        } = r;
+        IdentityRefresh {
+            identity,
+            failure_code,
+        }
+    }
+}
+
+/// How `identityFind` reached the identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum FoundBy {
+    Id,
+    /// The DPNS name, as spelled, whose `records.identity` it is.
+    Name { label: String },
+}
+
+impl From<engine::FoundBy> for FoundBy {
+    fn from(f: engine::FoundBy) -> Self {
+        match f {
+            engine::FoundBy::Id => FoundBy::Id,
+            engine::FoundBy::Name { label } => FoundBy::Name { label },
+        }
+    }
+}
+
+/// Any identity Platform knows, read-only; never added to the wallet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundIdentity {
+    /// Base58.
+    pub identity: String,
+    pub found_by: FoundBy,
+    /// Its DPNS names as spelled, at most 10; empty when that read failed.
+    pub names: Vec<String>,
+    /// Credits; `null` while unknown.
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub balance: Option<u64>,
+    pub revision: Option<u64>,
+    pub public_keys: Vec<IdentityKeyInfo>,
+    /// One of this wallet's identities.
+    pub own: bool,
+    /// Verified only through the trusted fallback.
+    pub unverified: bool,
+}
+
+impl From<engine::FoundIdentity> for FoundIdentity {
+    fn from(f: engine::FoundIdentity) -> Self {
+        let engine::FoundIdentity {
+            identity,
+            found_by,
+            names,
+            balance,
+            revision,
+            public_keys,
+            own,
+            unverified,
+        } = f;
+        FoundIdentity {
+            identity,
+            found_by: found_by.into(),
+            names,
+            balance,
+            revision,
+            public_keys: public_keys.into_iter().map(Into::into).collect(),
+            own,
+            unverified,
+        }
+    }
+}
