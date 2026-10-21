@@ -37,7 +37,7 @@ import type { UserHit } from "../api/generated/UserHit";
 import type { ScannedContactInfo } from "../api/generated/ScannedContactInfo";
 import { userLinkText } from "../contacts/add";
 import { CANDIDATE_GONE, MAX_FILE_BYTES } from "../dashpay/editProfile";
-import { activityPage, contactList, eventOf, relationOf, type DashPayWorld, type FixtureScan } from "./dashpay";
+import { activityPage, contactList, eventOf, fixtureLoops, relationOf, type DashPayWorld, type FixtureScan } from "./dashpay";
 import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
@@ -865,6 +865,20 @@ export const HANDLERS: Handlers = {
   // A pass is asked for; the fixture's world is always past it.
   dashpay_sync_soon: () => null,
   dashpay_startup: ({ walletId }, { world }) => dashpay(world, walletId).startup,
+  // DashPay::sync_status (startup.rs): the bring-up, its contact-crypto queue, the loops and the
+  // session's quorum source (DP6-03).
+  dashpay_sync_status: ({ walletId }, { world }) => {
+    const d = dashpay(world, walletId);
+    return {
+      startup: d.startup.startup,
+      lastPass: d.lastPass ?? null,
+      pendingContactCrypto: d.startup.contactAccountsPending,
+      loops: fixtureLoops(world.sync.running),
+      quorumSource: world.trust.source,
+    };
+  },
+  quorum_source: (_, { world }) => world.trust.source,
+  trusted_quorums_only: (_, { world }) => world.trust.trustedOnly,
   identities: ({ walletId }, { world }) => dashpay(world, walletId).identities,
   main_name: ({ walletId, identity }, { world }) =>
     dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!.mainName,

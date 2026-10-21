@@ -3036,6 +3036,18 @@ button {
   display: block;
 }
 
+/* Information's DashPay card (DP6-03): its state chip and headline, then its lines. */
+.dashpay-info-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.dashpay-info-line {
+  margin: 0;
+}
+
 .tool-actions,
 .tool-inline-form,
 .tool-progress {
