@@ -1442,7 +1442,9 @@ fn a_payment_to_an_own_provider_key_leaves_the_wallet() {
     // Custom change to the owner key leaves the wallet too.
     f.credit(3, COIN);
     let draft = f.draft(vec![pay(FOREIGN, 30_000_000)]);
-    draft.set_change(ChangePolicy::Address(owner.clone())).unwrap();
+    draft
+        .set_change(ChangePolicy::Address(owner.clone()))
+        .unwrap();
     let estimate = f.engine.block_on(draft.estimate()).unwrap();
     let r = f
         .engine
