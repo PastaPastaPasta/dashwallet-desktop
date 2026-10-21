@@ -20,6 +20,7 @@ const ROUTES: Route[] = [
   "activity",
   "coinJoin",
   "explore",
+  "masternodes",
   "notifications",
   "profile",
   "settings",

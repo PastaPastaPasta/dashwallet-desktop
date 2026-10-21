@@ -73,6 +73,19 @@ import type { UsernameCheck } from "./generated/UsernameCheck";
 import type { NameAvailability } from "./generated/NameAvailability";
 import type { FinishReport } from "./generated/FinishReport";
 import type { NameOutcome } from "./generated/NameOutcome";
+import type { GovernanceClock } from "./generated/GovernanceClock";
+import type { GovernanceInfo } from "./generated/GovernanceInfo";
+import type { GovernanceSyncState } from "./generated/GovernanceSyncState";
+import type { MyProposal } from "./generated/MyProposal";
+import type { ProposalDetail } from "./generated/ProposalDetail";
+import type { ProposalDraft } from "./generated/ProposalDraft";
+import type { ProposalPreview } from "./generated/ProposalPreview";
+import type { ProposalQuery } from "./generated/ProposalQuery";
+import type { ProposalRow } from "./generated/ProposalRow";
+import type { SuperblockDate } from "./generated/SuperblockDate";
+import type { VoteCast } from "./generated/VoteCast";
+import type { VoteOutcomeName } from "./generated/VoteOutcomeName";
+import type { VotingMasternode } from "./generated/VotingMasternode";
 import type { RescanStart } from "./generated/RescanStart";
 import type { RescanStatus } from "./generated/RescanStatus";
 import type { VerifyMessageResult } from "./generated/VerifyMessageResult";
@@ -386,6 +399,28 @@ export interface Backend {
   openFile(purpose: FilePurpose): Promise<OpenedFile | null>;
   saveFileAs(purpose: FilePurpose, suggestedName: string, data: string): Promise<string | null>;
   chooseFilePath(purpose: FilePurpose, save: boolean, suggestedName: string | null): Promise<string | null>;
+  // Governance (MG-09 over BL-232's binding; mg-engine §2). Reads answer `governance.not_synced`
+  // until a run reached `synced`; the clock, the info and the sync state need only the tip.
+  governanceSyncEnabled(): Promise<boolean>;
+  governanceSetSyncEnabled(enabled: boolean): Promise<null>;
+  governanceSyncState(): Promise<GovernanceSyncState>;
+  governanceResync(): Promise<null>;
+  governanceClock(): Promise<GovernanceClock>;
+  governanceInfo(): Promise<GovernanceInfo>;
+  /** The next `count` superblocks (at most 24), for the proposal form. */
+  governanceUpcomingSuperblocks(count: number): Promise<SuperblockDate[]>;
+  governanceProposals(query: ProposalQuery): Promise<ProposalRow[]>;
+  governanceProposal(hash: string): Promise<ProposalDetail>;
+  /** The masternodes whose voting key the wallet's keychain derives, with their votes seen on `proposal`. */
+  governanceVotingMasternodes(walletId: string, proposal: string): Promise<VotingMasternode[]>;
+  /** One vote per masternode under one `governance` grant; one result each, in order. */
+  governanceVote(walletId: string, proposal: string, outcome: VoteOutcomeName, masternodes: string[], grant: string): Promise<VoteCast[]>;
+  governancePreviewProposal(walletId: string, draft: ProposalDraft): Promise<ProposalPreview>;
+  /** Pays the 1 DASH fee under a `spend` grant and saves the proposal; it submits on its own. */
+  governanceCreateProposal(walletId: string, draft: ProposalDraft, grant: string): Promise<MyProposal>;
+  governanceMyProposals(walletId: string): Promise<MyProposal[]>;
+  /** [Submit] (MG-06 D24). */
+  governanceSubmitProposal(walletId: string, hash: string): Promise<MyProposal>;
   /** Subscribes to engine events; returns the unsubscribe function. */
   onEvent(listener: (event: AppEvent) => void): Promise<() => void>;
   /** Subscribes to the shell's events (menus, tray, deep links). */

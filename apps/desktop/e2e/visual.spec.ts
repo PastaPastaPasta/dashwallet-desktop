@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { STATES as COINJOIN, pressStart } from "./coinjoin";
 import { CARDS, CHIP_TEXT, CHIPS } from "./dashpay";
 import { fileDialogAnswers, WIDE_PNG } from "./editProfile";
@@ -598,5 +599,64 @@ for (const theme of THEMES) {
     await page.getByTestId("saved-links").getByTestId("saved-link").nth(2).waitFor();
     await page.mouse.move(0, 0);
     await shoot(page, "saved-links", theme);
+  });
+}
+
+// MG-09: Masternodes ▸ Governance: the list with its pane, the vote sheet, Mine, the numbers sheet
+// and the create wizard's three steps. The fixture's chain times are FIXTURE_NOW's, so the clock is pinned.
+async function openGovernance(page: Page, scenario: string, theme: Theme) {
+  await page.clock.setFixedTime(FIXTURE_NOW);
+  await page.goto(fixtureUrl(scenario, theme));
+  await page.getByTestId("toolbar").waitFor();
+  await page.getByTestId("sidebar-masternodes").click();
+  await page.getByTestId("proposal-pane-chip").waitFor();
+}
+
+for (const theme of THEMES) {
+  test(`visual governance ${theme}`, async ({ page }) => {
+    await openGovernance(page, "governance", theme);
+    await page.mouse.move(0, 0);
+    await shoot(page, "governance-list", theme);
+    await page.getByTestId("governance-filter-mine").click();
+    await page.getByTestId("mine-list").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "governance-mine", theme);
+    await page.getByTestId("governance-more").click();
+    await page.getByTestId("governance-more-numbers").click();
+    await page.getByTestId("numbers-votes").waitFor();
+    await shoot(page, "governance-numbers", theme);
+  });
+
+  test(`visual governance-vote ${theme}`, async ({ page }) => {
+    await openGovernance(page, "governance-vote-refused", theme);
+    await page.getByTestId("proposal-row-dashcon-2027-venue").click();
+    await page.getByTestId("proposal-vote").click();
+    await page.getByTestId("vote-outcome-yes").click();
+    await page.getByTestId("vote-privacy").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "governance-vote", theme);
+    await page.getByTestId("vote-passphrase").fill("demo");
+    await page.getByTestId("vote-send").click();
+    await page.getByTestId("vote-result").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "governance-vote-result", theme);
+  });
+
+  test(`visual governance-create ${theme}`, async ({ page }) => {
+    await openGovernance(page, "governance", theme);
+    await page.getByTestId("governance-create").click();
+    await page.getByTestId("create-name").fill("desktop-translations");
+    await page.getByTestId("create-url").fill("https://www.dashcentral.org/p/desktop-translations");
+    await shoot(page, "governance-create-details", theme);
+    await page.getByTestId("create-continue").click();
+    await page.getByTestId("create-count").selectOption("3");
+    await page.getByTestId("create-amount").fill("12.5");
+    await expect(page.getByTestId("create-total")).toContainText("37.5");
+    await page.mouse.move(0, 0);
+    await shoot(page, "governance-create-payments", theme);
+    await page.getByTestId("create-continue").click();
+    await page.getByTestId("create-review").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "governance-create-review", theme);
   });
 }

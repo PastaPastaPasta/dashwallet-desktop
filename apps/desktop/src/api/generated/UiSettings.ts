@@ -30,4 +30,9 @@ autoLockSecs: number | null,
 /**
  * A new payment starts with "Subtract fee from amount" checked (QT-137).
  */
-subtractFeeByDefault: boolean, };
+subtractFeeByDefault: boolean,
+/**
+ * Settings ▸ General ▸ Show Masternodes: the sidebar item shows even
+ * without a masternode, a collateral or a proposal (MG-00 D1, D2).
+ */
+showMasternodes: boolean, };
