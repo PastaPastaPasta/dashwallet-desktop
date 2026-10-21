@@ -178,7 +178,9 @@ impl AppDb {
     }
 
     /// An External row's new prepared transaction (refresh): only while
-    /// it is unsigned.
+    /// it is unsigned. `locks` (its new inputs) are written with it in one
+    /// transaction, and not at all when the row isn't updated (MG-04 D53).
+    #[expect(clippy::too_many_arguments, reason = "one prepared transaction")]
     pub fn reprepare_masternode_op(
         &self,
         wallet_id: &str,
@@ -187,9 +189,12 @@ impl AppDb {
         sign_message: &str,
         fee_inputs: &str,
         fee: u64,
+        locks: &[(String, u32)],
+        now: u64,
     ) -> Result<bool> {
         self.durably(|conn| {
-            Ok(conn.execute(
+            let tx = conn.unchecked_transaction()?;
+            let updated = tx.execute(
                 "UPDATE masternode_ops SET unsigned_tx = ?3, sign_message = ?4, fee_inputs = ?5,
                      fee = ?6, last_error = NULL
                  WHERE wallet_id = ?1 AND id = ?2 AND signed_tx IS NULL",
@@ -201,7 +206,15 @@ impl AppDb {
                     fee_inputs,
                     sql_u64(fee)
                 ],
-            )? == 1)
+            )? == 1;
+            if !updated {
+                return Ok(false);
+            }
+            for (txid, vout) in locks {
+                Self::lock_manual_on(&tx, wallet_id, txid, *vout, now)?;
+            }
+            tx.commit()?;
+            Ok(true)
         })
     }
 
@@ -397,7 +410,7 @@ mod tests {
             .unwrap();
         assert_eq!(db.begin_masternode_op_attempt(W, "e", 1).unwrap(), None);
         assert!(
-            db.reprepare_masternode_op(W, "e", &[3], "m", "[]", 9)
+            db.reprepare_masternode_op(W, "e", &[3], "m", "[]", 9, &[], 1)
                 .unwrap()
         );
         assert!(
@@ -409,7 +422,7 @@ mod tests {
                 .unwrap()
         );
         assert!(
-            !db.reprepare_masternode_op(W, "e", &[6], "m", "[]", 9)
+            !db.reprepare_masternode_op(W, "e", &[6], "m", "[]", 9, &[], 1)
                 .unwrap()
         );
         let r = db.masternode_op(W, "e").unwrap().unwrap();
@@ -481,6 +494,53 @@ mod tests {
             .unwrap();
         assert!(db.masternode_op(W, "a").unwrap().is_some());
         assert_eq!(active_locks(&db), locks);
+    }
+
+    /// MG-04 D53 (r3 n-2): a refresh's new inputs are locked in the write
+    /// that puts them in the row: a failure writing either, or a row that
+    /// is signed by now, leaves neither.
+    #[test]
+    fn a_refresh_locks_its_inputs_with_the_row() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.insert_masternode_op_durable(W, &row("e", false), &[], 1)
+            .unwrap();
+        let locks = [("n".to_string(), 0), ("o".to_string(), 3)];
+        let reprepare =
+            |db: &AppDb| db.reprepare_masternode_op(W, "e", &[3], "m", "[]", 9, &locks, 2);
+        db.conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_lock BEFORE INSERT ON utxo_locks
+                 BEGIN SELECT RAISE(ABORT, 'lock refused'); END;",
+            )
+            .unwrap();
+        assert!(reprepare(&db).is_err());
+        assert_eq!(
+            db.masternode_op(W, "e").unwrap().unwrap().fee,
+            row("e", false).fee
+        );
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER no_lock;
+                 CREATE TEMP TRIGGER no_row BEFORE UPDATE ON masternode_ops
+                 BEGIN SELECT RAISE(ABORT, 'row refused'); END;",
+            )
+            .unwrap();
+        assert!(reprepare(&db).is_err());
+        assert!(active_locks(&db).is_empty(), "no lock without its row");
+        db.conn().execute_batch("DROP TRIGGER no_row;").unwrap();
+        assert!(reprepare(&db).unwrap());
+        assert_eq!(db.masternode_op(W, "e").unwrap().unwrap().fee, 9);
+        assert_eq!(active_locks(&db), locks);
+
+        db.unlock(W, "n", 0, 3).unwrap();
+        db.unlock(W, "o", 3, 3).unwrap();
+        db.sign_masternode_op_durable(W, "e", &[4], "t", "t", 3)
+            .unwrap();
+        assert!(!reprepare(&db).unwrap());
+        assert!(
+            active_locks(&db).is_empty(),
+            "a signed row takes no new locks"
+        );
     }
 
     /// MG-04 D54: a conflicted operation's collateral lock goes with its

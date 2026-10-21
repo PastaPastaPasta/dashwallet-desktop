@@ -974,6 +974,16 @@ fn mg04_external_prepare_survives_a_restart_and_refreshes_when_spent() {
     let ask = fresh.sign_request.unwrap();
     assert_ne!(ask.message, op.sign_request.unwrap().message);
     assert_eq!(fresh.terms, op.terms, "the same terms");
+    let row = f.rows().pop().unwrap();
+    let refreshed: Transaction =
+        dashcore::consensus::deserialize(row.unsigned_tx.as_ref().unwrap()).unwrap();
+    assert!(
+        refreshed
+            .input
+            .iter()
+            .all(|i| f.locked().contains(&i.previous_output)),
+        "the new inputs are locked with the row (D53)"
+    );
     let _ = (fee_coin, other);
 
     // A signature by another key, then by the collateral's.

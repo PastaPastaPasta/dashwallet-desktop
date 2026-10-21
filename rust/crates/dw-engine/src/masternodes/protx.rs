@@ -473,14 +473,15 @@ impl Masternodes {
                     return Err(e);
                 }
             };
-            let new_inputs = ops::decode_inputs(&fresh.fee_inputs);
+            // The new inputs are locked in the write that puts them in the
+            // row (D53).
+            let locks: Vec<(String, u32)> = ops::decode_inputs(&fresh.fee_inputs)
+                .iter()
+                .map(|o| (o.txid.to_string(), o.vout))
+                .collect();
             let id = operation.clone();
             let updated = s
                 .appdb_op(move |db| {
-                    let now = now_secs();
-                    for o in &new_inputs {
-                        db.lock_manual(&w_id, &o.txid.to_string(), o.vout, now)?;
-                    }
                     db.reprepare_masternode_op(
                         &w_id,
                         &id,
@@ -488,6 +489,8 @@ impl Masternodes {
                         fresh.sign_message.as_deref().unwrap_or_default(),
                         &fresh.fee_inputs,
                         fresh.fee,
+                        &locks,
+                        now_secs(),
                     )
                 })
                 .await?;
