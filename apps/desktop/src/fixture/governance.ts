@@ -72,6 +72,12 @@ export interface GovernanceWorld {
   mine: Record<string, MyProposal[]>;
   /** A [Submit] whose resend fails, or whose new run finds no peer again. */
   submitFails: boolean;
+  /** The network fee `preview_proposal` estimates and `create_proposal` pays; a test may move it
+   *  between the review and Pay (the coins moved, MG-06 D25). */
+  networkFee: number;
+  /** `create_proposal` pays the fee and keeps the proposal, then fails (its read after the
+   *  payment, or IPC): MG-09 D34. */
+  createFailsAfterPaying: boolean;
 }
 
 const range = (estimate: number, slack = 0): WeightRange => ({ min: Math.max(0, estimate - slack), max: estimate + slack, estimate });
@@ -163,6 +169,8 @@ export const newGovernanceWorld = (): GovernanceWorld => ({
   listUnavailable: false,
   mine: {},
   submitFails: false,
+  networkFee: FEE_NETWORK,
+  createFailsAfterPaying: false,
 });
 
 /** A synced governance world with the sample proposals (the base of every governance scenario). */
@@ -173,7 +181,8 @@ export function syncedGovernance(): GovernanceWorld {
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
 
 function requireSynced(w: GovernanceWorld) {
-  if (w.sync.phase !== "synced") throw fail("governance.not_synced", `not synced: ${w.sync.phase}`, { kind: "governancePhase", phase: w.sync.phase });
+  // As the engine: reads answer once a run reached `synced`, whatever the phase since.
+  if (w.sync.lastSyncedAt === null) throw fail("governance.not_synced", `not synced: ${w.sync.phase}`, { kind: "governancePhase", phase: w.sync.phase });
 }
 
 function find(w: GovernanceWorld, hash: string): ProposalDetail {
@@ -375,7 +384,7 @@ export function governanceHandlers({
       const { start, end } = epochs(draft);
       const dataJson = JSON.stringify({ end_epoch: end, name: draft.name, payment_address: draft.paymentAddress, payment_amount: draft.paymentAmount / COIN, start_epoch: start, type: 1, url: draft.url });
       const dataHex = Array.from(new TextEncoder().encode(dataJson), (b) => b.toString(16).padStart(2, "0")).join("");
-      return { hash: draftHash(draft), dataJson, dataHex, startEpoch: start, endEpoch: end, fee: PROPOSAL_FEE, networkFee: FEE_NETWORK };
+      return { hash: draftHash(draft), dataJson, dataHex, startEpoch: start, endEpoch: end, fee: PROPOSAL_FEE, networkFee: world.governance.networkFee };
     },
     governance_create_proposal: ({ walletId, draft, grant: grantId }, ctx) => {
       const { world } = ctx;
@@ -386,8 +395,13 @@ export function governanceHandlers({
       if (mine.some((p) => p.hash === hash)) throw fail("governance.submit_refused", "submit refused: in_flight", { kind: "reason", reason: "in_flight" });
       const g = grant(world, grantId, walletId, ["spend"]);
       if (!g || g.grant.purpose.kind !== "spend") throw fail("send.grant_invalid", "grant invalid");
-      const cost = PROPOSAL_FEE + FEE_NETWORK;
+      const networkFee = world.governance.networkFee;
+      const cost = PROPOSAL_FEE + networkFee;
       if (g.grant.purpose.maxDuffs < cost) throw fail("send.grant_exceeded", "grant exceeded", { kind: "spendCap", maxDuffs: g.grant.purpose.maxDuffs, outflow: cost });
+      // The renderer asks no more than the fee it showed plus dwcli's margin (MG-09 D29): a larger
+      // grant is a test failure, not a payment.
+      const cap = cost + Math.max(networkFee, 10_000);
+      if (g.grant.purpose.maxDuffs > cap) throw fail("invalid_argument", `fixture: spend grant ${g.grant.purpose.maxDuffs} above the fee's cap ${cap}`);
       const available = w.summary.balances?.confirmed ?? 0;
       if (available < cost) throw fail("send.amount_with_fee_exceeds_balance", "amount with fee exceeds balance", { kind: "duffs", needed: cost, available });
       useGrant(world, grantId);
@@ -409,6 +423,7 @@ export function governanceHandlers({
       };
       mine.unshift(created);
       changed(ctx);
+      if (world.governance.createFailsAfterPaying) throw fail("internal", "fixture: the proposal's read after its fee failed");
       return copy(created);
     },
     governance_my_proposals: ({ walletId }, { world }) => {
@@ -518,10 +533,16 @@ export function governanceScenarios(base: Base) {
     "governance-disabled": (t: ThemeName | null) => governanceBase(base, t, { enabled: false, sync: disabled() }),
     /** No peer serves governance data. */
     "governance-failed": (t: ThemeName | null) => {
-      const w = governanceBase(base, t, { sync: { ...synced(), phase: "failed", lastError: "no peer completed its sync", nextRetryAt: NOW + 30 }, phaseOnStart: "failed" });
+      const w = governanceBase(base, t, {
+        sync: { ...synced(), phase: "failed", lastSyncedAt: null, lastError: "no peer completed its sync", nextRetryAt: NOW + 30 },
+        phaseOnStart: "failed",
+      });
       w.governance.mine[id(w)] = [EVERY_STATE[1]];
       return w;
     },
+    /** Synced once, then every peer dropped: the list stays readable under the notice (D36). */
+    "governance-peers-lost": (t: ThemeName | null) =>
+      governanceBase(base, t, { sync: { ...synced(), phase: "failed", lastError: "every peer disconnected", nextRetryAt: NOW + 30 }, phaseOnStart: "failed" }),
     /** No masternode whose voting key the wallet holds: browsing only. */
     "governance-no-masternodes": (t: ThemeName | null) => governanceBase(base, t, { masternodes: [] }),
     /** Masternodes whose voting keys are here but none can vote (banned). */

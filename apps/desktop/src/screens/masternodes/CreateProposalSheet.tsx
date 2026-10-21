@@ -1,9 +1,10 @@
 // Create a proposal (§4.25.3, D14, MG-06): Details, Payments, then Review and pay the fee. Review
-// reads `preview_proposal`; [Pay 1 Dash and create] reads it again (the coins may have moved), asks
-// a spend grant capped at the fee plus the network fee with dwcli's margin (D29), then
-// `create_proposal`. An engine field refusal goes back to the first failing
-// field's step. Once paid, the proposal is the engine's (Mine shows it and resumes it after a
-// restart, D27).
+// reads `preview_proposal`; [Pay 1 Dash and create] reads it again (the coins may have moved): a
+// changed fee stops for a fresh confirm (D33), the same one asks a spend grant capped at the
+// confirmed total plus dwcli's margin (D29), then `create_proposal`. An engine field refusal goes
+// back to the first failing field's step. Any other failure may come after the fee went out, so
+// Pay waits for a re-read of Mine and, if the proposal is there, sends the user to it (D34). Once
+// paid, the proposal is the engine's (Mine shows it and resumes it after a restart, D27).
 
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useState } from "react";
@@ -12,6 +13,7 @@ import type { MyProposal } from "../../api/generated/MyProposal";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { ProposalDraft } from "../../api/generated/ProposalDraft";
 import type { ProposalFieldName } from "../../api/generated/ProposalFieldName";
+import type { ProposalPreview } from "../../api/generated/ProposalPreview";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useBackend } from "../../api/queries";
 import { AmountText, DashButton } from "../../components/basics";
@@ -21,14 +23,18 @@ import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
 import {
   budgetNotice,
+  createdFrom,
   defaultFirstPayment,
   detailsProblems,
+  feeGrantCap,
+  feeTotal,
   FIELD_STEP,
   fieldText,
   GovText,
   governanceErrorText,
   lastPaymentText,
   MAX_PAYMENTS,
+  sameFee,
   shortAddress,
   shortDate,
   superblockOption,
@@ -48,9 +54,9 @@ const STEPS: { n: Step; title: string; heading: string }[] = [
 
 type FieldErrors = Partial<Record<ProposalFieldName, string>>;
 
-/** The least margin the spend grant gives over the estimated network fee, as dwcli's
- *  `PROPOSAL_FEE_MARGIN` (D29): the coins picked at create time may differ from the preview's. */
-const NETWORK_FEE_MARGIN = 10_000;
+/** After a failed `create_proposal` (D34): reading Mine, the proposal it made anyway, or Mine
+ *  unreadable. Pay stays off in all three. */
+type AfterFailure = { kind: "checking" } | { kind: "created"; p: MyProposal } | { kind: "unknown" };
 
 export function CreateProposalSheet({
   wallet,
@@ -83,6 +89,9 @@ export function CreateProposalSheet({
   const [errors, setErrors] = useState<FieldErrors>({});
   const [general, setGeneral] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Pay's re-read found other figures than the review showed: they need a fresh confirm (D33). */
+  const [feeChanged, setFeeChanged] = useState<ProposalPreview | null>(null);
+  const [after, setAfter] = useState<AfterFailure | null>(null);
   const credential = useCredential(wallet.walletId, "Enter your passphrase to pay the fee.");
 
   const choice = useMemo(() => defaultFirstPayment(superblocks.data ?? [], now), [superblocks.data, now]);
@@ -121,6 +130,7 @@ export function CreateProposalSheet({
 
   const next = async () => {
     setGeneral(null);
+    setFeeChanged(null);
     if (step === 1) {
       const p = detailsProblems(name, url);
       setErrors(p);
@@ -146,22 +156,49 @@ export function CreateProposalSheet({
     }
   };
 
+  /** Whether the failed call made the proposal anyway: Mine says (D34). */
+  const checkMine = async (d: ProposalDraft) => {
+    setAfter({ kind: "checking" });
+    try {
+      const made = createdFrom(await b.governanceMyProposals(wallet.walletId), d);
+      if (made) credential.setError(null); // the notice says what happened instead
+      setAfter(made ? { kind: "created", p: made } : null);
+    } catch {
+      setAfter({ kind: "unknown" });
+    }
+    void refresh();
+  };
+
   const create = async () => {
-    if (busy || !draft || !preview.data || !credential.ready) return;
+    // The figures the review shows as Pay is pressed: the ones the user confirms.
+    const confirmed = preview.data;
+    if (busy || after || !draft || !confirmed || !credential.ready) return;
     setBusy(true);
     setGeneral(null);
     try {
       const r = await preview.refetch();
       if (r.isError || !r.data) return; // the preview's effect says why
-      const p = r.data;
-      const margin = Math.max(p.networkFee, NETWORK_FEE_MARGIN);
-      const grant = await credential.authorize({ kind: "spend", maxDuffs: p.fee + p.networkFee + margin });
+      if (!sameFee(r.data, confirmed)) {
+        // The review now shows the new figures; the next press confirms them.
+        setFeeChanged(r.data);
+        return;
+      }
+      setFeeChanged(null);
+      const grant = await credential.authorize({ kind: "spend", maxDuffs: feeGrantCap(confirmed) });
       if (!grant) return;
-      const created = await b.governanceCreateProposal(wallet.walletId, draft, grant.id);
+      let created: MyProposal;
+      try {
+        created = await b.governanceCreateProposal(wallet.walletId, draft, grant.id);
+      } catch (e) {
+        if (refuseFields(e)) return;
+        credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
+        await checkMine(draft);
+        return;
+      }
       void refresh();
       onCreated(created);
     } catch (e) {
-      if (!refuseFields(e)) credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
+      credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
     } finally {
       setBusy(false);
     }
@@ -319,7 +356,16 @@ export function CreateProposalSheet({
                 <AmountText text={shown.full(preview.data.fee)} unitName={shown.name} /> + network fee{" "}
                 <AmountText text={shown.full(preview.data.networkFee)} unitName={shown.name} />
               </DetailRow>
+              <DetailRow label="You pay" testId="create-review-total">
+                <AmountText text={shown.full(feeTotal(preview.data))} unitName={shown.name} />
+              </DetailRow>
             </dl>
+            {feeChanged && (
+              <p className="mg-notice mg-notice-warning" role="alert" data-testid="create-fee-changed">
+                The network fee changed to {shown.withUnit(feeChanged.networkFee)}, so you pay {shown.withUnit(feeTotal(feeChanged))} in all. Nothing was paid: check
+                the figures and press Pay again.
+              </p>
+            )}
             <details className="disclosure card-l1">
               <summary>Proposal data (JSON)</summary>
               <pre className="mono mg-json" data-testid="create-json">
@@ -330,6 +376,25 @@ export function CreateProposalSheet({
               <strong>{GovText.feeWarning}</strong> {GovText.feeAfter}
             </p>
             <CredentialField c={credential} busy={busy} testId="create" className="mg-create-credential" />
+            {after?.kind === "checking" && <LoadingState testId="create-checking" text="Checking whether the proposal was made…" />}
+            {after?.kind === "created" && (
+              <div className="mg-notice mg-notice-warning" role="alert" data-testid="create-already-made">
+                <p className="mg-flush">
+                  <strong>{after.p.name} was made, and its fee may have gone out.</strong> Don&apos;t pay again: Mine shows it and sends it on from there.
+                </p>
+                <DashButton variant="filledBlue" size="small" data-testid="create-show-mine" onClick={() => onCreated(after.p)}>
+                  Show it in Mine
+                </DashButton>
+              </div>
+            )}
+            {after?.kind === "unknown" && (
+              <div className="mg-notice mg-notice-warning" role="alert" data-testid="create-unknown">
+                <p className="mg-flush">Couldn&apos;t check whether the proposal was made, so Pay stays off: its fee may have gone out.</p>
+                <DashButton variant="filledBlue" size="small" data-testid="create-check-again" onClick={() => void checkMine(draft)}>
+                  Check again
+                </DashButton>
+              </div>
+            )}
           </>
         ) : null}
       </>
@@ -367,7 +432,7 @@ export function CreateProposalSheet({
           </span>
           <span className="mg-actions">
             {step > 1 ? (
-              <DashButton variant="tintedGray" size="medium" data-testid="create-back" disabled={busy} onClick={() => setStep((s) => (s - 1) as Step)}>
+              <DashButton variant="tintedGray" size="medium" data-testid="create-back" disabled={busy || after !== null} onClick={() => setStep((s) => (s - 1) as Step)}>
                 Back
               </DashButton>
             ) : (
@@ -380,7 +445,7 @@ export function CreateProposalSheet({
                 Continue
               </DashButton>
             ) : (
-              <DashButton type="submit" variant="filledBlue" size="medium" data-testid="create-pay" disabled={busy || !preview.data || !credential.ready}>
+              <DashButton type="submit" variant="filledBlue" size="medium" data-testid="create-pay" disabled={busy || after !== null || !preview.data || !credential.ready}>
                 {busy ? "Paying…" : `Pay ${shown.compact(preview.data?.fee ?? 100_000_000)} ${shown.name} and create`}
               </DashButton>
             )}

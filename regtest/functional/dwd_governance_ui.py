@@ -60,6 +60,12 @@ DESKTOP = os.path.join(HERE, "..", "..", "apps", "desktop")
 UI_TIMEOUT = 5400
 
 
+def source_head():
+    """The commit under test and whether the tree differs from it, for result.json."""
+    git = lambda *a: subprocess.run(["git", "-C", HERE, *a], capture_output=True, text=True, check=True).stdout.strip()
+    return {"head": git("rev-parse", "HEAD"), "dirty": git("status", "--porcelain") != ""}
+
+
 class Dwcli:
     def __init__(self, binary, datadir, peer_port, log):
         self.binary = binary
@@ -140,7 +146,8 @@ class DwdGovernanceUi(DashTestFramework):
             self.wait_until(lambda: p0 in n.gobject("list", "all", "proposals"), timeout=30)
         assert_equal(self.yes_count(node, p0), 0)
 
-        self.log.info("The UI run: vote Yes on dwd_ui_p0, create dwd_ui_p1")
+        source = source_head()
+        self.log.info(f"The UI run on {source['head']}{' (dirty tree)' if source['dirty'] else ''}: vote Yes on dwd_ui_p0, create dwd_ui_p1")
         out = os.environ.get("DW_E2E_OUT", os.path.join(self.options.tmpdir, "ui"))
         os.makedirs(out, exist_ok=True)
         env = dict(os.environ, DW_E2E_OUT=out, DW_E2E_DATADIR=dwcli.root, DW_E2E_PASSPHRASE=PASSPHRASE,
@@ -188,6 +195,7 @@ class DwdGovernanceUi(DashTestFramework):
             assert_equal(Decimal(str(data["payment_amount"])), Decimal("2.5"))
             assert data["payment_address"] in wallet_addresses, (data["payment_address"], wallet_addresses)
         evidence["core"] = {"vote": ours[0], "created": data}
+        result["source"] = source
         with open(os.path.join(out, "result.json"), "w", encoding="utf8") as f:
             json.dump(result, f, indent=2)
         self.log.info("governance_ui suite passed")

@@ -89,6 +89,37 @@ test("a vote from Needs my vote keeps its result after the row leaves the list (
   await expect(page.getByTestId("vote-sheet")).toBeHidden();
 });
 
+test("a vote the engine refuses as a whole says why and keeps the form", async ({ page }) => {
+  await open(page, "governance");
+  await page.evaluate(() => window.__dwFixture!.fail("governance_vote", "governancePhase"));
+  await page.getByTestId("proposal-row-dashcon-2027-venue").click();
+  await page.getByTestId("proposal-vote").click();
+  await page.getByTestId("vote-outcome-yes").click();
+  await page.getByTestId("vote-passphrase").fill("demo");
+  await page.getByTestId("vote-send").click();
+  await expect(page.getByTestId("vote-error")).toHaveText("Proposals are still loading. Try again once they finish.");
+  await expect(page.getByTestId("vote-result")).toHaveCount(0);
+  await expect(page.getByTestId("vote-send")).toBeVisible();
+});
+
+test("the outcome is a radiogroup: one tab stop, the arrow keys choose (n1)", async ({ page }) => {
+  await open(page, "governance");
+  await page.getByTestId("proposal-row-dashcon-2027-venue").click();
+  await page.getByTestId("proposal-vote").click();
+  const group = page.getByRole("radiogroup", { name: "Your vote" });
+  await expect(group.getByRole("radio")).toHaveCount(3);
+  await page.getByTestId("vote-outcome-yes").click();
+  await expect(page.getByTestId("vote-outcome-yes")).toHaveAttribute("aria-checked", "true");
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByTestId("vote-outcome-no")).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByTestId("vote-outcome-no")).toBeFocused();
+  await expect(page.getByTestId("vote-outcome-yes")).toHaveAttribute("tabindex", "-1");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.getByTestId("vote-outcome-abstain")).toHaveAttribute("aria-checked", "true");
+  expect(await seriousAxeViolations(page)).toEqual([]);
+});
+
 test("sync off: the Disabled notice turns governance on", async ({ page }) => {
   await open(page, "governance-disabled");
   await expect(page.getByTestId("governance-disabled")).toBeVisible();
@@ -105,6 +136,17 @@ test("states: syncing, failed, no voting key, watch-only", async ({ page }) => {
   await open(page, "governance-failed");
   await expect(page.getByTestId("governance-failed")).toBeVisible();
   await expect(page.getByTestId("mine-row-dash-docs-refresh")).toBeVisible();
+  await open(page, "governance-peers-lost");
+  // Synced once, then every peer dropped: the list and pane stay under the notice (D36).
+  await expect(page.getByTestId("governance-failed")).toBeVisible();
+  await expect(page.getByTestId("proposal-list")).toBeVisible();
+  await expect(page.getByTestId("proposal-pane-chip")).toHaveText("Passing");
+  await open(page, "governance-banned");
+  await expect(page.getByTestId("proposal-pane-masternodes")).toContainText("PoSe banned");
+  await expect(page.getByTestId("proposal-vote")).toBeDisabled();
+  await expect(page.getByTestId("proposal-vote-blocked")).toHaveText("No masternode in this wallet can vote on this proposal");
+  await open(page, "governance-empty");
+  await expect(page.getByTestId("proposals-empty")).toContainText("No proposals this cycle");
   await open(page, "governance-no-masternodes");
   await expect(page.getByTestId("governance-browsing-only")).toBeVisible();
   await expect(page.getByTestId("proposal-vote")).toBeDisabled();
@@ -127,6 +169,19 @@ test("Mine: Submit only where MG-06 D24 allows it, a failed resend said on the r
   // The badge counts the proposals a failure left needing the user (D5).
   await expect(page.getByTestId("sidebar-masternodes-badge")).toHaveText("3");
   expect(await seriousAxeViolations(page)).toEqual([]);
+});
+
+test("Mine: a slow Submit says Sending… and keeps the row (D17)", async ({ page }) => {
+  await open(page, "governance-mine");
+  await page.getByTestId("governance-filter-mine").click();
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("governance_submit_proposal"));
+  await page.getByTestId("mine-submit-desktop-wallet-i18n").click();
+  await expect(page.getByTestId("mine-submit-desktop-wallet-i18n")).toHaveText("Sending…");
+  await expect(page.getByTestId("mine-submit-desktop-wallet-i18n")).toBeDisabled();
+  await expect(page.getByTestId("mine-row-desktop-wallet-i18n")).toBeVisible();
+  await release.evaluate((r) => r());
+  await expect(page.getByTestId("mine-submit-desktop-wallet-i18n")).toHaveText("Submit");
+  await expect(page.getByTestId("mine-chip-desktop-wallet-i18n")).toHaveText("Fee paid");
 });
 
 test("the sidebar shows Masternodes only with the setting or a proposal in progress", async ({ page }) => {
@@ -164,6 +219,9 @@ for (const theme of THEMES) {
     await page.getByTestId("create-continue").click();
     await expect(page.getByTestId("create-review")).toBeVisible();
     await expect(page.getByTestId("create-review-payments")).toContainText("× 3");
+    // The 1 DASH fee (burnt) and the network fee, apart and in all (D33).
+    await expect(page.getByTestId("create-review-fee")).toHaveText(/1\.00000000\s*tDASH \+ network fee 0\.00000227\s*tDASH/);
+    await expect(page.getByTestId("create-review-total")).toHaveText(/1\.00000227\s*tDASH/);
     await expect(page.getByTestId("create-fee-warning")).toBeVisible();
     expect(await seriousAxeViolations(page)).toEqual([]);
     await page.getByTestId("create-passphrase").fill("demo");
@@ -191,6 +249,72 @@ test("create: an address the engine refuses goes back to Payments with the field
   await expect(page.getByTestId("create-address")).toHaveAttribute("aria-invalid", "true");
 });
 
+/** Steps 1 and 2 of the create wizard with a valid draft, to the review. */
+async function toReview(page: Page, name = "desktop-translations") {
+  await page.getByTestId("governance-create").click();
+  await page.getByTestId("create-name").fill(name);
+  await page.getByTestId("create-url").fill(`https://www.dashcentral.org/p/${name}`);
+  await page.getByTestId("create-continue").click();
+  await page.getByTestId("create-amount").fill("10");
+  await page.getByTestId("create-continue").click();
+  await expect(page.getByTestId("create-review")).toBeVisible();
+}
+
+const createCalls = (page: Page) => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "governance_create_proposal").length);
+
+test("create: a network fee that changed at Pay stops for a fresh confirm, then pays that one (D33)", async ({ page }) => {
+  await open(page, "governance");
+  await toReview(page);
+  await expect(page.getByTestId("create-review-total")).toHaveText(/1\.00000227\s*tDASH/);
+  // The coins moved after the review: Pay's re-read finds a higher network fee.
+  await page.evaluate(() => (window.__dwFixture!.world.governance.networkFee = 4_500));
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
+  await expect(page.getByTestId("create-fee-changed")).toContainText("The network fee changed to 0.00004500 tDASH, so you pay 1.00004500 tDASH in all. Nothing was paid");
+  await expect(page.getByTestId("create-review-total")).toHaveText(/1\.00004500\s*tDASH/);
+  expect(await createCalls(page)).toBe(0);
+  // The next press confirms the figures now shown; the fixture refuses a grant above them plus the margin.
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
+  await expect(page.getByTestId("create-sheet")).toBeHidden();
+  await expect(page.getByTestId("mine-chip-desktop-translations")).toHaveText("Fee paid");
+  expect(await createCalls(page)).toBe(1);
+});
+
+test("create: a call that fails after the fee went out never offers Pay again; Mine resumes it (D34)", async ({ page }) => {
+  await open(page, "governance");
+  await page.evaluate(() => (window.__dwFixture!.world.governance.createFailsAfterPaying = true));
+  await toReview(page);
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
+  await expect(page.getByTestId("create-already-made")).toContainText("desktop-translations was made, and its fee may have gone out. Don't pay again");
+  await expect(page.getByTestId("create-pay")).toBeDisabled();
+  await expect(page.getByTestId("create-back")).toBeDisabled();
+  await page.getByTestId("create-passphrase").fill("demo");
+  await expect(page.getByTestId("create-pay")).toBeDisabled();
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  await page.getByTestId("create-show-mine").click();
+  await expect(page.getByTestId("create-sheet")).toBeHidden();
+  await expect(page.getByTestId("mine-chip-desktop-translations")).toHaveText("Fee paid");
+  await expect(page.getByTestId("mine-submit-desktop-translations")).toBeVisible();
+  expect(await createCalls(page)).toBe(1);
+});
+
+test("create: a failed call whose proposal Mine can't read keeps Pay off until Mine answers (D34)", async ({ page }) => {
+  await open(page, "governance");
+  await page.evaluate(() => (window.__dwFixture!.world.governance.createFailsAfterPaying = true));
+  await toReview(page);
+  await page.evaluate(() => window.__dwFixture!.fail("governance_my_proposals", "none"));
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
+  await expect(page.getByTestId("create-unknown")).toBeVisible();
+  await expect(page.getByTestId("create-pay")).toBeDisabled();
+  await page.evaluate(() => window.__dwFixture!.fail("governance_my_proposals", null));
+  await page.getByTestId("create-check-again").click();
+  await expect(page.getByTestId("create-already-made")).toBeVisible();
+  await expect(page.getByTestId("create-pay")).toBeDisabled();
+});
+
 test("create: a failed payment keeps the review open and says why", async ({ page }) => {
   await open(page, "governance");
   await page.evaluate(() => window.__dwFixture!.fail("governance_create_proposal", "duffs"));
@@ -204,7 +328,9 @@ test("create: a failed payment keeps the review open and says why", async ({ pag
   await page.getByTestId("create-pay").click();
   await expect(page.getByTestId("create-error")).not.toBeEmpty();
   await expect(page.getByTestId("create-step-3")).toBeVisible();
+  // Mine has no such proposal: nothing was paid, so Pay comes back (D34).
   await expect(page.getByTestId("create-pay")).toBeEnabled();
+  await expect(page.getByTestId("create-already-made")).toHaveCount(0);
 });
 
 test("Governance numbers and the status bar's voting item", async ({ page }) => {

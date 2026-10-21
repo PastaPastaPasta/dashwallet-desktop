@@ -2,7 +2,7 @@
 // is in this wallet, a governance grant from the passphrase (MG-05), then `governance_vote`; the
 // result lists each masternode's cast, a refusal in the engine's words as a sentence.
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { ProposalRow } from "../../api/generated/ProposalRow";
 import type { VoteCast } from "../../api/generated/VoteCast";
@@ -134,21 +134,7 @@ function VoteForm({
         <AmountText text={shown.compact(row.paymentAmount)} unitName={shown.name} /> {paymentsSuffix(row.paymentsRequested)} ·{" "}
         <StatusChip chip={statusChip(row.status, row.closeCall)} /> {threshold !== undefined && votesView(row.tally, threshold).head}
       </p>
-      <div className="segmented mg-outcomes" role="group" aria-label="Your vote" data-testid="vote-outcome">
-        {OUTCOMES.map((o) => (
-          <button
-            key={o}
-            type="button"
-            className="segment"
-            aria-pressed={outcome === o}
-            data-testid={`vote-outcome-${o}`}
-            disabled={busy}
-            onClick={() => setOutcome(o)}
-          >
-            {outcomeText(o)}
-          </button>
-        ))}
-      </div>
+      <OutcomePicker outcome={outcome} disabled={busy} onChange={setOutcome} />
       <ul className="mg-nodes card-l1" aria-label="Vote with" data-testid="vote-nodes">
         <li className="mg-node mg-node-head" aria-hidden="true">
           <span />
@@ -206,6 +192,46 @@ function VoteForm({
         </span>
       </footer>
     </form>
+  );
+}
+
+/** §4.25.4's segmented Yes · No · Abstain as a radiogroup (MG-00): one tab stop on the chosen
+ *  outcome (the first when none is), the arrow keys move and choose. */
+function OutcomePicker({ outcome, disabled, onChange }: { outcome: VoteOutcomeName | null; disabled: boolean; onChange: (o: VoteOutcomeName) => void }) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const tabStop = outcome === null ? 0 : OUTCOMES.indexOf(outcome);
+  const move = (from: number, by: number) => {
+    const i = (from + by + OUTCOMES.length) % OUTCOMES.length;
+    onChange(OUTCOMES[i]);
+    refs.current[i]?.focus();
+  };
+  return (
+    <div className="segmented mg-outcomes" role="radiogroup" aria-label="Your vote" data-testid="vote-outcome">
+      {OUTCOMES.map((o, i) => (
+        <button
+          key={o}
+          ref={(el) => {
+            refs.current[i] = el;
+          }}
+          type="button"
+          className="segment"
+          role="radio"
+          aria-checked={outcome === o}
+          tabIndex={i === tabStop ? 0 : -1}
+          data-testid={`vote-outcome-${o}`}
+          disabled={disabled}
+          onClick={() => onChange(o)}
+          onKeyDown={(e) => {
+            const by = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+            if (by === 0) return;
+            e.preventDefault();
+            move(i, by);
+          }}
+        >
+          {outcomeText(o)}
+        </button>
+      ))}
+    </div>
   );
 }
 

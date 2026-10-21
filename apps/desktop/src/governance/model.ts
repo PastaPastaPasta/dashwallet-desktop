@@ -6,7 +6,9 @@ import { isAppError } from "../api/backend";
 import type { GovernanceInfo } from "../api/generated/GovernanceInfo";
 import type { GovernanceSyncState } from "../api/generated/GovernanceSyncState";
 import type { MyProposal } from "../api/generated/MyProposal";
+import type { ProposalDraft } from "../api/generated/ProposalDraft";
 import type { ProposalFieldName } from "../api/generated/ProposalFieldName";
+import type { ProposalPreview } from "../api/generated/ProposalPreview";
 import type { ProposalRow } from "../api/generated/ProposalRow";
 import type { ProposalStatusName } from "../api/generated/ProposalStatusName";
 import type { SuperblockDate } from "../api/generated/SuperblockDate";
@@ -512,6 +514,37 @@ export function governanceErrorText(e: unknown): string | null {
   }
 }
 
+// ---------------------------------------------------------------- the fee (D29, D33, D34)
+
+/** The least margin the spend grant gives over the network fee, as dwcli's
+ *  `PROPOSAL_FEE_MARGIN`: the engine picks the coins again at create time (D29). */
+export const NETWORK_FEE_MARGIN = 10_000;
+
+type FeeFigures = Pick<ProposalPreview, "fee" | "networkFee">;
+
+/** What the user pays in all: the 1 DASH fee (burnt) and the network fee. */
+export const feeTotal = (p: FeeFigures): number => p.fee + p.networkFee;
+
+/** The spend grant's cap for the fee the user confirmed: its total and the margin, no more. */
+export const feeGrantCap = (p: FeeFigures): number => feeTotal(p) + Math.max(p.networkFee, NETWORK_FEE_MARGIN);
+
+/** Whether Pay's re-read shows the figures the review showed (D33). */
+export const sameFee = (a: FeeFigures, b: FeeFigures): boolean => a.fee === b.fee && a.networkFee === b.networkFee;
+
+/** The wallet's own proposal `create_proposal` made from `draft`, if it made one: after a failed
+ *  call the fee may be out, so Pay waits for this (D34). */
+export function createdFrom(mine: MyProposal[], draft: ProposalDraft): MyProposal | undefined {
+  return mine.find(
+    (p) =>
+      p.name === draft.name &&
+      p.url === draft.url &&
+      p.paymentAddress === draft.paymentAddress &&
+      p.paymentAmount === draft.paymentAmount &&
+      p.paymentCount === draft.paymentCount &&
+      p.state.kind !== "expired",
+  );
+}
+
 // ---------------------------------------------------------------- Mine (MG-06)
 
 export interface MineRowView {
@@ -528,12 +561,15 @@ export interface MineRowView {
   turnOn: boolean;
 }
 
-/** `last_error` is the engine's send failure text (MG-06 D10); shown as the reason, not a code. */
+/** `last_error` is the engine's send failure text (MG-06 D10). The engine keeps one only where the
+ *  fee may be out already (a maybe-sent create, any resend failure), so every one says so and
+ *  points to Submit, which sends the same fee again; never a new proposal (D35). */
 function lastErrorText(p: MyProposal): string | null {
   if (!p.lastError) return null;
-  return p.lastError.startsWith("send: broadcast outcome unknown")
+  const why = p.lastError.replace(/^send: /, "");
+  return why.startsWith("broadcast outcome unknown")
     ? "The fee may not have reached the network. Submit sends it again."
-    : `The fee wasn't sent: ${p.lastError.replace(/^send: /, "")}`;
+    : `The fee may not have reached the network (${why}). Submit sends the same fee again.`;
 }
 
 /** The toast once `create_proposal` returned: paid, or kept with its fee unsent (MG-06 D10). */

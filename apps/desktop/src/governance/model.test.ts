@@ -18,9 +18,12 @@ import {
   budgetNotice,
   budgetView,
   clockView,
+  createdFrom,
   createdToast,
   defaultFirstPayment,
   detailsProblems,
+  feeGrantCap,
+  feeTotal,
   FIELD_STEP,
   fieldText,
   governanceErrorText,
@@ -39,6 +42,7 @@ import {
   paneNote,
   presetOutcome,
   rejectedText,
+  sameFee,
   selectionNote,
   shortAddress,
   sortRows,
@@ -297,7 +301,8 @@ describe("Mine (MG-06 D24, D15–D17)", () => {
       error: "The fee may not have reached the network. Submit sends it again.",
       attention: true,
     });
-    expect(mineRow(mine({ kind: "feeUnsent" }, "send: no_peers"), L).error).toBe("The fee wasn't sent: no_peers");
+    // Any kept failure may have left the fee out: Submit, never a new proposal (D35).
+    expect(mineRow(mine({ kind: "feeUnsent" }, "send: no_peers"), L).error).toBe("The fee may not have reached the network (no_peers). Submit sends the same fee again.");
     expect(mineRow(mine({ kind: "feeUnsent" }), L).attention).toBe(false);
     expect(mineRow(mine({ kind: "feePaid", confirmations: 0 }), L)).toMatchObject({ chip: { text: "Fee paid" }, meta: "0 of 1" });
     expect(mineRow(mine({ kind: "confirming", confirmations: 9 }), L).meta).toBe("6 of 6");
@@ -320,6 +325,50 @@ describe("Mine (MG-06 D24, D15–D17)", () => {
     expect(masternodesShown(false, [], [4_000 * COIN])).toBe(true);
     expect(masternodesShown(false, [], [1_000 * COIN + 1])).toBe(false);
     expect(inProgress(mine({ kind: "public", status: null }))).toBe(true);
+  });
+});
+
+describe("the fee (D29, D33, D34)", () => {
+  const preview = { fee: COIN, networkFee: 227 };
+  it("totals the burn and the network fee, and caps the grant at that total and the margin, no more", () => {
+    expect(feeTotal(preview)).toBe(100_000_227);
+    // The margin is dwcli's: at least 10,000 duffs, else the network fee again.
+    expect(feeGrantCap(preview)).toBe(100_000_227 + 10_000);
+    expect(feeGrantCap({ fee: COIN, networkFee: 25_000 })).toBe(COIN + 50_000);
+    for (const nf of [0, 1, 227, 9_999, 10_000, 10_001, 1_000_000]) {
+      const p = { fee: COIN, networkFee: nf };
+      expect(feeGrantCap(p)).toBeGreaterThanOrEqual(feeTotal(p) + 10_000);
+      expect(feeGrantCap(p)).toBeLessThanOrEqual(feeTotal(p) + Math.max(nf, 10_000));
+    }
+  });
+
+  it("asks a fresh confirm when Pay's re-read differs from the review in either figure", () => {
+    expect(sameFee(preview, { ...preview })).toBe(true);
+    expect(sameFee(preview, { ...preview, networkFee: 228 })).toBe(false);
+    expect(sameFee(preview, { ...preview, fee: COIN + 1 })).toBe(false);
+  });
+
+  it("finds the proposal a failed create_proposal made from the draft", () => {
+    const made: MyProposal = {
+      hash: "e".repeat(64),
+      name: "p",
+      url: "https://x.org/p",
+      paymentAddress: "yPay8vK2pMxRt5nW9cJ3hL6dF4sA1bZ7Wm",
+      paymentAmount: COIN,
+      paymentCount: 2,
+      startEpoch: NOW,
+      endEpoch: NOW + 86_400,
+      feeTxid: "f".repeat(64),
+      createdAt: NOW,
+      submittedAt: null,
+      state: { kind: "feeUnsent" },
+      lastError: null,
+    };
+    const draft = { name: "p", url: "https://x.org/p", paymentAddress: made.paymentAddress, paymentAmount: COIN, paymentCount: 2, firstSuperblockHeight: 1, coins: [] };
+    expect(createdFrom([made], draft)).toBe(made);
+    expect(createdFrom([{ ...made, state: { kind: "feePaid", confirmations: 3 } }], draft)).toBeDefined();
+    expect(createdFrom([made], { ...draft, paymentAmount: COIN + 1 })).toBeUndefined();
+    expect(createdFrom([{ ...made, state: { kind: "expired" } }], draft)).toBeUndefined();
   });
 });
 

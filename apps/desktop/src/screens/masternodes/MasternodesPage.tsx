@@ -58,6 +58,9 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
   const refresh = useGovernanceRefresh();
   const shown = useDisplay(network);
   const state = sync.data ? listState(sync.data) : null;
+  // Once a run reached `synced` the engine keeps answering reads, so a later resync or a lost
+  // peer keeps the list under its notice (D36).
+  const listed = state?.kind === "ready" || (state !== null && state.kind !== "disabled" && sync.data?.lastSyncedAt != null);
 
   // Without the list (governance off, syncing or failed) Mine still shows below (D32).
   const mineBelow = (mine.data?.length ?? 0) > 0 && <MineList walletId={walletId} network={network} mine={mine.data!} heading />;
@@ -85,7 +88,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
   else
     body = (
       <>
-        <ClockCard info={info.data!} shown={shown} synced={state?.kind === "ready"} />
+        <ClockCard info={info.data!} shown={shown} synced={listed} />
         {wallet.watchOnly && (
           <Notice tone="info" testId="governance-notice-watch-only">
             <strong>{GovText.watchOnly}</strong> {GovText.watchOnlyText}
@@ -114,7 +117,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
             {state.text}
           </Notice>
         )}
-        {state?.kind === "ready" ? (
+        {listed ? (
           <ProposalsView wallet={wallet} network={network} info={info.data!} showEnded={showEnded} filter={filter} setFilter={setFilter} onVote={setVoteOn} />
         ) : (
           mineBelow
