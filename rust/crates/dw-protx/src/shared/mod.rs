@@ -41,6 +41,7 @@ pub mod netinfo;
 pub mod rawtx;
 pub mod registration;
 pub mod rules;
+pub mod session;
 
 pub use netinfo::ExtNetInfo;
 pub use rawtx::SpecialTx;
