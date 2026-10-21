@@ -26,6 +26,8 @@ Inputs:
 D-numbers here are MG-04b's (D1 and up). Other tasks' rows are cited as "MG-04 D5" and so on.
 
 Revision 2 answers design review r1 under DEC-311; the appendix lists each finding and where it is answered.
+Revision 3 folds in design review r2 (ACCEPT WITH NITS, DEC-312): r2-m1 to r2-m6 and n-r2-1 to n-r2-10, each listed
+in the appendix.
 
 ## 0. Blocker: the dashcore pin (BL-187)
 
@@ -142,7 +144,7 @@ Key order is the serializer's (`mnsharesession.cpp:276-349`); every message is t
 | `type` | string | `dash-shared-mn-session` | exact |
 | `version` | int | `1` | `== 1` |
 | `network` | string | Core's `NetworkIDString`: `main`, `test`, `devnet`, `regtest` | equals the wallet's network (UX: "This invitation is for Mainnet…", MG-00 D36) |
-| `sessionId` | string | 64 lower-case hex | dash-qt: non-empty (`mnsharesession.cpp:399-403`); the wallet: exactly 64 hex, lower-cased, else `shared_message{parse}` (D28) |
+| `sessionId` | string | 64 lower-case hex | dash-qt: non-empty (`mnsharesession.cpp:399-403`); the wallet: exactly 64 lower-case hex, else `shared_message{parse}` (D28) |
 | `revision` | int | starts at 1 | ≥ 1 |
 | `stage` | string | `draft`, `frozen`, `signing`, `combined`, `fundingSigned`, `broadcast` | one of these |
 | `fundingTx` | string | hex of the funding template (§2.4), `""` before a contribution | not trusted: rebuilt from `contributions` (D8) |
@@ -265,32 +267,33 @@ draft + draft → `absorbDraftReply`; our draft + anything else → `adoptLocked
 replaces the session with any higher revision (`OtherNewer` → `replaceSession`, `mnsharesession.cpp:1362-1368`,
 `sharedmncreatedialog.cpp:2952-2953`) and, at one revision, unions signatures, merges funding inputs and adopts a
 further stage (`mnsharesession.cpp:1376-1494`). The wallet decides by role as well, and refuses the cells where
-dash-qt would adopt a copy the wallet can't check. Every cell is a T0 case. "Own row and contribution unchanged" is
+dash-qt would adopt a copy the wallet can't check. **The table is read top-down and the first matching row decides**
+(r2-m1). Every cell is a T0 case. "Own row and contribution unchanged" is
 `adoptLockedTerms`' test (`SameShare`, `SameContribution`, `mnsharesession.cpp:1333-1349`); `rev` compares the
 imported `revision` with the session's; any import must first pass §2.3 and the session id.
 
 | Our session | Their copy | Result |
 |---|---|---|
 | none | `draft` | a new participant session, `invited`; no coin touched |
-| none | `frozen` or later | `shared_message{not_participant}`: there is no recorded row or contribution to check it against (§4); a wallet whose seed holds a row but which didn't join from this installation continues on the device that joined (D10) |
+| none, or participant `invited` | `frozen` or later | `shared_message{not_participant}`: there is no recorded row or contribution to check it against (§4); a wallet whose seed holds a row but which didn't join from this installation continues on the device that joined (D10) |
 | participant `invited` | `draft`, rev higher | replaces the invitation (nothing of ours is in it) |
 | participant `joined` | `draft`, rev higher | taken if our row and contribution are unchanged (the coordinator absorbed other replies), else `row_changed`/`contribution_changed` |
 | participant `joined` | `frozen`/`signing` | `adoptLockedTerms`: terms, labels and amounts equal our copy's (`terms_changed` otherwise), our row and contribution unchanged → `to_approve` |
 | participant `to_approve`/`approved`, `out_at` unset | `draft`, rev higher | **M-1 case 1:** our row and contribution unchanged → back to `joined`, our consent signature dropped, the same reservation kept; `shared_message` re-emits Details with the same owner, refund, reward and change |
 | participant `to_approve`/`approved`, `out_at` unset | `frozen`/`signing`, rev higher | **M-1 case 2:** our row and contribution unchanged → `to_approve` with the masternode-wide terms treated as new: the session carries the diff against the terms we last approved, and only a fresh `approve_shared` signs |
-| participant `to_approve`/`approved` | `signing`, same rev | merges others' approvals (no change to ours) |
+| participant `to_approve`/`approved` | `signing`, same rev | merges others' approvals (no change to ours), if its consent hash equals ours, else `shared_message{conflict}` (`mergeEnvelope`, `mnsharesession.cpp:1391-1397`) |
 | participant `approved` | `combined`, same rev | → `to_sign` after D12's checks |
 | participant, any | `combined` or later, rev higher | `shared_message{conflict}` (M-1 case 3, D15) |
 | participant `to_sign` or later, or `out_at` set | rev higher | `shared_message{conflict}` |
 | participant `to_sign` or later | same rev, `combined` or later | per-input merge (below, m-7); `broadcast` records the Final Record |
-| coordinator `draft` | `draft` | `absorbDraftReply`, filling at most the one row its one new contribution names (D15) |
+| coordinator `draft` | `draft` | `absorbDraftReply`, filling at most the one row its one new contribution names (D15). **The revision is not compared**: every participant answers the same Invitation, so replies carry equal or lower revisions than ours (`mnsharesession.cpp:1204-1284` never reads it). A reply that adds nothing is a no-op with no bump (`:1265-1270`); one that adds something sets ours + 1 (`:1280`). A reply whose copy of the coordinator's contribution isn't the current one is refused `shared_message{older}` (D33) |
 | coordinator `draft` | `frozen` or later | `shared_message{older}`: a copy of terms this coordinator unlocked (dash-qt would adopt it) |
 | coordinator `signing` | `draft` | `shared_message{older}` |
-| coordinator `signing` | `signing`, same rev | merges approvals, each verified as added |
+| coordinator `signing` | `signing`, same rev | merges approvals, each verified as added, if its consent hash equals ours, else `shared_message{conflict}` (`:1391-1397`) |
 | coordinator `combined`/`fundingSigned` | `combined`/`fundingSigned`, same rev | per-input merge (below) |
 | coordinator past `draft` | rev higher | `shared_message{conflict}` (D15) |
 | coordinator past `draft` | stage ahead of ours that we didn't produce (`combined` while we are `signing`) | `shared_message{conflict}` |
-| any | rev lower | `shared_message{older}` |
+| any other | rev lower | `shared_message{older}` |
 
 **Per-input merge** (`mnsharesession.cpp:1426-1463`, stricter, m-7): the transaction with scriptSigs cleared must be
 identical. An incoming scriptSig on **one of this wallet's inputs** is never taken (`foreign_input`); ours are only
@@ -304,7 +307,7 @@ transaction is fixed. A bad foreign scriptSig only makes the registration invali
 ```
 start ─▶ inviting(draft) ─▶ collecting(draft) ─lock+consent─▶ approving(signing) ─all approvals: combine─▶
 signing(combined) ─all participants' funding sigs─▶ ready ─send: sign own + save─▶ sent(broadcast) ─▶ confirmed
-     ▲  set fee (draft only)                         ◀─unlock (discards approvals)─┘
+     ▲  set fee (draft, before any reply)            ◀─unlock (discards approvals)─┘
 any state before `sent` ──discard──▶ (deleted, coins unlocked)
 sent, not confirmed ──abandon──▶ (an own input spent to self; row kept, §9.3)
 ```
@@ -318,7 +321,8 @@ sent, not confirmed ──abandon──▶ (an own input spent to self; row kept
 3. `lock_shared_terms` (grant): every row has owner and refund and a contribution; builds the ProRegTx (§2.4), runs
    §5's rules and `payloadMatchesEnvelope`; computes the minimum fee from the final size with **each foreign input
    counted as P2PKH** (148 bytes; the wallet can't see their scripts), and refuses `shared_funding_mismatch{fee_low}`
-   with the needed fee when its reserved fee is below it, so the coordinator can `set_shared_fee` (D33); then runs
+   with the needed fee when its reserved fee is below it (the coordinator discards and restarts with a higher fee:
+   `set_shared_fee` is closed once others replied, D33); then runs
    §4's consent checks on its own side (`foreign_input`, `overdraw` against its recorded contribution, its row,
    D16, as dash-qt's `checkOwnFunding` does for both roles, `sharedmncreatedialog.cpp:2533-2538`), signs this
    wallet's consent and moves to `signing` with `revision` unchanged (`freeze` keeps it, `mnsharesession.cpp:885-923`).
@@ -396,7 +400,7 @@ history is refused (`masternodes.shared_registration_unknown`).
 else `masternodes.shared_too_early`.
 
 **Maintenance sessions.** The two multi-party flows are maintenance sessions with the id **(kind, ProTx hash, sign
-hash)**: SHA-256 of `kind ‖ proTxHash ‖ signHash`, exposed as 64 hex (m-17). The sign hash is what the owners sign
+hash)**: SHA-256 of `kind ‖ proTxHash ‖ signHash`, exposed as 64 lower-case hex of the digest in its natural byte order (m-17). The bytes are the kind as the sigs envelope's ASCII `kind` (`dissolve` or `registrar`), then the ProTx hash and the sign hash, 32 bytes each in internal (wire) order, not the reversed display order (n-r2-5). The sign hash is what the owners sign
 (`MakeSignHash(tx, n)` for a dissolution, `SerializeHash(payload)` for a key change), so it is fixed while the txid
 changes as signatures are inserted and as the funder re-signs its inputs (`providertx_service.cpp:1209-1237`). A
 session is created by the wallet that prepares it (`start_dissolve_together`, `start_key_change`) or by the first
@@ -412,6 +416,9 @@ operator fields and PoSe-bans the masternode (`specialtxman.cpp:663-673`). Its o
 `(pubKeyOperator, keyIDVoting)` when it is prepared or first imported, and:
 - `approve_maintenance` and `send_maintenance` refuse once the synced list's keys differ from the base
   (`shared_message{stale}`), and the session reads `stale`;
+- the approval preview diffs **every** payload key against the synced list at approval time ("voting: V1 → V0"), so
+  a request built on an older state shows its revert whatever base this wallet imported at; the approval records the
+  diff it showed, and `approve_maintenance` refuses (`stale`) if the list moved since that preview (r2-m3);
 - the funder's `stale` session offers MG-04 D49's abandon (spend a fee input to itself), which voids every signature
   still out; until then the signed request stays usable by its funder, and the preview says so;
 - the approval preview shows Core's effects to every approver (m-12): an operator change resets the operator fields
@@ -440,7 +447,7 @@ Every row's checks include §5.1's Core rules for that type, run before the sign
 | ProUpShareTx | `SerializeHash(payload)` without `vchSig`: version, ProTx hash, share index, reward script, `inputsHash` (`providertx.h:497-503`) | the share's owner | §5.1's ProUpShareTx rules; the share index is this wallet's share (its owner key); a `Refund` choice is encoded as the share's own refund script, never empty (D31); `inputsHash` is the transaction's |
 | ProDisTx unilateral | `MakeSignHash(tx, 1)`: `cs "DashSharedMNDissolve"`, payload version, tx version, tx type, lock time, prevouts, sequences, outputs, ProTx hash, actor index, `u8 1` (`providertx.cpp:506-533`) | the actor's owner; `actorIndex` must be the signing share (`providertx_service.cpp:1267-1268`) | §5.1's ProDisTx rules; the transaction is Core's builder output (§5.4) for this masternode, actor, penalty and fee, recomputed by the wallet from the share table and compared byte for byte; fee at least the relay minimum for its size and at most 1,000,000 duffs; an actor output in (0, dust) is valid and kept by Core's builder (`providertx_service.cpp:674-676`) but won't relay, so the preview warns |
 | ProDisTx unanimous | `MakeSignHash(tx, n)` | every owner | §5.1's ProDisTx rules; `SharedMnReadDissolution`'s rule: one input (the collateral), every non-actor gets exactly its principal at its refund, at most one more output, to the actor's refund, fee in (0, 1,000,000] (`sharedmnwidgets.cpp:272-352`); lock time 0, sequence final (D16); **when this wallet holds the actor share of a request it didn't prepare**, the fee it pays from its principal is shown and must be accepted explicitly (`accept_actor_fee`), unless it is at most the relay minimum for the size (m-15; dash-qt's preparer can only choose its own share, `sharedmndialogs.cpp:988-996,1373-1375`, but its reader accepts any actor) |
-| ProUpSharedRegTx | `SerializeHash(payload)` without the count and signatures: version, ProTx hash, operator key (basic), voting key id, `inputsHash` (`providertx.h:531-545`) | every owner | §5.1's ProUpSharedRegTx rules; the synced list's keys still equal the session's base (`stale`, M-5, D25); the masternode is listed and shared; the user saw the keys it sets and Core's effects (§3.3, m-12; the preview, MG-04 D41) |
+| ProUpSharedRegTx | `SerializeHash(payload)` without the count and signatures: version, ProTx hash, operator key (basic), voting key id, `inputsHash` (`providertx.h:531-545`) | every owner | §5.1's ProUpSharedRegTx rules; the synced list's keys still equal the session's base (`stale`, M-5, D25) and the list the preview diffed against (r2-m3); the masternode is listed and shared; the user saw every key as current → requested and Core's effects (§3.3, m-12; the preview, MG-04 D41) |
 
 **Own debit (m-1).** At join (participant) or start (coordinator) the wallet records its contribution: its reserved
 inputs, their total `I`, and its change `C` (0 when none). At every consent and funding check the transaction must
@@ -470,7 +477,9 @@ penalty and the fee at 1,000,000 duffs, `specialtxman.cpp:1762-1766`).
   (1239-1244), `-dup-key` (1254-1273), `-inputs-hash` (1290), `-sig` (1304), `-shares-sig` (1314). **SPV can't
   check:** a share owner key already held by a listed masternode (`specialtxman.cpp:1256`; the SML carries no owner
   key ids), except the wallet's own keys (MG-04 D13); everything else above is checked from the payload, the
-  transaction and the synced list (service and operator key under either scheme, MG-04 D30).
+  transaction and the synced list (service and operator key under either scheme, MG-04 D30). `GetValidatedPayload`'s
+  prefix (`bad-protx-type`, `bad-protx-payload`, trailing bytes, `specialtxman.cpp:1098-1121`, `specialtx.h:18-28`)
+  is the decoder's: `SpecialTx::from_bytes` and the payload decoders refuse trailing bytes (n-r2-7).
 - **Early period and penalty:** blocks, 0..420,480 (UX presets 0, 52,560, 105,120, 210,240, 420,480,
   `sharedmncreatedialog.cpp:628-631`); `0 ≤ penalty <` the smallest share, and 0 without a period. A zero penalty
   carries Core's warning text.
@@ -571,7 +580,7 @@ template collateral) are reserved under the same owner too: harmless, and it kee
 ## 7. Facade
 
 All on `Masternodes`. Kind as in mn-engine §2. "Slice" is when a row joins the contract (§13, §14). **Every call
-that produces bytes the network can accept** (a funding signature, a hand-off, a standby read) checks `can_send`
+that produces bytes the network can accept** (a funding signature, a hand-off, a standby export; in part 2 also the signature that completes a unanimous ProDisTx, which anyone can broadcast, `providertx_service.cpp:1209-1220`; n-r2-6) checks `can_send`
 first and refuses `masternodes.unsupported{feature: "shared_masternodes"}` while it is false (D1, M-2); at the
 current pin that is every row marked †.
 
@@ -581,14 +590,14 @@ current pin that is every row marked †.
 | `shared_sessions(wallet)` | async | — | 1a | Every `SharedSession` of the wallet (creation and maintenance), newest first, state derived on read. |
 | `shared_session(wallet, session)` | async | — | 1a | One `SharedSession`. |
 | `start_shared(wallet, request)` | async | — | 1a | Coordinator: checks `StartSharedRequest` (§5, D28), picks keys, reserves share + fee, saves the draft. Returns the session and its Invitation (`SharedMessage`). |
-| `set_shared_fee(wallet, session, fee)` | async | — | 1a | Coordinator, `draft` only: replaces its own contribution with one covering share + the new fee (re-reserving its coins; the old locks released in the same write), `revision` + 1 (dash-qt's `removeContribution`/`addContribution`, `mnsharesession.cpp:865-883`; D33). |
+| `set_shared_fee(wallet, session, fee)` | async | — | 1a | Coordinator, `draft` only, and only while the session holds no other party's contribution (else `shared_stage{stage: "replied"}`): replaces its own contribution with one covering share + the new fee (re-reserving its coins; the old locks released in the same write), `revision` + 1 (D33). |
 | `import_shared_message(wallet, text, target)` | async | — | 1a | Detects and applies a pasted or opened message (§2.1) by §3.0's table: creates or advances a creation session, a maintenance session, or stores a standby (§9.4). `target`: an optional maintenance session, required for a bare signatures array (§2.5). Returns `SharedImport`. Signs nothing. |
 | `join_shared(wallet, session, request)` | async | — | 1a | Participant: fills its row, reserves its share, records its contribution, returns the Details. |
 | `shared_message(wallet, session)` | async | — | 1a | The message to copy or save now: text, code, Core's file name (`shared-mn-session-<CODE>.json`). |
 | `lock_shared_terms(wallet, session, grant)` | async | `MasternodeOp` | 1a | Coordinator: builds the registration, §3.1 step 3's checks, signs its consent, returns Locked Terms. |
 | `unlock_shared_terms(wallet, session)` | async | — | 1a | Coordinator: back to draft before `combined`. |
 | `approve_shared(wallet, session, grant)` | async | `MasternodeOp` | 1a | Participant: §4's checks, consent signatures, returns the Approval. |
-| `sign_shared_funding(wallet, session, grant)` † | async | `MasternodeOp` | 1a (refusing) | Participant: signs its inputs on the combined transaction, saves it with `out_at`, returns the Signed Contribution. In 1a it is on the facade and **always refuses** (`can_send` false); the in-process three-wallet test reaches the signed registration through a test-support capability override, never by removing the check. |
+| `sign_shared_funding(wallet, session, grant)` † | async | `MasternodeOp` | 1a (refusing) | Participant: signs its inputs on the combined transaction, saves it with `out_at`, returns the Signed Contribution. In 1a it is on the facade and **always refuses** (`can_send` false); the in-process three-wallet test reaches the signed registration through a test-support capability override, never by removing the check. The override (r2-m4) is an explicit argument of a constructor in `dw-engine`'s `test_support` module, under MG-03 D40's gate `cfg(all(debug_assertions, feature = "test-support"))`: no environment variable, global or config key, and no dwcli command or flag reaches it; a release-profile check proves it absent. |
 | `send_shared_registration(wallet, session, grant)` † | async | `MasternodeOp` | 1b | Coordinator: signs its inputs once every other input is signed, saves, hands off; `resend` the same way. |
 | `discard_shared_session(wallet, session)` | async | — | 1a | Deletes a session nothing of which may be out (D17) and unlocks its coins. |
 | `abandon_shared_session(wallet, session, grant)` † | async | `MasternodeOp` | 1b | A session that may be out (`out_at` set, not `confirmed`): MG-04 D49's abandon, spending one of the wallet's reserved inputs to a fresh address of its own; the row is kept, read `conflicted` once that spend is in a block, and its locks are then released (D26). For a funder's `stale` key change the input is a fee input. |
@@ -600,9 +609,9 @@ current pin that is every row marked †.
 | `standby(wallet, pro_tx_hash)` | async | — | 2 | The stored standbys' descriptions (no bytes). |
 | `export_standby(wallet, pro_tx_hash, share, grant)` † | async | `MasternodeOp{0}` "Dissolution" | 2 | Core's file text and name (§9.4): the signed bytes leave the wallet, so it needs a grant (m-22, D21). |
 | `send_standby(wallet, pro_tx_hash, share, variant, grant)` † | async | `MasternodeOp` | 2 | Hands a stored or imported variant to the fence as a `dissolve` operation; m-20's guard. |
-| `start_dissolve_together(wallet, request, grant)` | async | `MasternodeOp` | 2 | Builds the unanimous ProDisTx, signs this wallet's shares, returns the session and its sigs envelope. |
+| `start_dissolve_together(wallet, request, grant)` † | async | `MasternodeOp` | 2 | Builds the unanimous ProDisTx, signs this wallet's shares, returns the session and its sigs envelope. |
 | `start_key_change(wallet, request, grant)` | async | `MasternodeOp` | 2 | Builds and funds the ProUpSharedRegTx (keys kept or set), records the base (D25), signs this wallet's shares, returns the session and envelope. |
-| `approve_maintenance(wallet, session, grant, accept_actor_fee)` | async | `MasternodeOp` | 2 | Signs this wallet's shares of an imported maintenance session; refuses `stale` (D25); `accept_actor_fee` per §4 (m-15). |
+| `approve_maintenance(wallet, session, grant, accept_actor_fee)` † | async | `MasternodeOp` | 2 | Signs this wallet's shares of an imported maintenance session; refuses `stale` (D25); `accept_actor_fee` per §4 (m-15). |
 | `send_maintenance(wallet, session, grant)` † | async | `MasternodeOp` | 2 | Inserts every signature in share order and hands off (a key change re-signs its fee inputs); refuses `stale`. |
 | `operations`, `resend_operation`, `discard_operation` | | | 1b | MG-04's, now also over `update_share` (1b) and `dissolve` (2) rows. |
 
@@ -824,10 +833,17 @@ pass derives `confirmed`/`conflicted`/`dead`/`stale` and releases settled sessio
 - the rules module over **all four payload types** (shared ProRegTx, ProDisTx, ProUpShareTx, ProUpSharedRegTx):
   dashd's payloads pass, and each mutated payload returns dashd's reason in Core's order (§5, §5.1), including a
   ProUpShareTx with an empty `scriptReward` (`bad-proupshare-payee`);
-- the JSON reader and writer against UniValue's own output (D7), the fingerprint, envelope round trips, every
+- the JSON reader and writer against UniValue's own output (D7), the test checking the vectors' structure too (r2-m5):
+  the exact case count the generator writes, `fingerprint` present iff the case parsed to an object and isn't
+  read-only, `ints` iff it parsed to an array and isn't read-only, `read_only` only on the generator's deep cases, and
+  a committed corrupted-vector test that fails for a value and for a structural corruption; inputs include escaped,
+  control-character and non-ASCII keys (n-r2-9); the fingerprint, envelope round trips, every
   `fromJson` refusal (§2.3, n-1's list), the sigs-envelope reader rules (§2.5), `absorbDraftReply`,
   `adoptLockedTerms` and `mergeEnvelope` cases (the dash-qt test cases of `mnsharesessiontests.cpp`), the H-1 and H-8
   refusals;
+- an 8-share session whose seven Details arrive in any order, with equal and lower revisions than the coordinator's
+  (r2-m1), a re-pasted reply (no bump, n-r2-3), and a reply to an Invitation from before `set_shared_fee` (refused
+  `older`, D33);
 - **every cell of §3.0's table**, including M-1's three cases: unlock → new invitation (back to `joined`, same
   reservation, Details unchanged), unlock → re-lock with unchanged terms (fresh approval required, no diff), unlock →
   re-lock with a changed penalty (fresh approval, the diff shows the penalty);
@@ -890,8 +906,22 @@ Review r1's fifteen:
 23. m-13: MG-04's ProUpRegTx offered on a shared masternode;
 24. M-1: a participant adopting a re-locked copy whose own row changed.
 
-The mutant list lives in the scratch script with, for each, the test that kills it; the part's READY report lists
-all 24 with their killing test.
+Review r2's nine (r2-m6, DEC-312):
+25. M-1 case 2: a re-locked copy approved without a fresh `approve_shared`, or the old approval carried over or
+    re-signed silently;
+26. M-1 case 1: a newer draft adopted keeping the old consent signature, or re-selecting coins;
+27. m-7: an incoming scriptSig taken on one of this wallet's own inputs;
+28. m-15: `approve_maintenance` as the actor of a request this wallet didn't prepare, without `accept_actor_fee`, for
+    a fee above the relay minimum;
+29. m-20: `send_standby` sending the immediate variant once the full one is valid;
+30. D32: an imported standby stored without the `BuildDissolution` output comparison, or with a non-collateral input;
+31. D26/§9.3: `abandon_shared_session` releasing locks or deleting the row before a block settles it;
+32. D33/r2-m2: `set_shared_fee` outside `draft`, or after another party's contribution is in the session;
+33. D12: `tx.nVersion`, the payload version or `inputsHash` unchecked before consent.
+
+The mutant list lives in the scratch script with, for each, the test that kills it. Each READY report lists the
+mutants whose code is in that slice with their killing test (1a: the creation and envelope paths, and 20's release
+check); part 2's lists all 33.
 
 ## 13. Slices
 
@@ -900,7 +930,7 @@ all 24 with their killing test.
 | — | 0 | This document and the contract delta (§14) | — | design review r2 |
 | 1 | 1a | `dw-protx`: codecs, rules (§5, §5.1), JSON and envelopes, session merge logic (§3.0); vault signers; the oracle vectors (UniValue, dashd) and `oracle_shared.rs`; engine: capability, sessions, persistence, `start_shared`, `set_shared_fee`, `import_shared_message`, `join_shared`, `shared_message`, `lock/unlock_shared_terms`, `approve_shared`, `sign_shared_funding` (**refusing**: `can_send` false), `discard_shared_session`, `preview_update_share`; MG-04's registrar refusal (D30); dwcli `mn shared start|fee|import|join|message|lock|unlock|approve|discard|sessions|show` (no `sign` until 1b); the in-process three-wallet test through the test-support override | — (nothing in 1a produces bytes the network accepts) | READY part 1a |
 | 1 | 1b | `sign_shared_funding` enabled, `send_shared_registration`, `abandon_shared_session`, `update_share`, resend; the follower's shared sessions; dwcli `sign|send|abandon|update-share`; regtest creation (both mixed sessions) and reward change | **BL-187 (+ #1136)**: `can_send` true | READY part 1 |
-| 2 | 2 | `preview_dissolve`, `dissolve`, standby (create, export, import, send), dissolve together, key change; regtest create → reward change → dissolve; all 24 mutants | BL-187 | READY part 2 |
+| 2 | 2 | `preview_dissolve`, `dissolve`, standby (create, export, import, send), dissolve together, key change; regtest create → reward change → dissolve; all 33 mutants | BL-187 | READY part 2 |
 
 Slice 1a is reviewable and mergeable on its own (DEC-310, DEC-311): the engine reports `can_send: false`, the only
 call on its facade that would produce a broadcastable signature (`sign_shared_funding`) refuses, the hand-off calls
@@ -924,7 +954,7 @@ MG-05's FlowKind gains `SharedMasternode` (1a) and `Dissolution` (2) (MG-05 D8).
 
 | D | Decision | Why |
 |---|---|---|
-| D1 | **The hand-off and the regtest acceptance wait for BL-187**, extended by #1136: a graph-wide `[patch]` to a rust-dashcore with #1136, #1138, #1152 and #1156 on top of `d3d50520a` (or platform's next pin). Until then `shared_capability().can_send` is `false`; every call that produces bytes the network accepts refuses while it is: `sign_shared_funding` (on the facade from 1a, refusing), and the hand-off calls (`send_shared_registration`, `abandon_shared_session`, `update_share`, `dissolve`, `export_standby`, `send_standby`, `send_maintenance`), which aren't on the facade before their slice. The row is ready only as slice 1a. | §0: the pin can neither represent nor decode a version-3 ProRegTx or types 10–12, every hand-off needs a typed `dashcore::Transaction` (`send/mod.rs` `PreparedTx::assembled`), and the wallet would stall on the first block holding one (MG-04 D48, MG-03 D25, BL-187). The probe showed #1138 needs #1136. Hand-rolled broadcasting of raw bytes would still leave the sync stalled. DEC-09 makes the pin move the manager's. **DEC-310 (10-21):** none of the four is in the desktop pin nor in platform v5.0-dev's (d631aaca, v0.45.0), so the bump is a platform-fork branch, a separate pin task the manager staffs; part 1 ends at slice 1a until it lands. **DEC-311 (M-2):** a participant's Signed Contribution is broadcastable by whoever holds the rest (H-9), and a dash-qt coordinator signs its own inputs at combine (`sharedmncreatedialog.cpp:2576-2591`), so the wallet's may be the last signature; testnet's v24 window opened 2026-09-24 (`chainparams.cpp:421-428`), and a mined version-3 ProRegTx spending the wallet's inputs would stall its sync (MG-04 D48). So `sign_shared_funding` is gated like the hand-offs; consent (`approve_shared`) moves nothing and stays. |
+| D1 | **The hand-off and the regtest acceptance wait for BL-187**, extended by #1136: a graph-wide `[patch]` to a rust-dashcore with #1136, #1138, #1152 and #1156 on top of `d3d50520a` (or platform's next pin). Until then `shared_capability().can_send` is `false`; every call that produces bytes the network accepts refuses while it is: `sign_shared_funding` (on the facade from 1a, refusing), and the hand-off calls (`send_shared_registration`, `abandon_shared_session`, `update_share`, `dissolve`, `export_standby`, `send_standby`, `send_maintenance`), which aren't on the facade before their slice. The row is ready only as slice 1a. | §0: the pin can neither represent nor decode a version-3 ProRegTx or types 10–12, every hand-off needs a typed `dashcore::Transaction` (`send/mod.rs` `PreparedTx::assembled`), and the wallet would stall on the first block holding one (MG-04 D48, MG-03 D25, BL-187). The probe showed #1138 needs #1136. Hand-rolled broadcasting of raw bytes would still leave the sync stalled. DEC-09 makes the pin move the manager's. **DEC-310 (10-21):** none of the four is in the desktop pin nor in platform v5.0-dev's (d631aaca, v0.45.0), so the bump is a platform-fork branch, a separate pin task the manager staffs; part 1 ends at slice 1a until it lands. **DEC-311 (M-2):** a participant's Signed Contribution is broadcastable by whoever holds the rest (H-9), and a dash-qt coordinator signs its own inputs at combine (`sharedmncreatedialog.cpp:2576-2591`), so the wallet's may be the last signature; testnet's v24 window opened 2026-09-24 (`chainparams.cpp:421-428`), and a mined version-3 ProRegTx spending the wallet's inputs would stall its sync (MG-04 D48). So `sign_shared_funding` is gated like the hand-offs; consent (`approve_shared`) moves nothing and stays. **The test-only override (r2-m4, DEC-312)** lives only in `dw-engine::test_support`, compiled under MG-03 D40's `cfg(all(debug_assertions, feature = "test-support"))` (`dw-engine/src/lib.rs:48-53`), and is an explicit per-engine constructor argument; dwcli enables `test-support` for its own tests but has no command or flag that reaches it, and the gate builds `dw-engine` with `--release --features test-support` and runs a `cfg(not(debug_assertions))` test asserting `can_send` is false. |
 | D2 | Codecs stay `dw-protx`'s own (raw `Encodable` structs and byte builders), as the type 10–12 ones already are, also after BL-187; the engine converts to dashcore's types only at the hand-off. | The oracle compares bytes the wallet writes itself, independent of the dashcore revision; after the pin moves, a unit test compares `dw-protx`'s bytes with dashcore's encoding of the same transaction. |
 | D3 | On every network v24 is `active` once the synced list holds a version-3 entry or a version-3 provider transaction is known (MG-03's `any_shared_seen`), else `unknown`; `inactive` is never inferred from chain parameters (m-14). Creation needs `active`. The regtest harness lets dashd register one version-3 masternode first. Mainnet's `NEVER_ACTIVE` (`chainparams.cpp:213`, marked `// TODO`) is kept only as a pin-tied test that mainnet reads `unknown` at the rc.3 pin. | SPV sees no deployment state; a version-3 entry is valid only after v24 (`specialtxman.cpp:1112-1116,1158-1161`), and an EHF deployment never deactivates, so it proves activation on any network, including a mainnet release that sets a start time. A registration sent before activation is refused silently (MG-04 D5) and holds coins until abandoned, so `unknown` doesn't create. MG-00 D33: the engine reports, the UI never assumes. |
 | D4 | Regular masternodes only. A shared evonode is refused (`invalid_argument`), and `evonode_shares` reads `inactive` everywhere; the codecs still read and hash evonode payloads (the platform node id in the consent digest, rc.3's change) for a masternode created elsewhere. | `evo_shares` is `NEVER_ACTIVE` on mainnet (`chainparams.cpp:222`), and no masternode signs it at rc.3 (`llmq/ehf_signals.cpp:53-55`), so it can't activate on any EHF network; only a regtest with `useehf=0` has it. UX-SPEC §4.25.8 already disables Evonode. Accepted, DEC-310. |
@@ -948,15 +978,15 @@ MG-05's FlowKind gains `SharedMasternode` (1a) and `Dissolution` (2) (MG-05 D8).
 | D22 | The standby file's header lines are English; only the two hex lines are read on import, and a paste must be one hex line, as in Core. | Core translates the header (`tr()`, `sharedmndialogs.cpp:1702-1728`) and never parses it (`sharedmnwidgets.cpp:388-396`). |
 | D23 | Two shared operations of one masternode can't be out at once from this wallet: a key change or a reward change waits while another `update_share`, key change or dissolution of it is `signed`, `not_sent` or `sent` and not in a block (`masternodes.update_pending{operation}`), as MG-04 D49. | Core's mempool allows several ProUpShareTx of one share (the last mined wins, `specialtxman.cpp:620-648`) and conflicts a key change with a pending reward change paying the new voting key (`txmempool.cpp:1737-1786`). One at a time keeps "what the user asked last" what is mined. |
 | D24 | **The wallet's coordinator signs its own funding inputs last**, in `send_shared_registration`, after every participant's; its Signing Request carries no coordinator scriptSig. As a participant under a dash-qt coordinator, the wallet's signature may complete the transaction, so its `out_at` (D17) is written before the Signed Contribution is returned. A deliberate deviation from dash-qt (m-2). | dash-qt's `runCombineAndSign` signs the coordinator's inputs right after combining (`sharedmncreatedialog.cpp:2576-2591`), so the last participant to sign holds a broadcastable transaction (H-9). Signing last means only the coordinator can complete, which enforces D13 structurally. It is interop-safe: dash-qt merges funding signatures per input in any order (`mnsharesession.cpp:1426-1463`). The T1 mixed session with dashd as coordinator covers the other order. |
-| D25 | **A key change binds its base.** The session stores the list's `(pubKeyOperator, keyIDVoting)` when it is prepared or first imported; `approve_maintenance` and `send_maintenance` refuse once the synced list differs (`shared_message{stale}`), the session reads `stale`, and its funder is offered `abandon_shared_session` on a fee input. Every approver's preview shows Core's effects (operator reset and PoSe ban, basic-scheme key, one operator change in the mempool) and that a signed request stays usable by its funder until a fee input is spent (M-5, DEC-311). | The payload carries absolute keys, "keep" copies the current ones (`providertx_service.cpp:1345-1353`), the owners sign only the ProTx hash, keys and `inputsHash` (`specialtxman.cpp:1663-1669`), and consensus applies the keys as given, resetting and banning on an operator change (`:663-673`). A complete request sent after a later change would revert it. `inputsHash` (the funder's fee inputs, `providertx.h:527`) is the only thing that voids it, so the funder's abandon is the real cancel; the base check stops this wallet from approving or sending into a reverted state. dash-qt shows the ban only to the preparer (`sharedmndialogs.cpp:1805-1806`). |
-| D26 | **The wallet can't value other parties' inputs**, so it checks its own side exactly (§4, m-1), floors the fee on an estimated size with foreign inputs counted as P2PKH, and carries Core's non-blocking warning naming the contributions it can't value (`UnvaluedInputs`, as `fundingCheck` does with unresolved inputs, `sharedmncreatedialog.cpp:3298-3305`). It does not claim the "fee positive" check. A session stuck after `out_at` has a recorded exit, `abandon_shared_session`: it spends one of the wallet's reserved inputs to itself through the fence, keeps the row (`abandon_txid`), and releases the locks only once a block settles it (`confirmed` or `conflicted`); it never deletes a row that may be out (MG-04 D49, MG-06/MG-07) (M-3, DEC-311). | `fundingCheck` values every input through the node's UTXO set (`resolveInputValue`, `m_node.getUnspentOutput`, `:3259-3292`); an SPV wallet knows its own coins only, and the consent digest covers prevouts, not amounts. A party contributing less than share + change makes the registration invalid; with no P2P reject (MG-04 D5) the coordinator's row would sit `sent` holding its share and fee. Resolving foreign prevouts through DAPI is a follow-up. |
+| D25 | **A key change binds its base.** The session stores the list's `(pubKeyOperator, keyIDVoting)` when it is prepared or first imported; `approve_maintenance` and `send_maintenance` refuse once the synced list differs (`shared_message{stale}`), the session reads `stale`, and its funder is offered `abandon_shared_session` on a fee input. Every approver's preview shows each key as current → requested against the list at approval time, Core's effects (operator reset and PoSe ban, basic-scheme key, one operator change in the mempool) and that a signed request stays usable by its funder until a fee input is spent (M-5, DEC-311). The base protects against the list moving **after** import; the diff protects against a request built on an older state (r2-m3, DEC-312). | The payload carries absolute keys, "keep" copies the current ones (`providertx_service.cpp:1345-1353`), the owners sign only the ProTx hash, keys and `inputsHash` (`specialtxman.cpp:1663-1669`), and consensus applies the keys as given, resetting and banning on an operator change (`:663-673`). A complete request sent after a later change would revert it. `inputsHash` (the funder's fee inputs, `providertx.h:527`) is the only thing that voids it, so the funder's abandon is the real cancel; the base check stops this wallet from approving or sending into a reverted state. dash-qt shows the ban only to the preparer (`sharedmndialogs.cpp:1805-1806`). |
+| D26 | **The wallet can't value other parties' inputs**, so it checks its own side exactly (§4, m-1), floors the fee on an estimated size with foreign inputs counted as P2PKH (a floor only when they are P2PKH, as Dash Core wallets write; a P2SH input makes it low, n-r2-10), and carries Core's non-blocking warning naming the contributions it can't value (`UnvaluedInputs`, as `fundingCheck` does with unresolved inputs, `sharedmncreatedialog.cpp:3298-3305`). It does not claim the "fee positive" check. A session stuck after `out_at` has a recorded exit, `abandon_shared_session`: it spends one of the wallet's reserved inputs to itself through the fence, keeps the row (`abandon_txid`), and releases the locks only once a block settles it (`confirmed` or `conflicted`); it never deletes a row that may be out (MG-04 D49, MG-06/MG-07) (M-3, DEC-311). | `fundingCheck` values every input through the node's UTXO set (`resolveInputValue`, `m_node.getUnspentOutput`, `:3259-3292`); an SPV wallet knows its own coins only, and the consent digest covers prevouts, not amounts. A party contributing less than share + change makes the registration invalid; with no P2P reject (MG-04 D5) the coordinator's row would sit `sent` holding its share and fee. Resolving foreign prevouts through DAPI is a follow-up. |
 | D27 | **States come from what SPV sees.** `conflicted` and `dead` mean a spend of **this wallet's** inputs; another party's double-spend is invisible (the session stays `sent` until abandoned, D26). A key change's state for a non-funder comes from the synced list (`confirmed` when the keys equal the requested ones, `stale` when they move elsewhere, `dead` when the masternode leaves); a dissolution's from the collateral leaving the list (m-6). | BIP158 filters match scripts, not outpoints, and the wallet's filter holds its own scripts only. dash-qt's creation liveness is wallet-coin-only too (`sharedmncreatedialog.cpp:3226-3246`); its maintenance liveness asks the UTXO set (`sharedmndialogs.cpp:947-971`), which the wallet doesn't have. A non-funding approver of a key change can't see its fee inputs or the transaction. |
-| D28 | **Session ids and labels.** A `sessionId` must be 64 hex (lower-cased on read), else `shared_message{parse}`; `(wallet, sessionId)` is the table's key; a maintenance session's id is SHA-256 of (kind, ProTx hash, sign hash), 64 hex (§3.3). On every import and in `start_shared` labels are non-empty and unique after trimming, every contribution's label names a share, and a share has at most one contribution (`shared_message{labels}`) (m-4, m-5, m-17). | dash-qt accepts any non-empty id (`mnsharesession.cpp:399-403`) but always writes `GetRandHash().ToString()` (`:253`), so the rule is interop-safe, keeps every session reachable by the facade's 64-hex argument, and keeps the session code (`left(6).toUpper()`, `mnsharesession.h:166`) from echoing pasted free text (MG-00 D36, mn-engine D23). Labels bind contributions to shares (first match, `mnsharesession.cpp:91-97,1274-1278`); dash-qt's coordinator enforces unique labels in its UI only (`sharedmncreatedialog.cpp:1276-1288`), and D15's "the row its one new contribution names" needs them unambiguous. A maintenance id from the sign hash is fixed while the txid changes on combine and re-sign (`providertx_service.cpp:1209-1237`). |
+| D28 | **Session ids and labels.** A `sessionId` must be 64 lower-case hex, else `shared_message{parse}` (refused, not lower-cased: dash-qt compares ids exactly, `mnsharesession.cpp:1206`, so a lower-cased re-emission would be another session to it; n-r2-4); `(wallet, sessionId)` is the table's key; a maintenance session's id is SHA-256 of (kind, ProTx hash, sign hash), 64 hex (§3.3). On every import and in `start_shared` labels are non-empty and unique after trimming, every contribution's label names a share, and a share has at most one contribution (`shared_message{labels}`) (m-4, m-5, m-17). | dash-qt accepts any non-empty id (`mnsharesession.cpp:399-403`) but always writes `GetRandHash().ToString()` (`:253`), so the rule is interop-safe, keeps every session reachable by the facade's 64-hex argument, and keeps the session code (`left(6).toUpper()`, `mnsharesession.h:166`) from echoing pasted free text (MG-00 D36, mn-engine D23). Labels bind contributions to shares (first match, `mnsharesession.cpp:91-97,1274-1278`); dash-qt's coordinator enforces unique labels in its UI only (`sharedmncreatedialog.cpp:1276-1288`), and D15's "the row its one new contribution names" needs them unambiguous. A maintenance id from the sign hash is fixed while the txid changes on combine and re-sign (`providertx_service.cpp:1209-1237`). |
 | D29 | **The share table comes from the registration in the wallet's history**, with the registered height from its block; maintenance is refused (`shared_registration_unknown`) when it isn't there. D19's restore claim ("a restored wallet can sign a new standby") holds once the wallet watches its owner key ids 0–19 in its filters, which is added to BL-187/MG-03b's scope (m-11). | The SML has no shares, early terms or registered height (`evo/simplifiedmns.h:40`, mem-only). Filters do index each share's refund, reward and owner key id (`evo/specialtx_filter.cpp:80-85`), so watching the owner key ids finds the registration after a restore. |
 | D30 | **MG-04's registrar calls refuse a shared masternode** (`protx_refused{reason: "bad-protx-shared-mn"}`) before building (m-13). | Consensus refuses any ProUpRegTx on one (`specialtxman.cpp:1444-1448`; block apply `:534`). A coordinator holds the registration among its own operations, so MG-04's `update_registrar` would otherwise offer one that sits `sent` forever. |
 | D31 | **"Reward = refund" in a ProUpShareTx is the share's refund script**, never an empty script; reading a share, an empty `scriptReward` and one equal to the refund both display "rewards go to the refund address" (`RewardScript()`) (M-4, DEC-311). | A ProUpShareTx's `scriptReward` must be P2PKH/P2SH, so empty is `bad-proupshare-payee` (`providertx.cpp:560-562`); Core's own comment says "use the refund script to reset rewards" (`providertx.h:493`). At registration an empty reward means the refund (`providertx.cpp:96`), which is why the two encodings differ. |
 | D32 | **An imported standby is checked and stored for sending**, not just described: type 10, `nVersion` 3, `vin == [collateral]` with an empty scriptSig, the masternode listed and its registration known, §5.1's rules, its signature verified, its outputs equal to `BuildDissolution` with penalty 0 or `nEarlyPenalty` (m-19). | Core offers to broadcast a pasted standby (`masternodelist.cpp:358-379`) and promises the file "works even if this wallet is lost" (`sharedmndialogs.cpp:1564-1565`); D19 makes the export the backup, so the import must be able to use it. `SharedMnReadDissolution` flags a valid immediate variant (`masternodelist.cpp:346-353`), so the comparison is with the builder. |
-| D33 | **The coordinator can change its fee in `draft`** (`set_shared_fee`): its contribution is replaced and its coins re-reserved in one write, `revision` + 1. `lock_shared_terms` computes the minimum fee for the final size and refuses `fee_low{needed}` when the reserved fee is below it (m-8). | The final size is known only at lock. dash-qt's coordinator can change its own contribution while in `draft` (`removeContribution`/`addContribution`, `mnsharesession.cpp:865-883`), and a reply carrying its old contribution is skipped by label (`:1258-1261`), so interop holds. Nothing is out and no one has consented in `draft`, so re-selecting is safe under D17. |
+| D33 | **The coordinator can change its fee in `draft` until another party's contribution is in the session** (`set_shared_fee`; r2-m2 option (a)): its contribution is replaced and its coins re-reserved in one write, `revision` + 1 (the wallet's own +1; dash-qt's remove-and-add bumps twice). After that, `shared_stage{stage: "replied"}`; a `fee_low{needed}` at lock then means discard and start again. A Details reply whose copy of the coordinator's contribution isn't the current one (it answered an Invitation from before the change) is refused `shared_message{older}`, and that participant joins again from the current Invitation. The start-time default is Core's 100,000 duffs, which covers the relay minimum of an 8-share registration with 64 P2PKH inputs per party (about 77 kB at 1,000 duffs/kB), so the change is rarely needed. `lock_shared_terms` computes the minimum fee for the final size and refuses `fee_low{needed}` when the reserved fee is below it (m-8). | The final size is known only at lock. A dash-qt participant's copy keeps the coordinator's contribution from the Invitation it answered: `absorbDraftReply` skips a contribution whose label it already holds (`mnsharesession.cpp:1258-1261`), and `adoptLockedTerms` compares **every** contribution of its copy with the locked one (`:1339-1346`, `SameContribution` `:107-118`), refusing "The locked terms do not contain the details you sent." (`:1300-1301`). A fee change after a reply would strand that participant, and a re-join can't help it once the coordinator holds its old row (`:1245-1252`). So the change is allowed only while nobody else has replied into this copy, and an old reply is refused rather than absorbed, so no stranded party enters the session; the refusal is stricter than dash-qt, which absorbs it. Nothing is out and no one has consented in `draft`, so re-selecting is safe under D17. |
 
 ### Follow-ups
 
@@ -1023,3 +1053,26 @@ answered:
 
 One correction to the review: a different second signature for a share in a sigs envelope is skipped with a warning
 and the first kept, not refused (`sharedmndialogs.cpp:605-609`); §2.5 mirrors that.
+
+## Appendix: review r2 responses (DEC-312)
+
+Review r2 (Opus, on aca5a407) was ACCEPT WITH NITS; DEC-312 accepted the design and ruled on the Minors.
+
+| # | Response | Where |
+|---|---|---|
+| r2-m1 | Fixed before implementing: §3.0 is first-match, top-down; the coordinator's draft + draft cell doesn't compare revisions (`absorbDraftReply`, `mnsharesession.cpp:1204-1284`), a reply adding nothing doesn't bump; T0 case with seven Details in any order | §3.0, §12 |
+| r2-m2 | Fixed before implementing, option (a): `set_shared_fee` only while no other party's contribution is in the session; a reply to an older Invitation is refused `older` and that party re-joins; D33's interop claim corrected (`:1258-1261`, `:1339-1346`) | §3.1, §7, D33, mutant 32 |
+| r2-m3 | Accepted: the approval preview shows every key as current → requested against the list at approval time; the approval records it and refuses if the list moved since | §3.3, §4, D25 |
+| r2-m4 | Accepted: the override is a `test_support` constructor argument under MG-03 D40's gate, unreachable from dwcli; a release-profile build and test prove it absent (a killer of mutant 20) | §7, D1 |
+| r2-m5 | Accepted: `oracle_univalue.rs` checks the case count, the per-case fields and the `read_only` flags; a corrupted-vector test is committed | §12 |
+| r2-m6 | Accepted: mutants 25–33 | §12 |
+| n-r2-1 | `invited` + `frozen`/`signing` → `not_participant` | §3.0 |
+| n-r2-2 | Same-revision `signing` merges require an equal consent hash, else `conflict` | §3.0 |
+| n-r2-3 | A reply that adds nothing is a no-op without a bump | §3.0 |
+| n-r2-4 | A `sessionId` that isn't lower case is refused, not lower-cased | §2.3, D28 |
+| n-r2-5 | The maintenance id's bytes are specified | §3.3 |
+| n-r2-6 | "standby export"; part 2's completing signatures are † | §7 |
+| n-r2-7 | `GetValidatedPayload`'s prefix is the decoder's; tests for `bad-proupsharedreg-not-shared` and sig counts above 8 | §5, `shared/rules.rs` |
+| n-r2-8 | The shared ProRegTx rules and D5's net-info rules land in 1a with Core-order tests | `shared/rules.rs`, `shared/netinfo.rs` |
+| n-r2-9 | Escaped, control-character and non-ASCII keys added to the UniValue inputs | `testdata/oracle/univalue/` |
+| n-r2-10 | The P2PKH fee floor is a floor only for P2PKH foreign inputs | D26 |
