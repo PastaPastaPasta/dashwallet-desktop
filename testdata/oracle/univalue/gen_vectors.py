@@ -78,8 +78,24 @@ INPUTS = [
     # Invalid or unusual UTF-8 (passed as raw bytes below).
     b'["\xc0\xaf"]', b'["\xe0\x80\xaf"]', b'["\xed\xa0\x80"]', b'["\xff"]', b'["\xc3"]',
     b'["\xf4\x90\x80\x80"]', b'["a\x00b"]',
+    # Object keys that need escapes: quote, backslash, a control character,
+    # NUL, non-ASCII as raw UTF-8 and as \u escapes (with a surrogate pair).
+    r'{"a\"b":1}', r'{"a\\b":1}', r'{"\"":1,"\\":2}', r'{"a\u0001b":1}', r'{"a\u0000b":1}',
+    r'{"\u001f":1,"\u007f":2}',
+    b'{"\xc3\xa9":1,"\xe2\x82\xac":2,"\xf0\x9f\x98\x80":3}',
+    r'{"\u00e9":1,"\u20ac":2,"\ud83d\ude00":3}',
+    r'{"\ud83d":1}', r'{"\ud83d\ude00x":{"\u00e9":[]}}',
+    # Duplicate keys, also spelled with different escapes.
+    r'{"a\"b":1,"a\"b":2}', r'{"\u0061":1,"a":2,"\u0061":3}', b'{"\\u00e9":1,"\xc3\xa9":2}',
+    # `fingerprint` written with escapes (UniValue decodes it to the plain key,
+    # so WithoutFingerprint drops it), near-misses, and nested occurrences.
+    r'{"\u0066ingerprint":"x","a":1}', r'{"fingerprin\u0074":"x","fingerprint":"y","a":1}',
+    r'{"fingerprint\u0000":"x","Fingerprint":"y","fingerprint ":"z","a":1}',
+    '{"o":{"fingerprint":"nested"}}', '{"fingerprint":"top","o":{"fingerprint":"nested","p":[{"fingerprint":1}]}}',
+    '[{"fingerprint":"x"}]',
     # Malformed documents.
     "", " ", "[", "]", "{", '{"a"}', '{"a":}', '{"a":1,}', "[1,]", "[,1]", '{"a" 1}', "[1 2]",
+    b'{"a\tb":1}', b'{"a\nb":1}', r'{"a\x":1}', r'{"\ud83d\u12":1}',
     "tru", "nul", "[true false]", '"unterminated', "[1]x", "[1] [2]", "{} ", '{"a":1}}', "\"\\x\"",
     # Nesting written out, then UniValue's MAX_DEPTH (512): read only (READ_ONLY).
     "[" * 20 + "]" * 20, '{"a":' * 10 + "1" + "}" * 10,
@@ -129,6 +145,7 @@ def main():
         cases[i] = {"input": cases[i]["input"], "ok": cases[i]["ok"], "read_only": True}
     doc = {
         "source": f"Dash Core {args.tag} src/univalue via testdata/oracle/univalue/univalue_oracle.cpp",
+        "count": len(cases),
         "cases": cases,
     }
     with open(OUT, "w") as f:

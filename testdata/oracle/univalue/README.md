@@ -6,11 +6,25 @@ reads and writes each input in `gen_vectors.py`'s `INPUTS`: `read`'s verdict,
 `EnvelopeFingerprint` (the shared-masternode message code), and
 `getInt<int64_t|uint64_t|int|uint32_t>` of each array element. Cases nested
 deeper than 20 keep only `read`'s verdict (`read_only`): their pretty rendering
-is quadratic in the depth.
+is quadratic in the depth. The inputs include object keys that need escapes
+(`"`, `\`, `\u0001`, `\u0000`, non-ASCII raw and as `\u` escapes with a
+surrogate pair), duplicate keys (also spelled with different escapes),
+`fingerprint` written with an escape or nested, and malformed keys (a raw tab
+or newline, a bad escape).
+
+The document is `{"source", "count", "cases"}`; `count` is the number of
+cases. A case holds `input` and `ok`; `read_only` (deep cases only) replaces
+everything else; otherwise an ok case also holds `write0`, `write2` and
+`without_fp`, plus `fingerprint` for an object and `ints` for an array.
 
 `rust/crates/dw-protx/tests/oracle_univalue.rs` checks
-`dw-protx::shared::json` and `shared::envelope` against every case. Tests and
-CI read only the JSON; nothing compiles C++.
+`dw-protx::shared::json` and `shared::envelope` against every case, and the
+structure above: the exact case count, exactly these fields per case, and the
+exact set of `read_only` cases. A second test corrupts the vectors in memory
+(a byte of a result, `fingerprint` or `ints` removed from every case, every
+case `read_only`, truncation) and requires the check to fail. Adding or
+removing an input means updating `EXPECTED_CASES` (and `EXPECTED_READ_ONLY`)
+there. Tests and CI read only the JSON; nothing compiles C++.
 
 | File | What it is |
 |---|---|
