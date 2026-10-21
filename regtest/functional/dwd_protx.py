@@ -356,7 +356,10 @@ class DwdProtx(DwdMasternodes):
         self.log.info("8. U1: F's voting key changed, signed by its keychain owner key")
         refused_u = lambda code, *args: dw.mn(h, "update-registrar", *args, error=code)
         refused_u("masternodes.not_found", "ab" * 32, "--payout", payout_f)
-        refused_u("masternodes.no_owner_key", self.mninfo[0].proTxHash, "--payout", payout_f)
+        # Under v24 Core's own masternodes hold a version-3 state (extended addresses), which the
+        # wallet refuses before it looks for an owner key (D46).
+        refused_u("masternodes.unsupported" if V24 else "masternodes.no_owner_key", self.mninfo[0].proTxHash,
+                  "--payout", payout_f)
         refused_u("masternodes.protx_refused", hash_f, "--payout", f["terms"]["owner_address"])
         refused_u("masternodes.protx_refused", hash_f, "--payout", payout_f, "--operator-key", listed_operator)
         p = kept_preview("--voting-index", "7", "--payout", payout_f)
