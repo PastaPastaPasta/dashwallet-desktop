@@ -147,7 +147,7 @@ export function withdrawErrorText(e: unknown, credits: (c: string) => string): s
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "credits.withdrawal_out_of_range":
-      return e.data?.kind === "creditRange" ? `Withdraw between ${credits(e.data.min)} and ${credits(e.data.max)}.` : "The amount is outside what Dash Platform allows.";
+      return e.data?.kind === "creditRange" ? `Withdraw between ${credits(e.data.min)} and ${credits(e.data.max)}.` : "Dash Platform does not take a withdrawal of this amount.";
     case "platform.insufficient_credits":
       return e.data?.kind === "credits" ? `Not enough credits: ${credits(e.data.needed)} needed with the fee, ${credits(e.data.available)} available.` : "Not enough credits.";
     case "identity.keys_missing":

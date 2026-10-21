@@ -148,6 +148,7 @@ describe("the withdraw sheet (DP6-02)", () => {
     expect(withdrawErrorText(appError("credits.withdrawal_out_of_range", { kind: "creditRange", min: "1190000", max: "50000000000000" }), credits)).toBe(
       "Withdraw between 0.0000119 tDASH and 500 tDASH.",
     );
+    expect(withdrawErrorText(appError("credits.withdrawal_out_of_range"), credits)).toBe("Dash Platform does not take a withdrawal of this amount.");
     expect(withdrawErrorText(appError("platform.insufficient_credits", { kind: "credits", needed: "401190000", available: "4000000" }), credits)).toBe(
       "Not enough credits: 0.0040119 tDASH needed with the fee, 0.00004 tDASH available.",
     );
