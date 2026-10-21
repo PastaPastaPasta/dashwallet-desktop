@@ -45,7 +45,7 @@ Semantics:
 - **`identity_detail(identity)`**: the identity's `identities()` summary plus the library's in-memory identity (its
   revision and public keys, by key id). Reads memory only, after the library's read lock (the call is async, so it waits
   for a sync pass's write rather than answer from the snapshot). Not one of the wallet's: `identity.not_found`; a
-  malformed id: `platform.invalid_argument`.
+  malformed id: `invalid_argument`.
 - **`refresh_identity(identity)`**: one of the wallet's identities, else `identity.not_found`. Under the identity's write
   lock (`identity_writes.rs`, so it never races a key upgrade or a name write on the revision), fetches the identity from
   Platform (proved through the trust provider, so `platform.trust_mismatch` and `context_unavailable` reach the caller),
@@ -57,12 +57,12 @@ Semantics:
   outcome with the failed one's code. Fails as a whole only for `network_not_open`, `wallet_not_found` and the like.
 - **`find_identity(query)`**: `query` trimmed. 32 bytes in Base58: by id. Otherwise a DPNS label (`alice` or
   `alice.dash`, any case, `resolve_user`'s form): by name, via the DPNS domain (DP2-03's read), then by its
-  `records.identity`. Neither form: `platform.invalid_argument`. No domain, or no identity on Platform: `None`. The names
+  `records.identity`. Neither form: `invalid_argument`. No domain, or no identity on Platform: `None`. The names
   are a `records.identity` query (the SDK's `get_dpns_usernames_by_identity`, limit 10); their failure leaves `names`
   empty, never fails the find. **Read-only**: nothing is added to the library (unlike the library's
   `load_identity_by_dpns_name`, which watches the identity), nothing is recorded as verified. Needs no key.
 
-Errors: no new code. `identity.not_found`, `platform.invalid_argument`, and the shared `platform.*` mapping (E0-05)
+Errors: no new code. `identity.not_found`, `invalid_argument`, and the shared `platform.*` mapping (E0-05)
 cover every refusal. Nothing changes in m1–m4 §4, so neither the Swift `engineCodes` nor the Swift T0 suite is touched.
 
 **Contract delta** (`docs/contracts/m4-dashpay-engine.md`): §2.1 rows for `identity_detail` (implemented) and the three
@@ -98,7 +98,7 @@ place. View model `src/dashpay/identities.ts` (pure TypeScript), queries in `src
 | L1 | identities unread | "Loading identities…" | — |
 | L2 | read failed | "Could not read this wallet's identities." + Try again | `dashpay-registered` + `fail=identities:none` |
 | L3 | none (`noIdentity`, watch-only, …) | "This wallet has no identities." + Join DashPay (status allows) + Find my identities | `dashpay-no-identity` |
-| L4 | one or more | per row: initials avatar, @main name ("No username" / "Updating…" / "Username not loaded"), "Main" badge, "Identity N" (index), short id with copy, credit balance (Dash, masked in discreet mode; "Unknown"; "Updating…" when stale), "Unverified" mark; actions Set as main (not on the main row), Keys, Refresh | `dashpay-identities` (two identities, the second main by choice) |
+| L4 | one or more | per row: initials avatar, @main name ("No username" / "Updating…" / "Username not loaded"), "Main" badge, "Index N" (the derivation index), short id with copy, credit balance (Dash, masked in discreet mode; "Unknown"; "Updating…" when stale), "Unverified" mark; actions Set as main (not on the main row), Keys, Refresh | `dashpay-identities` (two identities, the second main by choice) |
 | L5 | names updating (snapshot) | L4 with "Updating…" | `dashpay-names-updating` |
 
 Header actions: **Refresh all** (`refresh_identities`; then "Refreshed N identities" or "N could not be refreshed"),
@@ -149,6 +149,10 @@ a D-row with the closest proof.
 | D8 | **Restore and the main identity.** The choice lives in `dp_main_identity` (app.sqlite): it survives a restart and a `.dwbackup` restore brings it back (wallet rows). A restore from the recovery phrase alone has no row, so the main identity is the lowest index once identities are rediscovered (DP1-05 `recovery.rs`). A row naming an identity the wallet no longer has is ignored (lowest index) and stays until the next choice. | DP1-05's rules, unchanged; the brief asks what a restore does to a user-chosen main. |
 | D9 | `refresh_identities` refreshes one identity at a time. | Each fetch is a few proved queries; one at a time keeps DAPI load and the write locks bounded, and a wallet has few identities. |
 | D10 | `identity_detail` reads memory after the library's read lock, not the snapshot. | The call is async (m4 §1), so it may wait; keys from a stale snapshot would show an old key set after a refresh. |
+| D11 | **T2 seeding.** On the dashmate `local` devnet dash-spv never finishes its masternode list (no `llmq_test_dip0024` quorum answers QRInfo; MG-07 saw the same), so `funding_hold()` keeps a `dwcli identity register` draft at `waiting: sync` with nothing funded. The two identities are therefore registered straight on Platform by an uncommitted `#[ignore]` harness (kept as `/work/scratch/dw-dp6-01/t2/identity_live.patch`) with the keys the T2 wallet's own seed derives at `m/9'/1'/5'/0'/0'/i'/k'`, key 0 the MASTER auth key the discovery scan looks up. Everything after that (discover, list, set-main, show, refresh, find) runs through `dwcli` on the branch build. | The closest proof the devnet allows: the identities are the wallet's own (the engine finds and signs for them), only their creation bypasses the engine's funding path, which DP1-09 owns and this task does not change. |
+| D12 | A key's contract bounds map to `contract_bound` (the contract id) plus `contract_bound_document_type` for `SingleContractDocumentType`; a `SingleContract` bound has no document type. The UI names DashPay's `contactRequest` binding "DashPay contact requests" and shows any other contract by its short id. | `IdentityKeyInfo` already has both fields (DP2-01); one field per bound part, no new record. |
+| D13 | Adding the Advanced tab changes the tab strip on every Settings screen, so the twelve `settings-*` visual baselines are regenerated with it. The pixel diff of each old and new baseline is confined to the tab strip. New baselines: `identities-list`, `identities-detail`, `identities-found` (light and dark). | The brief allows baselines for the new page only; a new tab cannot leave the strip as it was, and nothing else on those screens moved. |
+| D14 | `SettingsPage` takes the window's `network` (App already holds it), for the credit balance's unit. | The one shared-file edit the page needs in `App.tsx`; no new query. |
 
 ## Slice plan
 

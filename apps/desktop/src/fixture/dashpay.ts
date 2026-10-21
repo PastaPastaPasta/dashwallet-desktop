@@ -23,6 +23,7 @@ import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { UserHit } from "../api/generated/UserHit";
 import type { UserRelation } from "../api/generated/UserRelation";
+import type { IdentitiesWorld } from "./identities";
 import type { CreditsWorld } from "./topup";
 import { FIXTURE_NOW, secs } from "./wallet";
 
@@ -69,6 +70,8 @@ export interface DashPayWorld {
   pictures?: FixturePictures;
   /** DP4-03: this many next profile saves fail with `platform.unavailable`. */
   profileSaveFailures?: number;
+  /** DP6-01: keys, revisions, refresh failures and Find my identities' finds (identities.ts). */
+  identityState?: IdentitiesWorld;
 }
 
 /** Whether an upload host is configured, the candidates `dashpay_prepare_avatar` made, and every

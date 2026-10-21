@@ -47,6 +47,7 @@ import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
 import { toolsHandlers } from "./tools";
 import { topUpHandlers } from "./topup";
+import { identitiesHandlers } from "./identities";
 import { isClosed, settingsHandlers } from "./settings";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
@@ -646,6 +647,8 @@ export const HANDLERS: Handlers = {
   // Username registration (DP1-09): registration.ts.
   ...registrationHandlers({ wallet, dashpay, grant: checkGrant, newLease, setLease, writeLease }),
   ...topUpHandlers({ wallet, dashpay, grant: checkGrant, useGrant, costs: COST_TABLE }),
+  // Settings ▸ Advanced ▸ Identities (DP6-01): identities.ts.
+  ...identitiesHandlers({ dashpay, grant: checkGrant, useGrant }),
 
   // App and network
   launch_info: (_, { world }) => world.launch,
@@ -863,11 +866,6 @@ export const HANDLERS: Handlers = {
   dashpay_sync_soon: () => null,
   dashpay_startup: ({ walletId }, { world }) => dashpay(world, walletId).startup,
   identities: ({ walletId }, { world }) => dashpay(world, walletId).identities,
-  identity_detail: ({ walletId, identity }, { world }) => ({
-    summary: dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!,
-    revision: 3,
-    publicKeys: [],
-  }),
   main_name: ({ walletId, identity }, { world }) =>
     dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!.mainName,
   // DashPay::registration_quote (registration.rs `plan`): the label's rules, the funding kinds this
