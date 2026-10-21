@@ -13,6 +13,8 @@ import { FIXTURE_PASSPHRASE } from "../src/fixture/scenarios";
 const row = (page: Page, identity: string) => page.locator(`[data-testid=identity-row][data-identity="${identity}"]`);
 const mainRows = (page: Page) => page.locator("[data-testid=identity-row][data-main]");
 const find = (page: Page) => page.getByTestId("identity-find");
+const failRefresh = (page: Page, identity: string, code: string) =>
+  page.evaluate(([id, c]) => void (window.__dwFixture!.world.dashpay.identityState!.refreshFailures[id] = c as never), [identity, code]);
 
 async function lookUp(page: Page, text: string) {
   if (!(await find(page).isVisible())) await page.getByTestId("identities-look-up").click();
@@ -45,6 +47,23 @@ const STATES: Record<string, { scenario: string; extra?: string; go?: (page: Pag
     extra: "&fail=identity_find:none",
     go: (p) => lookUp(p, "bob"),
     ready: (p) => expect(p.getByTestId("identity-find-failed")).toBeVisible(),
+  },
+  // The refresh errors (Opus-h r1 review's axe states).
+  "refresh-failed": {
+    scenario: "dashpay-identities",
+    go: async (p) => {
+      await failRefresh(p, IDENTITY.alice, "platform.trust_mismatch");
+      await row(p, IDENTITY.alice).getByTestId("identity-refresh").click();
+    },
+    ready: (p) => expect(row(p, IDENTITY.alice).getByTestId("identity-result")).toHaveText("This identity's data could not be verified against the network."),
+  },
+  "refresh-all-failed": {
+    scenario: "dashpay-identities",
+    go: async (p) => {
+      await failRefresh(p, WORK_IDENTITY, "platform.unavailable");
+      await p.getByTestId("identities-refresh-all").click();
+    },
+    ready: (p) => expect(p.getByTestId("identities-result")).toHaveText("1 identity could not be refreshed: Dash Platform did not answer. Try again."),
   },
 };
 
@@ -121,9 +140,7 @@ test("IOS-071: Refresh, Refresh all and Find my identities", async ({ page }) =>
   await row(page, IDENTITY.alice).getByTestId("identity-refresh").click();
   await expect(row(page, IDENTITY.alice).getByTestId("identity-result")).toHaveText("Identity refreshed");
 
-  await page.evaluate((id) => {
-    window.__dwFixture!.world.dashpay.identityState!.refreshFailures[id] = "platform.unavailable";
-  }, WORK_IDENTITY);
+  await failRefresh(page, WORK_IDENTITY, "platform.unavailable");
   await page.getByTestId("identities-refresh-all").click();
   await expect(page.getByTestId("identities-result")).toHaveText("1 identity could not be refreshed: Dash Platform did not answer. Try again.");
 

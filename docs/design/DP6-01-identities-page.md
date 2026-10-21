@@ -51,15 +51,18 @@ Semantics:
   Platform (proved through the trust provider, so `platform.trust_mismatch` and `context_unavailable` reach the caller),
   and folds Platform's **keys and revision** into the library's copy, keeping the library's balance and its block time;
   then refreshes the balance the DP1-06 way (`Balances::refresh`, proved, with its block time, an older answer never
-  replacing a newer one). Platform has no such identity: `identity.not_found`. Returns `identity_detail`. The library's
-  store signals `Platform{Identities}`.
+  replacing a newer one). Platform has no such identity: `identity.not_found`. The keys are stored first, the revision
+  last (D16): a failed store is `storage` and leaves the old revision, so the next refresh folds the answer again.
+  Returns `identity_detail`. The library's store signals `Platform{Identities}`.
 - **`refresh_identities()`**: `refresh_identity` for each of the wallet's identities in index order, one at a time; each
-  outcome with the failed one's code. Fails as a whole only for `network_not_open`, `wallet_not_found` and the like.
+  outcome with the failed one's code. Fails as a whole for `network_not_open` and `wallet_not_found`, also when the
+  wallet goes mid-run (D9).
 - **`find_identity(query)`**: `query` trimmed. 32 bytes in Base58: by id. Otherwise a DPNS label (`alice` or
   `alice.dash`, any case, `resolve_user`'s form): by name, via the DPNS domain (DP2-03's read), then by its
   `records.identity`. Neither form: `invalid_argument`. No domain, or no identity on Platform: `None`. The names
   are a `records.identity` query (the SDK's `get_dpns_usernames_by_identity`, limit 10); their failure leaves `names`
-  empty, never fails the find. **Read-only**: nothing is added to the library (unlike the library's
+  empty, never fails the find; the names shown count in `unverified` with the identity's own lookups (m4 §5, D7).
+  **Read-only**: nothing is added to the library (unlike the library's
   `load_identity_by_dpns_name`, which watches the identity), nothing is recorded as verified. Needs no key.
 
 Errors: no new code. `identity.not_found`, `invalid_argument`, and the shared `platform.*` mapping (E0-05)
@@ -125,14 +128,16 @@ Platform.", `platform.timeout` "Dash Platform took too long to answer. Try again
 
 Fixture: scenario `dashpay-identities` (two identities; the second main; keys for each; a directory identity to find by
 name and id), plus failure switches through the existing `fail=` mechanism. Playwright `e2e/identities.spec.ts`
-(IOS-071) with axe in light and dark on Chromium and WebKit; visual baselines for L4, the detail and a found result,
-light and dark (Chromium). View-model mutants: the main badge on the wrong row; the disabled status read as enabled.
+(IOS-071) with axe in light and dark on Chromium and WebKit, the refresh-failed and refresh-all-failed states included;
+visual baselines for L4, the detail and a found result, light and dark (Chromium). View-model mutants: the main badge on
+the wrong row; the disabled status read as enabled.
 
 ## T2 (dashmate devnet)
 
-Run on 2026-10-21 against the shared dashmate `local` devnet with the branch's `dwcli`, one wallet from a seed under
-`/work/scratch/dw-dp6-01/t2/`; each command's JSON is kept in `/work/scratch/dw-dp6-01/t2/ev/` (`README` lists them).
-The two identities were registered on Platform by the seed's own keys (D11), `dp601-alpha7` and `dp601-beta8`.
+Run on 2026-10-21 against the shared dashmate `local` devnet with the branch's `dwcli` at f25a382b, one wallet from a
+seed under `/work/scratch/dw-dp6-01/t2/`; each command's JSON is kept in `/work/scratch/dw-dp6-01/t2/ev/` (`README`
+lists them). The two identities were registered on Platform by the seed's own keys (D11), `dp601-alpha7` and
+`dp601-beta8`.
 
 | Step | Evidence | Result |
 |---|---|---|
@@ -146,6 +151,8 @@ The two identities were registered on Platform by the seed's own keys (D11), `dp
 
 Every identity stays `unverified`: the devnet's quorum keys come from MG-07's sidecar, not from a masternode list
 (D11). The page itself is proven on the fixture (T0); the devnet run proves the engine and `dwcli` calls it uses.
+The engine changes after f25a382b are the simplifier's behaviour-neutral edits, D15's signals and review r1's fixes;
+of these only D16's store order touches a step above (15–17), and the engine tests cover it.
 
 ## D-rows
 
@@ -155,19 +162,22 @@ Every identity stays `unverified`: the devnet's quorum keys come from MG-07's si
 | D2 | `refresh_identity` folds keys and revision only; the balance is refreshed through DP1-06's `Balances::refresh`, not replaced by the fetched identity's. | The library's `refresh_identity` replaces the whole identity, balance included, without a block time: an older answer could replace a newer balance, which DP1-06 forbids (m4 item 44). Its error mapping also turns proof failures into an untyped string; a direct proved fetch keeps `trust_mismatch`. |
 | D3 | `refresh_identity` holds the identity's write lock while it fetches and folds. A Refresh started while a top-up, registration or profile write holds that lock waits for it, showing "Updating…", and the page's one-action rule holds the other actions meanwhile. | A key upgrade or name write builds on the cached revision (`requests.rs` `enable_keys`); a refresh between its read and its write would move the revision under it. The wait is bounded by that write's own timeouts. |
 | D4 | No `dwcli identity keys`: `identity show` already prints the keys (`identity_detail`), now implemented. | "The closest fit to the existing `identity …` commands"; one command per facade call. |
-| D5 | "Find" is the brief's: a read-only lookup by id or DPNS name (`find_identity`), which also answers iOS's "get username" (whose name is this identity). iOS's "Find identities" (scan the seed) is `discover_identities`, already DP1-05's, offered as **Find my identities**. "Get a username" as registration of an extra name is IOS-126 (the DP1-09 credits path), linked from a row without a name. | The brief defines find; m4 §2.1 already calls `discover_identities` DP6-01's "find". Both are on the page, named apart. |
+| D5 | "Find" is the brief's: a read-only lookup by id or DPNS name (`find_identity`), which also answers iOS's "get username" (whose name is this identity). iOS's "Find identities" (scan the seed) is `discover_identities`, already DP1-05's, offered as **Find my identities**. "Get a username" as registration of an extra name is IOS-126 (the DP1-09 credits path), linked from a row without a name. A 42–44 character label of Base58 characters only that decodes to 32 bytes is read as an id, so it answers "No identity" rather than being looked up by name (review N1). | The brief defines find; m4 §2.1 already calls `discover_identities` DP6-01's "find". Both are on the page, named apart. Such labels are rare, and a name fallback would make a missing id cost a second lookup. |
 | D6 | A found identity is never added to the wallet or watched, and nothing is recorded as verified (`dp_trust_verified`). | Read-only by the brief; the library's `load_identity_by_dpns_name` adds a watched identity, which would then show in sync passes. |
-| D7 | `FoundIdentity.names` are the domains whose `records.identity` is the identity, as spelled, at most 10, no contest or main-name rules. A failed names read leaves the list empty. | DPNS indexes `records.identity`, not `$ownerId` (SDK note); a lookup needs the names, not the wallet's main-name model. |
+| D7 | `FoundIdentity.names` are the domains whose `records.identity` is the identity, as spelled, at most 10, no contest or main-name rules. A failed names read leaves the list empty. The names shown count in `unverified` with the identity's own lookups (m4 §5; review F1). | DPNS indexes `records.identity`, not `$ownerId` (SDK note); a lookup needs the names, not the wallet's main-name model. A name on the page is a claim like the identity itself, so it needs the same proof to count as verified. |
 | D8 | **Restore and the main identity.** The choice lives in `dp_main_identity` (app.sqlite): it survives a restart and a `.dwbackup` restore brings it back (wallet rows). A restore from the recovery phrase alone has no row, so the main identity is the lowest index once identities are rediscovered (DP1-05 `recovery.rs`). A row naming an identity the wallet no longer has is ignored (lowest index) and stays until the next choice. | DP1-05's rules, unchanged; the brief asks what a restore does to a user-chosen main. |
-| D9 | `refresh_identities` refreshes one identity at a time. | Each fetch is a few proved queries; one at a time keeps DAPI load and the write locks bounded, and a wallet has few identities. |
+| D9 | `refresh_identities` refreshes one identity at a time. The wallet or the network gone mid-run (`wallet_not_found`, `network_not_open`) fails the whole run, not one row per remaining identity (review N2). | Each fetch is a few proved queries; one at a time keeps DAPI load and the write locks bounded, and a wallet has few identities. Every later row would fail the same way. |
 | D10 | `identity_detail` reads memory after the library's read lock, not the snapshot. | The call is async (m4 §1), so it may wait; keys from a stale snapshot would show an old key set after a refresh. |
 | D11 | **T2 seeding.** On the dashmate `local` devnet dash-spv never finishes its masternode list (no `llmq_test_dip0024` quorum answers QRInfo; MG-07 saw the same), so `funding_hold()` keeps a `dwcli identity register` draft at `waiting: sync` with nothing funded. The two identities are therefore registered straight on Platform by an uncommitted `#[ignore]` harness (kept as `/work/scratch/dw-dp6-01/t2/identity_live.patch`) with the keys the T2 wallet's own seed derives at `m/9'/1'/5'/0'/0'/i'/k'`, key 0 the MASTER auth key the discovery scan looks up. Everything after that (discover, list, set-main, show, refresh, find) runs through `dwcli` on the branch build. | The closest proof the devnet allows: the identities are the wallet's own (the engine finds and signs for them), only their creation bypasses the engine's funding path, which DP1-09 owns and this task does not change. |
 | D12 | A key's contract bounds map to `contract_bound` (the contract id) plus `contract_bound_document_type` for `SingleContractDocumentType`; a `SingleContract` bound has no document type. The UI names DashPay's `contactRequest` binding "DashPay contact requests" and shows any other contract by its short id. | `IdentityKeyInfo` already has both fields (DP2-01); one field per bound part, no new record. |
 | D13 | Adding the Advanced tab changes the tab strip on every Settings screen, so the fourteen `settings-*` visual baselines (seven screens, light and dark) are regenerated with it. The pixel diff of each old and new baseline is confined to the tab strip. New baselines: `identities-list`, `identities-detail`, `identities-found` (light and dark). | The brief allows baselines for the new page only; a new tab cannot leave the strip as it was, and nothing else on those screens moved. |
 | D14 | `SettingsPage` takes the window's `network` (App already holds it), for the credit balance's unit. | The one shared-file edit the page needs in `App.tsx`; no new query. |
-| D15 | **Set as main and Set as main name signal themselves.** `set_main_identity` sends `Platform{Identities}` and `Platform{Startup}`; a stored main-name pick sends `Platform{Identities}`. The fixture's handlers send the same. | Neither is a library changeset, so the changeset tap never saw them and the page, the chip and My Profile kept the old main until an unrelated signal (Opus review B1). Engine tests assert both signals (killed when removed). |
-| D16 | A refresh's fold may leave memory ahead of disk when a key store fails part-way (`replace_key` and `set_status` mutate, then persist). Kept: memory only ever moves toward Platform's answer, the call fails `storage`, and the next refresh after a restart folds again from the older stored copy. | The library offers no persist-first form; reordering would need its internals (Opus review N4). |
+| D15 | **Set as main and the name prefs signal themselves.** `set_main_identity` sends `Platform{Identities}` and `Platform{Startup}`; every name-pref write (the main-name pick, pending, refused, temporary, contested) sends `Platform{Identities}` from `set_name_pref` itself. The fixture's handlers send the same. | None is a library changeset, so the changeset tap never saw them and the page, the chip and My Profile kept the old main until an unrelated signal (Opus review B1). The other four prefs were covered only by the paid name write's balance refresh, an incidental coupling (review r1 N4). Engine tests assert the signals, one per pref key (killed when removed). |
+| D16 | **A refresh fails closed.** The fold stores each changed key first, under the old revision (`replace_key`); a key whose store fails is put back in memory, the call fails `storage`, and the revision stays. The revision is set last and stored through the engine's `WalletStore` as an identity snapshot; a failure there restores the old revision and is `storage`. Either way the next refresh folds Platform's answer again. An answer at the same revision still folds, so a key Platform disabled since gets Platform's disable time. | A revision stored ahead of its keys would make every later refresh skip the answer as not newer (review r1 F2). Tests: a failed key store keeps the old revision in memory and on disk, and a retry stores the key; a failed revision store is `storage` with the old revision; the same-revision fold (F3). Mutants: `/work/scratch/dw-dp6-01/mutants/r1-fixes.log`, all killed. |
 | D17 | Error copy (review S1, S2, N6): `invalid_argument` has no page-wide copy (the look-up shows its own; Set as main name says the identity no longer owns that name); `platform.proof_invalid` reads "Dash Platform's answer could not be verified. Try again."; `identity.not_found` keeps one text for the rare case an identity left the wallet mid-action. A key is "DashPay contact requests" only when bound to DashPay's system contract (`dashpay_contract::ID`, the same on every network) and its `contactRequest` type (N2). | Each failure the engine can return says what happened; the look-up's input check stays its own. |
+| D18 | A refresh whose keys were folded but whose balance step fails reports the failure (its `platform.*` code), not success with a stale balance. Not changed (review r1 N3). | A partial result needs a new result shape through the engine, IPC and UI. The stored keys are Platform's proved state, so Try again is idempotent: the fold has nothing to do and the balance is read again. |
+| D19 | The detail sheet can answer `identity.not_found` for an identity discovered moments ago, while a writer holds the lock and the summary comes from the snapshot. Kept (review r1 N6). | Transient: the snapshot catches up when the writer ends, and Try again recovers. Reading the summary under the lock would make every detail wait on every write. |
+| D20 | IOS-071 is `partial` in `docs/parity.md`: masternode and evonode identities, observed identities, key derivation paths, voting status and the Swift apps are not here. | iOS's screen has them (review r1 F4); the parity definition is unchanged. |
 
 ## Slice plan
 
