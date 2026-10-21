@@ -242,10 +242,7 @@ impl NetworkSession {
                 return Ok(picked);
             }
             if index.is_some() {
-                return Err(MasternodesError::ProtxRefused {
-                    reason: "bad-protx-dup-key".into(),
-                    operation: None,
-                });
+                return Err(super::build::refused("bad-protx-dup-key"));
             }
         }
         Err(exhausted("owner"))

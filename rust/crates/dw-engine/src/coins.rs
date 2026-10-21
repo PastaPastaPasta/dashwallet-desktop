@@ -71,6 +71,7 @@ use key_wallet::bip32::ChildNumber;
 use key_wallet::managed_account::ManagedCoreFundsAccount;
 use key_wallet::managed_account::address_pool::AddressInfo;
 use key_wallet::managed_account::managed_account_collection::ManagedAccountCollection;
+use key_wallet::managed_account::managed_account_ref::ManagedAccountRef;
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use key_wallet::managed_account::transaction_record::TransactionDirection;
 use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
@@ -102,10 +103,26 @@ pub(crate) fn now_secs() -> u64 {
 /// wallet's, so a payment to one leaves it, every cap counts it, and the
 /// wallet neither signs for one nor claims it in a PSBT (MG-05 D19).
 pub(crate) fn own_address_info(info: &ManagedWalletInfo, address: &Address) -> Option<AddressInfo> {
+    own_accounts(info).find_map(|account| account.get_address_info(address))
+}
+
+/// [`own_address_info`] in an account that holds funds. key-wallet tracks
+/// no coin in a keys-only account (identity, asset-lock, DIP-3 provider
+/// keys), so a payment to one of its addresses leaves the wallet: every
+/// cap counts it and it shows going out (MG-04 D55).
+pub(crate) fn own_funds_address_info(
+    info: &ManagedWalletInfo,
+    address: &Address,
+) -> Option<AddressInfo> {
+    own_accounts(info)
+        .filter(|account| account.as_funds().is_some())
+        .find_map(|account| account.get_address_info(address))
+}
+
+fn own_accounts(info: &ManagedWalletInfo) -> impl Iterator<Item = ManagedAccountRef<'_>> {
     info.all_managed_accounts()
         .into_iter()
         .filter(|account| !account.managed_account_type().is_contact_owned())
-        .find_map(|account| account.get_address_info(address))
 }
 
 /// Whether `address` is one of the wallet's derived addresses
@@ -114,28 +131,10 @@ pub(crate) fn wallet_owns(info: &ManagedWalletInfo, address: &Address) -> bool {
     own_address_info(info, address).is_some()
 }
 
-/// Whether a payment to `address` stays in the wallet's funds: one of its
-/// addresses ([`own_address_info`]) other than a DIP-3 provider key's
-/// (owner, voting, operator, platform). key-wallet tracks no coin at those
-/// (its provider-key accounts hold keys, not funds), and since MG-04 D50
-/// the wallet signs none at an owner key, so a payment to one leaves the
-/// wallet: every cap counts it and a send shows it going out (MG-04 D55).
+/// Whether a payment to `address` stays in the wallet's funds
+/// ([`own_funds_address_info`]).
 pub(crate) fn wallet_funds_address(info: &ManagedWalletInfo, address: &Address) -> bool {
-    use key_wallet::managed_account::managed_account_type::ManagedAccountType as T;
-    info.all_managed_accounts()
-        .into_iter()
-        .filter(|account| {
-            let kind = account.managed_account_type();
-            !kind.is_contact_owned()
-                && !matches!(
-                    kind,
-                    T::ProviderVotingKeys { .. }
-                        | T::ProviderOwnerKeys { .. }
-                        | T::ProviderOperatorKeys { .. }
-                        | T::ProviderPlatformKeys { .. }
-                )
-        })
-        .any(|account| account.get_address_info(address).is_some())
+    own_funds_address_info(info, address).is_some()
 }
 
 /// Tests: adds a DashPay contact's external account (watch-only, from a

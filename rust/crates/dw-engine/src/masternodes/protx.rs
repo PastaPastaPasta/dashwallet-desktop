@@ -33,7 +33,7 @@ use super::protx_records::{
 };
 use super::records::MasternodeType;
 use super::{Masternodes, MasternodesError, parse_pro_tx_hash};
-use crate::coins::{now_secs, wallet_owns};
+use crate::coins::{now_secs, wallet_funds_address};
 use crate::platform::lease::Lease;
 use crate::platform::{BudgetPurpose, FlowKind, PlatformError};
 use crate::send::{SendFailure, SpendCharge, lease_failure};
@@ -934,7 +934,7 @@ impl NetworkSession {
             change.as_ref(),
             |script| {
                 dashcore::Address::from_script(script, network)
-                    .is_ok_and(|a| wallet_owns(&state.core_wallet, &a))
+                    .is_ok_and(|a| wallet_funds_address(&state.core_wallet, &a))
             },
             network,
         )

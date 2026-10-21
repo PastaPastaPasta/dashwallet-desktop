@@ -275,14 +275,15 @@ impl AppDb {
         )? == 1)
     }
 
-    /// Unlocks the collateral `(txid, vout)` operation `id` locked and
+    /// Unlocks the collateral `txid:vout` operation `id` locked and
     /// forgets that it did, in one transaction: its transaction is
     /// conflicted, so it never confirms (MG-04 D54).
     pub fn release_masternode_op_collateral(
         &self,
         wallet_id: &str,
         id: &str,
-        (txid, vout): (&str, u32),
+        txid: &str,
+        vout: u32,
         now: u64,
     ) -> Result<()> {
         let mut conn = self.conn();
@@ -491,7 +492,7 @@ mod tests {
         r.locked_collateral = true;
         let locks = [("c".to_string(), 0), ("f".to_string(), 2)];
         db.insert_masternode_op_durable(W, &r, &locks, 1).unwrap();
-        db.release_masternode_op_collateral(W, "a", ("c", 0), 2)
+        db.release_masternode_op_collateral(W, "a", "c", 0, 2)
             .unwrap();
         let after = db.masternode_op(W, "a").unwrap().unwrap();
         assert!(!after.locked_collateral);

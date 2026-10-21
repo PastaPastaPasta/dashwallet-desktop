@@ -448,12 +448,9 @@ impl NetworkSession {
         Ok(())
     }
 
-    /// Unlocks the collateral each conflicted row locked (D54): its
-    /// transaction never confirms, and Core locks no collateral of a
-    /// ProRegTx outside its wallet's mempool or the list (rc.3
-    /// `wallet/wallet.cpp:1088,2867-2872`). A coin another row names stays
-    /// locked: that row registers it again. The caller holds the wallet's
-    /// coin fence, so no registration saves a row naming the coin meanwhile.
+    /// Unlocks the collateral each conflicted row locked, unless another
+    /// row names the coin (D54). The caller holds the wallet's coin fence,
+    /// so no registration saves a row naming it meanwhile.
     async fn release_conflicted_collaterals(
         &self,
         wallet: WalletId,
@@ -481,7 +478,7 @@ impl NetworkSession {
         self.appdb_op(move |db| {
             let now = now_secs();
             for (id, o) in &release {
-                db.release_masternode_op_collateral(&w, id, (&o.txid.to_string(), o.vout), now)?;
+                db.release_masternode_op_collateral(&w, id, &o.txid.to_string(), o.vout, now)?;
             }
             Ok(())
         })

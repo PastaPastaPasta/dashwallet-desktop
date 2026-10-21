@@ -1378,7 +1378,9 @@ fn psbt_an_owner_keys_coin_is_not_signed() {
 /// MG-04 D55 (review r2 m-1): a payment to one of the wallet's own
 /// provider-key addresses (owner, voting) leaves its funds: key-wallet
 /// tracks no coin there and the wallet signs none at an owner key. So the
-/// grant caps it and the send and a PSBT show it going out.
+/// grant caps it, as a recipient or as custom change; the send and a PSBT
+/// show it going out, an unsigned PSBT records no derivation for it, and
+/// the address book takes it as a Send entry only.
 #[test]
 fn a_payment_to_an_own_provider_key_leaves_the_wallet() {
     use crate::masternode_keys::MasternodeKeyRole::{Owner, Voting};
@@ -1400,14 +1402,21 @@ fn a_payment_to_an_own_provider_key_leaves_the_wallet() {
         .block_on(session.on_runtime(async move {
             let wallet = inner.wallet(&id).await?;
             let state = wallet.state().await;
-            let owns = |a: &str| {
+            let fp = Some(key_wallet::bip32::Fingerprint::default());
+            let seen = |a: &str| {
                 let a = Address::from_str(a).unwrap().assume_checked();
-                crate::coins::wallet_owns(&state.core_wallet, &a)
+                let owned = crate::coins::wallet_owns(&state.core_wallet, &a);
+                let derived = super::psbt::derivation_of(&state.core_wallet, &a, fp).is_some();
+                (owned, derived)
             };
-            Ok::<_, EngineError>((owns(&o), owns(&v)))
+            Ok::<_, EngineError>((seen(&o), seen(&v)))
         }))
         .unwrap();
-    assert_eq!(listed, (true, true), "the wallet lists both keys");
+    assert_eq!(
+        listed,
+        ((true, false), (true, false)),
+        "the wallet lists both keys; no derivation record for either"
+    );
 
     f.credit(1, COIN);
     let draft = f.draft(vec![pay(&owner, 30_000_000), pay(&voting, 20_000_000)]);
@@ -1429,6 +1438,36 @@ fn a_payment_to_an_own_provider_key_leaves_the_wallet() {
     let paid: Vec<_> = s.outputs.iter().filter(|o| !o.is_change).collect();
     assert_eq!(paid.len(), 2);
     assert!(paid.iter().all(|o| !o.is_mine), "{paid:?}");
+
+    // Custom change to the owner key leaves the wallet too.
+    f.credit(3, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 30_000_000)]);
+    draft.set_change(ChangePolicy::Address(owner.clone())).unwrap();
+    let estimate = f.engine.block_on(draft.estimate()).unwrap();
+    let r = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(30_000_000 + estimate.fee)));
+    assert_eq!(
+        send_failure(r),
+        SendFailure::GrantExceeded {
+            max_duffs: 30_000_000 + estimate.fee,
+            outflow: COIN
+        }
+    );
+
+    // The address book: a Send entry, never a Receive one.
+    let save = |purpose| {
+        f.engine.block_on(f.session.save_address_book_entry(
+            f.wallet,
+            owner.clone(),
+            "owner".into(),
+            purpose,
+            false,
+        ))
+    };
+    let r = save(dw_appdb::BookPurpose::Receive);
+    assert!(matches!(r, Err(EngineError::InvalidArgument(_))), "{r:?}");
+    save(dw_appdb::BookPurpose::Send).unwrap();
 
     let prev = f.credit_with_prev(2, COIN);
     let psbt = psbt_spending(&prev, &[(&owner, COIN / 2), (&voting, COIN / 2 - 10_000)]);
