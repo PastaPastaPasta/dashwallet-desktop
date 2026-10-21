@@ -237,6 +237,8 @@ pub(crate) struct Seam {
     pub crash: std::sync::Mutex<Option<CrashPoint>>,
     /// Stands in for the synced SPV list.
     pub list: std::sync::Mutex<Option<Vec<platform_wallet::masternode::MasternodeListSummary>>>,
+    /// The stand-in list's height.
+    pub list_height: std::sync::Mutex<u32>,
 }
 
 #[cfg(test)]

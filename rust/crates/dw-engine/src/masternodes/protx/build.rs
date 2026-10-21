@@ -304,6 +304,9 @@ pub(crate) struct Context {
     pub listed: Vec<ListedMasternode>,
     /// The synced list's entries, which a ProUpRegTx keeps keys from (D10).
     pub entries: Vec<MasternodeListSummary>,
+    /// The list's height (MG-03 D3): an operation confirmed above it isn't
+    /// in the list yet (D43).
+    pub list_height: Option<u32>,
     pub used: InUse,
     /// The collateral scripts of the wallet's `External` registrations by
     /// ProTx hash (wire order): a coin the wallet doesn't hold (D40).
@@ -479,13 +482,14 @@ impl NetworkSession {
         let network = self.network.core_network();
         let manager = self.manager()?;
         #[cfg(test)]
-        let seamed = (self.masternodes.protx_seam())
-            .and_then(|s| s.list.lock().unwrap().clone())
-            .map(|entries| ListView {
+        let seamed = (self.masternodes.protx_seam()).and_then(|s| {
+            let height = *s.list_height.lock().unwrap();
+            (s.list.lock().unwrap().clone()).map(|entries| ListView {
                 synced: true,
-                height: Some(1),
+                height: Some(height),
                 entries,
-            });
+            })
+        });
         #[cfg(not(test))]
         let seamed = None;
         let list = match seamed {
@@ -535,6 +539,7 @@ impl NetworkSession {
         }
         Ok(Context {
             listed: listed(&list, &owned),
+            list_height: list.height,
             entries: list.entries,
             used,
             external_collaterals,

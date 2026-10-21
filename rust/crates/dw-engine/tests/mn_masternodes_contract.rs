@@ -739,6 +739,7 @@ fn error_codes_match_the_contract() {
             MasternodesError::InFlight,
             MasternodesError::KeysExhausted { role: hash() },
             MasternodesError::NoOwnerKey,
+            MasternodesError::UpdatePending { operation: hash() },
         ],
         MasternodesError::code,
     );

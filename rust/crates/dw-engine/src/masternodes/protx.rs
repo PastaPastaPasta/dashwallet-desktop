@@ -554,6 +554,7 @@ impl Masternodes {
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             update::check_update_request(&request, s.network.core_network())?;
+            let updating = s.masternodes.update_lock().await;
             let ctx = s.protx_context(wallet).await?;
             let up = s.resolve_update(wallet, &request, &ctx, true).await?;
             let lease = s
@@ -607,6 +608,7 @@ impl Masternodes {
                     last_error: None,
                 };
                 s.save_operation(wallet, row, inputs).await?;
+                drop(updating);
                 #[cfg(test)]
                 ops::crash_at(&s, ops::CrashPoint::Saved)?;
                 let summary = s

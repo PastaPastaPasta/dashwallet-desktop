@@ -16,14 +16,15 @@ use dw_vault::{OwnerKey, VaultSigner};
 use key_wallet::{DerivationPath, Utxo};
 
 use super::super::protx_records::{
-    KeepOr, OperatorChoice, OwnerKeySource, PayoutChoice, ProTxTerms, UpdateRegistrarRequest,
-    VotingChoice,
+    KeepOr, OperatorChoice, OwnerKeySource, PayoutChoice, ProTxOperationState, ProTxTerms,
+    UpdateRegistrarRequest, VotingChoice,
 };
 use super::super::reads::owner_facts;
 use super::super::records::MasternodeType;
-use super::super::{MasternodesError, parse_pro_tx_hash};
+use super::super::{MasternodesError, display_hex, parse_pro_tx_hash};
 use super::build::{Context, Funding, assemble, dummy_output, refused, to_sign};
 use super::keys::{p2pkh_id, parse_operator_key};
+use super::ops::state_of;
 use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
 use crate::send::l1_address;
 use crate::{EngineError, NetworkSession, WalletId};
@@ -106,6 +107,30 @@ fn key_address(key_id: [u8; 20], network: Network) -> Address {
 }
 
 impl NetworkSession {
+    /// The id of an operation of the wallet on masternode `hash` (wire
+    /// order) that the synced list at `list_height` may not show yet:
+    /// signed or sent, or confirmed above the list's height (D43).
+    async fn unlisted_operation(
+        &self,
+        wallet: WalletId,
+        hash: [u8; 32],
+        list_height: Option<u32>,
+    ) -> Result<Option<String>, MasternodesError> {
+        let shown = display_hex(&hash);
+        let w = wallet.to_string();
+        let rows = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
+        let (history, unspent) = self.op_view(wallet).await?;
+        Ok(rows
+            .into_iter()
+            .filter(|r| r.pro_tx_hash.as_deref() == Some(shown.as_str()))
+            .find(|r| match state_of(r, &history, &unspent) {
+                ProTxOperationState::Signed | ProTxOperationState::Sent => true,
+                ProTxOperationState::Confirmed { height } => list_height.is_none_or(|l| l < height),
+                _ => false,
+            })
+            .map(|r| r.id))
+    }
+
     /// Resolves `req` against the synced list and the wallet (§4 steps 1,
     /// 2 and 4). `commit`: issue a `NewAddress` payout; a preview stands
     /// in for it.
@@ -145,6 +170,15 @@ impl NetworkSession {
                 ),
                 None => return Err(MasternodesError::NoOwnerKey),
             };
+        // A kept key is the list's: refused while one of the wallet's own
+        // operations on this masternode may not be in it yet (D43).
+        if (req.operator == KeepOr::Keep || req.voting == KeepOr::Keep)
+            && let Some(operation) = self
+                .unlisted_operation(wallet, hash, ctx.list_height)
+                .await?
+        {
+            return Err(MasternodesError::UpdatePending { operation });
+        }
 
         let listed_voting = key_address(entry.voting_key_id, network);
         let (voting_id, voting_address, voting_index) = match &req.voting {

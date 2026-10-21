@@ -149,6 +149,7 @@ fn seam_for(session: &NetworkSession, lib: &Arc<FakeLibrary>) -> Arc<Seam> {
         broadcaster: lib.clone(),
         crash: Mutex::new(None),
         list: Mutex::new(Some(Vec::new())),
+        list_height: Mutex::new(100),
     });
     session.masternodes.set_protx_seam(Some(seam.clone()));
     seam
@@ -1655,4 +1656,63 @@ fn mg04_update_registrar_requests_are_refused_in_order() {
     assert_eq!(e.code(), "platform.grant_invalid");
     assert_eq!(f.lib.sent().len(), 1, "only the registration");
     assert!(f.rows().iter().all(|r| r.kind == "registration"));
+}
+
+/// D43: a kept key is the list's, so a keep is refused while the wallet's
+/// own earlier update of the masternode may not be in the list: sent, or
+/// confirmed above the list's height. Every key given is still allowed.
+#[test]
+fn mg04_a_keep_waits_until_the_list_shows_the_last_update() {
+    let f = fx(Library::Accept);
+    let (_, op) = f.registered();
+    let hash = op.pro_tx_hash.clone().unwrap();
+    let voting = |index| KeepOr::Set(VotingChoice::Keychain { index });
+    let first = f
+        .update(
+            UpdateRegistrarRequest {
+                voting: voting(5),
+                ..keep(&hash)
+            },
+            f.grant(COIN),
+        )
+        .unwrap();
+    assert_eq!(first.state, ProTxOperationState::Sent);
+    f.credit(3, COIN);
+    let pending = |req: UpdateRegistrarRequest| {
+        let e = f.preview_update(req).unwrap_err();
+        assert!(
+            matches!(&e, MasternodesError::UpdatePending { operation } if *operation == first.id),
+            "{e:?}"
+        );
+        assert_eq!(e.code(), "masternodes.update_pending");
+    };
+    pending(keep(&hash));
+    pending(UpdateRegistrarRequest {
+        voting: voting(6),
+        ..keep(&hash)
+    });
+    pending(UpdateRegistrarRequest {
+        operator: KeepOr::Set(OperatorChoice::Keychain { index: 0 }),
+        ..keep(&hash)
+    });
+    let explicit = UpdateRegistrarRequest {
+        operator: KeepOr::Set(OperatorChoice::Keychain { index: 0 }),
+        voting: voting(5),
+        ..keep(&hash)
+    };
+    let p = f.preview_update(explicit.clone()).unwrap();
+    assert_eq!(p.terms.voting_index, Some(5));
+
+    // In a block the list hasn't reached: still refused.
+    let tx = f.lib.sent().pop().unwrap();
+    f.confirm(tx.clone(), 150);
+    pending(keep(&hash));
+    // The list shows it now: kept keys are the update's.
+    let mut entry = f.seam.list.lock().unwrap().as_ref().unwrap()[0].clone();
+    entry.voting_key_id = up_payload(&tx).voting_key_hash.to_byte_array();
+    *f.seam.list.lock().unwrap() = Some(vec![entry]);
+    *f.seam.list_height.lock().unwrap() = 150;
+    let p = f.preview_update(keep(&hash)).unwrap();
+    assert!(!p.voting_changes && !p.operator_changes, "{p:?}");
+    assert_eq!(p.terms.voting_address, first.terms.voting_address);
 }

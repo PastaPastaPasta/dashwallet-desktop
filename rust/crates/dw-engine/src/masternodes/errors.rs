@@ -80,6 +80,13 @@ pub enum MasternodesError {
     /// the masternode's owner key id, or the id isn't known (MG-04 D12).
     #[error("no owner key of this masternode")]
     NoOwnerKey,
+    /// ProUpRegTx: a key is kept while an operation of the wallet that may
+    /// change it (`operation`, its id) isn't in the synced list yet; every
+    /// key must be given (MG-04 D43).
+    #[error(
+        "operation {operation} may change this masternode's keys before the list shows it: give every key"
+    )]
+    UpdatePending { operation: String },
     /// A lease refused (MG-05 D12).
     #[error(transparent)]
     Platform(#[from] PlatformError),
@@ -108,6 +115,7 @@ impl MasternodesError {
             Self::InFlight => "masternodes.in_flight",
             Self::KeysExhausted { .. } => "masternodes.keys_exhausted",
             Self::NoOwnerKey => "masternodes.no_owner_key",
+            Self::UpdatePending { .. } => "masternodes.update_pending",
             Self::Platform(e) => e.code(),
             Self::Engine(e) => e.code(),
         }
