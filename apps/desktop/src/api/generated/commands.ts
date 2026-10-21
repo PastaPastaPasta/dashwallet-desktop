@@ -166,6 +166,7 @@ import type { WatchOnlyOptions } from "./WatchOnlyOptions";
 import type { WithdrawAmount } from "./WithdrawAmount";
 import type { WithdrawOutcome } from "./WithdrawOutcome";
 import type { WithdrawQuote } from "./WithdrawQuote";
+import type { Withdrawal } from "./Withdrawal";
 
 export type { AppError, AppEvent, ErrorCode, ShellEvent };
 
@@ -1613,6 +1614,14 @@ export function creditsWithdraw(walletId: string, identity: string, to: string, 
 }
 
 /**
+ * The identity's recent withdrawals on Platform, the most recently
+ * updated first (at most 20).
+ */
+export function creditsWithdrawals(walletId: string, identity: string): Promise<Array<Withdrawal>> {
+  return invoke<Array<Withdrawal>>("credits_withdrawals", { walletId, identity });
+}
+
+/**
  * The caps of the grant `action` needs.
  */
 export function grantRequest(walletId: string, identity: string, action: GrantAction): Promise<GrantRequest> {
@@ -2505,6 +2514,7 @@ export type CommandArgs = {
   credits_resolve_top_up: { walletId: string; txid: string };
   credits_withdraw_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
+  credits_withdrawals: { walletId: string; identity: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
   dispatch_status: { walletId: string; artifact: string };
   resolve_stuck_funding: { walletId: string; step: string; grant: string };
@@ -2773,6 +2783,7 @@ export type CommandResults = {
   credits_resolve_top_up: null;
   credits_withdraw_quote: WithdrawQuote;
   credits_withdraw: WithdrawOutcome;
+  credits_withdrawals: Array<Withdrawal>;
   grant_request: GrantRequest;
   dispatch_status: DispatchStateName | null;
   resolve_stuck_funding: BroadcastOutcome;
@@ -3043,6 +3054,7 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_resolve_top_up: "identity",
   credits_withdraw_quote: "identity",
   credits_withdraw: "identity",
+  credits_withdrawals: "identity",
   grant_request: "identity",
   dispatch_status: "identity",
   resolve_stuck_funding: "identity",
@@ -3349,6 +3361,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.below_minimum",
   "credits.coins_locked",
   "credits.top_up_pending",
+  "credits.withdrawal_out_of_range",
   "governance.sync_disabled",
   "governance.not_synced",
   "governance.proposal_not_found",

@@ -190,6 +190,15 @@ pub enum ErrorData {
         #[serde(with = "crate::dto::credits")]
         available: u64,
     },
+    /// `credits.withdrawal_out_of_range`: what a withdrawal may take, in credits.
+    CreditRange {
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        min: u64,
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        max: u64,
+    },
     /// `insufficient_credits`: the identity (Base58) whose balance is short.
     IdentityCredits {
         identity: String,

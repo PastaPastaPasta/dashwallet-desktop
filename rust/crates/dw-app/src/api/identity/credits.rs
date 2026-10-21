@@ -329,9 +329,13 @@ pub struct WithdrawOutcome {
     #[serde(with = "crate::dto::credits")]
     pub credits: u64,
     pub expected_duffs: Option<u64>,
+    /// The identity's balance after, proved; `null` when the withdrawal was
+    /// read back rather than answered.
     #[ts(type = "string | null")]
     #[serde(with = "crate::dto::credits::option")]
     pub remaining_credits: Option<u64>,
+    /// The withdrawal's document (Base58), as `creditsWithdrawals` lists it.
+    pub withdrawal: String,
 }
 
 impl From<engine::WithdrawOutcome> for WithdrawOutcome {
@@ -340,11 +344,77 @@ impl From<engine::WithdrawOutcome> for WithdrawOutcome {
             credits,
             expected_duffs,
             remaining_credits,
+            withdrawal,
         } = o;
         WithdrawOutcome {
             credits,
             expected_duffs,
             remaining_credits,
+            withdrawal,
+        }
+    }
+}
+
+/// Where a withdrawal stands on Platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum WithdrawalStatusName {
+    /// Waiting for Platform to sign its asset unlock.
+    Queued,
+    Pooled,
+    /// Sent to Core.
+    Broadcasted,
+    /// Mined on Core: the duffs arrived.
+    Complete,
+    /// Core never took it; Platform signs it again.
+    Expired,
+    /// Terminal: never mined, and Platform keeps the credits.
+    Failed,
+    Unknown,
+}
+
+mirror_enum!(engine::WithdrawalStatus => WithdrawalStatusName {
+    Queued, Pooled, Broadcasted, Complete, Expired, Failed, Unknown
+});
+
+/// One of an identity's withdrawals on Platform.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Withdrawal {
+    /// The withdrawal document's id (Base58).
+    pub id: String,
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    /// What reaches the address, by Platform's conversion.
+    pub expected_duffs: Option<u64>,
+    /// The address paid, when it reads as one of the network.
+    pub to: Option<String>,
+    pub status: WithdrawalStatusName,
+    /// Unix milliseconds.
+    pub created_at: Option<u64>,
+    pub updated_at: Option<u64>,
+}
+
+impl From<engine::Withdrawal> for Withdrawal {
+    fn from(w: engine::Withdrawal) -> Self {
+        let engine::Withdrawal {
+            id,
+            credits,
+            expected_duffs,
+            to,
+            status,
+            created_at,
+            updated_at,
+        } = w;
+        Withdrawal {
+            id,
+            credits,
+            expected_duffs,
+            to,
+            status: status.into(),
+            created_at,
+            updated_at,
         }
     }
 }

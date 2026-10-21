@@ -19,7 +19,7 @@ use dw_engine::platform::{BearerSecret, FlowKind};
 
 use self::credits::{
     CostTable, PendingTopUp, StuckTopUpFunding, TopUpOutcome, TopUpQuote, WithdrawAmount,
-    WithdrawOutcome, WithdrawQuote,
+    WithdrawOutcome, WithdrawQuote, Withdrawal,
 };
 use self::flows::{GrantAction, GrantRequest};
 use self::invitations::InvitationStatus;
@@ -360,6 +360,15 @@ commands! {
     ) -> WithdrawOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         Ok(dashpay.withdraw(identity, to, amount.into(), grant).await?.into())
+    }
+
+    /// The identity's recent withdrawals on Platform, the most recently
+    /// updated first (at most 20).
+    #[facade("DashPay::withdrawals")]
+    fn credits_withdrawals(state, wallet_id: String, identity: String) -> Vec<Withdrawal> {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let list = dashpay.withdrawals(identity).await?;
+        Ok(list.into_iter().map(Into::into).collect())
     }
 
     // Grants, flows and leases.
