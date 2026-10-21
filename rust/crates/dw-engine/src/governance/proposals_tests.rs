@@ -1185,6 +1185,22 @@ fn a_resend_refuses_a_coin_another_payment_holds() {
     assert_eq!(p.lib.sent.lock().unwrap().len(), 2, "no resend");
 }
 
+/// MG-04 D47: a coin locked since the restart (a masternode's collateral
+/// takes a user lock) is not the resend's to spend.
+#[test]
+fn a_resend_refuses_a_user_locked_coin() {
+    let p = props(Mode::Unconfirmed);
+    let (hash, fee) = p.restarted();
+    let coin = fee.input[0].previous_output;
+    let session = &p.f.session;
+    (p.f.engine)
+        .block_on(session.lock_outpoints(p.f.wallet, vec![coin]))
+        .unwrap();
+    assert_unavailable(&p.submit(&hash).unwrap_err(), coin);
+    assert!(p.row(&hash).fee_sent_at.is_none(), "nothing handed off");
+    assert_eq!(p.lib.sent.lock().unwrap().len(), 1, "no resend");
+}
+
 /// D10: after a restart a resend claims the fee's coins again, so no
 /// payment prepared since can take them.
 #[test]

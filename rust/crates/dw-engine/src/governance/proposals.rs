@@ -715,12 +715,13 @@ impl Governance {
             let tip = self.session.hub.tracker().tip_height().unwrap_or(0);
             let (depth, _) = fee_statuses(&self.session, &wallet, &[&saved.fee], tip)[0];
             if depth.is_none() {
-                // Each coin is unspent and held by no asset lock, whose
-                // holds outlive a restart (`coins.rs`; validator r1
-                // Major-1, Minor-1).
+                // Each coin is unspent, held by no asset lock, whose holds
+                // outlive a restart (`coins.rs`; validator r1 Major-1,
+                // Minor-1), and not locked by the user since, as a
+                // masternode's collateral is (MG-04 D47).
                 let snapshot = self.session.coin_snapshot(&fence, &handle).await?;
                 let free: HashSet<OutPoint> = (snapshot.coins.iter())
-                    .filter(|c| !c.lock_input && !c.unresolved_lock)
+                    .filter(|c| !c.lock_input && !c.unresolved_lock && !c.user_locked)
                     .map(|c| c.utxo.outpoint)
                     .collect();
                 if let Some(&o) = inputs.iter().find(|o| !free.contains(o)) {

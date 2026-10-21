@@ -1874,3 +1874,33 @@ fn mg04_an_update_resends_unless_a_later_one_exists() {
     let sent = resend(&second.id, f.grant(COIN)).unwrap();
     assert_eq!(sent.state, ProTxOperationState::Sent);
 }
+
+/// MG-06 meets MG-04 in the coin claims: a coin a pending proposal fee
+/// claims (`reserve_unless_held`, as its resend does) isn't a collateral;
+/// once free, the registration takes it and user-locks it, which the fee's
+/// resend refuses (`governance::proposals_tests`).
+#[test]
+fn mg04_a_coin_a_proposal_fee_claims_is_not_a_collateral() {
+    let f = fx(Library::Accept);
+    let collateral = f.credit(1, MASTERNODE_COLLATERAL);
+    f.credit(2, COIN);
+    let fee = SpendOwner::Tx(Txid::from_byte_array([0x77; 32]));
+    (f.session.spends)
+        .reserve_unless_held(f.wallet, fee, &[collateral])
+        .unwrap();
+    let req = request(CollateralChoice::ExistingUtxo {
+        outpoint: format!("{}-0", collateral.txid),
+    });
+    let refused = f.register(req.clone(), f.grant(COIN)).unwrap_err();
+    assert_eq!(refused.code(), "masternodes.collateral_unavailable");
+    assert!(f.lib.sent().is_empty());
+
+    f.session.spends.release(&f.wallet, fee);
+    let op = f.register(req, f.grant(COIN)).unwrap();
+    assert_eq!(op.state, ProTxOperationState::Sent);
+    let locked = f
+        .engine
+        .block_on(f.session.locked_outpoints(f.wallet))
+        .unwrap();
+    assert!(locked.contains(&collateral), "{locked:?}");
+}
