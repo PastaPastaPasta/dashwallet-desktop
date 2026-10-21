@@ -1,7 +1,7 @@
-//! v24 shared masternodes: the codecs of the three new provider payloads and
-//! of the share table, written from Dash Core v24.0.0-rc.2
+//! v24 shared masternodes: the codecs of the shared registration and the
+//! three new provider payloads, written from Dash Core v24.0.0-rc.3
 //! `src/evo/providertx.h` because rust-dashcore at the pin has the four
-//! classic payloads only:
+//! classic payloads at version ≤ 2 only (MG-04b §0):
 //!
 //! - [`ProDisTx`] (type 10, `providertx.h:436-482`): dissolve a shared
 //!   masternode, unilateral (one signature) or unanimous (one per share);
@@ -10,22 +10,32 @@
 //! - [`ProUpShareTx`] (type 11, `providertx.h:484-515`): change one share's
 //!   reward script, signed by that share's owner key over the payload hash
 //!   (`CHashSigner::VerifyHashCanonical(::SerializeHash(ptx), …)`,
-//!   `specialtxman.cpp:1597-1602`).
+//!   `specialtxman.cpp:1607-1614`).
 //! - [`ProUpSharedRegTx`] (type 12, `providertx.h:517-557`): rotate the
 //!   operator/voting keys, one owner signature per share over the payload
-//!   hash (`specialtxman.cpp:1653-1660`).
+//!   hash (`specialtxman.cpp:1663-1671`).
+//! - [`ProRegTxV3`] ([`registration`]): the version-3 ProRegTx with its
+//!   share table and [`ExtNetInfo`] ([`netinfo`]), and the consent digest
+//!   every share owner signs (`MakeSharedRegConsentHash`).
+//! - [`SpecialTx`] ([`rawtx`]): a transaction of any special type, which the
+//!   pin's `Transaction` can't decode for types 10–12 or a version-3 payload.
 //! - [`CollateralShare`] / [`PayoutShare`]: the share table and payout list
 //!   entries (`providertx.h:31-90`).
 //!
 //! These payloads are consensus-valid only once the v24 fork is active
-//! (`GetValidatedPayload`, `specialtxman.cpp:1099-1124`). The shared
-//! *registration* (ProRegTx version 3 with the share table) also needs the
-//! v24 extended network-info encoding, which this module does not write yet
-//! (MG-01 salvage plan §7).
+//! (`GetValidatedPayload`, `specialtxman.cpp:1097-1122`).
 
 use dashcore::consensus::encode::{self, Decodable, Encodable, VarInt};
 use dashcore::hashes::{Hash, HashEngine, sha256d};
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxOut, Txid};
+
+pub mod netinfo;
+pub mod rawtx;
+pub mod registration;
+
+pub use netinfo::ExtNetInfo;
+pub use rawtx::SpecialTx;
+pub use registration::ProRegTxV3;
 
 /// Special transaction types (`primitives/transaction.h:39-41`).
 pub const TRANSACTION_PROVIDER_DISSOLVE: u16 = 10;
