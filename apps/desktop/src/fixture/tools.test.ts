@@ -59,6 +59,8 @@ describe("fixture DashPay card (DP6-03)", () => {
       ["dashpay-watch-only", "watchOnly"],
       ["dashpay-info-no-identity-proven", "notSetUp"],
       ["dashpay-info-stopped", "stopped"],
+      ["dashpay-info-bringup-running", "starting"],
+      ["dashpay-info-identity-incomplete", "running"],
     ];
     for (const [scenario, state] of expected) expect(await cardState(scenario), scenario).toBe(state);
   });

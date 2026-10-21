@@ -65,7 +65,8 @@ export function DashPayInfoCard() {
     // A failed refetch keeps the last data: the error shows only when nothing was read.
     syncError: wallets.isError && !wallets.data ? failureText(wallets.error) : sync.isError && !sync.data ? failureText(sync.error) : null,
     quorumSource: source.data,
-    trustedOnly: trustedOnly.data,
+    // D5: a failed read claims neither the degraded mode nor the developer setting.
+    trustedOnly: trustedOnly.data ?? (trustedOnly.isError ? "failed" : undefined),
     now: Math.floor(Date.now() / 1000),
   });
 

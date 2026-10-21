@@ -658,8 +658,9 @@ const SCENARIOS = {
   "dashpay-look-failed": (t) => withStatus(base(t), { kind: "startupIncomplete", startup: "discoveryFailed" }),
   // DP6-03: Tools ▸ Information's DashPay card. `dashpay-registered` is its degraded mode (the
   // default quorum source, DEC-168); the states without an identity are the scenarios above.
-  /** Quorum keys from SPV, a pass that found two requests and a contact, two contacts waiting for
-   * an unlock: the card says Running. */
+  /** Quorum keys from SPV, a pass that found two requests and a contact, two contact accounts
+   * waiting to be built: the card says Running. Forward-looking: the engine reports no pass yet
+   * (`last_pass` is `None`, DP6-03 D4/F2), so the Last pass row is ahead of today's engine. */
   "dashpay-info-spv": (t) => {
     const w = withSyncInfo(t, { source: "spv", trustedOnly: false }, pass({ newRequests: 2, newContacts: 1 }));
     w.dashpay.startup = { ...w.dashpay.startup, contactAccountsPending: 2 };
@@ -669,13 +670,29 @@ const SCENARIOS = {
   "dashpay-info-fallback": (t) => withSyncInfo(t, { source: "trustedFallback", trustedOnly: false }),
   /** The developer toggle: the trusted service only. */
   "dashpay-info-trusted-only": (t) => withSyncInfo(t, { source: "trusted", trustedOnly: true }),
-  /** The last pass failed with `platform.unavailable`. */
+  /** The last pass failed with `platform.unavailable`. Forward-looking, as `dashpay-info-spv`'s
+   * pass: no engine reports one yet (DP6-03 D4/F2). */
   "dashpay-info-pass-failed": (t) => withSyncInfo(t, { source: "spv", trustedOnly: false }, pass({ failureCode: "platform.unavailable" })),
   /** No identity, which Platform proved within its 7 days: the bring-up did not run (bringup.rs),
    * and the card still says Not set up. */
   "dashpay-info-no-identity-proven": (t) => {
     const w = base(t);
     w.dashpay.startup = { ...w.dashpay.startup, startup: "notRun", finishedAt: null };
+    return w;
+  },
+  /** An identity on file whose bring-up runs, before SPV and the loops start (every launch,
+   * bringup.rs `supervise`): Starting, not Stopped (DP6-03 D19). */
+  "dashpay-info-bringup-running": (t) => {
+    const w = withSyncInfo(t, { source: "spv", trustedOnly: false });
+    w.dashpay.startup = { ...w.dashpay.startup, startup: "starting", finishedAt: null };
+    w.sync = { ...w.sync, running: false, connectedPeers: 0 };
+    return w;
+  },
+  /** An identity on file whose bring-up ended with contact accounts still to build (the library's
+   * `PartialAccountsPending`, the common case for them): the identity settles it, Running. */
+  "dashpay-info-identity-incomplete": (t) => {
+    const w = withSyncInfo(t, { source: "spv", trustedOnly: false });
+    w.dashpay.startup = { ...w.dashpay.startup, startup: "partialAccountsPending", contactAccountsPending: 3 };
     return w;
   },
   /** SPV stopped: the loops do not run, so Sync now has nothing to run. */

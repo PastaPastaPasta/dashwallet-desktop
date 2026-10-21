@@ -45,6 +45,8 @@ export interface DashPayInfo {
   syncNow: { disabled: boolean; note: string | null } | null;
 }
 
+export type TrustedOnlyRead = boolean | "failed" | undefined;
+
 export interface DashPayInfoInputs {
   /** No wallet on this network: only the session's quorum source is read. */
   noWallet: boolean;
@@ -57,8 +59,9 @@ export interface DashPayInfoInputs {
   syncError: string | null;
   /** `quorum_source` (no wallet) or the sync status's own. */
   quorumSource: QuorumSource | undefined;
-  /** The developer toggle (`trusted_quorums_only`), `undefined` while unread. */
-  trustedOnly: boolean | undefined;
+  /** The developer toggle (`trusted_quorums_only`): `undefined` while unread (the default, the
+   * degraded mode, is assumed), `"failed"` when the read failed (neither is claimed, D5). */
+  trustedOnly: TrustedOnlyRead;
   /** UNIX seconds. */
   now: number;
   timeZone?: string;
@@ -72,6 +75,7 @@ export const INFO_COPY = {
   notSetUp: { title: "No DashPay identity on this wallet", message: "Join DashPay to create a username." },
   notSetUpWaiting: "Join DashPay once the wallet has synced.",
   stopped: "DashPay sync is stopped",
+  startingUp: "DashPay is starting",
   degraded: {
     trusted: "Quorum keys from a trusted service",
     trustedFallback: "Trusted quorum keys until masternode sync finishes",
@@ -79,9 +83,14 @@ export const INFO_COPY = {
   },
   running: "Quorum keys verified by SPV",
   syncNow: "Sync now",
-  loopsStopped: "DashPay's sync loops are not running. They start when the wallet connects to the Dash network.",
+  loopsStopped: "DashPay's sync loops are not running. They run while the wallet is connected to the Dash network, and can take a little while to start after it connects.",
   watchOnly: "A watch-only wallet can't use DashPay because it has no keys.",
-  requested: "A DashPay pass was asked for. This card shows it once it reports.",
+  // n7: a pass syncs a known identity's contacts and payments; it does not look for one.
+  heldNoIdentityYet: "Sync now waits until DashPay finds this wallet's identity.",
+  heldNotSetUp: "Sync now waits until this wallet has a DashPay identity.",
+  heldStartingUp: "Sync now waits until DashPay has started.",
+  requested: "A DashPay pass was asked for. It runs in the background. Passes don't report their results yet, so this card can't show when it ends.",
+  pendingContactsNote: "They're built after an unlock or the DIP-15 contact rescan.",
 } as const;
 
 const CHIP: Record<DashPayInfoState, string> = {
@@ -125,7 +134,7 @@ const LOOP_TITLE: Record<SyncLoop, string> = {
 };
 
 /** D5: where Platform proofs get their quorum keys, and what that means for what the card shows. */
-export function quorumRow(source: QuorumSource | undefined, trustedOnly: boolean | undefined): InfoRow {
+export function quorumRow(source: QuorumSource | undefined, trustedOnly: TrustedOnlyRead): InfoRow {
   const title = "Quorum keys";
   switch (source) {
     case undefined:
@@ -135,6 +144,7 @@ export function quorumRow(source: QuorumSource | undefined, trustedOnly: boolean
     case "trustedFallback":
       return { title, value: "Trusted service until masternode sync finishes", note: "Platform data read meanwhile counts as unverified." };
     case "trusted":
+      if (trustedOnly === "failed") return { title, value: "Trusted service", note: "Could not read whether SPV checks of quorum keys are off." };
       return trustedOnly === true
         ? { title, value: "Trusted service only (developer setting)", note: "SPV checks of quorum keys are off." }
         : { title, value: "Trusted service (degraded mode)", note: "Checked against SPV's quorum keys where SPV holds them." };
@@ -157,6 +167,10 @@ export function loopRow(loop: SyncLoopStatus, now: number, timeZone?: string): I
   return { title, value: `Running · last run ${clock(loop.lastRunAt)}${next}` };
 }
 
+/** `contact_accounts_pending`: contact accounts waiting for an unlock or the DIP-15 rescan
+ * (startup_status.rs). */
+const PENDING_TITLE = "Contact accounts waiting to be built";
+
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** D4: the last pass's end and what it found; "—" until a pass reports (`last_pass` is `None` today). */
@@ -173,10 +187,12 @@ export function lastPassRow(pass: SyncPassReport | null, timeZone?: string): Inf
   return { title, value, note: found.length ? found.join(", ") : "Nothing new" };
 }
 
-function degradedHeadline(source: QuorumSource, trustedOnly: boolean | undefined): string {
+function degradedHeadline(source: QuorumSource, trustedOnly: TrustedOnlyRead): string {
   if (source === "trustedFallback") return INFO_COPY.degraded.trustedFallback;
-  return trustedOnly ? INFO_COPY.degraded.trustedOnly : INFO_COPY.degraded.trusted;
+  return trustedOnly === true ? INFO_COPY.degraded.trustedOnly : INFO_COPY.degraded.trusted;
 }
+
+const held = (note: string) => ({ disabled: true, note });
 
 function card(state: DashPayInfoState, tone: DashPayInfoTone, headline: string, rest: Partial<DashPayInfo> = {}): DashPayInfo {
   return { state, tone, chip: CHIP[state], headline, line: null, busy: false, rows: [], syncNow: null, ...rest };
@@ -184,8 +200,9 @@ function card(state: DashPayInfoState, tone: DashPayInfoTone, headline: string, 
 
 /** The card for the wallet's DashPay sync state (design note §2, D2): the first that applies of no
  * wallet, unread, watch-only, a failed pass, the bring-up's own state while no identity is known
- * (failed, not run, running), no identity, the DashPay loop stopped, quorum keys not from SPV,
- * running. */
+ * (failed, not run, running), no identity, the bring-up running with the loops not yet started,
+ * the DashPay loop stopped, quorum keys not from SPV, running. Sync now is held, with the reason,
+ * wherever it would do nothing (D3). */
 export function dashpayInfo(i: DashPayInfoInputs): DashPayInfo {
   const quorum = quorumRow(i.sync?.quorumSource ?? i.quorumSource, i.trustedOnly);
   if (i.noWallet) return card("noWallet", "neutral", INFO_COPY.noWallet, { rows: [quorum] });
@@ -198,13 +215,15 @@ export function dashpayInfo(i: DashPayInfoInputs): DashPayInfo {
   const rows: InfoRow[] = [
     { title: "Identity scan", ...verdict },
     lastPassRow(s.lastPass, i.timeZone),
-    { title: "Contacts waiting for an unlock", value: s.pendingContactCrypto === 0 ? "None" : String(s.pendingContactCrypto) },
+    s.pendingContactCrypto === 0
+      ? { title: PENDING_TITLE, value: "None" }
+      : { title: PENDING_TITLE, value: String(s.pendingContactCrypto), note: INFO_COPY.pendingContactsNote },
     ...s.loops.map((l) => loopRow(l, i.now, i.timeZone)),
     quorum,
   ];
   // D3: the pass Sync now asks for runs only while the DashPay loop does.
   const looping = s.loops.some((l) => l.syncLoop === "dashPaySync" && l.running);
-  const syncNow = looping ? { disabled: false, note: null } : { disabled: true, note: INFO_COPY.loopsStopped };
+  const syncNow = looping ? { disabled: false, note: null } : held(INFO_COPY.loopsStopped);
   const at = (state: DashPayInfoState, tone: DashPayInfoTone, headline: string, rest: Partial<DashPayInfo> = {}) =>
     card(state, tone, headline, { rows, syncNow, ...rest });
   const { status } = i;
@@ -215,20 +234,25 @@ export function dashpayInfo(i: DashPayInfoInputs): DashPayInfo {
   const absent = status?.kind === "noIdentity";
 
   if (i.watchOnly || (status?.kind === "noIdentity" && status.reason === "watchOnly"))
-    return at("watchOnly", "neutral", COPY.watchOnly.title, { syncNow: { disabled: true, note: INFO_COPY.watchOnly } });
+    return at("watchOnly", "neutral", COPY.watchOnly.title, { syncNow: held(INFO_COPY.watchOnly) });
   if (s.lastPass?.failureCode) return at("failed", "danger", INFO_COPY.passFailed.title, { line: INFO_COPY.passFailed.message(s.lastPass.failureCode) });
   if (!identity && !absent) {
-    if (s.startup === "seedBindingUnverified") return at("failed", "danger", COPY.unverified.title, { line: COPY.unverified.message });
-    if (FAILED.has(s.startup)) return at("failed", "danger", COPY.lookFailed.title, { line: COPY.lookFailed.message });
-    if (s.startup === "notRun") return at("notStarted", "neutral", COPY.notStarted.title, { line: COPY.notStarted.message });
-    if (s.startup === "identityUnsettled") return at("starting", "neutral", COPY.unlockToLook.title, { line: COPY.unlockToLook.message });
+    const look = (state: DashPayInfoState, tone: DashPayInfoTone, headline: string, rest: Partial<DashPayInfo> = {}) =>
+      at(state, tone, headline, { syncNow: held(INFO_COPY.heldNoIdentityYet), ...rest });
+    if (s.startup === "seedBindingUnverified") return look("failed", "danger", COPY.unverified.title, { line: COPY.unverified.message });
+    if (FAILED.has(s.startup)) return look("failed", "danger", COPY.lookFailed.title, { line: COPY.lookFailed.message });
+    if (s.startup === "notRun") return look("notStarted", "neutral", COPY.notStarted.title, { line: COPY.notStarted.message });
+    if (s.startup === "identityUnsettled") return look("starting", "neutral", COPY.unlockToLook.title, { line: COPY.unlockToLook.message });
     // A bring-up running, or (BL-153 D16) an outcome the status has not settled on yet.
-    return at("starting", "neutral", COPY.looking.title, { busy: true });
+    return look("starting", "neutral", COPY.looking.title, { busy: true });
   }
   if (absent)
     return at("notSetUp", "neutral", INFO_COPY.notSetUp.title, {
       line: status?.kind === "noIdentity" && status.reason === "waitingForSync" ? INFO_COPY.notSetUpWaiting : INFO_COPY.notSetUp.message,
+      syncNow: held(INFO_COPY.heldNotSetUp),
     });
+  // D19: every launch runs the bring-ups before SPV and the loops start (bringup.rs `supervise`).
+  if (!looping && s.startup === "starting") return at("starting", "neutral", INFO_COPY.startingUp, { busy: true, syncNow: held(INFO_COPY.heldStartingUp) });
   // Sync now's note says why.
   if (!looping) return at("stopped", "neutral", INFO_COPY.stopped);
   if (s.quorumSource !== "spv") return at("degraded", "warning", degradedHeadline(s.quorumSource, i.trustedOnly));

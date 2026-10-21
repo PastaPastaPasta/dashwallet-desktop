@@ -31,6 +31,8 @@ const STATES: [scenario: string, state: string, headline: string][] = [
   ["dashpay-look-failed", "failed", "Could not finish looking for your DashPay identity"],
   ["dashpay-info-pass-failed", "failed", "The last DashPay pass failed"],
   ["dashpay-starting", "starting", "Looking for your DashPay identity…"],
+  ["dashpay-info-bringup-running", "starting", "DashPay is starting"],
+  ["dashpay-info-identity-incomplete", "running", "Quorum keys verified by SPV"],
   ["dashpay-not-started", "notStarted", "DashPay has not started"],
   ["dashpay-no-identity", "notSetUp", "No DashPay identity on this wallet"],
   ["dashpay-info-no-identity-proven", "notSetUp", "No DashPay identity on this wallet"],
@@ -55,8 +57,9 @@ test("F23: Running lists the scan verdict, the last pass, the queue, the loops a
   await expect(rows).toContainText("Identity scan");
   await expect(rows).toContainText("Complete: identity found");
   await expect(rows).toContainText("2 new requests, 1 new contact");
-  await expect(rows).toContainText("Contacts waiting for an unlock");
-  await expect(rows.locator(".detail-row", { hasText: "Contacts waiting for an unlock" })).toContainText("2");
+  const pending = rows.locator(".detail-row", { hasText: "Contact accounts waiting to be built" });
+  await expect(pending).toContainText("2");
+  await expect(pending).toContainText("They're built after an unlock or the DIP-15 contact rescan.");
   await expect(rows.locator(".detail-row", { hasText: "Contacts and payments loop" })).toContainText("Running · last run 11:59:55 · next 12:00:10");
   await expect(rows).toContainText("SPV (verified masternode list)");
   await expect(c.getByTestId("information-dashpay-sync-now")).toBeEnabled();
@@ -70,7 +73,9 @@ test("D3: Sync now asks the engine for a pass, says so, and reads the card again
   await page.clock.runFor(1_000);
   const before = await calls(page, "dashpay_sync_status");
   await c.getByTestId("information-dashpay-sync-now").click();
-  await expect(page.getByTestId("information-dashpay-outcome")).toHaveText("A DashPay pass was asked for. This card shows it once it reports.");
+  await expect(page.getByTestId("information-dashpay-outcome")).toHaveText(
+    "A DashPay pass was asked for. It runs in the background. Passes don't report their results yet, so this card can't show when it ends.",
+  );
   expect(await calls(page, "dashpay_sync_soon")).toBe(1);
   await page.clock.runFor(4_900);
   expect(await calls(page, "dashpay_sync_status")).toBe(before);
@@ -100,6 +105,33 @@ test("D2: a watch-only wallet's Sync now is held with the reason", async ({ page
   const { c } = await card(page, "dashpay-watch-only");
   await expect(c.getByTestId("information-dashpay-sync-now")).toBeDisabled();
   await expect(page.getByTestId("information-dashpay-sync-note")).toHaveText("A watch-only wallet can't use DashPay because it has no keys.");
+});
+
+test("D19: an identity whose bring-up runs says Starting, with Sync now held until DashPay has started", async ({ page }) => {
+  const { c } = await card(page, "dashpay-info-bringup-running");
+  await expect(state(page)).toHaveAttribute("data-state", "starting");
+  await expect(c.getByTestId("information-dashpay-sync-now")).toBeDisabled();
+  await expect(page.getByTestId("information-dashpay-sync-note")).toHaveText("Sync now waits until DashPay has started.");
+});
+
+test("D3: without a known identity Sync now is held with the reason", async ({ page }) => {
+  for (const [scenario, note] of [
+    ["dashpay-look-failed", "Sync now waits until DashPay finds this wallet's identity."],
+    ["dashpay-starting", "Sync now waits until DashPay finds this wallet's identity."],
+    ["dashpay-no-identity", "Sync now waits until this wallet has a DashPay identity."],
+  ]) {
+    const { c } = await card(page, scenario);
+    await expect(c.getByTestId("information-dashpay-sync-now"), scenario).toBeDisabled();
+    await expect(page.getByTestId("information-dashpay-sync-note"), scenario).toHaveText(note);
+  }
+});
+
+test("D5: a failed toggle read claims neither the degraded mode nor the developer setting", async ({ page }) => {
+  await card(page, "dashpay-registered", "light", "&fail=trusted_quorums_only:none");
+  await expect(state(page)).toHaveAttribute("data-state", "degraded");
+  const row = page.getByTestId("information-dashpay-rows").locator(".detail-row", { hasText: "Quorum keys" });
+  await expect(row).toContainText("Could not read whether SPV checks of quorum keys are off.");
+  await expect(row).not.toContainText("degraded mode");
 });
 
 test("D7: a failed read says so, and Try again reads it again", async ({ page }) => {
@@ -173,10 +205,20 @@ test("D2: no wallet shows the session's quorum source", async ({ page }) => {
   await expect(c.getByTestId("information-dashpay-sync-now")).toHaveCount(0);
 });
 
+/** D14: every state, the other DashPay scenarios the card reads, and the failed reads. */
+const AXE: [label: string, scenario: string, extra: string][] = [
+  ...STATES.map(([s]): [string, string, string] => [s, s, ""]),
+  ["dashpay-identity-unsettled", "dashpay-identity-unsettled", ""],
+  ["dashpay-waiting-for-sync", "dashpay-waiting-for-sync", ""],
+  ["sync status unread", "dashpay-info-spv", "&fail=dashpay_sync_status:none"],
+  ["wallet list unread", "no-wallet", "&fail=list_wallets:none"],
+  ["toggle unread", "dashpay-registered", "&fail=trusted_quorums_only:none"],
+];
+
 for (const theme of THEMES) {
-  for (const scenario of STATES.map(([s]) => s)) {
-    test(`axe: the DashPay card, ${scenario}, ${theme}`, async ({ page }) => {
-      const { c } = await card(page, scenario, theme);
+  for (const [label, scenario, extra] of AXE) {
+    test(`axe: the DashPay card, ${label}, ${theme}`, async ({ page }) => {
+      const { c } = await card(page, scenario, theme, extra);
       await expect(state(page)).not.toHaveAttribute("data-state", "loading");
       await c.scrollIntoViewIfNeeded();
       await fontsReady(page);
