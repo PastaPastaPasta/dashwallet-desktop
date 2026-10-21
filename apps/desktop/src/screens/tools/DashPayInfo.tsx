@@ -31,7 +31,8 @@ export function DashPayInfoCard() {
   const id = wallet?.walletId;
   const noWallet = wallets.data?.length === 0;
   const { status } = useDashPayShell(id);
-  const sync = useQuery({ queryKey: dashpayKeys.syncInfo(id ?? ""), queryFn: () => b.dashpaySyncStatus(id!), enabled: !!id });
+  // Loops start and run without a signal (D6), so each showing reads afresh: a memory read.
+  const sync = useQuery({ queryKey: dashpayKeys.syncInfo(id ?? ""), queryFn: () => b.dashpaySyncStatus(id!), enabled: !!id, refetchOnMount: "always" });
   const trustedOnly = useQuery({ queryKey: trustKeys.trustedOnly, queryFn: () => b.trustedQuorumsOnly() });
   // Without a wallet the session's own; with one, the sync status carries it.
   const source = useQuery({ queryKey: trustKeys.source, queryFn: () => b.quorumSource(), enabled: noWallet });
@@ -52,7 +53,8 @@ export function DashPayInfoCard() {
     const timer = setTimeout(() => rereadLater(), SYNC_NOW_REREAD_MS);
     return () => clearTimeout(timer);
   }, [asked]);
-  // Another wallet's card says nothing of this one's request.
+  // A switched-to wallet's card starts without the last one's outcome (a request still in flight
+  // reports on it: the pass is session-wide, so its text holds for any wallet).
   useEffect(() => setOutcome(null), [id]);
 
   const info = dashpayInfo({
@@ -60,7 +62,8 @@ export function DashPayInfoCard() {
     watchOnly: wallet?.watchOnly ?? false,
     status,
     sync: sync.data,
-    syncError: wallets.isError ? failureText(wallets.error) : sync.isError && !sync.data ? failureText(sync.error) : null,
+    // A failed refetch keeps the last data: the error shows only when nothing was read.
+    syncError: wallets.isError && !wallets.data ? failureText(wallets.error) : sync.isError && !sync.data ? failureText(sync.error) : null,
     quorumSource: source.data,
     trustedOnly: trustedOnly.data,
     now: Math.floor(Date.now() / 1000),
@@ -113,7 +116,7 @@ export function DashPayInfoCard() {
       {outcome && <Outcome ok={outcome.ok} text={outcome.text} testId="information-dashpay-outcome" />}
       {info.state === "error" && (
         <div className="tool-actions">
-          <DashButton variant="tintedGray" size="small" data-testid="information-dashpay-retry" onClick={() => void (id ? sync.refetch() : wallets.refetch())}>
+          <DashButton variant="tintedGray" size="small" data-testid="information-dashpay-retry" onClick={() => void (wallets.isError ? wallets.refetch() : sync.refetch())}>
             Try again
           </DashButton>
         </div>

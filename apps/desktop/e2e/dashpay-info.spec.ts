@@ -112,6 +112,39 @@ test("D7: a failed read says so, and Try again reads it again", async ({ page })
   await expect(state(page)).toHaveAttribute("data-state", "running");
 });
 
+test("D7: a failed wallet list says so, and Try again reads it again", async ({ page }) => {
+  const { c } = await card(page, "no-wallet", "light", "&fail=list_wallets:none");
+  await expect(state(page)).toHaveAttribute("data-state", "error");
+  await page.evaluate(() => window.__dwFixture!.fail("list_wallets", null));
+  await c.getByTestId("information-dashpay-retry").click();
+  await expect(state(page)).toHaveAttribute("data-state", "noWallet");
+});
+
+test("D7: a failed wallet-list refetch keeps the card, which was read", async ({ page }) => {
+  await card(page, "dashpay-info-spv");
+  await expect(state(page)).toHaveAttribute("data-state", "running");
+  const before = await calls(page, "list_wallets");
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.fail("list_wallets", "none");
+    f.emit({ kind: "balances", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, balances: null });
+  });
+  await expect.poll(() => calls(page, "list_wallets")).toBeGreaterThan(before);
+  // The call is counted before it throws: let the failure land and render first.
+  await page.evaluate(() => new Promise((r) => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(r)), 50)));
+  await expect(state(page)).toHaveAttribute("data-state", "running");
+});
+
+test("D6: showing the card again reads it again", async ({ page }) => {
+  await card(page, "dashpay-info-spv");
+  await expect(state(page)).toHaveAttribute("data-state", "running");
+  const before = await calls(page, "dashpay_sync_status");
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "tools", tab: "peers" }));
+  await expect(page.getByTestId("information-dashpay")).toHaveCount(0);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "tools", tab: "information" }));
+  await expect.poll(() => calls(page, "dashpay_sync_status")).toBeGreaterThan(before);
+});
+
 test("D6: SPV stopping re-reads the card", async ({ page }) => {
   await card(page, "dashpay-info-spv");
   await expect(state(page)).toHaveAttribute("data-state", "running");

@@ -136,8 +136,9 @@ describe("the card's state (D2)", () => {
   it("D7: the status unread leaves the decision to the bring-up's outcome", () => {
     expect(stateOf({ status: undefined })).toBe("running");
     expect(stateOf({ status: undefined, sync: sync({ quorumSource: "trusted" }) })).toBe("degraded");
-    // No identity is never healthy.
-    expect(stateOf({ status: undefined, sync: sync({ startup: "noIdentity" }) })).toBe("notSetUp");
+    // No identity is never healthy, and the outcome alone proves no absence (BL-153 D16): still looking.
+    expect(stateOf({ status: undefined, sync: sync({ startup: "noIdentity" }) })).toBe("starting");
+    expect(stateOf({ status: { kind: "startupIncomplete", startup: "noIdentity" }, sync: sync({ startup: "noIdentity" }) })).toBe("starting");
     expect(stateOf({ status: undefined, sync: sync({ startup: "notRun" }) })).toBe("notStarted");
     expect(stateOf({ status: undefined, sync: sync({ startup: "starting" }) })).toBe("starting");
   });

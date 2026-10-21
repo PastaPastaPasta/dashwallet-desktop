@@ -208,10 +208,11 @@ export function dashpayInfo(i: DashPayInfoInputs): DashPayInfo {
   const at = (state: DashPayInfoState, tone: DashPayInfoTone, headline: string, rest: Partial<DashPayInfo> = {}) =>
     card(state, tone, headline, { rows, syncNow, ...rest });
   const { status } = i;
-  // An identity on file settles the bring-up's outcome (BL-153 D2), and a settled absence too; with
-  // the status unread the bring-up's outcome stands in (D7).
+  // An identity on file settles the bring-up's outcome (BL-153 D2), and a settled absence too. With
+  // the status unread the outcome stands in for an identity, never for an absence: the bring-up's
+  // `noIdentity` proves none (BL-153 D16, D2).
   const identity = status ? status.kind === "ready" || status.kind === "registering" || status.kind === "contestPending" : s.startup === "ready";
-  const absent = status ? status.kind === "noIdentity" : s.startup === "noIdentity";
+  const absent = status?.kind === "noIdentity";
 
   if (i.watchOnly || (status?.kind === "noIdentity" && status.reason === "watchOnly"))
     return at("watchOnly", "neutral", COPY.watchOnly.title, { syncNow: { disabled: true, note: INFO_COPY.watchOnly } });

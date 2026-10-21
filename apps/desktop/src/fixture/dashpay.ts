@@ -79,7 +79,8 @@ export interface DashPayWorld {
 /** `platform_loops` as the engine lists them (runtime.rs): session-wide, running while SPV runs
  * (bringup.rs starts them after every wallet's bring-up), DashPay last run 5 s before FIXTURE_NOW
  * (every 15 s with a window visible), the contest watch every 10 minutes (DASHPAY §3.2); stopped,
- * the last runs stay. */
+ * the last runs stay. Every scenario's loops have run once, even one whose bring-up did not run
+ * (`dashpay-not-started`): the card reads the loops apart from the outcome. */
 export function fixtureLoops(running: boolean): SyncLoopStatus[] {
   const now = secs(FIXTURE_NOW);
   const loop = (syncLoop: SyncLoopStatus["syncLoop"], every: number, ago: number): SyncLoopStatus => ({
