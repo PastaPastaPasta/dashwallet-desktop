@@ -27,6 +27,8 @@ import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
 import { isCheckable } from "../api/lockReport";
 import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
+import type { DashPayProfile } from "../api/generated/DashPayProfile";
+import type { ProfileFieldName } from "../api/generated/ProfileFieldName";
 import type { CostTable } from "../api/generated/CostTable";
 import type { GrantAction } from "../api/generated/GrantAction";
 import type { PrivateContactDetails } from "../api/generated/PrivateContactDetails";
@@ -34,6 +36,7 @@ import type { EligibilityName } from "../api/generated/EligibilityName";
 import type { UserHit } from "../api/generated/UserHit";
 import type { ScannedContactInfo } from "../api/generated/ScannedContactInfo";
 import { userLinkText } from "../contacts/add";
+import { CANDIDATE_GONE, MAX_FILE_BYTES } from "../dashpay/editProfile";
 import { activityPage, contactList, eventOf, relationOf, type DashPayWorld, type FixtureScan } from "./dashpay";
 import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
@@ -44,7 +47,7 @@ import { sendHandlers, type Pair, type SendDeps } from "./send";
 import { toolsHandlers } from "./tools";
 import { topUpHandlers } from "./topup";
 import { isClosed, settingsHandlers } from "./settings";
-import { emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
+import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
 import { BASE58, FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
 
@@ -79,6 +82,35 @@ function dashpay(w: World, walletId: string, identity?: string) {
   if (identity !== undefined && !dp.identities.some((i) => i.identity === identity))
     throw fail("identity.not_found", `identity not found: ${identity}`);
   return dp;
+}
+
+/** The bundled DashPay contract's `maxLength`s (DP4-01). */
+const PROFILE_LIMITS = { displayNameMax: 25, publicMessageMax: 140 };
+
+/** Two profiles as `profiles::matches` compares them: `updatedAt` aside, hashes in any case. */
+function sameProfile(a: DashPayProfile | null, b: DashPayProfile | null): boolean {
+  const norm = (p: DashPayProfile | null) =>
+    p && { ...p, avatarHash: p.avatarHash?.toLowerCase() ?? null, avatarFingerprint: p.avatarFingerprint?.toLowerCase() ?? null, updatedAt: null };
+  return JSON.stringify(norm(a)) === JSON.stringify(norm(b));
+}
+
+/** A PNG's or GIF's width and height from its header; `null` (unchecked) for a JPEG, whose size
+ * as the engine crops it needs its EXIF orientation, and for a header cut short. */
+function pictureSize(bytes: string): [number, number] | null {
+  const at = (i: number) => bytes.charCodeAt(i);
+  if (bytes.startsWith("\x89PNG") && bytes.length >= 24) return [((at(16) << 24) | (at(17) << 16) | (at(18) << 8) | at(19)) >>> 0, ((at(20) << 24) | (at(21) << 16) | (at(22) << 8) | at(23)) >>> 0];
+  if (bytes.startsWith("GIF8") && bytes.length >= 10) return [at(6) | (at(7) << 8), at(8) | (at(9) << 8)];
+  return null;
+}
+
+/** A candidate an edit may set (DP4-02): one this wallet prepared, with a URL. */
+function published(dp: DashPayWorld, candidate: string) {
+  const c = dp.pictures?.candidates.find((x) => x.id === candidate);
+  // The engine's own texts: the renderer tells these from its other `invalid_argument`s.
+  const [unknown, noUrl] = CANDIDATE_GONE;
+  if (!c) throw fail("invalid_argument", `invalid argument: ${unknown}`);
+  if (c.url === null) throw fail("invalid_argument", `invalid argument: ${noUrl}`);
+  return { ...c, url: c.url };
 }
 
 function contact(w: World, walletId: string, identity: string, id: string): ContactDetailInfo {
@@ -1094,12 +1126,106 @@ export const HANDLERS: Handlers = {
   dashpay_profile: ({ walletId, identity }, { world }) =>
     dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!.profile,
   // DP4-02: an own identity's picture shows with the toggle off too (from the engine's cache).
+  // Each read is counted by identity, so a spec can tell the renderer asked nothing (D13).
   dashpay_avatar: ({ walletId, identity, size }, { world }) => {
     const dp = dashpay(world, walletId);
+    const reads = (dp.avatarReads ??= {});
+    reads[identity] = (reads[identity] ?? 0) + 1;
     const own = dp.identities.some((i) => i.identity === identity);
     const shown = (world.loadContactPictures ?? true) || own;
     const png = shown ? dp.avatars?.[identity] : undefined;
     return png === undefined ? null : { png, size };
+  },
+  dashpay_profile_limits: () => PROFILE_LIMITS,
+  // DashPay::update_profile (DP4-01): texts trimmed and counted in characters, the candidate,
+  // nothing changed sends nothing, a baseline Platform no longer shows is a conflict, an empty
+  // profile, then the balance and the grant; Platform's profile and the thumbnail follow.
+  dashpay_update_profile: ({ walletId, identity, edit, grant }, ctx) => {
+    const dp = dashpay(ctx.world, walletId, identity);
+    const me = dp.identities.find((i) => i.identity === identity)!;
+    const text = (field: ProfileFieldName, value: string | null, max: number) => {
+      const t = value?.trim() ?? "";
+      const length = Array.from(t).length;
+      if (length > max) throw fail("profile.too_long", `fixture: ${field} over its maxLength`, { kind: "profileTooLong", field, length, max });
+      return t || null;
+    };
+    const displayName = text("displayName", edit.displayName, PROFILE_LIMITS.displayNameMax);
+    const publicMessage = text("publicMessage", edit.publicMessage, PROFILE_LIMITS.publicMessageMax);
+    const set = edit.avatar.kind === "set" ? published(dp, edit.avatar.candidate) : null;
+    const held = me.profile;
+    const picture =
+      edit.avatar.kind === "keep"
+        ? { avatarUrl: held?.avatarUrl ?? null, avatarHash: held?.avatarHash ?? null, avatarFingerprint: held?.avatarFingerprint ?? null }
+        : { avatarUrl: set?.url ?? null, avatarHash: set?.hash ?? null, avatarFingerprint: set?.fingerprint ?? null };
+    const wanted: DashPayProfile = { displayName, publicMessage, ...picture, updatedAt: null };
+    const empty = Object.values(wanted).every((v) => v === null);
+    if (sameProfile(held, empty ? null : wanted)) return null;
+    if (edit.baseline && !sameProfile(edit.baseline.profile, held))
+      throw fail("profile.conflict", "profile changed since it was read", { kind: "profileConflict", current: held ? { ...held, updatedAt: null } : null });
+    if (empty) throw fail("profile.empty", "profile empty");
+    if (BigInt(me.balance ?? "0") < DOCUMENT_10K_CREDITS)
+      throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(DOCUMENT_10K_CREDITS), available: me.balance ?? "0" });
+    const write = writeLease(ctx, walletId, grant, ["profileEdit"], DOCUMENT_10K_CREDITS);
+    if (dp.profileSaveFailures) {
+      dp.profileSaveFailures -= 1;
+      throw fail("platform.unavailable", "platform unavailable: no DAPI node answered");
+    }
+    write();
+    const updatedAt = (held?.updatedAt ?? FIXTURE_NOW.getTime()) + 60_000;
+    dp.identities = dp.identities.map((i) => (i.identity === identity ? { ...i, profile: { ...wanted, updatedAt } } : i));
+    const avatars = { ...dp.avatars };
+    if (set) avatars[identity] = set.png;
+    else if (edit.avatar.kind === "remove") delete avatars[identity];
+    dp.avatars = avatars;
+    ctx.emit({ kind: "platform", network: ctx.world.launch.network.dirName, walletId, change: { domain: "identities" } });
+    return null;
+  },
+  // DashPay::prepare_avatar (DP4-02) as DP4-03 D19 plays it: every source is recorded (with its
+  // crop); only https URLs are fetched, and one with `missing` is not there, `.webp` is not a
+  // format, `huge` is too large; a Gravatar for `nobody@…` has none; a file is sniffed and sized,
+  // and a PNG's or GIF's crop must lie inside it. Each preview is AVATAR_PNG.
+  dashpay_prepare_avatar: ({ walletId, source }, { world }) => {
+    const dp = dashpay(world, walletId);
+    const pictures = (dp.pictures ??= { upload: false, candidates: [], prepares: [] });
+    pictures.prepares.push(source);
+    let url: string | null = null;
+    if (source.kind === "url") {
+      if (!/^https:\/\/[^/\s]+/.test(source.url)) throw fail("invalid_argument", "url: not https");
+      if (source.url.includes("missing")) throw fail("avatar.fetch_failed", "fetch failed: 404");
+      if (source.url.endsWith(".webp")) throw fail("avatar.unsupported", "unsupported image format");
+      if (source.url.includes("huge")) throw fail("avatar.too_large", "image too large");
+      url = source.url;
+    } else if (source.kind === "gravatar") {
+      if (!/^[^@\s]+@[^@\s]+$/.test(source.email)) throw fail("invalid_argument", "email: not an e-mail address");
+      if (source.email.startsWith("nobody@")) throw fail("avatar.fetch_failed", "fetch failed: 404");
+      url = `https://gravatar.com/avatar/fixture-${pictures.prepares.length}?s=400&d=404`;
+    } else {
+      const bytes = atob(source.bytes);
+      if (bytes.length > MAX_FILE_BYTES) throw fail("avatar.too_large", "image too large");
+      const head = Array.from(bytes.slice(0, 4), (c) => c.charCodeAt(0));
+      const known = [[0x89, 0x50, 0x4e, 0x47], [0xff, 0xd8, 0xff], [0x47, 0x49, 0x46, 0x38]].some((m) => m.every((b, i) => head[i] === b));
+      if (!known) throw fail("avatar.unsupported", "unsupported image format");
+      const size = pictureSize(bytes);
+      const c = source.crop;
+      if (size && c && !(c.width > 0 && c.height > 0 && c.x + c.width <= size[0] && c.y + c.height <= size[1]))
+        throw fail("invalid_argument", `the crop is outside the ${size[0]} x ${size[1]} picture`);
+    }
+    const n = pictures.candidates.length + 1;
+    const id = `avatar-${n}`;
+    pictures.candidates.push({ id, url, png: AVATAR_PNG, hash: n.toString(16).padStart(2, "0").repeat(32), fingerprint: "c3".repeat(8) });
+    return { id, preview: { png: AVATAR_PNG, size: "large" }, url, needsUpload: url === null };
+  },
+  dashpay_avatar_upload_available: ({ walletId }, { world }) => dashpay(world, walletId).pictures?.upload ?? false,
+  // DashPay::upload_avatar (DP4-02 D2): unconfigured unless a scenario has a host; an unknown
+  // candidate, or one with a URL, is `invalid_argument`.
+  dashpay_upload_avatar: ({ walletId, candidate }, { world }) => {
+    const pictures = dashpay(world, walletId).pictures;
+    if (!pictures?.upload) throw fail("avatar.upload_unconfigured", "no upload service configured");
+    const c = pictures.candidates.find((x) => x.id === candidate);
+    if (!c) throw fail("invalid_argument", `invalid argument: ${CANDIDATE_GONE[0]}`);
+    if (c.url !== null) throw fail("invalid_argument", "invalid argument: the avatar candidate already has a URL");
+    c.url = `https://i.imgur.com/fixture-${c.id}.png`;
+    return c.url;
   },
   load_contact_pictures: (_, { world }) => world.loadContactPictures ?? true,
   set_load_contact_pictures: ({ on }, { world }) => {

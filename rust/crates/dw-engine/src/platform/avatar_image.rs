@@ -1,17 +1,19 @@
 //! Avatar bytes to thumbnails (DP4-02 design, "Decoding and re-encoding"):
 //! the format sniffed from the bytes, a bounded pure-Rust decode, the
-//! library's hash and dHash, and 128 / 256 px PNG thumbnails. Everything
-//! here is synchronous and CPU-bound; `avatar.rs` runs it on a blocking
-//! thread through [`ingest`], which also turns a decoder panic into
-//! `avatar.unsupported`. Not part of the facade.
+//! library's hash, the mobile wallets' dHash (BL-190), and 128 / 256 px PNG
+//! thumbnails. Everything here is synchronous and CPU-bound; `avatar.rs`
+//! runs it on a blocking thread through [`ingest`], which also turns a
+//! decoder panic into `avatar.unsupported`. Not part of the facade.
 
 use std::io::Cursor;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use image::imageops::FilterType;
+use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageReader, Limits};
-use platform_wallet::wallet::identity::{calculate_avatar_hash, calculate_dhash_fingerprint};
+use platform_wallet::wallet::identity::calculate_avatar_hash;
 
+use super::avatar_dhash::mobile_dhash;
 use super::errors::AvatarError;
 use super::profile::{AvatarSize, CropRect, Profile};
 
@@ -20,8 +22,8 @@ pub(super) const MAX_SIDE: u32 = 4096;
 /// The decoder's allocation budget.
 const MAX_ALLOC: u64 = 128 << 20;
 /// The largest decoded picture, in bytes: 4096 x 4096 8-bit RGBA. A
-/// 16-bit picture that large is refused; so the output of each decode, and
-/// the library's own decode of the same bytes, stays within this.
+/// 16-bit picture that large is refused; so the output of each decode stays
+/// within this.
 const MAX_DECODED: u64 = 64 << 20;
 /// Pictures larger than this per side are shrunk (fast) before the
 /// Lanczos3 resize, which is slow on large inputs.
@@ -99,6 +101,13 @@ fn limits(side: u32) -> Limits {
 /// Decodes `bytes` within the limits: PNG, JPEG or GIF (its first frame,
 /// D9), JPEG's EXIF orientation applied.
 pub(super) fn decode(bytes: &[u8]) -> Result<DynamicImage, AvatarError> {
+    let (mut image, orientation) = decode_unoriented(bytes)?;
+    image.apply_orientation(orientation);
+    Ok(image)
+}
+
+/// [`decode`] without applying the EXIF orientation, which it returns.
+fn decode_unoriented(bytes: &[u8]) -> Result<(DynamicImage, Orientation), AvatarError> {
     let format = sniff(bytes).ok_or(AvatarError::Unsupported)?;
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     reader.limits(limits(MAX_SIDE));
@@ -112,9 +121,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<DynamicImage, AvatarError> {
         return Err(AvatarError::TooLarge);
     }
     let orientation = decoder.orientation().map_err(image_error)?;
-    let mut image = DynamicImage::from_decoder(decoder).map_err(image_error)?;
-    image.apply_orientation(orientation);
-    Ok(image)
+    let image = DynamicImage::from_decoder(decoder).map_err(image_error)?;
+    Ok((image, orientation))
 }
 
 /// The square thumbnail of `image` at `px`, as 8-bit RGBA PNG.
@@ -176,8 +184,8 @@ fn preshrunk(image: DynamicImage) -> DynamicImage {
 pub(super) struct Ingested {
     /// SHA-256 of the bytes, as the library computes `avatarHash`.
     pub(super) sha: [u8; 32],
-    /// The library's dHash of the bytes (`avatarFingerprint`), made only
-    /// for a candidate: a read does not compare it (D32).
+    /// The mobile wallets' dHash of the bytes (`avatarFingerprint`,
+    /// BL-190), made only for a candidate: a read does not compare it (D32).
     pub(super) dhash: Option<[u8; 8]>,
     pub(super) small: Vec<u8>,
     pub(super) large: Vec<u8>,
@@ -193,33 +201,25 @@ impl Ingested {
 }
 
 /// Fetched (or file) bytes to their hash, thumbnails and, with
-/// `fingerprint` (a candidate's), the library's dHash. The bytes are
-/// decoded within the limits first; only then does the library's dHash see
-/// them (it decodes them again, unbounded, so this order is what bounds it:
-/// the same formats, sniffed the same way). The thumbnails are made, and
-/// the full-size picture dropped, before that second decode. A read skips
-/// it (D32). A panic anywhere is `avatar.unsupported`.
+/// `fingerprint` (a candidate's), the mobile wallets' dHash of the whole
+/// picture as decoded, before its EXIF orientation and any crop (as Android
+/// computes it, BL-190). The bytes are decoded once, within the limits. A
+/// panic anywhere is `avatar.unsupported`.
 pub(super) fn ingest(
     bytes: &[u8],
     crop: Option<Crop>,
     fingerprint: bool,
 ) -> Result<Ingested, AvatarError> {
     guarded(|| {
-        let (small, large) = {
-            let image = preshrunk(cropped(decode(bytes)?, crop)?);
-            (
-                thumbnail(&image, AvatarSize::Small.px())?,
-                thumbnail(&image, AvatarSize::Large.px())?,
-            )
-        };
-        let dhash = fingerprint
-            .then(|| calculate_dhash_fingerprint(bytes).map_err(|_| AvatarError::Unsupported))
-            .transpose()?;
+        let (mut image, orientation) = decode_unoriented(bytes)?;
+        let dhash = fingerprint.then(|| mobile_dhash(&image));
+        image.apply_orientation(orientation);
+        let image = preshrunk(cropped(image, crop)?);
         Ok(Ingested {
             sha: calculate_avatar_hash(bytes),
             dhash,
-            small,
-            large,
+            small: thumbnail(&image, AvatarSize::Small.px())?,
+            large: thumbnail(&image, AvatarSize::Large.px())?,
         })
     })
 }
@@ -271,9 +271,10 @@ pub(super) fn verifiable(profile: &Profile) -> bool {
 
 /// The verdict on content fetched for `profile` (design step 5): its
 /// SHA-256 must be the profile's `avatarHash`. The fingerprint is not
-/// compared (D6, D32: the mobile wallets' dHash is another algorithm, up to
-/// 35 bits off for the very bytes `avatarHash` names), only required to be
-/// well formed ([`verifiable`], D26).
+/// compared (D6, D32: publishers use two algorithms, Android's dHash and the
+/// library's, up to 35 bits apart for the very bytes `avatarHash` names, and
+/// no wallet compares it), only required to be well formed ([`verifiable`],
+/// D26).
 pub(super) fn matches(content_sha: &str, profile: &Profile) -> bool {
     profile
         .avatar_hash

@@ -10,7 +10,7 @@ import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { EmptyState, LoadingState } from "../../components/history";
 import type { ActionOutcome, ContactActions } from "../../contacts/actions";
-import { avatarLetters, shownName, subtitle } from "../../contacts/model";
+import { avatarLetters, initials, shownName, subtitle } from "../../contacts/model";
 import { ENABLE_FIRST } from "../../contacts/pane";
 import { useContactActions, useContactList, useContactsOwner, useHasKeys } from "../../contacts/queries";
 import { detailDate } from "../../format/tx";
@@ -206,7 +206,7 @@ function Requests({
           return (
             <li key={c.contact} className="bell-row has-actions" data-testid="bell-request" data-contact={c.contact}>
               <button type="button" className="bell-row-open" onClick={() => onOpen(c.contact)}>
-                <Avatar letters={avatarLetters(c)} />
+                <Avatar letters={avatarLetters(c)} identity={c.contact} />
                 <span className="bell-row-text">
                   <span className="bell-row-title">{shownName(c)}</span>
                   {sub && <span className="bell-row-sub">{sub}</span>}
@@ -256,6 +256,7 @@ function Events({
           const body = (
             <>
               {fresh && <span className="bell-dot" aria-hidden="true" />}
+              {e.contact && <Avatar letters={initials(nameOf(e.contact))} identity={e.contact} />}
               <span className="bell-row-text">
                 <span className="bell-row-title">{eventText(e, nameOf)}</span>
                 <span className="bell-row-sub">{detailDate(new Date(e.at * 1000))}</span>

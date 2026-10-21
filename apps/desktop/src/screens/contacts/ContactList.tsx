@@ -24,17 +24,18 @@ type RowActions = (c: ContactSummaryInfo) => ReactNode;
  * row's button, as buttons do not nest (DP2-09 D15). */
 export function Row({
   letters,
+  identity,
   name,
   sub,
   trailing,
   after,
   ...button
-}: { letters: string; name: string; sub: string | null; trailing: ReactNode; after?: ReactNode } & ButtonHTMLAttributes<HTMLButtonElement> &
+}: { letters: string; identity: string; name: string; sub: string | null; trailing: ReactNode; after?: ReactNode } & ButtonHTMLAttributes<HTMLButtonElement> &
   Record<`data-${string}`, string | undefined>) {
   return (
     <li className={after ? "contact-row-item has-actions" : undefined}>
       <button type="button" className="contact-row tx-row" {...button}>
-        <Avatar letters={letters} />
+        <Avatar letters={letters} identity={identity} />
         <span className="contact-row-text tx-row-text">
           <span className="contact-row-name tx-row-title">{name}</span>
           {sub && <span className="contact-row-username">{sub}</span>}
@@ -113,6 +114,7 @@ function ContactGroup({
               <Row
                 key={c.contact}
                 letters={avatarLetters(c)}
+                identity={c.contact}
                 name={shownName(c)}
                 sub={subtitle(c)}
                 trailing={
@@ -183,6 +185,7 @@ export function NetworkResults({
               <Row
                 key={h.identity}
                 letters={initials(displayName || h.username)}
+                identity={h.identity}
                 name={displayName || h.username}
                 sub={displayName ? `@${h.username}` : null}
                 trailing={h.unverified && <Chip tone="warning">Unverified</Chip>}

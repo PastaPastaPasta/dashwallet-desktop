@@ -1,5 +1,5 @@
 // The frequent-contacts strip (DP3-06 D3, DP3-07 D7): the contacts the main identity pays most,
-// each an initials avatar and its name. Pay ▸ To a contact and Home show it; the caller decides
+// each an avatar (DP4-03) and its name. Pay ▸ To a contact and Home show it; the caller decides
 // what a pick does (`onPick`).
 
 import { useId } from "react";
@@ -32,7 +32,7 @@ export function FrequentStrip({
           return (
             <li key={c.contact}>
               <button type="button" className="pay-frequent-chip" data-testid={`${testId}-chip`} data-contact={c.contact} onClick={() => onPick(p)}>
-                <Avatar letters={p.letters} size="pane" />
+                <Avatar letters={p.letters} size="pane" identity={p.contact} />
                 <span className="pay-frequent-name">{p.name}</span>
               </button>
             </li>

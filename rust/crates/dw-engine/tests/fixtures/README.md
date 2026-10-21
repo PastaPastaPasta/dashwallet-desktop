@@ -104,3 +104,26 @@ rule (`o`/`O` → `0`; `i`, `I`, `l`, `L` → `1`; lower case). The test also ch
 functions themselves, so a pin bump that changes them fails here.
 
 To regenerate: `python3 -I dp1_03_username_vectors.gen.py dp1_03_username_vectors.json`.
+
+## `bl190_avatar_fingerprints.json`
+
+The mobile wallets' avatar dHash (BL-190, DP4-03 D27, `src/platform/avatar_dhash.rs`) against every testnet DashPay
+avatar whose bytes match its published `avatarHash`: 53 of the 61 profiles with an avatar (304 profiles, read
+2026-10-20; 2 fetches failed, 6 hosts serve other bytes now). One avatar a line: owner, URL, published `avatarHash`,
+`avatarFingerprint` and `$updatedAt`, the picture's size, who made the fingerprint (`maker`), how many bits the engine's
+differs by, and the straight RGBA of the columns and rows the 9 × 9 grid reads (decoded as the engine decodes, before
+EXIF orientation). The pictures themselves are not kept. Every Android one is an opaque 8-bit picture, so the alpha
+path has no vector.
+
+The algorithm is ported from dash-wallet `v11.9.1` (`common/src/main/java/org/dash/wallet/common/ui/avatar/CocoaImageDHash.kt`
+and `ProfilePictureHelper.kt`), read only, with Skia's `SkBitmapProcState` filtered scale as Android ships it (Android 12's `filter_scale`).
+Also read for `maker`: dashwallet-ios `v9.1.3` (SwiftDashSDK, so the library's `calculate_dhash_fingerprint`), DashSync
+`v2.5.4` and CocoaImageHashing `5830cb0`. `maker` is `android` (equal bit for bit, 39), `android-libjpeg` (equal from
+libjpeg-turbo's `djpeg -dct int` pixels, 3), `android-ifast` (equal from `djpeg -dct fast`, 1), `library` (equal to the
+library's dHash, 9) or `other` (a Gravatar robohash PNG from neither, 1). The two libjpeg lists were checked by hand
+and are named in the generator.
+
+To regenerate: copy `bl190_avatar_fingerprints.corpus.rs` to `examples/bl190_corpus.rs` and run it with `OUT=<dir>`,
+then copy `bl190_avatar_fingerprints.gen.rs` to `examples/bl190_vectors.rs` and run
+`cargo run -p dw-engine --example bl190_vectors -- <dir> > tests/fixtures/bl190_avatar_fingerprints.json`. Delete the
+two copies afterwards. A new corpus can differ (profiles change), so the counts in the test move with it.

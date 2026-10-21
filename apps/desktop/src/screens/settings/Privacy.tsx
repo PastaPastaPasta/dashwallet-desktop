@@ -1,5 +1,6 @@
 // Settings ▸ General ▸ Privacy (DP3-03b, DASHPAY §5 F15): "Include my username in payment
 // requests" for the window's wallet. The engine keeps it per wallet, on by default (DP3-02 D21).
+// "Load contact pictures" (DP4-03 D14) is the network's, on by default (DP4-02 D17).
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
@@ -7,6 +8,7 @@ import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { keys, useBackend, useUsernameInRequests, useWallets } from "../../api/queries";
 import { changingUsernameInRequests } from "../../api/username";
 import { useUi } from "../../app/ui";
+import { useContactPictures, useSetContactPictures } from "../../dashpay/profileQueries";
 import { failureText } from "../../onboarding/model";
 import { Hint, Problem, SettingsCard } from "./parts";
 
@@ -16,7 +18,53 @@ export function PrivacyCard() {
   const wallets = useWallets();
   const wallet = wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0];
   if (!wallet) return null;
-  return <UsernameInRequests key={wallet.walletId} wallet={wallet} />;
+  return (
+    <SettingsCard title="Privacy" testId="settings-privacy">
+      <UsernameInRequests key={wallet.walletId} wallet={wallet} />
+      <ContactPictures />
+    </SettingsCard>
+  );
+}
+
+/** D14: off, no other user's picture is read or fetched, and every list shows initials. */
+function ContactPictures() {
+  const setting = useContactPictures();
+  const write = useSetContactPictures();
+  const [turning, setTurning] = useState<boolean | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const hint = useId();
+  if (setting.isPending) return null;
+  const turn = async (on: boolean) => {
+    setProblem(null);
+    setTurning(on);
+    try {
+      await write(on);
+    } catch (e) {
+      setProblem(failureText(e));
+    }
+    setTurning(null);
+  };
+  return (
+    <>
+      {setting.isError && <Problem text={failureText(setting.error)} testId="settings-pictures-error" />}
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          data-testid="settings-contact-pictures"
+          checked={turning ?? setting.data === true}
+          disabled={turning !== null}
+          aria-describedby={hint}
+          onChange={(e) => void turn(e.target.checked)}
+        />
+        Load contact pictures
+      </label>
+      <Hint id={hint}>
+        Show the profile pictures of your contacts and other DashPay users. Dash Wallet fetches them from the addresses in their profiles. Turned off, it
+        fetches none and shows initials instead.
+      </Hint>
+      <Problem text={problem} testId="settings-pictures-problem" />
+    </>
+  );
 }
 
 function UsernameInRequests({ wallet }: { wallet: WalletSummary }) {
@@ -52,7 +100,7 @@ function UsernameInRequests({ wallet }: { wallet: WalletSummary }) {
     setTurning(null);
   };
   return (
-    <SettingsCard title="Privacy" testId="settings-privacy">
+    <>
       {/* Unreadable, the requests carry no name (D6), so the box shows off; a click writes a
           value the engine reads again. */}
       {setting.isError && <Problem text={failureText(setting.error)} testId="settings-username-error" />}
@@ -73,6 +121,6 @@ function UsernameInRequests({ wallet }: { wallet: WalletSummary }) {
         address is yours. Turned off, they hold only the address and what you enter.
       </Hint>
       <Problem text={problem} testId="settings-username-problem" />
-    </SettingsCard>
+    </>
   );
 }

@@ -2,19 +2,20 @@
 // identity id, the credits block with its warnings and its pending or stuck top-ups, the own
 // contest's card while one runs, and the contest outcome rows. Without a main identity it is
 // DP1-08's card for the state (D2). The view models are dashpay/profile.ts and dashpay/topup.ts;
-// the Settings card (D20) is here too.
+// the Settings card (D20) is here too. Edit Profile (DP4-03) is a sheet over the page.
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { Backend } from "../../api/backend";
 import type { IdentitySummary } from "../../api/generated/IdentitySummary";
 import type { PendingTopUp } from "../../api/generated/PendingTopUp";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { mainIdentityOf, useBackend, useDashPayShell, useWallets } from "../../api/queries";
-import { navigate, useUi } from "../../app/ui";
+import { navigate, setLeaveGuard, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
 import { creditsModel, headerModel, holdsTopUp, outcomeRows, pageModel, PROFILE_COPY, requestModel, type ContestRef, type CreditsModel } from "../../dashpay/profile";
-import { useAvatar, useContest, useCostTable, useOutcomeEvents, usePendingTopUps, useRefreshBalanceOnVisit, useStuckTopUps } from "../../dashpay/profileQueries";
+import { editProfileFor, type EditProfileModel } from "../../dashpay/editProfile";
+import { useAvatarUploadAvailable, useContactPictures, useContest, useCostTable, useOutcomeEvents, usePendingTopUps, useProfileLimits, useRefreshBalanceOnVisit, useStuckTopUps } from "../../dashpay/profileQueries";
 import { useStatusInputs } from "../../dashpay/queries";
 import type { CardActionKind, StatusInputs } from "../../dashpay/status";
 import { outcomeText, topUpErrorText, topUpFor, type TopUpFlow } from "../../dashpay/topup";
@@ -24,6 +25,8 @@ import { useModel } from "../../onboarding/model";
 import { Avatar } from "../contacts/Avatar";
 import { Page } from "../Routes";
 import { SettingsCard } from "../settings/parts";
+import { showToast } from "../../components/toast";
+import { EditProfileSheet } from "./EditProfileSheet";
 import { VotingInfoSheet } from "./AboutDashPay";
 import { DashPayCard, defaultCardAction } from "./DashPayCard";
 import { TopUpSheet } from "./TopUpSheet";
@@ -45,13 +48,12 @@ export function buyCredits(b: Backend, walletId: string, main: IdentitySummary) 
   }, open);
 }
 
-function Header({ main, contest, walletId }: { main: IdentitySummary; contest: string | null; walletId: string }) {
+function Header({ main, contest, walletId, onEdit }: { main: IdentitySummary; contest: string | null; walletId: string; onEdit: () => void }) {
   const b = useBackend();
   const h = headerModel(main, contest);
-  const png = useAvatar(walletId, main.identity, "large");
   return (
     <section className="profile-header card-l1" data-testid="profile-header">
-      <Avatar letters={h.initials} size="pane" png={png} />
+      <Avatar letters={h.initials} size="pane" identity={main.identity} own />
       <div className="profile-header-text">
         <h2 className="profile-name" data-testid="profile-name">
           {h.title}
@@ -67,12 +69,9 @@ function Header({ main, contest, walletId }: { main: IdentitySummary; contest: s
         )}
       </div>
       <div className="profile-edit">
-        <DashButton variant="tintedGray" size="small" disabled aria-describedby="profile-edit-later" data-testid="profile-edit">
+        <DashButton variant="tintedBlue" size="small" data-testid="profile-edit" onClick={onEdit}>
           {PROFILE_COPY.editProfile}
         </DashButton>
-        <span className="field-hint" id="profile-edit-later">
-          {PROFILE_COPY.editLater}
-        </span>
       </div>
     </section>
   );
@@ -281,16 +280,32 @@ function Ready({ walletId, network, main, contest, inputs }: { walletId: string;
     discreet: inputs.discreet,
   });
   const rows = new Map((pending.data ?? []).map((p) => [p.txid, p]));
+  const editor = useEditor(walletId);
   return (
     <>
-      <Header main={main} contest={contest?.label ?? null} walletId={walletId} />
+      <Header main={main} contest={contest?.label ?? null} walletId={walletId} onEdit={() => editor.begin(main.identity, main.profile)} />
       <Details main={main} contest={contest?.label ?? null} />
       {contest && <RequestCard walletId={walletId} main={main} contest={contest} inputs={inputs} />}
       <Credits model={model} flow={flow} rows={rows} inputs={inputs} onTopUp={() => flow.begin(main.identity)} />
       <Outcomes walletId={walletId} identity={main.identity} date={inputs.date} />
       <TopUpSheet flow={flow} walletId={walletId} network={network} costs={costs.data} />
+      <EditProfileSheet model={editor} letters={headerModel(main, contest?.label ?? null).initials} username={main.mainName} />
     </>
   );
+}
+
+/** The wallet's Edit Profile (DP4-03 D1), fed the engine's limits and picture sources (D5, D7,
+ * D13), and the leave guard while the page shows (D11). */
+function useEditor(walletId: string): EditProfileModel {
+  const b = useBackend();
+  const editor = editProfileFor(b, walletId, showToast);
+  const limits = useProfileLimits(walletId);
+  const upload = useAvatarUploadAvailable(walletId);
+  const pictures = useContactPictures();
+  useEffect(() => editor.setLimits(limits.data), [editor, limits.data]);
+  useEffect(() => editor.setAvailability(upload.data === true, pictures.data === true), [editor, upload.data, pictures.data]);
+  useEffect(() => setLeaveGuard((route, go) => route !== "profile" && editor.requestLeave(go)), [editor]);
+  return editor;
 }
 
 export function MyProfilePage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
