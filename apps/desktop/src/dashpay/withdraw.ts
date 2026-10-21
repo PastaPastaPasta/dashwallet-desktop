@@ -51,7 +51,8 @@ export const WITHDRAW_COPY = {
     go: "Confirm & withdraw",
   },
   refused: {
-    document: (id: string) => `Withdrawal document: ${id}`,
+    /** Followed by the document id. */
+    document: "Withdrawal document:",
   },
   running: {
     title: "Withdrawing…",
@@ -67,7 +68,8 @@ export const WITHDRAW_COPY = {
     title: "Withdrawals",
     row: (amount: string) => `Withdrawal of ${amount}`,
     unconfirmed: "Withdrawal not on Dash Platform yet",
-    unconfirmedText: (id: string) => `It may have been sent: it shows here once Dash Platform takes document ${id}.`,
+    /** Followed by the document id. */
+    unconfirmedText: "It may have been sent, and shows here once Dash Platform takes it. Document:",
     status: {
       pending: "Pending",
       complete: "Sent",

@@ -24,12 +24,13 @@ export function useWithdrawQuote(walletId: string, identity: string | null, amou
 }
 
 /** D11: the identity's withdrawals, read on signals and every minute while one is pending or
- * `unconfirmed` (D23) is not listed. */
-export function useWithdrawals(walletId: string, identity: string, unconfirmed: string | null = null) {
+ * `unconfirmed` (D23) is not listed. `enabled` false: only what another reader has cached. */
+export function useWithdrawals(walletId: string, identity: string, unconfirmed: string | null = null, enabled = true) {
   const b = useBackend();
   return useQuery({
     queryKey: withdrawKeys.recent(walletId, identity),
     queryFn: () => b.creditsWithdrawals(walletId, identity),
+    enabled,
     retry: false,
     refetchInterval: (q) => pollWhilePending(q.state.data, unconfirmed),
   });

@@ -36,7 +36,8 @@ const C = WITHDRAW_COPY;
 function FormStep({ flow, walletId, identity, costs, network }: { flow: WithdrawFlow; walletId: string; identity: string; costs: CostTable | undefined; network: NetworkInfo }) {
   const b = useBackend();
   const unconfirmed = flow.unconfirmedFor(identity);
-  const recent = useWithdrawals(walletId, identity, unconfirmed);
+  // My Profile reads the list; the form reads it itself only while one is unconfirmed.
+  const recent = useWithdrawals(walletId, identity, unconfirmed, unconfirmed !== null);
   const id = useId();
   const shown = useDisplay(network);
   const receive = useReceiveAddress(walletId);
@@ -194,6 +195,7 @@ export function WithdrawSheet({ flow, walletId, network, costs }: { flow: Withdr
   // A credit figure as Dash at the table's rate, else in credits (as the credits block).
   const credits = (c: string) => creditBalance(c, costs, discreet, amount, shown.masked());
   const { step, outcome } = flow;
+  const unknown = unknownDocument(flow.error);
   return (
     <>
       <Sheet title={C.title} width="small" testId="withdraw-sheet" onClose={() => flow.close()}>
@@ -230,9 +232,9 @@ export function WithdrawSheet({ flow, walletId, network, costs }: { flow: Withdr
               <p className="form-problem" role="alert" data-testid="withdraw-refusal">
                 {withdrawErrorText(flow.error, credits)}
               </p>
-              {unknownDocument(flow.error) !== null && (
-                <p className="sheet-text withdraw-to" data-testid="withdraw-document">
-                  {C.refused.document(unknownDocument(flow.error)!)}
+              {unknown !== null && (
+                <p className="sheet-text" data-testid="withdraw-document">
+                  {C.refused.document} <span className="withdraw-to">{unknown}</span>
                 </p>
               )}
               <div className="sheet-actions">
@@ -282,7 +284,9 @@ export function RecentWithdrawals({ flow, walletId, identity, costs, amount, dat
         <div className="profile-row" data-testid="profile-withdraw-unconfirmed" data-pending>
           <div>
             <p className="profile-row-title">{C.recent.unconfirmed}</p>
-            <p className="profile-credits-line withdraw-to">{C.recent.unconfirmedText(unconfirmed)}</p>
+            <p className="profile-credits-line">
+              {C.recent.unconfirmedText} <span className="withdraw-to">{unconfirmed}</span>
+            </p>
           </div>
         </div>
       )}
