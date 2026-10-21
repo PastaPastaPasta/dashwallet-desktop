@@ -29,6 +29,8 @@ const NOT_BOUND: Record<string, string> = {
   governance: "the handle: every command takes it from the open session",
   superblock_budget: "a free function of a height; governance_upcoming_superblocks gives each budget",
   relay_vote: "Core's voteraw, which the console runs",
+  contested_names: "deferred: MG-11's contested-name voting UI binds it (MG-07 D11)",
+  vote_name: "deferred: MG-11's contested-name voting UI binds it (MG-07 D11)",
 };
 
 /** The text of the `##`-level section that starts with `heading`. */
@@ -136,8 +138,13 @@ function expectValue(c: Contract, type: string, value: unknown, at: string, seen
   }
 }
 
-/** §3 records no bound command returns: the `proposals` argument and the unbound calls' (D93). */
-const NOT_RETURNED = ["ProposalDraft", "ProposalQuery", "RawVote", "VoteRelayed"];
+/** §3 records no bound command returns: the `proposals` argument and the unbound calls' (D93,
+ * MG-07 D11). */
+const NOT_RETURNED = ["ContestedName", "ContestedNames", "NameContender", "NameVoteCast", "NameVoter", "NameVoterState", "ProposalDraft", "ProposalQuery", "RawVote", "VoteRelayed"];
+
+/** §3 enums with fields that only the unbound contested-name records carry: MG-11 mirrors them
+ * when it binds the calls (MG-07 D11). */
+const NOT_MIRRORED = ["NameChoice", "NameVotingKey"];
 
 /** The codes §4 lists for `GovernanceError`. */
 function contractCodes(): string[] {
@@ -165,7 +172,7 @@ afterEach(() => {
 describe("governance contract", () => {
   it("binds every mg-engine call or says why not", () => {
     const listed = contractCalls();
-    expect(listed).toHaveLength(19);
+    expect(listed).toHaveLength(21);
     const bound = listed.filter((c) => !(c in NOT_BOUND)).map((c) => `governance_${c}`);
     expect(governanceCommands().sort()).toEqual(bound.sort());
     for (const c of Object.keys(NOT_BOUND)) expect(listed, c).toContain(c);
@@ -174,7 +181,7 @@ describe("governance contract", () => {
 
   it("knows every governance code of mg-engine §4", () => {
     const codes = contractCodes();
-    expect(codes).toHaveLength(9);
+    expect(codes).toHaveLength(12);
     const union = cmd.ERROR_CODES.filter((c) => c.startsWith("governance."));
     expect([...union].sort()).toEqual([...codes].sort());
     // dw-app's own mapping reaches each of them, with an ErrorData class the fixture can inject.
@@ -240,8 +247,9 @@ describe("governance contract", () => {
     const c: Contract = { records: contractRecords(), enums: contractEnums() };
     const used = new Set([...c.records.values()].flat().map(([, t]) => t.match(/(\w+)>*$/)![1]).filter((t) => !(t in JSON_TYPES) && !c.records.has(t)));
     // `MyProposalState` carries fields, so `expectState` holds it (and the generated union below).
-    expect([...used].sort()).toEqual(["GovernanceSyncPhase", "MasternodeType", "MyProposalState", "ProposalScope", "ProposalStatus", "VoteOutcome", "VoteSignal"]);
+    expect([...used].sort()).toEqual(["GovernanceSyncPhase", "MasternodeType", "MyProposalState", "NameChoice", "NameVotingKey", "ProposalScope", "ProposalStatus", "VoteOutcome", "VoteSignal"]);
     used.delete("MyProposalState");
+    for (const e of NOT_MIRRORED) used.delete(e);
     for (const e of used) {
       // dw-app's mirror, `<Enum>Name`, as ts-rs writes it.
       const ts = readFileSync(new URL(`./generated/${e}Name.ts`, import.meta.url), "utf8");
