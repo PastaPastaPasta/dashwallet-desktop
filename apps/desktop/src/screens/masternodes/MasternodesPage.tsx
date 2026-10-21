@@ -1,6 +1,7 @@
 // Masternodes ▸ Governance (MG-09, UX-SPEC §4.25.1, §4.25.3): the clock and budget cards, the
 // proposal list with search, filters and sort, the detail pane, and Mine. Until MG-10 adds My
-// masternodes the page has no tab bar (D1). The sheets (vote, create, numbers) open from here.
+// masternodes the page has no tab bar (D1). The sheets (vote, create, numbers) live here, so a
+// list that changes under an open sheet (a filter, a re-sort, a resync) keeps it (D31).
 
 import { useMemo, useState } from "react";
 import { errorMessage } from "../../api/backend";
@@ -18,6 +19,7 @@ import { useDisplay, type Display } from "../../format/display";
 import {
   budgetView,
   clockView,
+  createdToast,
   GovText,
   isEnded,
   listState,
@@ -37,6 +39,7 @@ import { CreateProposalSheet } from "./CreateProposalSheet";
 import { MineList } from "./Mine";
 import { NumbersSheet } from "./NumbersSheet";
 import { ProposalPane } from "./ProposalPane";
+import { VoteSheet } from "./VoteSheet";
 
 const SEARCH_DEBOUNCE_MS = 200;
 
@@ -44,16 +47,20 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
   const [showEnded, setShowEnded] = useState(false);
   const [filter, setFilter] = useState<ListFilter>("all");
   const [sheet, setSheet] = useState<"create" | "numbers" | null>(null);
+  /** The proposal the vote sheet is open on, as it was when Vote was pressed. */
+  const [voteOn, setVoteOn] = useState<ProposalRow | null>(null);
   const walletId = wallet.walletId;
   const sync = useGovernanceSyncState();
   const info = useGovernanceInfo();
   const mine = useMyProposals(walletId);
-  const turnOn = useTurnOnGovernance();
+  const { turnOn, busy: turningOn } = useTurnOnGovernance();
   const backend = useBackend();
   const refresh = useGovernanceRefresh();
   const shown = useDisplay(network);
   const state = sync.data ? listState(sync.data) : null;
 
+  // Without the list (governance off, syncing or failed) Mine still shows below (D32).
+  const mineBelow = (mine.data?.length ?? 0) > 0 && <MineList walletId={walletId} network={network} mine={mine.data!} heading />;
   let body;
   if (sync.isPending || info.isPending) body = <LoadingState testId="governance-loading" text="Loading governance…" />;
   else if (sync.isError || info.isError)
@@ -65,14 +72,14 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
           tone="info"
           testId="governance-disabled"
           action={
-            <DashButton variant="filledBlue" size="small" data-testid="governance-turn-on" onClick={() => void turnOn()}>
+            <DashButton variant="filledBlue" size="small" data-testid="governance-turn-on" disabled={turningOn} onClick={turnOn}>
               {GovText.turnOn}
             </DashButton>
           }
         >
           <strong>{GovText.disabled}</strong> {GovText.disabledHelp}
         </Notice>
-        {(mine.data?.length ?? 0) > 0 && <MineList walletId={walletId} network={network} mine={mine.data!} syncOff />}
+        {mineBelow}
       </>
     );
   else
@@ -107,7 +114,11 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
             {state.text}
           </Notice>
         )}
-        {state?.kind === "ready" && <ProposalsView wallet={wallet} network={network} info={info.data!} showEnded={showEnded} filter={filter} setFilter={setFilter} />}
+        {state?.kind === "ready" ? (
+          <ProposalsView wallet={wallet} network={network} info={info.data!} showEnded={showEnded} filter={filter} setFilter={setFilter} onVote={setVoteOn} />
+        ) : (
+          mineBelow
+        )}
       </>
     );
 
@@ -147,10 +158,11 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
           onCreated={(p) => {
             setSheet(null);
             setFilter("mine");
-            showToast(`${p.name}: fee paid. Mine shows its progress.`);
+            showToast(createdToast(p));
           }}
         />
       )}
+      {voteOn && <VoteSheet row={voteOn} wallet={wallet} network={network} onClose={() => setVoteOn(null)} />}
     </main>
   );
 }
@@ -231,6 +243,7 @@ function ProposalsView({
   showEnded,
   filter,
   setFilter,
+  onVote,
 }: {
   wallet: WalletSummary;
   network: NetworkInfo;
@@ -238,6 +251,7 @@ function ProposalsView({
   showEnded: boolean;
   filter: ListFilter;
   setFilter: (f: ListFilter) => void;
+  onVote: (row: ProposalRow) => void;
 }) {
   const walletId = wallet.walletId;
   const shown = useDisplay(network);
@@ -282,7 +296,19 @@ function ProposalsView({
             </ul>
           </section>
         </div>
-        {current && <ProposalPane key={current.hash} row={current} nodes={voting.get(current.hash)} info={info} wallet={wallet} network={network} />}
+        {current && (
+          <ProposalPane
+            row={current}
+            nodes={voting.get(current.hash)}
+            info={info}
+            wallet={wallet}
+            network={network}
+            onVote={() => {
+              setSelected(current.hash);
+              onVote(current);
+            }}
+          />
+        )}
       </div>
     );
 

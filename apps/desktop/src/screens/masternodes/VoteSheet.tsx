@@ -49,14 +49,15 @@ export function VoteSheet({ row, wallet, network, onClose }: { row: ProposalRow;
     <Sheet title={`Vote on ${row.name}`} width="medium" testId="vote-sheet" closable={!busy} onClose={onClose} focusKey={result ? "result" : nodes.data ? "form" : "loading"}>
       {result ? (
         <VoteResult {...result} onDone={onClose} />
-      ) : nodes.isPending ? (
-        <LoadingState testId="vote-sheet-loading" text="Reading your masternodes…" />
+      ) : nodes.data ? (
+        // A failed re-read (after a vote elsewhere) keeps the form on the last rows.
+        <VoteForm row={row} wallet={wallet} network={network} nodes={nodes.data} busy={busy} setBusy={setBusy} onCancel={onClose} onResult={setResult} />
       ) : nodes.isError ? (
         <p className="form-problem" role="alert" data-testid="vote-sheet-load-error">
           {governanceErrorText(nodes.error) ?? failureText(nodes.error, chainOf(network))}
         </p>
       ) : (
-        <VoteForm row={row} wallet={wallet} network={network} nodes={nodes.data} busy={busy} setBusy={setBusy} onCancel={onClose} onResult={setResult} />
+        <LoadingState testId="vote-sheet-loading" text="Reading your masternodes…" />
       )}
     </Sheet>
   );
@@ -133,14 +134,13 @@ function VoteForm({
         <AmountText text={shown.compact(row.paymentAmount)} unitName={shown.name} /> {paymentsSuffix(row.paymentsRequested)} ·{" "}
         <StatusChip chip={statusChip(row.status, row.closeCall)} /> {threshold !== undefined && votesView(row.tally, threshold).head}
       </p>
-      <div className="segmented mg-outcomes" role="radiogroup" aria-label="Your vote" data-testid="vote-outcome">
+      <div className="segmented mg-outcomes" role="group" aria-label="Your vote" data-testid="vote-outcome">
         {OUTCOMES.map((o) => (
           <button
             key={o}
             type="button"
             className="segment"
-            role="radio"
-            aria-checked={outcome === o}
+            aria-pressed={outcome === o}
             data-testid={`vote-outcome-${o}`}
             disabled={busy}
             onClick={() => setOutcome(o)}
@@ -188,7 +188,7 @@ function VoteForm({
       </div>
       <footer className="mg-sheet-footer">
         <span className="mg-sheet-footer-note" data-testid="vote-selection">
-          {selectionNote(rows, checked)}
+          {selectionNote(picked)}
         </span>
         <span className="mg-actions">
           <DashButton variant="tintedGray" size="medium" data-testid="vote-cancel" disabled={busy} onClick={onCancel}>

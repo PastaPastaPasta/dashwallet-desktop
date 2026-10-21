@@ -1,6 +1,7 @@
 // Create a proposal (§4.25.3, D14, MG-06): Details, Payments, then Review and pay the fee. Review
-// reads `preview_proposal`; [Pay 1 Dash and create] asks a spend grant capped at the fee plus the
-// network fee, then `create_proposal`. An engine field refusal goes back to the first failing
+// reads `preview_proposal`; [Pay 1 Dash and create] reads it again (the coins may have moved), asks
+// a spend grant capped at the fee plus the network fee with dwcli's margin (D29), then
+// `create_proposal`. An engine field refusal goes back to the first failing
 // field's step. Once paid, the proposal is the engine's (Mine shows it and resumes it after a
 // restart, D27).
 
@@ -46,6 +47,10 @@ const STEPS: { n: Step; title: string; heading: string }[] = [
 ];
 
 type FieldErrors = Partial<Record<ProposalFieldName, string>>;
+
+/** The least margin the spend grant gives over the estimated network fee, as dwcli's
+ *  `PROPOSAL_FEE_MARGIN` (D29): the coins picked at create time may differ from the preview's. */
+const NETWORK_FEE_MARGIN = 10_000;
 
 export function CreateProposalSheet({
   wallet,
@@ -107,8 +112,9 @@ export function CreateProposalSheet({
     return true;
   };
   useEffect(() => {
-    if (preview.isError && !refuseFields(preview.error)) setGeneral(governanceErrorText(preview.error) ?? failureText(preview.error, shown.chain, shown.amountUnit));
-    // Read once per failed preview.
+    // Read once per failed preview; [Pay]'s own re-read says its failure itself.
+    if (busy || step !== 3 || !preview.isError) return;
+    if (!refuseFields(preview.error)) setGeneral(governanceErrorText(preview.error) ?? failureText(preview.error, shown.chain, shown.amountUnit));
   }, [preview.isError, preview.error]);
 
   const next = async () => {
@@ -139,12 +145,13 @@ export function CreateProposalSheet({
   };
 
   const create = async () => {
-    const p = preview.data;
-    if (busy || !draft || !p || !credential.ready) return;
+    if (busy || !draft || !preview.data || !credential.ready) return;
     setBusy(true);
     setGeneral(null);
     try {
-      const grant = await credential.authorize({ kind: "spend", maxDuffs: p.fee + p.networkFee });
+      const p = (await preview.refetch({ throwOnError: true })).data!;
+      const margin = Math.max(p.networkFee, NETWORK_FEE_MARGIN);
+      const grant = await credential.authorize({ kind: "spend", maxDuffs: p.fee + p.networkFee + margin });
       if (!grant) return;
       const created = await b.governanceCreateProposal(wallet.walletId, draft, grant.id);
       void refresh();
@@ -196,6 +203,10 @@ export function CreateProposalSheet({
       <>
         {superblocks.isPending ? (
           <LoadingState testId="create-superblocks" text="Reading the next superblocks…" />
+        ) : superblocks.isError && !superblocks.data ? (
+          <p className="form-problem" role="alert" data-testid="create-superblocks-error">
+            {GovText.superblocksFailed} {governanceErrorText(superblocks.error) ?? failureText(superblocks.error, shown.chain, shown.amountUnit)}
+          </p>
         ) : (
           <div className="mg-form">
             <label className="mg-field">

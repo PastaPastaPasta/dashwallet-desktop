@@ -37,6 +37,8 @@ export const GovText = {
   disabled: "Governance data is off for this network.",
   disabledHelp: "Turn it on to load proposals and votes from the network.",
   turnOn: "Turn on",
+  turnOnFailed: "Couldn't turn on governance data.",
+  superblocksFailed: "Couldn't read the next superblocks.",
   failed: "Couldn't load proposals: no peer is serving governance data.",
   tryAgain: "Try again",
   syncNote: "Counts appear when the sync is complete, never partly.",
@@ -410,9 +412,8 @@ export function presetOutcome(nodes: VotingMasternode[]): VoteOutcomeName | null
   return seen.size === 1 ? [...seen][0] : null;
 }
 
-/** "2 masternodes · weight 8 · no fee". */
-export function selectionNote(rows: NodeRowView[], checked: ReadonlySet<string>): string {
-  const picked = rows.filter((r) => checked.has(r.proTxHash));
+/** "2 masternodes · weight 8 · no fee", for the checked eligible rows. */
+export function selectionNote(picked: NodeRowView[]): string {
   const weight = picked.reduce((s, r) => s + r.weight, 0);
   return `${plural(picked.length, "masternode")} · weight ${weight} · no fee`;
 }
@@ -536,6 +537,13 @@ function lastErrorText(p: MyProposal): string | null {
 }
 
 /** One Mine row (MG-00 §4.25.3 Mine, MG-06 D24, D15–D16). */
+/** The toast once `create_proposal` returned: paid, or kept with its fee unsent (MG-06 D10). */
+export function createdToast(p: MyProposal): string {
+  return p.state.kind === "feeUnsent" || p.state.kind === "feeFailed"
+    ? `${p.name}: created, but its fee didn't go out. Mine shows why.`
+    : `${p.name}: fee paid. Mine shows its progress.`;
+}
+
 export function mineRow(p: MyProposal, locale?: string): MineRowView {
   const created = dateTime(p.createdAt, locale);
   const s = p.state;

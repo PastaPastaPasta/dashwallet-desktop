@@ -71,6 +71,24 @@ test("a wrong passphrase keeps the vote sheet open and says so", async ({ page }
   await expect(page.getByTestId("vote-result")).toHaveCount(0);
 });
 
+test("a vote from Needs my vote keeps its result after the row leaves the list (D31)", async ({ page }) => {
+  await open(page, "governance");
+  await page.getByTestId("governance-filter-needsVote").click();
+  const first = page.getByTestId("proposal-list").locator("li").first();
+  const name = (await first.locator(".mg-row-title").textContent())!;
+  await first.locator("button").click();
+  await page.getByTestId("proposal-vote").click();
+  await page.getByTestId("vote-outcome-yes").click();
+  await page.getByTestId("vote-passphrase").fill("demo");
+  await page.getByTestId("vote-send").click();
+  await expect(page.getByTestId("vote-result-title")).toContainText("sent");
+  // The vote re-reads the list: the proposal no longer needs a vote, and the sheet stays.
+  await expect(page.getByTestId(`proposal-row-${name}`)).toHaveCount(0);
+  await expect(page.getByTestId("vote-result")).toBeVisible();
+  await page.getByTestId("vote-done").click();
+  await expect(page.getByTestId("vote-sheet")).toBeHidden();
+});
+
 test("sync off: the Disabled notice turns governance on", async ({ page }) => {
   await open(page, "governance-disabled");
   await expect(page.getByTestId("governance-disabled")).toBeVisible();
@@ -82,8 +100,11 @@ test("states: syncing, failed, no voting key, watch-only", async ({ page }) => {
   await open(page, "governance-syncing");
   await expect(page.getByTestId("governance-syncing")).toContainText("1,204 votes so far");
   await expect(page.getByTestId("governance-budget")).toContainText("What passing proposals take shows after sync");
+  // Without the list, Mine still shows (D32).
+  await expect(page.getByTestId("mine-row-dash-docs-refresh")).toBeVisible();
   await open(page, "governance-failed");
   await expect(page.getByTestId("governance-failed")).toBeVisible();
+  await expect(page.getByTestId("mine-row-dash-docs-refresh")).toBeVisible();
   await open(page, "governance-no-masternodes");
   await expect(page.getByTestId("governance-browsing-only")).toBeVisible();
   await expect(page.getByTestId("proposal-vote")).toBeDisabled();

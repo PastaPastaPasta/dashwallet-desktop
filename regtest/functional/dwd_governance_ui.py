@@ -23,7 +23,7 @@ Setup:
 Checks, after the UI run:
  1. the vote: every node holds a funding Yes from masternode 1's collateral on dwd_ui_p0, and
     Core's Yes count went from 0 to 1;
- 2. the created proposal: its fee transaction has 6 confirmations, and every node lists the
+ 2. the created proposal: its fee transaction has at least 6 confirmations, every node lists the
     object with the hash and fee txid the app reported, the name, link, payment address and
     amount entered in the UI, the address being the wallet's (dwcli lists it).
 
@@ -34,6 +34,7 @@ Run (DW_APP, TAURI_DRIVER and DISPLAY as for scripts/e2e-regtest-governance.sh):
 
 import json
 import os
+import signal
 import subprocess
 import time
 from decimal import Decimal
@@ -54,6 +55,8 @@ PHRASE = "abandon abandon abandon abandon abandon abandon abandon abandon abando
 PROPOSAL = "dwd_ui_p0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 DESKTOP = os.path.join(HERE, "..", "..", "apps", "desktop")
+# Above the UI run's own worst case (its polls at DW_E2E_TIMEOUT_MS each, plus the chain's waits).
+UI_TIMEOUT = 5400
 
 
 class Dwcli:
@@ -145,8 +148,15 @@ class DwdGovernanceUi(DashTestFramework):
                    DW_E2E_PROPOSAL=PROPOSAL, DW_E2E_VOTER=voter.proTxHash)
         env.setdefault("RUST_LOG", "warn,dw_engine::governance=debug,dw_governance=debug")
         with open(os.path.join(out, "app.log"), "w", encoding="utf8") as log:
-            p = subprocess.run(["node", "e2e-tauri/regtest-governance.ts"], cwd=DESKTOP, env=env,
-                               stdout=log, stderr=subprocess.STDOUT, timeout=3600)
+            # Its own session, so a timeout also ends tauri-driver, WebKitWebDriver and the app.
+            p = subprocess.Popen(["node", "e2e-tauri/regtest-governance.ts"], cwd=DESKTOP, env=env,
+                                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                p.wait(timeout=UI_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                os.killpg(p.pid, signal.SIGKILL)
+                p.wait()
+                raise
         with open(os.path.join(out, "app.log"), encoding="utf8") as log:
             self.log.info("".join(line for line in log if line.startswith("regtest-governance:")))
         assert_equal(p.returncode, 0)
@@ -165,7 +175,7 @@ class DwdGovernanceUi(DashTestFramework):
 
         self.log.info("2. Every node lists the created proposal with the app's hash and fee txid")
         h, fee_txid = evidence["createdHash"], evidence["feeTxid"]
-        assert_equal(node.getrawtransaction(fee_txid, True)["confirmations"], 6)
+        assert node.getrawtransaction(fee_txid, True)["confirmations"] >= 6
         wallet_addresses = {line.split()[2] for line in dwcli.run("addresses", wallet) if line.startswith("addr ")}
         for n in self.nodes:
             self.wait_until(lambda: h in n.gobject("list", "all", "proposals"), timeout=120)

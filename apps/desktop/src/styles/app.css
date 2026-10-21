@@ -4974,11 +4974,6 @@ button.bell-row-open:focus-visible {
   padding: var(--dw-space-xs) var(--dw-space-xl);
 }
 
-.mg-outcomes .segment[aria-checked="true"] {
-  background: var(--dw-role-card);
-  box-shadow: var(--dw-shadow-card);
-}
-
 .mg-node label {
   display: flex;
   flex-direction: column;

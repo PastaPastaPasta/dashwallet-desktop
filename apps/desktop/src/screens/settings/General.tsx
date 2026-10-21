@@ -291,7 +291,7 @@ function NetworkCard() {
  * governance data is off asks once to load it too (MG-09 D6). */
 function ShowMasternodesRow({ checked, save }: { checked: boolean; save: (patch: Partial<UiSettings>) => Promise<boolean> }) {
   const backend = useBackend();
-  const turnOn = useTurnOnGovernance();
+  const { turnOn } = useTurnOnGovernance();
   const [ask, setAsk] = useState(false);
   const change = async (on: boolean) => {
     if (!(await save({ showMasternodes: on })) || !on) return;
@@ -311,7 +311,7 @@ function ShowMasternodesRow({ checked, save }: { checked: boolean; save: (patch:
           confirm="Turn on"
           testId="settings-governance-ask"
           confirmTestId="settings-governance-turn-on"
-          onConfirm={() => void turnOn()}
+          onConfirm={turnOn}
           onClose={() => setAsk(false)}
         />
       )}

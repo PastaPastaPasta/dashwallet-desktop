@@ -508,13 +508,20 @@ export function governanceScenarios(base: Base) {
       w.governance.mine[id(w)] = structuredClone(EVERY_STATE);
       return w;
     },
-    /** `gov-syncing`: votes loading, no counts yet (MG-00 D21). */
-    "governance-syncing": (t: ThemeName | null) => governanceBase(base, t, { sync: { ...synced(), phase: "syncingVotes", votes: 1_204, lastSyncedAt: null }, phaseOnStart: "syncingVotes" }),
+    /** `gov-syncing`: votes loading, no counts yet (MG-00 D21); Mine shows below (D32). */
+    "governance-syncing": (t: ThemeName | null) => {
+      const w = governanceBase(base, t, { sync: { ...synced(), phase: "syncingVotes", votes: 1_204, lastSyncedAt: null }, phaseOnStart: "syncingVotes" });
+      w.governance.mine[id(w)] = [EVERY_STATE[1]];
+      return w;
+    },
     /** Sync off (D6): the Disabled state with Turn on. */
     "governance-disabled": (t: ThemeName | null) => governanceBase(base, t, { enabled: false, sync: disabled() }),
     /** No peer serves governance data. */
-    "governance-failed": (t: ThemeName | null) =>
-      governanceBase(base, t, { sync: { ...synced(), phase: "failed", lastError: "no peer completed its sync", nextRetryAt: NOW + 30 }, phaseOnStart: "failed" }),
+    "governance-failed": (t: ThemeName | null) => {
+      const w = governanceBase(base, t, { sync: { ...synced(), phase: "failed", lastError: "no peer completed its sync", nextRetryAt: NOW + 30 }, phaseOnStart: "failed" });
+      w.governance.mine[id(w)] = [EVERY_STATE[1]];
+      return w;
+    },
     /** No masternode whose voting key the wallet holds: browsing only. */
     "governance-no-masternodes": (t: ThemeName | null) => governanceBase(base, t, { masternodes: [] }),
     /** Masternodes whose voting keys are here but none can vote (banned). */

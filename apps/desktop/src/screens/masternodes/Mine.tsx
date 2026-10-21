@@ -14,11 +14,11 @@ import { useGovernanceRefresh, useTurnOnGovernance } from "../../governance/quer
 import { failureText } from "../pay/model";
 import { StatusChip } from "./common";
 
-export function MineList({ walletId, network, mine, syncOff = false }: { walletId: string; network: NetworkInfo; mine: MyProposal[]; syncOff?: boolean }) {
+export function MineList({ walletId, network, mine, heading = false }: { walletId: string; network: NetworkInfo; mine: MyProposal[]; heading?: boolean }) {
   if (mine.length === 0) return <EmptyState testId="mine-empty" title={GovText.emptyMine} message={GovText.mineNote} />;
   return (
     <>
-      {syncOff && <h2 className="mg-section-title">Mine</h2>}
+      {heading && <h2 className="mg-section-title">Mine</h2>}
       <section className="tx-group card-l1">
         <ul className="mg-list" data-testid="mine-list">
           {mine.map((p) => (
@@ -34,10 +34,11 @@ export function MineList({ walletId, network, mine, syncOff = false }: { walletI
 function MineRow({ walletId, network, p }: { walletId: string; network: NetworkInfo; p: MyProposal }) {
   const b = useBackend();
   const refresh = useGovernanceRefresh();
-  const turnOn = useTurnOnGovernance();
+  const { turnOn, busy: turningOn } = useTurnOnGovernance();
   const view = mineRow(p);
   const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState<string | null>(null);
+  /** Submit's failure, said only while the proposal is still in the state it failed in. */
+  const [failed, setFailed] = useState<{ kind: string; text: string } | null>(null);
   const submit = async () => {
     if (busy) return;
     setBusy(true);
@@ -45,13 +46,13 @@ function MineRow({ walletId, network, p }: { walletId: string; network: NetworkI
     try {
       await b.governanceSubmitProposal(walletId, p.hash);
     } catch (e) {
-      setFailed(governanceErrorText(e) ?? failureText(e, chainOf(network)));
+      setFailed({ kind: p.state.kind, text: governanceErrorText(e) ?? failureText(e, chainOf(network)) });
     } finally {
       setBusy(false);
       void refresh();
     }
   };
-  const error = failed ?? view.error;
+  const error = (failed?.kind === p.state.kind ? failed.text : null) ?? view.error;
   return (
     <li className="mg-row mg-row-wide mg-mine-row" data-testid={`mine-row-${p.name}`}>
       <span className="mg-row-text">
@@ -73,7 +74,7 @@ function MineRow({ walletId, network, p }: { walletId: string; network: NetworkI
         </DashButton>
       )}
       {view.turnOn && (
-        <DashButton variant="tintedBlue" size="small" data-testid={`mine-turn-on-${p.name}`} onClick={() => void turnOn()}>
+        <DashButton variant="tintedBlue" size="small" data-testid={`mine-turn-on-${p.name}`} disabled={turningOn} onClick={turnOn}>
           {GovText.turnOn}
         </DashButton>
       )}

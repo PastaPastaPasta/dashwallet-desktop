@@ -18,6 +18,7 @@ import {
   budgetNotice,
   budgetView,
   clockView,
+  createdToast,
   defaultFirstPayment,
   detailsProblems,
   FIELD_STEP,
@@ -214,8 +215,8 @@ describe("the vote sheet", () => {
     expect(rows[1].sub).toBe("PoSe banned: a banned masternode can't vote");
     expect(rows[2].sub).toMatch(/^Voted Yes 40 min ago · can change after \d{1,2}:20 PM$/);
     expect(rows[3].sub).toBe("key in this wallet · voting key 3 · 3 masternodes use this key");
-    expect(selectionNote(rows, new Set(["a".repeat(64), "d".repeat(64)]))).toBe("2 masternodes · weight 5 · no fee");
-    expect(selectionNote(rows, new Set(["a".repeat(64)]))).toBe("1 masternode · weight 1 · no fee");
+    expect(selectionNote([rows[0], rows[3]])).toBe("2 masternodes · weight 5 · no fee");
+    expect(selectionNote([rows[0]])).toBe("1 masternode · weight 1 · no fee");
   });
 
   it("presets the outcome only when every valid masternode saw the same one", () => {
@@ -306,6 +307,8 @@ describe("Mine (MG-06 D24, D15–D17)", () => {
     expect(mineRow(mine({ kind: "public", status: "unfunded" }), L).chip.text).toBe("Over budget");
     expect(mineRow(mine({ kind: "feeFailed" }), L).chip.tone).toBe("danger");
     expect(mineRow(mine({ kind: "expired" }), L).chip.text).toBe("Ended");
+    expect(createdToast(mine({ kind: "feePaid", confirmations: 0 }))).toMatch(/: fee paid\. Mine shows its progress\.$/);
+    expect(createdToast(mine({ kind: "feeUnsent" }, "send: no_peers"))).toMatch(/: created, but its fee didn't go out\. Mine shows why\.$/);
     expect(badgeCount([mine({ kind: "feeUnsent" }, "send: x"), mine({ kind: "readyToSubmit", reason: "noPeerAccepted" }), mine({ kind: "feePaid", confirmations: 0 })], L)).toBe(2);
   });
 

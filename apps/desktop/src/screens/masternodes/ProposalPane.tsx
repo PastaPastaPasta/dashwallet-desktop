@@ -1,8 +1,7 @@
 // The selected proposal (§4.25.3 detail pane): its chip and note, what it asks for, where it pays,
 // its link (shown and copied, D9), the weighted votes with their range, the wallet's voting
-// masternodes, and Vote.
+// masternodes, and Vote (the page opens the vote sheet, D31).
 
-import { useState } from "react";
 import type { GovernanceInfo } from "../../api/generated/GovernanceInfo";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { ProposalRow } from "../../api/generated/ProposalRow";
@@ -24,13 +23,13 @@ import {
   votesView,
 } from "../../governance/model";
 import { MoreMenu, StatusChip, useNowSecs, VoteBar } from "./common";
-import { VoteSheet } from "./VoteSheet";
 
 /** Why Vote is disabled, or `null` (D18, §4.25.4). */
 function voteBlocked(row: ProposalRow, nodes: VotingMasternode[] | undefined, watchOnly: boolean): string | null {
   if (watchOnly) return GovText.voteWatchOnly;
   if (isEnded(row)) return "This proposal has ended";
-  if (!nodes?.some((n) => n.valid)) return GovText.noVotingKey;
+  if (nodes === undefined) return "Reading your masternodes…";
+  if (!nodes.some((n) => n.valid)) return GovText.noVotingKey;
   return null;
 }
 
@@ -40,16 +39,17 @@ export function ProposalPane({
   info,
   wallet,
   network,
+  onVote,
 }: {
   row: ProposalRow;
   nodes: VotingMasternode[] | undefined;
   info: GovernanceInfo;
   wallet: WalletSummary;
   network: NetworkInfo;
+  onVote: () => void;
 }) {
   const shown = useDisplay(network);
   const now = useNowSecs();
-  const [voting, setVoting] = useState(false);
   const votes = votesView(row.tally, info.passingThreshold);
   const blocked = voteBlocked(row, nodes, wallet.watchOnly);
   const copy = (text: string) => () => void copyWithToast(text);
@@ -124,7 +124,7 @@ export function ProposalPane({
             data-testid="proposal-vote"
             disabled={blocked !== null}
             title={blocked ?? undefined}
-            onClick={() => setVoting(true)}
+            onClick={onVote}
           >
             Vote
           </DashButton>
@@ -138,7 +138,6 @@ export function ProposalPane({
         </div>
         {blocked && <p className="mg-muted mg-small mg-flush" data-testid="proposal-vote-blocked">{blocked}</p>}
       </section>
-      {voting && nodes && <VoteSheet row={row} wallet={wallet} network={network} onClose={() => setVoting(false)} />}
     </aside>
   );
 }

@@ -3,12 +3,14 @@
 // `governance` event (MG-02 D96), so the tip-derived reads (clock, info, the wallet's own
 // proposals, whose states follow the fee's confirmations) also re-read on a timer.
 
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import type { ProposalScopeName } from "../api/generated/ProposalScopeName";
+import { errorMessage } from "../api/backend";
 import { keys, useBackend, useUtxos } from "../api/queries";
 import { useUi } from "../app/ui";
-import { badgeCount, masternodesShown, SUPERBLOCK_CHOICES } from "./model";
+import { showToast } from "../components/toast";
+import { badgeCount, GovText, governanceErrorText, masternodesShown, SUPERBLOCK_CHOICES } from "./model";
 
 const g = keys.governanceAll;
 /** Tip-derived reads: a block is about 2.5 minutes. */
@@ -86,20 +88,20 @@ export function useMasternodesItem(walletId: string | null): { shown: boolean; b
 
 export function useUpcomingSuperblocks() {
   const b = useBackend();
-  return useQuery({ queryKey: govKeys.superblocks, queryFn: () => b.governanceUpcomingSuperblocks(SUPERBLOCK_CHOICES) });
+  return useQuery({ queryKey: govKeys.superblocks, queryFn: () => b.governanceUpcomingSuperblocks(SUPERBLOCK_CHOICES), refetchInterval: TIP_REFRESH_MS });
 }
 
-/** Turns governance sync on (D6); re-reads everything under the prefix. */
+/** Turns governance sync on (D6) and re-reads everything under the prefix; a refusal is a toast
+ *  (D30). `busy` while the call runs, so its buttons don't send it twice. */
 export function useTurnOnGovernance() {
   const b = useBackend();
   const client = useQueryClient();
-  return async () => {
-    try {
-      await b.governanceSetSyncEnabled(true);
-    } finally {
-      await client.invalidateQueries({ queryKey: g });
-    }
-  };
+  const m = useMutation({
+    mutationFn: () => b.governanceSetSyncEnabled(true),
+    onError: (e) => showToast(`${GovText.turnOnFailed} ${governanceErrorText(e) ?? errorMessage(e)}`),
+    onSettled: () => client.invalidateQueries({ queryKey: g }),
+  });
+  return { turnOn: () => m.mutate(), busy: m.isPending };
 }
 
 /** Re-reads every governance query (after a vote, a create or a submit). */
