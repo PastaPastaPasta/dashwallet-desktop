@@ -7,7 +7,7 @@
 // paid, the proposal is the engine's (Mine shows it and resumes it after a restart, D27).
 
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { isAppError } from "../../api/backend";
 import type { MyProposal } from "../../api/generated/MyProposal";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
@@ -128,6 +128,9 @@ export function CreateProposalSheet({
     setReviewed({ key: draftKey, p: preview.data });
   }, [draftKey, preview.data, reviewed]);
   const figures = reviewed?.key === draftKey ? reviewed.p : undefined;
+  /** The draft on screen now, for a press whose awaits outlive it. */
+  const shownKey = useRef(draftKey);
+  shownKey.current = draftKey;
 
   /** An engine refusal of the draft's fields: back to the first failing field's step. */
   const refuseFields = (e: unknown): boolean => {
@@ -197,6 +200,7 @@ export function CreateProposalSheet({
     try {
       const r = await preview.refetch();
       if (r.isError || !r.data) return; // the preview's effect says why
+      if (shownKey.current !== draftKey) return; // the draft moved on (D33): its own review
       if (!sameFee(r.data, confirmed)) {
         // The review now shows the new figures; the next press confirms them.
         setReviewed({ key: draftKey, p: r.data });
@@ -205,7 +209,7 @@ export function CreateProposalSheet({
       }
       setFeeChanged(false);
       const grant = await credential.authorize({ kind: "spend", maxDuffs: feeGrantCap(confirmed) });
-      if (!grant) return;
+      if (!grant || shownKey.current !== draftKey) return;
       let created: MyProposal;
       try {
         created = await b.governanceCreateProposal(wallet.walletId, draft, grant.id);
@@ -353,7 +357,7 @@ export function CreateProposalSheet({
   else
     body = (
       <>
-        {preview.isPending && draft ? (
+        {draft && (preview.isPending || (preview.data && !figures)) ? (
           <LoadingState testId="create-preview-loading" text="Checking the proposal…" />
         ) : figures && draft ? (
           <>

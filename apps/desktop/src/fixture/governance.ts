@@ -78,8 +78,10 @@ export interface GovernanceWorld {
   /** `create_proposal` pays the fee and keeps the proposal, then fails (its read after the
    *  payment, or IPC): MG-09 D34. */
   createFailsAfterPaying: boolean;
-  /** Superblocks a test moved out of the upcoming list (their dates passed for the renderer);
-   *  a draft may still name one, as it was reviewed (MG-09 D33). */
+  /** Superblocks a test moved out of the upcoming list (MG-09 D33). Unlike the engine, which
+   *  refuses a passed height in preview and create, drafts here still validate at those heights:
+   *  so an engine event's re-reads land as if the list answered first (the "moved" path), never
+   *  as the old draft's `first_payment` refusal (back to Payments, also safe). */
   superblocksPassed: number;
 }
 
