@@ -11,7 +11,7 @@
 
 use dashcore::consensus::encode::{self, Decodable, Encodable};
 use dashcore::hashes::{Hash, sha256d};
-use dashcore::{OutPoint, TxIn, TxOut, Txid};
+use dashcore::{OutPoint, Script, ScriptBuf, TxIn, TxOut, Txid};
 
 /// `CTransaction::SPECIAL_VERSION`: from this version on, a non-zero type
 /// carries a payload (rc.3 `primitives/transaction.h:244,362-364`).
@@ -80,6 +80,37 @@ impl SpecialTx {
     }
 }
 
+/// `SIGHASH_ALL`.
+pub const SIGHASH_ALL: u32 = 1;
+
+impl SpecialTx {
+    /// `SignatureHash` with `SIGHASH_ALL`, the legacy algorithm (rc.3
+    /// `script/interpreter.cpp:1370-1500`): the transaction with every
+    /// scriptSig empty but input `index`'s, which is `script_code`, the
+    /// payload included as in [`Self::to_bytes`] (`:1437-1438`), then the
+    /// hash type as a `u32`. The scripts the wallet signs (P2PKH) hold no
+    /// `OP_CODESEPARATOR`. `None` for an input that doesn't exist (Core
+    /// returns the "one" hash).
+    pub fn signature_hash_all(&self, index: usize, script_code: &Script) -> Option<[u8; 32]> {
+        if index >= self.input.len() {
+            return None;
+        }
+        let mut tx = self.clone();
+        for (i, input) in tx.input.iter_mut().enumerate() {
+            input.script_sig = if i == index {
+                script_code.to_owned()
+            } else {
+                ScriptBuf::new()
+            };
+        }
+        let mut engine = sha256d::Hash::engine();
+        tx.consensus_encode(&mut engine)
+            .and_then(|_| SIGHASH_ALL.consensus_encode(&mut engine))
+            .expect("engines don't error");
+        Some(sha256d::Hash::from_engine(engine).to_byte_array())
+    }
+}
+
 /// `CalcTxInputsHash`: double SHA-256 of the prevouts, in order.
 pub fn inputs_hash<'a>(prevouts: impl IntoIterator<Item = &'a OutPoint>) -> [u8; 32] {
     let mut engine = sha256d::Hash::engine();
@@ -139,7 +170,7 @@ impl Decodable for SpecialTx {
 #[allow(non_snake_case)]
 mod tests {
     use super::*;
-    use dashcore::{ScriptBuf, Witness};
+    use dashcore::Witness;
 
     fn tx(version: u16, tx_type: u16, payload: Vec<u8>) -> SpecialTx {
         SpecialTx {

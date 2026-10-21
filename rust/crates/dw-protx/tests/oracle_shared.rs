@@ -601,3 +601,47 @@ fn test_QT_127_zero_penalty_standby_valid_from_the_early_periods_end() {
     // Mined, it takes the masternode out of the list.
     assert_eq!(late["listed_after"], false);
 }
+
+/// dashd's own funding signatures on each registration: every input's
+/// scriptSig (`<sig> <pubkey>`, P2PKH) verifies against
+/// `SpecialTx::signature_hash_all`, the payload included, and is
+/// `SIGHASH_ALL`. A changed payload byte breaks every one.
+#[test]
+fn test_QT_126_funding_signatures_verify_against_the_special_tx_sighash() {
+    use dashcore::secp256k1::{Message, PublicKey, ecdsa};
+    let mut checked = 0;
+    for c in registrations() {
+        let tx = tx_of(str_of(&c, "tx_hex"));
+        let mut tampered = tx.clone();
+        *tampered.payload.last_mut().unwrap() ^= 1;
+        for (i, input) in tx.input.iter().enumerate() {
+            let pushes: Vec<Vec<u8>> = input
+                .script_sig
+                .instructions()
+                .map(|ins| match ins.unwrap() {
+                    dashcore::blockdata::script::Instruction::PushBytes(b) => b.as_bytes().to_vec(),
+                    op => panic!("not a push: {op:?}"),
+                })
+                .collect();
+            let [sig, pubkey] = &pushes[..] else {
+                panic!("P2PKH scriptSig")
+            };
+            let (hash_type, der) = sig.split_last().unwrap();
+            assert_eq!(u32::from(*hash_type), dw_protx::shared::rawtx::SIGHASH_ALL);
+            let pubkey = PublicKey::from_slice(pubkey).unwrap();
+            let script_code = ScriptBuf::new_p2pkh(&dashcore::PublicKey::new(pubkey).pubkey_hash());
+            let sig = ecdsa::Signature::from_der(der).unwrap();
+            let digest = |t: &SpecialTx| {
+                Message::from_digest(t.signature_hash_all(i, &script_code).unwrap())
+            };
+            ecdsa::verify(&sig, digest(&tx), &pubkey).unwrap_or_else(|e| panic!("input {i}: {e}"));
+            assert!(ecdsa::verify(&sig, digest(&tampered), &pubkey).is_err());
+            checked += 1;
+        }
+        assert_eq!(
+            tx.signature_hash_all(tx.input.len(), &ScriptBuf::new()),
+            None
+        );
+    }
+    assert!(checked >= 5, "{checked}");
+}
