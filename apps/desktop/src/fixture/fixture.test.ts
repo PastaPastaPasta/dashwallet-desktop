@@ -53,6 +53,8 @@ describe("fixture backend", () => {
       "dashpay.ts",
       "errors.ts",
       "fixture.test.ts",
+      "governance.test.ts",
+      "governance.ts",
       "handlers.ts",
       "history.test.ts",
       "historyContacts.test.ts",
@@ -84,7 +86,7 @@ describe("fixture backend", () => {
     ]);
     // Only `*.test.ts` is a test (vite.config.ts `test.include`): a `*.test.mts` is a module.
     const modules = files.filter((f) => /\.[cm]?[jt]sx?$/.test(f) && !f.endsWith(".test.ts"));
-    expect(modules).toEqual(["coinjoin.ts", "dashpay.ts", "errors.ts", "handlers.ts", "index.ts", "links.ts", "registration.ts", "scan.ts", "scenarios.ts", "send.ts", "settings.ts", "tools.ts", "topup.ts", "vault.ts", "wallet.ts"]);
+    expect(modules).toEqual(["coinjoin.ts", "dashpay.ts", "errors.ts", "governance.ts", "handlers.ts", "index.ts", "links.ts", "registration.ts", "scan.ts", "scenarios.ts", "send.ts", "settings.ts", "tools.ts", "topup.ts", "vault.ts", "wallet.ts"]);
     const { bySource } = await fixtureSentinels(fileURLToPath(new URL("../..", import.meta.url)));
     for (const f of modules) {
       expect(readFileSync(join(dir, f), "utf8").startsWith("// dw-fixture-module"), f).toBe(true);

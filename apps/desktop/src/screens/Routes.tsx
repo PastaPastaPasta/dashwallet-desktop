@@ -18,6 +18,7 @@ const TITLES: Record<Route, string> = {
   activity: "Activity",
   coinJoin: "CoinJoin",
   explore: "Explore",
+  masternodes: "Masternodes",
   notifications: "Notifications",
   profile: "My Profile",
   settings: "Settings",
@@ -26,7 +27,7 @@ const TITLES: Record<Route, string> = {
 };
 
 /** The placeholder text of each route that `Placeholder` renders. */
-const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "coinJoin" | "tools" | "settings" | "notifications" | "joinDashPay" | "profile">, string> = {
+const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "coinJoin" | "tools" | "settings" | "notifications" | "joinDashPay" | "profile" | "masternodes">, string> = {
   explore: "Explore is not available yet.",
 };
 

@@ -16,6 +16,7 @@ import { Overview } from "../screens/Overview";
 import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
 import { CoinJoinPage } from "../screens/coinjoin/CoinJoinPage";
+import { MasternodesPage } from "../screens/masternodes/MasternodesPage";
 import { ContactsPage, PayPage, Placeholder } from "../screens/Routes";
 import { JoinDashPayPage } from "../screens/dashpay/JoinDashPay";
 import { MyProfilePage } from "../screens/dashpay/MyProfile";
@@ -30,6 +31,7 @@ import { ACTIVITY_EVENTS, armedFor, AutoLockTimer } from "../settings/autoLock";
 import { useDisplay } from "../format/display";
 import { SecurityText } from "../settings/security";
 import { useStatusRegistration } from "../dashpay/queries";
+import { useMasternodesItem } from "../governance/queries";
 import { useSavedLinksOffer } from "./savedLinksOffer";
 import { useShellBridge } from "./shellBridge";
 import { openFailure, type OpenFailure } from "./openFailure";
@@ -169,7 +171,7 @@ function Shell() {
   };
 
   let content;
-  if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts" || route === "notifications" || route === "joinDashPay" || route === "profile" || route === "coinJoin") {
+  if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts" || route === "notifications" || route === "joinDashPay" || route === "profile" || route === "coinJoin" || route === "masternodes") {
     if (wallets.isPending) content = <LoadingState testId="wallets-loading" text="Loading wallet…" />;
     else if (wallets.isError)
       content = (
@@ -197,6 +199,7 @@ function Shell() {
     else if (route === "joinDashPay") content = <JoinDashPayPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "profile") content = <MyProfilePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "coinJoin") content = <CoinJoinPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
+    else if (route === "masternodes") content = <MasternodesPage key={wallet.walletId} wallet={wallet} network={network} />;
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
   } else if (route === "tools") content = <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} />;
   else if (route === "settings") content = <SettingsPage />;
@@ -211,6 +214,7 @@ function Shell() {
       : undefined;
   // A contested username still has its identity: Contacts, not Join DashPay (D11).
   const joined = !(dashpay.status?.kind === "noIdentity" || dashpay.status?.kind === "registering");
+  const masternodesItem = useMasternodesItem(wallet?.walletId ?? null);
   const sheet = !!(detail && wallet && !locked);
   const layered = useLayeredSheet();
   const savedLinks = useSavedLinksOffer(backend, {
@@ -240,7 +244,7 @@ function Shell() {
           bellOwner={bellOwner}
         />
         <div className="app-body">
-          <Sidebar joined={joined} requests={dashpay.requests} />
+          <Sidebar joined={joined} requests={dashpay.requests} masternodes={masternodesItem} />
           {content}
         </div>
         <StatusBar

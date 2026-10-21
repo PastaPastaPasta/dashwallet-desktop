@@ -37,6 +37,7 @@ import { userLinkText } from "../contacts/add";
 import { activityPage, contactList, eventOf, relationOf, type DashPayWorld, type FixtureScan } from "./dashpay";
 import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
+import { governanceHandlers } from "./governance";
 import { advance, costs, failRun, fundable, NAME_CREDITS, registrationHandlers } from "./registration";
 import { intake, routeLink } from "./links";
 import { normalizePhrase } from "../onboarding/words";
@@ -608,6 +609,8 @@ export const HANDLERS: Handlers = {
   ...scanHandlers(),
   // CoinJoin (U-06): coinjoin.ts.
   ...coinjoinHandlers({ wallet }),
+  // Governance (MG-09): governance.ts.
+  ...governanceHandlers({ wallet, grant: checkGrant, useGrant }),
   // Username registration (DP1-09): registration.ts.
   ...registrationHandlers({ wallet, dashpay, grant: checkGrant, newLease, setLease, writeLease }),
   ...topUpHandlers({ wallet, dashpay, grant: checkGrant, useGrant, costs: COST_TABLE }),

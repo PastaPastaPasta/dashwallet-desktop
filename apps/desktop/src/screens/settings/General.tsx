@@ -9,9 +9,10 @@ import type { UiSettings } from "../../api/generated/UiSettings";
 import { keys, useBackend, useDustProtection, useNodeInfo } from "../../api/queries";
 import { useLaunch } from "../../app/App";
 import { DEFAULT_PREFS, useUi } from "../../app/ui";
+import { useTurnOnGovernance } from "../../governance/queries";
 import { DashButton } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
-import { Sheet } from "../../components/sheet";
+import { QuestionSheet, Sheet } from "../../components/sheet";
 import { failureText } from "../../onboarding/model";
 import { DEFAULT_DUST, DIGIT_CHOICES, dustThreshold, OptionsText, UNIT_CHOICES } from "../../settings/options";
 import { savePrefs, settledPending } from "../../settings/prefs";
@@ -129,6 +130,7 @@ export function GeneralTab() {
           />
           Subtract the fee from the amount by default
         </label>
+        <ShowMasternodesRow checked={prefs.showMasternodes} save={save} />
       </SettingsCard>
       <DustCard />
       <PrivacyCard />
@@ -282,5 +284,37 @@ function NetworkCard() {
         why="it comes with U-04b. To open another network, start Dash Wallet with --network testnet, devnet-<name> or regtest."
       />
     </SettingsCard>
+  );
+}
+
+/** Show Masternodes (MG-00 D2): the sidebar item whatever the wallet holds. Turning it on while
+ * governance data is off asks once to load it too (MG-09 D6). */
+function ShowMasternodesRow({ checked, save }: { checked: boolean; save: (patch: Partial<UiSettings>) => Promise<boolean> }) {
+  const backend = useBackend();
+  const turnOn = useTurnOnGovernance();
+  const [ask, setAsk] = useState(false);
+  const change = async (on: boolean) => {
+    if (!(await save({ showMasternodes: on })) || !on) return;
+    if (!(await backend.governanceSyncEnabled().catch(() => true))) setAsk(true);
+  };
+  return (
+    <>
+      <label className="checkbox-row">
+        <input type="checkbox" data-testid="settings-show-masternodes" checked={checked} onChange={(e) => void change(e.target.checked)} />
+        Show Masternodes
+      </label>
+      <Hint>Shows Masternodes in the sidebar even without a masternode, a collateral or a proposal: to read and vote on proposals.</Hint>
+      {ask && (
+        <QuestionSheet
+          title="Load governance data?"
+          text="Also load proposals and votes from the network? Governance data is off for this network."
+          confirm="Turn on"
+          testId="settings-governance-ask"
+          confirmTestId="settings-governance-turn-on"
+          onConfirm={() => void turnOn()}
+          onClose={() => setAsk(false)}
+        />
+      )}
+    </>
   );
 }

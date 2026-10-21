@@ -28,6 +28,7 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   autohideBalance: false,
   autoLockSecs: null,
   subtractFeeByDefault: false,
+  showMasternodes: false,
 };
 const MAX_AUTO_LOCK_SECS = 86_400;
 const MAX_KEEP = 10;

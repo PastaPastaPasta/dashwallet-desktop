@@ -119,6 +119,7 @@ export const DEFAULT_PREFS: UiSettings = {
   autohideBalance: false,
   autoLockSecs: null,
   subtractFeeByDefault: false,
+  showMasternodes: false,
 };
 
 let state: UiState = {

@@ -31,6 +31,7 @@ import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
+import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { buildRows, caughtUp, FUNDED_BALANCES, makeIds, prng, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
@@ -99,6 +100,8 @@ export interface World {
   scan: ScanWorld;
   /** CoinJoin's options and each wallet's mixer (coinjoin.ts, U-06). */
   coinjoin: CoinJoinWorld;
+  /** Governance: sync, proposals, voting masternodes and own proposals (governance.ts, MG-09). */
+  governance: GovernanceWorld;
 }
 
 /** A vault grant: single use (`used` once redeemed or revoked); `ownKey` when it was issued
@@ -192,6 +195,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     settings: withAutomaticBackups(newSettingsWorld(), FIXTURE_WALLET_ID, MAIN_PHRASE, FIXTURE_PASSPHRASE),
     scan: scanWorld(),
     coinjoin: newCoinJoinWorld(),
+    governance: newGovernanceWorld(),
   };
 }
 
@@ -819,6 +823,8 @@ const SCENARIOS = {
   "lock-report-call": (t) => unnamedCall(base(t)),
   // CoinJoin (U-06): coinjoin.ts.
   ...coinjoinScenarios(base),
+  // Governance (MG-09): governance.ts.
+  ...governanceScenarios(base),
 } satisfies Record<string, (theme: ThemeName | null) => World>;
 
 export type ScenarioName = keyof typeof SCENARIOS;

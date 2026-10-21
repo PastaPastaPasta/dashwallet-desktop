@@ -42,6 +42,9 @@ pub struct UiSettings {
     pub auto_lock_secs: Option<u32>,
     /// A new payment starts with "Subtract fee from amount" checked (QT-137).
     pub subtract_fee_by_default: bool,
+    /// Settings ▸ General ▸ Show Masternodes: the sidebar item shows even
+    /// without a masternode, a collateral or a proposal (MG-00 D1, D2).
+    pub show_masternodes: bool,
 }
 
 impl Default for UiSettings {
@@ -53,6 +56,7 @@ impl Default for UiSettings {
             autohide_balance: false,
             auto_lock_secs: None,
             subtract_fee_by_default: false,
+            show_masternodes: false,
         }
     }
 }
@@ -143,6 +147,7 @@ mod tests {
             autohide_balance: true,
             auto_lock_secs: Some(300),
             subtract_fee_by_default: true,
+            show_masternodes: true,
         };
         write(dir.path(), &s).unwrap();
         assert_eq!(read(dir.path()), s);

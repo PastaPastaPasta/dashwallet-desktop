@@ -3,4 +3,4 @@
 /**
  * A top-level page of the window (DASHPAY §4 information architecture).
  */
-export type Route = "home" | "pay" | "receive" | "contacts" | "activity" | "coinJoin" | "explore" | "notifications" | "profile" | "settings" | "tools" | "joinDashPay";
+export type Route = "home" | "pay" | "receive" | "contacts" | "activity" | "coinJoin" | "explore" | "masternodes" | "notifications" | "profile" | "settings" | "tools" | "joinDashPay";
