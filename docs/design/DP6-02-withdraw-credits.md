@@ -16,7 +16,7 @@ from the `PlatformVersion` of the network's protocol version, as the SDK last pr
 | Signing key selection (TRANSFER), the lease | `requests.rs` (`flow_keys`, `flow_levels` gain `Withdraw`) |
 | Contract | `docs/contracts/m4-dashpay-engine.md` §2.8, §3, §4, item 61; Contract-Version 34 |
 | App commands, DTOs | `dw-app/src/api/identity.rs`, `dto` |
-| dwcli | `identity withdraw-quote`, `identity withdraw`, `identity withdrawals` |
+| dwcli | `identity withdraw --quote-only` (the quote), `identity withdraw`, `identity withdrawals` (D13) |
 | UI | `apps/desktop/src/dashpay/withdraw.ts` (view model), `screens/dashpay/WithdrawSheet.tsx`, My Profile's credits block, fixture handlers and scenarios, `e2e/withdraw.spec.ts`, visual baselines of the sheet |
 
 ## 1. The fee reserve on Max
@@ -48,8 +48,9 @@ constant here), and `metered_bound` is an upper bound of rule 2 built like the c
 the non-exact processing doubled, plus the version's `perform_network_threshold_signing`, plus the identity's balance
 and nonce updates priced as one `identity_update` minimum. At every known protocol version the bound is below
 `min_fee` (a test holds it), so the reserve is Platform's 400,000,000; the `max` keeps the reserve right if a later
-fee version prices the metered part higher. `user_fee_increase` is 0, so nothing scales it. T2 measures the real
-charge (balance before − after − amount) against the reserve.
+fee version prices the metered part higher. `user_fee_increase` is 0, so nothing scales it. T2 measured the real
+charge (balance before − after − amount) against the reserve: 211,977,820 credits for a 0.2 Dash withdrawal and
+194,396,680 for Max, which left 205,603,411 of its 400,000,000 reserve.
 
 **Max** (`WithdrawAmount::All`) takes `balance − fee_credits`, rounded down to whole duffs (a multiple of
 `CREDITS_PER_DUFF`, 1,000): Platform turns credits into duffs by truncating division (`rs-dpp/src/identity/
@@ -119,10 +120,12 @@ queued documents (`withdrawal_transactions_per_block_limit` 4), a quorum signs t
 mines it, and Platform marks the document `COMPLETE`.
 
 What the engine observes:
+- **Proved means checked against the quorum keys the context provider serves** (DP3-04): how far those keys are
+  trusted is the trust mode's, not this flow's. On T2's devnet they come from the trusted service alone (D15).
 - **Platform's document.** Its id is deterministic (`Document::generate_document_id_v0(withdrawals contract,
   identity, "withdrawal", nonce ‖ output script)`, `transformer.rs`), so the outcome names it. The new read
   `withdrawals(identity)` lists the identity's documents, proved, newest first (index `identityRecent`: `$ownerId`,
-  `$updatedAt`), at most 20: id, credits, the Core output as Platform computes it, the destination address, status,
+  `$updatedAt`), at most 20, read oldest first in pages and the newest kept (D16): id, credits, the Core output as Platform computes it, the destination address, status,
   and the times. Status is the contract's: `Queued` (0), `Pooled` (1), `Broadcasted` (2), `Complete` (3),
   `Expired` (4: Core did not mine the signed transaction in time; Platform re-signs it), `Failed` (5, protocol 14+:
   terminal, the payout was below dust; the credits are not returned, `withdrawals-contract/src/lib.rs`). A value
@@ -143,7 +146,7 @@ re-read on every `Platform` signal and every 60 s while one is pending.
 | the amount outside Platform's range (rule 3), explicit amounts only | `credits.withdrawal_out_of_range{min, max}` (credits) — **new** |
 | no TRANSFER key the vault holds | `identity.keys_missing{purpose: Transfer}` |
 | any other consensus refusal | the existing `From<dash_sdk::Error>` mapping (`internal{detail}` for one with no code) |
-| broadcast with no answer, and the document is not on Platform when read back | `platform.broadcast_unknown{artifact}`, `artifact` the transition's hash (hex). The UI never offers a retry: "It may have been sent. Check your withdrawals below before trying again." The document appears in `withdrawals` once it executes. |
+| broadcast with no answer, and the document is not on Platform when read back | `platform.broadcast_unknown{artifact}`, `artifact` the withdrawal document's id (Base58), the id `withdrawals` lists it under once it executes. The UI never offers a retry: "It may have been sent. Check your withdrawals below before trying again." The document appears in `withdrawals` once it executes. |
 | the broadcast failed but the read-back finds the document | `Ok`, as a write that landed (requests.rs's `read_back`) |
 | stuck on Core (Queued/Pooled/Broadcasted for long, Expired) | not an error: `withdrawals` shows it pending; Platform keeps re-signing it. |
 | Failed (dust, protocol 14+) | `withdrawals` row `Failed`; the UI says the credits were not returned. Our minimum makes this unreachable for our own withdrawals. |
@@ -161,8 +164,9 @@ re-read on every `Platform` signal and every 60 s while one is pending.
 - `withdrawals(identity)` **new**, async, `CreditsError`: `Vec<Withdrawal{id, credits, duffs, to, status,
   created_at, updated_at}>`.
 - `WithdrawalStatus` new: `Queued | Pooled | Broadcasted | Complete | Expired | Failed | Unknown`.
-- `CreditsError::WithdrawalOutOfRange{min, max}` → `credits.withdrawal_out_of_range` **new §4 code**: the Swift
-  `engineCodes` table gains it, and the Swift T0 suite runs (`scripts/linux-docker-test.sh`).
+- `CreditsError::WithdrawalOutOfRange{min, max}` → `credits.withdrawal_out_of_range` **new §4 code**. The Swift
+  code tables (`ServiceErrorCode.engineCodes`, `m2EngineCodes`, `m3EngineCodes`) mirror the m1–m3 tables only; no
+  Swift table reads m4's §4, so none gains it (D14). The Swift T0 suite runs anyway (`scripts/linux-docker-test.sh`).
 - `IdentityError::KeysMissing` gains no variant: `KeyPurpose::Transfer` exists.
 
 ## D-rows
@@ -175,9 +179,17 @@ re-read on every `Platform` signal and every 60 s while one is pending.
 | D4 | The engine builds and broadcasts the transition itself (dpp `try_from_identity` + the SDK's broadcast), not platform-wallet's withdraw. | The status read needs the nonce and the output script to name the document; the library's call returns neither. Same SDK calls underneath. |
 | D5 | One new error code, `credits.withdrawal_out_of_range{min, max}`, in credits. A bad destination is `invalid_argument` (the UI validates it first with `classify_address`, as Send does). | `credits.below_minimum{min}` is in duffs for top-ups (and the binding names its field `duffs`); a second unit on one code would mislead. A typed destination code would add surface for a case the UI already prevents. |
 | D6 | The withdrawal is gated by DP3-04's money gate with `Subject::Identity`, like a top-up. | DP3-04 D6; the Platform data that decides where the credits go is the identity and its keys. |
-| D7 | An unanswered broadcast is read back by the document id; if absent, `platform.broadcast_unknown{transition hash}` and no retry is offered. | A second withdrawal gets a new nonce, so a blind retry could withdraw twice. The document id gives the user a way to see it land. |
+| D7 | An unanswered broadcast is read back by the document id; if absent, `platform.broadcast_unknown{document id}` and no retry is offered. | A second withdrawal gets a new nonce, so a blind retry could withdraw twice. The document id gives the user a way to see it land. |
 | D8 | Status comes from Platform's withdrawal documents (`withdrawals`), not from a local table. | Platform's record is authoritative and proved, survives reinstalls, and shows withdrawals made by another device of the same identity. |
 | D9 | Withdraw sits in My Profile's credits block beside Top up (DASHPAY §4 `CreditsViewModel`: top-up and withdraw together; iOS keeps both in the identity's credits section). The sheet is a separate flow (`withdraw.ts`), not a mode of the top-up flow. | §4 IA; the two flows share nothing but the balance. |
 | D10 | The sheet's amount is in Dash (the display unit) with a Max toggle; credits stay internal, converted at `creditsPerDuff`. | As the top-up sheet (DP1-10 D6). |
 | D11 | Recent withdrawals show on My Profile (at most 5 there), re-read on `Platform` signals and every 60 s while any is pending. | "Pending/complete" must be visible after the sheet closes; Platform makes no event for a document status change. |
-| D12 | T2 can show Platform's acceptance and the balance moving, but a 3-masternode dashmate devnet may never sign the asset unlock (no quorum of the required type), so Core completion may not be shown; T2 records what it sees. | The brief's devnet facts. |
+| D12 | T2 records what it sees. Expected: Platform's acceptance and the balance moving, with Core completion possibly missing on a 3-masternode devnet. Seen: both asset unlocks were quorum-signed, mined and chain-locked, both documents went `complete`, and the wallet's SPV received both payouts (`/work/scratch/dw-dp6-02/t2/EVIDENCE.md`). | The brief's devnet facts. |
+| D13 | dwcli keeps the stub's command shape: the brief's `identity withdraw-quote` is `identity withdraw --quote-only`, as `identity top-up --quote-only`; `identity withdrawals` is new. | The m4 stubs already had `identity withdraw` with `--quote-only`; a second command for the quote would duplicate its arguments. |
+| D14 | No Swift `engineCodes` change: Swift's code tables (`engineCodes`, `m2EngineCodes`, `m3EngineCodes`) mirror the m1–m3 contracts and no Swift test reads m4's §4. The Swift T0 suite ran anyway: 568 tests in 73 suites passed (1 known issue). | dw-common's rule is for a table Swift mirrors; checked rather than assumed. |
+| D15 | T2's identity was registered by an uncommitted harness (`/work/scratch/dw-dp6-02/t2/harness/withdraw_live.rs`, DP6-01's pattern: keys 0–3 from the wallet's own seed, a chain asset lock from the seed node), and T2 ran with the developer toggle "trusted quorums only" set in app.sqlite (dwcli has no command for it). Everything after registration went through dwcli. | On this devnet dash-spv never gets the masternode list (no dip0024 quorum), so the engine holds a registration's funding and DP3-04's enforcing gate holds every write; the toggle is the product's own way to trust the quorum service on a devnet. |
+| D16 | `withdrawals` reads the identity's documents oldest first, 100 a page, and keeps the newest 20, not one descending query. | At the pin a descending `$updatedAt` query's proof fails verification on the devnet ("Proof op family does not match the query direction: inverted op in a left-to-right walk", T2 step 4). Only the owner creates its withdrawals, so the pages end. A Platform follow-up, not this flow's to fix. |
+| D17 | The rules, the payout and the documents' payouts are read at the SDK's protocol version after a proved read (the balance, the documents), never before. | The SDK seeds regtest (and mainnet, testnet) at protocol 13 and ratchets up only once a proof verifies. T2 step 7 showed a fresh process quoting protocol 13's minimum on a protocol 14+ network. A test (`the_rules_are_the_proved_versions_not_the_seed`) holds the order and kills mutant R2. |
+| D18 | Visual baselines: three new shots of the withdraw sheet (form, confirm, done) in light and dark. The existing My Profile shots that show the credits block change only by the Withdraw button beside Top up; those are re-baselined, nothing else. | The brief limits baselines to the new sheet; the button is the one change to the page. |
+| D19 | The fixture's withdrawal handlers and state live in `fixture/topup.ts` (the credits module, `CreditsWorld`), and the UI's queries in a new `dashpay/withdrawQueries.ts`. | Shares the identity's balance with the top-up handlers; keeps `fixture.test.ts`'s module list and `profileQueries.ts` untouched. |
+| D20 | My Profile disables Withdraw while the balance is unknown or zero, and while a withdrawal runs ("Withdrawing…"); the recent withdrawals sit under the top-up rows, "Pending" for Queued, Pooled, Broadcasted and Expired. | §3: Platform keeps re-signing an expired payout; only Complete and Failed end. |
