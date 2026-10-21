@@ -32,6 +32,7 @@ import { ACTIVITY_EVENTS, armedFor, AutoLockTimer } from "../settings/autoLock";
 import { useDisplay } from "../format/display";
 import { SecurityText } from "../settings/security";
 import { useStatusRegistration } from "../dashpay/queries";
+import { PictureScope, usePictureScopeValue } from "../dashpay/profileQueries";
 import { useMasternodesItem } from "../governance/queries";
 import { useSavedLinksOffer } from "./savedLinksOffer";
 import { useShellBridge } from "./shellBridge";
@@ -224,13 +225,16 @@ function Shell() {
     covered: onboarding || wiping || forgot || sheet || layered || dialog !== null,
   });
   const [layer, setLayer] = useState<HTMLDivElement | null>(null);
+  const pictures = usePictureScopeValue(wallet?.walletId);
   // A dialog asked for while locked, onboarding, or behind a sheet is dropped, not kept for later.
   const shown = locked || onboarding || sheet || layered ? null : dialog;
   useEffect(() => {
     if (dialog !== shown) closeDialog();
   }, [dialog, shown]);
   return (
-    <>
+    // Whose avatars every list may show (DP4-03 D12): the window's wallet, others' only with
+    // "Load contact pictures" on.
+    <PictureScope.Provider value={pictures}>
       {/* Behind a sheet or the lock screen the shell takes no focus and is hidden from assistive tech. */}
       <div className="app-chrome" inert={locked || onboarding || forgot || sheet || layered || shown !== null}>
         <SheetLayer.Provider value={layer}>
@@ -271,7 +275,7 @@ function Shell() {
       {locked && <LockScreen network={network} covered={forgot} onForgot={() => ui.set({ forgotPassphrase: true })} />}
       {/* Over the lock screen, and still open once the recovery unlocked the vault (U-02 D11). */}
       {forgot && !onboarding && <ForgotPassphraseSheet onClose={closeForgot} />}
-    </>
+    </PictureScope.Provider>
   );
 }
 

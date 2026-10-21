@@ -115,6 +115,10 @@ import type { CostTable } from "./generated/CostTable";
 import type { ContestStatus } from "./generated/ContestStatus";
 import type { AvatarSizeName } from "./generated/AvatarSizeName";
 import type { AvatarThumbnail } from "./generated/AvatarThumbnail";
+import type { AvatarCandidateInfo } from "./generated/AvatarCandidateInfo";
+import type { AvatarSourceArgs } from "./generated/AvatarSourceArgs";
+import type { DashPayProfileLimits } from "./generated/DashPayProfileLimits";
+import type { ProfileEditArgs } from "./generated/ProfileEditArgs";
 import type { PendingTopUp } from "./generated/PendingTopUp";
 import type { StuckTopUpFunding } from "./generated/StuckTopUpFunding";
 import type { TopUpOutcome } from "./generated/TopUpOutcome";
@@ -360,6 +364,18 @@ export interface Backend {
   /** Any identity's avatar thumbnail, verified against its profile (DP4-02); `null` without one or while
    * "Load contact pictures" is off; `avatar.hash_mismatch` and the fetch errors show initials. */
   dashpayAvatar(walletId: string, identity: string, size: AvatarSizeName): Promise<AvatarThumbnail | null>;
+  // Edit Profile and the pictures toggle (DP4-03).
+  dashpayProfileLimits(walletId: string): Promise<DashPayProfileLimits>;
+  /** Publishes the whole profile under a `platformOp` grant; nothing to change uses no grant. */
+  dashpayUpdateProfile(walletId: string, identity: string, edit: ProfileEditArgs, grant: string): Promise<null>;
+  /** A file, URL or Gravatar as an engine-re-encoded candidate (DP4-02); a URL is fetched now. */
+  dashpayPrepareAvatar(walletId: string, source: AvatarSourceArgs): Promise<AvatarCandidateInfo>;
+  dashpayAvatarUploadAvailable(walletId: string): Promise<boolean>;
+  /** Uploads a `file` candidate; the URL it is published under. */
+  dashpayUploadAvatar(walletId: string, candidate: string): Promise<string>;
+  /** "Load contact pictures" for the window's network (DP4-02 D17). */
+  loadContactPictures(): Promise<boolean>;
+  setLoadContactPictures(on: boolean): Promise<null>;
   creditsTopUpQuote(walletId: string, identity: string, duffs: number): Promise<TopUpQuote>;
   creditsTopUp(walletId: string, identity: string, duffs: number, grant: string): Promise<TopUpOutcome>;
   creditsPendingTopUps(walletId: string): Promise<PendingTopUp[]>;

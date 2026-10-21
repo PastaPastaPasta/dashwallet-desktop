@@ -77,7 +77,7 @@ test("IOS-069 P4: header, usernames, identity id with copy, credits and the cont
   await openProfile(page, "dashpay-registered");
   await expect(page.getByTestId("profile-name")).toHaveText("Alice Liddell");
   await expect(page.getByTestId("profile-header")).toContainText("Down the rabbit hole");
-  await expect(page.getByTestId("profile-edit")).toBeDisabled();
+  await expect(page.getByTestId("profile-edit")).toBeEnabled();
   await expect(page.getByTestId("profile-usernames")).toContainText("@alice");
   await expect(page.getByTestId("profile-identity").getByRole("button", { name: "Copy identity id" })).toBeVisible();
   await expect(page.getByTestId("profile-credits-figure")).toHaveText(/^1\.845/);

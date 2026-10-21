@@ -69,7 +69,7 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
   return (
     <section className="add-contact contact-detail card-l1" aria-labelledby="contact-detail-name" data-testid="contact-detail">
       <header className="contact-detail-header">
-        <Avatar letters={avatarLetters(c)} size="pane" />
+        <Avatar letters={avatarLetters(c)} size="pane" identity={c.contact} />
         <div className="contact-detail-names">
           <h2 id="contact-detail-name" className="add-contact-title">
             {shownName(c)}

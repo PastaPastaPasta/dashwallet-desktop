@@ -159,11 +159,13 @@ const FACADE: &[&str] = &[
 /// payment attribution with its tests (DP3-02), and the DashPay status's
 /// rules with their tests (BL-153), the profile reads and writes with
 /// their tests (DP4-01), the names checks (DP1-08), and the avatar
-/// pipeline's guard, decoder, cache and tests (DP4-02).
+/// pipeline's guard, decoder, cache and tests (DP4-02), and the mobile
+/// wallets' dHash (DP4-03 D27).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
     "avatar_cache.rs",
+    "avatar_dhash.rs",
     "avatar_fetch.rs",
     "avatar_image.rs",
     "avatar_tests.rs",

@@ -230,7 +230,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
   return (
     <div className="add-contact-candidate" data-testid="add-contact-candidate">
       <header className="contact-detail-header">
-        <Avatar letters={initials(c.displayName || c.username || "")} size="pane" />
+        <Avatar letters={initials(c.displayName || c.username || "")} size="pane" identity={c.identity} />
         <div className="contact-detail-names">
           <h3 className="add-contact-name" tabIndex={-1} ref={heading} data-testid="add-contact-name">
             {name}
@@ -340,6 +340,7 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
             <Row
               key={h.identity}
               letters={initials(displayName || h.username)}
+              identity={h.identity}
               name={displayName || h.username}
               sub={displayName ? `@${h.username}` : null}
               trailing={
