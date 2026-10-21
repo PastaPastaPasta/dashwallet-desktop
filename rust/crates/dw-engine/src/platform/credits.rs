@@ -203,7 +203,8 @@ pub enum WithdrawalStatus {
 pub struct Withdrawal {
     /// The document's id (base58).
     pub id: String,
-    pub credits: u64,
+    /// `None` when the document's amount does not read.
+    pub credits: Option<u64>,
     /// What reaches the address, by Platform's conversion of the document.
     pub expected_duffs: Option<u64>,
     /// The address paid, when its script reads as one of the network.

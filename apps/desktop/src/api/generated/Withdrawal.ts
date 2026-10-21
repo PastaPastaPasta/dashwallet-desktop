@@ -8,7 +8,11 @@ export type Withdrawal = {
 /**
  * The withdrawal document's id (Base58).
  */
-id: string, credits: string,
+id: string,
+/**
+ * `null` when the document's amount does not read.
+ */
+credits: string | null,
 /**
  * What reaches the address, by Platform's conversion.
  */

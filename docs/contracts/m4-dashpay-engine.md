@@ -569,7 +569,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: cb0c58e64a688dfc04e8fc48e53a3868c81e800c16c20ba757522d3016d21e0b version: 35 -->
+<!-- surface-sha256: 40d07a56ba6d2715b0d59207b8020845c312d8669aa89afdced0cdf8708f0cc3 version: 35 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -799,7 +799,7 @@ pub enum WithdrawalStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Withdrawal {
     pub id: String,
-    pub credits: u64,
+    pub credits: Option<u64>,
     pub expected_duffs: Option<u64>,
     pub to: Option<String>,
     pub status: WithdrawalStatus,
@@ -3066,3 +3066,8 @@ renames or reshapes them takes the next version bump:
     - **Unknown outcomes.** The document id is fixed by the nonce and the script (Drive's entropy), so a failure after
       signing reads it back; `broadcast_unknown{artifact}` names it. There is no journal row: the host reads
       `withdrawals` before it offers another withdrawal.
+    - **Executed, and the nonce (DP6-02 D24, review r1 m1–m3).** A withdrawal is executed only on a proved balance at
+      least the amount below the one read under the identity's lock, or its document read back with the amount; a
+      refusal is read back too. The nonce is never the SDK cache's: the session's next withdrawal of the identity
+      signs at the unconfirmed one's nonce while Platform's nonce rule would take it, so at most one of the two
+      executes. `Withdrawal.credits` is `Option` (`None` when the document's amount does not read).

@@ -200,6 +200,8 @@ describe("My Profile's recent withdrawals (D11)", () => {
       title: "Withdrawal of 50,000,000,000 credits",
       at: null,
     });
+    // n5: an amount that does not read is unknown, not 0.
+    expect(withdrawalRows([doc("x", "queued", { credits: null, expectedDuffs: null })], COSTS, amount)[0]).toMatchObject({ title: "Withdrawal of an unknown amount" });
     expect(withdrawalRows(undefined, COSTS, amount)).toEqual([]);
   });
 

@@ -6,11 +6,15 @@
 //! broadcast that failed after signing. The devnet round trip is T2
 //! (`/work/scratch/dw-dp6-02/t2`).
 
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{BTreeMap, BTreeSet};
 
-use dpp::identity::KeyType;
-use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dpp::identity::identity_nonce::IDENTITY_NONCE_VALUE_FILTER_MAX_BYTES;
+use std::sync::Mutex;
+
+use dpp::identity::identity_public_key::accessors::v0::{
+    IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
+};
+use dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dpp::serialization::{PlatformSerializable, Signable};
 use dpp::state_transition::StateTransitionHasUserFeeIncrease;
 use dpp::state_transition::identity_credit_withdrawal_transition::accessors::IdentityCreditWithdrawalTransitionAccessorsV0;
@@ -226,15 +230,30 @@ fn the_document_id_is_drives() {
 
 /// What `broadcast` answers.
 enum Answer {
-    /// Platform's proved new balance: the balance less the amount and `fee`.
-    Applied {
-        fee: u64,
-    },
+    /// It executes: Platform's proved new balance, the balance less the
+    /// amount and `fee`; Platform's refusal when Drive refuses it.
+    Applied { fee: u64 },
+    /// Refused at execution: the nonce is spent.
     Refused,
+    /// No answer, and it never executes.
     Unknown,
-    /// No answer, though the withdrawal landed.
+    /// No answer, and it sits in a mempool until `execute_pending`.
+    Pending,
+    /// No answer, though the withdrawal executed.
     LandedUnanswered,
+    /// A node that says refused, though the withdrawal executed.
+    LandedRefused,
+    /// A proved balance, unchanged, and nothing executed.
+    LyingSuccess,
+    /// A proved balance from before it executed.
+    StaleSuccess,
+    /// No answer; the transitions pending meanwhile execute, and this one
+    /// never does.
+    EarlierLands,
 }
+
+/// What a withdrawal Drive executes is charged on top of its amount.
+const FEE: u64 = 210_000_000;
 
 /// Platform as a withdrawal sees it.
 struct FakeWithdrawals {
@@ -243,14 +262,30 @@ struct FakeWithdrawals {
     /// The network's protocol version, which a proved read ratchets to.
     proved: &'static PlatformVersion,
     balance: Mutex<Option<u64>>,
-    nonce: AtomicU64,
+    /// The identity's nonces Drive took.
+    used: Mutex<BTreeSet<u64>>,
+    /// The nonce state a node behind the chain answers, if one does.
+    lag: Mutex<Option<u64>>,
     answer: Mutex<Answer>,
     /// The transitions broadcast.
     sent: Mutex<Vec<StateTransition>>,
+    /// The transitions in a mempool.
+    pending: Mutex<Vec<StateTransition>>,
     /// The withdrawal documents on Platform.
     documents: Mutex<Vec<Document>>,
     /// The document reads fail.
     reads_fail: Mutex<bool>,
+}
+
+fn withdrawal_of(transition: &StateTransition) -> &IdentityCreditWithdrawalTransition {
+    let StateTransition::IdentityCreditWithdrawal(w) = transition else {
+        panic!("not a withdrawal");
+    };
+    w
+}
+
+fn nonce_of(transition: &StateTransition) -> u64 {
+    withdrawal_of(transition).nonce()
 }
 
 impl FakeWithdrawals {
@@ -259,9 +294,11 @@ impl FakeWithdrawals {
             version: Mutex::new(PlatformVersion::latest()),
             proved: PlatformVersion::latest(),
             balance: Mutex::new(Some(balance)),
-            nonce: AtomicU64::new(4),
-            answer: Mutex::new(Answer::Applied { fee: 210_000_000 }),
+            used: Mutex::new((1..=4).collect()),
+            lag: Mutex::default(),
+            answer: Mutex::new(Answer::Applied { fee: FEE }),
             sent: Mutex::default(),
+            pending: Mutex::default(),
             documents: Mutex::default(),
             reads_fail: Mutex::new(false),
         })
@@ -282,17 +319,71 @@ impl FakeWithdrawals {
         self.sent.lock().unwrap().clone()
     }
 
-    /// The document Drive writes for `transition`, as it lands.
-    fn land(&self, transition: &StateTransition) {
-        let StateTransition::IdentityCreditWithdrawal(w) = transition else {
-            panic!("not a withdrawal");
+    fn answer(&self, answer: Answer) {
+        *self.answer.lock().unwrap() = answer;
+    }
+
+    /// A node `state` behind the chain answers the nonce reads.
+    fn lag(&self, state: u64) {
+        *self.lag.lock().unwrap() = Some(state);
+    }
+
+    /// The withdrawal documents on Platform.
+    fn landed(&self) -> usize {
+        self.documents.lock().unwrap().len()
+    }
+
+    /// The nonce as Drive stores it: the newest, and a bit for each of the
+    /// 24 below it not yet used (`validate_identity_nonce_update`).
+    fn state(&self) -> u64 {
+        let used = self.used.lock().unwrap();
+        let tip = used.last().copied().unwrap_or(0);
+        (1..=24u64)
+            .filter(|&p| tip > p && !used.contains(&(tip - p)))
+            .fold(tip, |state, p| {
+                state | 1 << (p - 1 + IDENTITY_NONCE_VALUE_FILTER_MAX_BYTES)
+            })
+    }
+
+    /// Another identity-nonce write (a key update) executes at `nonce`.
+    fn other_write(&self, nonce: u64) {
+        assert!(validate_identity_nonce_update(self.state(), nonce, id(ME)).is_valid());
+        self.used.lock().unwrap().insert(nonce);
+    }
+
+    /// Drive executes `transition` by its nonce rule: the nonce taken, the
+    /// credits and `fee` charged, the document written. False when Drive
+    /// refuses it.
+    fn execute(&self, transition: &StateTransition, fee: u64) -> bool {
+        let w = withdrawal_of(transition);
+        if !validate_identity_nonce_update(self.state(), w.nonce(), w.identity_id()).is_valid() {
+            return false;
+        }
+        self.used.lock().unwrap().insert(w.nonce());
+        let mut balance = self.balance.lock().unwrap();
+        let Some(after) = balance.unwrap().checked_sub(w.amount() + fee) else {
+            return false;
         };
+        *balance = Some(after);
         let script = w.output_script().unwrap();
         let mut document = drive_document(w.amount(), &script, self.proved).unwrap();
         let Document::V0(d) = &mut document;
         d.id = document_id(&w.identity_id(), w.nonce(), &script);
         d.owner_id = w.identity_id();
         self.documents.lock().unwrap().push(document);
+        true
+    }
+
+    /// The mempool's transitions reach a block.
+    fn execute_pending(&self) {
+        let pending = std::mem::take(&mut *self.pending.lock().unwrap());
+        for t in &pending {
+            self.execute(t, FEE);
+        }
+    }
+
+    fn balance_now(&self) -> u64 {
+        self.balance.lock().unwrap().unwrap()
     }
 }
 
@@ -306,31 +397,52 @@ impl WithdrawNet for FakeWithdrawals {
         Ok(*self.balance.lock().unwrap())
     }
 
-    async fn nonce(&self, _: Identifier) -> Result<u64, PlatformError> {
-        Ok(self.nonce.fetch_add(1, Ordering::SeqCst) + 1)
+    async fn nonce_state(&self, _: Identifier) -> Result<u64, PlatformError> {
+        let lag = *self.lag.lock().unwrap();
+        Ok(lag.unwrap_or_else(|| self.state()))
     }
 
     async fn broadcast(&self, transition: StateTransition) -> Result<u64, Unsent> {
         self.sent.lock().unwrap().push(transition.clone());
-        let StateTransition::IdentityCreditWithdrawal(w) = &transition else {
-            panic!("not a withdrawal");
-        };
-        match *self.answer.lock().unwrap() {
-            Answer::Applied { fee } => {
-                self.land(&transition);
-                let mut balance = self.balance.lock().unwrap();
-                let after = balance.unwrap() - w.amount() - fee;
-                *balance = Some(after);
-                Ok(after)
-            }
-            Answer::Refused => Err(Unsent::Refused(PlatformError::InsufficientCredits {
+        let refused = || {
+            Unsent::Refused(PlatformError::InsufficientCredits {
                 needed: 1,
                 available: 0,
-            })),
-            Answer::Unknown => Err(Unsent::Unknown(PlatformError::Timeout)),
+            })
+        };
+        let unknown = || Unsent::Unknown(PlatformError::Timeout);
+        match *self.answer.lock().unwrap() {
+            Answer::Applied { fee } if self.execute(&transition, fee) => Ok(self.balance_now()),
+            Answer::Applied { .. } => Err(refused()),
+            Answer::Refused => {
+                self.used
+                    .lock()
+                    .unwrap()
+                    .insert(withdrawal_of(&transition).nonce());
+                Err(refused())
+            }
+            Answer::Unknown => Err(unknown()),
+            Answer::Pending => {
+                self.pending.lock().unwrap().push(transition);
+                Err(unknown())
+            }
             Answer::LandedUnanswered => {
-                self.land(&transition);
-                Err(Unsent::Unknown(PlatformError::Timeout))
+                assert!(self.execute(&transition, FEE));
+                Err(unknown())
+            }
+            Answer::LandedRefused => {
+                assert!(self.execute(&transition, FEE));
+                Err(refused())
+            }
+            Answer::LyingSuccess => Ok(self.balance_now()),
+            Answer::StaleSuccess => {
+                let before = self.balance_now();
+                assert!(self.execute(&transition, FEE));
+                Ok(before)
+            }
+            Answer::EarlierLands => {
+                self.execute_pending();
+                Err(unknown())
             }
         }
     }
@@ -538,6 +650,8 @@ fn the_transition_is_platforms_own_construction() {
     assert_eq!(t.core_fee_per_byte(), 1);
     assert_eq!(t.user_fee_increase(), 0);
     assert_eq!(key.key_type(), KeyType::ECDSA_SECP256K1);
+    assert_eq!(key.purpose(), Purpose::TRANSFER);
+    assert_eq!(key.security_level(), SecurityLevel::CRITICAL);
     dashcore::signer::verify_data_signature(
         &signed.signable_bytes().unwrap(),
         signed.signature().expect("signed").as_slice(),
@@ -705,6 +819,160 @@ fn a_failed_broadcast_after_signing() {
     assert_eq!(w.net.sent().len(), 3, "nothing sent again");
 }
 
+fn unconfirmed(w: &World, nonce: u64) -> CreditsError {
+    let artifact = document_id(&id(ME), nonce, &w.script).to_string(Encoding::Base58);
+    CreditsError::Platform(PlatformError::BroadcastUnknown { artifact })
+}
+
+/// Review r1 m1 (D24): a withdrawal retried in the session after an
+/// unknown outcome signs at the first one's nonce while Platform would
+/// still take it, even past another identity-nonce write, so at most one
+/// of the two executes. At ae89f4de the retry took the SDK cache's next
+/// nonce and both executed.
+#[test]
+fn a_retry_after_an_unknown_outcome_cannot_execute_twice() {
+    let balance = 10 * DASH;
+    let w = World::new(balance);
+    let grant = || w.f.grant(4 * DASH);
+    w.net.answer(Answer::Pending);
+    let first = w.withdraw(WithdrawAmount::Credits { credits: DASH }, &grant());
+    let k = nonce_of(&w.net.sent()[0]);
+    // A key update executes at the SDK cache's next nonce meanwhile.
+    w.net.other_write(k + 1);
+    // The retry, of another amount, still unanswered.
+    let again = w.withdraw(WithdrawAmount::Credits { credits: 2 * DASH }, &grant());
+    // Both reach a block.
+    w.net.execute_pending();
+    assert_eq!(w.net.landed(), 1, "one executed");
+    assert_eq!(w.net.balance_now(), balance - DASH - FEE);
+    assert_eq!(nonce_of(&w.net.sent()[1]), k, "the first one's nonce");
+    assert_eq!(first.unwrap_err(), unconfirmed(&w, k));
+    assert_eq!(again.unwrap_err(), unconfirmed(&w, k));
+    // Seen executed, the nonce is not offered again.
+    w.net.answer(Answer::Applied { fee: FEE });
+    w.withdraw(WithdrawAmount::Credits { credits: DASH }, &grant())
+        .unwrap();
+    assert_eq!(nonce_of(&w.net.sent()[2]), k + 2);
+    assert_eq!(w.recent().unwrap().len(), 2);
+}
+
+/// D24: after a withdrawal seen executed, a node behind the chain answers
+/// the nonce from before it; the next withdrawal signs past it anyway, so
+/// it is not refused and then mistaken for the first one's document.
+#[test]
+fn a_node_behind_a_seen_withdrawal_does_not_bring_its_nonce_back() {
+    let w = World::new(10 * DASH);
+    let ask = WithdrawAmount::Credits { credits: DASH };
+    let before = w.net.state();
+    let first = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap();
+    w.net.lag(before);
+    let second = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap();
+    assert_ne!(second.withdrawal, first.withdrawal);
+    assert_eq!(second.remaining_credits, Some(10 * DASH - 2 * (DASH + FEE)));
+    assert_eq!(w.net.landed(), 2);
+}
+
+/// Review r1 m2: a proved balance is the identity's state after the wait,
+/// not proof the transition executed. One that did not drop by the amount
+/// is no success: the document decides, and with none it is unconfirmed
+/// and a retry signs at its nonce.
+#[test]
+fn a_success_without_the_balance_drop_is_unconfirmed() {
+    let balance = 10 * DASH;
+    let w = World::new(balance);
+    let ask = WithdrawAmount::Credits { credits: DASH };
+    w.net.answer(Answer::LyingSuccess);
+    let lied = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap_err();
+    let k = nonce_of(&w.net.sent()[0]);
+    assert_eq!(lied, unconfirmed(&w, k));
+    assert_eq!(w.net.landed(), 0);
+    // The answer's balance is from before it executed: read back.
+    w.net.answer(Answer::StaleSuccess);
+    let out = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap();
+    assert_eq!(nonce_of(&w.net.sent()[1]), k);
+    assert_eq!((out.credits, out.remaining_credits), (DASH, None));
+    assert_eq!(w.net.balance_now(), balance - DASH - FEE);
+}
+
+/// The document read back counts only with this withdrawal's amount: a
+/// retry at the same nonce and address of another amount names the same
+/// document, and the earlier one's landing is not this one's.
+#[test]
+fn a_document_of_another_amount_is_not_this_withdrawal() {
+    let w = World::new(10 * DASH);
+    w.net.answer(Answer::Pending);
+    let first = w.withdraw(
+        WithdrawAmount::Credits { credits: DASH },
+        &w.f.grant(2 * DASH),
+    );
+    let k = nonce_of(&w.net.sent()[0]);
+    assert_eq!(first.unwrap_err(), unconfirmed(&w, k));
+    w.net.answer(Answer::EarlierLands);
+    let retry = w.withdraw(
+        WithdrawAmount::Credits { credits: 2 * DASH },
+        &w.f.grant(3 * DASH),
+    );
+    assert_eq!(retry.unwrap_err(), unconfirmed(&w, k));
+    let recent = w.recent().unwrap();
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].credits, Some(DASH));
+}
+
+/// Review r1 m3 (D21): a refusal is one node's unproved answer, so the
+/// document is read back; one there is the withdrawal, done. Only a
+/// refusal with no document read back is the refusal.
+#[test]
+fn a_refusal_with_the_document_on_platform_is_done() {
+    let w = World::new(10 * DASH);
+    let ask = WithdrawAmount::Credits { credits: DASH };
+    w.net.answer(Answer::LandedRefused);
+    let out = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap();
+    assert_eq!((out.credits, out.remaining_credits), (DASH, None));
+    w.net.answer(Answer::Refused);
+    let refused = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap_err();
+    assert_eq!(refused.code(), "platform.insufficient_credits");
+}
+
+/// Review r1 m4: the withdrawal signs with the CRITICAL TRANSFER key and
+/// never with an OWNER key or a TRANSFER key of another level, which the
+/// vault holds too (keys 1 and 2, relabelled; lower ids than key 3).
+#[test]
+fn only_a_critical_transfer_key_signs_a_withdrawal() {
+    let balance = 2 * DASH;
+    let relabel = |k: &mut BTreeMap<u32, IdentityPublicKey>| {
+        let mut set = |id, purpose, level| {
+            let key = k.get_mut(&id).unwrap();
+            key.set_purpose(purpose);
+            key.set_security_level(level);
+        };
+        set(1, Purpose::TRANSFER, SecurityLevel::HIGH);
+        set(2, Purpose::OWNER, SecurityLevel::CRITICAL);
+    };
+    let w = World::of(Fixture::with_adjusted_keys(balance, relabel), balance);
+    let grant = w.f.grant(balance);
+    w.withdraw(WithdrawAmount::Credits { credits: DASH }, &grant)
+        .unwrap();
+    assert_eq!(w.net.sent()[0].signature_public_key_id(), Some(3));
+
+    let w = World::of(
+        Fixture::with_adjusted_keys(balance, |k| {
+            relabel(k);
+            k.remove(&3);
+        }),
+        balance,
+    );
+    let grant = w.f.grant(balance);
+    let refused = w.withdraw(WithdrawAmount::Credits { credits: DASH }, &grant);
+    assert_eq!(
+        refused.unwrap_err(),
+        CreditsError::Platform(PlatformError::Identity(IdentityError::KeysMissing {
+            purpose: KeyPurpose::Transfer,
+        }))
+    );
+    assert!(w.f.unused(&grant));
+    assert!(w.net.sent().is_empty());
+}
+
 #[test]
 fn recent_withdrawals_are_platforms_documents_newest_first() {
     let w = World::new(5 * DASH);
@@ -729,7 +997,7 @@ fn recent_withdrawals_are_platforms_documents_newest_first() {
     assert_eq!(ids, [first.withdrawal.as_str(), second.withdrawal.as_str()]);
     assert_eq!(recent[0].status, WithdrawalStatus::Pooled);
     assert_eq!(recent[1].status, WithdrawalStatus::Queued);
-    assert_eq!(recent[0].credits, DASH);
+    assert_eq!(recent[0].credits, Some(DASH));
     assert_eq!(recent[0].expected_duffs, Some(100_000_000 - 190));
     assert_eq!(recent[1].expected_duffs, second.expected_duffs);
     assert_eq!(recent[0].to.as_deref(), Some(w.to.as_str()));

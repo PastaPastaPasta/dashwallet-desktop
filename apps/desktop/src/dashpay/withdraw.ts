@@ -35,7 +35,7 @@ export const WITHDRAW_COPY = {
     noCosts: "Waiting for the network's prices. Try Max, or wait a moment.",
     invalidTo: "Enter a Dash address.",
     platformTo: "This is a Dash Platform address. Withdraw to a Dash address.",
-    unconfirmed: "Your last withdrawal is not on Dash Platform yet and may still go through. Withdrawing again could send twice.",
+    unconfirmed: "Your last withdrawal is not on Dash Platform yet and may still go through. A new withdrawal now takes its place: only one of the two can go through.",
     next: "Continue",
     cancel: "Cancel",
   },
@@ -60,13 +60,15 @@ export const WITHDRAW_COPY = {
   },
   done: {
     title: "Withdrawal queued",
-    text: (amount: string, to: string) => `${amount} is on its way to ${to}. Dash Platform sends it to the Dash chain, which can take a few minutes.`,
+    text: (amount: string, to: string) => `${amount} is on its way to ${to}. Dash Platform sends it to the Dash chain, usually within minutes, or hours later when Platform's daily withdrawal limit is reached.`,
     balance: (balance: string) => `Your credit balance is ${balance}.`,
     landed: "Your credit balance updates shortly.",
   },
   recent: {
     title: "Withdrawals",
     row: (amount: string) => `Withdrawal of ${amount}`,
+    /** A withdrawal whose amount does not read. */
+    unknownAmount: "an unknown amount",
     unconfirmed: "Withdrawal not on Dash Platform yet",
     /** Followed by the document id. */
     unconfirmedText: "It may have been sent, and shows here once Dash Platform takes it. Document:",
@@ -134,15 +136,22 @@ export interface WithdrawalRow {
 /** The withdrawals My Profile lists: the newest `RECENT_SHOWN` (the engine reads them newest first). */
 const listed = (list: Withdrawal[] | undefined) => (list ?? []).slice(0, RECENT_SHOWN);
 
+/** A row's amount: the payout, else the credits, else unknown (D25 n5). */
+function rowAmount(w: Withdrawal, shown: number | null, amount: (duffs: number) => string): string {
+  if (shown !== null) return amount(shown);
+  if (w.credits === null) return WITHDRAW_COPY.recent.unknownAmount;
+  return `${BigInt(w.credits).toLocaleString("en-US")} credits`;
+}
+
 /** My Profile's rows. */
 export function withdrawalRows(list: Withdrawal[] | undefined, costs: Pick<CostTable, "creditsPerDuff"> | undefined, amount: (duffs: number) => string): WithdrawalRow[] {
   return listed(list).map((w) => {
     const s = statusText(w.status);
-    const shown = w.expectedDuffs ?? (costs ? creditsToDuffs(w.credits, costs) : null);
+    const shown = w.expectedDuffs ?? (costs && w.credits !== null ? creditsToDuffs(w.credits, costs) : null);
     const at = w.updatedAt ?? w.createdAt;
     return {
       id: w.id,
-      title: WITHDRAW_COPY.recent.row(shown === null ? `${BigInt(w.credits).toLocaleString("en-US")} credits` : amount(shown)),
+      title: WITHDRAW_COPY.recent.row(rowAmount(w, shown, amount)),
       status: s.text,
       pending: s.pending,
       to: w.to,

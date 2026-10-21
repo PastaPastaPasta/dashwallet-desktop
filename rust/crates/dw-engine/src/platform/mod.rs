@@ -87,7 +87,7 @@ mod trust_tests;
 mod users;
 #[cfg(test)]
 mod users_tests;
-mod withdrawal;
+pub(crate) mod withdrawal;
 
 pub use bringup::CREATED_HERE_BUDGET;
 pub use contacts::{

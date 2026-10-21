@@ -383,9 +383,10 @@ mirror_enum!(engine::WithdrawalStatus => WithdrawalStatusName {
 pub struct Withdrawal {
     /// The withdrawal document's id (Base58).
     pub id: String,
-    #[ts(type = "string")]
-    #[serde(with = "crate::dto::credits")]
-    pub credits: u64,
+    /// `null` when the document's amount does not read.
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub credits: Option<u64>,
     /// What reaches the address, by Platform's conversion.
     pub expected_duffs: Option<u64>,
     /// The address paid, when it reads as one of the network.
