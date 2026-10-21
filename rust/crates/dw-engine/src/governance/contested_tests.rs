@@ -104,6 +104,8 @@ pub(crate) struct FakeNames {
     unproved: AtomicBool,
     /// Broadcasts DAPI takes are answered "already exists".
     duplicate: AtomicBool,
+    /// `votes_of` fails while the other reads answer.
+    no_votes: AtomicBool,
     waits: AtomicUsize,
 }
 
@@ -172,6 +174,9 @@ impl NameVoteNet for FakeNames {
         pro_tx_hash: [u8; 32],
     ) -> Result<BTreeMap<String, NameChoice>, PlatformError> {
         self.up()?;
+        if self.no_votes.load(Ordering::SeqCst) {
+            return Err(PlatformError::Unavailable);
+        }
         Ok(lock(&self.votes)
             .get(&pro_tx_hash)
             .cloned()
@@ -850,11 +855,24 @@ fn a_repeat_reads_platforms_present_choice() {
     assert_eq!(n.net.waits.load(Ordering::SeqCst), 0);
     assert_eq!(super::votes_used(&appdb, &A, LABEL).unwrap(), 0);
 
+    // A failed read proves no repeat: the limit stays `vote_limit`, and a
+    // duplicate waits for its proof (none comes: `unconfirmed`).
+    n.net.no_votes.store(true, Ordering::SeqCst);
+    set_votes_used(&appdb, &A, LABEL, 5).unwrap();
+    let cast = n.vote(LABEL, towards(ID1), &[A], n.grant()).unwrap();
+    assert_eq!(reasons(&cast), vec![(display_hex(&A), Some("vote_limit"))]);
+    set_votes_used(&appdb, &A, LABEL, 0).unwrap();
+    let cast = n.vote(LABEL, towards(ID1), &[A], n.grant()).unwrap();
+    assert_eq!(reasons(&cast), vec![(display_hex(&A), Some("unconfirmed"))]);
+    assert!(cast[0].transition.is_some());
+    assert_eq!(n.net.waits.load(Ordering::SeqCst), 1);
+    n.net.no_votes.store(false, Ordering::SeqCst);
+
     // B has no present vote: its duplicate may still execute.
     n.net.unproved.store(false, Ordering::SeqCst);
     let cast = n.vote(LABEL, NameChoice::Abstain, &[B], n.grant()).unwrap();
     assert_eq!(reasons(&cast), vec![(display_hex(&B), None)]);
-    assert_eq!(n.net.waits.load(Ordering::SeqCst), 1);
+    assert_eq!(n.net.waits.load(Ordering::SeqCst), 2);
     assert_eq!(super::votes_used(&appdb, &B, LABEL).unwrap(), 1);
     assert_eq!(n.leases(), 0);
 }

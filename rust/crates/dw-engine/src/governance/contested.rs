@@ -854,9 +854,9 @@ impl<N: NameVoteNet> Batch<'_, N> {
     /// §2): admitted under the lease's scope, broadcast under a First's
     /// permit deadline (so nothing it signed leaves after a lock's drain),
     /// then waited for after the permit ended. A Resend or an unleased
-    /// First has no deadline: its bytes were signed before (D16). A refusal of the fence, or a
-    /// deadline that came first, is `Err` with no hash. `platform` is the
-    /// masternode's proTxHash in Platform order.
+    /// First has no deadline: its bytes were signed before (D16). A
+    /// refusal of the fence, or a deadline that came first, is `Err` with
+    /// no hash. `platform` is the masternode's proTxHash in Platform order.
     async fn hand_off(
         &self,
         bytes: Vec<u8>,
@@ -923,8 +923,9 @@ impl<N: NameVoteNet> Batch<'_, N> {
         Ok(match sent {
             Broadcast::Accepted => self.net.wait(bytes).await,
             // The same bytes carry the nonce Platform gave this run, so
-            // they have not executed: a present choice equal to this one
-            // is Drive's `already_voted`, else they may still (D18).
+            // they had not executed when it was read: a present choice
+            // equal to this one is Drive's `already_voted` (barring one
+            // that executed since), else they may still count (D18).
             Broadcast::Duplicate => match self.already_cast(platform).await {
                 Some(true) => Cast::Refused {
                     refusal: Refusal::Reason("already_voted"),
