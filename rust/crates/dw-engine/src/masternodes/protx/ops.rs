@@ -256,8 +256,7 @@ pub(crate) fn crash_at(
     Ok(())
 }
 
-/// What a hand-off locks once the transaction may be out: a fund-new
-/// collateral output (D9).
+/// A saved row's hand-off.
 pub(crate) struct Delivery {
     pub id: String,
     pub tx: Transaction,
@@ -266,7 +265,6 @@ pub(crate) struct Delivery {
     pub fence: CoinFence,
     /// The row's `sent_at` was set: the bytes may already be out (D7).
     pub maybe_out: bool,
-    pub lock_after: Option<OutPoint>,
 }
 
 impl NetworkSession {
@@ -406,17 +404,9 @@ impl NetworkSession {
                 error: outcome.as_ref().err().map(code),
             }
         };
-        let out = matches!(end, AttemptEnd::Out { .. });
         let (w, id) = (wallet.to_string(), d.id.clone());
-        let lock = d.lock_after.filter(|_| out);
-        self.appdb_op(move |db| {
-            db.end_masternode_op_attempt(&w, &id, &end)?;
-            if let Some(o) = lock {
-                db.lock_manual(&w, &o.txid.to_string(), o.vout, now_secs())?;
-            }
-            Ok(())
-        })
-        .await?;
+        self.appdb_op(move |db| db.end_masternode_op_attempt(&w, &id, &end))
+            .await?;
         self.masternodes.local_change();
         Ok(())
     }

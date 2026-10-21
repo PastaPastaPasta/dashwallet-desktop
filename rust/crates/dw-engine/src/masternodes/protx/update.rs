@@ -24,7 +24,8 @@ use super::super::reads::owner_facts;
 use super::super::records::MasternodeType;
 use super::super::{MasternodesError, display_hex, parse_pro_tx_hash};
 use super::build::{
-    Context, Funding, assemble, dummy_output, invalid, preview_script, refused, to_sign,
+    Claim, Context, Funding, assemble, dummy_output, invalid, preview_script, refused,
+    shared_voting, to_sign,
 };
 use super::keys::{p2pkh_id, parse_operator_key};
 use super::ops::state_of;
@@ -247,6 +248,9 @@ impl NetworkSession {
             KeepOr::Keep => (entry.voting_key_id, listed_voting.to_string(), None),
             KeepOr::Set(choice) => {
                 let p = self.pick_voting(wallet, choice, &ctx.used).await?;
+                if p.key_id == owner_key_id {
+                    return Err(shared_voting());
+                }
                 (p.key_id, p.address, p.index)
             }
         };
@@ -256,6 +260,11 @@ impl NetworkSession {
             KeepOr::Keep => (listed_operator, None),
             KeepOr::Set(choice) => {
                 let p = self.pick_operator(wallet, choice, &ctx.used).await?;
+                ctx.check_pending(&Claim {
+                    pro_tx_hash: Some(&display_hex(&hash)),
+                    operator: Some(p.public_key),
+                    ..Claim::default()
+                })?;
                 (p.public_key, p.index)
             }
         };

@@ -133,8 +133,14 @@ impl SignerScope {
         let sign_or_public_key = matches!(key_use, KeyUse::Sign | KeyUse::PublicKey);
         match self {
             // An owner payload signature comes from a `MasternodeOp` grant
-            // only (MG-04 D38).
-            SignerScope::Full => key_use != KeyUse::OwnerPayload,
+            // only (MG-04 D38), and no other signature at an owner key: a
+            // ProUpRegTx's owner signature is a plain ECDSA one over the
+            // payload's hash, which `Sign` would make for any digest (D50).
+            SignerScope::Full => match key_use {
+                KeyUse::OwnerPayload => false,
+                KeyUse::Sign | KeyUse::Message => !paths::is_owner_key(path, network),
+                _ => true,
+            },
             SignerScope::CoinJoinOnly => coinjoin_use && is_coinjoin_path(path, network),
             SignerScope::CoinJoinFunding => {
                 coinjoin_use && (is_coinjoin_path(path, network) || is_bip44_path(path, network))
@@ -552,11 +558,21 @@ mod tests {
     }
 
     /// Everything but an owner payload signature, which only a
-    /// `MasternodeOp` grant's signer makes (MG-04 D38).
+    /// `MasternodeOp` grant's signer makes (MG-04 D38), and no signature or
+    /// message signature at an owner key (D50). A voting key keeps every
+    /// use but the owner payload.
     #[test]
-    fn full_scope_allows_everything_but_owner_payloads() {
-        for p in ["m/0", "m/9'/1'/3'/2'/0"] {
+    fn full_scope_allows_everything_but_owner_signatures() {
+        for p in ["m/0", "m/44'/1'/0'/0/0", "m/9'/1'/3'/1'/0"] {
             assert_eq!(uses(SignerScope::Full, p), ALL_USES[..8].to_vec(), "{p}");
+        }
+        let owner: Vec<KeyUse> = ALL_USES[..8]
+            .iter()
+            .copied()
+            .filter(|u| !matches!(u, KeyUse::Sign | KeyUse::Message))
+            .collect();
+        for p in ["m/9'/1'/3'/2'/0", "m/9'/1'/3'/2'/7"] {
+            assert_eq!(uses(SignerScope::Full, p), owner, "{p}");
         }
     }
 

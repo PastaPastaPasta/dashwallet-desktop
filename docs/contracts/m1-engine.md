@@ -493,7 +493,7 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
 | Call | Kind | Semantics | Errors | Serves | Status |
 |---|---|---|---|---|---|
 | `verify_message(network, address, message, signature)` | sync, free | `Ok(())` when valid. dash-qt result texts map 1:1 from the codes. | `message.invalid_address`, `message.address_no_key`, `message.malformed_signature`, `message.pubkey_not_recovered`, `message.not_signed` | QT-100 | **works** |
-| `NetworkSession.sign_message(id, address, message, grant_id)` | async | Base64 65-byte compact signature, magic `"DarkCoin Signed Message:\n"`. `SignMessage` grant, redeemed only after the address checks pass. Signs through dw-vault's `VaultSigner`. | `message.address_not_mine`, `message.address_no_key`, `message.watch_only`, `message.vault_locked`, `message.grant_invalid` | QT-099 | **works** |
+| `NetworkSession.sign_message(id, address, message, grant_id)` | async | Base64 65-byte compact signature, magic `"DarkCoin Signed Message:\n"`. `SignMessage` grant, redeemed only after the address checks pass. Signs through dw-vault's `VaultSigner`. A masternode owner key's address is refused before the grant is redeemed (`EngineError::Signer(PathNotAllowed)`: the app's `signer.path_not_allowed`, the FFI's `message.vault_locked` as for any path refusal): an owner key signs owner payloads only, under a `MasternodeOp` grant (MG-04 D50). | `message.address_not_mine`, `message.address_no_key`, `message.watch_only`, `message.vault_locked`, `message.grant_invalid` | QT-099 | **works** |
 
 ### 2.11 URI and QR (`uri.rs`) — owner E2
 

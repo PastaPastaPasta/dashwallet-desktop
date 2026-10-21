@@ -62,7 +62,7 @@ impl InUse {
         }
     }
 
-    fn holds_operator(&self, basic: &[u8; 48]) -> bool {
+    pub(crate) fn holds_operator(&self, basic: &[u8; 48]) -> bool {
         self.operator.contains(basic)
             || dw_protx::bls::legacy_of(basic).is_some_and(|l| self.operator.contains(&l))
     }

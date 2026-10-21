@@ -35,19 +35,20 @@ use super::super::aggregate::OwnedMasternode;
 use super::super::follow::{ListView, read_list, wallet_masternodes};
 use super::super::protx_records::{
     CollateralChoice, CollateralKind, EvonodeTerms, OperatorChoice, PayoutChoice, PlatformFacts,
-    PlatformNodeChoice, ProTxTerms, RegistrationRequest, VotingChoice,
+    PlatformNodeChoice, ProTxOperationState, ProTxTerms, RegistrationRequest, VotingChoice,
 };
 use super::super::records::MasternodeType;
 use super::super::{MasternodesError, outpoint_string, parse_pro_tx_hash};
 use super::keys::{InUse, parse_outpoint};
+use super::ops::state_of;
 use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
 use crate::coins::{CoinFence, CoinSnapshot, own_address_info, read_coins, wallet_owns};
 use crate::send::plan::{
     INPUT_SIZE, MAX_INPUTS, dust_threshold, fee_for, output_size, varint_size,
 };
 use crate::send::{
-    CoinSource, MIN_FEE_PER_KB, PreparedInput, PreparedOutput, PreparedSummary, SendFailure,
-    l1_address,
+    CoinSource, MAX_TX_FEE, MIN_FEE_PER_KB, PreparedInput, PreparedOutput, PreparedSummary,
+    SendFailure, l1_address,
 };
 use crate::{EngineError, NetworkSession, WalletId};
 
@@ -117,6 +118,11 @@ pub(crate) fn plan_funding(
             Some(_) => fee,
             None => total - target,
         };
+        // Core's `-maxtxfee` (`CreateTransaction`), as the wallet's send:
+        // never reached at the relay minimum within `MAX_INPUTS`.
+        if fee > MAX_TX_FEE {
+            return Err(SendFailure::AbsurdFee { fee });
+        }
         return Ok(Funding {
             inputs: chosen,
             fee,
@@ -304,9 +310,76 @@ pub(crate) struct Context {
     /// in the list yet (D43).
     pub list_height: Option<u32>,
     pub used: InUse,
+    /// The wallet's operations that may still go out or be out, and aren't
+    /// in the list yet (D51).
+    pub pending: Vec<Pending>,
     /// The collateral scripts of the wallet's `External` registrations by
     /// ProTx hash (wire order): a coin the wallet doesn't hold (D40).
     pub external_collaterals: HashMap<[u8; 32], ScriptBuf>,
+}
+
+/// One of [`Context::pending`]: what its terms name.
+pub(crate) struct Pending {
+    pub id: String,
+    pub pro_tx_hash: Option<String>,
+    pub service: String,
+    pub used: InUse,
+}
+
+/// What a new operation claims that Core's mempool holds unique (D51).
+#[derive(Default)]
+pub(crate) struct Claim<'a> {
+    /// The row being sent, which never clashes with itself.
+    pub id: Option<&'a str>,
+    /// A ProUpRegTx's masternode: its own operations don't clash.
+    pub pro_tx_hash: Option<&'a str>,
+    pub operator: Option<[u8; 48]>,
+    pub node_id: Option<[u8; 20]>,
+    pub service: Option<&'a str>,
+}
+
+impl Context {
+    /// D51: refuses, as Core's mempool does (`protx-dup`, rc.3
+    /// `validation.cpp:1105-1106`), an operator key, platform node id or
+    /// service that one of the wallet's pending operations names (rc.3
+    /// `txmempool.cpp:1601-1622` for a ProRegTx, `:1691-1692` for a
+    /// ProUpRegTx). Core never tells an SPV wallet: the operation would sit
+    /// `sent` until abandoned.
+    pub(crate) fn check_pending(&self, claim: &Claim<'_>) -> Result<(), MasternodesError> {
+        let clash = self.pending.iter().any(|p| {
+            if claim.id == Some(p.id.as_str())
+                || claim.pro_tx_hash.is_some() && claim.pro_tx_hash == p.pro_tx_hash.as_deref()
+            {
+                return false;
+            }
+            claim.operator.is_some_and(|k| p.used.holds_operator(&k))
+                || claim.node_id.is_some_and(|n| p.used.node_ids.contains(&n))
+                || claim
+                    .service
+                    .is_some_and(|s| !s.is_empty() && s == p.service)
+        });
+        match clash {
+            true => Err(MasternodesError::ProtxRefused {
+                reason: "protx-dup".into(),
+            }),
+            false => Ok(()),
+        }
+    }
+
+    /// [`Self::check_pending`] for the pending row `id` about to go out
+    /// (an `External` registration's), against the others.
+    pub(crate) fn check_pending_row(&self, id: &str) -> Result<(), MasternodesError> {
+        let Some(own) = self.pending.iter().find(|p| p.id == id) else {
+            return Ok(());
+        };
+        self.check_pending(&Claim {
+            id: Some(id),
+            operator: own.used.operator.iter().next().copied(),
+            node_id: own.used.node_ids.iter().next().copied(),
+            service: Some(&own.service),
+            ..Claim::default()
+        })
+    }
 }
 
 /// Where a resolved registration's collateral is.
@@ -360,6 +433,12 @@ impl Registration {
             _ => vec![dummy_output()],
         }
     }
+}
+
+/// Voting never shares the owner's key (D52), though Core lets it (rc.3
+/// `evo/providertx_service.cpp:521` defaults to it).
+pub(crate) fn shared_voting() -> MasternodesError {
+    invalid("the voting key is the owner key: give another")
 }
 
 pub(crate) fn refused(reason: rules::Reject) -> MasternodesError {
@@ -510,6 +589,8 @@ impl NetworkSession {
         .unwrap_or_default();
         let w = wallet.to_string();
         let rows = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
+        let (history, unspent) = self.op_view(wallet).await?;
+        let mut pending = Vec::new();
         let mut used = InUse::default();
         let mut external_collaterals = HashMap::new();
         for o in &owned {
@@ -530,6 +611,23 @@ impl NetworkSession {
                 continue;
             };
             used.add_terms(&terms, network);
+            // Whatever may still go out, or is out and not in the list
+            // (D43's window).
+            let unlisted = match state_of(row, &history, &unspent) {
+                ProTxOperationState::Conflicted => false,
+                ProTxOperationState::Confirmed { height } => list.height.is_none_or(|l| l < height),
+                _ => true,
+            };
+            if unlisted {
+                let mut claims = InUse::default();
+                claims.add_terms(&terms, network);
+                pending.push(Pending {
+                    id: row.id.clone(),
+                    pro_tx_hash: row.pro_tx_hash.clone(),
+                    service: terms.service.clone(),
+                    used: claims,
+                });
+            }
             if let (Some(CollateralKind::External), Some(address), Some(hash)) = (
                 terms.collateral,
                 terms.collateral_address.as_deref(),
@@ -545,6 +643,7 @@ impl NetworkSession {
             list_height: list.height,
             entries: list.entries,
             used,
+            pending,
             external_collaterals,
         })
     }
@@ -600,6 +699,9 @@ impl NetworkSession {
         };
         let owner = self.pick_owner(wallet, req.owner_index, &ctx.used).await?;
         let voting = self.pick_voting(wallet, &req.voting, &ctx.used).await?;
+        if voting.key_id == owner.key_id {
+            return Err(shared_voting());
+        }
         let operator = self.pick_operator(wallet, &req.operator, &ctx.used).await?;
         let platform = match &req.evonode {
             Some(t) => {
@@ -669,6 +771,12 @@ impl NetworkSession {
         };
         rules::check_registration_list(&placeholder, listed_collateral, &ctx.listed)
             .map_err(refused)?;
+        ctx.check_pending(&Claim {
+            operator: Some(operator.public_key),
+            node_id: platform.map(|(_, p)| p.node_id),
+            service: Some(&service.to_string()),
+            ..Claim::default()
+        })?;
         if let Collateral::External { address, .. } = &collateral {
             rules::check_collateral_key_safe(&address.script_pubkey(), owner.key_id, voting.key_id)
                 .map_err(refused)?;

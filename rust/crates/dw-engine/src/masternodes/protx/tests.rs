@@ -332,22 +332,35 @@ impl Fx {
 
     /// `tx` in a block of the wallet's history, as key-wallet records it.
     fn confirm(&self, tx: Transaction, height: u32) {
+        use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+        self.record(
+            tx,
+            TransactionContext::InChainLockedBlock(BlockInfo::new(
+                height,
+                dashcore::BlockHash::all_zeros(),
+                0,
+            )),
+        );
+    }
+
+    /// `tx` in the wallet's history in `context`.
+    fn record(
+        &self,
+        tx: Transaction,
+        context: key_wallet::transaction_checking::TransactionContext,
+    ) {
         use key_wallet::account::{AccountType, StandardAccountType};
         use key_wallet::managed_account::transaction_record::{
             TransactionDirection, TransactionRecord,
         };
-        use key_wallet::transaction_checking::{BlockInfo, TransactionContext, TransactionType};
+        use key_wallet::transaction_checking::TransactionType;
         let record = TransactionRecord::new(
             tx,
             AccountType::Standard {
                 index: 0,
                 standard_account_type: StandardAccountType::BIP44Account,
             },
-            TransactionContext::InChainLockedBlock(BlockInfo::new(
-                height,
-                dashcore::BlockHash::all_zeros(),
-                0,
-            )),
+            context,
             TransactionType::Standard,
             TransactionDirection::Internal,
             Vec::new(),
@@ -621,11 +634,14 @@ fn mg04_not_sent_keeps_the_row_and_discard_releases_it() {
     assert_eq!(op.sent_at, None);
     assert_eq!(op.last_error.as_deref(), Some("send.no_peers"));
     assert!(f.locked().contains(&funding), "kept for a resend (D25)");
-    assert!(
-        !f.locked()
-            .iter()
-            .any(|o| o.txid.to_string() == op.txid.clone().unwrap()),
-        "no collateral lock for a transaction that never left"
+    let collateral = OutPoint::new(
+        op.txid.as_deref().unwrap().parse().unwrap(),
+        payload(&f.lib.sent()[0]).collateral_outpoint.vout,
+    );
+    assert_eq!(
+        f.locked(),
+        HashSet::from([funding, collateral]),
+        "the new collateral is locked with the row (D53)"
     );
 
     f.engine
@@ -638,6 +654,71 @@ fn mg04_not_sent_keeps_the_row_and_discard_releases_it() {
         .block_on(f.mn().discard_operation(f.wallet, op.id))
         .unwrap_err();
     assert_eq!(gone.code(), "masternodes.operation_not_found");
+}
+
+/// D53 (review r1 m-1): a new collateral is locked in the write that
+/// saves its row, so neither a resend after a first `not_sent` nor a crash
+/// between the hand-off and the record leaves it to the follower: an
+/// ordinary send never counts it, though the wallet holds it.
+#[test]
+fn mg04_a_new_collateral_is_locked_with_its_row_before_any_hand_off() {
+    let ordinary = |f: &Fx| {
+        f.engine
+            .block_on(f.session.max_spendable(
+                f.wallet,
+                crate::send::CoinSource::Any,
+                crate::send::FeeMode::PerKb(1_000),
+            ))
+            .unwrap()
+    };
+    let new_collateral = |tx: &Transaction| {
+        let vout = payload(tx).collateral_outpoint.vout;
+        (
+            OutPoint::new(tx.txid(), vout),
+            tx.output[vout as usize].clone(),
+        )
+    };
+
+    // A first hand-off with no peers, then a resend that goes out.
+    let f = fx(Library::NoPeers);
+    let funding = f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    let op = f
+        .register(request(CollateralChoice::FundNew), f.grant(COIN))
+        .unwrap();
+    assert_eq!(op.state, ProTxOperationState::NotSent);
+    *f.lib.mode.lock().unwrap() = Library::Accept;
+    f.engine
+        .block_on(
+            f.mn()
+                .resend_operation(f.wallet, op.id.clone(), f.grant(op.fee)),
+        )
+        .unwrap();
+    let (collateral, txout) = new_collateral(&f.lib.sent()[1]);
+    // Its outputs reach the wallet (IS-locked) before any follower pass.
+    f.spend(funding);
+    f.hold(collateral, txout.clone());
+    f.credit(2, COIN);
+    assert!(f.locked().contains(&collateral));
+    assert_eq!(ordinary(&f), COIN, "the other coin only");
+
+    // A crash after the hand-off, before its outcome is recorded.
+    let coins = [(1u8, MASTERNODE_COLLATERAL + COIN), (2u8, COIN)];
+    let mut f = fx(Library::Accept);
+    f.credit(1, coins[0].1);
+    f.crash_at(Some(CrashPoint::HandedOff));
+    assert!(
+        f.register(request(CollateralChoice::FundNew), f.grant(COIN))
+            .is_err()
+    );
+    let (collateral, txout) = new_collateral(&f.lib.sent()[0]);
+    f.restart(&coins);
+    f.crash_at(None);
+    f.spend(OutPoint::new(Txid::from_byte_array([1; 32]), 0));
+    f.hold(collateral, txout);
+    assert_eq!(f.operations()[0].state, ProTxOperationState::Sent);
+    assert!(f.locked().contains(&collateral));
+    assert_eq!(ordinary(&f), COIN, "the other coin only");
+    drop(f.dir);
 }
 
 #[test]
@@ -782,9 +863,12 @@ fn mg04_a_crash_between_save_and_record_loses_nothing_and_sends_once() {
             .filter_map(super::ops::signed_tx)
             .flat_map(|tx| tx.input.into_iter().map(|i| i.previous_output))
             .collect();
-        let second = f
-            .register(request(CollateralChoice::FundNew), f.grant(COIN))
-            .unwrap();
+        // Its own service: the first's may be out (D51).
+        let other_service = RegistrationRequest {
+            service: "1.2.3.5".into(),
+            ..request(CollateralChoice::FundNew)
+        };
+        let second = f.register(other_service, f.grant(COIN)).unwrap();
         let second_tx = f.lib.sent().pop().unwrap();
         assert_eq!(second.txid, Some(second_tx.txid().to_string()));
         assert!(
@@ -1930,7 +2014,7 @@ fn mg04_an_update_resend_waits_for_an_earlier_sent_one() {
 /// inputs (the user abandons the update's transaction, unlocks the coin
 /// and spends it): once that spend is in a block the update reads
 /// `conflicted`, can never be mined, `operations()` releases its inputs,
-/// and it blocks nothing.
+/// and it blocks nothing. Seen only unconfirmed, the rival changes nothing.
 #[test]
 fn mg04_a_conflicted_update_lets_the_next_one_through() {
     let f = fx(Library::Accept);
@@ -1969,8 +2053,21 @@ fn mg04_a_conflicted_update_lets_the_next_one_through() {
         }],
         special_transaction_payload: None,
     };
-    f.confirm(rival, 60);
+    // Review r1 m-3: a rival seen unconfirmed conflicts with nothing yet;
+    // only a block settles the row, and its locks stay meanwhile.
+    f.record(
+        rival.clone(),
+        key_wallet::transaction_checking::TransactionContext::Mempool,
+    );
     f.spend(input);
+    let ops = f.operations();
+    let unsettled = ops.iter().find(|o| o.id == first.id).unwrap();
+    assert_eq!(unsettled.state, ProTxOperationState::Sent);
+    assert!(f.locked().contains(&input), "D25");
+    let e = f.preview_update(next.clone()).unwrap_err();
+    assert_eq!(e.code(), "masternodes.update_pending");
+
+    f.confirm(rival, 60);
     let ops = f.operations();
     let settled = ops.iter().find(|o| o.id == first.id).unwrap();
     assert_eq!(settled.state, ProTxOperationState::Conflicted);
@@ -2065,4 +2162,209 @@ fn mg04_a_coin_an_unseen_proposal_fee_spends_is_not_a_collateral() {
     });
     let op = f.register(req, f.grant(COIN)).unwrap();
     assert_eq!(op.state, ProTxOperationState::Sent);
+}
+
+fn protx_dup(e: &MasternodesError) -> bool {
+    matches!(e, MasternodesError::ProtxRefused { reason } if reason == "protx-dup")
+}
+
+/// D51 (review r1 m-2): an operator key, platform node id or service that
+/// one of the wallet's own operations names while it may still go out, or
+/// is out and not in the list, is refused as Core's mempool refuses it
+/// (`protx-dup`), whatever the choice. A conflicted operation frees them.
+#[test]
+fn mg04_a_pending_operations_keys_and_service_are_refused_as_protx_dup() {
+    use CollateralChoice::FundNew;
+    let f = fx(Library::Accept);
+    let funding = f.credit(1, EVONODE_COLLATERAL + COIN);
+    let first = f
+        .register(
+            evonode(FundNew, PlatformNodeChoice::Keychain { index: 0 }),
+            f.grant(COIN),
+        )
+        .unwrap();
+    assert_eq!(first.state, ProTxOperationState::Sent);
+    f.credit(2, EVONODE_COLLATERAL + COIN);
+    let elsewhere = |r: RegistrationRequest| RegistrationRequest {
+        service: "1.2.3.9".into(),
+        ..r
+    };
+    let node_id = first.terms.platform.as_ref().unwrap().node_id.clone();
+    let clashes = [
+        (
+            "keychain operator",
+            elsewhere(RegistrationRequest {
+                operator: OperatorChoice::Keychain {
+                    index: first.terms.operator_index.unwrap(),
+                },
+                ..request(FundNew)
+            }),
+        ),
+        (
+            "given operator",
+            elsewhere(RegistrationRequest {
+                operator: OperatorChoice::Given {
+                    public_key: first.terms.operator_public_key.clone(),
+                },
+                ..request(FundNew)
+            }),
+        ),
+        (
+            "given node",
+            elsewhere(evonode(FundNew, PlatformNodeChoice::Given { node_id })),
+        ),
+        ("service", request(FundNew)),
+    ];
+    let preview = |r: &RegistrationRequest| {
+        f.engine
+            .block_on(f.mn().preview_registration(f.wallet, r.clone()))
+    };
+    for (name, req) in &clashes {
+        let e = preview(req).unwrap_err();
+        assert!(protx_dup(&e), "{name}: {e:?}");
+        let e = f.register(req.clone(), f.grant(COIN)).unwrap_err();
+        assert!(protx_dup(&e), "{name}: {e:?}");
+    }
+    assert_eq!(f.lib.sent().len(), 1, "nothing else handed off");
+    preview(&elsewhere(request(FundNew))).unwrap();
+
+    // A block spends its input elsewhere: it can never be mined.
+    let rival = Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: funding,
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value: COIN,
+            script_pubkey: dashcore::ScriptBuf::new(),
+        }],
+        special_transaction_payload: None,
+    };
+    f.confirm(rival, 60);
+    f.spend(funding);
+    for (name, req) in &clashes {
+        preview(req).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    }
+}
+
+/// D51: a ProUpRegTx's new operator key, against another masternode's
+/// pending registration, until the list holds what was mined.
+#[test]
+fn mg04_an_updates_operator_key_is_refused_while_another_registration_holds_it() {
+    let f = fx(Library::Accept);
+    let (_, op) = f.registered();
+    let hash = op.pro_tx_hash.clone().unwrap();
+    f.credit(3, MASTERNODE_COLLATERAL + COIN);
+    let second = f
+        .register(
+            RegistrationRequest {
+                service: "1.2.3.9".into(),
+                operator: OperatorChoice::Keychain { index: 5 },
+                ..request(CollateralChoice::FundNew)
+            },
+            f.grant(COIN),
+        )
+        .unwrap();
+    let second_tx = f.lib.sent().pop().unwrap();
+    let take = UpdateRegistrarRequest {
+        operator: KeepOr::Set(OperatorChoice::Keychain { index: 5 }),
+        ..keep(&hash)
+    };
+    let e = f.preview_update(take.clone()).unwrap_err();
+    assert!(protx_dup(&e), "{e:?}");
+    let e = f.update(take.clone(), f.grant(COIN)).unwrap_err();
+    assert!(protx_dup(&e), "{e:?}");
+    // Mined above the list's height: not in the list yet (D43's window).
+    f.confirm(second_tx, 120);
+    let e = f.preview_update(take.clone()).unwrap_err();
+    assert!(protx_dup(&e), "{e:?}");
+    // The list reaches it: the list's own rules apply from here.
+    *f.seam.list_height.lock().unwrap() = 150;
+    f.preview_update(take).unwrap();
+    assert_eq!(second.state, ProTxOperationState::Sent);
+}
+
+/// D51: an `External` registration's submit is checked against the
+/// wallet's other pending operations, not against itself.
+#[test]
+fn mg04_an_external_submit_is_refused_while_another_operation_holds_its_service() {
+    let f = fx(Library::Accept);
+    f.credit(1, COIN);
+    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
+    let public = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let address = dashcore::Address::p2pkh(&public, dashcore::Network::Regtest);
+    let outpoint = OutPoint::new(Txid::from_byte_array([0x79; 32]), 0);
+    let req = request(CollateralChoice::External {
+        outpoint: format!("{}-0", outpoint.txid),
+        address: address.to_string(),
+    });
+    let op = f
+        .engine
+        .block_on(f.mn().prepare_external_registration(f.wallet, req))
+        .unwrap();
+    // A row saved before D51 naming the same service.
+    let mut twin = f.rows().pop().unwrap();
+    twin.id = super::ops::new_id();
+    twin.fee_inputs = "[]".into();
+    f.db()
+        .insert_masternode_op_durable(&f.wallet.to_string(), &twin)
+        .unwrap();
+    let ask = op.sign_request.clone().unwrap();
+    let sig = dw_protx::payloads::sign_message_compact(&EXTERNAL_KEY, &ask.message).unwrap();
+    let signature = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(sig)
+    };
+    let submit = || {
+        f.engine.block_on(f.mn().submit_external_registration(
+            f.wallet,
+            op.id.clone(),
+            signature.clone(),
+            f.grant(COIN),
+        ))
+    };
+    let e = submit().unwrap_err();
+    assert!(protx_dup(&e), "{e:?}");
+    assert!(f.lib.sent().is_empty());
+    f.engine
+        .block_on(f.mn().discard_operation(f.wallet, twin.id))
+        .unwrap();
+    assert_eq!(submit().unwrap().state, ProTxOperationState::Sent);
+}
+
+/// D52 (review r1 n-3): a voting address that is the owner key's is
+/// refused, in a registration and in an update, though Core takes it.
+#[test]
+fn mg04_voting_never_shares_the_owner_key() {
+    let f = fx(Library::Accept);
+    let keys = f
+        .engine
+        .block_on(f.mn().registration_keys(f.wallet, MasternodeType::Regular))
+        .unwrap();
+    f.credit(5, MASTERNODE_COLLATERAL + COIN);
+    let shared = RegistrationRequest {
+        voting: VotingChoice::Address {
+            address: keys.owner.address.clone().unwrap(),
+        },
+        ..request(CollateralChoice::FundNew)
+    };
+    let e = f
+        .engine
+        .block_on(f.mn().preview_registration(f.wallet, shared))
+        .unwrap_err();
+    assert_eq!(e.code(), "invalid_argument", "{e:?}");
+
+    let (_, op) = f.registered();
+    let hash = op.pro_tx_hash.clone().unwrap();
+    let e = f
+        .preview_update(UpdateRegistrarRequest {
+            voting: KeepOr::Set(VotingChoice::Address {
+                address: op.terms.owner_address.clone(),
+            }),
+            ..keep(&hash)
+        })
+        .unwrap_err();
+    assert_eq!(e.code(), "invalid_argument", "{e:?}");
 }

@@ -523,6 +523,49 @@ fn only_a_masternode_op_grant_signs_owner_payloads() {
     }
 }
 
+/// D50: a full signer (a `Spend` or `SignMessage` grant's) makes no
+/// signature at a keychain owner key. A ProUpRegTx's owner signature is
+/// a plain ECDSA one over the payload's hash, so `sign_ecdsa` there would
+/// forge one past the `MasternodeOp` grant. Voting and address keys still
+/// sign.
+#[tokio::test]
+async fn a_full_signer_signs_nothing_at_an_owner_key() {
+    let fx = Fixture::new();
+    let v = encrypted(&fx);
+    let p = update(PRO_TX);
+    let digest = p.base_payload_hash().to_byte_array();
+    for purpose in [
+        GrantPurpose::Spend { max_duffs: 1 },
+        GrantPurpose::SignMessage,
+    ] {
+        let full = v
+            .signer(&wallet(1), &token(&v, purpose, Credential::None))
+            .unwrap();
+        assert_eq!(full.scope(), SignerScope::Full);
+        for owner in ["m/9'/1'/3'/2'/0", "m/9'/1'/3'/2'/19"] {
+            assert!(
+                matches!(
+                    full.sign_ecdsa(&path(owner), digest).await,
+                    Err(SignerError::PathNotAllowed(_))
+                ),
+                "{purpose:?} {owner}"
+            );
+            assert!(
+                matches!(
+                    full.sign_message(&path(owner), b"owner").await,
+                    Err(SignerError::PathNotAllowed(_))
+                ),
+                "{purpose:?} {owner}"
+            );
+            full.public_key(&path(owner)).await.unwrap();
+        }
+        for other in [BIP44, "m/9'/1'/3'/1'/0"] {
+            full.sign_ecdsa(&path(other), digest).await.unwrap();
+            full.sign_message(&path(other), b"other").await.unwrap();
+        }
+    }
+}
+
 /// dashd's own ProUpRegTx payloads (testdata/protx_update_registrar.json,
 /// dashd v24.0.0-rc.3): with dashd's owner key attached, the vault signs
 /// each exactly as dashd did (`CKey::SignCompact` is RFC 6979).

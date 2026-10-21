@@ -15,7 +15,7 @@ use dashcore::Address;
 use dw_uri::keyio::{Destination, decode_destination};
 use dw_vault::MnemonicError;
 use dw_vault::mnemonic;
-use dw_vault::{GrantKind, LockState, Vault, VaultError, WalletSecret, WalletSigner};
+use dw_vault::{GrantKind, LockState, SignerError, Vault, VaultError, WalletSecret, WalletSigner};
 use key_wallet::mnemonic::Language;
 use key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
@@ -769,6 +769,14 @@ impl NetworkSession {
                 crate::coins::own_address_info(&state.core_wallet, &parsed).map(|info| info.path)
             }
             .ok_or_else(|| EngineError::AddressNotMine(address.clone()))?;
+            // A ProTx owner key signs owner payloads only, under a
+            // `MasternodeOp` grant (MG-04 D50); the vault refuses it here
+            // too, but this keeps the grant.
+            if dw_vault::paths::is_owner_key(&path, network) {
+                return Err(EngineError::Signer(SignerError::PathNotAllowed(format!(
+                    "{address} is a masternode owner key"
+                ))));
+            }
 
             let vault = this.vault.clone();
             let signer = tokio::task::spawn_blocking(move || {

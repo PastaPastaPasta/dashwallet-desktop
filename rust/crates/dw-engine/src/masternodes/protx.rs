@@ -214,6 +214,11 @@ impl Masternodes {
                 let lock_collateral = existing.as_ref().filter(|(_, _, locked)| !locked);
                 let mut locks = inputs.clone();
                 locks.extend(lock_collateral.map(|(u, _, _)| u.outpoint));
+                // A new collateral is locked with the row, before any
+                // hand-off, as Core's `AddToWallet` locks it (D53): no
+                // ordinary send spends it while a resend may still put the
+                // registration out, and `discard` unlocks it.
+                locks.extend(fund_new);
                 let now = now_secs();
                 let row = MasternodeOpRow {
                     id: id.clone(),
@@ -227,7 +232,7 @@ impl Masternodes {
                     signed_tx: Some(dashcore::consensus::serialize(&tx)),
                     txid: Some(txid.to_string()),
                     pro_tx_hash: Some(txid.to_string()),
-                    locked_collateral: lock_collateral.is_some(),
+                    locked_collateral: lock_collateral.is_some() || fund_new.is_some(),
                     fee: funding.fee,
                     created_at: now,
                     signed_at: Some(now),
@@ -249,7 +254,6 @@ impl Masternodes {
                         charge,
                         fence,
                         maybe_out: false,
-                        lock_after: fund_new,
                     },
                 )
                 .await?;
@@ -334,6 +338,7 @@ impl Masternodes {
             let tx: dashcore::Transaction = dashcore::consensus::deserialize(unsigned)
                 .map_err(|e| EngineError::Internal(format!("stored transaction: {e}")))?;
             let ctx = s.protx_context(wallet).await?;
+            ctx.check_pending_row(&operation)?;
             let lease = s
                 .begin_lease(wallet, FlowKind::MasternodeRegistration, &[grant])
                 .await
@@ -393,7 +398,6 @@ impl Masternodes {
                         charge,
                         fence,
                         maybe_out: false,
-                        lock_after: None,
                     },
                 )
                 .await?;
@@ -607,7 +611,6 @@ impl Masternodes {
                         charge,
                         fence,
                         maybe_out: false,
-                        lock_after: None,
                     },
                 )
                 .await?;
@@ -719,7 +722,6 @@ impl Masternodes {
                         charge,
                         fence,
                         maybe_out,
-                        lock_after: None,
                     },
                 )
                 .await?;
