@@ -449,6 +449,191 @@
         "keyLastVote": "abstain",
         "keyLastVoteTime": 1789200000
       }
+    ],
+    "governance_contested_names": {
+      "contests": [
+        {
+          "label": "a11ce",
+          "endsAt": 1800003600,
+          "contenders": [
+            {
+              "identity": "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P",
+              "votes": 9
+            },
+            {
+              "identity": "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF",
+              "votes": 4
+            }
+          ],
+          "lockVotes": 1,
+          "abstainVotes": 0,
+          "contendersComplete": true
+        },
+        {
+          "label": "dash-pay",
+          "endsAt": 1800090000,
+          "contenders": [
+            {
+              "identity": "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF",
+              "votes": 0
+            }
+          ],
+          "lockVotes": 0,
+          "abstainVotes": 0,
+          "contendersComplete": true
+        }
+      ],
+      "voters": [
+        {
+          "proTxHash": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "kind": "regular",
+          "weight": 1,
+          "valid": true,
+          "key": {
+            "kind": "keychain",
+            "index": 0
+          },
+          "current": [
+            {
+              "label": "a11ce",
+              "choice": {
+                "kind": "towardsIdentity",
+                "identity": "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P"
+              },
+              "votesUsed": 2
+            }
+          ]
+        },
+        {
+          "proTxHash": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "kind": "evonode",
+          "weight": 4,
+          "valid": true,
+          "key": {
+            "kind": "keychain",
+            "index": 3
+          },
+          "current": [
+            {
+              "label": "a11ce",
+              "choice": {
+                "kind": "lock"
+              },
+              "votesUsed": 5
+            },
+            {
+              "label": "dash-pay",
+              "choice": {
+                "kind": "abstain"
+              },
+              "votesUsed": 1
+            }
+          ]
+        },
+        {
+          "proTxHash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+          "kind": "regular",
+          "weight": 1,
+          "valid": false,
+          "key": {
+            "kind": "attached"
+          },
+          "current": []
+        }
+      ],
+      "votesAllowed": 5
+    },
+    "governance_vote_name": [
+      {
+        "proTxHash": "0000000000000000000000000000000000000000000000000000000000000001",
+        "transition": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+        "rejected": null
+      },
+      {
+        "proTxHash": "0000000000000000000000000000000000000000000000000000000000000002",
+        "transition": null,
+        "rejected": "unknown_masternode"
+      },
+      {
+        "proTxHash": "0000000000000000000000000000000000000000000000000000000000000003",
+        "transition": null,
+        "rejected": "no_voting_key"
+      },
+      {
+        "proTxHash": "0000000000000000000000000000000000000000000000000000000000000004",
+        "transition": null,
+        "rejected": "cancelled"
+      },
+      {
+        "proTxHash": "0000000000000000000000000000000000000000000000000000000000000005",
+        "transition": null,
+        "rejected": "signer_unavailable"
+      },
+      {
+        "proTxHash": "0000000000000000000000000000000000000000000000000000000000000006",
+        "transition": null,
+        "rejected": "in_flight"
+      },
+      {
+        "proTxHash": "0000000000000000000000000000000000000000000000000000000000000007",
+        "transition": null,
+        "rejected": "vote_limit"
+      },
+      {
+        "proTxHash": "0000000000000000000000000000000000000000000000000000000000000008",
+        "transition": null,
+        "rejected": "platform_unavailable"
+      },
+      {
+        "proTxHash": "0000000000000000000000000000000000000000000000000000000000000009",
+        "transition": "0000000000000000000000000000000000000000000000000000000000005e07",
+        "rejected": "unconfirmed"
+      },
+      {
+        "proTxHash": "000000000000000000000000000000000000000000000000000000000000000a",
+        "transition": "0000000000000000000000000000000000000000000000000000000000005e08",
+        "rejected": "already_voted"
+      },
+      {
+        "proTxHash": "000000000000000000000000000000000000000000000000000000000000000b",
+        "transition": "0000000000000000000000000000000000000000000000000000000000005e09",
+        "rejected": "contest_closed"
+      },
+      {
+        "proTxHash": "000000000000000000000000000000000000000000000000000000000000000c",
+        "transition": "0000000000000000000000000000000000000000000000000000000000005e0a",
+        "rejected": "contest_not_found"
+      },
+      {
+        "proTxHash": "000000000000000000000000000000000000000000000000000000000000000d",
+        "transition": "0000000000000000000000000000000000000000000000000000000000005e0b",
+        "rejected": "masternode_not_found"
+      },
+      {
+        "proTxHash": "000000000000000000000000000000000000000000000000000000000000000e",
+        "transition": "0000000000000000000000000000000000000000000000000000000000005e0c",
+        "rejected": "wrong_voting_key"
+      },
+      {
+        "proTxHash": "000000000000000000000000000000000000000000000000000000000000000f",
+        "transition": "0000000000000000000000000000000000000000000000000000000000005e0d",
+        "rejected": "choice_not_allowed"
+      },
+      {
+        "proTxHash": "0000000000000000000000000000000000000000000000000000000000000010",
+        "transition": "0000000000000000000000000000000000000000000000000000000000005e0e",
+        "rejected": "no_voter_identity"
+      },
+      {
+        "proTxHash": "0000000000000000000000000000000000000000000000000000000000000011",
+        "transition": "0000000000000000000000000000000000000000000000000000000000005e0f",
+        "rejected": "voting_key_disabled"
+      },
+      {
+        "proTxHash": "0000000000000000000000000000000000000000000000000000000000000012",
+        "transition": "0000000000000000000000000000000000000000000000000000000000005e10",
+        "rejected": "refused"
+      }
     ]
   },
   "errors": [
@@ -521,17 +706,26 @@
     {
       "code": "governance.contest_not_found",
       "message": "no contest for a11ce",
-      "data": null
+      "data": {
+        "kind": "contestLabel",
+        "label": "a11ce"
+      }
     },
     {
       "code": "governance.contest_closed",
       "message": "the contest for a11ce is closed",
-      "data": null
+      "data": {
+        "kind": "contestLabel",
+        "label": "a11ce"
+      }
     },
     {
       "code": "governance.not_a_contender",
       "message": "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P is not a contender",
-      "data": null
+      "data": {
+        "kind": "contender",
+        "identity": "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P"
+      }
     },
     {
       "code": "governance.not_implemented",

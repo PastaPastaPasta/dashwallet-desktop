@@ -61,6 +61,8 @@ const SAMPLES: Samples = {
   governancePhase: { code: "governance.not_synced", data: { kind: "governancePhase", phase: "syncingVotes" } },
   proposalHash: { code: "governance.proposal_not_found", data: { kind: "proposalHash", hash: "5c".repeat(32) } },
   proposalFields: { code: "governance.invalid_proposal", data: { kind: "proposalFields", fields: ["name", "payment_address"] } },
+  contestLabel: { code: "governance.contest_closed", data: { kind: "contestLabel", label: "a11ce" } },
+  contender: { code: "governance.not_a_contender", data: { kind: "contender", identity: "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P" } },
   call: { code: "platform.not_implemented", data: { kind: "call", call: "create_invitation" } },
   reason: { code: "send.broadcast_rejected", data: { kind: "reason", reason: "bad-txns-inputs-missingorspent" } },
   txAction: { code: "tx_action_refused", data: { kind: "txAction", refusal: "instantLocked" } },
