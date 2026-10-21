@@ -161,7 +161,8 @@ impl DashPay {
 
     /// Chooses the main identity: one of the wallet's, else
     /// `identity.not_found`. Stored in `dp_main_identity`, so a `.dwbackup`
-    /// carries it.
+    /// carries it. Signalled `Platform{Identities}` and `Platform{Startup}`
+    /// (DP6-01 D15).
     pub async fn set_main_identity(&self, identity: String) -> Result<(), PlatformError> {
         let (session, id) = (Arc::clone(&self.session), self.wallet_id());
         self.session

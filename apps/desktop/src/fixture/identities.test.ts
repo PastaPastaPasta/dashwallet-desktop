@@ -2,9 +2,11 @@
 // revision, Set as main (kept across a relaunch's world), Refresh and Refresh all with a failure,
 // the read-only look-up by id and by username, Set as main name and Find my identities.
 
+import { listen } from "@tauri-apps/api/event";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as cmd from "../api/generated/commands";
+import type { AppEvent } from "../api/generated/commands";
 import { IDENTITY } from "./dashpay";
 import { identitiesOf, SPARE_IDENTITY, WORK_IDENTITY } from "./identities";
 import { installFixture } from "./index";
@@ -41,9 +43,12 @@ describe("the Identities page's calls (DP6-01)", () => {
     expect(await code(cmd.identityDetail(W, IDENTITY.bob))).toBe("identity.not_found");
   });
 
-  it("Set as main moves the badge and the status, and a relaunch keeps it", async () => {
+  it("Set as main moves the badge and the status, signals both as the engine does (D15), and a relaunch keeps it", async () => {
     const f = installFixture({ scenario: "dashpay-identities" });
+    const seen: AppEvent[] = [];
+    await listen<AppEvent>(cmd.ENGINE_EVENT, (e) => void seen.push(e.payload));
     await cmd.setMainIdentity(W, A);
+    expect(seen.flatMap((e) => (e.kind === "platform" ? [e.change.domain] : []))).toEqual(["identities", "startup"]);
     expect((await cmd.identities(W)).map((i) => i.isMain)).toEqual([true, false]);
     expect(await cmd.dashpayStatus(W)).toEqual({ kind: "ready", main: A });
     const again = restarted(JSON.parse(JSON.stringify(f.world)) as World);
