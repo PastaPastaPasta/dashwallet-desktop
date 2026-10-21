@@ -130,10 +130,22 @@ light and dark (Chromium). View-model mutants: the main badge on the wrong row; 
 
 ## T2 (dashmate devnet)
 
-Two identities from one seed under `/work/scratch/dw-dp6-01/`, registered with `dwcli identity register` (funded from
-Core); then `dwcli` list, set-main (and list again after a new process: the choice holds), show (keys), refresh (one and
-all), find by id and by name, each JSON line kept as evidence in `/work/scratch/dw-dp6-01/t2/`. What the devnet stops is
-a D-row with the closest proof.
+Run on 2026-10-21 against the shared dashmate `local` devnet with the branch's `dwcli`, one wallet from a seed under
+`/work/scratch/dw-dp6-01/t2/`; each command's JSON is kept in `/work/scratch/dw-dp6-01/t2/ev/` (`README` lists them).
+The two identities were registered on Platform by the seed's own keys (D11), `dp601-alpha7` and `dp601-beta8`.
+
+| Step | Evidence | Result |
+|---|---|---|
+| Find my identities | `02-discover` | `2`: the scan finds both from the seed |
+| List | `03-list` | index 0 and 1, index 0 main (no choice yet), names as registered |
+| Set main, then list in a new process | `04`–`06` | index 1 main; `dashpay status` names it |
+| Keys | `07-show-A`, `08-show-main` | revision 0, keys 0–2 (MASTER, HIGH, CRITICAL auth); no `--identity` shows the main one |
+| Refresh one, refresh all | `09`, `10`, `14` | the balance current again (`balance_stale` false); both refreshed, no failure |
+| Find by name, by id, none | `11`–`13` | found by `name` and by `id`, both `own`; an unknown name answers `null` |
+| A key added on Platform, then refresh | `15`–`17` | before: revision 0, 3 keys (the cached copy); after `refresh`: revision 1 with key 3 (MEDIUM auth); a new process shows it |
+
+Every identity stays `unverified`: the devnet's quorum keys come from MG-07's sidecar, not from a masternode list
+(D11). The page itself is proven on the fixture (T0); the devnet run proves the engine and `dwcli` calls it uses.
 
 ## D-rows
 
