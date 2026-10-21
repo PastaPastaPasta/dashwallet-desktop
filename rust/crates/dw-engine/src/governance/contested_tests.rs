@@ -3,8 +3,9 @@
 //! Platform scripted.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use dash_sdk::error::StateTransitionBroadcastError;
 use dashcore::hashes::{Hash, hash160, sha256};
@@ -45,7 +46,10 @@ use super::super::records::{
     NameVoterState, NameVotingKey,
 };
 use super::super::{Governance, GovernanceError};
-use super::{Cast, NameVoteNet, Refusal, consensus, platform_order, refusal, set_votes_used};
+use super::{
+    Broadcast, Cast, NameVoteNet, Refusal, broadcast_outcome, consensus, platform_order,
+    proof_outcome, refusal, set_votes_used,
+};
 use crate::events::unix_now;
 use crate::masternode_keys::MasternodeKeyRole;
 use crate::masternodes::AttachedKeyRole;
@@ -77,7 +81,10 @@ const LABEL: &str = "c0ntest";
 
 /// Platform, scripted: the end-date index, the polls, each masternode's
 /// choices, nonces, and what each broadcast comes to (`Counted` once the
-/// script is empty).
+/// script is empty; a scripted `Counted` or executed refusal is the
+/// broadcast's `Accepted`, then the wait's answer). `delay` holds each
+/// broadcast that long; `delivered` counts the broadcasts that ran to
+/// their end.
 #[derive(Default)]
 pub(crate) struct FakeNames {
     ends: Mutex<BTreeMap<String, u64>>,
@@ -90,6 +97,9 @@ pub(crate) struct FakeNames {
     diagnosis: Mutex<Option<&'static str>>,
     down: AtomicBool,
     on_cast: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    delay: Mutex<Option<Duration>>,
+    delivered: AtomicUsize,
+    pending: Mutex<Option<Cast>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -173,12 +183,29 @@ impl NameVoteNet for FakeNames {
         Ok(*n)
     }
 
-    async fn cast(&self, bytes: Vec<u8>) -> Cast {
+    async fn broadcast(&self, bytes: Vec<u8>) -> Broadcast {
         lock(&self.sent).push(bytes);
         if let Some(hook) = lock(&self.on_cast).as_ref() {
             hook();
         }
-        lock(&self.casts).pop_front().unwrap_or(Cast::Counted)
+        let delay = *lock(&self.delay);
+        if let Some(d) = delay {
+            tokio::time::sleep(d).await;
+        }
+        self.delivered.fetch_add(1, Ordering::SeqCst);
+        match lock(&self.casts).pop_front().unwrap_or(Cast::Counted) {
+            c @ (Cast::Counted | Cast::Refused { executed: true, .. }) => {
+                *lock(&self.pending) = Some(c);
+                Broadcast::Accepted
+            }
+            Cast::Refused { refusal, .. } => Broadcast::Refused(refusal),
+            Cast::NotSent => Broadcast::NotSent,
+            Cast::Unknown => Broadcast::Unknown,
+        }
+    }
+
+    async fn wait(&self, _: Vec<u8>) -> Cast {
+        lock(&self.pending).take().unwrap_or(Cast::Counted)
     }
 
     async fn diagnose(&self, _: [u8; 32], _: [u8; 20]) -> Option<&'static str> {
@@ -714,6 +741,102 @@ fn a_lock_mid_batch_cancels_the_rest() {
         ]
     );
     assert_eq!(lock(&n.net.sent).len(), 1);
+}
+
+/// Review M1: a broadcast still running at its permit's deadline is cut
+/// there, so nothing of it runs after a lock's drain: a lock during a slow
+/// broadcast leaves the vote `unconfirmed` (MaybeSent), and the broadcast
+/// never finishes.
+#[test]
+fn a_slow_broadcast_is_cut_at_the_permit_deadline() {
+    let n = names();
+    let ttl = crate::platform::lease::LeaseConfig::default().permit_ttl;
+    *lock(&n.net.delay) = Some(ttl + Duration::from_secs(2));
+    let session = Arc::clone(&n.f.session);
+    *lock(&n.net.on_cast) = Some(Box::new(move || {
+        session.lock_vault_sync().unwrap();
+    }));
+    let cast = n
+        .vote(LABEL, NameChoice::Abstain, &[A, B], n.grant())
+        .unwrap();
+    assert_eq!(
+        reasons(&cast),
+        vec![
+            (display_hex(&A), Some("unconfirmed")),
+            (display_hex(&B), Some("cancelled")),
+        ]
+    );
+    let t = cast[0].transition.as_deref().unwrap();
+    assert_eq!(n.status(t), Some(DispatchState::MaybeSent));
+    // Past where the dropped broadcast would have finished.
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(lock(&n.net.sent).len(), 1);
+    assert_eq!(n.net.delivered.load(Ordering::SeqCst), 0);
+    assert_eq!(n.leases(), 0);
+}
+
+/// Review m1, m4: the SDK's answers as the fence and the caller see them.
+#[test]
+fn broadcast_and_proof_answers_classify() {
+    let present = ConsensusError::from(StateError::MasternodeVoteAlreadyPresentError(
+        MasternodeVoteAlreadyPresentError::new(Identifier::from([5; 32]), poll()),
+    ));
+    let typed = || {
+        dash_sdk::Error::StateTransitionBroadcastError(StateTransitionBroadcastError {
+            code: present.code(),
+            message: "present".into(),
+            cause: Some(present.clone()),
+        })
+    };
+    let untyped = || {
+        dash_sdk::Error::StateTransitionBroadcastError(StateTransitionBroadcastError {
+            code: 1,
+            message: "no cause".into(),
+            cause: None,
+        })
+    };
+    let at_check_tx = || {
+        dash_sdk::Error::Protocol(dpp::ProtocolError::ConsensusError(Box::new(
+            present.clone(),
+        )))
+    };
+    // A consensus error DAPI sent that this client cannot decode.
+    let undecoded = || dash_sdk::Error::Protocol(dpp::ProtocolError::Generic("decode".into()));
+    let timeout = || dash_sdk::Error::Generic("timeout".into());
+    let already = Refusal::Reason("already_voted");
+
+    assert_eq!(broadcast_outcome(Ok(())), Broadcast::Accepted);
+    assert_eq!(
+        broadcast_outcome(Err(dash_sdk::Error::AlreadyExists("same bytes".into()))),
+        Broadcast::Accepted
+    );
+    assert_eq!(
+        broadcast_outcome(Err(at_check_tx())),
+        Broadcast::Refused(already)
+    );
+    assert_eq!(
+        broadcast_outcome(Err(dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(
+            at_check_tx()
+        )))),
+        Broadcast::Refused(already)
+    );
+    assert_eq!(
+        broadcast_outcome(Err(undecoded())),
+        Broadcast::Refused(Refusal::Reason("refused"))
+    );
+    assert_eq!(broadcast_outcome(Err(timeout())), Broadcast::Unknown);
+
+    let executed = |refusal| Cast::Refused {
+        refusal,
+        executed: true,
+    };
+    assert_eq!(proof_outcome(Ok(())), Cast::Counted);
+    assert_eq!(proof_outcome::<()>(Err(typed())), executed(already));
+    assert_eq!(
+        proof_outcome::<()>(Err(untyped())),
+        executed(Refusal::Reason("refused"))
+    );
+    assert_eq!(proof_outcome::<()>(Err(timeout())), Cast::Unknown);
 }
 
 fn poll() -> VotePoll {

@@ -118,10 +118,11 @@ impl FundingVote {
     }
 }
 
-/// Signs funding votes for one wallet, valid until the vault locks or
-/// changes unlock scope, or the hold of its grant's key drops. Obtain it
-/// from [`crate::Vault::vote_signer`] under a `Governance` grant. It has no
-/// other method: no `Signer`, no message, no public key beyond the key id.
+/// Signs funding votes and contested-name votes (MG-07) for one wallet,
+/// valid until the vault locks or changes unlock scope, or the hold of its
+/// grant's key drops. Obtain it from [`crate::Vault::vote_signer`] under a
+/// `Governance` grant. It has no other method: no `Signer`, no message, no
+/// public key beyond the key id.
 #[derive(Clone)]
 pub struct VoteSigner {
     /// Scope [`crate::SignerScope::MasternodeVoting`]: what it reaches, and

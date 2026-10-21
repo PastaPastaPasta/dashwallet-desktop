@@ -8,6 +8,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use dash_sdk::RequestSettings;
 use dash_sdk::drive::query::contested_resource_votes_given_by_identity_query::ContestedResourceVotesGivenByIdentityQuery;
 use dash_sdk::platform::FetchMany;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
@@ -51,6 +52,7 @@ use crate::masternode_keys::{MasternodeKeyInfo, MasternodeKeyRole};
 use crate::masternodes::AttachedKeyRole;
 use crate::masternodes::follow::{Notes, load_notes, read_list};
 use crate::platform::contest_watch::{ContestNet, ENDS_PAGE, POLL_PAGE, Poll, SdkContests};
+use crate::platform::lease::fence::HandOff;
 use crate::platform::lease::{
     AdmitRequest, ArtifactId, ArtifactKind, DispatchScope, Lease, Outcome, Verdict,
 };
@@ -78,8 +80,12 @@ pub(crate) trait NameVoteNet: ContestNet {
     ) -> impl Future<Output = Result<BTreeMap<String, NameChoice>, PlatformError>> + Send;
     /// The voter identity's next nonce.
     fn nonce(&self, voter: [u8; 32]) -> impl Future<Output = Result<u64, PlatformError>> + Send;
-    /// Broadcasts a signed transition and waits for its proof (D12).
-    fn cast(&self, bytes: Vec<u8>) -> impl Future<Output = Cast> + Send;
+    /// Broadcasts a signed transition: one attempt, no retry on another
+    /// node (D12). Runs under the permit's deadline (D16).
+    fn broadcast(&self, bytes: Vec<u8>) -> impl Future<Output = Broadcast> + Send;
+    /// Waits for the proof of a transition [`Broadcast::Accepted`] took
+    /// (D12), after the permit ended.
+    fn wait(&self, bytes: Vec<u8>) -> impl Future<Output = Cast> + Send;
     /// Why Platform refused the voting key: one identity fetch, only
     /// after such a refusal (D10). `None` when the fetch says nothing.
     fn diagnose(
@@ -87,6 +93,20 @@ pub(crate) trait NameVoteNet: ContestNet {
         pro_tx_hash: [u8; 32],
         voting_address: [u8; 20],
     ) -> impl Future<Output = Option<&'static str>> + Send;
+}
+
+/// What the one broadcast attempt of a transition came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Broadcast {
+    /// DAPI took it, or already held the same bytes: its proof is waited
+    /// for.
+    Accepted,
+    /// Platform's CheckTx refused it.
+    Refused(Refusal),
+    /// The request never left (a local error).
+    NotSent,
+    /// It may have reached a node; no answer came back.
+    Unknown,
 }
 
 /// What became of one broadcast transition.
@@ -152,8 +172,56 @@ fn consensus(e: &dash_sdk::Error) -> Option<&ConsensusError> {
     }
 }
 
+/// The broadcast's answer as [`Broadcast`]. `AlreadyExists` (the same
+/// bytes in the mempool) goes on to the wait, as rs-sdk's identity put
+/// does. A `Protocol` error with no consensus error is DAPI's refusal in
+/// a form this client cannot decode (rs-sdk `Error::from(DapiClientError)`):
+/// refused, not unsent.
+fn broadcast_outcome(answer: Result<(), dash_sdk::Error>) -> Broadcast {
+    let Err(e) = answer else {
+        return Broadcast::Accepted;
+    };
+    match (&e, consensus(&e)) {
+        (dash_sdk::Error::AlreadyExists(_), _) => Broadcast::Accepted,
+        (_, Some(c)) => Broadcast::Refused(refusal(c)),
+        (dash_sdk::Error::Protocol(_), None) => Broadcast::Refused(Refusal::Reason("refused")),
+        (_, None) => {
+            tracing::debug!(error = %e, "name vote broadcast");
+            Broadcast::Unknown
+        }
+    }
+}
+
+/// The proof wait's answer as [`Cast`]: a refusal in the block that
+/// executed the transition, typed or not, or no proof.
+fn proof_outcome<T>(answer: Result<T, dash_sdk::Error>) -> Cast {
+    let Err(e) = answer else {
+        return Cast::Counted;
+    };
+    let refusal = match (&e, consensus(&e)) {
+        (_, Some(c)) => refusal(c),
+        (dash_sdk::Error::StateTransitionBroadcastError(_), None) => Refusal::Reason("refused"),
+        (_, None) => {
+            tracing::debug!(error = %e, "name vote proof");
+            return Cast::Unknown;
+        }
+    };
+    Cast::Refused {
+        refusal,
+        executed: true,
+    }
+}
+
 /// The SDK behind [`NameVoteNet`].
 pub(crate) struct SdkNames(pub(crate) Arc<dash_sdk::Sdk>);
+
+impl SdkNames {
+    /// The vault's transition, decoded as Drive decodes it.
+    fn decode(&self, bytes: &[u8]) -> Option<StateTransition> {
+        StateTransition::deserialize_from_bytes_untrusted_exact_in_version(bytes, self.0.version())
+            .ok()
+    }
+}
 
 impl ContestNet for SdkNames {
     async fn page(&self, normalized: &str, limit: u16) -> Result<Poll, PlatformError> {
@@ -204,51 +272,34 @@ impl NameVoteNet for SdkNames {
             .await?)
     }
 
-    async fn cast(&self, bytes: Vec<u8>) -> Cast {
-        let Ok(st) = StateTransition::deserialize_from_bytes_untrusted_exact_in_version(
-            &bytes,
-            self.0.version(),
-        ) else {
-            return Cast::NotSent;
+    async fn broadcast(&self, bytes: Vec<u8>) -> Broadcast {
+        let Some(st) = self.decode(&bytes) else {
+            return Broadcast::NotSent;
+        };
+        // One node only: a refusal by a second node would not prove that
+        // the first did not take it (D12).
+        let settings = PutSettings {
+            request_settings: RequestSettings {
+                retries: Some(0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        broadcast_outcome(st.broadcast(&self.0, Some(settings)).await)
+    }
+
+    async fn wait(&self, bytes: Vec<u8>) -> Cast {
+        let Some(st) = self.decode(&bytes) else {
+            return Cast::Unknown;
         };
         let settings = PutSettings {
             wait_timeout: Some(WAIT_FOR_PROOF),
             ..Default::default()
         };
-        match st.broadcast(&self.0, Some(settings)).await {
-            // The same bytes are in the mempool: wait for them, as rs-sdk's
-            // `Waitable` does.
-            Ok(()) | Err(dash_sdk::Error::AlreadyExists(_)) => {}
-            Err(e) => {
-                return match consensus(&e) {
-                    Some(c) => Cast::Refused {
-                        refusal: refusal(c),
-                        executed: false,
-                    },
-                    None if matches!(e, dash_sdk::Error::Protocol(_)) => Cast::NotSent,
-                    None => {
-                        tracing::debug!(error = %e, "name vote broadcast");
-                        Cast::Unknown
-                    }
-                };
-            }
-        }
-        match st
-            .wait_for_response::<StateTransitionProofResult>(&self.0, Some(settings))
-            .await
-        {
-            Ok(_) => Cast::Counted,
-            Err(e) => match consensus(&e) {
-                Some(c) => Cast::Refused {
-                    refusal: refusal(c),
-                    executed: true,
-                },
-                None => {
-                    tracing::debug!(error = %e, "name vote proof");
-                    Cast::Unknown
-                }
-            },
-        }
+        proof_outcome(
+            st.wait_for_response::<StateTransitionProofResult>(&self.0, Some(settings))
+                .await,
+        )
     }
 
     async fn diagnose(
@@ -594,8 +645,10 @@ impl Governance {
     ) -> Result<Vec<NameVoteCast>, GovernanceError> {
         let label = contested_label(&label)?;
         let vault_choice = vault_choice(&choice)?;
+        // Format and repeats first; the count needs the list.
+        let targets = parse_masternodes(&masternodes, usize::MAX)?;
         let list = self.name_list().await?;
-        let targets = parse_masternodes(&masternodes, list.len())?;
+        parse_masternodes(&masternodes, list.len())?;
         let net = net?;
         check_open_poll(net, &label, &choice, vault_choice).await?;
         let allowed = net.votes_allowed();
@@ -785,15 +838,18 @@ impl<N: NameVoteNet> Batch<'_, N> {
                 refusal: Refusal::Reason(r),
                 ..
             } => r,
-            Cast::NotSent => "platform_unavailable",
+            // It never left: no transition to name.
+            Cast::NotSent => return Err(no_hash("platform_unavailable")),
             Cast::Unknown => "unconfirmed",
         };
         Err((Some(hash), rejected))
     }
 
     /// One signed transition through the dispatch fence (MG-05 §4, MG-07
-    /// §2): admitted under the lease's scope, then handed off by the
-    /// broadcast. A refusal of the fence is `Err` with no hash.
+    /// §2): admitted under the lease's scope, broadcast under a First's
+    /// permit deadline (so nothing leaves after a lock's drain), then
+    /// waited for after the permit ended. A refusal of the fence, or a
+    /// deadline that came first, is `Err` with no hash.
     async fn hand_off(&self, bytes: Vec<u8>, hash: [u8; 32]) -> Result<Cast, Rejection> {
         let wallet = self.lease.wallet();
         let table = Arc::clone(&self.lease.table);
@@ -811,32 +867,56 @@ impl<N: NameVoteNet> Batch<'_, N> {
                     .await
             })
             .await;
-        // A consensus refusal at the broadcast never left DAPI's CheckTx.
-        let outcome = |c: &Cast| match c {
-            Cast::Counted | Cast::Refused { executed: true, .. } => Outcome::Sent,
-            Cast::Refused {
-                executed: false, ..
-            }
-            | Cast::NotSent => Outcome::NotSent,
-            Cast::Unknown => Outcome::MaybeSent,
+        // A single attempt refused at CheckTx never entered a block.
+        let outcome = |b: &Broadcast| match b {
+            Broadcast::Accepted => Outcome::Sent,
+            Broadcast::Refused(_) | Broadcast::NotSent => Outcome::NotSent,
+            Broadcast::Unknown => Outcome::MaybeSent,
         };
-        match verdict {
+        let sent = match verdict {
             Verdict::First(permit) => {
-                let c = self.net.cast(bytes).await;
-                permit.finish(outcome(&c));
-                Ok(c)
+                let ready = async { Ok::<_, std::convert::Infallible>(()) };
+                let handed = (self.lease.table)
+                    .hand_off(Some(permit.deadline()), ready, |()| {
+                        self.net.broadcast(bytes.clone())
+                    })
+                    .await;
+                match handed {
+                    Ok(HandOff::Done(b)) => {
+                        permit.finish(outcome(&b));
+                        b
+                    }
+                    Ok(HandOff::NotEntered) => {
+                        permit.finish(Outcome::NotSent);
+                        return Err(no_hash("cancelled"));
+                    }
+                    Ok(HandOff::Cut) => {
+                        permit.finish(Outcome::MaybeSent);
+                        return Ok(Cast::Unknown);
+                    }
+                    Err(never) => match never {},
+                }
             }
             Verdict::Resend(guard) | Verdict::FirstUnleased(guard) => {
-                let c = self.net.cast(bytes).await;
-                guard.finish(outcome(&c));
-                Ok(c)
+                let b = self.net.broadcast(bytes.clone()).await;
+                guard.finish(outcome(&b));
+                b
             }
             // The lease was revoked: a lock ended the batch.
-            Verdict::Refused { .. } => Err(no_hash("cancelled")),
+            Verdict::Refused { .. } => return Err(no_hash("cancelled")),
             // The same transition is in flight, or its outcome is still
             // being resolved.
-            Verdict::Deferred => Err(no_hash("in_flight")),
-        }
+            Verdict::Deferred => return Err(no_hash("in_flight")),
+        };
+        Ok(match sent {
+            Broadcast::Accepted => self.net.wait(bytes).await,
+            Broadcast::Refused(refusal) => Cast::Refused {
+                refusal,
+                executed: false,
+            },
+            Broadcast::NotSent => Cast::NotSent,
+            Broadcast::Unknown => Cast::Unknown,
+        })
     }
 
     /// Records the votes Platform took; a failed write only lowers the
