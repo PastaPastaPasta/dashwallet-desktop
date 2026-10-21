@@ -16,12 +16,12 @@
 use dashcore::OutPoint;
 use dashcore::consensus::Encodable;
 use dashcore::hashes::{Hash, hash160, sha256d};
-use dashcore::secp256k1::{Message, PublicKey, SecretKey, ecdsa};
+use dashcore::secp256k1::{PublicKey, SecretKey};
 use key_wallet::Network;
 
 use crate::SignerError;
 use crate::paths::voting_key_path;
-use crate::signer::{KeyUse, VaultSigner, WalletSigner};
+use crate::signer::{KeyUse, VaultSigner, WalletSigner, sign_compact};
 use crate::types::WalletId;
 use crate::vault::masternode::ROLE_VOTING;
 
@@ -150,15 +150,8 @@ impl VoteSigner {
     /// `27 + recid + 4` (a compressed key), as Core's `SignCompact`, and
     /// signing is deterministic (RFC 6979).
     pub fn sign_vote(&self, key: &VotingKey, vote: &FundingVote) -> Result<[u8; 65], SignerError> {
-        let digest = Message::from_digest(vote.digest(self.network()));
-        self.with_secret(key, |secret| {
-            let sig = ecdsa::RecoverableSignature::sign_ecdsa_recoverable(digest, secret);
-            let (recid, rs) = sig.serialize_compact();
-            let mut out = [0u8; 65];
-            out[0] = 27 + recid.to_u8() + 4;
-            out[1..].copy_from_slice(&rs);
-            out
-        })
+        let digest = vote.digest(self.network());
+        self.with_secret(key, |secret| sign_compact(digest, secret))
     }
 
     fn with_secret<T>(

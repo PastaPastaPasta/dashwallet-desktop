@@ -1,20 +1,25 @@
 //! MG-05 (docs/design/MG-05-authorization.md §1–§3, §7 "dw-vault"): the
 //! `Governance` and `MasternodeOp` grants, the vote signer and the
-//! `MasternodeOwner` signer.
+//! `MasternodeOwner` signer, with MG-04's owner payload signer (MG-04 D11,
+//! D12, D38).
 
 mod common;
 
 use std::str::FromStr;
 
 use common::*;
+use dashcore::blockdata::transaction::special_transaction::provider_update_registrar::ProviderUpdateRegistrarPayload;
+use dashcore::blockdata::transaction::special_transaction::{
+    SpecialTransactionBasePayloadEncodable, TransactionPayload,
+};
 use dashcore::hashes::{Hash, hash160};
 use dashcore::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use dashcore::secp256k1::{Message, PublicKey, SecretKey};
 use dashcore::{OutPoint, Txid};
 use dw_vault::{
     Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, FundingOutcome, FundingVote, GrantKind,
-    GrantPurpose, GrantToken, SignerError, SignerScope, UnlockScope, Vault, VaultError, VoteSigner,
-    VotingKey, WalletSigner,
+    GrantPurpose, GrantToken, OwnerKey, SignerError, SignerScope, UnlockScope, Vault, VaultError,
+    VoteSigner, VotingKey, WalletSigner,
 };
 use key_wallet::Signer;
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
@@ -208,19 +213,25 @@ fn each_signer_takes_its_own_purpose_only() {
     );
 }
 
+/// MG-04 D11: the owner signer signs address keys' digests and messages,
+/// and no digest at an owner key: those sign owner payloads only.
 #[tokio::test]
-async fn the_owner_signer_signs_addresses_and_owner_keys_only() {
+async fn the_owner_signer_signs_addresses_and_no_owner_digest() {
     let fx = Fixture::new();
     let v = encrypted(&fx);
     let s = v
         .masternode_signer(&wallet(1), &token(&v, MN_OP, Credential::None))
         .unwrap();
     s.sign_ecdsa(&path(BIP44), [3; 32]).await.unwrap();
-    s.sign_ecdsa(&path("m/9'/1'/3'/2'/0"), [3; 32])
-        .await
-        .unwrap();
     s.sign_message(&path(BIP44), b"collateral").await.unwrap();
+    s.public_key(&path("m/9'/1'/3'/2'/0")).await.unwrap();
+    assert!(matches!(
+        s.sign_message(&path("m/9'/1'/3'/2'/0"), b"collateral")
+            .await,
+        Err(SignerError::PathNotAllowed(_))
+    ));
     for refused in [
+        "m/9'/1'/3'/2'/0",
         "m/9'/1'/3'/1'/0",
         "m/9'/1'/3'/3'/0",
         "m/9'/1'/5'/0'/0'/0'/0'",
@@ -372,4 +383,179 @@ async fn own_key_grants_sign_through_a_hold_until_it_drops() {
         owner.sign_ecdsa(&path(BIP44), [3; 32]).await,
         Err(SignerError::Locked)
     ));
+}
+
+// MARK: The owner payload signer (MG-04 D11, D12, D38)
+
+fn owner_signer(v: &Vault) -> dw_vault::VaultSigner {
+    v.masternode_signer(&wallet(1), &token(v, MN_OP, Credential::None))
+        .unwrap()
+}
+
+/// A ProUpRegTx payload of `pro_tx_hash` (wire order).
+fn update(pro_tx_hash: [u8; 32]) -> ProviderUpdateRegistrarPayload {
+    ProviderUpdateRegistrarPayload {
+        version: 2,
+        pro_tx_hash: Txid::from_byte_array(pro_tx_hash),
+        provider_mode: 0,
+        operator_public_key: [0x8b; 48].into(),
+        voting_key_hash: dashcore::PubkeyHash::from_byte_array([0x33; 20]),
+        script_payout: dashcore::ScriptBuf::new_p2pkh(&dashcore::PubkeyHash::from_byte_array(
+            [0x44; 20],
+        )),
+        inputs_hash: dashcore::hash_types::InputsHash::from_byte_array([0x55; 32]),
+        payload_sig: Vec::new(),
+    }
+}
+
+/// The key id `sig` recovers over `payload`'s hash (signature excluded).
+fn owner_of(sig: &[u8; 65], payload: &ProviderUpdateRegistrarPayload) -> [u8; 20] {
+    assert!((31..=34).contains(&sig[0]), "header {}", sig[0]);
+    let recid = RecoveryId::try_from(i32::from(sig[0] - 31)).unwrap();
+    let rsig = RecoverableSignature::from_compact(&sig[1..], recid).unwrap();
+    let public = rsig
+        .recover_ecdsa(Message::from_digest(
+            payload.base_payload_hash().to_byte_array(),
+        ))
+        .unwrap();
+    hash160::Hash::hash(&public.serialize()).to_byte_array()
+}
+
+#[test]
+fn a_keychain_owner_key_signs_the_payload_hash() {
+    let fx = Fixture::new();
+    let v = encrypted(&fx);
+    let s = owner_signer(&v);
+    let master = ExtendedPrivKey::new_master(v.network(), &[1; 64]).unwrap();
+    for index in [0, 19] {
+        let key = OwnerKey::Keychain { index };
+        let p = update(PRO_TX);
+        let sig = s.sign_update_registrar(&key, &p).unwrap();
+        let owner = master
+            .derive_priv(&path(&format!("m/9'/1'/3'/2'/{index}")))
+            .unwrap();
+        assert_eq!(
+            owner_of(&sig, &p),
+            hash160_of(&owner.private_key),
+            "{index}"
+        );
+        // The hash leaves the signature out: a payload already carrying one
+        // signs the same.
+        let mut signed = p.clone();
+        signed.payload_sig = sig.to_vec();
+        assert_eq!(s.sign_update_registrar(&key, &signed).unwrap(), sig);
+        let mut other = p.clone();
+        other.inputs_hash = dashcore::hash_types::InputsHash::from_byte_array([0x56; 32]);
+        assert_ne!(s.sign_update_registrar(&key, &other).unwrap(), sig);
+    }
+    assert!(matches!(
+        s.sign_update_registrar(&OwnerKey::Keychain { index: 1 << 31 }, &update(PRO_TX)),
+        Err(SignerError::PathNotAllowed(_))
+    ));
+}
+
+#[test]
+fn an_attached_owner_key_signs_its_masternodes_payloads_only() {
+    let fx = Fixture::new();
+    let v = encrypted(&fx);
+    v.store_masternode_key(&PRO_TX, "owner", &ATTACHED).unwrap();
+    v.store_masternode_key(&[0x5b; 32], "voting", &[0x08; 32])
+        .unwrap();
+    let s = owner_signer(&v);
+    let key = OwnerKey::Attached {
+        pro_tx_hash: PRO_TX,
+    };
+    let p = update(PRO_TX);
+    let sig = s.sign_update_registrar(&key, &p).unwrap();
+    assert_eq!(
+        owner_of(&sig, &p),
+        hash160_of(&SecretKey::from_secret_bytes(ATTACHED).unwrap())
+    );
+    // Another masternode's payload: refused before the key is read.
+    assert!(matches!(
+        s.sign_update_registrar(&key, &update([0x5b; 32])),
+        Err(SignerError::KeyMismatch(_))
+    ));
+    // Only an `owner` key: a voting key, or none at all, is no secret.
+    let voting_only = OwnerKey::Attached {
+        pro_tx_hash: [0x5b; 32],
+    };
+    assert_eq!(
+        s.sign_update_registrar(&voting_only, &update([0x5b; 32])),
+        Err(SignerError::NoSecret)
+    );
+    // A vote signer can't vote with the attached owner key either.
+    assert_eq!(
+        vote_signer(&v).key_id(&VotingKey::Attached {
+            pro_tx_hash: PRO_TX
+        }),
+        Err(SignerError::NoSecret)
+    );
+}
+
+/// D38: only a `MasternodeOp` grant's signer makes an owner signature; a
+/// spend grant's full signer reaches neither kind of owner key for it.
+#[test]
+fn only_a_masternode_op_grant_signs_owner_payloads() {
+    let fx = Fixture::new();
+    let v = encrypted(&fx);
+    v.store_masternode_key(&PRO_TX, "owner", &ATTACHED).unwrap();
+    let full = v
+        .signer(
+            &wallet(1),
+            &token(&v, GrantPurpose::Spend { max_duffs: 1 }, Credential::None),
+        )
+        .unwrap();
+    assert_eq!(full.scope(), SignerScope::Full);
+    for key in [
+        OwnerKey::Keychain { index: 0 },
+        OwnerKey::Attached {
+            pro_tx_hash: PRO_TX,
+        },
+    ] {
+        assert!(
+            matches!(
+                full.sign_update_registrar(&key, &update(PRO_TX)),
+                Err(SignerError::PathNotAllowed(_))
+            ),
+            "{key:?}"
+        );
+    }
+}
+
+/// dashd's own ProUpRegTx payloads (testdata/protx_update_registrar.json,
+/// dashd v24.0.0-rc.3): with dashd's owner key attached, the vault signs
+/// each exactly as dashd did (`CKey::SignCompact` is RFC 6979).
+#[test]
+fn attached_owner_signatures_equal_dashds() {
+    let path = format!(
+        "{}/../../../testdata/protx_update_registrar.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert!(doc["source"].as_str().unwrap().contains("v24.0.0-rc.3"));
+    let fx = Fixture::new();
+    let v = encrypted(&fx);
+    let s = owner_signer(&v);
+    let cases = doc["cases"].as_array().unwrap();
+    assert!(!cases.is_empty());
+    for c in cases {
+        let tx: dashcore::Transaction =
+            dashcore::consensus::deserialize(&hex::decode(c["tx_hex"].as_str().unwrap()).unwrap())
+                .unwrap();
+        let Some(TransactionPayload::ProviderUpdateRegistrarPayloadType(p)) =
+            tx.special_transaction_payload
+        else {
+            panic!("not a ProUpRegTx")
+        };
+        let owner = dashcore::PrivateKey::from_wif(c["owner_wif"].as_str().unwrap()).unwrap();
+        let hash = p.pro_tx_hash.to_byte_array();
+        v.store_masternode_key(&hash, "owner", &owner.inner.to_secret_bytes())
+            .unwrap();
+        let sig = s
+            .sign_update_registrar(&OwnerKey::Attached { pro_tx_hash: hash }, &p)
+            .unwrap();
+        assert_eq!(sig.to_vec(), p.payload_sig, "{}", c["kind"]);
+    }
 }

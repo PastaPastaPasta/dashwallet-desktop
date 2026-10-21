@@ -29,7 +29,7 @@ use crate::SignerError;
 use crate::paths::{self, is_bip44_path, is_coinjoin_path};
 use crate::types::{KeySource, WalletId};
 use crate::vault::Vault;
-use crate::vault::masternode::ROLE_VOTING;
+use crate::vault::masternode::{ROLE_OWNER, ROLE_VOTING};
 
 /// Which derivations a signer may use, and for what.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -77,12 +77,14 @@ pub enum SignerScope {
     /// address stay out of a vote signer's reach.
     MasternodeVoting,
     /// Masternode Core transactions (MG-05 §1): signatures and public keys
-    /// of BIP44 and BIP32 addresses (inputs, change) and of the keychain
-    /// owner keys `m/9'/coin'/3'/2'/i` (a ProUpRegTx's payload signature),
-    /// and `signmessage` with an address key (an existing collateral's
-    /// proof). Like `PlatformFunding`, the vault cannot see what it signs;
-    /// the engine checks the debit against the grant's cap first (MG-05
-    /// §2). No operator or platform-node key is in reach.
+    /// of BIP44 and BIP32 addresses (inputs, change), `signmessage` with an
+    /// address key (an existing collateral's proof), and a ProUpRegTx's
+    /// payload signature ([`KeyUse::OwnerPayload`]) with a keychain owner
+    /// key `m/9'/coin'/3'/2'/i` or the `owner` key attached to that
+    /// masternode (MG-04 D11, D12). An owner key signs no digest it is
+    /// given. Like `PlatformFunding`, the vault cannot see the debit of
+    /// what it signs; the engine checks it against the grant's cap first
+    /// (MG-05 §2). No operator or platform-node key is in reach.
     MasternodeOwner,
 }
 
@@ -107,6 +109,9 @@ pub(crate) enum KeyUse {
     /// A governance vote's key id, or a signature over the digest of a
     /// funding vote the vault builds ([`crate::VoteSigner`]).
     Vote,
+    /// A ProUpRegTx's owner signature over the hash of a payload the vault
+    /// hashes itself ([`VaultSigner::sign_update_registrar`]).
+    OwnerPayload,
 }
 
 impl SignerScope {
@@ -127,7 +132,9 @@ impl SignerScope {
         );
         let sign_or_public_key = matches!(key_use, KeyUse::Sign | KeyUse::PublicKey);
         match self {
-            SignerScope::Full => true,
+            // An owner payload signature comes from a `MasternodeOp` grant
+            // only (MG-04 D38).
+            SignerScope::Full => key_use != KeyUse::OwnerPayload,
             SignerScope::CoinJoinOnly => coinjoin_use && is_coinjoin_path(path, network),
             SignerScope::CoinJoinFunding => {
                 coinjoin_use && (is_coinjoin_path(path, network) || is_bip44_path(path, network))
@@ -136,7 +143,7 @@ impl SignerScope {
                 sign_or_public_key && paths::identity_auth_key(path, network).is_some()
             }
             SignerScope::DashPayCrypto => match key_use {
-                KeyUse::Sign | KeyUse::Message | KeyUse::Vote => false,
+                KeyUse::Sign | KeyUse::Message | KeyUse::Vote | KeyUse::OwnerPayload => false,
                 KeyUse::PublicKey | KeyUse::ExtendedPublicKey => {
                     paths::is_dashpay_receiving_account(path, network)
                         || paths::is_auto_accept_key(path, network)
@@ -162,11 +169,11 @@ impl SignerScope {
             SignerScope::MasternodeOwner => {
                 let address =
                     paths::is_bip44_address(path, network) || paths::is_bip32_address(path);
+                let owner = paths::is_owner_key(path, network);
                 match key_use {
-                    KeyUse::Sign | KeyUse::PublicKey => {
-                        address || paths::is_owner_key(path, network)
-                    }
-                    KeyUse::Message => address,
+                    KeyUse::Sign | KeyUse::Message => address,
+                    KeyUse::PublicKey => address || owner,
+                    KeyUse::OwnerPayload => owner,
                     _ => false,
                 }
             }
@@ -175,10 +182,15 @@ impl SignerScope {
 
     /// Whether this scope may use the key attached for `role` to a tracked
     /// masternode for `key_use` (MG-01 D7): the `voting` key, for
-    /// [`KeyUse::Vote`] under [`SignerScope::MasternodeVoting`]. Nothing
-    /// else; MG-04 adds the owner key with its first caller.
+    /// [`KeyUse::Vote`] under [`SignerScope::MasternodeVoting`], and the
+    /// `owner` key, for [`KeyUse::OwnerPayload`] under
+    /// [`SignerScope::MasternodeOwner`] (MG-04 D12). Nothing else.
     pub(crate) fn allows_attached(&self, key_use: KeyUse, role: &str) -> bool {
-        *self == SignerScope::MasternodeVoting && key_use == KeyUse::Vote && role == ROLE_VOTING
+        match self {
+            SignerScope::MasternodeVoting => key_use == KeyUse::Vote && role == ROLE_VOTING,
+            SignerScope::MasternodeOwner => key_use == KeyUse::OwnerPayload && role == ROLE_OWNER,
+            _ => false,
+        }
     }
 }
 
@@ -199,6 +211,18 @@ pub trait WalletSigner: ExtendedPubKeySigner + Signer<Error = SignerError> {
 }
 
 const METHODS: &[SignerMethod] = &[SignerMethod::Digest];
+
+/// Core's `CKey::SignCompact` over `digest` for a compressed key:
+/// `27 + 4 + recid ‖ r ‖ s`, deterministic (RFC 6979).
+pub(crate) fn sign_compact(digest: [u8; 32], secret: &SecretKey) -> [u8; 65] {
+    let sig =
+        ecdsa::RecoverableSignature::sign_ecdsa_recoverable(Message::from_digest(digest), secret);
+    let (recid, rs) = sig.serialize_compact();
+    let mut out = [0u8; 65];
+    out[0] = 27 + recid.to_u8() + 4;
+    out[1..].copy_from_slice(&rs);
+    out
+}
 
 /// A signer for one wallet, valid until the vault locks or changes unlock
 /// scope. Obtain it from [`Vault::signer`] (after redeeming a grant) or
@@ -499,7 +523,7 @@ mod tests {
     }
 
     const T: Network = Network::Testnet;
-    const ALL_USES: [KeyUse; 8] = [
+    const ALL_USES: [KeyUse; 9] = [
         KeyUse::Sign,
         KeyUse::Message,
         KeyUse::PublicKey,
@@ -508,6 +532,7 @@ mod tests {
         KeyUse::ContactInfo,
         KeyUse::Export,
         KeyUse::Vote,
+        KeyUse::OwnerPayload,
     ];
 
     fn uses(scope: SignerScope, p: &str) -> Vec<KeyUse> {
@@ -526,9 +551,13 @@ mod tests {
         assert!(std::mem::needs_drop::<ExtendedPrivKey>());
     }
 
+    /// Everything but an owner payload signature, which only a
+    /// `MasternodeOp` grant's signer makes (MG-04 D38).
     #[test]
-    fn full_scope_allows_everything() {
-        assert_eq!(uses(SignerScope::Full, "m/0"), ALL_USES.to_vec());
+    fn full_scope_allows_everything_but_owner_payloads() {
+        for p in ["m/0", "m/9'/1'/3'/2'/0"] {
+            assert_eq!(uses(SignerScope::Full, p), ALL_USES[..8].to_vec(), "{p}");
+        }
     }
 
     #[test]
@@ -664,6 +693,10 @@ mod tests {
             (SignerScope::Full, KeyUse::Vote, "voting"),
             (SignerScope::MasternodeOwner, KeyUse::Sign, "owner"),
             (SignerScope::MasternodeOwner, KeyUse::Vote, "voting"),
+            (SignerScope::MasternodeOwner, KeyUse::OwnerPayload, "voting"),
+            (SignerScope::MasternodeOwner, KeyUse::OwnerPayload, "payout"),
+            (SignerScope::Full, KeyUse::OwnerPayload, "owner"),
+            (s, KeyUse::OwnerPayload, "owner"),
         ] {
             assert!(
                 !scope.allows_attached(key_use, role),
@@ -672,8 +705,10 @@ mod tests {
         }
     }
 
+    /// MG-04 D11: an owner key signs owner payloads only, no digest it is
+    /// given; the attached owner key likewise (D12).
     #[test]
-    fn masternode_owner_signs_addresses_and_owner_keys() {
+    fn masternode_owner_signs_addresses_and_owner_payloads() {
         let s = SignerScope::MasternodeOwner;
         let address = vec![KeyUse::Sign, KeyUse::Message, KeyUse::PublicKey];
         assert_eq!(uses(s, "m/44'/1'/0'/0/0"), address);
@@ -681,8 +716,23 @@ mod tests {
         assert_eq!(uses(s, "m/0'/1/3"), address);
         assert_eq!(
             uses(s, "m/9'/1'/3'/2'/4"),
-            vec![KeyUse::Sign, KeyUse::PublicKey]
+            vec![KeyUse::PublicKey, KeyUse::OwnerPayload]
         );
+        assert!(s.allows_attached(KeyUse::OwnerPayload, "owner"));
+        for other in [
+            SignerScope::CoinJoinOnly,
+            SignerScope::CoinJoinFunding,
+            SignerScope::PlatformIdentity,
+            SignerScope::DashPayCrypto,
+            SignerScope::PlatformFunding { max_duffs: 1 },
+            SignerScope::MasternodeVoting,
+            SignerScope::Full,
+        ] {
+            assert!(
+                !other.allows(KeyUse::OwnerPayload, &path("m/9'/1'/3'/2'/0"), T),
+                "{other:?}"
+            );
+        }
         for other in [
             "m/9'/1'/3'/1'/0",  // voting
             "m/9'/1'/3'/3'/0",  // operator
