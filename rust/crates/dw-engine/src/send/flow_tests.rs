@@ -1490,16 +1490,38 @@ fn a_payment_to_an_own_provider_key_leaves_the_wallet() {
 /// MG-04 D55 (review r3 m-1), across every account the wallet derives: a
 /// payment to any keys-only account's address (identity, asset-lock,
 /// provider) leaves the wallet, so a fee-only grant refuses it; one to a
-/// funds account's address (BIP44/BIP32, CoinJoin) stays, so the same grant
-/// takes it and the output shows as the wallet's.
+/// funds account's address (BIP44/BIP32, CoinJoin, DashPay receiving) stays,
+/// so the same grant takes it and the output shows as the wallet's.
 #[test]
 fn only_a_funds_account_keeps_a_payment_in_the_wallet() {
+    use key_wallet::account::AccountType;
+    use key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
     let f = fixture(false);
     let (id, inner) = (f.wallet, Arc::clone(&f.session));
     let accounts = f
         .engine
         .block_on(f.session.on_runtime(async move {
             let wallet = inner.wallet(&id).await?;
+            // The fixture derives no DashPay account: add a receiving one
+            // (a contact pays the wallet there).
+            let network = dashcore::Network::Regtest;
+            let master = ExtendedPrivKey::new_master(network, &[7; 32]).unwrap();
+            let receiving = key_wallet::managed_account::ManagedCoreFundsAccount::from_account(
+                &key_wallet::Account {
+                    parent_wallet_id: None,
+                    account_type: AccountType::DashpayReceivingFunds {
+                        index: 0,
+                        user_identity_id: [1; 32],
+                        friend_identity_id: [2; 32],
+                    },
+                    network,
+                    account_xpub: ExtendedPubKey::from_priv(&master),
+                    is_watch_only: true,
+                },
+            );
+            (wallet.state_mut().await.core_wallet.accounts)
+                .insert_funds_bearing_account(receiving)
+                .unwrap();
             let state = wallet.state().await;
             let mut accounts = Vec::new();
             for account in state.core_wallet.all_managed_accounts() {
@@ -1550,7 +1572,10 @@ fn only_a_funds_account_keeps_a_payment_in_the_wallet() {
             "ProviderVotingKeys",
         ]
     );
-    assert_eq!(names(true), ["CoinJoin", "Standard"]);
+    assert_eq!(
+        names(true),
+        ["CoinJoin", "DashpayReceivingFunds", "Standard"]
+    );
 
     for (seed, (name, address, funds)) in (10u8..).zip(&accounts) {
         f.credit(seed, COIN);
