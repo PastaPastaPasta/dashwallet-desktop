@@ -202,7 +202,8 @@ fn set(path: &'static [&'static str], value: Json) -> impl FnOnce(&mut Json) {
 fn test_QT_126_reader_refuses_as_dash_qt_and_the_wallet() {
     use EnvelopeError::*;
     let draft = at(Stage::Draft);
-    let cases: Vec<(&str, Box<dyn FnOnce(&mut Json)>, EnvelopeError)> = vec![
+    type Case = (&'static str, Box<dyn FnOnce(&mut Json)>, EnvelopeError);
+    let cases: Vec<Case> = vec![
         ("type", Box::new(set(&["type"], Json::str("x"))), NotShared),
         (
             "version 2",
@@ -556,4 +557,405 @@ fn test_QT_126_combined_and_signed_stages_check_signatures_and_inputs() {
     unsigned.protx = at(Stage::Combined).protx;
     assert_eq!(reparse(&unsigned), Err(EnvelopeError::Parse("scriptSig")));
     assert!(check_frozen(&at(Stage::Broadcast)).is_ok());
+}
+
+mod merges {
+    use super::super::merge::*;
+    use super::*;
+    use crate::shared::{ProRegTxV3, SpecialTx};
+
+    /// The coordinator's (s0's) Invitation: its own row and contribution,
+    /// the other rows empty.
+    fn invitation() -> Session {
+        let (mut session, _) = draft();
+        for share in &mut session.shares[1..] {
+            share.owner_address.clear();
+            share.refund_address.clear();
+            share.reward_address.clear();
+        }
+        session.contributions.truncate(1);
+        session.coordinator_label = "s0".into();
+        rebuild_funding_tx(&mut session).unwrap();
+        session
+    }
+
+    /// Party `i`'s Details: the Invitation with its row and contribution.
+    fn reply(i: usize) -> Session {
+        let (full, _) = draft();
+        let mut session = invitation();
+        session.shares[i] = full.shares[i].clone();
+        session.contributions.push(full.contributions[i].clone());
+        rebuild_funding_tx(&mut session).unwrap();
+        session.revision += 1;
+        session
+    }
+
+    #[test]
+    fn test_QT_126_replies_absorb_in_any_order_to_dashds_funding() {
+        let one = absorb_draft_reply(&invitation(), &reply(1), "s0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(one.revision, 2);
+        let forward = absorb_draft_reply(&one, &reply(2), "s0").unwrap().unwrap();
+        let two = absorb_draft_reply(&invitation(), &reply(2), "s0")
+            .unwrap()
+            .unwrap();
+        let backward = absorb_draft_reply(&two, &reply(1), "s0").unwrap().unwrap();
+        assert_eq!(forward, backward);
+        assert_eq!(forward.revision, 3);
+        let (full, _) = draft();
+        assert_eq!(forward.funding_tx, full.funding_tx);
+        assert_eq!(forward.contributions, full.contributions);
+        // Re-absorbing a reply already in hand changes nothing, and doesn't bump.
+        assert_eq!(absorb_draft_reply(&forward, &reply(1), "s0"), Ok(None));
+        // An older-revision reply is still absorbed: the revision isn't compared.
+        let mut old = reply(2);
+        old.revision = 1;
+        assert!(absorb_draft_reply(&one, &old, "s0").unwrap().is_some());
+    }
+
+    #[test]
+    fn test_QT_126_absorb_refuses_what_dash_qt_and_d15_d33_refuse() {
+        let ours = absorb_draft_reply(&invitation(), &reply(1), "s0")
+            .unwrap()
+            .unwrap();
+        let fresh = invitation();
+        let cases: Vec<(&str, Session, &Session, Refusal)> = vec![
+            (
+                "other session",
+                {
+                    let mut r = reply(2);
+                    r.session_id = "cd".repeat(32);
+                    r
+                },
+                &ours,
+                Refusal::OtherSession,
+            ),
+            (
+                "terms",
+                {
+                    let mut r = reply(2);
+                    r.terms.early_penalty += 1;
+                    r
+                },
+                &ours,
+                Refusal::TermsChanged,
+            ),
+            (
+                "amount",
+                {
+                    let mut r = reply(2);
+                    r.shares[2].amount += 1;
+                    r
+                },
+                &ours,
+                Refusal::TermsChanged,
+            ),
+            (
+                "label",
+                {
+                    let mut r = reply(2);
+                    r.shares[0].label = "x".into();
+                    r
+                },
+                &ours,
+                Refusal::TermsChanged,
+            ),
+            (
+                "stale coordinator contribution (D33)",
+                {
+                    let mut r = reply(2);
+                    r.contributions[0].change.as_mut().unwrap().amount -= 1;
+                    r
+                },
+                &ours,
+                Refusal::Older,
+            ),
+            (
+                "row already filled",
+                {
+                    let mut r = reply(1);
+                    r.shares[1].refund_address = r.shares[0].refund_address.clone();
+                    r
+                },
+                &ours,
+                Refusal::Conflict,
+            ),
+            (
+                "fills a row its contribution doesn't name (D15)",
+                {
+                    let mut r = reply(2);
+                    r.shares[1] = Share {
+                        label: "s1".into(),
+                        ..ours.shares[1].clone()
+                    };
+                    r.shares[0].reward_address.clear();
+                    r.shares[1].reward_address = ours.shares[0].owner_address.clone();
+                    r
+                },
+                &ours,
+                Refusal::Conflict,
+            ),
+            (
+                "two new contributions (D15)",
+                {
+                    let mut r = reply(2);
+                    r.contributions.push(draft().0.contributions[1].clone());
+                    r
+                },
+                &fresh,
+                Refusal::Conflict,
+            ),
+            (
+                "a row without a contribution (D15)",
+                {
+                    let mut r = reply(2);
+                    r.contributions.pop();
+                    r
+                },
+                &ours,
+                Refusal::Conflict,
+            ),
+            (
+                "reused input",
+                {
+                    let mut r = reply(2);
+                    r.contributions[1].inputs = r.contributions[0].inputs.clone();
+                    r
+                },
+                &ours,
+                Refusal::Conflict,
+            ),
+            ("frozen", at(Stage::Frozen), &ours, Refusal::Conflict),
+        ];
+        for (name, theirs, ours, want) in cases {
+            assert_eq!(absorb_draft_reply(ours, &theirs, "s0"), Err(want), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_QT_126_locked_terms_are_adopted_only_with_our_details_unchanged() {
+        let ours = reply(1);
+        let locked = at(Stage::Frozen);
+        assert_eq!(adopt_locked_terms(&ours, &locked), Ok(locked.clone()));
+        assert_eq!(
+            adopt_locked_terms(&ours, &at(Stage::Signing)).map(|s| s.stage),
+            Ok(Stage::Signing)
+        );
+        type Edit = fn(&mut Session);
+        let cases: &[(&str, Edit, Refusal)] = &[
+            (
+                "terms",
+                |s| s.terms.voting_address.clear(),
+                Refusal::TermsChanged,
+            ),
+            (
+                "our refund",
+                |s| s.shares[1].refund_address.clear(),
+                Refusal::RowChanged,
+            ),
+            (
+                "coordinator's row",
+                |s| s.shares[0].reward_address.clear(),
+                Refusal::RowChanged,
+            ),
+            (
+                "our contribution",
+                |s| s.contributions[1].inputs[0].sequence = 0,
+                Refusal::ContributionChanged,
+            ),
+            (
+                "coordinator's contribution",
+                |s| s.contributions[0].change = None,
+                Refusal::ContributionChanged,
+            ),
+            (
+                "ours missing",
+                |s| {
+                    s.contributions.remove(1);
+                },
+                Refusal::ContributionChanged,
+            ),
+            ("draft", |s| s.stage = Stage::Draft, Refusal::Conflict),
+            ("combined", |s| s.stage = Stage::Combined, Refusal::Conflict),
+        ];
+        for (name, f, want) in cases {
+            let mut theirs = locked.clone();
+            f(&mut theirs);
+            assert_eq!(adopt_locked_terms(&ours, &theirs), Err(*want), "{name}");
+        }
+        // M-1: our own row and contribution, nothing else.
+        assert_eq!(own_unchanged(&ours, &locked, 1), Ok(()));
+        let mut theirs = locked.clone();
+        theirs.shares[1].reward_address = theirs.shares[1].refund_address.clone();
+        assert_eq!(own_unchanged(&ours, &theirs, 1), Err(Refusal::RowChanged));
+        theirs = locked.clone();
+        theirs.contributions[1].change.as_mut().unwrap().amount -= 1;
+        assert_eq!(
+            own_unchanged(&ours, &theirs, 1),
+            Err(Refusal::ContributionChanged)
+        );
+        theirs.contributions[0].change = None;
+        assert_eq!(own_unchanged(&ours, &theirs, 2), Err(Refusal::RowChanged));
+    }
+
+    fn with_sigs(stage: Stage, keep: &[i32]) -> Session {
+        let mut s = at(Stage::Signing);
+        s.sigs.retain(|sig| keep.contains(&sig.share_index));
+        s.stage = if keep.is_empty() {
+            Stage::Frozen
+        } else {
+            stage
+        };
+        s
+    }
+
+    #[test]
+    fn test_QT_126_approvals_union_verified_and_ascending() {
+        let (merged, skipped) = merge_approvals(
+            &with_sigs(Stage::Frozen, &[]),
+            &with_sigs(Stage::Signing, &[2, 0]),
+        )
+        .unwrap();
+        assert!(skipped.is_empty());
+        assert_eq!(merged.stage, Stage::Signing);
+        assert_eq!(
+            merged
+                .sigs
+                .iter()
+                .map(|s| s.share_index)
+                .collect::<Vec<_>>(),
+            [0, 2]
+        );
+        let (all, _) = merge_approvals(&merged, &with_sigs(Stage::Signing, &[1, 2])).unwrap();
+        assert_eq!(all, at(Stage::Signing));
+
+        let mut bad = with_sigs(Stage::Signing, &[1]);
+        bad.sigs[0].signature = at(Stage::Signing).sigs[0].signature.clone();
+        let mut different = with_sigs(Stage::Signing, &[0]);
+        different.sigs[0].signature = encode_base64(&[0; 65]);
+        let mut out_of_range = with_sigs(Stage::Signing, &[]);
+        out_of_range.sigs.push(Signature {
+            share_index: 7,
+            signature: String::new(),
+        });
+        let ours = with_sigs(Stage::Signing, &[0]);
+        let (_, skipped) = merge_approvals(&ours, &bad).unwrap();
+        assert_eq!(skipped, [SkippedSignature::Invalid { share: 1 }]);
+        // An invalid signature is reported as invalid even for a share we hold.
+        let (_, skipped) = merge_approvals(&ours, &different).unwrap();
+        assert_eq!(skipped, [SkippedSignature::Invalid { share: 0 }]);
+        let (_, skipped) = merge_approvals(&ours, &out_of_range).unwrap();
+        assert_eq!(skipped, [SkippedSignature::Invalid { share: 7 }]);
+
+        let mut other_terms = with_sigs(Stage::Signing, &[1]);
+        other_terms.consent_hash = "00".repeat(32);
+        assert_eq!(merge_approvals(&ours, &other_terms), Err(Refusal::Conflict));
+        let mut later = with_sigs(Stage::Signing, &[1]);
+        later.revision += 1;
+        assert_eq!(merge_approvals(&ours, &later), Err(Refusal::Conflict));
+    }
+
+    #[test]
+    fn test_QT_126_a_different_valid_signature_for_a_held_share_is_skipped() {
+        // Ours holds share 0's approval under another (garbled but stored)
+        // value; theirs carries the valid one: dash-qt's stale-version case.
+        let mut ours = with_sigs(Stage::Signing, &[0]);
+        ours.sigs[0].signature = encode_base64(&[5; 65]);
+        let (merged, skipped) = merge_approvals(&ours, &with_sigs(Stage::Signing, &[0])).unwrap();
+        assert_eq!(skipped, [SkippedSignature::Different { share: 0 }]);
+        assert_eq!(merged.sigs, ours.sigs);
+    }
+
+    fn edit_tx(hex_tx: &str, f: impl FnOnce(&mut SpecialTx)) -> String {
+        let mut tx = SpecialTx::from_bytes(&hex::decode(hex_tx).unwrap()).unwrap();
+        f(&mut tx);
+        hex::encode(tx.to_bytes())
+    }
+
+    #[test]
+    fn test_QT_126_combined_copy_is_taken_only_with_our_approvals_embedded() {
+        let combined = at(Stage::Combined);
+        assert_eq!(
+            adopt_combined(&at(Stage::Signing), &combined),
+            Ok(combined.clone())
+        );
+        assert_eq!(
+            adopt_combined(&with_sigs(Stage::Signing, &[0, 1]), &combined),
+            Err(Refusal::Conflict)
+        );
+        let mut tampered = combined.clone();
+        tampered.protx = edit_tx(&combined.protx, |tx| {
+            let mut p = ProRegTxV3::from_payload(&tx.payload).unwrap();
+            p.join_sigs[1][5] ^= 1;
+            tx.payload = p.to_payload().unwrap();
+        });
+        assert_eq!(
+            adopt_combined(&at(Stage::Signing), &tampered),
+            Err(Refusal::BadSignature { share: 1 })
+        );
+        let mut other = combined.clone();
+        other.protx = edit_tx(&combined.protx, |tx| tx.input[0].sequence = 0);
+        assert_eq!(
+            adopt_combined(&at(Stage::Signing), &other),
+            Err(Refusal::Conflict)
+        );
+    }
+
+    /// The combined transaction with dashd's signatures on `inputs`.
+    fn signed_on(inputs: &[usize]) -> Session {
+        let c = case("three_shares_early");
+        let signed = SpecialTx::from_bytes(&hex::decode(s(&c["tx_hex"])).unwrap()).unwrap();
+        let mut session = at(Stage::Combined);
+        session.protx = edit_tx(&session.protx, |tx| {
+            for &i in inputs {
+                tx.input[i].script_sig = signed.input[i].script_sig.clone();
+            }
+        });
+        session
+    }
+
+    #[test]
+    fn test_QT_126_funding_inputs_merge_per_input() {
+        let merged = merge_funding_inputs(&signed_on(&[1]), &signed_on(&[2]), &[], false).unwrap();
+        assert_eq!(merged, signed_on(&[1, 2]));
+        assert_eq!(merged.stage, Stage::Combined);
+        let all = merge_funding_inputs(&merged, &signed_on(&[0]), &[], false).unwrap();
+        assert_eq!(all.stage, Stage::FundingSigned);
+        assert_eq!(all.protx, at(Stage::FundingSigned).protx);
+
+        // m-7: a scriptSig on our own input that we didn't make is never taken.
+        let own = SpecialTx::from_bytes(&hex::decode(&merged.protx).unwrap())
+            .unwrap()
+            .input[0]
+            .previous_output;
+        assert_eq!(
+            merge_funding_inputs(&merged, &signed_on(&[0]), &[own], false),
+            Err(Refusal::ForeignInput)
+        );
+        assert!(merge_funding_inputs(&signed_on(&[0]), &signed_on(&[0, 1]), &[own], false).is_ok());
+
+        // A foreign input's later scriptSig replaces the earlier until out_at.
+        let mut other = signed_on(&[1]);
+        other.protx = edit_tx(&other.protx, |tx| {
+            tx.input[1].script_sig = vec![0x51].into()
+        });
+        let replaced = merge_funding_inputs(&signed_on(&[1]), &other, &[], false).unwrap();
+        assert_eq!(replaced.protx, other.protx);
+        assert_eq!(
+            merge_funding_inputs(&signed_on(&[1]), &other, &[], true),
+            Err(Refusal::Conflict)
+        );
+
+        let mut changed = signed_on(&[2]);
+        changed.protx = edit_tx(&changed.protx, |tx| tx.lock_time = 1);
+        assert_eq!(
+            merge_funding_inputs(&signed_on(&[1]), &changed, &[], false),
+            Err(Refusal::Conflict)
+        );
+        assert_eq!(
+            merge_funding_inputs(&at(Stage::Signing), &signed_on(&[1]), &[], false),
+            Err(Refusal::Conflict)
+        );
+    }
 }

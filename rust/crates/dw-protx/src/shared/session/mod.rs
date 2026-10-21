@@ -16,6 +16,7 @@ use super::json::Json;
 use crate::params::MAX_SHARES;
 
 pub mod funding;
+pub mod merge;
 
 /// `ENVELOPE_TYPE` (`mnsharesession.cpp:35`).
 pub const SESSION_TYPE: &str = "dash-shared-mn-session";
