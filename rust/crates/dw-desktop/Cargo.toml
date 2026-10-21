@@ -15,7 +15,7 @@ tracing = { workspace = true }
 rqrr = { version = "0.9", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
 # Log export (IOS-112): deflate through flate2's pure-Rust backend.
-zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

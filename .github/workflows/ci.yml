@@ -5,7 +5,8 @@
 #   feature build that it works); rust-linux then regenerates the Tauri bindings
 #   (apps/desktop/src/api/generated and the E0-13 facade coverage table) and fails if they
 #   differ from the committed ones. lint also runs `cargo deny check advisories` (BL-151,
-#   rust/deny.toml) so a RustSec advisory against Cargo.lock fails CI.
+#   rust/deny.toml) so a RustSec advisory against Cargo.lock fails CI. lint first checks that
+#   every tracked path can be checked out on Windows (ci/github/windows-paths.py).
 # - desktop-renderer: the Tauri renderer (apps/desktop): design tokens, tsc, vitest, the
 #   production and fixture bundles (scripts/check-bundle.mjs: neither fixture marker and none of
 #   the fixture sources' literals in production), the guard's negative control, and the test of
@@ -74,6 +75,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Tracked paths are valid on Windows
+        working-directory: .
+        run: ci/github/windows-paths.py
       - name: protoc
         working-directory: .
         run: ci/github/install-protoc.sh

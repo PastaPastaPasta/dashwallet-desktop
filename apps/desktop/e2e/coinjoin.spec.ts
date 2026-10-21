@@ -33,6 +33,37 @@ async function openSettings(page: Page, scenario: string, theme: Theme = "light"
   return errors;
 }
 
+/** Records every value the page gives the checkbox `testId` from now on, through the setter React
+ * already wraps on it. The returned read waits until the settings were read again after the last
+ * write, then one more task so that read's render has run (the query notifies on a timeout). The
+ * fixture answers without a timer here (no `delay`), so once the read is called its answer and
+ * that timeout are already queued. */
+async function recordChecked(page: Page, testId: string) {
+  const shown = await page.evaluateHandle((testId) => {
+    const el = document.querySelector<HTMLInputElement>(`[data-testid="${testId}"]`)!;
+    const { get, set } = Object.getOwnPropertyDescriptor(el, "checked") ?? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked")!;
+    const shown: boolean[] = [];
+    Object.defineProperty(el, "checked", {
+      configurable: true,
+      get,
+      set(v: boolean) {
+        shown.push(v);
+        set!.call(this, v);
+      },
+    });
+    return shown;
+  }, testId);
+  return async () => {
+    await expect
+      .poll(() => page.evaluate(() => window.__dwFixture!.calls.lastIndexOf("coinjoin_settings") > window.__dwFixture!.calls.lastIndexOf("set_coinjoin_settings")))
+      .toBe(true);
+    return shown.evaluate(async (s) => {
+      await new Promise((r) => setTimeout(r, 0));
+      return s;
+    });
+  };
+}
+
 const status = (page: Page) => page.getByTestId("coinjoin-status");
 const card = (page: Page) => page.getByTestId("coinjoin-card");
 const calls = (page: Page) => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "start_mixing" || c === "stop_mixing"));
@@ -290,11 +321,14 @@ test("D11: Settings ▸ CoinJoin checks, saves and restores the network's option
   // The level shows the custom value.
   await navigate(page, "coinJoin");
   await expect(page.getByTestId("coinjoin-level-custom")).toContainText("Custom: 6 rounds");
-  // Turning CoinJoin off stops the mixing wallet.
+  // Turning CoinJoin off stops the mixing wallet. The box stays off while its write and the read
+  // after it land: it once flipped back on for the frame before that read reached the form.
   await navigate(page, "settings");
+  const shown = await recordChecked(page, "settings-coinjoin-enabled");
   await field("enabled").uncheck();
   await expect(field("enabled")).not.toBeChecked();
   expect(await page.evaluate((w) => window.__dwFixture!.world.coinjoin.mixers[w].stopReason, FIXTURE_WALLET_ID)).toBe("disabled");
+  expect(await shown()).not.toContain(true);
   // Restore defaults, after a confirmation.
   await field("restore").click();
   await page.getByTestId("settings-coinjoin-restore-confirm").click();
