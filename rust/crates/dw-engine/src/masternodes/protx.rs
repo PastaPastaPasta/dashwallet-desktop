@@ -144,10 +144,11 @@ impl Masternodes {
                 let snapshot = s.coin_snapshot(&fence, &w).await?;
                 let existing = match &reg.collateral {
                     Collateral::Existing { outpoint } => {
+                        let fee_held = s.unseen_proposal_fee_inputs(&wallet)?;
                         let state = w.state().await;
                         Some(existing_coin(
                             &snapshot,
-                            &s.unseen_proposal_fee_inputs(&wallet)?,
+                            &fee_held,
                             &state.core_wallet,
                             *outpoint,
                             reg.evo(),
@@ -816,10 +817,11 @@ impl NetworkSession {
             return Ok(HashSet::new());
         };
         let snapshot = self.coin_snapshot(fence, w).await?;
+        let fee_held = self.unseen_proposal_fee_inputs(&wallet)?;
         let state = w.state().await;
         let (coin, _, _) = existing_coin(
             &snapshot,
-            &self.unseen_proposal_fee_inputs(&wallet)?,
+            &fee_held,
             &state.core_wallet,
             *outpoint,
             reg.evo(),

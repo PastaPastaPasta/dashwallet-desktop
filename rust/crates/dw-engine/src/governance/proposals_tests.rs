@@ -1199,6 +1199,20 @@ fn an_unseen_fees_coins_are_held_from_a_collateral() {
     assert!(held(&p).is_empty(), "the wallet reads them spent");
 }
 
+/// A failed fee has no resend, so it holds none of its coins.
+#[test]
+fn a_failed_fees_coins_are_not_held() {
+    let p = props(Mode::Unconfirmed);
+    let (hash, fee) = p.restarted();
+    let mut rival = fee.clone();
+    rival.output.truncate(1);
+    rival.output[0].script_pubkey = dashcore::ScriptBuf::new();
+    p.confirm_tx(rival, 1);
+    assert_eq!(p.state(&hash), MyProposalState::FeeFailed);
+    let held = p.f.session.unseen_proposal_fee_inputs(&p.f.wallet);
+    assert!(held.unwrap().is_empty());
+}
+
 /// MG-04 D47: a coin locked since the restart (a masternode's collateral
 /// takes a user lock) is not the resend's to spend.
 #[test]

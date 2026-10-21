@@ -226,21 +226,28 @@ impl Saved {
 impl NetworkSession {
     /// The coins of `wallet`'s proposal fees it hasn't seen (`fee_unsent`,
     /// which may be out): a resend claims them again (D10), so no
-    /// masternode collateral may take one (MG-04 D47). A row that doesn't
-    /// decode has no resend and holds nothing.
+    /// masternode collateral may take one (MG-04 D47). A failed fee
+    /// (another confirmed transaction spends one of its coins, D5) and a
+    /// row that doesn't decode have no resend and hold nothing.
     pub(crate) fn unseen_proposal_fee_inputs(
         &self,
         wallet: &WalletId,
     ) -> Result<HashSet<OutPoint>, EngineError> {
         let rows = self.live()?.appdb.proposals(Some(&wallet.to_string()))?;
         let fees: Vec<Transaction> = (rows.into_iter())
-            .filter_map(|row| Saved::decode(row).ok().map(|s| s.fee))
+            .filter_map(|row| match Saved::decode(row) {
+                Ok(saved) => Some(saved.fee),
+                Err(e) => {
+                    tracing::warn!(error = %e, "skipping a proposal row");
+                    None
+                }
+            })
             .collect();
         let tip = self.hub.tracker().tip_height().unwrap_or(0);
         let refs: Vec<&Transaction> = fees.iter().collect();
         let statuses = fee_statuses(self, wallet, &refs, tip);
         Ok((fees.iter().zip(statuses))
-            .filter(|(_, (depth, _))| depth.is_none())
+            .filter(|(_, (depth, conflicted))| depth.is_none() && !conflicted)
             .flat_map(|(fee, _)| fee.input.iter().map(|i| i.previous_output))
             .collect())
     }
