@@ -1333,8 +1333,8 @@ fn psbt_a_contacts_address_is_not_the_wallets() {
 
 /// MG-04 D50 (validator r1 m-1): a coin paid to one of the wallet's ProTx
 /// owner keys is not the wallet's to sign in a PSBT, so a PSBT spending it
-/// is reported unsignable and signs nothing, the grant kept, instead of
-/// failing at the vault after redeeming it.
+/// is reported unsignable and leaves that input unsigned, as another
+/// wallet's would be, instead of failing at the vault.
 #[test]
 fn psbt_an_owner_keys_coin_is_not_signed() {
     let f = fixture(false);

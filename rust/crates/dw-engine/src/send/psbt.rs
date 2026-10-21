@@ -481,7 +481,7 @@ impl NetworkSession {
     /// `BroadcastUnknown`). Returns the txid. An input of an asset lock a
     /// funding call of any wallet signed whose step is unresolved is
     /// refused (`Invalid`, [`held_lock_input`]), read right before the send
-    /// under the coin fence of each wallet owning an input, held through the
+    /// under the coin fence of each wallet owning a signable input, held through the
     /// send (up to dash-spv's acceptance wait).
     pub async fn broadcast_psbt(
         self: &Arc<Self>,
