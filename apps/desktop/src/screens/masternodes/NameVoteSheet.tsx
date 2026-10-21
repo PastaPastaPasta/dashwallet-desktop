@@ -43,6 +43,8 @@ const CHOICE_NOTE: Record<NameChoice["kind"], string> = {
   lock: "Nobody gets the name",
 };
 
+const CHECK_FAILED = "Couldn't check again.";
+
 /** What the result shows once the votes went out. */
 interface NameVoteDone {
   casts: NameVoteCast[];
@@ -220,10 +222,14 @@ function NameVoteForm({
         </p>
       )}
       {closed && (
-        <p className="mg-notice mg-notice-warning" role="status" data-testid="name-vote-closed">
+        <p className="mg-notice mg-notice-warning" data-testid="name-vote-closed">
           {NameText.ended}.
         </p>
       )}
+      {/* Live regions stay mounted, so a screen reader hears the text that arrives in them. */}
+      <span className="sr-only" role="status">
+        {closed ? `${NameText.ended}.` : ""}
+      </span>
       {last && (
         <p className="mg-notice mg-notice-warning" data-testid="name-vote-last">
           {last}
@@ -270,6 +276,7 @@ function NameVoteResult({
   const done = useRef<HTMLButtonElement>(null);
   const view = nameVoteResult(casts, names.voters, contest.label, choice, after);
   const check = async () => {
+    if (checking) return;
     setChecking(true);
     setCheckError(null);
     try {
@@ -304,15 +311,18 @@ function NameVoteResult({
       </ul>
       <p className="mg-muted mg-small mg-flush">{NameText.counts}</p>
       {checkError && (
-        <p className="mg-notice mg-notice-warning" role="status" data-testid="name-vote-check-error">
-          Couldn't check again. {checkError}
+        <p className="mg-notice mg-notice-warning" data-testid="name-vote-check-error">
+          {CHECK_FAILED} {checkError}
         </p>
       )}
+      <span className="sr-only" role="status">
+        {checkError ? `${CHECK_FAILED} ${checkError}` : ""}
+      </span>
       <footer className="mg-sheet-footer">
         <span />
         <span className="mg-actions">
           {view.unconfirmed && (
-            <DashButton variant="tintedGray" size="medium" data-testid="name-vote-check" disabled={checking} onClick={() => void check()}>
+            <DashButton variant="tintedGray" size="medium" data-testid="name-vote-check" aria-disabled={checking || undefined} onClick={() => void check()}>
               {checking ? "Checking…" : "Check again"}
             </DashButton>
           )}

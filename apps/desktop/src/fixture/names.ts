@@ -254,11 +254,10 @@ export function nameScenarios(base: (theme: ThemeName | null, patch?: (n: NamesW
         };
         n.unconfirmedLands = true;
       }),
-    /** As names-vote-mixed for the regular masternode, then Platform goes down: Check again fails. */
+    /** The regular masternode's vote goes out with no answer, then Platform goes down: Check again fails. */
     "names-check-fails": (t: ThemeName | null) =>
       base(t, (n) => {
         n.refuse = { [VOTER_A]: "unconfirmed" };
-        n.unconfirmedLands = true;
         n.downAfterVote = true;
       }),
     /** A watch-only wallet browses. */

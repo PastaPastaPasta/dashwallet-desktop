@@ -104,8 +104,12 @@ test("a Check again that can't read says so and counts nothing; the tab says its
   await page.getByTestId("name-vote-passphrase").fill("demo");
   await page.getByTestId("name-vote-send").click();
   await expect(page.getByTestId("name-vote-result-title")).toHaveText("1 of 2 votes counted · 1 not confirmed yet");
-  await page.getByTestId("name-vote-check").click();
+  await page.getByTestId("name-vote-check").focus();
+  await page.keyboard.press("Enter");
   await expect(page.getByTestId("name-vote-check-error")).toHaveText("Couldn't check again. Couldn't reach Dash Platform. Try again in a moment.");
+  await expect(page.getByRole("status").filter({ hasText: "Couldn't check again." })).toHaveCount(1);
+  // The keyboard user is still on Check again.
+  await expect(page.getByTestId("name-vote-check")).toBeFocused();
   await expect(page.getByTestId("name-vote-result-title")).toHaveText("1 of 2 votes counted · 1 not confirmed yet");
   await expect(page.getByTestId("name-vote-result-a1a1a1a1")).toContainText("Unconfirmed");
   await page.getByTestId("name-vote-done").click();
@@ -125,6 +129,7 @@ test("Vote goes off when the contest ends under the open sheet", async ({ page }
   await page.clock.setSystemTime(FIXTURE_NOW.getTime() + (3 * 3600 + 1) * 1000);
   await page.clock.runFor(31_000);
   await expect(page.getByTestId("name-vote-closed")).toHaveText("Voting on this name has ended.");
+  await expect(page.getByRole("status").filter({ hasText: "Voting on this name has ended." })).toHaveCount(1);
   await expect(page.getByTestId("name-vote-send")).toBeDisabled();
 });
 
