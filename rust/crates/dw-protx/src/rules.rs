@@ -398,6 +398,26 @@ pub fn check_update_registrar(
     collateral_script: Option<&ScriptBuf>,
     list: &[ListedMasternode],
 ) -> Result<(), Reject> {
+    check_update_registrar_terms(p, owner_key_id, collateral_script, list)?;
+    check_inputs_hash(tx, p.inputs_hash.to_byte_array())?;
+    if !signed_by(
+        &p.payload_sig,
+        p.base_payload_hash().to_byte_array(),
+        owner_key_id,
+    ) {
+        return Err("bad-protx-sig");
+    }
+    Ok(())
+}
+
+/// [`check_update_registrar`] without the inputs hash and the signature:
+/// what a placeholder can be held to before anything is signed.
+pub fn check_update_registrar_terms(
+    p: &ProviderUpdateRegistrarPayload,
+    owner_key_id: [u8; 20],
+    collateral_script: Option<&ScriptBuf>,
+    list: &[ListedMasternode],
+) -> Result<(), Reject> {
     if p.version == 0 || p.version > EXT_ADDR {
         return Err("bad-protx-version");
     }
@@ -420,14 +440,6 @@ pub fn check_update_registrar(
         .any(|e| e.pro_tx_hash != own && holds_operator_key(e, &operator, scheme))
     {
         return Err("bad-protx-dup-key");
-    }
-    check_inputs_hash(tx, p.inputs_hash.to_byte_array())?;
-    if !signed_by(
-        &p.payload_sig,
-        p.base_payload_hash().to_byte_array(),
-        owner_key_id,
-    ) {
-        return Err("bad-protx-sig");
     }
     Ok(())
 }

@@ -23,7 +23,7 @@ use dw_protx::params::collateral_amount;
 use dw_protx::payloads::{
     CollateralSource, PlatformPorts, RegistrationSigner, RegistrationTerms, finalize_registration,
     finalize_update_registrar, registration_placeholder, registration_sign_message,
-    registration_with_inputs, update_registrar_placeholder,
+    registration_with_inputs, update_registrar_placeholder, update_registrar_with_inputs,
 };
 use dw_protx::rules::{
     self, ListedMasternode, check_registration, check_update_registrar, p2pkh_key_id,
@@ -372,7 +372,22 @@ fn test_MG04_update_registrars_equal_dashd() {
                 address(s(&c, "payout_address")).script_pubkey(),
             )),
         );
+        // What the vault's owner signer is handed: dashd's payload without
+        // its signature, held to the rules a placeholder can be (D11).
+        let committed = update_registrar_with_inputs(&unsigned).unwrap();
+        assert_eq!(
+            committed,
+            ProviderUpdateRegistrarPayload {
+                payload_sig: Vec::new(),
+                ..want.clone()
+            }
+        );
         let owner = secret_of(s(&c, "owner_wif"));
+        let owner_id = key_id(s(&c["protx_info_before"]["state"], "ownerAddress"));
+        assert_eq!(
+            rules::check_update_registrar_terms(&committed, owner_id, None, &[]),
+            Ok(())
+        );
         let got = finalize_update_registrar(&unsigned, &owner).unwrap();
         assert_eq!(
             got,
@@ -380,7 +395,6 @@ fn test_MG04_update_registrars_equal_dashd() {
             "{}",
             s(&c, "kind")
         );
-        let owner_id = key_id(s(&c["protx_info_before"]["state"], "ownerAddress"));
         assert_eq!(
             check_update_registrar(&tx, &want, owner_id, None, &[]),
             Ok(()),

@@ -242,12 +242,12 @@ pub fn update_registrar_placeholder(
     }
 }
 
-/// The ProUpRegTx finalizer: inputs hash, then the owner key's compact
-/// signature over the payload hash.
-pub fn finalize_update_registrar(
+/// The ProUpRegTx placeholder of `unsigned` with `inputsHash` committed to
+/// its inputs and no signature: what the owner key signs, through its hash
+/// without the signature (`providertx_service.cpp:324-334,946-950`).
+pub fn update_registrar_with_inputs(
     unsigned: &Transaction,
-    owner_secret: &[u8; 32],
-) -> Result<TransactionPayload, PayloadError> {
+) -> Result<ProviderUpdateRegistrarPayload, PayloadError> {
     if unsigned.output.is_empty() {
         return Err(PayloadError::NoOutputs);
     }
@@ -258,6 +258,18 @@ pub fn finalize_update_registrar(
     };
     let mut payload = placeholder.clone();
     payload.inputs_hash = unsigned.hash_inputs();
+    payload.payload_sig = Vec::new();
+    Ok(payload)
+}
+
+/// The ProUpRegTx finalizer with a raw owner secret: inputs hash, then the
+/// owner key's compact signature over the payload hash. The wallet signs
+/// through the vault instead (`VaultSigner::sign_update_registrar`).
+pub fn finalize_update_registrar(
+    unsigned: &Transaction,
+    owner_secret: &[u8; 32],
+) -> Result<TransactionPayload, PayloadError> {
+    let mut payload = update_registrar_with_inputs(unsigned)?;
     let hash = payload.base_payload_hash();
     payload.payload_sig = sign_hash_compact(owner_secret, hash.as_byte_array())?.to_vec();
     Ok(TransactionPayload::ProviderUpdateRegistrarPayloadType(
