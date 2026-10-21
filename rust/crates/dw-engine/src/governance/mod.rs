@@ -7,6 +7,7 @@
 //! No call signs with, takes or returns an operator key (MG-01's guard).
 
 pub(crate) mod collateral;
+mod contested;
 mod errors;
 mod proposals;
 mod reads;
@@ -17,6 +18,10 @@ mod voting;
 use std::sync::Arc;
 
 pub use errors::GovernanceError;
+pub use records::{
+    ContestedName, ContestedNames, NameChoice, NameContender, NameVoteCast, NameVoter,
+    NameVoterState, NameVotingKey,
+};
 pub use records::{
     CurrentVoteRow, GovernanceClock, GovernanceInfo, GovernanceSyncPhase, GovernanceSyncState,
     MasternodeType, MyProposal, MyProposalState, ProposalCounts, ProposalDetail, ProposalDraft,

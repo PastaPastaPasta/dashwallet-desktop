@@ -1,0 +1,93 @@
+{
+  "contests": [
+    {
+      "label": "a11ce",
+      "ends_at": 1800003600,
+      "contenders": [
+        {
+          "identity": "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P",
+          "votes": 9
+        },
+        {
+          "identity": "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF",
+          "votes": 4
+        }
+      ],
+      "lock_votes": 1,
+      "abstain_votes": 0,
+      "contenders_complete": true
+    },
+    {
+      "label": "dash-pay",
+      "ends_at": 1800090000,
+      "contenders": [
+        {
+          "identity": "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF",
+          "votes": 0
+        }
+      ],
+      "lock_votes": 0,
+      "abstain_votes": 0,
+      "contenders_complete": true
+    }
+  ],
+  "voters": [
+    {
+      "pro_tx_hash": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "kind": "regular",
+      "weight": 1,
+      "valid": true,
+      "key": {
+        "kind": "keychain",
+        "index": 0
+      },
+      "current": [
+        {
+          "label": "a11ce",
+          "choice": {
+            "kind": "towards_identity",
+            "identity": "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P"
+          },
+          "votes_used": 2
+        }
+      ]
+    },
+    {
+      "pro_tx_hash": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "kind": "evonode",
+      "weight": 4,
+      "valid": true,
+      "key": {
+        "kind": "keychain",
+        "index": 3
+      },
+      "current": [
+        {
+          "label": "a11ce",
+          "choice": {
+            "kind": "lock"
+          },
+          "votes_used": 5
+        },
+        {
+          "label": "dash-pay",
+          "choice": {
+            "kind": "abstain"
+          },
+          "votes_used": 1
+        }
+      ]
+    },
+    {
+      "pro_tx_hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "kind": "regular",
+      "weight": 1,
+      "valid": false,
+      "key": {
+        "kind": "attached"
+      },
+      "current": []
+    }
+  ],
+  "votes_allowed": 5
+}

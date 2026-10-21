@@ -54,11 +54,14 @@ const IMPLEMENTED: &[&str] = &[
     "Governance.create_proposal",
     "Governance.my_proposals",
     "Governance.submit_proposal",
+    "Governance.contested_names",
+    "Governance.vote_name",
 ];
 
 /// The facade's files in `src/governance/` (mg-engine.md §0). A new file
 /// there must join this list or `NOT_FACADE`.
 const FACADE: &[&str] = &[
+    "contested.rs",
     "errors.rs",
     "mod.rs",
     "proposals.rs",
@@ -69,10 +72,12 @@ const FACADE: &[&str] = &[
 
 /// Files of `src/governance/` that are not part of the facade: the sync
 /// task and its tracker, the collateral resolver (D80) with its tests,
-/// `vote`'s tests (MG-05) and the own proposals' tests (MG-06).
+/// `vote`'s tests (MG-05), the own proposals' tests (MG-06) and the
+/// contested-name tests (MG-07).
 const NOT_FACADE: &[&str] = &[
     "collateral.rs",
     "collateral_tests.rs",
+    "contested_tests.rs",
     "proposals_tests.rs",
     "sync.rs",
     "voting_tests.rs",
@@ -727,6 +732,15 @@ fn error_codes_match_the_contract() {
             GovernanceError::InvalidProposal { fields: Vec::new() },
             GovernanceError::SubmitRefused {
                 reason: SubmitRefusal::Public,
+            },
+            GovernanceError::ContestNotFound {
+                label: String::new(),
+            },
+            GovernanceError::ContestClosed {
+                label: String::new(),
+            },
+            GovernanceError::NotAContender {
+                identity: String::new(),
             },
             GovernanceError::NotImplemented {
                 call: String::new(),

@@ -146,6 +146,13 @@ pub(crate) struct GovernanceRuntime {
     /// `changed` calls, for the tests.
     #[cfg(test)]
     pub(super) changes: AtomicUsize,
+    /// The SPV list `vote_name` and `contested_names` read, set by the
+    /// tests (MG-07).
+    #[cfg(test)]
+    pub(super) name_list: Mutex<Option<Vec<MasternodeListSummary>>>,
+    /// Their Platform, scripted (MG-07).
+    #[cfg(test)]
+    pub(super) name_net: Mutex<Option<Arc<super::contested::tests::FakeNames>>>,
     /// `resync` calls, for the tests.
     #[cfg(test)]
     pub(super) resyncs: AtomicUsize,
@@ -209,6 +216,10 @@ impl GovernanceRuntime {
             resolved_sets: AtomicUsize::new(0),
             #[cfg(test)]
             changes: AtomicUsize::new(0),
+            #[cfg(test)]
+            name_list: Mutex::default(),
+            #[cfg(test)]
+            name_net: Mutex::default(),
             #[cfg(test)]
             resyncs: AtomicUsize::new(0),
             #[cfg(test)]

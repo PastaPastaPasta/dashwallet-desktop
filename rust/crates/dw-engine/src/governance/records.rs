@@ -346,6 +346,103 @@ pub struct VoteCast {
     pub rejected: Option<String>,
 }
 
+/// A masternode's choice in a contested DPNS name's poll (MG-07 §1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum NameChoice {
+    /// For the contender with this identity id (base58).
+    TowardsIdentity {
+        identity: String,
+    },
+    Abstain,
+    /// Nobody gets the name.
+    Lock,
+}
+
+/// One contender of a contested name, with its tally.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameContender {
+    /// The contender's identity id, base58.
+    pub identity: String,
+    /// Its weighted votes; `None` when Platform gave no tally.
+    pub votes: Option<u32>,
+}
+
+/// An open DPNS contest (MG-07 §1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContestedName {
+    /// The normalized label (`a-hj-km-np-z01-`).
+    pub label: String,
+    /// When voting ends (Unix s): the poll is resolved in the first block
+    /// after it.
+    pub ends_at: u64,
+    /// The poll's first page of contenders, in identity order (D9).
+    pub contenders: Vec<NameContender>,
+    pub lock_votes: Option<u32>,
+    pub abstain_votes: Option<u32>,
+    /// False for a full page: later contenders may exist.
+    pub contenders_complete: bool,
+}
+
+/// Which of the wallet's keys a masternode votes with (MG-07 D3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum NameVotingKey {
+    /// The keychain's voting key at `index` (`m/9'/coin'/3'/1'/index`).
+    Keychain { index: u32 },
+    /// The masternode's attached `voting` key.
+    Attached,
+}
+
+/// A voter's standing in one listed contest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameVoterState {
+    pub label: String,
+    /// Its present choice, as Platform proved it.
+    pub choice: Option<NameChoice>,
+    /// The votes this app saw Platform take from it on the label, a lower
+    /// bound of Platform's own count (D6).
+    pub votes_used: u32,
+}
+
+/// One of the wallet's masternodes that can vote on names (MG-07 §1, D3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameVoter {
+    pub pro_tx_hash: String,
+    pub kind: MasternodeType,
+    /// Platform's strength of its vote: 1, or 4 for an evonode.
+    pub weight: u32,
+    pub valid: bool,
+    pub key: NameVotingKey,
+    /// The listed contests it has a choice or a vote in.
+    pub current: Vec<NameVoterState>,
+}
+
+/// `contested_names`'s answer (MG-07 §1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContestedNames {
+    /// Soonest ending first.
+    pub contests: Vec<ContestedName>,
+    /// In list order.
+    pub voters: Vec<NameVoter>,
+    /// The votes a masternode has per poll: one and its changes (§4).
+    pub votes_allowed: u32,
+}
+
+/// One masternode's vote of a `vote_name` batch (MG-07 §1, §3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameVoteCast {
+    /// The masternode, display order, lower case.
+    pub pro_tx_hash: String,
+    /// The transition's hash (hex) once it was broadcast.
+    pub transition: Option<String>,
+    /// Why the vote does not count (mg-engine §4): `unknown_masternode`,
+    /// `no_voting_key`, `cancelled`, `signer_unavailable`, `in_flight`,
+    /// `vote_limit`, `platform_unavailable`, `unconfirmed`, or Platform's
+    /// refusal (`already_voted`, `contest_closed`, …).
+    pub rejected: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuperblockDate {
     pub height: u32,
