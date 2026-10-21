@@ -83,6 +83,8 @@ pub enum Route {
     Activity,
     CoinJoin,
     Explore,
+    /// Masternodes ▸ Governance (MG-09); My masternodes comes with MG-10.
+    Masternodes,
     Notifications,
     Profile,
     Settings,

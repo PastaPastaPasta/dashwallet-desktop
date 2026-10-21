@@ -104,8 +104,9 @@ impl SessionSettings {
             initial_protocol_version: initial_protocol_version
                 .or(launch.initial_protocol_version),
             no_platform: no_platform || launch.no_platform,
-            // A regtest-only test seam (MG-02 D80); the app always uses DAPI.
-            collateral_rpc: None,
+            // Launch flag only, regtest only (MG-02 D80, MG-09 D28); elsewhere
+            // governance resolves collaterals through DAPI.
+            collateral_rpc: launch.collateral_rpc.clone(),
         }
     }
 }
@@ -238,6 +239,7 @@ mod tests {
             ca_cert_path: Some("/etc/dash/ca.pem".into()),
             initial_protocol_version: Some(9),
             no_platform: true,
+            collateral_rpc: Some("http://dw:dw@127.0.0.1:19898".into()),
             ..LaunchOptions::default()
         };
         let o = SessionSettings::default().over(&launch);
@@ -245,6 +247,7 @@ mod tests {
         assert_eq!(o.ca_cert_path, launch.ca_cert_path);
         assert_eq!(o.initial_protocol_version, Some(9));
         assert!(o.no_platform);
+        assert_eq!(o.collateral_rpc, launch.collateral_rpc);
         let o = SessionSettings {
             dapi_addresses: vec!["https://10.0.0.1:443".into()],
             ca_cert_path: Some("/tmp/gw.pem".into()),

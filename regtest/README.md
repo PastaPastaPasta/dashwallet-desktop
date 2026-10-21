@@ -324,6 +324,25 @@ DWCLI=${CARGO_TARGET_DIR:-$PWD/rust/target}/debug/dwcli DWD_PYTHON=~/.cache/dwd-
 `DWD_MG03_EVIDENCE=<dir>` also writes the list, A's payouts and its removed detail as JSON. One
 pass takes about 3 minutes on agentbox.
 
+### Suite `governance_ui` (MG-09)
+
+`functional/dwd_governance_ui.py` is the Governance tab's acceptance on the real app: 3 masternodes,
+one of them voting with the app wallet's DIP3 voting key 0 (`protx update_registrar`), a proposal
+submitted by Core, and the wallet holding one 1,000 DASH coin. It runs
+`apps/desktop/e2e-tauri/regtest-governance.ts` (tauri-driver), which turns governance on, votes Yes
+and creates a proposal from the UI, then checks on every node that the vote and the proposal are
+Core's. The app reads masternodes' ProRegTxs from dashd through `--collateral-rpc` (MG-09 D28).
+`apps/desktop/scripts/e2e-regtest-governance.sh` builds the app and dwcli and runs it; it needs a
+private X display, WebKitWebDriver and tauri-driver:
+
+```sh
+DISPLAY=:<n> TAURI_DRIVER=<tauri-driver> DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python \
+    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0-rc.2 apps/desktop/scripts/e2e-regtest-governance.sh
+```
+
+Screenshots, the app's log and `result.json` go to `DW_E2E_OUT`. One pass takes about 4 minutes on
+agentbox once built.
+
 ## Layout
 
 ```
@@ -345,5 +364,6 @@ regtest/
     ├── feature_llmq_chainlocks.py   upstream, unmodified
     ├── dwd_mn_chainlock.py  4 MNs → quorums → ChainLock + InstantSend
     ├── dwd_coinjoin_probe.py        4 MNs + 3 mixing wallets → real CoinJoin rounds
-    └── dwd_masternodes.py   dwcli mn against the MN list: roles, tracking, payouts, status
+    ├── dwd_masternodes.py   dwcli mn against the MN list: roles, tracking, payouts, status
+    └── dwd_governance_ui.py the desktop app votes and creates a proposal through its UI
 ```
