@@ -397,7 +397,8 @@ element comes from iOS; new strings only where neither has one (mark them in L10
   `MacStrings.App.demoHelp`; not in the toolbar, not a sentence in the status bar (Cross today shows
   "Demo mode: sample data, nothing is sent (passphrase: demo)").
 - **Sidebar**: §C1. Shortcut tooltips "(⌘1)" renumbered by visible items (QT-012, exists). Masternodes is one item
-  with the tabs My masternodes and Governance, shown under the rules of §4.25.1 (MG-00 D1–D3; there is no
+  with the tabs My masternodes, Governance and Username voting, shown under the rules of §4.25.1 (MG-00 D1–D3,
+  MG-11 D1; there is no
   separate Governance item). Cross only:
   a second section "More" with Address Book, Sign / Verify, Tools, PSBT, Wallets, Options, Security,
   About as normal rows (same style, PNG `settings-*` icons), replacing today's bold blue link buttons
@@ -881,13 +882,17 @@ setting. Badge (red count, as Contacts): items that need the user's action only 
 whose owner key or collateral is in this wallet, a registration or shared session waiting on this user, a proposal whose fee is confirmed but
 not yet submitted because submission failed. Unvoted proposals never badge (D8).
 
-**Page frame.** `TopIntro` "Masternodes", trailing actions; then `tabs` **My masternodes | Governance**
-(`ui.masternodesTab`, remembered, D3). Header actions per tab:
+**Page frame.** `TopIntro` "Masternodes", trailing actions; then `tabs` **My masternodes | Governance |
+Username voting**, in that order (`ui.masternodesTab`, remembered, D3). Username voting is a tab, not a
+section of Governance, because name votes read Platform and need no governance sync, so Governance's
+Disabled state must not hide them (MG-11 D1). Until MG-10 lands `ui.masternodesTab`, the tab is page state
+and the page opens on Governance (MG-11 D2). Header actions per tab:
 
 | Tab | Primary (filledBlue S) | More menu (tintedGray S) |
 |---|---|---|
 | My masternodes | Set up a masternode | Track a masternode… · Masternode keys… · Join a shared masternode… |
 | Governance | Create proposal | Show ended proposals · Governance numbers… (D20) |
+| Username voting | none | none (MG-11 D2) |
 
 Below the tabs, a small muted line on the right: "Masternode list at block 1,214,880" (the SPV list height).
 
