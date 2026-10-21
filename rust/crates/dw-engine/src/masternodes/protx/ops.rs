@@ -62,7 +62,6 @@ pub(crate) fn state_name(state: ProTxOperationState) -> &'static str {
     }
 }
 
-/// `fee_inputs`: a JSON array of `"txid:vout"`.
 /// The code `last_error` keeps (§6): a send failure's `send.*` wire code
 /// (the strings of dw-ffi's and dw-app's `SendCode`), else the engine
 /// error's.
@@ -99,6 +98,7 @@ pub(crate) fn error_code(e: &EngineError) -> String {
     format!("send.{name}")
 }
 
+/// `fee_inputs`: a JSON array of `"txid:vout"`.
 pub(crate) fn encode_inputs(outpoints: &[OutPoint]) -> String {
     let list: Vec<String> = outpoints
         .iter()

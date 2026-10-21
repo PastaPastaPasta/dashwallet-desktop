@@ -115,18 +115,13 @@ fn holds_operator_key(entry: &ListedMasternode, key: &[u8; 48], scheme: BlsSchem
 }
 
 /// `IsPayoutListTriviallyValid` for a version-2 payload's one payout (all
-/// of the reward, so the reward checks hold). `owner` is null for a
-/// ProUpRegTx's own check.
-fn check_payout(
-    script: &ScriptBuf,
-    owner: Option<[u8; 20]>,
-    voting: [u8; 20],
-) -> Result<(), Reject> {
+/// of the reward, so the reward checks hold).
+fn check_payout(script: &ScriptBuf, owner: [u8; 20], voting: [u8; 20]) -> Result<(), Reject> {
     if !is_valid_payout_script(script) {
         return Err("bad-protx-payee");
     }
     if let Some(id) = p2pkh_key_id(script)
-        && (Some(id) == owner || id == voting)
+        && (id == owner || id == voting)
     {
         return Err("bad-protx-payee-reuse");
     }
@@ -157,7 +152,7 @@ pub fn check_registration_trivial(p: &ProviderRegistrationPayload) -> Result<(),
     }
     check_payout(
         &p.script_payout,
-        Some(p.owner_key_hash.to_byte_array()),
+        p.owner_key_hash.to_byte_array(),
         p.voting_key_hash.to_byte_array(),
     )?;
     if p.operator_reward > MAX_OPERATOR_REWARD {
@@ -238,7 +233,7 @@ pub fn check_internal_collateral(
     if out.value != collateral_amount(evo) {
         return Err("bad-protx-collateral");
     }
-    if !(out.script_pubkey.is_p2pkh() || out.script_pubkey.is_p2sh()) {
+    if !is_valid_payout_script(&out.script_pubkey) {
         return Err("bad-protx-collateral-dest");
     }
     check_collateral_key_safe(
@@ -430,7 +425,7 @@ pub fn check_update_registrar_terms(
     if !is_valid_operator_key(&operator, scheme) || voting == [0; 20] {
         return Err("bad-protx-key-null");
     }
-    check_payout(&p.script_payout, Some(owner_key_id), voting)?;
+    check_payout(&p.script_payout, owner_key_id, voting)?;
     if let Some(script) = collateral_script {
         check_collateral_key_safe(script, owner_key_id, voting)?;
     }

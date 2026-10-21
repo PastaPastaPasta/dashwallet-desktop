@@ -134,9 +134,9 @@ pub(crate) fn plan_funding(
 /// Core's `CompareInputBIP69`: the previous txid's bytes in display order,
 /// then the index (rc.3 `primitives/transaction.h:411-426`).
 fn input_order(a: &OutPoint, b: &OutPoint) -> Ordering {
-    let ka = a.txid.to_byte_array_reversed();
-    let kb = b.txid.to_byte_array_reversed();
-    ka.cmp(&kb).then(a.vout.cmp(&b.vout))
+    display_bytes(&a.txid)
+        .cmp(&display_bytes(&b.txid))
+        .then(a.vout.cmp(&b.vout))
 }
 
 /// Core's `CompareOutputBIP69`: the value, then the script, and a script
@@ -149,16 +149,11 @@ fn output_order(a: &TxOut, b: &TxOut) -> Ordering {
         .then(a.script_pubkey.as_bytes().cmp(b.script_pubkey.as_bytes()))
 }
 
-trait Reversed {
-    fn to_byte_array_reversed(&self) -> [u8; 32];
-}
-
-impl Reversed for dashcore::Txid {
-    fn to_byte_array_reversed(&self) -> [u8; 32] {
-        let mut b = self.to_byte_array();
-        b.reverse();
-        b
-    }
+/// A txid's bytes in display order.
+fn display_bytes(txid: &dashcore::Txid) -> [u8; 32] {
+    let mut b = txid.to_byte_array();
+    b.reverse();
+    b
 }
 
 /// The unsigned special transaction: inputs and outputs sorted BIP69 (D3),
@@ -294,8 +289,9 @@ pub(crate) fn dummy_output() -> TxOut {
 }
 
 /// A stand-in P2PKH for a preview's addresses that are issued only at
-/// registration: same size, never a key the wallet uses.
-fn preview_script() -> ScriptBuf {
+/// registration (or, in an update, a `NewAddress` payout): same size, never
+/// a key the wallet uses.
+pub(crate) fn preview_script() -> ScriptBuf {
     ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array([0xff; 20]))
 }
 
@@ -372,7 +368,7 @@ pub(crate) fn refused(reason: rules::Reject) -> MasternodesError {
     }
 }
 
-fn invalid(detail: &str) -> MasternodesError {
+pub(crate) fn invalid(detail: &str) -> MasternodesError {
     EngineError::InvalidArgument(detail.into()).into()
 }
 
@@ -423,6 +419,17 @@ fn listed(list: &ListView, owned: &[OwnedMasternode]) -> Vec<ListedMasternode> {
         .collect()
 }
 
+/// The evonode terms and the operator reward of `req`.
+fn check_shape(req: &RegistrationRequest) -> Result<(), MasternodesError> {
+    if (req.kind == MasternodeType::Evonode) != req.evonode.is_some() {
+        return Err(invalid("evonode terms are given exactly for an evonode"));
+    }
+    if req.operator_reward > MAX_OPERATOR_REWARD {
+        return Err(invalid("the operator reward is at most 10000 basis points"));
+    }
+    Ok(())
+}
+
 /// The checks of `req` that need nothing but its text and the network:
 /// run before the list is read, so a malformed request is refused as
 /// `invalid_argument` (or the service's own refusal) first, as MG-03's
@@ -431,12 +438,7 @@ pub(crate) fn check_request(
     req: &RegistrationRequest,
     network: Network,
 ) -> Result<(), MasternodesError> {
-    if (req.kind == MasternodeType::Evonode) != req.evonode.is_some() {
-        return Err(invalid("evonode terms are given exactly for an evonode"));
-    }
-    if req.operator_reward > MAX_OPERATOR_REWARD {
-        return Err(invalid("the operator reward is at most 10000 basis points"));
-    }
+    check_shape(req)?;
     parse_service(&req.service, network)?;
     match &req.collateral {
         CollateralChoice::FundNew => {}
@@ -471,6 +473,7 @@ pub(crate) fn check_request(
     }
     Ok(())
 }
+
 impl NetworkSession {
     /// The context of a ProTx: the synced list (`ListUnavailable`
     /// otherwise), the wallet's masternodes and operations, and every key
@@ -556,13 +559,8 @@ impl NetworkSession {
         commit: bool,
     ) -> Result<Registration, MasternodesError> {
         let network = self.network.core_network();
+        check_shape(req)?;
         let evo = req.kind == MasternodeType::Evonode;
-        if evo != req.evonode.is_some() {
-            return Err(invalid("evonode terms are given exactly for an evonode"));
-        }
-        if req.operator_reward > MAX_OPERATOR_REWARD {
-            return Err(invalid("the operator reward is at most 10000 basis points"));
-        }
         let service = parse_service(&req.service, network)?;
         let collateral = match &req.collateral {
             CollateralChoice::FundNew => Collateral::FundNew {

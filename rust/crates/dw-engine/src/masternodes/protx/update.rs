@@ -22,7 +22,9 @@ use super::super::protx_records::{
 use super::super::reads::owner_facts;
 use super::super::records::MasternodeType;
 use super::super::{MasternodesError, display_hex, parse_pro_tx_hash};
-use super::build::{Context, Funding, assemble, dummy_output, refused, to_sign};
+use super::build::{
+    Context, Funding, assemble, dummy_output, invalid, preview_script, refused, to_sign,
+};
 use super::keys::{p2pkh_id, parse_operator_key};
 use super::ops::state_of;
 use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
@@ -61,10 +63,6 @@ impl Update {
     }
 }
 
-fn invalid(detail: &str) -> MasternodesError {
-    EngineError::InvalidArgument(detail.into()).into()
-}
-
 /// The checks of `req` that need nothing but its text and the network,
 /// before the list is read (D33).
 pub(crate) fn check_update_request(
@@ -91,12 +89,6 @@ pub(crate) fn check_update_request(
 /// either serialization.
 fn operator_differs(new: &[u8; 48], old: &[u8; 48]) -> bool {
     new != old && dw_protx::bls::legacy_of(new).as_ref() != Some(old)
-}
-
-/// A stand-in for a `NewAddress` payout in a preview: a P2PKH of the same
-/// size, never a key the wallet uses.
-fn preview_payout() -> ScriptBuf {
-    ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array([0xff; 20]))
 }
 
 fn key_address(key_id: [u8; 20], network: Network) -> Address {
@@ -209,7 +201,7 @@ impl NetworkSession {
         };
         let payout_script = payout
             .as_ref()
-            .map_or_else(preview_payout, Address::script_pubkey);
+            .map_or_else(preview_script, Address::script_pubkey);
         let placeholder = payloads::update_registrar_placeholder(
             Txid::from_byte_array(hash),
             operator,

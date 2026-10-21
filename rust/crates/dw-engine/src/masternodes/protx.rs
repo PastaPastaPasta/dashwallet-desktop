@@ -19,6 +19,8 @@ use dashcore::OutPoint;
 use dashcore::hashes::Hash;
 use dw_appdb::MasternodeOpRow;
 use dw_protx::params::collateral_amount;
+use dw_vault::VaultSigner;
+use platform_wallet::wallet::platform_wallet::PlatformWallet;
 
 use self::build::{
     Collateral, Funding, decode_signature, existing_coin, finish_registration, plan_funding,
@@ -32,6 +34,7 @@ use super::protx_records::{
 use super::records::MasternodeType;
 use super::{Masternodes, MasternodesError, parse_pro_tx_hash};
 use crate::coins::{now_secs, wallet_owns};
+use crate::platform::lease::Lease;
 use crate::platform::{BudgetPurpose, FlowKind, PlatformError};
 use crate::send::{SendFailure, SpendCharge, lease_failure};
 use crate::{EngineError, NetworkSession, WalletId};
@@ -158,17 +161,8 @@ impl Masternodes {
                 let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
                 let funding = plan_funding(&utxos, &reg.outputs(), reg.sized_payload(), CHANGE_LEN)
                     .map_err(EngineError::from)?;
-                let (charge, signer) = lease
-                    .charge_tx_signer(BudgetPurpose::Masternode, funding.fee)
-                    .map_err(|e| lease_failure(e, funding.fee))?;
-                let charge = SpendCharge::new(lease.clone(), BudgetPurpose::Masternode, charge);
-                let change = match funding.change {
-                    Some(_) => Some(
-                        (w.core().next_change_address_for_account(0).await)
-                            .map_err(EngineError::from)?,
-                    ),
-                    None => None,
-                };
+                let (charge, signer) = charge_fee(&lease, funding.fee)?;
+                let change = change_address(&w, &funding).await?;
                 let tx = unsigned_registration(&reg, &funding, change.as_ref())?;
                 let signature = match &existing {
                     Some((_, path, _)) => {
@@ -346,10 +340,7 @@ impl Masternodes {
                 let fence = s.coin_fence(wallet).await?;
                 let w = s.wallet(&wallet).await?;
                 let coins = s.input_coins(&fence, &w, &tx, true).await?;
-                let (charge, signer) = lease
-                    .charge_tx_signer(BudgetPurpose::Masternode, row.fee)
-                    .map_err(|e| lease_failure(e, row.fee))?;
-                let charge = SpendCharge::new(lease.clone(), BudgetPurpose::Masternode, charge);
+                let (charge, signer) = charge_fee(&lease, row.fee)?;
                 let script =
                     dashcore::ScriptBuf::new_p2pkh(&dashcore::PubkeyHash::from_byte_array(key_id));
                 let tx = finish_registration(
@@ -570,17 +561,8 @@ impl Masternodes {
                 let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
                 let funding = plan_funding(&utxos, &up.outputs(), up.sized_payload(), CHANGE_LEN)
                     .map_err(EngineError::from)?;
-                let (charge, signer) = lease
-                    .charge_tx_signer(BudgetPurpose::Masternode, funding.fee)
-                    .map_err(|e| lease_failure(e, funding.fee))?;
-                let charge = SpendCharge::new(lease.clone(), BudgetPurpose::Masternode, charge);
-                let change = match funding.change {
-                    Some(_) => Some(
-                        (w.core().next_change_address_for_account(0).await)
-                            .map_err(EngineError::from)?,
-                    ),
-                    None => None,
-                };
+                let (charge, signer) = charge_fee(&lease, funding.fee)?;
+                let change = change_address(&w, &funding).await?;
                 let tx = update::unsigned_update(&up, &funding, change.as_ref())?;
                 let tx = update::finish_update(tx, &up, &coins, &ctx, &signer).await?;
                 #[cfg(test)]
@@ -708,10 +690,7 @@ impl Masternodes {
                     .into());
                 }
                 let coins = s.input_coins(&fence, &w, &tx, false).await?;
-                let (charge, _) = lease
-                    .charge_tx_signer(BudgetPurpose::Masternode, row.fee)
-                    .map_err(|e| lease_failure(e, row.fee))?;
-                let charge = SpendCharge::new(lease.clone(), BudgetPurpose::Masternode, charge);
+                let (charge, _) = charge_fee(&lease, row.fee)?;
                 let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
                 let funding = Funding {
                     inputs: utxos.clone(),
@@ -788,6 +767,29 @@ fn json<T: serde::Serialize>(value: &T) -> Result<String, MasternodesError> {
         .map_err(|e| EngineError::Internal(format!("encoding a ProTx record: {e}")).into())
 }
 
+/// `fee` charged to `lease`'s masternode budget: the charge (refunded on
+/// drop unless bound to the signed txid) and the signer the grant redeemed.
+fn charge_fee(lease: &Lease, fee: u64) -> Result<(SpendCharge, VaultSigner), EngineError> {
+    let (charge, signer) = lease
+        .charge_tx_signer(BudgetPurpose::Masternode, fee)
+        .map_err(|e| lease_failure(e, fee))?;
+    Ok((
+        SpendCharge::new(lease.clone(), BudgetPurpose::Masternode, charge),
+        signer,
+    ))
+}
+
+/// A fresh change address, when `funding` has change.
+async fn change_address(
+    w: &PlatformWallet,
+    funding: &Funding,
+) -> Result<Option<dashcore::Address>, EngineError> {
+    match funding.change {
+        Some(_) => Ok(Some(w.core().next_change_address_for_account(0).await?)),
+        None => Ok(None),
+    }
+}
+
 impl NetworkSession {
     /// Under the fence: an `ExistingUtxo` collateral must be one of the
     /// wallet's coins of exactly the type's amount (§6); returned so the
@@ -795,7 +797,7 @@ impl NetworkSession {
     async fn check_collateral(
         &self,
         fence: &crate::coins::CoinFence,
-        w: &platform_wallet::wallet::platform_wallet::PlatformWallet,
+        w: &PlatformWallet,
         reg: &build::Registration,
     ) -> Result<HashSet<OutPoint>, MasternodesError> {
         let Collateral::Existing { outpoint } = &reg.collateral else {
@@ -832,12 +834,7 @@ impl NetworkSession {
         let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
         let funding = plan_funding(&utxos, &reg.outputs(), reg.sized_payload(), CHANGE_LEN)
             .map_err(EngineError::from)?;
-        let change = match funding.change {
-            Some(_) => Some(
-                (w.core().next_change_address_for_account(0).await).map_err(EngineError::from)?,
-            ),
-            None => None,
-        };
+        let change = change_address(&w, &funding).await?;
         let tx = unsigned_registration(reg, &funding, change.as_ref())?;
         let message = sign_message(&tx, network)?;
         let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
@@ -869,7 +866,7 @@ impl NetworkSession {
     async fn input_coins(
         &self,
         fence: &crate::coins::CoinFence,
-        w: &platform_wallet::wallet::platform_wallet::PlatformWallet,
+        w: &PlatformWallet,
         tx: &dashcore::Transaction,
         unspent: bool,
     ) -> Result<Vec<(key_wallet::Utxo, key_wallet::DerivationPath)>, MasternodesError> {
@@ -904,7 +901,7 @@ impl NetworkSession {
 
     async fn summary_of(
         &self,
-        w: &platform_wallet::wallet::platform_wallet::PlatformWallet,
+        w: &PlatformWallet,
         tx: &dashcore::Transaction,
         inputs: &[key_wallet::Utxo],
         funding: &Funding,

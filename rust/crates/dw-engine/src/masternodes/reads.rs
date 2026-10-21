@@ -862,8 +862,6 @@ impl Masternodes {
     }
 }
 
-/// `masternodes.not_found`, or `list_unavailable` when the list that
-/// wasn't searched might have held it.
 /// What a ProUpRegTx of a masternode needs from the wallet (MG-04 D10,
 /// D12), read as MG-03's reads do.
 #[derive(Debug, Clone, Default)]
@@ -911,6 +909,8 @@ pub(super) async fn owner_facts(
     })
 }
 
+/// `masternodes.not_found`, or `list_unavailable` when the list that
+/// wasn't searched might have held it.
 pub(super) fn not_found(list: &ListView) -> MasternodesError {
     if list.synced {
         MasternodesError::NotFound
