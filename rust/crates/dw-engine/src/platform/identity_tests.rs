@@ -4,7 +4,7 @@
 //! answer; under the write lock), the refresh of all, and the read-only
 //! lookup by id and by name.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use dpp::identity::accessors::IdentityGettersV0;
@@ -19,6 +19,7 @@ use dpp::platform_value::BinaryData;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 
+use crate::PlatformChange;
 use crate::platform::balances::Refreshed;
 use crate::platform::dashpay::DashPay;
 use crate::platform::errors::PlatformError;
@@ -593,4 +594,20 @@ fn the_refreshed_keys_and_the_chosen_main_identity_survive_a_restart() {
         .map(|s| (s.identity, s.is_main))
         .collect();
     assert_eq!(main, vec![(b58(MINE), false), (b58(SECOND), true)]);
+}
+
+/// Set as main writes no changeset, so it signals itself: the list's main
+/// mark and `DashPay::status` re-read on it (review B1).
+#[test]
+fn set_main_signals_the_identities_and_the_status() {
+    let f = fixture(false);
+    give_identities(&f);
+    let pump = &f.session.hub.pump;
+    *pump.platform_marks.lock().unwrap() = Some(Vec::new());
+    f.engine
+        .block_on(dp(&f).set_main_identity(b58(SECOND)))
+        .unwrap();
+    let marks = pump.platform_marks.lock().unwrap().take().unwrap();
+    let both = BTreeSet::from([PlatformChange::Identities, PlatformChange::Startup]);
+    assert!(marks.contains(&(f.wallet, both)), "{marks:?}");
 }

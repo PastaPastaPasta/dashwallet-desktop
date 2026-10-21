@@ -115,6 +115,8 @@ describe("an identity's keys (IOS-071 detail)", () => {
     const contract = "Bwr4WHCPz5rFVAD87RqTs3izo4zpzwsEdKPWUT1NS1C7";
     expect(keyRow(key({ contractBound: contract, contractBoundDocumentType: "contactRequest" })).bound).toBe("DashPay contact requests");
     expect(keyRow(key({ contractBound: contract })).bound).toBe("Bwr4WH…1NS1C7");
+    // Another contract's `contactRequest` type is that contract's (review N2).
+    expect(keyRow(key({ contractBound: ID_B, contractBoundDocumentType: "contactRequest" })).bound).toBe("8GopLQ…V2DYiN");
     expect(keyRow(key()).bound).toBeNull();
   });
 });
@@ -156,6 +158,14 @@ describe("the look-up (IOS-071 find)", () => {
     answer(null);
     await slow;
     expect(model.find.kind).toBe("found");
+
+    // An invalid entry overtakes a pending answer too (review N1).
+    api.identityFind.mockImplementationOnce(() => new Promise((r) => (answer = r)));
+    const pending = model.lookUp("old");
+    await model.lookUp("a.b");
+    answer(null);
+    await pending;
+    expect(model.find.kind).toBe("invalid");
   });
 });
 
@@ -181,6 +191,7 @@ describe("the page's actions (IOS-071)", () => {
     await model.refresh(ID_A);
     expect(model.result).toEqual({ identity: ID_A, ok: false, text: "This identity's data could not be verified against the network." });
     expect(identityErrorText(appError("internal"))).toBe("Something went wrong (internal).");
+    expect(identityErrorText(appError("platform.proof_invalid"))).toBe("Dash Platform's answer could not be verified. Try again.");
   });
 
   it("Refresh all (D9): the count, or how many failed and why", async () => {
@@ -210,5 +221,9 @@ describe("the page's actions (IOS-071)", () => {
     await model.setMainName(ID_A, "alice2");
     expect(api.setMainName).toHaveBeenCalledWith(WALLET_A, ID_A, "alice2");
     expect(model.result).toBeNull();
+    // A name the identity lost meanwhile (review S1).
+    api.setMainName.mockRejectedValueOnce(appError("invalid_argument"));
+    await model.setMainName(ID_A, "gone");
+    expect(model.result).toEqual({ identity: ID_A, ok: false, text: "This identity no longer owns that name." });
   });
 });

@@ -9,7 +9,7 @@ import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { IdentityDetail } from "../api/generated/IdentityDetail";
 import type { IdentityKeyInfo } from "../api/generated/IdentityKeyInfo";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
-import { BASE58_ID } from "../dashpay/identities";
+import { BASE58_ID, DASHPAY_CONTRACT_ID } from "../dashpay/identities";
 import { IDENTITY, registered, type DashPayWorld } from "./dashpay";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureGrant, World } from "./scenarios";
@@ -32,7 +32,6 @@ export const identitiesOf = (dp: DashPayWorld): IdentitiesWorld => (dp.identityS
 export const WORK_IDENTITY = "AWrk7m2Lq9XzDhcP4fT6bN8sGyJ3uVeR5kHnC1aQwMpE";
 /** The seed's third identity, which Find my identities finds. */
 export const SPARE_IDENTITY = "SpRe3vK8tQ1mZxWb6nH9cF4jL7dGyP2aUeT5sNrB3kXw";
-const DASHPAY_CONTRACT = "Bwr4WHCPz5rFVAD87RqTs3izo4zpzwsEdKPWUT1NS1C7";
 
 function key(id: number, purpose: IdentityKeyInfo["purpose"], securityLevel: IdentityKeyInfo["securityLevel"], patch: Partial<IdentityKeyInfo> = {}): IdentityKeyInfo {
   return {
@@ -54,7 +53,7 @@ function key(id: number, purpose: IdentityKeyInfo["purpose"], securityLevel: Ide
 export function identityKeys(dashpay: boolean): IdentityKeyInfo[] {
   const keys = [key(0, "authentication", "master"), key(1, "authentication", "high"), key(2, "authentication", "critical"), key(3, "transfer", "critical")];
   if (!dashpay) return keys;
-  const bound = { contractBound: DASHPAY_CONTRACT, contractBoundDocumentType: "contactRequest" };
+  const bound = { contractBound: DASHPAY_CONTRACT_ID, contractBoundDocumentType: "contactRequest" };
   return [...keys, key(4, "encryption", "medium", bound), key(5, "decryption", "medium", bound)];
 }
 
@@ -98,8 +97,8 @@ export interface IdentitiesDeps {
 }
 
 export function identitiesHandlers(d: IdentitiesDeps): Handlers {
-  const changed = ({ world, emit }: Ctx, walletId: string) =>
-    emit({ kind: "platform", network: world.launch.network.dirName, walletId, change: { domain: "identities" } });
+  const changed = ({ world, emit }: Ctx, walletId: string, domain: "identities" | "startup" = "identities") =>
+    emit({ kind: "platform", network: world.launch.network.dirName, walletId, change: { domain } });
 
   function detail(dp: DashPayWorld, identity: string): IdentityDetail {
     const s = identitiesOf(dp);
@@ -162,7 +161,9 @@ export function identitiesHandlers(d: IdentitiesDeps): Handlers {
       const dp = d.dashpay(ctx.world, walletId, identity);
       dp.identities = dp.identities.map((i) => ({ ...i, isMain: i.identity === identity }));
       if (dp.status.kind === "ready") dp.status = { kind: "ready", main: identity };
+      // As the engine (D15): the list's main mark and the status.
       changed(ctx, walletId);
+      changed(ctx, walletId, "startup");
       return null;
     },
     set_main_name: ({ walletId, identity, label }, ctx) => {

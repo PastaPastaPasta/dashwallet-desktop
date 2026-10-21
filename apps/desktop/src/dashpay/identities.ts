@@ -47,6 +47,7 @@ export const IDENTITIES_COPY = {
     usernames: "Usernames",
     mainName: "Main name",
     setMainName: "Set as main name",
+    notOwned: "This identity no longer owns that name.",
     keys: "Public keys",
     noKeys: "No public keys",
     loading: "Loading keys…",
@@ -77,7 +78,7 @@ const BY_CODE: Record<string, string> = {
   "platform.trust_mismatch": "This identity's data could not be verified against the network.",
   "identity.not_found": "This identity is not on Dash Platform.",
   "platform.timeout": "Dash Platform took too long to answer. Try again.",
-  invalid_argument: IDENTITIES_COPY.find.invalid,
+  "platform.proof_invalid": "Dash Platform's answer could not be verified. Try again.",
 };
 
 const codeText = (code: string) => BY_CODE[code] ?? `Something went wrong (${code}).`;
@@ -149,6 +150,9 @@ const KEY_TYPE: Record<KeyTypeName, string> = {
   eddsaHash160: "EdDSA Hash160",
 };
 
+/** DashPay's system contract, the same id on every network (dpp `dashpay_contract::ID`). */
+export const DASHPAY_CONTRACT_ID = "Bwr4WHCPz5rFVAD87RqTs3izo4zpzwsEdKPWUT1NS1C7";
+
 /** One row of the keys table. */
 export interface KeyRow {
   id: number;
@@ -163,8 +167,8 @@ export interface KeyRow {
 
 export function keyRow(k: IdentityKeyInfo): KeyRow {
   const status = k.disabledAt !== null ? "disabled" : k.readOnly ? "readOnly" : "enabled";
-  const bound =
-    k.contractBound === null ? null : k.contractBoundDocumentType === "contactRequest" ? IDENTITIES_COPY.boundDashPay : shortId(k.contractBound);
+  const dashpay = k.contractBound === DASHPAY_CONTRACT_ID && k.contractBoundDocumentType === "contactRequest";
+  const bound = k.contractBound === null ? null : dashpay ? IDENTITIES_COPY.boundDashPay : shortId(k.contractBound);
   return {
     id: k.id,
     purpose: PURPOSE[k.purpose],
@@ -307,8 +311,14 @@ export class IdentitiesModel extends Model {
 
   setMainName(identity: string, label: string) {
     return this.#run(`mainName:${identity}`, identity, async () => {
-      await this.api.setMainName(this.walletId, identity, label);
-      return null;
+      try {
+        await this.api.setMainName(this.walletId, identity, label);
+        return null;
+      } catch (e) {
+        // A name lost since the sheet read its names (review S1).
+        if (hasCode(e, "invalid_argument")) return { ok: false, text: IDENTITIES_COPY.detail.notOwned };
+        throw e;
+      }
     });
   }
 
@@ -334,12 +344,12 @@ export class IdentitiesModel extends Model {
   /** Looks `text` up (read-only, D6); a newer look-up overtakes an older one's answer. */
   async lookUp(text: string) {
     const input = findInput(text);
+    const seq = ++this.#findSeq;
     if (input.kind !== "query") {
       this.find = input.kind === "invalid" ? { kind: "invalid" } : { kind: "idle" };
       this.changed();
       return;
     }
-    const seq = ++this.#findSeq;
     this.find = { kind: "searching", query: input.query };
     this.changed();
     let next: FindState;
