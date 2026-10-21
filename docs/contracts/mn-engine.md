@@ -92,7 +92,7 @@ wallet's masternodes and its saved operations: keys in use (`masternodes.protx_r
 0–19 is in use), a listed service (`bad-protx-dup-netinfo-entry`), the collateral (`masternodes.collateral_unavailable`,
 MG-04 D23). An operation id is 32 lower-case hex (`invalid_argument` otherwise), then `masternodes.operation_not_found`,
 then `masternodes.in_flight` while another call on it runs, then `masternodes.operation_state{state}` when the call
-doesn't apply to its state. An `UpdateRegistrarRequest` is checked first on its own (`invalid_argument`, the ProTx
+doesn't apply to its state, then (a resent update) `masternodes.update_superseded{operation}` (MG-04 D43). An `UpdateRegistrarRequest` is checked first on its own (`invalid_argument`, the ProTx
 hash among it), then against the synced list (`masternodes.list_unavailable`, `masternodes.not_found` when not
 listed), then the masternode (`masternodes.unsupported{feature: "shared_masternodes"}` for a version-3 one), then its
 owner key (`masternodes.no_owner_key`, MG-04 D12), then a kept key while an operation of a loaded wallet on the
@@ -584,7 +584,8 @@ a hash's shape (D23).
   a loaded wallet's ProTx on the same masternode) is signed, not sent or sent, or confirmed above the list's height, so
   the list may not show its keys yet. Giving every key is allowed (MG-04 D43).
 - `masternodes.update_superseded{operation}`: `resend_operation` of a ProUpRegTx that `operation`, a later update of
-  the same masternode that is or may go out, would undo; discard that one first (MG-04 D43).
+  the same masternode (maybe another loaded wallet's) that is or may go out, would undo. Discard this row, or send a
+  new update giving every key (MG-04 D43). `update_pending`'s `operation` may also be another loaded wallet's.
 - `Platform(PlatformError)`: a lease's refusal (MG-05 D12), its code unchanged.
 - `Engine(EngineError)`: `network_not_open`, `wallet_not_found`, `invalid_argument`, `vault` (a locked vault among
   them), `storage`,

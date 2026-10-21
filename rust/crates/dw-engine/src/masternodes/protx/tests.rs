@@ -1822,3 +1822,55 @@ fn mg04_a_keep_waits_for_another_loaded_wallets_update() {
         "{e:?}"
     );
 }
+
+/// D7, D43: a `not_sent` update resends (its own row isn't "later"), and a
+/// later update's resend isn't blocked by an earlier one.
+#[test]
+fn mg04_an_update_resends_unless_a_later_one_exists() {
+    let f = fx(Library::Accept);
+    let (_, op) = f.registered();
+    let hash = op.pro_tx_hash.clone().unwrap();
+    let voting = |index| KeepOr::Set(VotingChoice::Keychain { index });
+    let resend = |id: &str, grant| {
+        f.engine
+            .block_on(f.mn().resend_operation(f.wallet, id.to_string(), grant))
+    };
+    *f.lib.mode.lock().unwrap() = Library::NoPeers;
+    let first = f
+        .update(
+            UpdateRegistrarRequest {
+                voting: voting(5),
+                ..keep(&hash)
+            },
+            f.grant(COIN),
+        )
+        .unwrap();
+    assert_eq!(first.state, ProTxOperationState::NotSent);
+    *f.lib.mode.lock().unwrap() = Library::Accept;
+    let sent = resend(&first.id, f.grant(COIN)).unwrap();
+    assert_eq!(sent.state, ProTxOperationState::Sent);
+
+    // `created_at` is in seconds: the second update is saved a second later.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    f.credit(3, COIN);
+    *f.lib.mode.lock().unwrap() = Library::NoPeers;
+    let second = f
+        .update(
+            UpdateRegistrarRequest {
+                operator: KeepOr::Set(OperatorChoice::Keychain { index: 0 }),
+                voting: voting(6),
+                ..keep(&hash)
+            },
+            f.grant(COIN),
+        )
+        .unwrap();
+    assert_eq!(second.state, ProTxOperationState::NotSent);
+    *f.lib.mode.lock().unwrap() = Library::Accept;
+    let e = resend(&first.id, f.grant(COIN)).unwrap_err();
+    assert!(
+        matches!(&e, MasternodesError::UpdateSuperseded { operation } if *operation == second.id),
+        "{e:?}"
+    );
+    let sent = resend(&second.id, f.grant(COIN)).unwrap();
+    assert_eq!(sent.state, ProTxOperationState::Sent);
+}

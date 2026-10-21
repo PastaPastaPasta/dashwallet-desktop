@@ -119,7 +119,11 @@ impl NetworkSession {
             if rows.is_empty() {
                 continue;
             }
-            let (history, unspent) = self.op_view(wallet).await?;
+            // A wallet unloaded since `wallet_ids` has no view to judge by.
+            let (history, unspent) = match self.op_view(wallet).await {
+                Err(MasternodesError::Engine(EngineError::WalletNotFound(_))) => continue,
+                view => view?,
+            };
             out.extend(rows.into_iter().map(|r| {
                 let state = state_of(&r, &history, &unspent);
                 (r, state)
@@ -163,7 +167,9 @@ impl NetworkSession {
         row: &MasternodeOpRow,
     ) -> Result<Option<String>, MasternodesError> {
         let Some(shown) = row.pro_tx_hash.as_deref() else {
-            return Ok(None);
+            return Err(
+                EngineError::Internal("an update row without its ProTx hash".into()).into(),
+            );
         };
         Ok(self
             .ops_on(shown)

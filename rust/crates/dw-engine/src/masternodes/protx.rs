@@ -654,14 +654,10 @@ impl Masternodes {
             let row = s.op_row(wallet, &operation).await?;
             // An update resends only while nothing later on its masternode
             // is or may go out, held against a new update (D43).
-            let _updating = if row.kind == "update_registrar" {
-                let updating = s.masternodes.update_lock().await;
-                if let Some(later) = s.later_operation(&row).await? {
-                    return Err(MasternodesError::UpdateSuperseded { operation: later });
-                }
-                Some(updating)
-            } else {
-                None
+            let update = row.kind == "update_registrar";
+            let _updating = match update {
+                true => Some(s.masternodes.update_lock().await),
+                false => None,
             };
             let state = s.op_state(wallet, &row).await?;
             if !matches!(
@@ -673,6 +669,9 @@ impl Masternodes {
                 return Err(MasternodesError::OperationState {
                     state: state_name(state).into(),
                 });
+            }
+            if update && let Some(later) = s.later_operation(&row).await? {
+                return Err(MasternodesError::UpdateSuperseded { operation: later });
             }
             let tx = ops::signed_tx(&row)
                 .ok_or_else(|| EngineError::Internal("stored signed transaction".into()))?;

@@ -258,7 +258,9 @@ pub(crate) struct MasternodesRuntime {
     /// key for a masternode an `untrack` is removing.
     mutations: tokio::sync::Mutex<()>,
     /// Held by a ProUpRegTx from reading the list's keys until its row is
-    /// saved, so a second update sees the first one's row (MG-04 D43).
+    /// saved, so a second update sees the first one's row, and by the
+    /// resend of one from its D43 check through the hand-off (a new update
+    /// waits on that broadcast) (MG-04 D43).
     updates: tokio::sync::Mutex<()>,
     /// Keys whose vault write failed in this session: the vault may hold
     /// the new key on disk and the old one in memory, so their ids are only
@@ -320,7 +322,8 @@ impl MasternodesRuntime {
         *self.protx_seam.lock().unwrap() = seam;
     }
 
-    /// Serialises ProUpRegTx builds up to their saved rows (see `updates`).
+    /// Serialises ProUpRegTx builds up to their saved rows, and their
+    /// resends (see `updates`).
     pub(crate) async fn update_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.updates.lock().await
     }
