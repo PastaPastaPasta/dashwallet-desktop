@@ -101,7 +101,7 @@ describe("fixture contested names", () => {
     // B's present choice at its limit: `already_voted`, nothing sent.
     const lock = await cmd.governanceVoteName(W, "a11ce", { kind: "lock" }, [VOTER_B], await grant());
     expect(lock).toEqual([{ proTxHash: VOTER_B, transition: null, rejected: "already_voted" }]);
-    expect((await a11ce()).lockVotes).toBe(1);
+    expect((await a11ce()).lockVotes).toBe(5);
   });
 
   it("takes an unconfirmed vote that landed: the re-read shows it, the count does not grow", async () => {
@@ -129,7 +129,7 @@ describe("fixture contested names", () => {
   });
 
   it("builds every names scenario", async () => {
-    for (const s of ["names-empty", "names-no-voters", "names-ending", "names-ended", "names-partial", "names-watch-only", "names-check-fails"] as ScenarioName[]) {
+    for (const s of ["names-empty", "names-no-voters", "names-ending", "names-ended", "names-partial", "names-watch-only", "names-check-fails", "names-still-unconfirmed"] as ScenarioName[]) {
       install(s);
       await cmd.governanceContestedNames(W);
     }

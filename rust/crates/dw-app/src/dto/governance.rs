@@ -776,7 +776,8 @@ impl From<engine::ContestedNames> for ContestedNames {
 /// Why a masternode's name vote does not count: the engine's
 /// `NameVoteCast.rejected` reasons (MG-07 §3) as a closed set, so the
 /// renderer has a sentence for each (MG-11 D15). `unconfirmed` may still
-/// count; `refused` is Platform's catch-all.
+/// count; `refused` is Platform's catch-all; `unknown` is a reason this
+/// build doesn't know (MG-11 review n4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum NameRejectionName {
@@ -797,14 +798,18 @@ pub enum NameRejectionName {
     NoVoterIdentity,
     VotingKeyDisabled,
     Refused,
+    Unknown,
 }
 
 impl NameRejectionName {
-    /// The engine's reason; one this build doesn't know reads as `refused`,
-    /// which is what the renderer would say for it anyway.
+    /// The engine's reason; one this build doesn't know is `unknown`, and
+    /// logged, so a new engine reason shows up rather than passing as
+    /// Platform's `refused`.
     pub fn from_engine(reason: &str) -> Self {
-        serde_json::from_value(serde_json::Value::String(reason.to_owned()))
-            .unwrap_or(Self::Refused)
+        serde_json::from_value(serde_json::Value::String(reason.to_owned())).unwrap_or_else(|_| {
+            tracing::warn!(reason, "a name vote rejection reason this build doesn't know");
+            Self::Unknown
+        })
     }
 }
 

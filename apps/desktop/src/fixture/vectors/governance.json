@@ -465,7 +465,7 @@
               "votes": 4
             }
           ],
-          "lockVotes": 1,
+          "lockVotes": 5,
           "abstainVotes": 0,
           "contendersComplete": true
         },
@@ -479,7 +479,7 @@
             }
           ],
           "lockVotes": 0,
-          "abstainVotes": 0,
+          "abstainVotes": 4,
           "contendersComplete": true
         }
       ],

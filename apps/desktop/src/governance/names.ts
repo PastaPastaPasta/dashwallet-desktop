@@ -365,6 +365,9 @@ const REJECTED: Record<Exclude<NameRejectionName, "unconfirmed">, string> = {
   no_voter_identity: "Platform has no voting identity for its key yet.",
   voting_key_disabled: "Platform disabled this voting key: the masternode's voting key was changed.",
   refused: "Platform refused the vote.",
+  // A reason this build doesn't know (dw-app logs it): not counted, and not passed off as Platform's
+  // `refused` (MG-11 review n4).
+  unknown: "Not counted, for a reason this version of the wallet doesn't know.",
 };
 
 /** A `NameVoteCast.rejected` reason as a sentence (MG-09 D13's rule): never the raw value. */

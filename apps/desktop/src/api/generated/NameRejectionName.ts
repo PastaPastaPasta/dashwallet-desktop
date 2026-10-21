@@ -4,6 +4,7 @@
  * Why a masternode's name vote does not count: the engine's
  * `NameVoteCast.rejected` reasons (MG-07 §3) as a closed set, so the
  * renderer has a sentence for each (MG-11 D15). `unconfirmed` may still
- * count; `refused` is Platform's catch-all.
+ * count; `refused` is Platform's catch-all; `unknown` is a reason this
+ * build doesn't know (MG-11 review n4).
  */
-export type NameRejectionName = "unknown_masternode" | "no_voting_key" | "cancelled" | "signer_unavailable" | "in_flight" | "vote_limit" | "platform_unavailable" | "unconfirmed" | "already_voted" | "contest_closed" | "contest_not_found" | "masternode_not_found" | "wrong_voting_key" | "choice_not_allowed" | "no_voter_identity" | "voting_key_disabled" | "refused";
+export type NameRejectionName = "unknown_masternode" | "no_voting_key" | "cancelled" | "signer_unavailable" | "in_flight" | "vote_limit" | "platform_unavailable" | "unconfirmed" | "already_voted" | "contest_closed" | "contest_not_found" | "masternode_not_found" | "wrong_voting_key" | "choice_not_allowed" | "no_voter_identity" | "voting_key_disabled" | "refused" | "unknown";

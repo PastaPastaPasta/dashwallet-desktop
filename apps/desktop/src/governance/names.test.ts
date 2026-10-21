@@ -68,7 +68,7 @@ describe("names and choices", () => {
       ["8ZtW…R97P", 9],
       ["4EfA…iSeF", 4],
       ["Abstain", 0],
-      ["Lock", 1],
+      ["Lock", 5],
     ]);
   });
 
@@ -80,15 +80,15 @@ describe("names and choices", () => {
 describe("the tally", () => {
   it("leads with the contender with most votes", () => {
     const t = tallyView(a11ce());
-    expect(t.total).toBe(14);
+    expect(t.total).toBe(18);
     expect(t.rows.map((r) => [r.key, r.votes, r.leading])).toEqual([
       [`id:${ID_1}`, 9, true],
       [`id:${ID_2}`, 4, false],
-      ["lock", 1, false],
+      ["lock", 5, false],
       ["abstain", 0, false],
     ]);
-    expect(t.rows[0].pct).toBeCloseTo((9 / 14) * 100);
-    expect(t.lead).toBe("8ZtW…R97P leads with 9 of 14 votes");
+    expect(t.rows[0].pct).toBeCloseTo((9 / 18) * 100);
+    expect(t.lead).toBe("8ZtW…R97P leads with 9 of 18 votes");
   });
 
   it("lets Lock lead only with strictly more votes than every contender (Drive)", () => {
@@ -117,7 +117,7 @@ describe("the list", () => {
   it("shows each contest's contenders, end, your votes and an ending chip", () => {
     const n = names();
     const row = contestRow(a11ce(n), n.voters, NOW);
-    expect(row).toMatchObject({ label: "a11ce", you: "You: 2 of 3 voted", total: 14, chip: null });
+    expect(row).toMatchObject({ label: "a11ce", you: "You: 2 of 3 voted", total: 18, chip: null });
     expect(row.sub).toMatch(/^2 contenders · ends /);
     const soon = contestRow({ ...a11ce(n), endsAt: NOW + 3 * 3600 }, n.voters, NOW);
     expect(soon.chip).toMatchObject({ text: "Ends in 3 hours", tone: "warning" });
@@ -255,6 +255,10 @@ describe("the result", () => {
     expect(reasons).toHaveLength(16);
     for (const r of reasons) expect(nameRejectedText(r), r).not.toMatch(/_|^[a-z]+$/);
     expect(new Set(reasons.map(nameRejectedText)).size).toBe(reasons.length);
+    // A reason dw-app doesn't know says so, apart from Platform's `refused`, and isn't counted.
+    const unknown = nameVoteResult([cast(VOTER_A, "unknown")], names().voters, "a11ce", LOCK);
+    expect(unknown.rows[0]).toMatchObject({ state: "refused", sub: "Not counted, for a reason this version of the wallet doesn't know." });
+    expect(nameRejectedText("unknown")).not.toBe(nameRejectedText("refused"));
     // An unknown masternode in the result is named by its hash.
     const view = nameVoteResult([cast("d4".repeat(32), "unknown_masternode")], names().voters, "a11ce", LOCK);
     expect(view.rows[0]).toMatchObject({ name: "Masternode d4d4d4d4", state: "refused" });

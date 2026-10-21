@@ -3,7 +3,7 @@
 // `governance_vote_name`; the result lists each masternode's vote, an `unconfirmed` one as not
 // confirmed until Check again re-reads Platform and finds its choice there (MG-07 D7).
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { errorMessage } from "../../api/backend";
 import type { ContestedName } from "../../api/generated/ContestedName";
 import type { ContestedNames } from "../../api/generated/ContestedNames";
@@ -32,6 +32,7 @@ import {
   voteButtonText,
   votesText,
 } from "../../governance/names";
+import { timeOfDay } from "../../format/tx";
 import { failureText } from "../pay/model";
 import { StatusChip, useNowSecs } from "./common";
 import { CredentialField, useCredential } from "./credential";
@@ -44,6 +45,7 @@ const CHOICE_NOTE: Record<NameChoice["kind"], string> = {
 };
 
 const CHECK_FAILED = "Couldn't check again.";
+const stillText = (at: Date) => `Checked at ${timeOfDay(at)} · still not confirmed.`;
 
 /** What the result shows once the votes went out. */
 interface NameVoteDone {
@@ -126,8 +128,16 @@ function NameVoteForm({
   const rows = useMemo(() => nameVoterRows(names.voters, label, choice, allowed), [names.voters, label, choice, allowed]);
   const picked = pickedVoters(rows, checked);
   const last = lastVoteNotice(picked);
-  // The sheet keeps its read, but not past the end: Vote goes off when the contest ends under it.
-  const closed = isClosed(contest, now);
+  // The sheet keeps its read, but not past the end: Vote goes off when the contest ends under it,
+  // at the end itself rather than at the next 30 s tick (MG-11 review n1).
+  const [woke, wake] = useState(0);
+  useEffect(() => {
+    const ms = contest.endsAt * 1000 - Date.now();
+    if (ms <= 0) return;
+    const t = setTimeout(() => wake((n) => n + 1), Math.min(ms, 2 ** 31 - 1));
+    return () => clearTimeout(t);
+  }, [contest.endsAt, woke]);
+  const closed = isClosed(contest, Math.max(now, Math.floor(Date.now() / 1000)));
   const credential = useCredential(wallet.walletId, "Enter your passphrase to vote.");
   const toggle = (hash: string) =>
     setChecked((s) => {
@@ -136,8 +146,16 @@ function NameVoteForm({
       return next;
     });
 
+  // `busy` is state, so it changes only at the next render: two clicks in one task would both pass
+  // it. The ref changes at once (MG-11 review m3).
+  const sending = useRef(false);
   const vote = async () => {
-    if (busy || closed || choice === null || picked.length === 0 || !credential.ready) return;
+    if (sending.current || busy || choice === null || picked.length === 0 || !credential.ready) return;
+    if (isClosed(contest, Math.floor(Date.now() / 1000))) {
+      wake((n) => n + 1);
+      return;
+    }
+    sending.current = true;
     setBusy(true);
     try {
       const grant = await credential.authorize({ kind: "governance" });
@@ -155,6 +173,7 @@ function NameVoteForm({
       // A closed contest or a contender gone: the list re-reads under the sheet.
       onRefused();
     } finally {
+      sending.current = false;
       setBusy(false);
     }
   };
@@ -273,17 +292,21 @@ function NameVoteResult({
   const [after, setAfter] = useState<ContestedNames | undefined>(undefined);
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState<string | null>(null);
+  /** When a Check again read fine but still didn't find the vote (MG-11 review n2). */
+  const [stillAt, setStillAt] = useState<Date | null>(null);
   const done = useRef<HTMLButtonElement>(null);
   const view = nameVoteResult(casts, names.voters, contest.label, choice, after);
   const check = async () => {
     if (checking) return;
     setChecking(true);
     setCheckError(null);
+    setStillAt(null);
     try {
       const read = (await reread()) ?? after;
       setAfter(read);
       // Check again leaves once nothing is unconfirmed: focus goes to Done, not the page.
       if (!nameVoteResult(casts, names.voters, contest.label, choice, read).unconfirmed) done.current?.focus();
+      else setStillAt(new Date());
     } catch (e) {
       setCheckError(nameErrorText(e) ?? errorMessage(e));
     } finally {
@@ -315,8 +338,13 @@ function NameVoteResult({
           {CHECK_FAILED} {checkError}
         </p>
       )}
+      {stillAt && (
+        <p className="mg-muted mg-small mg-flush" data-testid="name-vote-check-note">
+          {stillText(stillAt)}
+        </p>
+      )}
       <span className="sr-only" role="status">
-        {checkError ? `${CHECK_FAILED} ${checkError}` : ""}
+        {checkError ? `${CHECK_FAILED} ${checkError}` : stillAt ? stillText(stillAt) : ""}
       </span>
       <footer className="mg-sheet-footer">
         <span />

@@ -390,6 +390,8 @@ fn every_name_vote_reason_crosses_as_itself() {
     }
     assert_eq!(
         dto::NameRejectionName::from_engine("new_reason"),
-        dto::NameRejectionName::Refused
+        dto::NameRejectionName::Unknown
     );
+    // `unknown` is this build's word, never one of the engine's.
+    assert!(!reasons.contains("unknown"));
 }

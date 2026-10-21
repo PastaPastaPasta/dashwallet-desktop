@@ -60,6 +60,24 @@ for (const theme of THEMES) {
   });
 }
 
+const calls = (page: Page, cmd: string) => page.evaluate((c) => window.__dwFixture!.calls.filter((x) => x === c).length, cmd);
+
+test("two clicks on Vote in one task send one batch, and the result stays (MG-11 review m3)", async ({ page }) => {
+  const errors = await open(page, "governance");
+  await page.getByTestId("proposal-vote").click();
+  await page.getByTestId("vote-outcome-yes").click();
+  await page.getByTestId("vote-passphrase").fill("demo");
+  // Both clicks run before React renders, so `busy` can't stop the second.
+  await page.getByTestId("vote-send").evaluate((b: HTMLButtonElement) => {
+    b.click();
+    b.click();
+  });
+  await expect(page.getByTestId("vote-result")).toBeVisible();
+  expect(await calls(page, "governance_vote")).toBe(1);
+  await expect(page.getByTestId("vote-result-title")).not.toHaveText(/^0 of/);
+  expect(errors).toEqual([]);
+});
+
 test("a wrong passphrase keeps the vote sheet open and says so", async ({ page }) => {
   await open(page, "governance");
   await page.getByTestId("proposal-row-dashcon-2027-venue").click();

@@ -44,7 +44,7 @@ export const FIXTURE_NAMES: ContestedNames = {
         { identity: ID_1, votes: 9 },
         { identity: ID_2, votes: 4 },
       ],
-      lockVotes: 1,
+      lockVotes: 5,
       abstainVotes: 0,
       contendersComplete: true,
     },
@@ -53,7 +53,7 @@ export const FIXTURE_NAMES: ContestedNames = {
       endsAt: 1_800_090_000,
       contenders: [{ identity: ID_2, votes: 0 }],
       lockVotes: 0,
-      abstainVotes: 0,
+      abstainVotes: 4,
       contendersComplete: true,
     },
   ],
@@ -254,6 +254,8 @@ export function nameScenarios(base: (theme: ThemeName | null, patch?: (n: NamesW
         };
         n.unconfirmedLands = true;
       }),
+    /** The regular masternode's vote goes out with no answer and never lands: Check again reads it unchanged. */
+    "names-still-unconfirmed": (t: ThemeName | null) => base(t, (n) => (n.refuse = { [VOTER_A]: "unconfirmed" })),
     /** The regular masternode's vote goes out with no answer, then Platform goes down: Check again fails. */
     "names-check-fails": (t: ThemeName | null) =>
       base(t, (n) => {
