@@ -58,6 +58,8 @@ pub(super) enum Ty {
     LabelText,
     /// A DPNS name: a label, with `.dash` or without.
     Username,
+    /// What `identity find` takes: an identity id or a DPNS name.
+    IdentityOrName,
     /// An `http(s)://` URL: up to 2048 printable ASCII characters, not
     /// bearer-shaped.
     Url,
@@ -98,6 +100,7 @@ fn value_type(cmd: &str, arg: &str) -> Option<Ty> {
         (_, "prefix") => Ty::LabelText,
         (_, "label" | "temporary_label") => Ty::Label,
         (_, "username") => Ty::Username,
+        ("find", "query") => Ty::IdentityOrName,
         (_, "avatar_url") => Ty::Url,
         ("prepare-avatar", "url") => Ty::Url,
         ("prepare-avatar", "file") => Ty::Path,
@@ -128,6 +131,7 @@ impl Ty {
             Ty::Label => "a DPNS label (3-63 of [A-Za-z0-9-], no edge hyphen)",
             Ty::LabelText => "label text (1-63 of [A-Za-z0-9-])",
             Ty::Username => "a DPNS name",
+            Ty::IdentityOrName => "an identity id or a DPNS name",
             Ty::Url => "an http(s) URL that is not a bearer input",
             Ty::Path => "a file path (of [A-Za-z0-9._/ +@,~-]) that is not a bearer input",
             Ty::Text(_) => "text within its length, without control characters or a bearer input",
@@ -167,6 +171,7 @@ impl Ty {
                 Some(n) if b[n..].eq_ignore_ascii_case(b".dash") => is_label(&b[..n]),
                 _ => is_label(b),
             },
+            Ty::IdentityOrName => Ty::Identity.accepts(v) || Ty::Username.accepts(v),
             Ty::Url => {
                 let lower = |p: &[u8]| b.len() >= p.len() && b[..p.len()].eq_ignore_ascii_case(p);
                 b.len() <= 2048
@@ -534,6 +539,11 @@ mod tests {
                 &[".dash", "a.b.dash"],
             ),
             (
+                Ty::IdentityOrName,
+                &[ID1, "alice", "alice.dash"],
+                &["", "a.b.dash", "ab"],
+            ),
+            (
                 Ty::Url,
                 &["https://x/a.png", "HTTP://x"],
                 &[
@@ -635,6 +645,9 @@ mod tests {
                 "/dev/shm/p.hex",
             ],
             &["profile", "get", "--identity", ID1],
+            &["identity", "refresh", "--all"],
+            &["identity", "find", "alice.dash"],
+            &["identity", "find", ID1],
             &[
                 "profile",
                 "set",
@@ -702,6 +715,10 @@ mod tests {
             (
                 &["identity", "set-main", "x"],
                 "argument 3: <IDENTITY> takes an identity id (Base58 of 32 bytes)",
+            ),
+            (
+                &["identity", "find", "a.b"],
+                "argument 3: <QUERY> takes an identity id or a DPNS name",
             ),
             (
                 &["contact", "list", "--sort", "bogus"],

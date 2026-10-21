@@ -134,6 +134,9 @@ import type { GrantAction } from "./generated/GrantAction";
 import type { GrantRequest } from "./generated/GrantRequest";
 import type { PrivateContactDetails } from "./generated/PrivateContactDetails";
 import type { PublishStateName } from "./generated/PublishStateName";
+import type { FoundIdentity } from "./generated/FoundIdentity";
+import type { IdentityDetail } from "./generated/IdentityDetail";
+import type { IdentityRefresh } from "./generated/IdentityRefresh";
 
 export interface Backend {
   readonly kind: "tauri" | "fixture";
@@ -372,6 +375,17 @@ export interface Backend {
   // My Profile and the top-up (DP1-10).
   /** Asks Platform for the identity's balance; the answer arrives as `Platform{Identities}`. */
   identityRefreshBalance(walletId: string, identity: string): Promise<string | null>;
+  // Settings ▸ Advanced ▸ Identities (DP6-01).
+  identityDetail(walletId: string, identity: string): Promise<IdentityDetail>;
+  /** Keys and revision from Platform, then the balance; the detail after. */
+  identityRefresh(walletId: string, identity: string): Promise<IdentityDetail>;
+  identityRefreshAll(walletId: string): Promise<IdentityRefresh[]>;
+  /** Any identity by id or username, read-only; `null` when Platform has none. */
+  identityFind(walletId: string, query: string): Promise<FoundIdentity | null>;
+  setMainIdentity(walletId: string, identity: string): Promise<null>;
+  setMainName(walletId: string, identity: string, label: string | null): Promise<null>;
+  /** Same-seed discovery under an `identityScan` grant; how many identities it found. */
+  discoverIdentities(walletId: string, grant: string): Promise<number>;
   contestStatus(walletId: string, identity: string, label: string): Promise<ContestStatus>;
   /** Any identity's avatar thumbnail, verified against its profile (DP4-02); `null` without one or while
    * "Load contact pictures" is off; `avatar.hash_mismatch` and the fetch errors show initials. */

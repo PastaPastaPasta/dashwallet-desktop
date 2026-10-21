@@ -14,7 +14,7 @@ from the `PlatformVersion` of the network's protocol version, as the SDK last pr
 |---|---|
 | Quote, Max, minimum, Core output, the transition, the status read | `dw-engine/src/platform/withdrawal.rs` (new, not facade) with `withdrawal_tests.rs`; `credits.rs` (facade bodies, `withdrawals`, records) |
 | Signing key selection (TRANSFER), the lease | `requests.rs` (`transfer_keys`, `signing_keys` gain `Withdraw`; `write_lease`, `write_permit`, `flow_signer` shared) |
-| Contract | `docs/contracts/m4-dashpay-engine.md` §2.8, §3, §4, item 61; Contract-Version 34 |
+| Contract | `docs/contracts/m4-dashpay-engine.md` §2.8, §3, §4, item 62; Contract-Version 35 |
 | App commands, DTOs | `dw-app/src/api/identity.rs`, `dto` |
 | dwcli | `identity withdraw --quote-only` (the quote), `identity withdraw`, `identity withdrawals` (D13) |
 | UI | `apps/desktop/src/dashpay/withdraw.ts` (view model), `screens/dashpay/WithdrawSheet.tsx`, My Profile's credits block, fixture handlers and scenarios, `e2e/withdraw.spec.ts`, visual baselines of the sheet |
@@ -151,7 +151,7 @@ re-read on every `Platform` signal and every 60 s while one is pending.
 | stuck on Core (Queued/Pooled/Broadcasted for long, Expired) | not an error: `withdrawals` shows it pending; Platform keeps re-signing it. |
 | Failed (dust, protocol 14+) | `withdrawals` row `Failed`; the UI says the credits were not returned. Our minimum makes this unreachable for our own withdrawals. |
 
-## 4. Errors and the contract delta (Contract-Version 33 → 34, item 61)
+## 4. Errors and the contract delta (Contract-Version 34 → 35, item 62)
 
 - `withdraw_quote(identity, amount)`: implemented. Refuses an identity the wallet lacks (`identity.not_found`), a
   watched one (`invalid_argument`), an explicit amount outside `[min, max]` (`credits.withdrawal_out_of_range`), an

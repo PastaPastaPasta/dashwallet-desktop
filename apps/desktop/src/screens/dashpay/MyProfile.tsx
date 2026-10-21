@@ -36,7 +36,7 @@ import { RecentWithdrawals, WithdrawButton, WithdrawSheet } from "./WithdrawShee
 
 /** Opens DP1-09's credits path for `identity` on the Join page; `instant` refuses a contested
  * label (D13). */
-function chooseName(b: Backend, walletId: string, identity: string, instant: boolean) {
+export function chooseName(b: Backend, walletId: string, identity: string, instant: boolean) {
   wizardFor(b, walletId).begin({ kind: "credits", identity, instant });
   navigate("joinDashPay");
 }

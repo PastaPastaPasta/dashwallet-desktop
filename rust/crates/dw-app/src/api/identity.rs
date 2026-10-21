@@ -23,7 +23,7 @@ use self::credits::{
 };
 use self::flows::{GrantAction, GrantRequest};
 use self::invitations::InvitationStatus;
-use self::keys::{IdentityDetail, IdentitySummary};
+use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary};
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
 use self::registration::{
     FaucetLockKey, FinishReport, RegistrationQuote, RegistrationRequest, RegistrationStatus,
@@ -83,6 +83,28 @@ commands! {
     #[facade("DashPay::identity_detail")]
     fn identity_detail(state, wallet_id: String, identity: String) -> IdentityDetail {
         Ok(state.dashpay(&wallet_id).await?.identity_detail(identity).await?.into())
+    }
+
+    /// Re-reads the identity's keys and revision from Platform, then its
+    /// balance; the detail after.
+    #[facade("DashPay::refresh_identity")]
+    fn identity_refresh(state, wallet_id: String, identity: String) -> IdentityDetail {
+        Ok(state.dashpay(&wallet_id).await?.refresh_identity(identity).await?.into())
+    }
+
+    /// `identityRefresh` for each of the wallet's identities, one at a time.
+    #[facade("DashPay::refresh_identities")]
+    fn identity_refresh_all(state, wallet_id: String) -> Vec<IdentityRefresh> {
+        let outcomes = state.dashpay(&wallet_id).await?.refresh_identities().await?;
+        Ok(outcomes.into_iter().map(Into::into).collect())
+    }
+
+    /// Any identity by its id or a username, read-only; `null` when Platform
+    /// has none.
+    #[facade("DashPay::find_identity")]
+    fn identity_find(state, wallet_id: String, query: String) -> Option<FoundIdentity> {
+        let found = state.dashpay(&wallet_id).await?.find_identity(query).await?;
+        Ok(found.map(Into::into))
     }
 
     /// Re-reads the identity's credit balance from Platform, as a decimal

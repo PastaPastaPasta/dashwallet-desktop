@@ -87,7 +87,7 @@ use super::reverify::{Held, identity_and_profile};
 use super::runtime::PlatformSignal;
 use super::runtime::guard;
 use crate::session::Manager;
-use crate::{EngineError, NetworkSession, WalletId};
+use crate::{EngineError, NetworkSession, PlatformChange, WalletId};
 
 /// The `dp_prefs` key of an identity's chosen main name (DP1-03 writes it
 /// when the user picks one).
@@ -678,6 +678,9 @@ impl NetworkSession {
         self.platform
             .recovery
             .update_choices(id, |c| c.main_identity = Some(identity));
+        // No changeset carries the choice: the list's main mark and
+        // `DashPay::status` re-read on these (DP6-01 review B1).
+        (self.hub.pump).mark_platform(id, [PlatformChange::Identities, PlatformChange::Startup]);
         Ok(())
     }
 
@@ -705,7 +708,12 @@ impl NetworkSession {
         let wallet = id.to_string();
         let _writer = self.platform.recovery.choice_writer.lock().await;
         self.appdb_op(move |db| db.set_dp_pref(&wallet, &identity, key, value.as_deref()))
-            .await
+            .await?;
+        // No changeset carries a pref, and `identities()` reads every one
+        // (main, pending, refused, temporary, contested): it signals itself
+        // (DP6-01 D15, review N4).
+        (self.hub.pump).mark_platform(id, [PlatformChange::Identities]);
+        Ok(())
     }
 
     /// `identity`'s main-name rows as stored.

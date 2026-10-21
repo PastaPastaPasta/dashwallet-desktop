@@ -26,6 +26,7 @@ import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
+import { identitiesWorld } from "./identities";
 import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
 import type { Withdrawal } from "../api/generated/Withdrawal";
@@ -796,6 +797,13 @@ const SCENARIOS = {
     const w = base(t);
     const world = registered();
     w.dashpay = { ...world, identities: world.identities.map((i) => ({ ...i, names: [], mainName: null })) };
+    return w;
+  },
+  /** DP6-01: Alice and her work identity, the main one by choice; keys for both; a third identity
+   * of the seed for Find my identities. */
+  "dashpay-identities": (t) => {
+    const w = base(t);
+    w.dashpay = identitiesWorld();
     return w;
   },
   /** A sync pass holds Alice's names (S18): no card, the chip says "Updating…". */
