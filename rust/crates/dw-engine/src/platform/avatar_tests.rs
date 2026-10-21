@@ -22,12 +22,14 @@ use reqwest::Url;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use super::avatar::{Admission, Pictures, Pipeline, Target, Whose};
+use super::avatar::{
+    Admission, CANDIDATE_WITHOUT_URL, Pictures, Pipeline, Target, UNKNOWN_CANDIDATE, Whose,
+};
 use super::avatar_cache::ThumbDir;
 use super::avatar_dhash::mobile_dhash;
 use super::avatar_fetch::{FetchError, FetchPolicy, Fetcher, MAX_BYTES, NameResolver};
 use super::avatar_image::{self, Crop, MAX_SIDE};
-use super::errors::AvatarError;
+use super::errors::{AvatarError, PlatformError};
 use super::profile::{AvatarSize, CropRect, Profile};
 
 pub(super) const LOCAL: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -712,7 +714,7 @@ fn hash_is_the_librarys_and_dhash_the_mobile_wallets() {
 }
 
 /// `BitmapFactory` does not apply EXIF orientation, so neither does the
-/// fingerprint, while the thumbnails do.
+/// fingerprint, while the thumbnails do (review r2 Minor 2).
 #[test]
 fn the_dhash_is_of_the_picture_before_its_exif_orientation() {
     // Bright left, dark right: every horizontal difference is set.
@@ -732,30 +734,65 @@ fn the_dhash_is_of_the_picture_before_its_exif_orientation() {
     let turned = DynamicImage::ImageRgba8(image::imageops::rotate90(&sides));
     assert_eq!(mobile_dhash(&turned), [0; 8]);
     assert_eq!(avatar_image::decode(&rotated).unwrap().width(), 60);
+    // The thumbnail is turned: bright at the top, even across.
+    let large = image::load_from_memory(&ingested.large).unwrap().to_luma8();
+    let (side, mid) = (large.width() - 1, large.width() / 2);
+    let grey = |x, y| i32::from(large.get_pixel(x, y).0[0]);
+    assert!(grey(mid, 0) > grey(mid, side) + 30, "not turned");
+    assert!((grey(0, mid) - grey(side, mid)).abs() < 10, "not turned");
+}
+
+/// The fingerprint is of the whole picture fetched, not of the crop a URL's
+/// zoom parameter makes for the thumbnails (Android hashes the file).
+#[test]
+fn the_dhash_is_of_the_whole_picture_not_its_crop() {
+    let bytes = png(300, 200);
+    let crop = Crop::Fractions([0.1, 0.2, 0.6, 0.9]);
+    let whole = avatar_image::ingest(&bytes, None, true).unwrap();
+    let cropped = avatar_image::ingest(&bytes, Some(crop), true).unwrap();
+    assert_eq!(cropped.dhash, whole.dhash);
+    assert_ne!(cropped.large, whole.large);
+    let part = image::load_from_memory(&bytes)
+        .unwrap()
+        .crop_imm(30, 40, 150, 140);
+    assert_ne!(
+        Some(mobile_dhash(&part)),
+        whole.dhash,
+        "the crop must hash otherwise"
+    );
+}
+
+/// D26 of DP4-03: Edit Profile tells a candidate no longer held ready from
+/// other `invalid_argument`s by the end of the error's text, kept in
+/// `CANDIDATE_GONE`; both sides must say the same (review r2 Minor 1).
+#[test]
+fn edit_profile_knows_the_candidate_refusals_by_their_text() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../apps/desktop/src/dashpay/editProfile.ts");
+    let source = std::fs::read_to_string(path).unwrap();
+    let gone = (source.lines())
+        .find(|l| l.starts_with("export const CANDIDATE_GONE"))
+        .expect("CANDIDATE_GONE in editProfile.ts");
+    for text in [UNKNOWN_CANDIDATE, CANDIDATE_WITHOUT_URL] {
+        assert!(
+            gone.contains(&format!("\"{text}\"")),
+            "{text:?} not in {gone}"
+        );
+        let refusal = AvatarError::from(PlatformError::InvalidArgument {
+            detail: text.into(),
+        });
+        assert_eq!(refusal.code(), "invalid_argument");
+        assert!(refusal.to_string().ends_with(text), "{refusal}");
+    }
 }
 
 /// `jpeg` with an EXIF APP1 segment giving `orientation`.
 fn with_exif_orientation(jpeg: &[u8], orientation: u8) -> Vec<u8> {
     let mut tiff = b"MM\0*\0\0\0\x08\0\x01".to_vec();
     // Tag 0x0112 (Orientation), SHORT, count 1, the value; no next IFD.
-    tiff.extend([
-        0x01,
-        0x12,
-        0,
-        3,
-        0,
-        0,
-        0,
-        1,
-        0,
-        orientation,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-    ]);
+    tiff.extend(b"\x01\x12\0\x03\0\0\0\x01\0");
+    tiff.push(orientation);
+    tiff.extend([0; 6]);
     let mut body = b"Exif\0\0".to_vec();
     body.extend(tiff);
     let len = u16::try_from(body.len() + 2).unwrap().to_be_bytes();

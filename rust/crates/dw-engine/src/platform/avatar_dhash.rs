@@ -5,18 +5,21 @@
 //! `Bitmap.createScaledBitmap(…, filter = true)`, and sets bit `x` of byte
 //! `y` where pixel `(x, y)` is brighter than `(x + 1, y)`, rows 0–7, brightness
 //! being `(r + g + b) / 3` of the colour over black. The scale is Skia's filtered
-//! bitmap draw as Android shipped it (`SkBitmapProcState`): the pixel centre
-//! mapped back in floats, 16.16 fixed point less half a pixel, clamped to the
-//! picture, and bilinear weights of 4 bits on premultiplied colour,
-//! truncated. Of the 43 testnet avatars Android set whose bytes match
-//! `avatarHash`, this gives the published fingerprint bit for bit on 38 from
-//! the engine's decoder, on 4 more from libjpeg-turbo's pixels (the engine's
+//! bitmap draw as Android shipped it (`SkBitmapProcState`, Android 12's
+//! `filter_scale`): each row's centre mapped back in floats, column 0's too
+//! with the next columns a 32.32 step apart, both less half a pixel and
+//! clamped to the picture, and bilinear weights of 4 bits on premultiplied
+//! colour, truncated. Of the 43 testnet avatars Android set whose bytes match
+//! `avatarHash`, this gives the published fingerprint bit for bit on 39 from
+//! the engine's decoder, on 3 more from libjpeg-turbo's pixels (the engine's
 //! pure-Rust decoder rounds some up to 2 levels apart), and on the last from
 //! libjpeg's fast IDCT, which older Android used
-//! (`tests/fixtures/bl190_avatar_fingerprints.json`, DP4-03 D27).
+//! (`tests/fixtures/bl190_avatar_fingerprints.json`, DP4-03 D27). Those are
+//! all opaque 8-bit pictures: the alpha path follows Skia's code but has no
+//! published vector.
 //!
 //! The library's dHash (9 × 8 Lanczos3 of luma) differs from those by 12 to
-//! 35 bits (DP4-02 D32); reads compare neither.
+//! 35 bits; reads compare neither (DP4-02 D32).
 
 use image::{DynamicImage, GenericImageView};
 
@@ -31,9 +34,9 @@ pub(super) fn mobile_dhash(image: &DynamicImage) -> [u8; 8] {
 
 /// [`mobile_dhash`] of a `w` × `h` picture whose straight (not
 /// premultiplied) RGBA `pixel` gives.
-pub(super) fn dhash_of(w: u32, h: u32, pixel: impl Fn(u32, u32) -> [u8; 4]) -> [u8; 8] {
-    let xs: Vec<Tap> = (0..GRID).map(|i| Tap::of(i, w)).collect();
-    let ys: Vec<Tap> = (0..GRID).map(|i| Tap::of(i, h)).collect();
+fn dhash_of(w: u32, h: u32, pixel: impl Fn(u32, u32) -> [u8; 4]) -> [u8; 8] {
+    let xs: [Tap; GRID as usize] = std::array::from_fn(|i| Tap::column(i as u32, w));
+    let ys: [Tap; GRID as usize] = std::array::from_fn(|i| Tap::row(i as u32, h));
     let premultiplied = |x, y| premultiply(pixel(x, y));
     let mut grey = [[0u32; GRID as usize]; GRID as usize];
     for (row, ty) in grey.iter_mut().zip(&ys) {
@@ -62,28 +65,54 @@ pub(super) fn dhash_of(w: u32, h: u32, pixel: impl Fn(u32, u32) -> [u8; 4]) -> [
 }
 
 /// The two source pixels a grid column (or row) blends, and the far one's
-/// weight in sixteenths (`ClampX_ClampY_filter_scale`'s packing).
+/// weight in sixteenths (`filter_scale`'s `pack` with clamp tiling).
 struct Tap {
     near: u32,
     far: u32,
     sub: u32,
 }
 
+/// Half a source pixel in 32.32, the filter's bias.
+const HALF: i64 = 1 << 31;
+
 impl Tap {
-    fn of(i: u32, n: u32) -> Self {
-        // The inverse of the draw's scale, as `SkMatrix::invert` makes it.
-        let inverse = 1.0f32 / (GRID as f32 / n as f32);
-        let centre = (i as f32 + 0.5) * inverse;
-        // `SkScalarToFixed` truncates; a picture is at most 4096 pixels a
-        // side, so this stays far inside `i32`.
-        let f = (centre * 65536.0) as i32 - 0x8000;
-        let last = n as i32 - 1;
+    /// Row `i` of a picture `n` high: `SkBitmapProcStateAutoMapper` maps
+    /// each row's centre.
+    fn row(i: u32, n: u32) -> Self {
+        Self::at(fixed_3232((i as f32 + 0.5) * inverse(n)) - HALF, n)
+    }
+
+    /// Column `i` of a picture `n` wide: the mapper maps column 0's centre
+    /// only, and `filter_scale` adds `fInvSxFractionalInt` per column (its
+    /// decal path the same, with the far pixel unclamped where both ends are
+    /// inside the picture, so no different).
+    fn column(i: u32, n: u32) -> Self {
+        let first = fixed_3232(0.5 * inverse(n)) - HALF;
+        Self::at(first + i64::from(i) * fixed_3232(inverse(n)), n)
+    }
+
+    /// The tap at `f` (32.32) in a picture `n` pixels across.
+    fn at(f: i64, n: u32) -> Self {
+        // `SkFractionalIntToFixed`; a picture is at most 4096 pixels a side,
+        // so the 16.16 value is far inside `i32`, as Skia keeps it.
+        let f = f >> 16;
+        let last = i64::from(n) - 1;
         Self {
             near: (f >> 16).clamp(0, last) as u32,
             far: ((f + 0x10000) >> 16).clamp(0, last) as u32,
             sub: ((f >> 12) & 0xF) as u32,
         }
     }
+}
+
+/// The inverse of the draw's scale to [`GRID`], as `SkMatrix::invert` makes it.
+fn inverse(n: u32) -> f32 {
+    1.0 / (GRID as f32 / n as f32)
+}
+
+/// `SkScalarToFixed3232`: the float times 2³² (exact), truncated.
+fn fixed_3232(v: f32) -> i64 {
+    (v * 4_294_967_296.0) as i64
 }
 
 /// `SkPremultiplyARGBInline`: each colour channel times alpha / 255, rounded.
@@ -173,7 +202,7 @@ mod tests {
     }
 
     /// D27: every byte-exact testnet avatar. Android's are equal bit for bit
-    /// but for five JPEGs decoded otherwise (1 to 3 bits); the library's and
+    /// but for four JPEGs decoded otherwise (1 to 3 bits); the library's and
     /// one other client's are not Android's algorithm.
     #[test]
     fn equals_android_on_the_testnet_avatars_android_set() {
@@ -204,7 +233,7 @@ mod tests {
             "library",
             "other",
         ];
-        assert_eq!(makers.map(count), [38, 4, 1, 9, 1]);
+        assert_eq!(makers.map(count), [39, 3, 1, 9, 1]);
     }
 
     #[test]
@@ -238,7 +267,26 @@ mod tests {
     fn a_one_pixel_picture_reads_only_that_pixel() {
         let one = image::RgbImage::from_pixel(1, 1, image::Rgb([9, 9, 9]));
         assert_eq!(mobile_dhash(&one.into()), [0; 8]);
-        let taps = (0..GRID).map(|i| Tap::of(i, 4096));
-        assert!(taps.into_iter().all(|t| t.near <= t.far && t.far <= 4095));
+        for tap in (0..GRID).flat_map(|i| [Tap::row(i, 1), Tap::column(i, 1)]) {
+            assert_eq!((tap.near, tap.far), (0, 0));
+        }
+    }
+
+    #[test]
+    fn taps_stay_inside_the_picture() {
+        for n in [1, 2, 9, 10, 800, 4096] {
+            for tap in (0..GRID).flat_map(|i| [Tap::row(i, n), Tap::column(i, n)]) {
+                assert!(tap.near <= tap.far && tap.far < n, "{n}");
+            }
+        }
+    }
+
+    /// The review's case: 800 wide, column 4's centre rounds up in floats
+    /// across a sixteenth (sub 8), where Skia's steps give sub 7.
+    #[test]
+    fn columns_step_from_the_first_as_skia_does() {
+        let (row, column) = (Tap::row(4, 800), Tap::column(4, 800));
+        assert_eq!((row.near, row.far, row.sub), (399, 400, 8));
+        assert_eq!((column.near, column.far, column.sub), (399, 400, 7));
     }
 }

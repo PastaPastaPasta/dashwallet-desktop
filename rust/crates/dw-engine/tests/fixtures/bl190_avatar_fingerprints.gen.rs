@@ -21,7 +21,6 @@ use platform_wallet::wallet::identity::calculate_dhash_fingerprint;
 /// decoder (zune-jpeg), which rounds a pixel up to 2 levels apart: checked by hand (D27).
 const LIBJPEG: &[&str] = &[
     "3sze1Jtr3PSXtXr3wcfA2KABC1W7fmcEufYrC1iZ2wGg",
-    "BfTACNHZe3b31p61BejuTWnn5ZeD1x1ZDFpQsf69gV5H",
     "EEfj96h8qqHozKWj2yZU6fsQ8ffahppsSeRtLMKgvSQy",
     "EfPggELWzpqfw7EXQi42CEBKL7udAoWwEHcysEEuTGzb",
 ];
@@ -29,13 +28,19 @@ const LIBJPEG: &[&str] = &[
 /// decoders used.
 const IFAST: &[&str] = &["62ozXKF27zh55c3bpvgWn4h9Fkt2be1MzJgqP8PvqduW"];
 
-fn taps(n: u32) -> Vec<(u32, u32, u32)> {
+/// The grid's taps: rows each map their centre, columns step from column 0's (`column`).
+fn taps(n: u32, column: bool) -> Vec<(u32, u32, u32)> {
+    let inverse = 1.0f32 / (9.0f32 / n as f32);
+    let fixed = |v: f32| (v * 4_294_967_296.0) as i64;
     (0..9)
         .map(|i| {
-            let inverse = 1.0f32 / (9.0f32 / n as f32);
-            let centre = (i as f32 + 0.5) * inverse;
-            let f = (centre * 65536.0) as i32 - 0x8000;
-            let last = n as i32 - 1;
+            let f = if column {
+                fixed(0.5 * inverse) + i64::from(i) * fixed(inverse)
+            } else {
+                fixed((i as f32 + 0.5) * inverse)
+            };
+            let f = (f - (1 << 31)) >> 16;
+            let last = i64::from(n) - 1;
             (
                 (f >> 16).clamp(0, last) as u32,
                 ((f + 0x10000) >> 16).clamp(0, last) as u32,
@@ -55,7 +60,7 @@ fn dhash(w: u32, h: u32, px: impl Fn(u32, u32) -> [u8; 4]) -> [u8; 8] {
         };
         [t(r), t(g), t(b), a]
     };
-    let (xs, ys) = (taps(w), taps(h));
+    let (xs, ys) = (taps(w, true), taps(h, false));
     let mut grey = [[0u32; 9]; 9];
     for (gy, &(y0, y1, sy)) in ys.iter().enumerate() {
         for (gx, &(x0, x1, sx)) in xs.iter().enumerate() {
@@ -108,13 +113,13 @@ fn main() {
             "other"
         };
         // The grid reads the pixels at these columns and rows, row by row.
-        let axis = |n| {
-            let mut v: Vec<u32> = taps(n).iter().flat_map(|&(a, b, _)| [a, b]).collect();
+        let axis = |n, column| {
+            let mut v: Vec<u32> = taps(n, column).iter().flat_map(|&(a, b, _)| [a, b]).collect();
             v.sort_unstable();
             v.dedup();
             v
         };
-        let (xs, ys) = (axis(w), axis(h));
+        let (xs, ys) = (axis(w, true), axis(h, false));
         let rgba: String = (ys.iter())
             .flat_map(|&y| xs.iter().map(move |&x| (x, y)))
             .map(|(x, y)| hex::encode(image.get_pixel(x, y).0))

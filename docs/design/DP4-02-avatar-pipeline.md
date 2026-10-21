@@ -206,5 +206,5 @@ otherwise), before the identity's lock is taken (DP4-01 D8); the write sets `ava
   compute it the way the mobile wallets do, or their 20-bit check refuses our avatars. T2 compared the library's dHash
   with fingerprints already on testnet, not with a mobile implementation; D6's "9 × 9, mean grey, bilinear" for
   Android is unverified. Check dash-wallet (Android) and the iOS DashPay fingerprint code first.
-  Done in DP4-03 D27: the published fingerprint is Android's `CocoaImageDHash`, equal on 38 of the 53 byte-exact
+  Done in DP4-03 D27: the published fingerprint is Android's `CocoaImageDHash`, equal on 39 of the 53 byte-exact
   testnet avatars (all 43 Android set, with their decoder); no current reader compares it, so nothing refuses either.

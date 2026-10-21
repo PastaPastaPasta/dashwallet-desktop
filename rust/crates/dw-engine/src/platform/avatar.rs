@@ -42,6 +42,11 @@ const DECODES: usize = 2;
 /// Candidates kept, and for how long (design: "Sources").
 const CANDIDATES: usize = 16;
 const CANDIDATE_LIFE: Duration = Duration::from_secs(30 * 60);
+/// The refusals of a candidate no longer held ready. Edit Profile tells
+/// them from other `invalid_argument`s by these texts (`CANDIDATE_GONE` in
+/// `editProfile.ts`, DP4-03 D26; a test pins both sides).
+pub(super) const UNKNOWN_CANDIDATE: &str = "unknown avatar candidate";
+pub(super) const CANDIDATE_WITHOUT_URL: &str = "the avatar candidate has no URL; upload it first";
 /// Profiles of identities the wallet does not hold (D14), and the
 /// Platform reads of them at once (D35).
 const REMOTE_PROFILES: usize = 256;
@@ -818,7 +823,7 @@ impl AvatarRuntime {
             .find(|(i, c)| i == id && c.wallet == wallet && c.made.elapsed() < CANDIDATE_LIFE)
             .map(|(_, c)| f(c))
             .ok_or_else(|| PlatformError::InvalidArgument {
-                detail: "unknown avatar candidate".into(),
+                detail: UNKNOWN_CANDIDATE.into(),
             })
     }
 
@@ -833,7 +838,7 @@ impl AvatarRuntime {
             })
         })?;
         published.ok_or_else(|| PlatformError::InvalidArgument {
-            detail: "the avatar candidate has no URL; upload it first".into(),
+            detail: CANDIDATE_WITHOUT_URL.into(),
         })
     }
 

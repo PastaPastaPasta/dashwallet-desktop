@@ -14,7 +14,6 @@ use image::{DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageReader, Li
 use platform_wallet::wallet::identity::calculate_avatar_hash;
 
 use super::avatar_dhash::mobile_dhash;
-
 use super::errors::AvatarError;
 use super::profile::{AvatarSize, CropRect, Profile};
 
@@ -272,9 +271,10 @@ pub(super) fn verifiable(profile: &Profile) -> bool {
 
 /// The verdict on content fetched for `profile` (design step 5): its
 /// SHA-256 must be the profile's `avatarHash`. The fingerprint is not
-/// compared (D6, D32: the mobile wallets' dHash is another algorithm, up to
-/// 35 bits off for the very bytes `avatarHash` names), only required to be
-/// well formed ([`verifiable`], D26).
+/// compared (D6, D32: publishers use two algorithms, Android's dHash and the
+/// library's, up to 35 bits apart for the very bytes `avatarHash` names, and
+/// no wallet compares it), only required to be well formed ([`verifiable`],
+/// D26).
 pub(super) fn matches(content_sha: &str, profile: &Profile) -> bool {
     profile
         .avatar_hash
