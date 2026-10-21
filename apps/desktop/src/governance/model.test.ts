@@ -369,6 +369,9 @@ describe("the fee (D29, D33, D34)", () => {
     expect(createdFrom([{ ...made, state: { kind: "feePaid", confirmations: 3 } }], draft)).toBeDefined();
     expect(createdFrom([made], { ...draft, paymentAmount: COIN + 1 })).toBeUndefined();
     expect(createdFrom([{ ...made, state: { kind: "expired" } }], draft)).toBeUndefined();
+    expect(createdFrom([{ ...made, state: { kind: "feeFailed" } }], draft)).toBeUndefined();
+    // One Mine held before Pay is an older proposal, not this call's.
+    expect(createdFrom([made], draft, new Set([made.hash]))).toBeUndefined();
   });
 });
 

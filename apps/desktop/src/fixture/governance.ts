@@ -213,7 +213,7 @@ export function governanceInfo(w: GovernanceWorld): GovernanceInfo {
   const cutoff = NEXT - MATURITY;
   const rows = w.proposals.map((p) => p.row).filter((r) => r.status !== "lapsed");
   const count = (...s: ProposalStatusName[]) => rows.filter((r) => s.includes(r.status)).length;
-  const ready = w.sync.phase === "synced";
+  const ready = w.sync.lastSyncedAt !== null; // as the engine: the counts once a run reached `synced`
   const allocated = rows.filter((r) => r.status === "passing" || r.status === "funded").reduce((s, r) => s + r.paymentAmount, 0);
   return {
     clock: {
@@ -542,7 +542,7 @@ export function governanceScenarios(base: Base) {
     },
     /** Synced once, then every peer dropped: the list stays readable under the notice (D36). */
     "governance-peers-lost": (t: ThemeName | null) =>
-      governanceBase(base, t, { sync: { ...synced(), phase: "failed", lastError: "every peer disconnected", nextRetryAt: NOW + 30 }, phaseOnStart: "failed" }),
+      governanceBase(base, t, { sync: { ...synced(), phase: "failed", peers: 0, lastError: "every peer disconnected", nextRetryAt: NOW + 30 }, phaseOnStart: "failed" }),
     /** No masternode whose voting key the wallet holds: browsing only. */
     "governance-no-masternodes": (t: ThemeName | null) => governanceBase(base, t, { masternodes: [] }),
     /** Masternodes whose voting keys are here but none can vote (banned). */

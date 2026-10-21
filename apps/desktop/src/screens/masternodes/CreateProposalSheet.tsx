@@ -39,7 +39,7 @@ import {
   shortDate,
   superblockOption,
 } from "../../governance/model";
-import { useGovernanceInfo, useGovernanceRefresh, useUpcomingSuperblocks } from "../../governance/queries";
+import { useGovernanceInfo, useGovernanceRefresh, useMyProposals, useUpcomingSuperblocks } from "../../governance/queries";
 import { useAmountField } from "../pay/form";
 import { failureText } from "../pay/model";
 import { useNowSecs } from "./common";
@@ -56,7 +56,7 @@ type FieldErrors = Partial<Record<ProposalFieldName, string>>;
 
 /** After a failed `create_proposal` (D34): reading Mine, the proposal it made anyway, or Mine
  *  unreadable. Pay stays off in all three. */
-type AfterFailure = { kind: "checking" } | { kind: "created"; p: MyProposal } | { kind: "unknown" };
+type AfterFailure = { kind: "checking" } | { kind: "created"; p: MyProposal } | { kind: "unknown"; known: ReadonlySet<string> };
 
 export function CreateProposalSheet({
   wallet,
@@ -89,8 +89,13 @@ export function CreateProposalSheet({
   const [errors, setErrors] = useState<FieldErrors>({});
   const [general, setGeneral] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** The fee figures the review shows: the first preview, then only Pay's own re-read moves them,
+   *  never a background one (an engine event re-reads every query), so what the user confirms is
+   *  what they saw (D33). */
+  const [reviewed, setReviewed] = useState<ProposalPreview | null>(null);
   /** Pay's re-read found other figures than the review showed: they need a fresh confirm (D33). */
-  const [feeChanged, setFeeChanged] = useState<ProposalPreview | null>(null);
+  const [feeChanged, setFeeChanged] = useState(false);
+  const mine = useMyProposals(wallet.walletId);
   const [after, setAfter] = useState<AfterFailure | null>(null);
   const credential = useCredential(wallet.walletId, "Enter your passphrase to pay the fee.");
 
@@ -113,6 +118,10 @@ export function CreateProposalSheet({
     retry: false,
     gcTime: 0,
   });
+  useEffect(() => {
+    if (step === 3 && reviewed === null && preview.data) setReviewed(preview.data);
+  }, [step, reviewed, preview.data]);
+  const figures = reviewed ?? preview.data;
 
   /** An engine refusal of the draft's fields: back to the first failing field's step. */
   const refuseFields = (e: unknown): boolean => {
@@ -130,7 +139,8 @@ export function CreateProposalSheet({
 
   const next = async () => {
     setGeneral(null);
-    setFeeChanged(null);
+    setReviewed(null);
+    setFeeChanged(false);
     if (step === 1) {
       const p = detailsProblems(name, url);
       setErrors(p);
@@ -156,23 +166,25 @@ export function CreateProposalSheet({
     }
   };
 
-  /** Whether the failed call made the proposal anyway: Mine says (D34). */
-  const checkMine = async (d: ProposalDraft) => {
+  /** Whether the failed call made the proposal anyway: Mine says, ignoring the proposals it held
+   *  when Pay was pressed (D34). */
+  const checkMine = async (d: ProposalDraft, known: ReadonlySet<string>) => {
     setAfter({ kind: "checking" });
     try {
-      const made = createdFrom(await b.governanceMyProposals(wallet.walletId), d);
+      const made = createdFrom(await b.governanceMyProposals(wallet.walletId), d, known);
       if (made) credential.setError(null); // the notice says what happened instead
       setAfter(made ? { kind: "created", p: made } : null);
     } catch {
-      setAfter({ kind: "unknown" });
+      setAfter({ kind: "unknown", known });
     }
     void refresh();
   };
 
   const create = async () => {
     // The figures the review shows as Pay is pressed: the ones the user confirms.
-    const confirmed = preview.data;
+    const confirmed = reviewed;
     if (busy || after || !draft || !confirmed || !credential.ready) return;
+    const known = new Set((mine.data ?? []).map((p) => p.hash));
     setBusy(true);
     setGeneral(null);
     try {
@@ -180,10 +192,11 @@ export function CreateProposalSheet({
       if (r.isError || !r.data) return; // the preview's effect says why
       if (!sameFee(r.data, confirmed)) {
         // The review now shows the new figures; the next press confirms them.
-        setFeeChanged(r.data);
+        setReviewed(r.data);
+        setFeeChanged(true);
         return;
       }
-      setFeeChanged(null);
+      setFeeChanged(false);
       const grant = await credential.authorize({ kind: "spend", maxDuffs: feeGrantCap(confirmed) });
       if (!grant) return;
       let created: MyProposal;
@@ -192,7 +205,9 @@ export function CreateProposalSheet({
       } catch (e) {
         if (refuseFields(e)) return;
         credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
-        await checkMine(draft);
+        // `after` keeps Pay and Back off; the sheet may close while Mine is read.
+        setBusy(false);
+        await checkMine(draft, known);
         return;
       }
       void refresh();
@@ -333,7 +348,7 @@ export function CreateProposalSheet({
       <>
         {preview.isPending && draft ? (
           <LoadingState testId="create-preview-loading" text="Checking the proposal…" />
-        ) : preview.data && draft ? (
+        ) : figures && draft ? (
           <>
             <dl className="detail-list card-l1" data-testid="create-review">
               <DetailRow label="Name">
@@ -353,23 +368,23 @@ export function CreateProposalSheet({
                 {payTo === "new" && ", this wallet"}
               </DetailRow>
               <DetailRow label="Fee" testId="create-review-fee">
-                <AmountText text={shown.full(preview.data.fee)} unitName={shown.name} /> + network fee{" "}
-                <AmountText text={shown.full(preview.data.networkFee)} unitName={shown.name} />
+                <AmountText text={shown.full(figures.fee)} unitName={shown.name} /> + network fee{" "}
+                <AmountText text={shown.full(figures.networkFee)} unitName={shown.name} />
               </DetailRow>
               <DetailRow label="You pay" testId="create-review-total">
-                <AmountText text={shown.full(feeTotal(preview.data))} unitName={shown.name} />
+                <AmountText text={shown.full(feeTotal(figures))} unitName={shown.name} />
               </DetailRow>
             </dl>
             {feeChanged && (
               <p className="mg-notice mg-notice-warning" role="alert" data-testid="create-fee-changed">
-                The network fee changed to {shown.withUnit(feeChanged.networkFee)}, so you pay {shown.withUnit(feeTotal(feeChanged))} in all. Nothing was paid: check
+                The network fee changed to {shown.withUnit(figures.networkFee)}, so you pay {shown.withUnit(feeTotal(figures))} in all. Nothing was paid: check
                 the figures and press Pay again.
               </p>
             )}
             <details className="disclosure card-l1">
               <summary>Proposal data (JSON)</summary>
               <pre className="mono mg-json" data-testid="create-json">
-                {preview.data.dataJson}
+                {figures.dataJson}
               </pre>
             </details>
             <p className="mg-notice mg-notice-warning" data-testid="create-fee-warning">
@@ -390,7 +405,7 @@ export function CreateProposalSheet({
             {after?.kind === "unknown" && (
               <div className="mg-notice mg-notice-warning" role="alert" data-testid="create-unknown">
                 <p className="mg-flush">Couldn&apos;t check whether the proposal was made, so Pay stays off: its fee may have gone out.</p>
-                <DashButton variant="filledBlue" size="small" data-testid="create-check-again" onClick={() => void checkMine(draft)}>
+                <DashButton variant="filledBlue" size="small" data-testid="create-check-again" onClick={() => void checkMine(draft, after.known)}>
                   Check again
                 </DashButton>
               </div>
@@ -445,8 +460,8 @@ export function CreateProposalSheet({
                 Continue
               </DashButton>
             ) : (
-              <DashButton type="submit" variant="filledBlue" size="medium" data-testid="create-pay" disabled={busy || after !== null || !preview.data || !credential.ready}>
-                {busy ? "Paying…" : `Pay ${shown.compact(preview.data?.fee ?? 100_000_000)} ${shown.name} and create`}
+              <DashButton type="submit" variant="filledBlue" size="medium" data-testid="create-pay" disabled={busy || after !== null || !figures || !credential.ready}>
+                {busy ? "Paying…" : `Pay ${shown.compact(figures?.fee ?? 100_000_000)} ${shown.name} and create`}
               </DashButton>
             )}
           </span>

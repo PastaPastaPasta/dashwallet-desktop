@@ -532,16 +532,18 @@ export const feeGrantCap = (p: FeeFigures): number => feeTotal(p) + Math.max(p.n
 export const sameFee = (a: FeeFigures, b: FeeFigures): boolean => a.fee === b.fee && a.networkFee === b.networkFee;
 
 /** The wallet's own proposal `create_proposal` made from `draft`, if it made one: after a failed
- *  call the fee may be out, so Pay waits for this (D34). */
-export function createdFrom(mine: MyProposal[], draft: ProposalDraft): MyProposal | undefined {
+ *  call the fee may be out, so Pay waits for this (D34). `known` are the proposals Mine held
+ *  before the call; an ended or failed one isn't this call's either. */
+export function createdFrom(mine: MyProposal[], draft: ProposalDraft, known: ReadonlySet<string> = new Set()): MyProposal | undefined {
   return mine.find(
     (p) =>
+      !known.has(p.hash) &&
+      inProgress(p) &&
       p.name === draft.name &&
       p.url === draft.url &&
       p.paymentAddress === draft.paymentAddress &&
       p.paymentAmount === draft.paymentAmount &&
-      p.paymentCount === draft.paymentCount &&
-      p.state.kind !== "expired",
+      p.paymentCount === draft.paymentCount,
   );
 }
 

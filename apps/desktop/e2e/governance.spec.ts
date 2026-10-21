@@ -281,6 +281,26 @@ test("create: a network fee that changed at Pay stops for a fresh confirm, then 
   expect(await createCalls(page)).toBe(1);
 });
 
+test("create: a background re-read never changes the figures the review shows; Pay still stops (D33)", async ({ page }) => {
+  await open(page, "governance");
+  await toReview(page);
+  const previews = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "governance_preview_proposal").length);
+  const before = await previews();
+  // The coins move and an engine event re-reads every governance query, the preview included.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.world.governance.networkFee = 4_500;
+    f.emit({ kind: "governance", network: f.world.launch.network.dirName });
+  });
+  await expect.poll(previews).toBeGreaterThan(before);
+  await expect(page.getByTestId("create-review-total")).toHaveText(/1\.00000227\s*tDASH/);
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
+  await expect(page.getByTestId("create-fee-changed")).toContainText("The network fee changed to 0.00004500 tDASH");
+  await expect(page.getByTestId("create-review-total")).toHaveText(/1\.00004500\s*tDASH/);
+  expect(await createCalls(page)).toBe(0);
+});
+
 test("create: a call that fails after the fee went out never offers Pay again; Mine resumes it (D34)", async ({ page }) => {
   await open(page, "governance");
   await page.evaluate(() => (window.__dwFixture!.world.governance.createFailsAfterPaying = true));
