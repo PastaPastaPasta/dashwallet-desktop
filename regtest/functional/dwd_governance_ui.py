@@ -32,6 +32,7 @@ Run (DW_APP, TAURI_DRIVER and DISPLAY as for scripts/e2e-regtest-governance.sh):
   DWD_PYTHON=<venv>/bin/python DASHCORE_DIR=<dashcore> regtest/functional/run.sh dwd_governance_ui.py
 """
 
+import contextlib
 import json
 import os
 import signal
@@ -154,7 +155,8 @@ class DwdGovernanceUi(DashTestFramework):
             try:
                 p.wait(timeout=UI_TIMEOUT)
             except subprocess.TimeoutExpired:
-                os.killpg(p.pid, signal.SIGKILL)
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(p.pid, signal.SIGKILL)
                 p.wait()
                 raise
         with open(os.path.join(out, "app.log"), encoding="utf8") as log:

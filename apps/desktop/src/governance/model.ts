@@ -536,7 +536,6 @@ function lastErrorText(p: MyProposal): string | null {
     : `The fee wasn't sent: ${p.lastError.replace(/^send: /, "")}`;
 }
 
-/** One Mine row (MG-00 §4.25.3 Mine, MG-06 D24, D15–D16). */
 /** The toast once `create_proposal` returned: paid, or kept with its fee unsent (MG-06 D10). */
 export function createdToast(p: MyProposal): string {
   return p.state.kind === "feeUnsent" || p.state.kind === "feeFailed"
@@ -544,6 +543,7 @@ export function createdToast(p: MyProposal): string {
     : `${p.name}: fee paid. Mine shows its progress.`;
 }
 
+/** One Mine row (MG-00 §4.25.3 Mine, MG-06 D24, D15–D16). */
 export function mineRow(p: MyProposal, locale?: string): MineRowView {
   const created = dateTime(p.createdAt, locale);
   const s = p.state;

@@ -86,9 +86,11 @@ export function CreateProposalSheet({
   const credential = useCredential(wallet.walletId, "Enter your passphrase to pay the fee.");
 
   const choice = useMemo(() => defaultFirstPayment(superblocks.data ?? [], now), [superblocks.data, now]);
+  // The default, and again when the chosen superblock passes (the list re-reads on the tip).
   useEffect(() => {
-    if (first === null && choice.height !== null) setFirst(choice.height);
-  }, [first, choice.height]);
+    const gone = first !== null && superblocks.data !== undefined && !superblocks.data.some((s) => s.height === first);
+    if ((first === null || gone) && choice.height !== null) setFirst(choice.height);
+  }, [first, choice.height, superblocks.data]);
 
   const address = payTo === "new" ? fresh : other.trim();
   const draft: ProposalDraft | null =
@@ -112,8 +114,8 @@ export function CreateProposalSheet({
     return true;
   };
   useEffect(() => {
-    // Read once per failed preview; [Pay]'s own re-read says its failure itself.
-    if (busy || step !== 3 || !preview.isError) return;
+    // Read once per failed preview, [Pay]'s re-read included.
+    if (step !== 3 || !preview.isError) return;
     if (!refuseFields(preview.error)) setGeneral(governanceErrorText(preview.error) ?? failureText(preview.error, shown.chain, shown.amountUnit));
   }, [preview.isError, preview.error]);
 
@@ -149,7 +151,9 @@ export function CreateProposalSheet({
     setBusy(true);
     setGeneral(null);
     try {
-      const p = (await preview.refetch({ throwOnError: true })).data!;
+      const r = await preview.refetch();
+      if (r.isError || !r.data) return; // the preview's effect says why
+      const p = r.data;
       const margin = Math.max(p.networkFee, NETWORK_FEE_MARGIN);
       const grant = await credential.authorize({ kind: "spend", maxDuffs: p.fee + p.networkFee + margin });
       if (!grant) return;
