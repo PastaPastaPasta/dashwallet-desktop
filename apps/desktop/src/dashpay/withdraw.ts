@@ -17,6 +17,7 @@ import type { WithdrawOutcome } from "../api/generated/WithdrawOutcome";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel } from "../tools/grant";
 import { creditsToDuffs } from "./profile";
+import { platformOp } from "./topup";
 
 export type WithdrawApi = Pick<Backend, "creditsWithdraw" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
@@ -122,9 +123,12 @@ export interface WithdrawalRow {
   at: number | null;
 }
 
-/** My Profile's rows: the newest `RECENT_SHOWN` (the engine reads them newest first). */
+/** The withdrawals My Profile lists: the newest `RECENT_SHOWN` (the engine reads them newest first). */
+const listed = (list: Withdrawal[] | undefined) => (list ?? []).slice(0, RECENT_SHOWN);
+
+/** My Profile's rows. */
 export function withdrawalRows(list: Withdrawal[] | undefined, costs: Pick<CostTable, "creditsPerDuff"> | undefined, amount: (duffs: number) => string): WithdrawalRow[] {
-  return (list ?? []).slice(0, RECENT_SHOWN).map((w) => {
+  return listed(list).map((w) => {
     const s = statusText(w.status);
     const shown = w.expectedDuffs ?? (costs ? creditsToDuffs(w.credits, costs) : null);
     const at = w.updatedAt ?? w.createdAt;
@@ -140,7 +144,7 @@ export function withdrawalRows(list: Withdrawal[] | undefined, costs: Pick<CostT
 }
 
 /** D11: read again every minute while a row is pending, else only on signals. */
-export const pollWhilePending = (list: Withdrawal[] | undefined) => ((list ?? []).slice(0, RECENT_SHOWN).some((w) => statusText(w.status).pending) ? PENDING_POLL_MS : false);
+export const pollWhilePending = (list: Withdrawal[] | undefined) => (listed(list).some((w) => statusText(w.status).pending) ? PENDING_POLL_MS : false);
 
 /** A withdrawal's refusal, by code (§3's table). `credits` shows a credit figure as Dash. */
 export function withdrawErrorText(e: unknown, credits: (c: string) => string): string {
@@ -175,8 +179,6 @@ export function withdrawErrorText(e: unknown, credits: (c: string) => string): s
 /** Back is offered when another amount or address may pass. */
 export const amountCanChange = (e: unknown) =>
   hasCode(e, "credits.withdrawal_out_of_range") || hasCode(e, "platform.insufficient_credits") || hasCode(e, "platform.grant_exceeded") || hasCode(e, "invalid_argument");
-
-const platformOp = (g: GrantRequest) => ({ kind: "platformOp" as const, maxDuffs: g.maxDuffs, maxCredits: g.maxCredits });
 
 const settledListeners = new Set<() => void>();
 

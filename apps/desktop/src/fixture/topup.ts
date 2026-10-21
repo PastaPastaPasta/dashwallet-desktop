@@ -105,7 +105,8 @@ function withdrawPlan(balance: bigint, amount: WithdrawAmount): bigint {
   const R = WITHDRAW_RULES;
   if (amount.kind === "all") {
     const free = balance > R.fee ? balance - R.fee : 0n;
-    const credits = free - (free % 1000n) < R.max ? free - (free % 1000n) : R.max;
+    const whole = free - (free % 1000n);
+    const credits = whole < R.max ? whole : R.max;
     if (credits < R.min) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(R.min + R.fee), available: String(balance) });
     return credits;
   }
@@ -230,6 +231,7 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
         throw fail("invalid_argument", "not a Dash address of the network", { kind: "reason", reason: "not a Dash address of the network" });
       const credits = withdrawPlan(BigInt(me.balance ?? "0"), amount);
       const total = credits + WITHDRAW_RULES.fee;
+      const expectedDuffs = withdrawPayout(credits);
       const g = d.grant(world, grant, walletId, ["platformOp"]);
       if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
       if (BigInt(g.grant.purpose.maxCredits) < total)
@@ -239,9 +241,9 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
       const id = withdrawalId(c.withdrawals.length + 1);
       if (c.nextWithdraw === "unknown") throw fail("platform.broadcast_unknown", "withdrawal outcome unknown", { kind: "artifact", artifact: id });
       const at = FIXTURE_NOW.getTime() + c.withdrawals.length * 1000;
-      c.withdrawals = [{ id, credits: String(credits), expectedDuffs: withdrawPayout(credits), to: to.trim(), status: "queued", createdAt: at, updatedAt: at }, ...c.withdrawals];
+      c.withdrawals = [{ id, credits: String(credits), expectedDuffs, to: to.trim(), status: "queued", createdAt: at, updatedAt: at }, ...c.withdrawals];
       const remaining = apply(ctx, walletId, dp, identity, -total);
-      return { credits: String(credits), expectedDuffs: withdrawPayout(credits), remainingCredits: c.nextWithdraw === "landed" ? null : remaining, withdrawal: id } satisfies WithdrawOutcome;
+      return { credits: String(credits), expectedDuffs, remainingCredits: c.nextWithdraw === "landed" ? null : remaining, withdrawal: id } satisfies WithdrawOutcome;
     },
     credits_withdrawals: ({ walletId, identity }, { world }) => creditsOf(d.dashpay(world, walletId, identity)).withdrawals,
     credits_resolve_top_up: ({ walletId, txid }, ctx) => {

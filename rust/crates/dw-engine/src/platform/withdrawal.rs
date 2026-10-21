@@ -89,9 +89,9 @@ use crate::{NetworkSession, WalletId};
 
 /// The Core fee rate the withdrawal asks for, in duffs per byte: Platform's
 /// minimum, as the SDK's default (D5).
-pub(super) const CORE_FEE_PER_BYTE: u32 = MIN_CORE_FEE_PER_BYTE;
+const CORE_FEE_PER_BYTE: u32 = MIN_CORE_FEE_PER_BYTE;
 /// The withdrawals a `withdrawals` read returns at most, newest first.
-pub(super) const RECENT_WITHDRAWALS: u32 = 20;
+const RECENT_WITHDRAWALS: u32 = 20;
 
 /// Documents per page of [`SdkWithdrawals`]'s read.
 const WITHDRAWALS_PAGE: u32 = 100;
@@ -568,11 +568,12 @@ pub(crate) async fn withdraw(
         Err(Unsent::Refused(e) | Unsent::Unknown(e)) => return Err(e.into()),
     };
     let doc = document_id(&id, nonce, &script);
+    let withdrawal = doc.to_string(Encoding::Base58);
     let done = |remaining| WithdrawOutcome {
         credits,
         expected_duffs: Some(expected),
         remaining_credits: remaining,
-        withdrawal: doc.to_string(Encoding::Base58),
+        withdrawal: withdrawal.clone(),
     };
     let e = match broadcast {
         Ok(balance) => return Ok(done(Some(balance))),
@@ -589,7 +590,7 @@ pub(crate) async fn withdraw(
                 tracing::info!("reading the withdrawal back: {again}");
             }
             Err(PlatformError::BroadcastUnknown {
-                artifact: doc.to_string(Encoding::Base58),
+                artifact: withdrawal,
             }
             .into())
         }
