@@ -24,7 +24,8 @@ export const dashpayKeys = {
   nameCredits: (walletId: string, identity: string, label: string) => ["dashpay", "nameCredits", walletId, identity, label] as const,
   /** Pure and offline (`check_username`): no signal changes it, so it is not under `dashpay`. */
   usernameCheck: (label: string) => ["usernameCheck", label] as const,
-  /** Tools ▸ Information's DashPay card (DP6-03). */
+  /** Tools ▸ Information's DashPay card (DP6-03); sync events re-read every wallet's (D6). */
+  syncInfoAll: ["dashpay", "syncInfo"] as const,
   syncInfo: (walletId: string) => ["dashpay", "syncInfo", walletId] as const,
 };
 

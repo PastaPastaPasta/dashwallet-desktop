@@ -36,6 +36,7 @@ const READY: DashPayStatus = { kind: "ready", main: "AliceId" };
 
 const inputs = (over: Partial<DashPayInfoInputs> = {}): DashPayInfoInputs => ({
   noWallet: false,
+  watchOnly: false,
   status: READY,
   sync: sync(),
   syncError: null,
@@ -65,8 +66,9 @@ describe("the card's state (D2)", () => {
 
   it("D5: quorum keys not from SPV are degraded, never Running", () => {
     const degraded = dashpayInfo(inputs({ sync: sync({ quorumSource: "trusted" }) }));
-    expect(degraded).toMatchObject({ state: "degraded", tone: "warning", chip: "Degraded", headline: INFO_COPY.degraded.trusted });
-    expect(degraded.line).toBe(quorumRow("trusted", false).note);
+    // The quorum row's note explains it; the headline says no more.
+    expect(degraded).toMatchObject({ state: "degraded", tone: "warning", chip: "Degraded", headline: INFO_COPY.degraded.trusted, line: null });
+    expect(degraded.rows.at(-1)).toEqual(quorumRow("trusted", false));
     expect(dashpayInfo(inputs({ sync: sync({ quorumSource: "trustedFallback" }) }))).toMatchObject({ state: "degraded", headline: INFO_COPY.degraded.trustedFallback });
     expect(dashpayInfo(inputs({ sync: sync({ quorumSource: "trusted" }), trustedOnly: true }))).toMatchObject({ state: "degraded", headline: INFO_COPY.degraded.trustedOnly });
     // The toggle unread reads as the degraded mode, the default (DEC-168).
@@ -80,22 +82,30 @@ describe("the card's state (D2)", () => {
     const c = dashpayInfo(inputs({ status: { kind: "noIdentity", reason: null }, sync: sync({ startup: "noIdentity", quorumSource: "trusted" }) }));
     expect(c).toMatchObject({ state: "notSetUp", tone: "neutral", headline: INFO_COPY.notSetUp.title, line: INFO_COPY.notSetUp.message, syncNow: { disabled: false } });
     expect(dashpayInfo(inputs({ status: { kind: "noIdentity", reason: "waitingForSync" }, sync: sync({ startup: "noIdentity" }) })).line).toBe(INFO_COPY.notSetUpWaiting);
+    // Within the 7-day proof of no identity the bring-up does not run (bringup.rs): still Not set up.
+    expect(stateOf({ status: { kind: "noIdentity", reason: null }, sync: sync({ startup: "notRun" }) })).toBe("notSetUp");
   });
 
   it("D2: a watch-only wallet is Watch-only, its Sync now held with the reason", () => {
-    const c = dashpayInfo(inputs({ status: { kind: "noIdentity", reason: "watchOnly" }, sync: sync({ startup: "noIdentity", quorumSource: "trusted" }) }));
-    expect(c).toMatchObject({ state: "watchOnly", tone: "neutral", headline: COPY.watchOnly.title, syncNow: { disabled: true, note: INFO_COPY.watchOnly } });
+    const c = dashpayInfo(inputs({ status: { kind: "noIdentity", reason: "watchOnly" }, sync: sync({ startup: "notRun", quorumSource: "trusted" }) }));
+    expect(c).toMatchObject({ state: "watchOnly", tone: "neutral", headline: COPY.watchOnly.title, line: null, syncNow: { disabled: true, note: INFO_COPY.watchOnly } });
+    // A watch-only wallet with an identity on file: its summary says so.
+    expect(stateOf({ watchOnly: true, status: READY })).toBe("watchOnly");
   });
 
-  it("D2: a failed bring-up is Failed, before anything but watch-only", () => {
+  it("D2: a failed bring-up is Failed while no identity is known", () => {
     const failed: StartupStatus[] = ["discoveryFailed", "identityScanIncomplete", "partialNoIdentity", "partialAccountsPending"];
     for (const startup of failed) {
       const c = dashpayInfo(inputs({ sync: sync({ startup }), status: { kind: "startupIncomplete", startup } }));
       expect(c, startup).toMatchObject({ state: "failed", tone: "danger", headline: COPY.lookFailed.title, line: COPY.lookFailed.message });
+      // The status unread: the bring-up's outcome decides (D7).
+      expect(stateOf({ sync: sync({ startup }), status: undefined }), startup).toBe("failed");
     }
-    expect(dashpayInfo(inputs({ sync: sync({ startup: "seedBindingUnverified" }) }))).toMatchObject({ state: "failed", headline: COPY.unverified.title });
-    // A failure outranks a healthy identity and SPV quorum keys.
-    expect(stateOf({ status: READY, sync: sync({ startup: "discoveryFailed" }) })).toBe("failed");
+    expect(dashpayInfo(inputs({ sync: sync({ startup: "seedBindingUnverified" }), status: undefined }))).toMatchObject({ state: "failed", headline: COPY.unverified.title });
+    // An identity on file settles the outcome (BL-153 D2), as the Home card reads it: the scan row says it.
+    const settled = dashpayInfo(inputs({ status: READY, sync: sync({ startup: "partialAccountsPending" }) }));
+    expect(settled.state).toBe("running");
+    expect(settled.rows[0]).toEqual({ title: "Identity scan", ...STARTUP_TEXT.partialAccountsPending });
   });
 
   it("D4: a failed last pass is Failed, with its code", () => {
@@ -114,14 +124,36 @@ describe("the card's state (D2)", () => {
       headline: COPY.looking.title,
       busy: true,
     });
-    expect(dashpayInfo(inputs({ sync: sync({ startup: "identityUnsettled" }) }))).toMatchObject({ state: "starting", headline: COPY.unlockToLook.title, busy: false });
+    expect(dashpayInfo(inputs({ sync: sync({ startup: "identityUnsettled" }), status: { kind: "startupIncomplete", startup: "identityUnsettled" } }))).toMatchObject({
+      state: "starting",
+      headline: COPY.unlockToLook.title,
+      busy: false,
+    });
     // BL-153 D16: an outcome read from a snapshot, no identity known yet.
     expect(stateOf({ sync: sync({ startup: "noIdentity" }), status: { kind: "startupIncomplete", startup: "noIdentity" } })).toBe("starting");
   });
 
-  it("D2: the status unread leaves the decision to the sync status", () => {
+  it("D7: the status unread leaves the decision to the bring-up's outcome", () => {
     expect(stateOf({ status: undefined })).toBe("running");
     expect(stateOf({ status: undefined, sync: sync({ quorumSource: "trusted" }) })).toBe("degraded");
+    // No identity is never healthy.
+    expect(stateOf({ status: undefined, sync: sync({ startup: "noIdentity" }) })).toBe("notSetUp");
+    expect(stateOf({ status: undefined, sync: sync({ startup: "notRun" }) })).toBe("notStarted");
+    expect(stateOf({ status: undefined, sync: sync({ startup: "starting" }) })).toBe("starting");
+  });
+
+  it("D2: the DashPay loop stopped is Stopped, never Running or Degraded", () => {
+    const stopped = LOOPS.map((l) => ({ ...l, running: false, nextRunAt: null }));
+    for (const quorumSource of ["spv", "trusted"] as const)
+      expect(dashpayInfo(inputs({ sync: sync({ loops: stopped, quorumSource }) }))).toMatchObject({
+        state: "stopped",
+        tone: "neutral",
+        headline: INFO_COPY.stopped,
+        syncNow: { disabled: true, note: INFO_COPY.loopsStopped },
+      });
+    // Only the DashPay loop counts.
+    const onlyDashPay = LOOPS.map((l) => (l.syncLoop === "dashPaySync" ? l : { ...l, running: false }));
+    expect(stateOf({ sync: sync({ loops: onlyDashPay }) })).toBe("running");
   });
 
   it("D2: no wallet shows the session's quorum source alone, with no Sync now", () => {

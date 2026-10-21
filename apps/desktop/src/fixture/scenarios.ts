@@ -473,12 +473,12 @@ function withContest(w: World, state: ContestStatus["state"]): World {
 }
 
 /** The wallet's DashPay status set to `status`, no identity on file (DP1-08). The bring-up's
- * outcome says the same: a `startupIncomplete` status's own, read-only for a watch-only wallet
- * (Tools ▸ Information reads both, DP6-03). */
+ * outcome says the same: a `startupIncomplete` status's own; a watch-only wallet's bring-up does
+ * not run and is read-only (bringup.rs `admit`). Tools ▸ Information reads both (DP6-03). */
 function withStatus(w: World, status: DashPayStatus): World {
   const d = noIdentity();
   if (status.kind === "startupIncomplete") d.startup = { ...d.startup, startup: status.startup };
-  if (status.kind === "noIdentity" && status.reason === "watchOnly") d.startup = { ...d.startup, readOnly: true };
+  if (status.kind === "noIdentity" && status.reason === "watchOnly") d.startup = { ...d.startup, startup: "notRun", readOnly: true, finishedAt: null };
   w.dashpay = { ...d, status };
   return w;
 }
@@ -671,6 +671,13 @@ const SCENARIOS = {
   "dashpay-info-trusted-only": (t) => withSyncInfo(t, { source: "trusted", trustedOnly: true }),
   /** The last pass failed with `platform.unavailable`. */
   "dashpay-info-pass-failed": (t) => withSyncInfo(t, { source: "spv", trustedOnly: false }, pass({ failureCode: "platform.unavailable" })),
+  /** No identity, which Platform proved within its 7 days: the bring-up did not run (bringup.rs),
+   * and the card still says Not set up. */
+  "dashpay-info-no-identity-proven": (t) => {
+    const w = base(t);
+    w.dashpay.startup = { ...w.dashpay.startup, startup: "notRun", finishedAt: null };
+    return w;
+  },
   /** SPV stopped: the loops do not run, so Sync now has nothing to run. */
   "dashpay-info-stopped": (t) => {
     const w = withSyncInfo(t, { source: "spv", trustedOnly: false });

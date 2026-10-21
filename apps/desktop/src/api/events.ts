@@ -36,9 +36,10 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       return [keys.wallets, keys.dashpayStatus(event.walletId)];
     // Sync ends `noIdentity`'s `waitingForSync` and sends no Platform signal (BL-153 D9); only
     // statuses without an identity are re-read (bridgeEvents), `startupIncomplete` too (DP1-09 D28).
+    // The Platform loops start and stop with SPV, also without one (DP6-03 D6).
     case "spvStateChanged":
     case "sync":
-      return [keys.sync, keys.dashpayStatusAll];
+      return [keys.sync, keys.dashpayStatusAll, dashpayKeys.syncInfoAll];
     // The username quote's fee grows with the wallet's coins (DP1-08).
     case "balances":
       // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7).

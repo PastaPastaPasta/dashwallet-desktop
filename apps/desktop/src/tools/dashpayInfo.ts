@@ -23,6 +23,7 @@ export type DashPayInfoState =
   | "notStarted"
   | "starting"
   | "notSetUp"
+  | "stopped"
   | "degraded"
   | "running";
 
@@ -47,10 +48,12 @@ export interface DashPayInfo {
 export interface DashPayInfoInputs {
   /** No wallet on this network: only the session's quorum source is read. */
   noWallet: boolean;
+  /** The wallet's summary says it has no keys (`WalletSummary.watchOnly`). */
+  watchOnly: boolean;
   /** BL-153's status (the shell's query), `undefined` while unread or when it failed. */
   status: DashPayStatus | undefined;
   sync: DashPaySyncStatus | undefined;
-  /** Why the sync status could not be read, else `null`. */
+  /** Why the sync status (or the wallet list) could not be read, else `null`. */
   syncError: string | null;
   /** `quorum_source` (no wallet) or the sync status's own. */
   quorumSource: QuorumSource | undefined;
@@ -68,12 +71,13 @@ export const INFO_COPY = {
   passFailed: { title: "The last DashPay pass failed", message: (code: string) => `It stopped with ${code}.` },
   notSetUp: { title: "No DashPay identity on this wallet", message: "Join DashPay to create a username." },
   notSetUpWaiting: "Join DashPay once the wallet has synced.",
+  stopped: "DashPay sync is stopped",
   degraded: {
-    trusted: "Running in degraded mode",
-    trustedFallback: "Running on trusted quorum keys until masternode sync finishes",
-    trustedOnly: "Running with SPV quorum checks off",
+    trusted: "Quorum keys from a trusted service",
+    trustedFallback: "Trusted quorum keys until masternode sync finishes",
+    trustedOnly: "SPV quorum checks are off (developer setting)",
   },
-  running: "Running on SPV-verified quorum keys",
+  running: "Quorum keys verified by SPV",
   syncNow: "Sync now",
   loopsStopped: "DashPay's sync loops are not running. They start when the wallet connects to the Dash network.",
   watchOnly: "A watch-only wallet can't use DashPay because it has no keys.",
@@ -89,16 +93,19 @@ const CHIP: Record<DashPayInfoState, string> = {
   notStarted: "Not started",
   starting: "Starting",
   notSetUp: "Not set up",
+  stopped: "Stopped",
   degraded: "Degraded",
   running: "Running",
 };
 
-/** The bring-up outcomes that are failures, as the Home card reads them (status.ts `startupCard`). */
+/** The bring-up outcomes that are failures while no identity is known, as the Home card reads them
+ * (status.ts `startupCard`). */
 const FAILED: ReadonlySet<StartupStatus> = new Set(["discoveryFailed", "identityScanIncomplete", "partialNoIdentity", "partialAccountsPending", "seedBindingUnverified"]);
 
 /** The scan verdict: the bring-up's outcome (DASHPAY §3.2 "Startup status values"). */
 export const STARTUP_TEXT: Record<StartupStatus, { value: string; note?: string }> = {
-  notRun: { value: "Not run", note: "It runs when the wallet connects to the Dash network." },
+  // Also a watch-only wallet's, and a wallet's that Platform showed has no identity (bringup.rs).
+  notRun: { value: "Not run" },
   starting: { value: "Looking for identities…" },
   ready: { value: "Complete: identity found" },
   noIdentity: { value: "Complete: no identity" },
@@ -176,8 +183,9 @@ function card(state: DashPayInfoState, tone: DashPayInfoTone, headline: string, 
 }
 
 /** The card for the wallet's DashPay sync state (design note §2, D2): the first that applies of no
- * wallet, unread, watch-only, a failed bring-up or pass, no bring-up, a bring-up running, no
- * identity, quorum keys not from SPV, running. */
+ * wallet, unread, watch-only, a failed pass, the bring-up's own state while no identity is known
+ * (failed, not run, running), no identity, the DashPay loop stopped, quorum keys not from SPV,
+ * running. */
 export function dashpayInfo(i: DashPayInfoInputs): DashPayInfo {
   const quorum = quorumRow(i.sync?.quorumSource ?? i.quorumSource, i.trustedOnly);
   if (i.noWallet) return card("noWallet", "neutral", INFO_COPY.noWallet, { rows: [quorum] });
@@ -195,25 +203,33 @@ export function dashpayInfo(i: DashPayInfoInputs): DashPayInfo {
     quorum,
   ];
   // D3: the pass Sync now asks for runs only while the DashPay loop does.
-  const dashpayLoop = s.loops.find((l) => l.syncLoop === "dashPaySync");
-  const syncNow = dashpayLoop?.running ? { disabled: false, note: null } : { disabled: true, note: INFO_COPY.loopsStopped };
+  const looping = s.loops.some((l) => l.syncLoop === "dashPaySync" && l.running);
+  const syncNow = looping ? { disabled: false, note: null } : { disabled: true, note: INFO_COPY.loopsStopped };
   const at = (state: DashPayInfoState, tone: DashPayInfoTone, headline: string, rest: Partial<DashPayInfo> = {}) =>
     card(state, tone, headline, { rows, syncNow, ...rest });
   const { status } = i;
+  // An identity on file settles the bring-up's outcome (BL-153 D2), and a settled absence too; with
+  // the status unread the bring-up's outcome stands in (D7).
+  const identity = status ? status.kind === "ready" || status.kind === "registering" || status.kind === "contestPending" : s.startup === "ready";
+  const absent = status ? status.kind === "noIdentity" : s.startup === "noIdentity";
 
-  if (status?.kind === "noIdentity" && status.reason === "watchOnly")
-    return at("watchOnly", "neutral", COPY.watchOnly.title, { line: COPY.watchOnly.message, syncNow: { disabled: true, note: INFO_COPY.watchOnly } });
-  if (s.startup === "seedBindingUnverified") return at("failed", "danger", COPY.unverified.title, { line: COPY.unverified.message });
-  if (FAILED.has(s.startup)) return at("failed", "danger", COPY.lookFailed.title, { line: COPY.lookFailed.message });
+  if (i.watchOnly || (status?.kind === "noIdentity" && status.reason === "watchOnly"))
+    return at("watchOnly", "neutral", COPY.watchOnly.title, { syncNow: { disabled: true, note: INFO_COPY.watchOnly } });
   if (s.lastPass?.failureCode) return at("failed", "danger", INFO_COPY.passFailed.title, { line: INFO_COPY.passFailed.message(s.lastPass.failureCode) });
-  if (s.startup === "notRun") return at("notStarted", "neutral", COPY.notStarted.title, { line: COPY.notStarted.message });
-  if (s.startup === "identityUnsettled") return at("starting", "neutral", COPY.unlockToLook.title, { line: COPY.unlockToLook.message });
-  // A bring-up running, or (BL-153 D16) an outcome the status has not settled on yet.
-  if (s.startup === "starting" || status?.kind === "startupIncomplete") return at("starting", "neutral", COPY.looking.title, { busy: true });
-  if (status?.kind === "noIdentity")
+  if (!identity && !absent) {
+    if (s.startup === "seedBindingUnverified") return at("failed", "danger", COPY.unverified.title, { line: COPY.unverified.message });
+    if (FAILED.has(s.startup)) return at("failed", "danger", COPY.lookFailed.title, { line: COPY.lookFailed.message });
+    if (s.startup === "notRun") return at("notStarted", "neutral", COPY.notStarted.title, { line: COPY.notStarted.message });
+    if (s.startup === "identityUnsettled") return at("starting", "neutral", COPY.unlockToLook.title, { line: COPY.unlockToLook.message });
+    // A bring-up running, or (BL-153 D16) an outcome the status has not settled on yet.
+    return at("starting", "neutral", COPY.looking.title, { busy: true });
+  }
+  if (absent)
     return at("notSetUp", "neutral", INFO_COPY.notSetUp.title, {
-      line: status.reason === "waitingForSync" ? INFO_COPY.notSetUpWaiting : INFO_COPY.notSetUp.message,
+      line: status?.kind === "noIdentity" && status.reason === "waitingForSync" ? INFO_COPY.notSetUpWaiting : INFO_COPY.notSetUp.message,
     });
-  if (s.quorumSource !== "spv") return at("degraded", "warning", degradedHeadline(s.quorumSource, i.trustedOnly), { line: quorum.note ?? null });
+  // Sync now's note says why.
+  if (!looping) return at("stopped", "neutral", INFO_COPY.stopped);
+  if (s.quorumSource !== "spv") return at("degraded", "warning", degradedHeadline(s.quorumSource, i.trustedOnly));
   return at("running", "success", INFO_COPY.running);
 }

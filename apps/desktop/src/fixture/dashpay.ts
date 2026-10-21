@@ -76,16 +76,17 @@ export interface DashPayWorld {
   lastPass?: SyncPassReport;
 }
 
-/** `platform_loops` as the engine lists them (runtime.rs): running while SPV runs and the bring-up
- * ran, DashPay last run 5 s before FIXTURE_NOW (every 15 s with a window visible), the contest watch
- * every 10 minutes (DASHPAY §3.2); nothing ran before a bring-up. */
-export function fixtureLoops(running: boolean, ran = running): SyncLoopStatus[] {
+/** `platform_loops` as the engine lists them (runtime.rs): session-wide, running while SPV runs
+ * (bringup.rs starts them after every wallet's bring-up), DashPay last run 5 s before FIXTURE_NOW
+ * (every 15 s with a window visible), the contest watch every 10 minutes (DASHPAY §3.2); stopped,
+ * the last runs stay. */
+export function fixtureLoops(running: boolean): SyncLoopStatus[] {
   const now = secs(FIXTURE_NOW);
   const loop = (syncLoop: SyncLoopStatus["syncLoop"], every: number, ago: number): SyncLoopStatus => ({
     syncLoop,
     running,
-    lastRunAt: ran ? now - ago : null,
-    nextRunAt: ran && running ? now - ago + every : null,
+    lastRunAt: now - ago,
+    nextRunAt: running ? now - ago + every : null,
   });
   return [loop("identitySync", 60, 40), loop("dashPaySync", 15, 5), loop("dpnsSync", 600, 120)];
 }

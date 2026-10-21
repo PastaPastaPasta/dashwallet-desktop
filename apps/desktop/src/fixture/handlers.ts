@@ -866,12 +866,11 @@ export const HANDLERS: Handlers = {
   // session's quorum source (DP6-03).
   dashpay_sync_status: ({ walletId }, { world }) => {
     const d = dashpay(world, walletId);
-    const ran = d.startup.startup !== "notRun";
     return {
       startup: d.startup.startup,
       lastPass: d.lastPass ?? null,
       pendingContactCrypto: d.startup.contactAccountsPending,
-      loops: fixtureLoops(world.sync.running && ran, ran),
+      loops: fixtureLoops(world.sync.running),
       quorumSource: world.trust.source,
     };
   },

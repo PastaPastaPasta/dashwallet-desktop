@@ -39,8 +39,8 @@ describe("fixture DashPay card (DP6-03)", () => {
   async function cardState(scenario: ScenarioName) {
     clearMocks();
     installFixture({ scenario });
-    const [status, sync, trustedOnly] = await Promise.all([cmd.dashpayStatus(W), cmd.dashpaySyncStatus(W), cmd.trustedQuorumsOnly()]);
-    return dashpayInfo({ noWallet: false, status, sync, syncError: null, quorumSource: undefined, trustedOnly, now: 0 }).state;
+    const [wallet, status, sync, trustedOnly] = await Promise.all([cmd.walletInfo(W), cmd.dashpayStatus(W), cmd.dashpaySyncStatus(W), cmd.trustedQuorumsOnly()]);
+    return dashpayInfo({ noWallet: false, watchOnly: wallet.watchOnly, status, sync, syncError: null, quorumSource: undefined, trustedOnly, now: 0 }).state;
   }
 
   it("each state has its scenario", async () => {
@@ -57,7 +57,8 @@ describe("fixture DashPay card (DP6-03)", () => {
       ["funded", "notSetUp"],
       ["dashpay-waiting-for-sync", "notSetUp"],
       ["dashpay-watch-only", "watchOnly"],
-      ["dashpay-info-stopped", "running"],
+      ["dashpay-info-no-identity-proven", "notSetUp"],
+      ["dashpay-info-stopped", "stopped"],
     ];
     for (const [scenario, state] of expected) expect(await cardState(scenario), scenario).toBe(state);
   });
@@ -72,10 +73,10 @@ describe("fixture DashPay card (DP6-03)", () => {
       ["dashPaySync", true],
       ["dpnsSync", true],
     ]);
-    // No bring-up: nothing ran, nothing runs.
+    // A watch-only wallet's bring-up does not run (bringup.rs `admit`).
     clearMocks();
-    installFixture({ scenario: "dashpay-not-started" });
-    expect((await cmd.dashpaySyncStatus(W)).loops.every((l) => !l.running && l.lastRunAt === null)).toBe(true);
+    installFixture({ scenario: "dashpay-watch-only" });
+    expect(await cmd.dashpaySyncStatus(W)).toMatchObject({ startup: "notRun" });
     // SPV stopped: the loops stop, and the card holds Sync now.
     clearMocks();
     installFixture({ scenario: "dashpay-info-stopped" });

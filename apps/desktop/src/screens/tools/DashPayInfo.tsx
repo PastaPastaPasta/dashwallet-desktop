@@ -1,6 +1,6 @@
 // Tools ▸ Information's DashPay card (DP6-03, DASHPAY F23): the toolbar wallet's DashPay sync state
 // (tools/dashpayInfo.ts) and Sync now. The sync status sits under `["dashpay", …]`, so every
-// Platform signal re-reads it; sync events re-read it too (D6).
+// Platform signal re-reads it; sync events re-read it too (events.ts, D6).
 
 import { useEffect, useEffectEvent, useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -27,7 +27,8 @@ export function DashPayInfoCard() {
   const noteId = useId();
   const walletId = useUi((s) => s.walletId);
   const wallets = useWallets();
-  const id = (wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0])?.walletId;
+  const wallet = wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0];
+  const id = wallet?.walletId;
   const noWallet = wallets.data?.length === 0;
   const { status } = useDashPayShell(id);
   const sync = useQuery({ queryKey: dashpayKeys.syncInfo(id ?? ""), queryFn: () => b.dashpaySyncStatus(id!), enabled: !!id });
@@ -38,24 +39,28 @@ export function DashPayInfoCard() {
   const [asking, setAsking] = useState(false);
   const [outcome, setOutcome] = useState<{ ok: boolean; text: string } | null>(null);
 
-  // `refetch` ignores `enabled`, so each read is guarded as its query is.
-  const reread = () => {
-    if (id) void sync.refetch();
+  // `refetch` ignores `enabled`, so each read is guarded as its query is. The source moves with
+  // masternode sync (`trustedFallback` → `spv`).
+  useReloadOnSync(() => {
     if (noWallet) void source.refetch();
-  };
-  useReloadOnSync(reread);
-  const rereadLater = useEffectEvent(reread);
+  });
+  const rereadLater = useEffectEvent(() => {
+    if (id) void sync.refetch();
+  });
   useEffect(() => {
     if (!asked) return;
-    const timer = setTimeout(rereadLater, SYNC_NOW_REREAD_MS);
+    const timer = setTimeout(() => rereadLater(), SYNC_NOW_REREAD_MS);
     return () => clearTimeout(timer);
   }, [asked]);
+  // Another wallet's card says nothing of this one's request.
+  useEffect(() => setOutcome(null), [id]);
 
   const info = dashpayInfo({
     noWallet,
+    watchOnly: wallet?.watchOnly ?? false,
     status,
     sync: sync.data,
-    syncError: sync.isError && !sync.data ? failureText(sync.error) : null,
+    syncError: wallets.isError ? failureText(wallets.error) : sync.isError && !sync.data ? failureText(sync.error) : null,
     quorumSource: source.data,
     trustedOnly: trustedOnly.data,
     now: Math.floor(Date.now() / 1000),
@@ -108,7 +113,7 @@ export function DashPayInfoCard() {
       {outcome && <Outcome ok={outcome.ok} text={outcome.text} testId="information-dashpay-outcome" />}
       {info.state === "error" && (
         <div className="tool-actions">
-          <DashButton variant="tintedGray" size="small" data-testid="information-dashpay-retry" onClick={() => void sync.refetch()}>
+          <DashButton variant="tintedGray" size="small" data-testid="information-dashpay-retry" onClick={() => void (id ? sync.refetch() : wallets.refetch())}>
             Try again
           </DashButton>
         </div>
