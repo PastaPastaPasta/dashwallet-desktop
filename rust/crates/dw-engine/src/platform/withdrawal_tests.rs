@@ -734,3 +734,164 @@ fn recent_withdrawals_are_platforms_documents_newest_first() {
     assert_eq!(recent[1].expected_duffs, second.expected_duffs);
     assert_eq!(recent[0].to.as_deref(), Some(w.to.as_str()));
 }
+
+/// D21: only a refusal that carries Platform's consensus error means the
+/// withdrawal did not happen. DAPI's failed wait (a broadcast error with a
+/// code and no cause), a timeout, and a CheckTx consensus error (a resend's
+/// refusal can follow a first send Platform took) are all `Unknown`, so the
+/// withdrawal is read back and never offered again blindly.
+#[test]
+fn only_a_consensus_refusal_says_nothing_happened() {
+    use dash_sdk::error::StateTransitionBroadcastError as Broadcast;
+    use dpp::consensus::ConsensusError;
+    use dpp::consensus::codes::ErrorWithCode;
+    use dpp::consensus::state::identity::IdentityInsufficientBalanceError;
+    use dpp::identity::PartialIdentity;
+    let cause: ConsensusError =
+        IdentityInsufficientBalanceError::new(Identifier::from([9; 32]), 1, 2).into();
+    let refused = |cause: Option<ConsensusError>| {
+        dash_sdk::Error::StateTransitionBroadcastError(Broadcast {
+            code: cause.as_ref().map_or(13, |c| c.code()),
+            message: "x".into(),
+            cause,
+        })
+    };
+    let kind = |r: Result<u64, Unsent>| match r {
+        Ok(balance) => format!("ok {balance}"),
+        Err(Unsent::Refused(_)) => "refused".into(),
+        Err(Unsent::Unknown(_)) => "unknown".into(),
+    };
+    let identity = |balance| {
+        StateTransitionProofResult::VerifiedPartialIdentity(PartialIdentity {
+            id: Identifier::from([9; 32]),
+            loaded_public_keys: Default::default(),
+            balance,
+            revision: None,
+            not_found_public_keys: Default::default(),
+        })
+    };
+    let timeout = dash_sdk::Error::TimeoutReached(std::time::Duration::from_secs(30), "x".into());
+    let check_tx =
+        dash_sdk::Error::Protocol(dpp::ProtocolError::ConsensusError(Box::new(cause.clone())));
+    let cases = [
+        (Err(refused(Some(cause))), "refused"),
+        (Err(refused(None)), "unknown"),
+        (Err(timeout), "unknown"),
+        (Err(check_tx), "unknown"),
+        (Ok(identity(Some(7))), "ok 7"),
+        (Ok(identity(None)), "unknown"),
+    ];
+    for (i, (result, want)) in cases.into_iter().enumerate() {
+        assert_eq!(kind(settled(result)), want, "case {i}");
+    }
+}
+
+/// D16: the pages are read oldest first, each after the last one's final
+/// document, until a short page; the newest `limit` come back newest first.
+#[test]
+fn the_pages_keep_the_newest() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let page = WITHDRAWALS_PAGE as usize;
+    for n in [0, 1, 20, page - 1, page, page + 1, 2 * page, 250] {
+        let all: Vec<_> = (0..n as u32)
+            .map(|i| {
+                let mut id = [0; 32];
+                id[..4].copy_from_slice(&i.to_be_bytes());
+                Identifier::from(id)
+            })
+            .collect();
+        let starts = Mutex::new(Vec::new());
+        let got = rt
+            .block_on(newest(RECENT_WITHDRAWALS, |start: Option<Identifier>| {
+                starts.lock().unwrap().push(start);
+                let from = start.map_or(0, |s| all.iter().position(|&id| id == s).unwrap() + 1);
+                let read: Vec<_> = (all[from..].iter().take(page))
+                    .map(|&id| {
+                        (
+                            id,
+                            Some(Document::V0(DocumentV0 {
+                                id,
+                                ..Default::default()
+                            })),
+                        )
+                    })
+                    .collect();
+                async move { Ok(read) }
+            }))
+            .unwrap();
+        let ids: Vec<_> = got.iter().map(|d| d.id()).collect();
+        let want: Vec<_> = all
+            .iter()
+            .rev()
+            .take(RECENT_WITHDRAWALS as usize)
+            .copied()
+            .collect();
+        assert_eq!(ids, want, "{n} documents");
+        let starts = starts.into_inner().unwrap();
+        assert_eq!(
+            starts.len(),
+            n / page + 1,
+            "{n} documents: one read per page and a short one"
+        );
+        for (k, start) in starts.iter().enumerate() {
+            assert_eq!(
+                *start,
+                k.checked_sub(1).map(|k| all[(k + 1) * page - 1]),
+                "{n} documents, page {k}"
+            );
+        }
+    }
+}
+
+/// A document updated between two page reads comes twice; `withdrawals`
+/// lists it once, as its newest.
+#[test]
+fn a_document_read_twice_is_listed_once() {
+    let w = World::new(5 * DASH);
+    let out = w
+        .withdraw(
+            WithdrawAmount::Credits { credits: DASH },
+            &w.f.grant(2 * DASH),
+        )
+        .unwrap();
+    {
+        let mut documents = w.net.documents.lock().unwrap();
+        let mut again = documents[0].clone();
+        let Document::V0(d) = &mut again;
+        d.properties.insert(
+            withdrawal::properties::STATUS.into(),
+            Value::U8(DocStatus::COMPLETE as u8),
+        );
+        d.updated_at = Some(u64::MAX);
+        documents.push(again);
+    }
+    let recent = w.recent().unwrap();
+    assert_eq!(recent.len(), 1);
+    assert_eq!(
+        (recent[0].id.as_str(), recent[0].status),
+        (out.withdrawal.as_str(), WithdrawalStatus::Complete)
+    );
+}
+
+/// Max takes no more than the quote approved: credits that arrive between
+/// the quote and the withdrawal grow Max past the quote's grant, which
+/// refuses it unredeemed.
+#[test]
+fn max_stays_within_the_quotes_grant() {
+    let w = World::new(2 * DASH);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    let grant = w.f.grant(q.grant.max_credits);
+    *w.net.balance.lock().unwrap() = Some(2 * DASH + 1_000);
+    let refused = w.withdraw(WithdrawAmount::All, &grant).unwrap_err();
+    assert_eq!(refused.code(), "platform.grant_exceeded");
+    assert!(w.f.unused(&grant));
+    assert!(w.net.sent().is_empty());
+    // Within the grant again, it withdraws the quote's credits.
+    *w.net.balance.lock().unwrap() = Some(2 * DASH);
+    assert_eq!(
+        w.withdraw(WithdrawAmount::All, &grant).unwrap().credits,
+        q.credits
+    );
+}

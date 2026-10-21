@@ -155,19 +155,11 @@ impl WithdrawNet for SdkWithdrawals {
     }
 
     async fn broadcast(&self, transition: StateTransition) -> Result<u64, Unsent> {
-        let result = transition
-            .broadcast_and_wait_for_affected_state::<StateTransitionProofResult>(&self.0, None)
-            .await;
-        match result {
-            Ok(StateTransitionProofResult::VerifiedPartialIdentity(identity)) => identity
-                .balance
-                .ok_or_else(|| Unsent::Unknown(internal("the proved identity has no balance"))),
-            Ok(_) => Err(Unsent::Unknown(internal("the proof is not of an identity"))),
-            Err(e @ dash_sdk::Error::StateTransitionBroadcastError(_)) => {
-                Err(Unsent::Refused(e.into()))
-            }
-            Err(e) => Err(Unsent::Unknown(e.into())),
-        }
+        settled(
+            transition
+                .broadcast_and_wait_for_affected_state::<StateTransitionProofResult>(&self.0, None)
+                .await,
+        )
     }
 
     async fn withdrawal(&self, id: Identifier) -> Result<Option<Document>, PlatformError> {
@@ -179,8 +171,7 @@ impl WithdrawNet for SdkWithdrawals {
 
     /// Reads every page oldest first and keeps the newest `limit`: at the
     /// pin a descending query's proof does not verify ("inverted op in a
-    /// left-to-right walk", T2 D16). Only the owner creates its withdrawals,
-    /// so the pages end.
+    /// left-to-right walk", T2 D16).
     async fn withdrawals(
         &self,
         owner: Identifier,
@@ -188,36 +179,79 @@ impl WithdrawNet for SdkWithdrawals {
     ) -> Result<Vec<Document>, PlatformError> {
         use dash_sdk::dapi_grpc::platform::v0::get_documents_request::get_documents_request_v0::Start;
         let contract = withdrawals_contract_v()?;
-        let mut newest = std::collections::VecDeque::new();
-        let mut start = None;
-        loop {
-            let mut query = DocumentQuery::new(Arc::clone(&contract), withdrawal::NAME)
-                .map_err(|e| PlatformError::from(dash_sdk::Error::from(e)))?
-                .with_where(WhereClause {
-                    field: withdrawal::properties::OWNER_ID.into(),
-                    operator: WhereOperator::Equal,
-                    value: Value::Identifier(owner.to_buffer()),
-                })
-                .with_order_by(OrderClause {
-                    field: withdrawal::properties::UPDATED_AT.into(),
-                    ascending: true,
-                });
-            query.limit = WITHDRAWALS_PAGE;
-            query.start = start.take();
-            let page = Document::fetch_many(&self.0, query).await?;
-            let (len, last) = (page.len(), page.keys().last().copied());
-            for document in page.into_values().flatten() {
-                if newest.len() == limit as usize {
-                    newest.pop_front();
-                }
-                newest.push_back(document);
+        let sdk = &self.0;
+        newest(limit, |start: Option<Identifier>| {
+            let contract = Arc::clone(&contract);
+            async move {
+                let mut query = DocumentQuery::new(contract, withdrawal::NAME)
+                    .map_err(|e| PlatformError::from(dash_sdk::Error::from(e)))?
+                    .with_where(WhereClause {
+                        field: withdrawal::properties::OWNER_ID.into(),
+                        operator: WhereOperator::Equal,
+                        value: Value::Identifier(owner.to_buffer()),
+                    })
+                    .with_order_by(OrderClause {
+                        field: withdrawal::properties::UPDATED_AT.into(),
+                        ascending: true,
+                    });
+                query.limit = WITHDRAWALS_PAGE;
+                query.start = start.map(|id| Start::StartAfter(id.to_buffer().to_vec()));
+                Ok(Document::fetch_many(sdk, query)
+                    .await?
+                    .into_iter()
+                    .collect())
             }
-            match last {
-                Some(id) if len >= WITHDRAWALS_PAGE as usize => {
-                    start = Some(Start::StartAfter(id.to_buffer().to_vec()));
-                }
-                _ => return Ok(newest.into_iter().rev().collect()),
+        })
+        .await
+    }
+}
+
+/// What a broadcast's result says (D21): only a refusal that carries
+/// Platform's consensus error says the withdrawal did not happen. DAPI
+/// answers a failed wait (its own timeout, a dropped Tenderdash
+/// subscription) with a broadcast error too, without a cause, while the
+/// transition may sit in the mempool and land: that is `Unknown`. So is a
+/// consensus error from the broadcast step: the SDK resends to other nodes,
+/// and a later send's refusal (the nonce used, the credits gone) can follow
+/// a first send Platform took.
+fn settled(result: Result<StateTransitionProofResult, dash_sdk::Error>) -> Result<u64, Unsent> {
+    match result {
+        Ok(StateTransitionProofResult::VerifiedPartialIdentity(identity)) => identity
+            .balance
+            .ok_or_else(|| Unsent::Unknown(internal("the proved identity has no balance"))),
+        Ok(_) => Err(Unsent::Unknown(internal("the proof is not of an identity"))),
+        Err(
+            e @ dash_sdk::Error::StateTransitionBroadcastError(
+                dash_sdk::error::StateTransitionBroadcastError { cause: Some(_), .. },
+            ),
+        ) => Err(Unsent::Refused(e.into())),
+        Err(e) => Err(Unsent::Unknown(e.into())),
+    }
+}
+
+/// The newest `limit` documents of pages read oldest first: `page(start)`
+/// reads up to [`WITHDRAWALS_PAGE`] documents after `start`, and a shorter
+/// page is the last. Only the owner creates its withdrawals, so the pages
+/// end.
+async fn newest<F, Fut>(limit: u32, mut page: F) -> Result<Vec<Document>, PlatformError>
+where
+    F: FnMut(Option<Identifier>) -> Fut,
+    Fut: Future<Output = Result<Vec<(Identifier, Option<Document>)>, PlatformError>>,
+{
+    let mut newest = std::collections::VecDeque::new();
+    let mut start = None;
+    loop {
+        let read = page(start.take()).await?;
+        let (len, last) = (read.len(), read.last().map(|(id, _)| *id));
+        for document in read.into_iter().filter_map(|(_, d)| d) {
+            if newest.len() == limit as usize {
+                newest.pop_front();
             }
+            newest.push_back(document);
+        }
+        match last {
+            Some(id) if len >= WITHDRAWALS_PAGE as usize => start = Some(id),
+            _ => return Ok(newest.into_iter().rev().collect()),
         }
     }
 }
@@ -274,7 +308,7 @@ impl Rules {
             _ => {
                 return Err(PlatformError::InvalidArgument {
                     detail: format!(
-                        "protocol version {} takes no withdrawals",
+                        "no withdrawal rules known for protocol version {}",
                         version.protocol_version
                     ),
                 });
@@ -612,6 +646,9 @@ pub(crate) async fn recent(
     let version = net.version();
     documents.retain(|d| d.owner_id() == id);
     documents.sort_by_key(|d| std::cmp::Reverse((d.updated_at(), d.created_at())));
+    // A document updated between two page reads comes twice: keep its newest.
+    let mut seen = std::collections::HashSet::new();
+    documents.retain(|d| seen.insert(d.id()));
     Ok((documents.iter())
         .map(|d| record(d, network, version))
         .collect())
