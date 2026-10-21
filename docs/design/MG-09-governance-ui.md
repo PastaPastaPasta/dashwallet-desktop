@@ -19,7 +19,7 @@ binding as it is and adds no command (D2). The copy is MG-00's; deviations are D
 | Styles lifted from the mocks (`mg-*`) | `apps/desktop/src/styles/app.css` |
 | Fixture: governance state, handlers, scenarios | `apps/desktop/src/fixture/governance.ts`, `src/fixture/scenarios.ts`, `src/fixture/governance.test.ts` |
 | Playwright (flows, axe, light and dark, Chromium and WebKit) | `e2e/governance.spec.ts`; baselines in `e2e/visual.spec.ts` |
-| Real app on regtest (GL) | `e2e-tauri/regtest-governance.ts`, `scripts/e2e-regtest-governance.sh` |
+| Real app on regtest (GL) | `regtest/functional/dwd_governance_ui.py` (chain and judge) runs `e2e-tauri/regtest-governance.ts`; `scripts/e2e-regtest-governance.sh` builds and runs both |
 
 ## Screen inventory
 
@@ -71,6 +71,7 @@ binding as it is and adds no command (D2). The copy is MG-00's; deviations are D
 | D25 | More (page): Show/Hide ended proposals and Governance numbers…; More (pane): Copy link, Copy proposal hash. A small menu button (`MoreMenu`, arrow keys, Escape) in `screens/masternodes/common.tsx`, styled from mg-00's `.mg-menu`. | The renderer had no menu component; MG-00 shows these Mores. |
 | D26 | A notice's button (Turn on, Try again) is filled blue, not the mock's tinted blue; the vote result's "Not sent" chip is neutral, not warning. | Both mock colours fail axe's colour contrast in the light theme (tinted blue on the accent tint; warning text on the sheet's raised card). The sentence beside the chip says why it wasn't sent. |
 | D27 | Resume (§4.25.3) is Mine's: once the fee is paid the engine owns the proposal (MG-06), so Mine lists it and its Submit or Turn on resumes it after a restart. The wizard keeps nothing before payment: closing it drops the unsent form. Amounts in the wizard's sentences, the Pay button and Governance numbers are compact (2 decimals); the Total and the review's fee are exact. | A paid proposal already survives a restart in the engine; a second, UI-side draft store would be a second truth for the same proposal. An unpaid form costs nothing to retype. Eight decimals in prose ("6018.00000000 tDASH") read as noise; where the user checks the money, it is exact. |
+| D28 | The regtest acceptance needs a collateral source in the app: dw-app takes `--collateral-rpc <url>` (dashd's RPC), as dwcli does, and passes it to `SessionOptions.collateral_rpc` (MG-02 D80). It is a launch flag only (not in `SessionSettings`, so the renderer can't set it), and refused unless `--network regtest` (the parser, and the engine again at open). | Regtest has no DAPI, and with `--no-platform` the app had no source: no listed masternode's collateral outpoint resolved, so every vote was refused `collateral_unresolved` (found in the first GL run). The flag stands in for DAPI exactly as `dwcli --collateral-rpc` does in MG-02's suite; trust is unchanged, since each ProRegTx must hash to the list's proTxHash (D80). Mainnet and testnet keep DAPI. |
 
 ## Follow-ups
 
