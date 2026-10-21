@@ -100,7 +100,7 @@ listed), then the masternode (`masternodes.unsupported{feature: "shared_masterno
 owner key (`masternodes.no_owner_key`, MG-04 D12), then any update while an operation of a loaded wallet on the
 masternode may not be in the list yet (`masternodes.update_pending{operation}`, MG-04 D43, D49), then a keychain key to pick
 (`masternodes.keys_exhausted`), a new voting address that is the owner key's (`invalid_argument`, MG-04 D52), a new
-operator key another masternode's pending operation names (`protx-dup`, MG-04 D51), then Core's rules
+operator key a pending operation of the wallet names (`protx-dup`, MG-04 D51), then Core's rules
 (`masternodes.protx_refused`: `bad-protx-dup-key`, `bad-protx-payee-reuse`, `bad-protx-collateral-reuse`, …). A grant is the lease's: `MasternodeOp` for the wallet, its cap covering the fee
 (`send.grant_exceeded`, nothing signed); its refusals come through `Platform`/`Engine` unchanged (MG-05 D12). Each
 signing call saves its row durably, with its inputs locked (MG-04 D25), before the hand-off; then hands the bytes to

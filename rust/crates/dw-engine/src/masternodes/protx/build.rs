@@ -39,7 +39,7 @@ use super::super::protx_records::{
 };
 use super::super::records::MasternodeType;
 use super::super::{MasternodesError, outpoint_string, parse_pro_tx_hash};
-use super::keys::{InUse, parse_outpoint};
+use super::keys::{Claim, InUse, parse_outpoint};
 use super::ops::state_of;
 use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
 use crate::coins::{CoinFence, CoinSnapshot, own_address_info, read_coins, wallet_owns};
@@ -312,30 +312,10 @@ pub(crate) struct Context {
     pub used: InUse,
     /// The wallet's operations that may still go out or be out, and aren't
     /// in the list yet (D51).
-    pub pending: Vec<Pending>,
+    pub pending: Vec<Claim>,
     /// The collateral scripts of the wallet's `External` registrations by
     /// ProTx hash (wire order): a coin the wallet doesn't hold (D40).
     pub external_collaterals: HashMap<[u8; 32], ScriptBuf>,
-}
-
-/// One of [`Context::pending`]: what its terms name.
-pub(crate) struct Pending {
-    pub id: String,
-    pub pro_tx_hash: Option<String>,
-    pub service: String,
-    pub used: InUse,
-}
-
-/// What a new operation claims that Core's mempool holds unique (D51).
-#[derive(Default)]
-pub(crate) struct Claim<'a> {
-    /// The row being sent, which never clashes with itself.
-    pub id: Option<&'a str>,
-    /// A ProUpRegTx's masternode: its own operations don't clash.
-    pub pro_tx_hash: Option<&'a str>,
-    pub operator: Option<[u8; 48]>,
-    pub node_id: Option<[u8; 20]>,
-    pub service: Option<&'a str>,
 }
 
 impl Context {
@@ -345,19 +325,10 @@ impl Context {
     /// `txmempool.cpp:1601-1622` for a ProRegTx, `:1691-1692` for a
     /// ProUpRegTx). Core never tells an SPV wallet: the operation would sit
     /// `sent` until abandoned.
-    pub(crate) fn check_pending(&self, claim: &Claim<'_>) -> Result<(), MasternodesError> {
-        let clash = self.pending.iter().any(|p| {
-            if claim.id == Some(p.id.as_str())
-                || claim.pro_tx_hash.is_some() && claim.pro_tx_hash == p.pro_tx_hash.as_deref()
-            {
-                return false;
-            }
-            claim.operator.is_some_and(|k| p.used.holds_operator(&k))
-                || claim.node_id.is_some_and(|n| p.used.node_ids.contains(&n))
-                || claim
-                    .service
-                    .is_some_and(|s| !s.is_empty() && s == p.service)
-        });
+    pub(crate) fn check_pending(&self, claim: &Claim) -> Result<(), MasternodesError> {
+        let clash = (self.pending.iter())
+            .filter(|p| p.id != claim.id)
+            .any(|p| p.clashes(claim));
         match clash {
             true => Err(MasternodesError::ProtxRefused {
                 reason: "protx-dup".into(),
@@ -369,16 +340,10 @@ impl Context {
     /// [`Self::check_pending`] for the pending row `id` about to go out
     /// (an `External` registration's), against the others.
     pub(crate) fn check_pending_row(&self, id: &str) -> Result<(), MasternodesError> {
-        let Some(own) = self.pending.iter().find(|p| p.id == id) else {
-            return Ok(());
-        };
-        self.check_pending(&Claim {
-            id: Some(id),
-            operator: own.used.operator.iter().next().copied(),
-            node_id: own.used.node_ids.iter().next().copied(),
-            service: Some(&own.service),
-            ..Claim::default()
-        })
+        match self.pending.iter().find(|p| p.id.as_deref() == Some(id)) {
+            Some(own) => self.check_pending(own),
+            None => Ok(()),
+        }
     }
 }
 
@@ -619,14 +584,7 @@ impl NetworkSession {
                 _ => true,
             };
             if unlisted {
-                let mut claims = InUse::default();
-                claims.add_terms(&terms, network);
-                pending.push(Pending {
-                    id: row.id.clone(),
-                    pro_tx_hash: row.pro_tx_hash.clone(),
-                    service: terms.service.clone(),
-                    used: claims,
-                });
+                pending.push(Claim::of_terms(&row.id, &terms));
             }
             if let (Some(CollateralKind::External), Some(address), Some(hash)) = (
                 terms.collateral,
@@ -774,7 +732,7 @@ impl NetworkSession {
         ctx.check_pending(&Claim {
             operator: Some(operator.public_key),
             node_id: platform.map(|(_, p)| p.node_id),
-            service: Some(&service.to_string()),
+            service: Some(service.to_string()),
             ..Claim::default()
         })?;
         if let Collateral::External { address, .. } = &collateral {

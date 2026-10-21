@@ -62,9 +62,43 @@ impl InUse {
         }
     }
 
-    pub(crate) fn holds_operator(&self, basic: &[u8; 48]) -> bool {
+    fn holds_operator(&self, basic: &[u8; 48]) -> bool {
         self.operator.contains(basic)
             || dw_protx::bls::legacy_of(basic).is_some_and(|l| self.operator.contains(&l))
+    }
+}
+
+/// What an operation claims that Core's mempool holds unique (D51): one of
+/// the wallet's pending rows ([`super::build::Context::pending`]), or a new
+/// operation's terms.
+#[derive(Debug, Default)]
+pub(crate) struct Claim {
+    /// The row's id; a row never clashes with itself.
+    pub id: Option<String>,
+    pub operator: Option<[u8; 48]>,
+    pub node_id: Option<[u8; 20]>,
+    pub service: Option<String>,
+}
+
+impl Claim {
+    /// What row `id`'s `terms` claim.
+    pub fn of_terms(id: &str, terms: &ProTxTerms) -> Self {
+        Claim {
+            id: Some(id.to_string()),
+            operator: dw_protx::bls::parse_public_hex(&terms.operator_public_key).ok(),
+            node_id: terms.platform.as_ref().and_then(|p| hex20(&p.node_id).ok()),
+            service: Some(terms.service.clone()).filter(|s| !s.is_empty()),
+        }
+    }
+
+    /// Whether `other` claims what this one holds: the operator key, the
+    /// platform node id or the service. Both sides are the wallet's terms,
+    /// whose operator keys are in the basic serialization
+    /// (`parse_public_hex`), so one comparison covers it.
+    pub fn clashes(&self, other: &Claim) -> bool {
+        self.operator.is_some() && self.operator == other.operator
+            || self.node_id.is_some() && self.node_id == other.node_id
+            || self.service.is_some() && self.service == other.service
     }
 }
 

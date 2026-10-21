@@ -24,10 +24,10 @@ use super::super::reads::owner_facts;
 use super::super::records::MasternodeType;
 use super::super::{MasternodesError, display_hex, parse_pro_tx_hash};
 use super::build::{
-    Claim, Context, Funding, assemble, dummy_output, invalid, preview_script, refused,
-    shared_voting, to_sign,
+    Context, Funding, assemble, dummy_output, invalid, preview_script, refused, shared_voting,
+    to_sign,
 };
-use super::keys::{p2pkh_id, parse_operator_key};
+use super::keys::{Claim, p2pkh_id, parse_operator_key};
 use super::ops::state_of;
 use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
 use crate::send::l1_address;
@@ -261,7 +261,6 @@ impl NetworkSession {
             KeepOr::Set(choice) => {
                 let p = self.pick_operator(wallet, choice, &ctx.used).await?;
                 ctx.check_pending(&Claim {
-                    pro_tx_hash: Some(&display_hex(&hash)),
                     operator: Some(p.public_key),
                     ..Claim::default()
                 })?;

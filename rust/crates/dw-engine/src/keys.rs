@@ -770,8 +770,9 @@ impl NetworkSession {
             }
             .ok_or_else(|| EngineError::AddressNotMine(address.clone()))?;
             // A ProTx owner key signs owner payloads only, under a
-            // `MasternodeOp` grant (MG-04 D50); the vault refuses it here
-            // too, but this keeps the grant.
+            // `MasternodeOp` grant (MG-04 D50). Refused before the grant is
+            // redeemed, so the refusal doesn't spend it; the vault enforces
+            // the same rule.
             if dw_vault::paths::is_owner_key(&path, network) {
                 return Err(EngineError::Signer(SignerError::PathNotAllowed(format!(
                     "{address} is a masternode owner key"
