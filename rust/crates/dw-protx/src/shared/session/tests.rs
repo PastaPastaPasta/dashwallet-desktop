@@ -959,3 +959,102 @@ mod merges {
         );
     }
 }
+
+mod consent {
+    use super::super::consent::*;
+    use super::*;
+
+    fn side(party: usize, fee: Option<u64>) -> OwnSide {
+        let (full, c) = draft();
+        OwnSide {
+            share_index: party,
+            row: full.shares[party].clone(),
+            contribution: full.contributions[party].clone(),
+            input_total: c["parties"][party]["funding_coin"]["amount"]
+                .as_u64()
+                .unwrap(),
+            fee,
+        }
+    }
+
+    fn check(own: &OwnSide, f: impl FnOnce(&mut funding::Frozen)) -> Result<(), FundingMismatch> {
+        let session = at(Stage::Frozen);
+        let mut frozen = check_frozen(&session).unwrap();
+        f(&mut frozen);
+        check_consent(&session, &frozen, own, |_| false)
+    }
+
+    #[test]
+    fn test_QT_126_consent_checks_pass_for_every_party_of_dashds_registration() {
+        // The coordinator paid dashd's 30,000-duff fee on top of its share.
+        assert_eq!(check(&side(0, Some(30_000)), |_| {}), Ok(()));
+        assert_eq!(
+            check(&side(0, Some(29_999)), |_| {}),
+            Err(FundingMismatch::Overdraw)
+        );
+        assert_eq!(check(&side(1, None), |_| {}), Ok(()));
+        assert_eq!(check(&side(2, None), |_| {}), Ok(()));
+    }
+
+    #[test]
+    fn test_QT_126_consent_refusals_in_order() {
+        let own = side(1, None);
+        let template = |f: &mut funding::Frozen| f.tx.version = 2;
+        assert_eq!(check(&own, template), Err(FundingMismatch::Template));
+        assert_eq!(
+            check(&own, |f| f.payload.inputs_hash[0] ^= 1),
+            Err(FundingMismatch::Template)
+        );
+        assert_eq!(
+            check(&own, |f| f.tx.lock_time = 1),
+            Err(FundingMismatch::TimeLock)
+        );
+        assert_eq!(
+            check(&own, |f| f.tx.input[2].sequence = 0),
+            Err(FundingMismatch::TimeLock)
+        );
+
+        let mut moved = own.clone();
+        moved.row.refund_address = moved.row.owner_address.clone();
+        assert_eq!(check(&moved, |_| {}), Err(FundingMismatch::RowChanged));
+        let mut other_row = own.clone();
+        other_row.share_index = 2;
+        assert_eq!(check(&other_row, |_| {}), Err(FundingMismatch::RowChanged));
+        let mut changed = own.clone();
+        changed.contribution.change.as_mut().unwrap().amount += 1;
+        assert_eq!(
+            check(&changed, |_| {}),
+            Err(FundingMismatch::ContributionChanged)
+        );
+
+        // One of this wallet's coins in another party's contribution.
+        let session = at(Stage::Frozen);
+        let frozen = check_frozen(&session).unwrap();
+        let foreign = session.contributions[2].inputs[0].txid.clone();
+        assert_eq!(
+            check_consent(&session, &frozen, &own, |o| o.txid.to_string() == foreign),
+            Err(FundingMismatch::ForeignInput)
+        );
+        // Its own reserved coins are its own.
+        let mine = session.contributions[1].inputs[0].txid.clone();
+        assert_eq!(
+            check_consent(&session, &frozen, &own, |o| o.txid.to_string() == mine),
+            Ok(())
+        );
+
+        // m-1: exactly its share leaves it.
+        let mut overdraw = own.clone();
+        overdraw.input_total += 1;
+        assert_eq!(check(&overdraw, |_| {}), Err(FundingMismatch::Overdraw));
+    }
+
+    #[test]
+    fn test_QT_126_no_change_allows_less_than_dust_to_the_fee() {
+        let mut own = side(1, None);
+        own.contribution.change = None;
+        own.input_total = own.row.amount as u64 + P2PKH_DUST - 1;
+        assert!(own.within_bound());
+        own.input_total += 1;
+        assert!(!own.within_bound());
+    }
+}

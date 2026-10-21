@@ -15,6 +15,7 @@ use super::envelope::{EnvelopeError, append_fingerprint, fingerprint, network_id
 use super::json::Json;
 use crate::params::MAX_SHARES;
 
+pub mod consent;
 pub mod funding;
 pub mod merge;
 
