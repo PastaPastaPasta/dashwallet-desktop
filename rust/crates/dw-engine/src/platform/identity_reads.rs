@@ -238,7 +238,6 @@ impl NetworkSession {
             (wm.get_wallet_info(&wallet.0))
                 .map(|info| {
                     (info.identity_manager.wallet_managed_identities(&wallet.0))
-                        .into_iter()
                         .map(|m| (m.identity_index, m.identity.id()))
                         .collect::<Vec<_>>()
                 })
