@@ -518,7 +518,7 @@ export function governanceErrorText(e: unknown): string | null {
 
 /** The least margin the spend grant gives over the network fee, as dwcli's
  *  `PROPOSAL_FEE_MARGIN`: the engine picks the coins again at create time (D29). */
-export const NETWORK_FEE_MARGIN = 10_000;
+const NETWORK_FEE_MARGIN = 10_000;
 
 type FeeFigures = Pick<ProposalPreview, "fee" | "networkFee">;
 

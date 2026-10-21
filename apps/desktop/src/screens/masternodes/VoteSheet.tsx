@@ -195,16 +195,13 @@ function VoteForm({
   );
 }
 
+const ARROW_STEP: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+
 /** §4.25.4's segmented Yes · No · Abstain as a radiogroup (MG-00): one tab stop on the chosen
  *  outcome (the first when none is), the arrow keys move and choose. */
 function OutcomePicker({ outcome, disabled, onChange }: { outcome: VoteOutcomeName | null; disabled: boolean; onChange: (o: VoteOutcomeName) => void }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const tabStop = outcome === null ? 0 : OUTCOMES.indexOf(outcome);
-  const move = (from: number, by: number) => {
-    const i = (from + by + OUTCOMES.length) % OUTCOMES.length;
-    onChange(OUTCOMES[i]);
-    refs.current[i]?.focus();
-  };
   return (
     <div className="segmented mg-outcomes" role="radiogroup" aria-label="Your vote" data-testid="vote-outcome">
       {OUTCOMES.map((o, i) => (
@@ -222,10 +219,12 @@ function OutcomePicker({ outcome, disabled, onChange }: { outcome: VoteOutcomeNa
           disabled={disabled}
           onClick={() => onChange(o)}
           onKeyDown={(e) => {
-            const by = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
-            if (by === 0) return;
+            const by = ARROW_STEP[e.key];
+            if (!by) return;
             e.preventDefault();
-            move(i, by);
+            const to = (i + by + OUTCOMES.length) % OUTCOMES.length;
+            onChange(OUTCOMES[to]);
+            refs.current[to]?.focus();
           }}
         >
           {outcomeText(o)}
