@@ -130,6 +130,7 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
             <Row
               key={r.contact}
               letters={r.letters}
+              identity={r.contact}
               name={r.name}
               sub={r.sub}
               trailing={r.reason && <span className="contact-row-note">{r.reason}</span>}
@@ -277,7 +278,7 @@ function ContactForm({
       >
         <section className="pay-card card-l1 pay-payee-card" data-testid="pay-payee">
           <span className="pay-payee">
-            <Avatar letters={payee.letters} size="pane" />
+            <Avatar letters={payee.letters} size="pane" identity={payee.contact} />
             <span className="pay-payee-names">
               <span className="pay-payee-name" data-testid="pay-payee-name">
                 {payee.name}

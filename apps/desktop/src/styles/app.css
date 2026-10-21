@@ -4151,3 +4151,117 @@ button.bell-row-open:focus-visible {
   display: flex;
   gap: var(--dw-space-xs);
 }
+
+/* ------------------------------------------------------------------ Edit Profile (DP4-03) */
+
+.edit-profile-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+}
+
+.edit-profile-picture {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: var(--dw-space-m);
+}
+
+.edit-profile-picture-side,
+.edit-profile-sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.edit-profile-picture-side {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.edit-profile-picture-side p,
+.edit-profile-body p {
+  margin: 0;
+}
+
+.edit-profile-picture-state {
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.edit-profile-field textarea {
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-body-size);
+  font-weight: var(--dw-type-body-weight);
+  line-height: var(--dw-type-body-line);
+  resize: vertical;
+}
+
+.edit-profile-field textarea[aria-invalid="true"] {
+  border-color: var(--dw-role-danger);
+}
+
+.edit-profile-count {
+  align-self: flex-end;
+}
+
+.edit-profile-count.is-over {
+  color: var(--dw-role-danger);
+}
+
+.edit-profile-step-title {
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.edit-profile-saving {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+/* The square crop (D4): the picture moves under a fixed frame; the ring shows the circle the
+   lists draw. */
+.crop-frame {
+  position: relative;
+  align-self: center;
+  overflow: hidden;
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-field-fill);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.crop-frame:active {
+  cursor: grabbing;
+}
+
+.crop-image {
+  position: absolute;
+  max-width: none;
+  pointer-events: none;
+}
+
+.crop-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 999px var(--dw-role-overlay);
+  pointer-events: none;
+}
+
+.crop-zoom input {
+  accent-color: var(--dw-role-accent);
+}

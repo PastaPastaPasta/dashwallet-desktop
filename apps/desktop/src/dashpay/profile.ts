@@ -19,8 +19,7 @@ import { COPY, homeCard, namesState, type CardModel, type NamesState, type Statu
 export const PROFILE_COPY = {
   loading: "Loading your profile…",
   noProfile: "You have no DashPay profile yet",
-  editProfile: "Edit profile",
-  editLater: "Editing your profile comes with a later version.",
+  editProfile: "Edit Profile",
   usernames: "Usernames",
   identity: "Identity",
   noUsername: "No username",

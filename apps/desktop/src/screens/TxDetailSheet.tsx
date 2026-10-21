@@ -201,7 +201,7 @@ function ContactFact({
   return (
     <DetailRow label={sent ? "Sent to contact" : "Received from contact"} testId="tx-detail-contact">
       <span className="tx-detail-contact">
-        {letters !== null && <Avatar letters={letters} />}
+        {letters !== null && <Avatar letters={letters} identity={c.identity} />}
         <span className="tx-detail-contact-names">
           <span className="tx-detail-contact-name">{name}</span>
           {sub && <span className="contact-row-username">{sub}</span>}

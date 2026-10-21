@@ -10,6 +10,7 @@ import type { WalletSummary } from "../api/generated/WalletSummary";
 import { navigate, ui, useUi, type Route } from "../app/ui";
 import { namesState, type NamesState } from "../dashpay/status";
 import { isSyncing, syncPercent, syncState } from "../format/sync";
+import { Avatar } from "../screens/contacts/Avatar";
 
 interface SidebarItem {
   route: Route;
@@ -124,7 +125,7 @@ export type ChipState =
   /** `label`: the registration's username once its row is read (DP1-08 S11). */
   | { kind: "registering"; label: string | null }
   | { kind: "contest"; label: string }
-  | { kind: "identity"; username: string | null; names: NamesState }
+  | { kind: "identity"; identity: string; username: string | null; names: NamesState }
   | null;
 
 export function chipState(
@@ -140,7 +141,7 @@ export function chipState(
     case "contestPending":
       return { kind: "contest", label: status.label };
     case "ready":
-      return { kind: "identity", username: main?.mainName ?? null, names: namesState(main) };
+      return { kind: "identity", identity: status.main, username: main?.mainName ?? null, names: namesState(main) };
     default:
       return null;
   }
@@ -188,9 +189,7 @@ function IdentityChip({ chip }: { chip: ChipState }) {
       aria-label={name ? `My profile, @${name}` : "My profile"}
       onClick={() => navigate("profile")}
     >
-      <span className="identity-chip-avatar" aria-hidden="true">
-        {(name ?? "?").slice(0, 1).toUpperCase()}
-      </span>
+      <Avatar letters={(name ?? "?").slice(0, 1).toUpperCase()} size="chip" identity={chip.identity} own />
       <span>{chipLabel(name, chip.names)}</span>
     </button>
   );
