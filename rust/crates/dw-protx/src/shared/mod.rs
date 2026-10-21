@@ -21,6 +21,8 @@
 //!   pin's `Transaction` can't decode for types 10–12 or a version-3 payload.
 //! - [`CollateralShare`] / [`PayoutShare`]: the share table and payout list
 //!   entries (`providertx.h:31-90`).
+//! - [`json`] and [`envelope`]: UniValue's JSON model and the message code
+//!   of dash-qt's envelopes (MG-04b §2.2, D7).
 //! - [`rules`]: Core's trivial and contextual checks of types 10–12, in
 //!   Core's order with Core's reasons, run before anything is signed
 //!   (MG-04b §5.1), and [`rules::ShareReward`], which resets a reward to the
@@ -33,6 +35,7 @@ use dashcore::consensus::encode::{self, Decodable, Encodable, VarInt};
 use dashcore::hashes::{Hash, HashEngine, sha256d};
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 
+pub mod envelope;
 pub mod json;
 pub mod netinfo;
 pub mod rawtx;
