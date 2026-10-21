@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 33
+Contract-Version: 34
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -55,7 +55,7 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
 DP1-01's `keys_policy.rs`, E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, DP2-04's private details `private_details.rs` with `private_details_tests.rs`, DP2-05's bell session tests `notifications_tests.rs`, DP1-06's cost table `credit_costs.rs`, balance refreshes `balances.rs` and top-up flow `topup.rs` with `topup_tests.rs`, DP1-04's contest watch `contest_watch.rs` with `contest_watch_tests.rs`, and DP3-02's contact payment attribution `attribution.rs` with `payments_tests.rs`, DP1-08's names checks `names_check.rs`, and DP3-04's money-move trust gate `money_gate.rs` with `money_gate_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, DP2-04's private details `private_details.rs` with `private_details_tests.rs`, DP2-05's bell session tests `notifications_tests.rs`, DP1-06's cost table `credit_costs.rs`, balance refreshes `balances.rs` and top-up flow `topup.rs` with `topup_tests.rs`, DP1-04's contest watch `contest_watch.rs` with `contest_watch_tests.rs`, and DP3-02's contact payment attribution `attribution.rs` with `payments_tests.rs`, DP1-08's names checks `names_check.rs`, and DP3-04's money-move trust gate `money_gate.rs` with `money_gate_tests.rs`, and DP6-01's identity reads `identity_reads.rs` with `identity_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -64,7 +64,7 @@ type is `pub(crate)`.
 |---|---|---|
 | `dashpay.rs` | E0-08 | `NetworkSession.dashpay`, `wallet_id`; `BearerSecret` |
 | `startup.rs` | E0-05 bring-up | `status`, `sync_status`, `sync_now` |
-| `identity.rs` | DP1-01, DP1-05, DP6-01 | `identities`, `set_main_identity`, `identity_detail`, `refresh_balance`, `discover_identities` |
+| `identity.rs` | DP1-01, DP1-05, DP6-01 | `identities`, `set_main_identity`, `identity_detail`, `refresh_identity`, `refresh_identities`, `find_identity`, `refresh_balance`, `discover_identities` |
 | `registration.rs` | DP1-02 | `registration_quote`, `start_registration`, `start_registration_past_unknown_funding`, `registrations`, `resume_registration`, `discard_registration`, `finish_asset_locks`, `prepare_faucet_lock` |
 | `names.rs` | DP1-03, DP1-04, DP2-03 | `check_username`, `name_availability`, `register_name`, `set_main_name`, `main_name`, `contest_status`, `search_users`, `resolve_user` |
 | `contacts.rs` | DP2-01…DP2-04 | `contacts`, `contact`, `pending_setup_count`, `eligibility`, `send_request`, `accept_request`, `ignore`, `unignore`, `set_private_details`, `enable_dashpay_keys`, `my_user_link`, `verify_scanned` |
@@ -185,7 +185,7 @@ status 1.
 
 ## 2. Calls
 
-Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), DP1-05's `identities`, `set_main_identity` and
+Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), DP6-01's `identity_detail`, `refresh_identity`, `refresh_identities` and `find_identity` (§2.1), DP1-05's `identities`, `set_main_identity` and
 `discover_identities` (§2.1), DP1-03's names calls in §2.3 (`check_username`, `name_availability`,
 `register_name`, `set_main_name`, `main_name`), DP2-01's contacts read model in §2.4 (`contacts`, `contact`,
 `pending_setup_count`), and DP2-03's user search, links and scans (`search_users` and `resolve_user` in §2.3,
@@ -200,9 +200,12 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 | `sync_now()` | async | Runs one DashPay pass now and reports it. | `PlatformError` |
 | `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown) with `balance_as_of` (the Platform block time, ms, of the balance shown, once a refresh read it) and `balance_stale` (it may be behind: spent by a write since its refresh, or neither refreshed by this process nor stored by Platform in the last ten minutes; the engine refreshes it in the background and sends `Platform{Identities}` when the flag may have changed, §7 item 44), and its `credit_level` against the cost table (`None` while the balance is unknown; DP1-06), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `names` and `main_name` are as `main_name(identity)` (§2.3) has them: names the identity owns by Platform's evidence (not a label in a contest or one whose write may be in flight), and its pick while owned, else the temporary or won contested name, else the name acquired first; `None` while it owns none. Read from the library's memory, or the last snapshot while a sync pass writes it; which names show comes from the app database's main-name rows, read in one statement on each call (a failed read fails the call), never from a cache. From the live list, a label whose write may be in flight or that Platform refused is hidden. From the older snapshot, `names` is empty, `main_name` is `None` and `names_updating` is `true` (show "updating", not "no name"); the other fields still come from it. `names_updating` is `false` on a live read. `names_check` (item 51) is `Pending` or `Failed` while `main_name` is `None` and Platform has not said this session that the identity owns no name: it may still own one. **Implemented (DP1-05).** | `PlatformError` |
 | `set_main_identity(identity)` | async | Writes `dp_main_identity`; one of the wallet's identities, else `identity.not_found`. **Implemented (DP1-05).** | `PlatformError` (`identity.not_found`) |
-| `identity_detail(identity)` | async | The summary plus revision and public keys. | `PlatformError` (`identity.not_found`) |
+| `identity_detail(identity)` | async | The `identities()` summary of one of the wallet's identities plus its revision and public keys (by key id: purpose, security level, type, read-only, `disabled_at`, contract bounds), from the library's memory after its read lock, never the snapshot. Not the wallet's: `identity.not_found`; malformed: `invalid_argument`. **Implemented (DP6-01).** | `PlatformError` (`identity.not_found`) |
+| `refresh_identity(identity)` | async | Under the identity's write lock, fetches it from Platform (proved) and folds Platform's keys and revision into the library's copy (stored; a key upserted by id keeps its derivation breadcrumb), only from an answer whose revision is not below the library's; the balance is then refreshed as `refresh_balance` does, never taken from the fetched identity. Returns `identity_detail`. Not the wallet's, or not on Platform: `identity.not_found`; proof and trust refusals as their `platform.*` codes. Needs no key. **Implemented (DP6-01).** | `PlatformError` (`identity.not_found`) |
+| `refresh_identities()` | async | `refresh_identity` for each of the wallet's identities in index order, one at a time: `IdentityRefresh{identity, failure_code}` each, `failure_code` the code of a failed one. **Implemented (DP6-01).** | `PlatformError` |
+| `find_identity(query)` | async | Read-only lookup (DP6-01's "find"): `query` trimmed, a Base58 identity id, or a DPNS name (`alice`, `alice.dash`, any case) resolved through its domain's `records.identity`; neither form: `invalid_argument`. `None` when Platform has no such name or identity. `FoundIdentity{identity, found_by: Id \| Name{label}, names, balance, revision, public_keys, own, unverified}`: `names` the labels (as spelled, at most 10) of the domains whose `records.identity` it is, empty when that read fails; `own` whether it is one of this wallet's; `unverified` as §5. Adds nothing to the library and records nothing as verified. Needs no key. **Implemented (DP6-01).** | `PlatformError` |
 | `refresh_balance(identity)` | async | Fetches the credit balance, proved, and stores it with its block time (an older answer never overwrites a newer one), so `identities()` shows it; a spend marked before stays `balance_stale` until a balance of the spend's end or later is read (§7 item 44); `None` = not found on Platform yet. Needs no key: works with the vault locked. **Implemented (DP1-06).** | `PlatformError` (`identity.not_found`) |
-| `discover_identities(grant)` | async | Same-seed discovery (DP1-05) past the highest identity index on file; returns the number of identities it stored. What it finds then gets the rest of a recovery in the background: a bring-up of the wallet (DashPay pass, contact accounts) and a names pass, at once while SPV runs, otherwise at the next start. Also forgets Platform's earlier proof that the seed owns none, so the next start's bring-up looks again (DP6-01's "find"). `grant` is an `IdentityScan` grant id only (E0-04 §3.2); a lease id there is `platform.grant_invalid`. A grant confirmed with the passphrase on a locked or mixing-only vault scans through its key hold (E0-04 §3.5). A vault lock during the scan is `platform.cancelled`, as is the wallet's removal, unload or a failed restore's rollback, which waits for the call to end and admits no new one until it is done; identities the scan stored before a lock or an error still get their bring-up and names pass; running out of time with nothing stored is `platform.timeout`. **Implemented (DP1-05).** | `PlatformError` |
+| `discover_identities(grant)` | async | Same-seed discovery (DP1-05) past the highest identity index on file; returns the number of identities it stored. What it finds then gets the rest of a recovery in the background: a bring-up of the wallet (DashPay pass, contact accounts) and a names pass, at once while SPV runs, otherwise at the next start. Also forgets Platform's earlier proof that the seed owns none, so the next start's bring-up looks again (DP6-01's "Find my identities"; its lookup of any identity is `find_identity`). `grant` is an `IdentityScan` grant id only (E0-04 §3.2); a lease id there is `platform.grant_invalid`. A grant confirmed with the passphrase on a locked or mixing-only vault scans through its key hold (E0-04 §3.5). A vault lock during the scan is `platform.cancelled`, as is the wallet's removal, unload or a failed restore's rollback, which waits for the call to end and admits no new one until it is done; identities the scan stored before a lock or an error still get their bring-up and names pass; running out of time with nothing stored is `platform.timeout`. **Implemented (DP1-05).** | `PlatformError` |
 
 ### 2.2 Registration (DASHPAY §3.4)
 
@@ -565,7 +568,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 3bf37c8517c87e9fa44c3cb1e7cfe9026a1e9b247803e5299160a37b1e78a114 version: 33 -->
+<!-- surface-sha256: 48de170de1f37bc14bbba8a39032bbc28935e308d443cf96677ee6c04085c91f version: 34 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1117,6 +1120,28 @@ pub struct IdentityKeyInfo {
     pub contract_bound: Option<String>,
     pub contract_bound_document_type: Option<String>,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityRefresh {
+    pub identity: String,
+    pub failure_code: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoundIdentity {
+    pub identity: String,
+    pub found_by: FoundBy,
+    pub names: Vec<String>,
+    pub balance: Option<u64>,
+    pub revision: Option<u64>,
+    pub public_keys: Vec<IdentityKeyInfo>,
+    pub own: bool,
+    pub unverified: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FoundBy {
+    Id,
+    Name { label: String },
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyPurpose {
@@ -1149,6 +1174,9 @@ impl DashPay {
     pub fn identities(&self) -> Result<Vec<IdentitySummary>, PlatformError>;
     pub async fn set_main_identity(&self, identity: String) -> Result<(), PlatformError>;
     pub async fn identity_detail(&self, identity: String) -> Result<IdentityDetail, PlatformError>;
+    pub async fn refresh_identity(&self, identity: String) -> Result<IdentityDetail, PlatformError>;
+    pub async fn refresh_identities(&self) -> Result<Vec<IdentityRefresh>, PlatformError>;
+    pub async fn find_identity(&self, query: String) -> Result<Option<FoundIdentity>, PlatformError>;
     pub async fn refresh_balance(&self, identity: String) -> Result<Option<u64>, PlatformError>;
     pub async fn discover_identities(&self, grant: String) -> Result<u32, PlatformError>;
 }
@@ -2972,3 +3000,14 @@ renames or reshapes them takes the next version bump:
     `prepare`, fenced at the hand-off and refunded on a definite `NotSent` or an `abandon`. Any other grant kind is
     `platform.grant_invalid`. A resend of a saved fee (`Governance.submit_proposal`) takes no lease. Decisions in
     `docs/design/MG-06-proposals.md`.
+
+**From DP6-01** (version 34):
+
+61. **The Identities page (DP6-01, version 34; `docs/design/DP6-01-identities-page.md`).** `identity_detail` is
+    implemented, and `refresh_identity`, `refresh_identities` and `find_identity` are new (§2.1), with the records
+    `IdentityRefresh{identity, failure_code}`, `FoundIdentity` and `FoundBy` (`Id` | `Name{label}`, tagged `kind`).
+    No new code: refusals are `identity.not_found`, `invalid_argument` and the shared `platform.*` mapping. A
+    refresh folds keys and revision only (D2: the library's `refresh_identity` replaces the balance without its
+    block time and persists no keys) under the identity's write lock (D3). A lookup is read-only (D6). The main
+    identity's restore rules are DP1-05's, unchanged (D8): `dp_main_identity` survives a restart and a `.dwbackup`
+    restore; a restore from the phrase alone starts at the lowest index.
