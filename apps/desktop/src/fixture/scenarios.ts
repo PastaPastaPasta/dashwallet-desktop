@@ -25,7 +25,7 @@ import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
-import { fixtureLoops, IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
+import { IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
 import { newCreditsWorld, topUpStep, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
@@ -488,7 +488,7 @@ function withSyncInfo(t: ThemeName | null, trust: World["trust"], lastPass: Sync
   const w = base(t);
   w.dashpay = registered();
   w.trust = trust;
-  if (lastPass) w.dashpay.syncInfo = { loops: fixtureLoops(true), lastPass };
+  if (lastPass) w.dashpay.lastPass = lastPass;
   return w;
 }
 

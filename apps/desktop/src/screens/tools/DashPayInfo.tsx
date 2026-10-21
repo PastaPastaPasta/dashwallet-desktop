@@ -20,7 +20,7 @@ const trustKeys = {
 };
 
 /** D3: Sync now's pass reports through no call, so the card reads again this long after asking. */
-export const SYNC_NOW_REREAD_MS = 5_000;
+const SYNC_NOW_REREAD_MS = 5_000;
 
 export function DashPayInfoCard() {
   const b = useBackend();
@@ -105,7 +105,7 @@ export function DashPayInfoCard() {
           {info.syncNow.note}
         </p>
       )}
-      <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="information-dashpay-outcome" />
+      {outcome && <Outcome ok={outcome.ok} text={outcome.text} testId="information-dashpay-outcome" />}
       {info.state === "error" && (
         <div className="tool-actions">
           <DashButton variant="tintedGray" size="small" data-testid="information-dashpay-retry" onClick={() => void sync.refetch()}>

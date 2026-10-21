@@ -71,9 +71,9 @@ export interface DashPayWorld {
   pictures?: FixturePictures;
   /** DP4-03: this many next profile saves fail with `platform.unavailable`. */
   profileSaveFailures?: number;
-  /** DP6-03: what `dashpay_sync_status` reports beyond the bring-up; absent: `fixtureLoops` and no
-   * pass (the engine's `last_pass` is `None` until passes report, E0-10b §7). */
-  syncInfo?: { loops: SyncLoopStatus[]; lastPass: SyncPassReport | null };
+  /** DP6-03: the pass `dashpay_sync_status` reports; absent: none (the engine's `last_pass` is
+   * `None` until passes report, E0-10b §7). */
+  lastPass?: SyncPassReport;
 }
 
 /** `platform_loops` as the engine lists them (runtime.rs): running while SPV runs and the bring-up

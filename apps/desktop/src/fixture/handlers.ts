@@ -869,9 +869,9 @@ export const HANDLERS: Handlers = {
     const ran = d.startup.startup !== "notRun";
     return {
       startup: d.startup.startup,
-      lastPass: d.syncInfo?.lastPass ?? null,
+      lastPass: d.lastPass ?? null,
       pendingContactCrypto: d.startup.contactAccountsPending,
-      loops: d.syncInfo?.loops ?? fixtureLoops(world.sync.running && ran, ran),
+      loops: fixtureLoops(world.sync.running && ran, ran),
       quorumSource: world.trust.source,
     };
   },

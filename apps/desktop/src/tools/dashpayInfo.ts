@@ -110,7 +110,7 @@ export const STARTUP_TEXT: Record<StartupStatus, { value: string; note?: string 
   identityUnsettled: { value: "Waiting for an unlock", note: COPY.unlockToLook.message },
 };
 
-export const LOOP_TITLE: Record<SyncLoop, string> = {
+const LOOP_TITLE: Record<SyncLoop, string> = {
   identitySync: "Identities loop",
   dashPaySync: "Contacts and payments loop",
   dpnsSync: "Username contests loop",
@@ -166,8 +166,9 @@ export function lastPassRow(pass: SyncPassReport | null, timeZone?: string): Inf
   return { title, value, note: found.length ? found.join(", ") : "Nothing new" };
 }
 
-export function pendingRow(pending: number): InfoRow {
-  return { title: "Contacts waiting for an unlock", value: pending === 0 ? "None" : String(pending) };
+function degradedHeadline(source: QuorumSource, trustedOnly: boolean | undefined): string {
+  if (source === "trustedFallback") return INFO_COPY.degraded.trustedFallback;
+  return trustedOnly ? INFO_COPY.degraded.trustedOnly : INFO_COPY.degraded.trusted;
 }
 
 function card(state: DashPayInfoState, tone: DashPayInfoTone, headline: string, rest: Partial<DashPayInfo> = {}): DashPayInfo {
@@ -181,12 +182,15 @@ export function dashpayInfo(i: DashPayInfoInputs): DashPayInfo {
   const quorum = quorumRow(i.sync?.quorumSource ?? i.quorumSource, i.trustedOnly);
   if (i.noWallet) return card("noWallet", "neutral", INFO_COPY.noWallet, { rows: [quorum] });
   const s = i.sync;
-  if (!s) return i.syncError === null ? card("loading", "neutral", INFO_COPY.loading, { busy: true }) : card("error", "danger", INFO_COPY.error, { line: i.syncError });
+  if (!s) {
+    if (i.syncError === null) return card("loading", "neutral", INFO_COPY.loading, { busy: true });
+    return card("error", "danger", INFO_COPY.error, { line: i.syncError });
+  }
   const verdict = STARTUP_TEXT[s.startup];
   const rows: InfoRow[] = [
     { title: "Identity scan", ...verdict },
     lastPassRow(s.lastPass, i.timeZone),
-    pendingRow(s.pendingContactCrypto),
+    { title: "Contacts waiting for an unlock", value: s.pendingContactCrypto === 0 ? "None" : String(s.pendingContactCrypto) },
     ...s.loops.map((l) => loopRow(l, i.now, i.timeZone)),
     quorum,
   ];
@@ -195,7 +199,7 @@ export function dashpayInfo(i: DashPayInfoInputs): DashPayInfo {
   const syncNow = dashpayLoop?.running ? { disabled: false, note: null } : { disabled: true, note: INFO_COPY.loopsStopped };
   const at = (state: DashPayInfoState, tone: DashPayInfoTone, headline: string, rest: Partial<DashPayInfo> = {}) =>
     card(state, tone, headline, { rows, syncNow, ...rest });
-  const status = i.status;
+  const { status } = i;
 
   if (status?.kind === "noIdentity" && status.reason === "watchOnly")
     return at("watchOnly", "neutral", COPY.watchOnly.title, { line: COPY.watchOnly.message, syncNow: { disabled: true, note: INFO_COPY.watchOnly } });
@@ -210,10 +214,6 @@ export function dashpayInfo(i: DashPayInfoInputs): DashPayInfo {
     return at("notSetUp", "neutral", INFO_COPY.notSetUp.title, {
       line: status.reason === "waitingForSync" ? INFO_COPY.notSetUpWaiting : INFO_COPY.notSetUp.message,
     });
-  const source = s.quorumSource;
-  if (source !== "spv") {
-    const headline = source === "trustedFallback" ? INFO_COPY.degraded.trustedFallback : i.trustedOnly ? INFO_COPY.degraded.trustedOnly : INFO_COPY.degraded.trusted;
-    return at("degraded", "warning", headline, { line: quorum.note ?? null });
-  }
+  if (s.quorumSource !== "spv") return at("degraded", "warning", degradedHeadline(s.quorumSource, i.trustedOnly), { line: quorum.note ?? null });
   return at("running", "success", INFO_COPY.running);
 }
