@@ -25,8 +25,9 @@ export function signErrorText(e: unknown): string {
   switch (e.code) {
     case "invalid_address":
       return SignVerifyText.invalidAddress;
+    // `sign` refuses a P2SH address before asking, so the engine's `address_no_key` here is one of
+    // the wallet's owner keys, which it holds but never signs with (MG-04 D50).
     case "address_no_key":
-      return SignVerifyText.addressNoKey;
     case "address_not_mine":
       return SignVerifyText.privateKeyUnavailable;
     case "vault.locked":

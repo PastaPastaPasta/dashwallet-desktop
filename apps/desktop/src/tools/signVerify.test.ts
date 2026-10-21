@@ -67,6 +67,8 @@ describe("Sign/Verify (QT-099, QT-100)", () => {
 
   it("QT099_engineErrorsMapToDashQtTexts", () => {
     expect(signErrorText(appError("address_not_mine"))).toBe(SignVerifyText.privateKeyUnavailable);
+    // MG-04 D50: past the P2SH check, `address_no_key` is an owner key the wallet never signs with.
+    expect(signErrorText(appError("address_no_key"))).toBe(SignVerifyText.privateKeyUnavailable);
     expect(signErrorText(appError("wallet_not_found"))).toBe(SignVerifyText.signingFailed);
   });
 
