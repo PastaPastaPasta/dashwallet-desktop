@@ -423,8 +423,8 @@ pub struct MyProposal {
     /// When a peer first fetched it (MG-06 D6).
     pub submitted_at: Option<u64>,
     pub state: MyProposalState,
-    /// The last hand-off of its fee's failure, if it failed: why a fee
-    /// reads unsent (review r1 m-3).
+    /// The last hand-off of its fee's failure, if it failed, while the
+    /// wallet has not seen the fee: why a fee reads unsent (review r1 m-3).
     pub last_error: Option<String>,
 }
 

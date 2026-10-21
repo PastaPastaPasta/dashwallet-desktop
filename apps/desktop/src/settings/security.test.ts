@@ -304,6 +304,8 @@ describe("wipe", () => {
   it("IOS109_theWarningSaysHowEachKindOfWalletComesBack", () => {
     expect(SecurityText.wipeMessage).toMatch(/recovery phrase, or from a backup or export you kept/);
     expect(SecurityText.wipeMessage).toMatch(/watch-only wallet comes back with its extended public key/);
+    // MG-06 D23: a paid proposal outlives the removal.
+    expect(SecurityText.wipeMessage).toMatch(/proposal you paid for is kept/);
     expect(SecurityText.wipeMessage).not.toMatch(/only your recovery phrase/);
   });
 

@@ -33,7 +33,7 @@ export const SecurityText = {
   /** IOS-009 "Delete All Wallets?". */
   wipeTitle: "Delete all wallet data?",
   wipeMessage:
-    "Every wallet on this network is removed from this computer: its keys, its recovery phrase, its history and its settings. Your coins stay on the network. A wallet that spends comes back from its recovery phrase, or from a backup or export you kept; a watch-only wallet comes back with its extended public key.",
+    "Every wallet on this network is removed from this computer: its keys, its recovery phrase, its history and its settings. Your coins stay on the network. A wallet that spends comes back from its recovery phrase, or from a backup or export you kept; a watch-only wallet comes back with its extended public key. A governance proposal you paid for is kept, so it comes back when you add its wallet again.",
   /** iOS's sentence, typed exactly. */
   wipeAcceptPhrase: "I accept that I will lose my coins if I no longer possess the recovery phrase",
   acceptPhraseMismatch: "Type the sentence exactly as shown.",

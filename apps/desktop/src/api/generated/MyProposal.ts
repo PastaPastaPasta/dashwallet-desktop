@@ -10,7 +10,7 @@ export type MyProposal = { hash: string, name: string, url: string, paymentAddre
  */
 submittedAt: number | null, state: MyProposalState,
 /**
- * The last hand-off of its fee's failure, if it failed: why a fee
- * reads unsent (MG-06 D10).
+ * The last hand-off of its fee's failure, if it failed, while the
+ * wallet has not seen the fee: why a fee reads unsent (MG-06 D10).
  */
 lastError: string | null, };

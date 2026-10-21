@@ -644,7 +644,9 @@ impl AppDb {
             source,
         };
         delete_wallet_rows(&tx, wallet_id).map_err(unfinished_by)?;
-        // Its own failure: the removal's rows are gone in this transaction.
+        // Its own error, not `RemovalUnfinished`: the dropped transaction
+        // brings the rows and the removal record back, so the wallet stays
+        // removed and the import fails closed.
         proposals::restore_kept(&tx, wallet_id)?;
         tx.commit().map_err(unfinished_by)?;
         unfinished(&self.unfinished).remove(wallet_id);

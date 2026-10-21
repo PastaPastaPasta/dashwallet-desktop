@@ -149,6 +149,26 @@ impl AppDb {
         self.mark("fee_sent_at", wallet_id, hash, at)
     }
 
+    /// Records a resend's hand-off at `at` (unless one is recorded) and
+    /// `provisional` as its error until the attempt's outcome replaces it,
+    /// in one statement: a crash before the broadcast leaves the row
+    /// reading unsent (MG-06 D10, review r2 m-2). Returns whether a row
+    /// changed.
+    pub fn mark_proposal_resending(
+        &self,
+        wallet_id: &str,
+        hash: &[u8; 32],
+        at: u64,
+        provisional: &str,
+    ) -> Result<bool> {
+        let at = to_db("fee_sent_at", at)?;
+        Ok(self.conn().execute(
+            "UPDATE mg_proposals SET fee_sent_at = COALESCE(fee_sent_at, ?3), last_error = ?4
+             WHERE wallet_id = ?1 AND hash = ?2",
+            params![wallet_id, hash.as_slice(), at, provisional],
+        )? == 1)
+    }
+
     /// Records that a peer fetched the object at `at`, if none was
     /// recorded. Returns whether a row changed.
     pub fn mark_proposal_submitted(
@@ -497,6 +517,19 @@ mod tests {
             .unwrap();
         assert!(!db.readmit_wallet(W).unwrap());
         assert_eq!(hashes(&db), [3]);
+
+        // Another wallet's kept copies stay with it (review r2 m-3, k1):
+        // `bb` removed, its record forgotten too, and `W` readmitted.
+        db.keep_proposals("bb", &[[1; 32]]).unwrap();
+        db.delete_wallet("bb").unwrap();
+        db.conn()
+            .execute("DELETE FROM removed_wallets", [])
+            .unwrap();
+        db.keep_proposals(W, &[[3; 32]]).unwrap();
+        db.delete_wallet(W).unwrap();
+        assert!(db.readmit_wallet(W).unwrap());
+        assert_eq!(hashes(&db), [3]);
+        assert!(db.proposals(Some("bb")).unwrap().is_empty());
     }
 
     /// A `.dwbackup` carries the table: the fee is 1 DASH (MG-00 D18).

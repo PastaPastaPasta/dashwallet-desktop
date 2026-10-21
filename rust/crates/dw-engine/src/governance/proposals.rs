@@ -65,6 +65,9 @@ const MAX_RETRY: Duration = Duration::from_secs(30 * 60);
 /// doubles it up to [`MAX_ECHO_RETRY`], until the proposal ends (D20).
 const FIRST_ECHO_RETRY: Duration = Duration::from_secs(30 * 60);
 const MAX_ECHO_RETRY: Duration = Duration::from_secs(24 * 60 * 60);
+/// A resend's `last_error` from its recorded hand-off until its outcome:
+/// what a crash in between leaves (D10, review r2 m-2).
+const RESEND_IN_PROGRESS: &str = "send: broadcast outcome unknown: the resend did not finish";
 
 /// One own proposal's submission pace in this session (not stored: a
 /// restart starts it again).
@@ -481,12 +484,13 @@ impl Governance {
             .await;
         // The fee's fate is the answer: a row left behind reads
         // `fee_unsent`, and a fee that went out still shows in history.
-        let deleted = recorded.unwrap_or_else(|e| {
+        // A failed record answers by the send too.
+        let answer_by_send = recorded.unwrap_or_else(|e| {
             tracing::warn!(error = %e, "recording a proposal fee's broadcast");
             true
         });
         match (sent, outcome) {
-            (Err(e), Outcome::NotSent) if deleted => Err(e.into()),
+            (Err(e), Outcome::NotSent) if answer_by_send => Err(e.into()),
             _ => Ok(hash),
         }
     }
@@ -584,6 +588,7 @@ impl Governance {
 
     fn view(&self, saved: &Saved) -> MyProposal {
         let data = &saved.data;
+        let facts = self.facts(saved, true);
         MyProposal {
             hash: display_hex(&saved.row.hash),
             payment_count: data.payments_requested(&self.params()),
@@ -596,8 +601,14 @@ impl Governance {
             fee_txid: display_hex(&saved.row.fee_txid),
             created_at: saved.row.created_at,
             submitted_at: saved.row.submitted_at,
-            state: derive_state(self.facts(saved, true)),
-            last_error: saved.row.last_error.clone(),
+            state: derive_state(facts),
+            // It describes a hand-off of a fee the wallet has not seen
+            // (review r2 m-1).
+            last_error: saved
+                .row
+                .last_error
+                .clone()
+                .filter(|_| facts.depth.is_none()),
         }
     }
 
@@ -723,7 +734,9 @@ impl Governance {
         }
         let (at, hash) = (unix_now(), saved.row.hash);
         (self.session)
-            .appdb_op(move |db| db.mark_proposal_sent(&wallet.to_string(), &hash, at))
+            .appdb_op(move |db| {
+                db.mark_proposal_resending(&wallet.to_string(), &hash, at, RESEND_IN_PROGRESS)
+            })
             .await?;
         #[cfg(test)]
         let seam = self.runtime()?.fee_broadcaster.lock().unwrap().clone();

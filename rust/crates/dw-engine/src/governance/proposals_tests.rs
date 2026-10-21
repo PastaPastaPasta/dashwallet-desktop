@@ -170,6 +170,28 @@ impl Props {
         (hash, fee)
     }
 
+    /// Removes the wallet, checking its rows went, and imports it again.
+    fn remove_and_import(&self) {
+        let (s, wallet) = (&self.f.session, self.f.wallet);
+        let wipe = self.f.grant(GrantPurpose::Wipe, Credential::None);
+        self.f
+            .engine
+            .block_on(s.remove_wallet(wallet, wipe))
+            .unwrap();
+        assert!(self.rows().is_empty());
+        let phrase = crate::platform::lease::session_tests::PHRASE.as_bytes();
+        let again = self.f.engine.block_on(s.import_wallet(
+            zeroize::Zeroizing::new(phrase.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(0),
+                core_compat: false,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(again.unwrap(), wallet);
+    }
+
     fn rows(&self) -> Vec<ProposalRow> {
         self.lib.appdb.proposals(None).unwrap()
     }
@@ -1000,6 +1022,21 @@ fn a_resend_records_the_hand_off_and_its_failure() {
     assert_eq!(*p.lib.saved_at_entry.lock().unwrap(), [true, false, false]);
 }
 
+/// Review r2 m-1: `last_error` describes a hand-off of a fee the wallet has
+/// not seen; once it sees the fee, it is no longer reported.
+#[test]
+fn a_seen_fee_reports_no_hand_off_error() {
+    let p = props(Mode::Unconfirmed);
+    let mine = p.create(p.spend(2 * COIN)).unwrap();
+    assert!(mine.last_error.is_some());
+    let hash = dw_governance::object::parse_display_hex(&mine.hash).unwrap();
+    p.confirm(&hash, 0);
+    let mine =
+        p.f.engine
+            .block_on(async { p.gov.my_proposals(p.f.wallet) });
+    assert_eq!(mine.unwrap()[0].last_error, None);
+}
+
 /// The library's broadcast of a fee: the first is held until released, its
 /// entry signalled, and every one answers a definite rejection (review r1
 /// M-1).
@@ -1073,6 +1110,40 @@ fn a_submit_during_the_create_hand_off_is_refused_in_flight() {
         p.submit(&row.hash).unwrap_err().code(),
         "governance.proposal_not_found"
     );
+}
+
+/// Review r2 m-2: a resend cut short between its recorded hand-off and its
+/// broadcast (a crash there) leaves the row reading `fee_unsent`, not "Fee
+/// paid": the record carries a provisional error the outcome replaces.
+#[test]
+fn a_resend_cut_short_before_its_broadcast_reads_unsent() {
+    let p = props(Mode::Unconfirmed);
+    let mine = p.create(p.spend(2 * COIN)).unwrap();
+    let hash = dw_governance::object::parse_display_hex(&mine.hash).unwrap();
+    // Never handed off and no error: a backup restored before the broadcast.
+    (p.lib.appdb)
+        .set_proposal_error(&p.f.wallet.to_string(), &hash, None)
+        .unwrap();
+    assert_eq!(p.state(&hash), MyProposalState::FeeUnsent);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let held = Arc::new(HeldLib {
+        entered: Mutex::new(Some(tx)),
+        release: Arc::clone(&release),
+    });
+    *p.f.session.governance.fee_broadcaster.lock().unwrap() = Some(held);
+    let (gov, wallet) = (p.f.session.governance(), p.f.wallet);
+    let submit =
+        (p.f.session.rt).spawn(async move { gov.submit_proposal(wallet, mine.hash).await });
+    rx.recv_timeout(Duration::from_secs(120))
+        .expect("the resend's hand-off is entered");
+    // What a crash now leaves.
+    let row = p.row(&hash);
+    assert!(row.fee_sent_at.is_some());
+    assert_eq!(row.last_error.as_deref(), Some(super::RESEND_IN_PROGRESS));
+    assert_eq!(p.state(&hash), MyProposalState::FeeUnsent);
+    release.store(true, Ordering::SeqCst);
+    assert!(p.f.engine.block_on(submit).unwrap().is_err());
 }
 
 /// Review r1 M-2: after a restart the fee's claims are gone. A payment
@@ -1295,7 +1366,11 @@ fn a_backup_round_trip_restores_the_proposal_as_it_was() {
     let hash = p.created();
     p.confirm(&hash, 2);
     let before = p.gov.my_proposals(p.f.wallet).unwrap();
-    assert!(before[0].last_error.is_some());
+    let row = p.row(&hash);
+    assert!(
+        row.last_error.is_some(),
+        "the create's, unreported once seen"
+    );
     let (s, wallet) = (&p.f.session, p.f.wallet);
     let dir = dw_testutil::private_tempdir();
     let backup = dir.path().join("proposal.dwbackup");
@@ -1318,6 +1393,7 @@ fn a_backup_round_trip_restores_the_proposal_as_it_was() {
     );
     p.confirm(&hash, 2);
     assert_eq!(p.gov.my_proposals(wallet).unwrap(), before);
+    assert_eq!(p.row(&hash), row);
 }
 
 /// D23 (review r1 nit): removing the wallet keeps a paid proposal that has
@@ -1330,35 +1406,26 @@ fn a_removal_keeps_a_paid_proposal_for_the_wallets_return() {
     let hash = p.created();
     p.expired();
     assert_eq!(p.rows().len(), 2);
-    let (s, wallet) = (&p.f.session, p.f.wallet);
-    let wipe = p.f.grant(GrantPurpose::Wipe, Credential::None);
-    p.f.engine.block_on(s.remove_wallet(wallet, wipe)).unwrap();
-    assert!(p.rows().is_empty());
-    let again =
-        p.f.engine
-            .block_on(
-                s.import_wallet(
-                    zeroize::Zeroizing::new(
-                        crate::platform::lease::session_tests::PHRASE
-                            .as_bytes()
-                            .to_vec(),
-                    ),
-                    zeroize::Zeroizing::new(Vec::new()),
-                    crate::ImportOptions {
-                        birth_height: Some(0),
-                        core_compat: false,
-                        ..Default::default()
-                    },
-                ),
-            )
-            .unwrap();
-    assert_eq!(again, wallet);
+    p.remove_and_import();
     let hashes: Vec<_> = p.rows().into_iter().map(|r| r.hash).collect();
     assert_eq!(hashes, vec![hash]);
     assert_eq!(
         p.state(&hash),
         MyProposalState::FeePaid { confirmations: 0 }
     );
+}
+
+/// D23 (review r2 m-3, k2): a fee that may be out (`fee_unsent`) is kept
+/// too; it is the case the keeping exists for.
+#[test]
+fn a_removal_keeps_a_fee_that_may_be_out() {
+    let p = props(Mode::Unconfirmed);
+    let mine = p.create(p.spend(2 * COIN)).unwrap();
+    assert_eq!(mine.state, MyProposalState::FeeUnsent);
+    let hash = dw_governance::object::parse_display_hex(&mine.hash).unwrap();
+    p.remove_and_import();
+    assert_eq!(p.rows().len(), 1);
+    assert_eq!(p.state(&hash), MyProposalState::FeeUnsent);
 }
 
 /// Review r1 m-2: a tick reads each wallet's history once for all its live
