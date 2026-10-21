@@ -117,8 +117,19 @@ describe("fixture contested names", () => {
     expect((await a11ce()).abstainVotes).toBe(1);
   });
 
+  it("reads in the facade's order, and goes down after a vote in names-check-fails", async () => {
+    install("names-list-unavailable");
+    await expect(cmd.governanceContestedNames("no-such-wallet")).rejects.toMatchObject({ code: "governance.list_unavailable" });
+    install("names-platform-unavailable");
+    await expect(cmd.governanceContestedNames("no-such-wallet")).rejects.toMatchObject({ code: "wallet_not_found" });
+    install("names-check-fails");
+    const casts = await cmd.governanceVoteName(W, "a11ce", { kind: "abstain" }, [VOTER_A], await grant());
+    expect(casts.map((c) => c.rejected)).toEqual(["unconfirmed"]);
+    await expect(cmd.governanceContestedNames(W)).rejects.toMatchObject({ code: "platform.unavailable" });
+  });
+
   it("builds every names scenario", async () => {
-    for (const s of ["names-empty", "names-no-voters", "names-ending", "names-ended", "names-partial", "names-watch-only"] as ScenarioName[]) {
+    for (const s of ["names-empty", "names-no-voters", "names-ending", "names-ended", "names-partial", "names-watch-only", "names-check-fails"] as ScenarioName[]) {
       install(s);
       await cmd.governanceContestedNames(W);
     }

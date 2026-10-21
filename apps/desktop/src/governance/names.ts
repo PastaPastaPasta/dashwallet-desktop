@@ -31,6 +31,9 @@ export const NameText = {
   emptyHelp: "A vote starts when a second identity asks for a name someone has asked for.",
   loading: "Reading the votes on usernames from Platform…",
   failed: "Couldn't read the votes on usernames",
+  /** A later read failed: the tab keeps the last one it had (D25). */
+  stale: "These votes may be out of date.",
+  ended: "Voting on this name has ended",
   tryAgain: "Try again",
   limitNote: (allowed: number) =>
     `Each masternode has ${allowed} votes per username: its first vote and ${allowed - 1} changes. This wallet counts the votes it sent, so votes sent from another wallet aren't included.`,
@@ -180,10 +183,10 @@ export function tallyView(c: ContestedName): TallyView {
   ];
   let lead: string;
   if (total === 0) lead = "No votes yet";
-  else if (lockLeads) lead = `Lock leads with ${lock} of ${votesText(total)}: if voting ended now, nobody would get the name`;
+  else if (lockLeads) lead = `Lock leads with ${lock.toLocaleString("en-US")} of ${votesText(total)}: if voting ended now, nobody would get the name`;
   else if (top === 0) lead = "No contender has a vote yet";
   else if (tied) lead = `Tied at ${votesText(top)} between ${topCount} contenders`;
-  else lead = `${shortIdentity(contenders[0].identity)} leads with ${top} of ${votesText(total)}`;
+  else lead = `${shortIdentity(contenders[0].identity)} leads with ${top.toLocaleString("en-US")} of ${votesText(total)}`;
   return { rows, total, lead };
 }
 
@@ -249,7 +252,7 @@ export function listContests(contests: ContestedName[], search: string, sort: Na
 /** Why Vote is off on a contest's pane, or `null` (D10). */
 export function voteBlocked(c: ContestedName, names: ContestedNames, watchOnly: boolean, now: number): string | null {
   if (watchOnly) return NameText.voteWatchOnly;
-  if (isClosed(c, now)) return "Voting on this name has ended";
+  if (isClosed(c, now)) return NameText.ended;
   if (names.voters.length === 0) return NameText.noVoters;
   if (names.voters.every((v) => voterState(v, c.label).votesUsed >= names.votesAllowed)) return "Your masternodes have used all their votes on this name";
   return null;

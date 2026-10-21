@@ -3,7 +3,8 @@
 // `governance_vote_name`; the result lists each masternode's vote, an `unconfirmed` one as not
 // confirmed until Check again re-reads Platform and finds its choice there (MG-07 D7).
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { errorMessage } from "../../api/backend";
 import type { ContestedName } from "../../api/generated/ContestedName";
 import type { ContestedNames } from "../../api/generated/ContestedNames";
 import type { NameChoice } from "../../api/generated/NameChoice";
@@ -20,6 +21,7 @@ import {
   choiceOptions,
   defaultVoters,
   endsText,
+  isClosed,
   lastVoteNotice,
   nameErrorText,
   NameText,
@@ -78,11 +80,12 @@ export function NameVoteSheet({
           busy={busy}
           setBusy={setBusy}
           onCancel={onClose}
+          // A failed read here shows on the tab (D25); the result waits for Check again.
           onResult={(r) => {
-            void reread();
+            void reread().catch(() => undefined);
             setResult(r);
           }}
-          onRefused={() => void reread()}
+          onRefused={() => void reread().catch(() => undefined)}
         />
       )}
     </Sheet>
@@ -121,6 +124,8 @@ function NameVoteForm({
   const rows = useMemo(() => nameVoterRows(names.voters, label, choice, allowed), [names.voters, label, choice, allowed]);
   const picked = pickedVoters(rows, checked);
   const last = lastVoteNotice(picked);
+  // The sheet keeps its read, but not past the end: Vote goes off when the contest ends under it.
+  const closed = isClosed(contest, now);
   const credential = useCredential(wallet.walletId, "Enter your passphrase to vote.");
   const toggle = (hash: string) =>
     setChecked((s) => {
@@ -130,7 +135,7 @@ function NameVoteForm({
     });
 
   const vote = async () => {
-    if (busy || choice === null || picked.length === 0 || !credential.ready) return;
+    if (busy || closed || choice === null || picked.length === 0 || !credential.ready) return;
     setBusy(true);
     try {
       const grant = await credential.authorize({ kind: "governance" });
@@ -214,6 +219,11 @@ function NameVoteForm({
           {NameText.privacy}
         </p>
       )}
+      {closed && (
+        <p className="mg-notice mg-notice-warning" role="status" data-testid="name-vote-closed">
+          {NameText.ended}.
+        </p>
+      )}
       {last && (
         <p className="mg-notice mg-notice-warning" data-testid="name-vote-last">
           {last}
@@ -231,7 +241,7 @@ function NameVoteForm({
           <DashButton variant="tintedGray" size="medium" data-testid="name-vote-cancel" disabled={busy} onClick={onCancel}>
             Cancel
           </DashButton>
-          <DashButton type="submit" variant="filledBlue" size="medium" data-testid="name-vote-send" disabled={busy || choice === null || picked.length === 0 || !credential.ready}>
+          <DashButton type="submit" variant="filledBlue" size="medium" data-testid="name-vote-send" disabled={busy || closed || choice === null || picked.length === 0 || !credential.ready}>
             {busy ? "Voting…" : voteButtonText(choice)}
           </DashButton>
         </span>
@@ -256,11 +266,19 @@ function NameVoteResult({
   // Only an explicit re-read can turn an `unconfirmed` vote into a counted one (D14).
   const [after, setAfter] = useState<ContestedNames | undefined>(undefined);
   const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState<string | null>(null);
+  const done = useRef<HTMLButtonElement>(null);
   const view = nameVoteResult(casts, names.voters, contest.label, choice, after);
   const check = async () => {
     setChecking(true);
+    setCheckError(null);
     try {
-      setAfter((await reread()) ?? after);
+      const read = (await reread()) ?? after;
+      setAfter(read);
+      // Check again leaves once nothing is unconfirmed: focus goes to Done, not the page.
+      if (!nameVoteResult(casts, names.voters, contest.label, choice, read).unconfirmed) done.current?.focus();
+    } catch (e) {
+      setCheckError(nameErrorText(e) ?? errorMessage(e));
     } finally {
       setChecking(false);
     }
@@ -268,7 +286,7 @@ function NameVoteResult({
   return (
     <div className="mg-sheet-body" data-testid="name-vote-result">
       <div className="tx-detail-summary">
-        <h3 className="tx-detail-title mg-flush" data-testid="name-vote-result-title">
+        <h3 className="tx-detail-title mg-flush" aria-live="polite" data-testid="name-vote-result-title">
           {view.title}
         </h3>
         <span className="tx-detail-date">{view.line}</span>
@@ -285,6 +303,11 @@ function NameVoteResult({
         ))}
       </ul>
       <p className="mg-muted mg-small mg-flush">{NameText.counts}</p>
+      {checkError && (
+        <p className="mg-notice mg-notice-warning" role="status" data-testid="name-vote-check-error">
+          Couldn't check again. {checkError}
+        </p>
+      )}
       <footer className="mg-sheet-footer">
         <span />
         <span className="mg-actions">
@@ -293,7 +316,7 @@ function NameVoteResult({
               {checking ? "Checking…" : "Check again"}
             </DashButton>
           )}
-          <DashButton variant="filledBlue" size="medium" data-testid="name-vote-done" data-autofocus onClick={onDone}>
+          <DashButton ref={done} variant="filledBlue" size="medium" data-testid="name-vote-done" data-autofocus onClick={onDone}>
             Done
           </DashButton>
         </span>

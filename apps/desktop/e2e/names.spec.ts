@@ -8,9 +8,10 @@ import { fixtureUrl, fontsReady, THEMES, trackPageErrors } from "./helpers";
 // Check again finds, and the states (empty, browsing only, watch-only, unavailable, ending, ended,
 // partial), in light and dark with 0 serious axe issues. The clock is pinned to FIXTURE_NOW.
 
-async function open(page: Page, scenario: string, theme: "light" | "dark" = "light") {
+async function open(page: Page, scenario: string, theme: "light" | "dark" = "light", clock: "fixed" | "installed" = "fixed") {
   const errors = trackPageErrors(page);
-  await page.clock.setFixedTime(FIXTURE_NOW);
+  if (clock === "fixed") await page.clock.setFixedTime(FIXTURE_NOW);
+  else await page.clock.install({ time: FIXTURE_NOW });
   await page.goto(fixtureUrl(scenario, theme));
   await page.getByTestId("toolbar").waitFor();
   await page.getByTestId("sidebar-masternodes").click();
@@ -75,6 +76,7 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("name-vote-result-title")).toHaveText("1 of 2 votes counted");
     await expect(page.getByTestId("name-vote-result-a1a1a1a1")).toContainText("Platform now shows this choice");
     await expect(page.getByTestId("name-vote-check")).toHaveCount(0);
+    await expect(page.getByTestId("name-vote-done")).toBeFocused();
     await page.getByTestId("name-vote-done").click();
     await expect(sheet).toBeHidden();
     expect(errors).toEqual([]);
@@ -93,6 +95,37 @@ test("a counted vote moves the tally and the row's You:", async ({ page }) => {
   await expect(page.getByTestId("name-pane-lead")).toHaveText("8ZtW…R97P leads with 8 of 15 votes");
   await expect(page.getByTestId("name-tally-id:4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF")).toContainText("6");
   await expect(page.getByTestId("name-row-a11ce")).toContainText("You: 3 of 3 voted");
+});
+
+test("a Check again that can't read says so and counts nothing; the tab says its votes may be out of date", async ({ page }) => {
+  const errors = await open(page, "names-check-fails");
+  await page.getByTestId("name-vote").click();
+  await page.getByTestId("name-choice-abstain").click();
+  await page.getByTestId("name-vote-passphrase").fill("demo");
+  await page.getByTestId("name-vote-send").click();
+  await expect(page.getByTestId("name-vote-result-title")).toHaveText("1 of 2 votes counted · 1 not confirmed yet");
+  await page.getByTestId("name-vote-check").click();
+  await expect(page.getByTestId("name-vote-check-error")).toHaveText("Couldn't check again. Couldn't reach Dash Platform. Try again in a moment.");
+  await expect(page.getByTestId("name-vote-result-title")).toHaveText("1 of 2 votes counted · 1 not confirmed yet");
+  await expect(page.getByTestId("name-vote-result-a1a1a1a1")).toContainText("Unconfirmed");
+  await page.getByTestId("name-vote-done").click();
+  await expect(page.getByTestId("names-stale")).toContainText("These votes may be out of date.");
+  await expect(page.getByTestId("name-pane")).toBeVisible();
+  await fontsReady(page);
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test("Vote goes off when the contest ends under the open sheet", async ({ page }) => {
+  await open(page, "names-ending", "light", "installed");
+  await page.getByTestId("name-vote").click();
+  await page.getByTestId("name-choice-lock").click();
+  await page.getByTestId("name-vote-passphrase").fill("demo");
+  await expect(page.getByTestId("name-vote-send")).toBeEnabled();
+  await page.clock.setSystemTime(FIXTURE_NOW.getTime() + (3 * 3600 + 1) * 1000);
+  await page.clock.runFor(31_000);
+  await expect(page.getByTestId("name-vote-closed")).toHaveText("Voting on this name has ended.");
+  await expect(page.getByTestId("name-vote-send")).toBeDisabled();
 });
 
 test("a wrong passphrase keeps the username vote sheet open and says so", async ({ page }) => {

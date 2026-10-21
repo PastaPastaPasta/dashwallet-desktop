@@ -104,12 +104,15 @@ export interface NamesWorld {
   refuse: Record<string, NameRejectionName>;
   /** An `unconfirmed` answer whose vote Platform did take: the next read shows it (MG-07 D7). */
   unconfirmedLands: boolean;
+  /** Platform goes down once a vote went out: later reads fail (Check again's failure, D25). */
+  downAfterVote: boolean;
 }
 
 export const newNamesWorld = (): NamesWorld => ({
   names: structuredClone(FIXTURE_NAMES),
   unavailable: null,
   refuse: {},
+  downAfterVote: false,
   unconfirmedLands: false,
 });
 
@@ -152,8 +155,10 @@ export function nameHandlers({
 }): Handlers {
   return {
     governance_contested_names: ({ walletId }, { world }) => {
-      wallet(world, walletId);
       const n = world.governance.names;
+      // The facade's order: the masternode list, the wallet, then Platform.
+      if (n.unavailable === "list") readable(n);
+      wallet(world, walletId);
       readable(n);
       return structuredClone(n.names);
     },
@@ -207,6 +212,7 @@ export function nameHandlers({
         state.votesUsed += 1;
         return { proTxHash, transition, rejected: null };
       });
+      if (n.downAfterVote) n.unavailable = "platform";
       return casts;
     },
   };
@@ -233,7 +239,8 @@ export function nameScenarios(base: (theme: ThemeName | null, patch?: (n: NamesW
     "names-platform-unavailable": (t: ThemeName | null) => base(t, (n) => (n.unavailable = "platform")),
     /** a11ce's voting ends in three hours. */
     "names-ending": (t: ThemeName | null) => base(t, (n) => (contest(n, A11CE).endsAt = NOW + 3 * 3600)),
-    /** a11ce's voting ended ten minutes ago; Platform hasn't resolved it yet, so it is still listed. */
+    /** a11ce's voting ended ten minutes ago by the app's clock. The engine lists only contests ending
+     * after its read, so this is the state between that read and the next one (D7). */
     "names-ended": (t: ThemeName | null) => base(t, (n) => (contest(n, A11CE).endsAt = NOW - 600)),
     /** a11ce has a full first page of contenders: later ones may exist (MG-07 D9). */
     "names-partial": (t: ThemeName | null) => base(t, (n) => (contest(n, A11CE).contendersComplete = false)),
@@ -246,6 +253,13 @@ export function nameScenarios(base: (theme: ThemeName | null, patch?: (n: NamesW
           [VOTER_C]: "masternode_not_found",
         };
         n.unconfirmedLands = true;
+      }),
+    /** As names-vote-mixed for the regular masternode, then Platform goes down: Check again fails. */
+    "names-check-fails": (t: ThemeName | null) =>
+      base(t, (n) => {
+        n.refuse = { [VOTER_A]: "unconfirmed" };
+        n.unconfirmedLands = true;
+        n.downAfterVote = true;
       }),
     /** A watch-only wallet browses. */
     "names-watch-only": (t: ThemeName | null) => {

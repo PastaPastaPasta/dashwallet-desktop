@@ -68,6 +68,19 @@ export function NamesTab({ wallet, network }: { wallet: WalletSummary; network: 
     const current = listed.find((c) => c.label === selected) ?? listed[0] ?? null;
     body = (
       <>
+        {names.isError && (
+          <Notice
+            tone="warning"
+            testId="names-stale"
+            action={
+              <DashButton variant="tintedGray" size="small" data-testid="names-stale-retry" disabled={names.isFetching} onClick={() => void names.refetch()}>
+                {NameText.tryAgain}
+              </DashButton>
+            }
+          >
+            <strong>{NameText.stale}</strong> {nameErrorText(names.error) ?? errorMessage(names.error)}
+          </Notice>
+        )}
         {wallet.watchOnly ? (
           <Notice tone="info" testId="names-notice-watch-only">
             <strong>{NameText.watchOnly}</strong> {NameText.watchOnlyText}
@@ -159,7 +172,8 @@ export function NamesTab({ wallet, network }: { wallet: WalletSummary; network: 
           wallet={wallet}
           network={network}
           onClose={() => setVoteOn(null)}
-          reread={() => names.refetch().then((r) => r.data)}
+          // A failed read throws, so Check again never takes the cached one for a new read (D14).
+          reread={() => names.refetch({ throwOnError: true }).then((r) => r.data)}
         />
       )}
     </>
