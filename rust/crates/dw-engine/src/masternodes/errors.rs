@@ -7,6 +7,7 @@
 //! through `Engine` unchanged, so no m1–m4 table gains a code.
 
 use crate::error::EngineError;
+use crate::platform::PlatformError;
 
 use super::records::AttachedKeyRole;
 
@@ -35,12 +36,73 @@ pub enum MasternodesError {
     #[error("Platform unavailable: {detail}")]
     PlatformUnavailable { detail: String },
     /// The call needs an API the pinned libraries don't expose
-    /// (MG-03 §7, D11).
-    #[error("unsupported: {feature}")]
-    Unsupported { feature: String },
+    /// (MG-03 §7, D11), or a version-3 ProTx (MG-04 D1, `protx_v3`):
+    /// `field` names what needs it (`service`: an address kind only
+    /// version 3 carries).
+    #[error(
+        "unsupported: {feature}{}",
+        field.as_deref().map(|f| format!(" (needed by the {f})")).unwrap_or_default()
+    )]
+    Unsupported {
+        feature: String,
+        field: Option<String>,
+    },
     /// A contract stub (`call` is `"Masternodes.<method>"`).
     #[error("not implemented: {call}")]
     NotImplemented { call: String },
+    /// A Core rule refuses the ProTx (MG-04 D5): `reason` is Core's reject
+    /// reason verbatim (`bad-protx-dup-key`, …). `operation`: the wallet's
+    /// operation (its id) holding what the ProTx claims, for a `protx-dup`
+    /// the wallet finds itself (MG-04 D51); `None` otherwise.
+    #[error(
+        "refused by Core's rules: {reason}{}",
+        operation.as_deref().map(|o| format!(" (operation {o} holds it: end that one first)")).unwrap_or_default()
+    )]
+    ProtxRefused {
+        reason: String,
+        operation: Option<String>,
+    },
+    /// An `ExistingUtxo` collateral isn't an unspent wallet coin of the
+    /// type's amount at a P2PKH address, or is already a collateral of the
+    /// wallet's masternodes or operations (MG-04 D23).
+    #[error("collateral unavailable")]
+    CollateralUnavailable,
+    /// The `External` signature isn't the collateral address's over the
+    /// saved message.
+    #[error("the signature does not match the collateral address and message")]
+    SignatureMismatch,
+    #[error("unknown ProTx operation")]
+    OperationNotFound,
+    /// The call doesn't apply to the operation's state (its snake-case
+    /// name).
+    #[error("the operation is {state}")]
+    OperationState { state: String },
+    /// Another call on the operation is running.
+    #[error("another attempt on the operation is running")]
+    InFlight,
+    /// Every keychain key of `role` the registration may use is in use
+    /// (MG-04 D13).
+    #[error("no unused {role} key")]
+    KeysExhausted { role: String },
+    /// ProUpRegTx: no keychain owner key 0–19 nor attached `owner` key has
+    /// the masternode's owner key id, or the id isn't known (MG-04 D12).
+    #[error("no owner key of this masternode")]
+    NoOwnerKey,
+    /// ProUpRegTx: an operation on this masternode (`operation`, its id,
+    /// maybe another loaded wallet's) isn't in the synced list yet: an
+    /// update now could keep a key it changes, or be mined before it
+    /// (MG-04 D43, D49).
+    #[error(
+        "operation {operation} on this masternode isn't in the list yet: wait for it, or end it (discard it if never sent, else abandon its transaction)"
+    )]
+    UpdatePending { operation: String },
+    /// Resending a ProUpRegTx that `operation` (its id, maybe another
+    /// loaded wallet's), saved no earlier, would undo (MG-04 D43).
+    #[error("operation {operation} came after this update: resending it would undo that one")]
+    UpdateSuperseded { operation: String },
+    /// A lease refused (MG-05 D12).
+    #[error(transparent)]
+    Platform(#[from] PlatformError),
     #[error(transparent)]
     Engine(#[from] EngineError),
 }
@@ -58,6 +120,17 @@ impl MasternodesError {
             Self::PlatformUnavailable { .. } => "masternodes.platform_unavailable",
             Self::Unsupported { .. } => "masternodes.unsupported",
             Self::NotImplemented { .. } => "masternodes.not_implemented",
+            Self::ProtxRefused { .. } => "masternodes.protx_refused",
+            Self::CollateralUnavailable => "masternodes.collateral_unavailable",
+            Self::SignatureMismatch => "masternodes.signature_mismatch",
+            Self::OperationNotFound => "masternodes.operation_not_found",
+            Self::OperationState { .. } => "masternodes.operation_state",
+            Self::InFlight => "masternodes.in_flight",
+            Self::KeysExhausted { .. } => "masternodes.keys_exhausted",
+            Self::NoOwnerKey => "masternodes.no_owner_key",
+            Self::UpdatePending { .. } => "masternodes.update_pending",
+            Self::UpdateSuperseded { .. } => "masternodes.update_superseded",
+            Self::Platform(e) => e.code(),
             Self::Engine(e) => e.code(),
         }
     }

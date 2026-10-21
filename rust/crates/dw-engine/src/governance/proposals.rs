@@ -223,6 +223,36 @@ impl Saved {
     }
 }
 
+impl NetworkSession {
+    /// The coins of `wallet`'s proposal fees it hasn't seen (`fee_unsent`,
+    /// which may be out): a resend claims them again (D10), so no
+    /// masternode collateral may take one (MG-04 D47). A failed fee
+    /// (another confirmed transaction spends one of its coins, D5) and a
+    /// row that doesn't decode have no resend and hold nothing.
+    pub(crate) fn unseen_proposal_fee_inputs(
+        &self,
+        wallet: &WalletId,
+    ) -> Result<HashSet<OutPoint>, EngineError> {
+        let rows = self.live()?.appdb.proposals(Some(&wallet.to_string()))?;
+        let fees: Vec<Transaction> = (rows.into_iter())
+            .filter_map(|row| match Saved::decode(row) {
+                Ok(saved) => Some(saved.fee),
+                Err(e) => {
+                    tracing::warn!(error = %e, "skipping a proposal row");
+                    None
+                }
+            })
+            .collect();
+        let tip = self.hub.tracker().tip_height().unwrap_or(0);
+        let refs: Vec<&Transaction> = fees.iter().collect();
+        let statuses = fee_statuses(self, wallet, &refs, tip);
+        Ok((fees.iter().zip(statuses))
+            .filter(|(_, (depth, conflicted))| depth.is_none() && !conflicted)
+            .flat_map(|(fee, _)| fee.input.iter().map(|i| i.previous_output))
+            .collect())
+    }
+}
+
 /// Each fee's depth at `tip` (`None`: not in the wallet's history) and
 /// whether another confirmed transaction spends one of its coins, from one
 /// pass over the wallet's history (review r1 m-2).
@@ -697,7 +727,9 @@ impl Governance {
     /// Hands the saved fee to the network again (dash-qt "Resend", QT-091).
     /// Its coins are claimed for it first, as a restart dropped the claims
     /// its first hand-off took: a coin another payment or an asset lock
-    /// holds, or that the wallet reads spent, refuses the resend
+    /// holds, that a lock taken since holds (coin control, dust, or a
+    /// masternode's, MG-04 D47), or that the wallet reads spent, refuses
+    /// the resend
     /// (`send.outpoint_unavailable`), and the claim stays, as for any fee
     /// that may be out (D10). The hand-off is recorded before
     /// the bytes go out, so nothing reads the row as unpaid while they may
@@ -715,12 +747,13 @@ impl Governance {
             let tip = self.session.hub.tracker().tip_height().unwrap_or(0);
             let (depth, _) = fee_statuses(&self.session, &wallet, &[&saved.fee], tip)[0];
             if depth.is_none() {
-                // Each coin is unspent and held by no asset lock, whose
-                // holds outlive a restart (`coins.rs`; validator r1
-                // Major-1, Minor-1).
+                // Each coin is unspent, held by no asset lock, whose holds
+                // outlive a restart (`coins.rs`; validator r1 Major-1,
+                // Minor-1), and not locked by the user since, as a
+                // masternode's collateral is (MG-04 D47).
                 let snapshot = self.session.coin_snapshot(&fence, &handle).await?;
                 let free: HashSet<OutPoint> = (snapshot.coins.iter())
-                    .filter(|c| !c.lock_input && !c.unresolved_lock)
+                    .filter(|c| !c.lock_input && !c.unresolved_lock && !c.user_locked)
                     .map(|c| c.utxo.outpoint)
                     .collect();
                 if let Some(&o) = inputs.iter().find(|o| !free.contains(o)) {

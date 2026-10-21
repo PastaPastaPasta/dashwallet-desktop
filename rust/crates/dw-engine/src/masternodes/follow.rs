@@ -257,6 +257,11 @@ pub(crate) struct MasternodesRuntime {
     /// Held across each tracking change, so an `attach_key` can't store a
     /// key for a masternode an `untrack` is removing.
     mutations: tokio::sync::Mutex<()>,
+    /// Held by a ProUpRegTx from reading the list's keys until its row is
+    /// saved, so a second update sees the first one's row, and by the
+    /// resend of one from its D43 check through the hand-off (a new update
+    /// waits on that broadcast) (MG-04 D43).
+    updates: tokio::sync::Mutex<()>,
     /// Keys whose vault write failed in this session: the vault may hold
     /// the new key on disk and the old one in memory, so their ids are only
     /// recorded again by the next session (D31).
@@ -264,6 +269,11 @@ pub(crate) struct MasternodesRuntime {
     /// Every recorded id was compared with the key the vault holds, once
     /// this session (D34).
     pub(super) ids_verified: AtomicBool,
+    /// ProTx operations with a call running on them (MG-04 §5).
+    protx_in_flight: Mutex<HashSet<(WalletId, String)>>,
+    /// The ProTx hand-off's test seam (MG-04 §7).
+    #[cfg(test)]
+    protx_seam: Mutex<Option<Arc<super::protx::ops::Seam>>>,
 }
 
 impl MasternodesRuntime {
@@ -287,9 +297,35 @@ impl MasternodesRuntime {
             coalescer,
             follower: Mutex::default(),
             mutations: tokio::sync::Mutex::new(()),
+            updates: tokio::sync::Mutex::new(()),
             unsettled: Mutex::default(),
             ids_verified: AtomicBool::new(false),
+            protx_in_flight: Mutex::default(),
+            #[cfg(test)]
+            protx_seam: Mutex::default(),
         }
+    }
+
+    pub(crate) fn protx_in_flight(&self) -> std::sync::MutexGuard<'_, HashSet<(WalletId, String)>> {
+        self.protx_in_flight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn protx_seam(&self) -> Option<Arc<super::protx::ops::Seam>> {
+        self.protx_seam.lock().unwrap().clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_protx_seam(&self, seam: Option<Arc<super::protx::ops::Seam>>) {
+        *self.protx_seam.lock().unwrap() = seam;
+    }
+
+    /// Serialises ProUpRegTx builds up to their saved rows, and their
+    /// resends (see `updates`).
+    pub(crate) async fn update_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.updates.lock().await
     }
 
     /// Serialises the tracking changes (see `mutations`).
@@ -429,6 +465,9 @@ impl MasternodesRuntime {
         };
         if changed {
             self.changes.notify.notify_one();
+        }
+        if let Err(e) = session.protx_follow_pass().await {
+            tracing::debug!(error = %e, "ProTx follower pass");
         }
         Ok(())
     }

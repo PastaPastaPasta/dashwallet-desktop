@@ -292,7 +292,7 @@ impl NetworkSession {
         .await
     }
 
-    async fn issue_address(
+    pub(crate) async fn issue_address(
         &self,
         wallet: WalletId,
         label: Option<String>,

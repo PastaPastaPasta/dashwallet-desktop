@@ -19,6 +19,9 @@
 //! - [`payloads`]: placeholders and finalizers of ProRegTx (fund new /
 //!   existing collateral with the `payout|reward|owner|voting|payloadHash`
 //!   message) and ProUpRegTx (owner-signed), and collateral resolution.
+//! - [`rules`]: Core's checks of those payloads, with its reject reasons
+//!   (`IsTriviallyValid`, `CheckProRegTx`, `CheckProUpRegTx`), which the
+//!   engine runs before it signs.
 //! - [`shared`]: v24 shared masternodes — codecs of ProDisTx (type 10),
 //!   ProUpShareTx (11), ProUpSharedRegTx (12) and the share table; absent
 //!   from rust-dashcore at the pin. The shared session protocol (envelope,
@@ -28,5 +31,6 @@
 pub mod bls;
 pub mod params;
 pub mod payloads;
+pub mod rules;
 pub mod service;
 pub mod shared;

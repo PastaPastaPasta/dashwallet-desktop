@@ -758,6 +758,7 @@ impl Masternodes {
             if v.shared_unsupported(&hash) {
                 return Err(MasternodesError::Unsupported {
                     feature: "shared_masternodes".into(),
+                    field: None,
                 });
             }
             let mut payouts = v.payouts(&hash);
@@ -856,8 +857,56 @@ impl Masternodes {
         parse_pro_tx_hash(&pro_tx_hash)?;
         Err(MasternodesError::Unsupported {
             feature: "collateral_lookup".into(),
+            field: None,
         })
     }
+}
+
+/// What a ProUpRegTx of a masternode needs from the wallet (MG-04 D10,
+/// D12), read as MG-03's reads do.
+#[derive(Debug, Clone, Default)]
+pub(super) struct OwnerFacts {
+    /// The owner key id of a ProRegTx a loaded wallet holds.
+    pub owner_key_id: Option<[u8; 20]>,
+    /// An `owner` key is attached and matches that id.
+    pub attached_owner: bool,
+    /// The wallet's latest payout script of it.
+    pub payout_script: Option<ScriptBuf>,
+    /// Its collateral's script, when the collateral is this wallet's coin.
+    pub collateral_script: Option<ScriptBuf>,
+    pub operator_reward: Option<u16>,
+    /// A version-3 provider transaction or list entry was seen (D25, D29).
+    pub shared: bool,
+}
+
+/// [`OwnerFacts`] of `hash` for `wallet`.
+pub(super) async fn owner_facts(
+    session: &NetworkSession,
+    wallet: WalletId,
+    hash: [u8; 32],
+) -> Result<OwnerFacts, MasternodesError> {
+    let v = WalletView::read(session, wallet).await?;
+    let record = (v.tracked_owned.get(&hash))
+        .or_else(|| v.owned(&hash))
+        .filter(|o| !o.shared_unsupported);
+    let collateral = v.owned(&hash).and_then(|o| o.collateral);
+    Ok(OwnerFacts {
+        owner_key_id: record.and_then(|o| o.record.owner_key_hash),
+        attached_owner: v
+            .attached_keys(&hash)
+            .into_iter()
+            .flatten()
+            .any(|k| k.role == AttachedKeyRole::Owner && k.check == KeyCheck::Matched),
+        payout_script: v.payout_script(&hash),
+        collateral_script: v
+            .coins
+            .coins
+            .iter()
+            .find(|c| Some(c.utxo.outpoint) == collateral)
+            .map(|c| c.utxo.txout.script_pubkey.clone()),
+        operator_reward: record.and_then(|o| o.operator_reward),
+        shared: v.shared_unsupported(&hash),
+    })
 }
 
 /// `masternodes.not_found`, or `list_unavailable` when the list that

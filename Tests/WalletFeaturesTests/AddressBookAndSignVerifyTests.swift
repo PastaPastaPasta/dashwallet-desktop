@@ -179,6 +179,10 @@ struct SignVerifyViewModelTests {
         #expect(model.signResult?.text == L10n.SignVerify.privateKeyUnavailable)
         #expect(model.signResult?.isSuccess == false)
         #expect(SignVerifyViewModel.signText(.init(rawValue: "message.something")) == L10n.SignVerify.signingFailed)
+        // MG-04 D50: past the P2SH check, `address_no_key` is an owner key the wallet never signs with.
+        #expect(
+            SignVerifyViewModel.signText(.init(rawValue: "message.address_no_key"))
+                == L10n.SignVerify.privateKeyUnavailable)
     }
 
     /// A grant the engine did not redeem because signing failed first is

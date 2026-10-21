@@ -17518,7 +17518,8 @@ enum MessageError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      */
     case InvalidAddress
     /**
-     * Code `message.address_no_key`: valid but not P2PKH.
+     * Code `message.address_no_key`: valid, but the wallet holds no signing
+     * key for it here: a P2SH address, or one of its DIP-3 owner keys.
      */
     case AddressNoKey
     /**

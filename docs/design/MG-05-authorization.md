@@ -34,7 +34,7 @@ D-numbers in this file are MG-05's (D1 and up).
 | Scope | Uses | Keys |
 |---|---|---|
 | `MasternodeVoting` | the voting key id; a signature over a funding vote whose digest the vault computes (§3). **Never a `VaultSigner`**, so there is no `Signer`, no sighash and no message. | keychain voting keys `m/9'/coin'/3'/1'/i` (non-hardened `i`); the `voting` key attached to any tracked masternode (MG-01 D7) |
-| `MasternodeOwner` | sign, public key; `signmessage` | BIP44 and BIP32 addresses (inputs, change, and the ExistingUtxo collateral proof); keychain owner keys `m/9'/coin'/3'/2'/i` (ProUpRegTx's payload signature) |
+| `MasternodeOwner` | at addresses: sign, public key, `signmessage`; at owner keys: public key, and a ProUpRegTx's payload signature whose digest the vault computes (`sign_update_registrar`, MG-04 D11). No raw digest at an owner key. | BIP44 and BIP32 addresses (inputs, change, and the ExistingUtxo collateral proof); keychain owner keys `m/9'/coin'/3'/2'/i`; the `owner` key attached to a tracked masternode, for that masternode's payloads only (MG-04 D12) |
 
 Both scopes refuse every other path and use before the seed is read, as the Platform scopes do (E0-04 §3.4). Neither
 reaches an operator or platform-node key. The wallet holds no such secret, and `no_operator_signing` stays green.

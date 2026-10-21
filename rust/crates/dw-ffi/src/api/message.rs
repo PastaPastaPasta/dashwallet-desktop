@@ -11,7 +11,8 @@ pub enum MessageError {
     /// Code `message.invalid_address`: does not decode on the network.
     #[error("invalid address")]
     InvalidAddress,
-    /// Code `message.address_no_key`: valid but not P2PKH.
+    /// Code `message.address_no_key`: valid, but the wallet holds no signing
+    /// key for it here: a P2SH address, or one of its DIP-3 owner keys.
     #[error("address does not refer to a key")]
     AddressNoKey,
     /// Code `message.malformed_signature`: not strict base64.
