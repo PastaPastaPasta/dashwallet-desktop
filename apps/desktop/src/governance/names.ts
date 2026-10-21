@@ -50,17 +50,28 @@ export const shortIdentity = (id: string) => (id.length > 12 ? `${id.slice(0, 4)
 export const normalizeLabel = (text: string) => text.toLowerCase().replace(/o/g, "0").replace(/[il]/g, "1");
 
 export function sameChoice(a: NameChoice | null | undefined, b: NameChoice | null | undefined): boolean {
-  if (!a || !b || a.kind !== b.kind) return false;
-  return a.kind !== "towardsIdentity" || a.identity === (b as typeof a).identity;
+  if (!a || !b) return false;
+  if (a.kind === "towardsIdentity") return b.kind === "towardsIdentity" && a.identity === b.identity;
+  return a.kind === b.kind;
 }
 
 /** "8ZtW…R97P", "Abstain", "Lock". */
 export function choiceText(c: NameChoice): string {
-  return c.kind === "towardsIdentity" ? shortIdentity(c.identity) : c.kind === "lock" ? "Lock" : "Abstain";
+  switch (c.kind) {
+    case "towardsIdentity":
+      return shortIdentity(c.identity);
+    case "lock":
+      return "Lock";
+    case "abstain":
+      return "Abstain";
+  }
 }
 
 /** The vote button's label: "Vote for 8ZtW…R97P", "Vote Lock", "Vote Abstain". */
-export const voteButtonText = (c: NameChoice | null) => (c === null ? "Vote" : c.kind === "towardsIdentity" ? `Vote for ${shortIdentity(c.identity)}` : `Vote ${choiceText(c)}`);
+export function voteButtonText(c: NameChoice | null): string {
+  if (c === null) return "Vote";
+  return c.kind === "towardsIdentity" ? `Vote for ${choiceText(c)}` : `Vote ${choiceText(c)}`;
+}
 
 /** A choice as a stable key, for radio values and React keys. */
 export const choiceKey = (c: NameChoice) => (c.kind === "towardsIdentity" ? `id:${c.identity}` : c.kind);
@@ -125,6 +136,9 @@ export interface TallyView {
 const votesOf = (n: number | null) => n ?? 0;
 const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
 
+/** "1 vote", "14 votes". */
+export const votesText = (n: number) => plural(n, "vote");
+
 /** The contenders by votes (Platform's order among equals), then Lock and Abstain, with who would
  * get the name if voting ended now: the contender with the most votes unless Lock has more
  * (Drive's `check_for_ended_vote_polls`); a tie among the top contenders names no one (D6). */
@@ -135,7 +149,8 @@ export function tallyView(c: ContestedName): TallyView {
   const total = contenders.reduce((s, x) => s + x.v, 0) + lock + abstain;
   const pct = (n: number) => (total > 0 ? (n / total) * 100 : 0);
   const top = contenders[0]?.v ?? 0;
-  const tied = contenders.filter((x) => x.v === top).length > 1;
+  const topCount = contenders.filter((x) => x.v === top).length;
+  const tied = topCount > 1;
   const lockLeads = lock > top;
   const rows: TallyRowView[] = [
     ...contenders.map((x, i) => ({
@@ -165,10 +180,10 @@ export function tallyView(c: ContestedName): TallyView {
   ];
   let lead: string;
   if (total === 0) lead = "No votes yet";
-  else if (lockLeads) lead = `Lock leads with ${lock} of ${plural(total, "vote")}: if voting ended now, nobody would get the name`;
+  else if (lockLeads) lead = `Lock leads with ${lock} of ${votesText(total)}: if voting ended now, nobody would get the name`;
   else if (top === 0) lead = "No contender has a vote yet";
-  else if (tied) lead = `Tied at ${plural(top, "vote")} between ${contenders.filter((x) => x.v === top).length} contenders`;
-  else lead = `${shortIdentity(contenders[0].identity)} leads with ${top} of ${plural(total, "vote")}`;
+  else if (tied) lead = `Tied at ${votesText(top)} between ${topCount} contenders`;
+  else lead = `${shortIdentity(contenders[0].identity)} leads with ${top} of ${votesText(total)}`;
   return { rows, total, lead };
 }
 
@@ -193,30 +208,23 @@ export function youText(voters: NameVoter[], label: string): string | null {
   return `You: ${voted.length} of ${voters.length} voted`;
 }
 
-export function contestRow(c: ContestedName, voters: NameVoter[], now: number, locale?: string): ContestRowView {
-  const t = tallyView(c);
-  const closed = isClosed(c, now);
+/** "Voting ended", or "Ends in …" within a day of the end; `null` otherwise (D7). */
+export function contestChip(c: ContestedName, now: number, locale?: string): ChipView | null {
+  if (isClosed(c, now)) return { text: "Voting ended", tone: "neutral", tooltip: "Platform names the winner in its next block." };
   const left = c.endsAt - now;
-  const chip: ChipView | null = closed
-    ? {
-        text: "Voting ended",
-        tone: "neutral",
-        tooltip: "Platform names the winner in its next block.",
-      }
-    : left < ENDING_SOON_SECS
-      ? {
-          text: `Ends in ${spanLong(left)}`,
-          tone: "warning",
-          tooltip: endsText(c, now, locale),
-        }
-      : null;
+  if (left >= ENDING_SOON_SECS) return null;
+  return { text: `Ends in ${spanLong(left)}`, tone: "warning", tooltip: endsText(c, now, locale) };
+}
+
+export function contestRow(c: ContestedName, voters: NameVoter[], now: number, locale?: string): ContestRowView {
+  const closed = isClosed(c, now);
   const count = c.contendersComplete ? plural(c.contenders.length, "contender") : `${c.contenders.length}+ contenders`;
   return {
     label: c.label,
     sub: `${count} · ${closed ? "ended" : "ends"} ${shortDate(c.endsAt, locale)}`,
     you: youText(voters, c.label),
-    total: t.total,
-    chip,
+    total: tallyView(c).total,
+    chip: contestChip(c, now, locale),
   };
 }
 
@@ -250,8 +258,8 @@ export function voteBlocked(c: ContestedName, names: ContestedNames, watchOnly: 
 /** The pane's "Your masternodes" line for one voter: its present choice and votes left. */
 export function voterLine(v: NameVoter, label: string, allowed: number): string {
   const s = voterState(v, label);
-  const now = s.choice ? `Votes ${choiceText(s.choice)}` : "No vote yet";
-  return `${now} · ${votesLeftText(s.votesUsed, allowed)}`;
+  const present = s.choice ? `Votes ${choiceText(s.choice)}` : "No vote yet";
+  return `${present} · ${votesLeftText(s.votesUsed, allowed)}`;
 }
 
 // ---------------------------------------------------------------- the vote sheet
@@ -295,6 +303,8 @@ export interface NameVoterRowView {
   present: string;
   /** Can take part with `choice` (the checkbox is on). */
   eligible: boolean;
+  /** Votes it has left on this name. */
+  votesLeft: number;
 }
 
 /** One row per voter (§4.25.4's rows, D11): the key's custody and votes left; a voter that used its
@@ -306,7 +316,8 @@ export function nameVoterRows(voters: NameVoter[], label: string, choice: NameCh
     const s = voterState(v, label);
     const custody = v.key.kind === "keychain" ? `key in this wallet · voting key ${v.key.index + 1}` : "key you added";
     const banned = v.valid ? "" : " · PoSe banned, still votes on names";
-    const base = { proTxHash: v.proTxHash, name: nodeName(v), weight: v.weight, present: s.choice ? choiceText(s.choice) : "None" };
+    const votesLeft = Math.max(0, allowed - s.votesUsed);
+    const base = { proTxHash: v.proTxHash, name: nodeName(v), weight: v.weight, present: s.choice ? choiceText(s.choice) : "None", votesLeft };
     if (s.votesUsed >= allowed) return { ...base, sub: `No votes left: it used its ${allowed} votes on this name`, eligible: false };
     if (sameChoice(s.choice, choice)) return { ...base, sub: `Votes ${choiceText(s.choice!)} already`, eligible: false };
     return { ...base, sub: `${custody}${banned} · ${votesLeftText(s.votesUsed, allowed)}`, eligible: true };
@@ -322,11 +333,8 @@ export const defaultVoters = (voters: NameVoter[], label: string, allowed: numbe
 export const pickedVoters = (rows: NameVoterRowView[], checked: ReadonlySet<string>) => rows.filter((r) => r.eligible && checked.has(r.proTxHash));
 
 /** The notice for checked voters casting their last vote (Android's "One vote left", D11). */
-export function lastVoteNotice(picked: NameVoterRowView[], voters: NameVoter[], label: string, allowed: number): string | null {
-  const last = picked.filter((r) => {
-    const v = voters.find((x) => x.proTxHash === r.proTxHash);
-    return v !== undefined && allowed - voterState(v, label).votesUsed === 1;
-  });
+export function lastVoteNotice(picked: NameVoterRowView[]): string | null {
+  const last = picked.filter((r) => r.votesLeft === 1);
   if (last.length === 0) return null;
   const names = last.map((r) => r.name).join(" and ");
   return last.length === 1
@@ -408,7 +416,7 @@ export function nameVoteResult(casts: NameVoteCast[], voters: NameVoter[], label
   const total = casts.reduce((s, c) => s + weightOf(c.proTxHash), 0);
   const weight = counted.reduce((s, r) => s + weightOf(r.proTxHash), 0);
   return {
-    title: `${counted.length} of ${plural(casts.length, "vote")} counted${pending > 0 ? ` · ${pending} not confirmed yet` : ""}`,
+    title: `${counted.length} of ${votesText(casts.length)} counted${pending > 0 ? ` · ${pending} not confirmed yet` : ""}`,
     line: `${choice.kind === "towardsIdentity" ? `For ${shortIdentity(choice.identity)}` : choiceText(choice)} on ${label} · weight ${weight} of ${total}`,
     rows,
     unconfirmed: pending > 0,

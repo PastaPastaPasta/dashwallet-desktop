@@ -15,7 +15,7 @@ import type { NameRejectionName } from "../api/generated/NameRejectionName";
 import type { NameVoteCast } from "../api/generated/NameVoteCast";
 import type { ThemeName } from "../api/generated/ThemeName";
 import { sameChoice } from "../governance/names";
-import type { Ctx, Handlers } from "./handlers";
+import type { Handlers } from "./handlers";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import { FIXTURE_NOW, secs } from "./wallet";
 
@@ -157,8 +157,7 @@ export function nameHandlers({
       readable(n);
       return structuredClone(n.names);
     },
-    governance_vote_name: ({ walletId, label, choice, masternodes, grant: grantId }, ctx: Ctx) => {
-      const { world } = ctx;
+    governance_vote_name: ({ walletId, label, choice, masternodes, grant: grantId }, { world }) => {
       const n = world.governance.names;
       if (!LABEL.test(label) || (choice.kind === "towardsIdentity" && !BASE58.test(choice.identity)))
         throw fail("invalid_argument", "a label that cannot be contested, or a malformed identity");

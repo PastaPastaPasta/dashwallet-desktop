@@ -191,10 +191,8 @@ describe("the vote sheet's voters", () => {
     n.voters[0].current[0].votesUsed = 4;
     const rows = nameVoterRows(n.voters, "a11ce", ABSTAIN, n.votesAllowed);
     expect(rows[0]).toMatchObject({ eligible: true, sub: "key in this wallet · voting key 1 · One vote left" });
-    expect(lastVoteNotice(pickedVoters(rows, new Set([VOTER_A, VOTER_C])), n.voters, "a11ce", n.votesAllowed)).toBe(
-      "This is the last vote Masternode a1a1a1a1 has on this name: after it, its choice can't change.",
-    );
-    expect(lastVoteNotice(pickedVoters(rows, new Set([VOTER_C])), n.voters, "a11ce", n.votesAllowed)).toBeNull();
+    expect(lastVoteNotice(pickedVoters(rows, new Set([VOTER_A, VOTER_C])))).toBe("This is the last vote Masternode a1a1a1a1 has on this name: after it, its choice can't change.");
+    expect(lastVoteNotice(pickedVoters(rows, new Set([VOTER_C])))).toBeNull();
   });
 
   it("turns off a voter whose present choice is the one picked (Platform's already_voted)", () => {

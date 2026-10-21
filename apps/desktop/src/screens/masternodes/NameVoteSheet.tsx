@@ -28,10 +28,18 @@ import {
   pickedVoters,
   sameChoice,
   voteButtonText,
+  votesText,
 } from "../../governance/names";
 import { failureText } from "../pay/model";
 import { StatusChip, useNowSecs } from "./common";
 import { CredentialField, useCredential } from "./credential";
+
+/** What each choice does, under its title. */
+const CHOICE_NOTE: Record<NameChoice["kind"], string> = {
+  towardsIdentity: "Gets the name",
+  abstain: "Counted, for no one",
+  lock: "Nobody gets the name",
+};
 
 /** What the result shows once the votes went out. */
 interface NameVoteDone {
@@ -112,7 +120,7 @@ function NameVoteForm({
   const [checked, setChecked] = useState<ReadonlySet<string>>(() => defaultVoters(names.voters, label, allowed));
   const rows = useMemo(() => nameVoterRows(names.voters, label, choice, allowed), [names.voters, label, choice, allowed]);
   const picked = pickedVoters(rows, checked);
-  const last = lastVoteNotice(picked, names.voters, label, allowed);
+  const last = lastVoteNotice(picked);
   const credential = useCredential(wallet.walletId, "Enter your passphrase to vote.");
   const toggle = (hash: string) =>
     setChecked((s) => {
@@ -165,8 +173,7 @@ function NameVoteForm({
                   {o.title}
                 </span>
                 <span className="mg-muted mg-small">
-                  {o.choice.kind === "lock" ? "Nobody gets the name" : o.choice.kind === "abstain" ? "Counted, for no one" : "Gets the name"} · {o.votes.toLocaleString("en-US")}{" "}
-                  {o.votes === 1 ? "vote" : "votes"}
+                  {CHOICE_NOTE[o.choice.kind]} · {votesText(o.votes)}
                 </span>
               </span>
             </label>

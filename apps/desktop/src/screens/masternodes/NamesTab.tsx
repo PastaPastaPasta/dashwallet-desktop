@@ -13,10 +13,27 @@ import { DashButton, Icon } from "../../components/basics";
 import { EmptyState, LoadingState } from "../../components/history";
 import { copyWithToast } from "../../components/toast";
 import { nodeName } from "../../governance/model";
-import { contestRow, endsText, isClosed, listContests, NAME_SORTS, nameErrorText, NameText, tallyView, voteBlocked, voterLine, type NameSort } from "../../governance/names";
+import {
+  contestChip,
+  contestRow,
+  endsText,
+  isClosed,
+  listContests,
+  NAME_SORTS,
+  nameErrorText,
+  NameText,
+  tallyView,
+  voteBlocked,
+  voterLine,
+  votesText,
+  type NameSort,
+} from "../../governance/names";
 import { useContestedNames } from "../../governance/queries";
 import { Notice, StatusChip, useNowSecs } from "./common";
 import { NameVoteSheet } from "./NameVoteSheet";
+
+/** The tally bar's class for the rows that aren't contenders. */
+const TALLY_BAR: Record<string, string> = { lock: "mg-tally-lock", abstain: "mg-tally-abstain" };
 
 export function NamesTab({ wallet, network }: { wallet: WalletSummary; network: NetworkInfo }) {
   const names = useContestedNames(wallet.walletId);
@@ -162,7 +179,7 @@ function ContestRowButton({ contest, names, now, current, onSelect }: { contest:
       </span>
       <span className="mg-row-trailing">
         {row.chip && <StatusChip chip={row.chip} />}
-        <span className="mg-row-meta">{row.total === 1 ? "1 vote" : `${row.total.toLocaleString("en-US")} votes`}</span>
+        <span className="mg-row-meta">{votesText(row.total)}</span>
       </span>
     </button>
   );
@@ -172,7 +189,7 @@ function ContestRowButton({ contest, names, now, current, onSelect }: { contest:
  * with their present choice and votes left, and Vote. */
 function NamePane({ contest, names, watchOnly, now, onVote }: { contest: ContestedName; names: ContestedNames; watchOnly: boolean; now: number; onVote: () => void }) {
   const tally = tallyView(contest);
-  const row = contestRow(contest, names.voters, now);
+  const chip = contestChip(contest, now);
   const closed = isClosed(contest, now);
   const blocked = voteBlocked(contest, names, watchOnly, now);
   return (
@@ -181,7 +198,7 @@ function NamePane({ contest, names, watchOnly, now, onVote }: { contest: Contest
         <div>
           <h2 className="mg-pane-title">{contest.label}</h2>
           <div className="chip-row mg-pane-chip">
-            {row.chip && <StatusChip chip={row.chip} testId="name-pane-chip" />}
+            {chip && <StatusChip chip={chip} testId="name-pane-chip" />}
             <span className="mg-muted mg-small" data-testid="name-pane-ends">
               {endsText(contest, now)}
             </span>
@@ -219,7 +236,7 @@ function NamePane({ contest, names, watchOnly, now, onVote }: { contest: Contest
                 </span>
                 <span className="mg-tally-votes">{r.votes.toLocaleString("en-US")}</span>
                 <span className="mg-tally-bar" aria-hidden="true">
-                  <span className={r.key === "lock" ? "mg-tally-lock" : r.key === "abstain" ? "mg-tally-abstain" : "mg-tally-fill"} style={{ width: `${r.pct}%` }} />
+                  <span className={TALLY_BAR[r.key] ?? "mg-tally-fill"} style={{ width: `${r.pct}%` }} />
                 </span>
               </li>
             ))}
