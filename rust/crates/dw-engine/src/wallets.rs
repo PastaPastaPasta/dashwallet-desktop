@@ -232,6 +232,17 @@ impl NetworkSession {
             // E0-04 §8.6: the wallet's leases end and its permits drain
             // before anything of it goes.
             let _barrier = this.revoke_wallet(id, RevokeCause::WalletRemoved).await;
+            // MG-06 D23: a proposal whose fee is paid outlives the removal,
+            // or the fee is lost with its object. Its failure fails the
+            // removal before anything goes.
+            let kept = this.governance().kept_on_removal(id)?;
+            if !kept.is_empty() {
+                tracing::warn!(wallet_id = %id, proposals = kept.len(), "keeping the paid proposals of a removed wallet");
+            }
+            // On the blocking pool as the deletion below is, not through
+            // `appdb_op`: the tests' first-job hold is the deletion's.
+            let (appdb, wallet_id) = (Arc::clone(&live.appdb), id.to_string());
+            tokio::task::spawn_blocking(move || appdb.keep_proposals(&wallet_id, &kept)).await??;
             let vault = this.vault.clone();
             // The grant is redeemed (consumed) before anything is deleted. Its
             // token carries the key of a passphrase grant on a locked vault.

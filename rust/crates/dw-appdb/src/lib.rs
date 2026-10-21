@@ -26,11 +26,13 @@ mod dashpay_journal;
 pub mod dispatch;
 #[cfg(all(debug_assertions, any(test, feature = "durability-sim")))]
 pub mod durability_sim;
+mod proposals;
 mod provenance;
 mod registration;
 mod rows;
 pub use avatar::AvatarRow;
 pub use dashpay_journal::{ContestWatch, JournalEntry, JournalPage, JournalRow};
+pub use proposals::ProposalRow;
 pub use registration::{
     Adoption, LockOutpoint, NewRegistration, RegistrationChange, RegistrationRow,
     RegistrationUpdate,
@@ -205,7 +207,7 @@ pub(crate) static CHILD_STARTS: std::sync::RwLock<()> = std::sync::RwLock::new((
 /// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
 /// with an insert trigger that skips rows of a removed wallet (migration
 /// `V2026101302`, DEC-210). Settings are cleared by scope.
-pub(crate) const WALLET_TABLES: [&str; 14] = [
+pub(crate) const WALLET_TABLES: [&str; 15] = [
     "wallets",
     "address_book",
     "labels",
@@ -220,6 +222,7 @@ pub(crate) const WALLET_TABLES: [&str; 14] = [
     "dp_trust_unverified",
     "dp_prefs",
     "dp_contact_info",
+    "mg_proposals",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -622,7 +625,8 @@ impl AppDb {
     ///
     /// Rows a removal that failed part-way left are deleted in the same
     /// transaction; if they cannot be, the wallet stays removed and the call
-    /// fails ([`AppDbError::RemovalUnfinished`]).
+    /// fails ([`AppDbError::RemovalUnfinished`]). Then the proposals its
+    /// last removal kept are back ([`Self::keep_proposals`]).
     pub fn readmit_wallet(&self, wallet_id: &str) -> Result<bool> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -631,15 +635,20 @@ impl AppDb {
             [wallet_id],
         )? > 0;
         if !(removed || unfinished(&self.unfinished).contains(wallet_id)) {
+            proposals::restore_kept(&tx, wallet_id)?;
             tx.commit()?;
             return Ok(false);
         }
-        (delete_wallet_rows(&tx, wallet_id).and_then(|()| tx.commit())).map_err(|source| {
-            AppDbError::RemovalUnfinished {
-                wallet: wallet_id.to_owned(),
-                source,
-            }
-        })?;
+        let unfinished_by = |source| AppDbError::RemovalUnfinished {
+            wallet: wallet_id.to_owned(),
+            source,
+        };
+        delete_wallet_rows(&tx, wallet_id).map_err(unfinished_by)?;
+        // Its own error, not `RemovalUnfinished`: the dropped transaction
+        // brings the rows and the removal record back, so the wallet stays
+        // removed and the import fails closed.
+        proposals::restore_kept(&tx, wallet_id)?;
+        tx.commit().map_err(unfinished_by)?;
         unfinished(&self.unfinished).remove(wallet_id);
         Ok(true)
     }
@@ -1523,7 +1532,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026101901);
+        assert_eq!(db.schema_version().unwrap(), 2026102001);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();

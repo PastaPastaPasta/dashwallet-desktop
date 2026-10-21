@@ -64,12 +64,18 @@
       {
         "height": 2354256,
         "estimatedTime": 1790653323,
-        "budget": 6650000000000
+        "budget": 6650000000000,
+        "votingCutoffHeight": 2352594,
+        "votingCutoffEstimate": 1790400000,
+        "cutoffSoon": true
       },
       {
         "height": 2370872,
         "estimatedTime": 1793265358,
-        "budget": 6650000000000
+        "budget": 6650000000000,
+        "votingCutoffHeight": 2369210,
+        "votingCutoffEstimate": 1793000000,
+        "cutoffSoon": false
       }
     ],
     "governance_proposals": [
@@ -248,6 +254,176 @@
         "rejected": "too_often"
       }
     ],
+    "governance_preview_proposal": {
+      "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "dataJson": "[[\"proposal\",{\"end_epoch\":1793265358,\"name\":\"wallet-fund\",\"payment_address\":\"yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr\",\"payment_amount\":100,\"start_epoch\":1790653323,\"type\":1,\"url\":\"https://example.org/wallet\"}]]",
+      "dataHex": "5b5b2270726f706f73616c222c7b7d5d5d",
+      "startEpoch": 1790653323,
+      "endEpoch": 1793265358,
+      "fee": 100000000,
+      "networkFee": 2260
+    },
+    "governance_create_proposal": {
+      "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "name": "wallet-fund",
+      "url": "https://example.org/wallet",
+      "paymentAddress": "yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr",
+      "paymentAmount": 10000000000,
+      "paymentCount": 2,
+      "startEpoch": 1790653323,
+      "endEpoch": 1793265358,
+      "feeTxid": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+      "createdAt": 1790000000,
+      "submittedAt": 1790000120,
+      "state": {
+        "kind": "feePaid",
+        "confirmations": 0
+      },
+      "lastError": null
+    },
+    "governance_my_proposals": [
+      {
+        "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "name": "wallet-fund",
+        "url": "https://example.org/wallet",
+        "paymentAddress": "yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr",
+        "paymentAmount": 10000000000,
+        "paymentCount": 2,
+        "startEpoch": 1790653323,
+        "endEpoch": 1793265358,
+        "feeTxid": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+        "createdAt": 1790000000,
+        "submittedAt": 1790000120,
+        "state": {
+          "kind": "feePaid",
+          "confirmations": 0
+        },
+        "lastError": null
+      },
+      {
+        "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "name": "wallet-fund",
+        "url": "https://example.org/wallet",
+        "paymentAddress": "yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr",
+        "paymentAmount": 10000000000,
+        "paymentCount": 2,
+        "startEpoch": 1790653323,
+        "endEpoch": 1793265358,
+        "feeTxid": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+        "createdAt": 1790000000,
+        "submittedAt": 1790000120,
+        "state": {
+          "kind": "readyToSubmit",
+          "reason": "noPeerAccepted"
+        },
+        "lastError": null
+      },
+      {
+        "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "name": "wallet-fund",
+        "url": "https://example.org/wallet",
+        "paymentAddress": "yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr",
+        "paymentAmount": 10000000000,
+        "paymentCount": 2,
+        "startEpoch": 1790653323,
+        "endEpoch": 1793265358,
+        "feeTxid": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+        "createdAt": 1790000000,
+        "submittedAt": 1790000120,
+        "state": {
+          "kind": "confirming",
+          "confirmations": 3
+        },
+        "lastError": null
+      },
+      {
+        "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "name": "wallet-fund",
+        "url": "https://example.org/wallet",
+        "paymentAddress": "yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr",
+        "paymentAmount": 10000000000,
+        "paymentCount": 2,
+        "startEpoch": 1790653323,
+        "endEpoch": 1793265358,
+        "feeTxid": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+        "createdAt": 1790000000,
+        "submittedAt": 1790000120,
+        "state": {
+          "kind": "public",
+          "status": "voting"
+        },
+        "lastError": null
+      },
+      {
+        "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "name": "wallet-fund",
+        "url": "https://example.org/wallet",
+        "paymentAddress": "yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr",
+        "paymentAmount": 10000000000,
+        "paymentCount": 2,
+        "startEpoch": 1790653323,
+        "endEpoch": 1793265358,
+        "feeTxid": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+        "createdAt": 1790000000,
+        "submittedAt": 1790000120,
+        "state": {
+          "kind": "feeUnsent"
+        },
+        "lastError": "the broadcast's outcome is unknown: no verdict yet"
+      },
+      {
+        "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "name": "wallet-fund",
+        "url": "https://example.org/wallet",
+        "paymentAddress": "yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr",
+        "paymentAmount": 10000000000,
+        "paymentCount": 2,
+        "startEpoch": 1790653323,
+        "endEpoch": 1793265358,
+        "feeTxid": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+        "createdAt": 1790000000,
+        "submittedAt": 1790000120,
+        "state": {
+          "kind": "feeFailed"
+        },
+        "lastError": null
+      },
+      {
+        "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "name": "wallet-fund",
+        "url": "https://example.org/wallet",
+        "paymentAddress": "yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr",
+        "paymentAmount": 10000000000,
+        "paymentCount": 2,
+        "startEpoch": 1790653323,
+        "endEpoch": 1793265358,
+        "feeTxid": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+        "createdAt": 1790000000,
+        "submittedAt": 1790000120,
+        "state": {
+          "kind": "expired"
+        },
+        "lastError": null
+      }
+    ],
+    "governance_submit_proposal": {
+      "hash": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "name": "wallet-fund",
+      "url": "https://example.org/wallet",
+      "paymentAddress": "yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr",
+      "paymentAmount": 10000000000,
+      "paymentCount": 2,
+      "startEpoch": 1790653323,
+      "endEpoch": 1793265358,
+      "feeTxid": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+      "createdAt": 1790000000,
+      "submittedAt": 1790000120,
+      "state": {
+        "kind": "readyToSubmit",
+        "reason": "notSynced"
+      },
+      "lastError": null
+    },
     "governance_voting_masternodes": [
       {
         "proTxHash": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
@@ -314,6 +490,33 @@
       "code": "governance.list_unavailable",
       "message": "masternode list unavailable",
       "data": null
+    },
+    {
+      "code": "governance.invalid_proposal",
+      "message": "invalid proposal: [Name, PaymentAddress]",
+      "data": {
+        "kind": "proposalFields",
+        "fields": [
+          "name",
+          "payment_address"
+        ]
+      }
+    },
+    {
+      "code": "governance.submit_refused",
+      "message": "submit refused: public",
+      "data": {
+        "kind": "reason",
+        "reason": "public"
+      }
+    },
+    {
+      "code": "governance.submit_refused",
+      "message": "submit refused: in_flight",
+      "data": {
+        "kind": "reason",
+        "reason": "in_flight"
+      }
     },
     {
       "code": "governance.not_implemented",

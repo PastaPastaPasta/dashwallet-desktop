@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 use dw_engine::EngineError;
 use dw_engine::governance::{
     CurrentVoteRow, GovernanceClock, GovernanceError, GovernanceInfo, GovernanceSyncPhase,
-    GovernanceSyncState, MasternodeType, ProposalCounts, ProposalDetail, ProposalRow,
-    ProposalStatus, SignalTallies, SuperblockDate, VoteCast, VoteOutcome, VoteSignal, VoteTally,
+    GovernanceSyncState, MasternodeType, MyProposal, MyProposalState, ProposalCounts,
+    ProposalDetail, ProposalField, ProposalPreview, ProposalRow, ProposalStatus, SignalTallies,
+    SubmitRefusal, SubmitWait, SuperblockDate, VoteCast, VoteOutcome, VoteSignal, VoteTally,
     VotingMasternode, WeightRange,
 };
 use serde_json::{Value, json};
@@ -191,12 +192,61 @@ fn build() -> Value {
             height: 2_354_256,
             estimated_time: 1_790_653_323,
             budget: 6_650_000_000_000,
+            voting_cutoff_height: 2_352_594,
+            voting_cutoff_estimate: 1_790_400_000,
+            cutoff_soon: true,
         },
         SuperblockDate {
             height: 2_370_872,
             estimated_time: 1_793_265_358,
             budget: 6_650_000_000_000,
+            voting_cutoff_height: 2_369_210,
+            voting_cutoff_estimate: 1_793_000_000,
+            cutoff_soon: false,
         },
+    ];
+    let preview = ProposalPreview {
+        hash: "c3".repeat(32),
+        data_json: r#"[["proposal",{"end_epoch":1793265358,"name":"wallet-fund","payment_address":"yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr","payment_amount":100,"start_epoch":1790653323,"type":1,"url":"https://example.org/wallet"}]]"#.into(),
+        data_hex: "5b5b2270726f706f73616c222c7b7d5d5d".into(),
+        start_epoch: 1_790_653_323,
+        end_epoch: 1_793_265_358,
+        fee: 100_000_000,
+        network_fee: 2_260,
+    };
+    let my_proposal = |state| MyProposal {
+        hash: "c3".repeat(32),
+        name: "wallet-fund".into(),
+        url: "https://example.org/wallet".into(),
+        payment_address: "yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr".into(),
+        payment_amount: 10_000_000_000,
+        payment_count: 2,
+        start_epoch: 1_790_653_323,
+        end_epoch: 1_793_265_358,
+        fee_txid: "d4".repeat(32),
+        created_at: 1_790_000_000,
+        submitted_at: Some(1_790_000_120),
+        state,
+        last_error: None,
+    };
+    let submitted = my_proposal(MyProposalState::ReadyToSubmit {
+        reason: SubmitWait::NotSynced,
+    });
+    let my_proposals = vec![
+        my_proposal(MyProposalState::FeePaid { confirmations: 0 }),
+        my_proposal(MyProposalState::ReadyToSubmit {
+            reason: SubmitWait::NoPeerAccepted,
+        }),
+        my_proposal(MyProposalState::Confirming { confirmations: 3 }),
+        my_proposal(MyProposalState::Public {
+            status: Some(ProposalStatus::Voting),
+        }),
+        MyProposal {
+            last_error: Some("the broadcast's outcome is unknown: no verdict yet".into()),
+            ..my_proposal(MyProposalState::FeeUnsent)
+        },
+        my_proposal(MyProposalState::FeeFailed),
+        my_proposal(MyProposalState::Expired),
     ];
     let errors: Vec<Value> = [
         GovernanceError::SyncDisabled,
@@ -211,6 +261,15 @@ fn build() -> Value {
         },
         GovernanceError::NoPeers,
         GovernanceError::ListUnavailable,
+        GovernanceError::InvalidProposal {
+            fields: vec![ProposalField::Name, ProposalField::PaymentAddress],
+        },
+        GovernanceError::SubmitRefused {
+            reason: SubmitRefusal::Public,
+        },
+        GovernanceError::SubmitRefused {
+            reason: SubmitRefusal::InFlight,
+        },
         GovernanceError::NotImplemented {
             call: "Governance.vote".into(),
         },
@@ -244,6 +303,12 @@ fn build() -> Value {
             "governance_vote": to_json(
                 cast.into_iter().map(dto::VoteCast::from).collect::<Vec<_>>()
             ),
+            "governance_preview_proposal": to_json(dto::ProposalPreview::from(preview)),
+            "governance_create_proposal": to_json(dto::MyProposal::from(my_proposals[0].clone())),
+            "governance_my_proposals": to_json(
+                my_proposals.into_iter().map(dto::MyProposal::from).collect::<Vec<_>>()
+            ),
+            "governance_submit_proposal": to_json(dto::MyProposal::from(submitted)),
             "governance_voting_masternodes": to_json(
                 masternodes.into_iter().map(dto::VotingMasternode::from).collect::<Vec<_>>()
             ),

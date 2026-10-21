@@ -108,6 +108,10 @@ struct RelayInstead {
 enum Seen {
     Govsync([u8; 32]),
     Vote(Vec<u8>),
+    /// The wallet's own object, as it served it on `getdata`.
+    Object(Vec<u8>),
+    /// Hashes the wallet announced.
+    Inv(Vec<[u8; 32]>),
 }
 
 async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
@@ -289,7 +293,9 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
                 }
             }
             "inv" => {
-                for i in decode_inv(&msg.payload).unwrap() {
+                let items = decode_inv(&msg.payload).unwrap();
+                let _ = seen.send(Seen::Inv(items.iter().map(|i| i.hash).collect()));
+                for i in items {
                     known.insert(i.hash);
                 }
                 conn.send("getdata", &msg.payload).await.unwrap();
@@ -308,6 +314,9 @@ async fn serve(mock: MockPeer, node: Node, seen: mpsc::UnboundedSender<Seen>) {
             }
             commands::MNGOVERNANCEOBJECTVOTE => {
                 let _ = seen.send(Seen::Vote(msg.payload));
+            }
+            commands::MNGOVERNANCEOBJECT => {
+                let _ = seen.send(Seen::Object(msg.payload));
             }
             _ => {}
         }
@@ -417,7 +426,7 @@ async fn test_qt_128_objects_from_every_peer_then_votes() {
             match s {
                 Seen::Govsync(x) if x == [0; 32] => full += 1,
                 Seen::Govsync(_) => votes += 1,
-                Seen::Vote(_) => {}
+                _ => {}
             }
         }
     }
@@ -540,16 +549,97 @@ async fn own_votes_are_announced_and_served() {
     let v = vote(obj.hash(), 1, VoteOutcome::Yes);
     assert_eq!(hx.shared.relay_vote(&v), 1);
     let got = loop {
-        match tokio::time::timeout(Duration::from_secs(5), hx.seen[0].recv())
+        let seen = tokio::time::timeout(Duration::from_secs(5), hx.seen[0].recv())
             .await
             .unwrap()
-            .unwrap()
-        {
-            Seen::Vote(p) => break p,
-            Seen::Govsync(_) => {}
+            .unwrap();
+        if let Seen::Vote(p) = seen {
+            break p;
         }
     };
     assert_eq!(got, v.encode());
+    hx.stop.send(true).unwrap();
+}
+
+/// The next own object a node was served, skipping everything else.
+async fn served_object(seen: &mut mpsc::UnboundedReceiver<Seen>) -> Vec<u8> {
+    loop {
+        let s = tokio::time::timeout(Duration::from_secs(5), seen.recv());
+        if let Seen::Object(p) = s.await.unwrap().unwrap() {
+            return p;
+        }
+    }
+}
+
+/// Whether `hash` is announced to the node within `wait`.
+async fn announced_within(
+    seen: &mut mpsc::UnboundedReceiver<Seen>,
+    hash: [u8; 32],
+    wait: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + wait;
+    while let Ok(Some(s)) = tokio::time::timeout_at(deadline, seen.recv()).await {
+        if matches!(s, Seen::Inv(h) if h.contains(&hash)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// MG-06 D6, D7, D19: the wallet's own proposal is announced to each peer
+/// once per round and served on `getdata`; the peers that fetched it are
+/// reported. Queuing it again announces nothing (a peer holding it
+/// postponed is not asked again). Withdrawn (its fee lost its
+/// confirmation), it is neither announced nor served, and queued again it
+/// reaches every peer once more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn own_objects_are_announced_once_per_round_and_their_fetchers_reported() {
+    let mut hx = start(vec![Node::default(), Node::default()], |_| {}).await;
+    wait_for(&hx.shared, |p| p.phase == Phase::Synced).await;
+    let own = proposal("mine");
+    let hash = own.hash();
+    assert_eq!(hx.shared.relay_object(&own), 2);
+    for seen in &mut hx.seen {
+        assert_eq!(served_object(seen).await, own.encode());
+    }
+    let fetchers = hx.shared.object_fetchers(&hash);
+    assert_eq!(fetchers.len(), 2, "{fetchers:?}");
+
+    // Queued again: no new round, no announcement.
+    hx.shared.relay_object(&own);
+    for seen in &mut hx.seen {
+        assert!(!announced_within(seen, hash, Duration::from_millis(500)).await);
+    }
+    assert_eq!(hx.shared.object_fetchers(&hash).len(), 2);
+    // Another item's pass announces that item alone: one announcement per
+    // round and connection (review r1 m-1).
+    let v = vote(hash, 1, VoteOutcome::Yes);
+    hx.shared.relay_vote(&v);
+    for seen in &mut hx.seen {
+        let inv = loop {
+            let s = tokio::time::timeout(Duration::from_secs(5), seen.recv());
+            match s.await.unwrap().unwrap() {
+                Seen::Inv(h) if h.contains(&v.hash()) => break h,
+                Seen::Inv(h) => assert!(!h.contains(&hash), "{h:?}"),
+                _ => {}
+            }
+        };
+        assert!(!inv.contains(&hash), "{inv:?}");
+        assert!(!announced_within(seen, hash, Duration::from_millis(500)).await);
+    }
+
+    assert!(hx.shared.withdraw_object(&hash));
+    assert!(!hx.shared.is_queued(&hash));
+    assert!(hx.shared.object_fetchers(&hash).is_empty());
+    for seen in &mut hx.seen {
+        assert!(!announced_within(seen, hash, Duration::from_millis(500)).await);
+    }
+
+    hx.shared.relay_object(&own);
+    for seen in &mut hx.seen {
+        assert_eq!(served_object(seen).await, own.encode());
+    }
+    assert_eq!(hx.shared.object_fetchers(&hash).len(), 2);
     hx.stop.send(true).unwrap();
 }
 

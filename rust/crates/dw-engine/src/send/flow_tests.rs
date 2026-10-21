@@ -1331,6 +1331,62 @@ fn psbt_a_contacts_address_is_not_the_wallets() {
     assert_eq!(a.signability, PsbtSignability::CanSign);
 }
 
+/// MG-05 r2 N2: the same claim through `create_unsigned` itself: a draft
+/// paying a contact's address gets no derivation record for that output,
+/// while its own input and change get theirs.
+#[test]
+fn psbt_create_unsigned_records_no_derivation_for_a_contacts_address() {
+    let f = fixture(false);
+    let session = Arc::clone(&f.session);
+    let id = f.wallet;
+    let inner = Arc::clone(&session);
+    let contact = f
+        .engine
+        .block_on(session.on_runtime(async move {
+            let wallet = inner.wallet(&id).await?;
+            let mut state = wallet.state_mut().await;
+            Ok::<_, EngineError>(crate::coins::insert_contact_account(
+                &mut state.core_wallet,
+                id.0,
+            ))
+        }))
+        .unwrap();
+    let prev = f.credit_with_prev(1, COIN);
+    f.session.hub.history.with_wallet(f.wallet, |h| {
+        h.txs.insert(
+            prev.txid(),
+            crate::history::TxEntry {
+                tx: prev.clone(),
+                context: key_wallet::transaction_checking::TransactionContext::Mempool,
+                instant_locked: false,
+                first_seen: None,
+                own_inputs: Default::default(),
+                abandoned: false,
+            },
+        )
+    });
+    (f.session.live().unwrap().appdb)
+        .set_setting(
+            &f.wallet.to_string(),
+            super::psbt::FINGERPRINT_SETTING,
+            Some("01020304"),
+        )
+        .unwrap();
+    let d = f.draft(vec![pay(&contact.to_string(), COIN / 2)]);
+    let psbt = f.engine.block_on(d.create_unsigned()).unwrap();
+    let to_contact = contact.script_pubkey();
+    let tx = &psbt.unsigned_tx;
+    assert_eq!(tx.output.len(), 2, "the payment and change");
+    for (o, out) in tx.output.iter().zip(&psbt.outputs) {
+        assert_eq!(
+            out.bip32_derivation.is_empty(),
+            o.script_pubkey == to_contact,
+            "{o:?}"
+        );
+    }
+    assert!(!psbt.inputs[0].bip32_derivation.is_empty());
+}
+
 /// Before H1 the cap covered only the outputs to others, so a PSBT could
 /// burn the rest of a coin as fee under a small grant.
 #[test]
@@ -1748,4 +1804,63 @@ fn a_lock_held_past_a_removal_leaves_nothing() {
     a_write_held_past_the_removal(&f.engine, &f.session, (w, wipe), &pause, Some(task), || {
         db.locks(&w.to_string()).unwrap().is_empty()
     });
+}
+
+/// Core's `RANDOM_CHANGE_POSITION` (review r1 nit): the change of a data
+/// transaction lands before or after the data output, by chance. 64
+/// prepares all alike would fail this once in 2^63.
+#[test]
+fn a_data_transactions_change_lands_at_a_random_position() {
+    let f = fixture(false);
+    f.credit(1, 3 * COIN);
+    let data = TxOut {
+        value: COIN,
+        script_pubkey: dashcore::ScriptBuf::new_op_return(&[7u8; 32]),
+    };
+    let draft = f.session.new_tx_draft(f.wallet).unwrap();
+    draft.set_data_output(data.clone()).unwrap();
+    let mut seen = [false; 2];
+    for _ in 0..64 {
+        let prepared = f
+            .engine
+            .block_on(draft.prepare(f.spend_grant(2 * COIN)))
+            .unwrap();
+        let tx: dashcore::Transaction =
+            dashcore::consensus::deserialize(&prepared.raw().unwrap()).unwrap();
+        assert_eq!(tx.output.len(), 2);
+        seen[tx.output.iter().position(|o| *o == data).unwrap()] = true;
+        f.engine.block_on(draft.abandon(prepared)).unwrap();
+        if seen == [true; 2] {
+            return;
+        }
+    }
+    panic!("the change always at one position: {seen:?}");
+}
+
+/// MG-06 D1: a proposal fee's change is automatic (a fresh BIP44 P2PKH
+/// address) and it takes no CoinJoin source, so every output but its data
+/// is P2PKH, as Core's collateral check needs.
+#[test]
+fn a_data_output_takes_only_automatic_change() {
+    let f = fixture(false);
+    let data = TxOut {
+        value: 100_000_000,
+        script_pubkey: dashcore::ScriptBuf::new_op_return(&[7u8; 32]),
+    };
+    let draft = f.session.new_tx_draft(f.wallet).unwrap();
+    draft.set_data_output(data.clone()).unwrap();
+    draft
+        .set_change(ChangePolicy::Address(FOREIGN.into()))
+        .unwrap();
+    assert!(matches!(
+        f.engine.block_on(draft.estimate()),
+        Err(EngineError::InvalidArgument(_))
+    ));
+    let mixed = f.session.new_tx_draft(f.wallet).unwrap();
+    mixed.set_data_output(data).unwrap();
+    mixed.set_source(CoinSource::FullyMixedOnly).unwrap();
+    assert!(matches!(
+        f.engine.block_on(mixed.estimate()),
+        Err(EngineError::InvalidArgument(_))
+    ));
 }
