@@ -173,7 +173,7 @@ export function prepareErrorText(e: unknown, source: PictureSource): string {
  * engine's own text, the choice kept (D9). */
 export const CANDIDATE_GONE = ["unknown avatar candidate", "the avatar candidate has no URL; upload it first"] as const;
 
-const candidateGone = (e: unknown): boolean => hasCode(e, "invalid_argument") && CANDIDATE_GONE.some((detail) => e.message.endsWith(detail));
+const isCandidateGoneRefusal = (e: unknown): boolean => hasCode(e, "invalid_argument") && CANDIDATE_GONE.some((detail) => e.message.endsWith(detail));
 
 /** D9: why a save was refused; the edits stay. */
 export function saveErrorText(e: unknown): string {
@@ -190,6 +190,13 @@ export function saveErrorText(e: unknown): string {
   if (hasCode(e, "platform.trust_mismatch")) return E.trust;
   if (hasCode(e, "platform.grant_exceeded")) return E.grant;
   return errorMessage(e);
+}
+
+/** D9: why an upload before the save was refused; the choice stays. */
+function uploadErrorText(e: unknown): string {
+  if (hasCode(e, "avatar.upload_unconfigured")) return EDIT_COPY.errors.uploadUnconfigured;
+  if (hasCode(e, "invalid_argument")) return errorMessage(e);
+  return EDIT_COPY.errors.uploadFailed;
 }
 
 /** The discard question (D11): from the sheet's own close, or a navigation it holds. */
@@ -598,12 +605,7 @@ export class EditProfileModel extends Model {
     try {
       url = await this.api.dashpayUploadAvatar(this.walletId, p.candidate.id);
     } catch (e) {
-      if (!this.#candidateGone(e))
-        this.error = hasCode(e, "avatar.upload_unconfigured")
-          ? EDIT_COPY.errors.uploadUnconfigured
-          : hasCode(e, "invalid_argument")
-            ? errorMessage(e)
-            : EDIT_COPY.errors.uploadFailed;
+      if (!this.#candidateGone(e)) this.error = uploadErrorText(e);
       return false;
     }
     this.picture = { ...p, candidate: { ...p.candidate, url, needsUpload: false } };
@@ -616,7 +618,7 @@ export class EditProfileModel extends Model {
    * goes back to the published picture and the form says to choose it again; no retry could
    * use it. */
   #candidateGone(e: unknown): boolean {
-    if (this.picture.kind !== "new" || !candidateGone(e)) return false;
+    if (this.picture.kind !== "new" || !isCandidateGoneRefusal(e)) return false;
     this.picture = { kind: "keep" };
     this.error = EDIT_COPY.errors.candidateGone;
     return true;
