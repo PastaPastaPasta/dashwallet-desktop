@@ -68,12 +68,13 @@ export function Sidebar({ joined, requests, masternodes }: { joined: boolean; re
     ? { route: "contacts", title: "Contacts", icon: CONTACTS_ICON }
     : { route: "joinDashPay", title: "Join DashPay", icon: CONTACTS_ICON };
   const items = [HOME, PAY, RECEIVE, contacts, ACTIVITY, COINJOIN, ...(EXPLORE_ENABLED ? [EXPLORE] : []), ...(masternodes.shown ? [MASTERNODES] : [])];
+  const badges: Partial<Record<Route, number>> = { contacts: requests, masternodes: masternodes.badge };
   return (
     <nav className="sidebar" aria-label="Main" data-testid="sidebar">
       <ul role="list" className="sidebar-list">
         {items.map((item) => {
           const current = item.route === route;
-          const count = item.route === "contacts" ? requests : item.route === "masternodes" ? masternodes.badge : 0;
+          const count = badges[item.route] ?? 0;
           const badge = count > 0 ? count : null;
           return (
             <li key={item.route}>

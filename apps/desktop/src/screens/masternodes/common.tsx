@@ -4,7 +4,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { VoteTally } from "../../api/generated/VoteTally";
 import { DashButton } from "../../components/basics";
-import { voteBar, type ChipView } from "../../governance/model";
+import { GovText, voteBar, type ChipView } from "../../governance/model";
 
 const TICK_MS = 30_000;
 
@@ -46,7 +46,7 @@ export interface MenuItem {
 }
 
 /** "More": a menu button whose items close it; Escape and a click elsewhere close it too. */
-export function MoreMenu({ items, testId, label = "More" }: { items: MenuItem[]; testId: string; label?: string }) {
+export function MoreMenu({ items, testId }: { items: MenuItem[]; testId: string }) {
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLSpanElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -88,10 +88,10 @@ export function MoreMenu({ items, testId, label = "More" }: { items: MenuItem[];
         data-testid={testId}
         onClick={() => setOpen((o) => !o)}
       >
-        {label}
+        {GovText.more}
       </DashButton>
       {open && (
-        <ul className="mg-menu" role="menu" id={id} aria-label={label} onKeyDown={move}>
+        <ul className="mg-menu" role="menu" id={id} aria-label={GovText.more} onKeyDown={move}>
           {items.map((item) => (
             <li key={item.id} role="none">
               <button
@@ -113,8 +113,8 @@ export function MoreMenu({ items, testId, label = "More" }: { items: MenuItem[];
   );
 }
 
-/** An info, warning or danger notice with an optional action at its end. */
-export function Notice({ tone, testId, children, action }: { tone: "info" | "warning" | "danger"; testId: string; children: ReactNode; action?: ReactNode }) {
+/** An info or warning notice with an optional action at its end. */
+export function Notice({ tone, testId, children, action }: { tone: "info" | "warning"; testId: string; children: ReactNode; action?: ReactNode }) {
   return (
     <div className={`mg-notice mg-notice-${tone} ${action ? "mg-notice-row" : ""}`} role={tone === "info" ? undefined : "status"} data-testid={testId}>
       <span>{children}</span>

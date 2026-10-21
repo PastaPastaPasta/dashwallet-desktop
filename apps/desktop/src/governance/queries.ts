@@ -14,13 +14,12 @@ const g = keys.governanceAll;
 /** Tip-derived reads: a block is about 2.5 minutes. */
 const TIP_REFRESH_MS = 30_000;
 
-export const govKeys = {
+const govKeys = {
   enabled: [...g, "enabled"] as const,
   syncState: [...g, "syncState"] as const,
   info: [...g, "info"] as const,
   superblocks: [...g, "superblocks"] as const,
   proposals: (scope: ProposalScopeName, text: string) => [...g, "proposals", scope, text] as const,
-  proposal: (hash: string) => [...g, "proposal", hash] as const,
   voting: (walletId: string, hash: string) => [...g, "voting", walletId, hash] as const,
   mine: (walletId: string) => [...g, "mine", walletId] as const,
 };
@@ -48,11 +47,6 @@ export function useProposals(scope: ProposalScopeName, text: string, enabled: bo
   });
 }
 
-export function useProposal(hash: string | null) {
-  const b = useBackend();
-  return useQuery({ queryKey: govKeys.proposal(hash ?? ""), queryFn: () => b.governanceProposal(hash!), enabled: hash !== null });
-}
-
 /** The wallet's voting masternodes per listed proposal, with their votes seen (D8). */
 export function useVotingByProposal(walletId: string, hashes: string[], enabled: boolean) {
   const b = useBackend();
@@ -66,13 +60,9 @@ export function useVotingByProposal(walletId: string, hashes: string[], enabled:
   return useMemo(() => new Map(hashes.map((h, i) => [h, results[i]?.data] as const)), [hashes, results]);
 }
 
-export function useVotingMasternodes(walletId: string, hash: string | null) {
+export function useVotingMasternodes(walletId: string, hash: string) {
   const b = useBackend();
-  return useQuery({
-    queryKey: govKeys.voting(walletId, hash ?? ""),
-    queryFn: () => b.governanceVotingMasternodes(walletId, hash!),
-    enabled: hash !== null,
-  });
+  return useQuery({ queryKey: govKeys.voting(walletId, hash), queryFn: () => b.governanceVotingMasternodes(walletId, hash) });
 }
 
 /** The wallet's own proposals: work with sync off (mg-engine §2.5). */
@@ -94,9 +84,9 @@ export function useMasternodesItem(walletId: string | null): { shown: boolean; b
   };
 }
 
-export function useUpcomingSuperblocks(enabled: boolean) {
+export function useUpcomingSuperblocks() {
   const b = useBackend();
-  return useQuery({ queryKey: govKeys.superblocks, queryFn: () => b.governanceUpcomingSuperblocks(SUPERBLOCK_CHOICES), enabled });
+  return useQuery({ queryKey: govKeys.superblocks, queryFn: () => b.governanceUpcomingSuperblocks(SUPERBLOCK_CHOICES) });
 }
 
 /** Turns governance sync on (D6); re-reads everything under the prefix. */

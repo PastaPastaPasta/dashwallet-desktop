@@ -235,7 +235,7 @@ describe("the vote sheet", () => {
       [a, b],
       "yes",
     );
-    expect(v).toMatchObject({ title: "1 of 2 votes sent", ok: false, line: "Yes · weight 4 of 5" });
+    expect(v).toMatchObject({ title: "1 of 2 votes sent", line: "Yes · weight 4 of 5" });
     expect(v.rows[0].sub).toBe("weight 4 · to 8 peers");
     expect(v.rows[1].sub).toBe("Its voting key changed, so the key in this wallet no longer matches.");
     expect(voteResult([{ proTxHash: a.proTxHash, hash: "f".repeat(64), peers: 0, rejected: null }], [a], "no").rows[0].sub).toBe(

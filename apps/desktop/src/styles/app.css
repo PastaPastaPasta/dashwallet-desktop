@@ -4268,20 +4268,16 @@ button.bell-row-open:focus-visible {
 
 /* ------------------------------------------------------------------ masternodes (MG-09) */
 
-/* The Masternodes screens' components, lifted from docs/design/ux/mg-00/mg-00.css part 2 (all but
-   the summary strip, which is My masternodes', MG-10). */
+/* The Masternodes screens' components, lifted from docs/design/ux/mg-00/mg-00.css part 2 (the parts
+   Governance uses). */
 
-/* Page header with the two tabs under the title (§4.25.1). */
+/* Page header: the title and its actions (§4.25.1). */
 .mg-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--dw-space-m);
   margin-bottom: var(--dw-space-l);
-}
-
-.mg-header .tabs {
-  margin: 0;
 }
 
 .mg-header-actions {
@@ -4308,8 +4304,7 @@ button.bell-row-open:focus-visible {
   color: var(--dw-role-text-primary);
 }
 
-.chip-success::before,
-.chip-dot::before {
+.chip-success::before {
   content: "";
   width: 6px;
   height: 6px;
@@ -4350,11 +4345,6 @@ button.bell-row-open:focus-visible {
 
 .mg-row[aria-current="true"] {
   background: var(--dw-role-accent-tint);
-}
-
-.mg-row img {
-  width: 30px;
-  height: 30px;
 }
 
 .mg-row-text,
@@ -4401,18 +4391,6 @@ button.bell-row-open:focus-visible {
   border-radius: var(--dw-radius-card);
 }
 
-.mg-pane-header {
-  display: grid;
-  grid-template-columns: 46px minmax(0, 1fr);
-  align-items: center;
-  gap: var(--dw-space-m);
-}
-
-.mg-pane-header img {
-  width: 46px;
-  height: 46px;
-}
-
 .mg-pane-title {
   margin: 0;
   font-size: var(--dw-type-title3-size);
@@ -4453,7 +4431,7 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-s);
 }
 
-/* What this wallet holds: one line per role, a mark and a word (no colour alone). */
+/* Lines in two columns: the wallet's masternodes and their last votes. */
 .mg-roles {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4471,28 +4449,7 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-xs);
 }
 
-.mg-roles .mg-held::before,
-.mg-roles .mg-elsewhere::before {
-  flex: none;
-  width: 14px;
-  font-weight: var(--dw-type-footnote-medium-weight);
-}
-
-.mg-roles .mg-held::before {
-  content: "✓";
-  color: var(--dw-role-success);
-}
-
-.mg-roles .mg-elsewhere::before {
-  content: "–";
-  color: var(--dw-role-text-tertiary);
-}
-
-.mg-roles .mg-elsewhere {
-  color: var(--dw-role-text-secondary);
-}
-
-/* Notices: info (accent tint), warning, danger. */
+/* Notices: info (accent tint) and warning. */
 .mg-notice {
   margin: 0;
   padding: var(--dw-space-sm) var(--dw-space-m);
@@ -4512,10 +4469,6 @@ button.bell-row-open:focus-visible {
 
 .mg-notice-warning {
   background: var(--dw-role-warning-tint);
-}
-
-.mg-notice-danger {
-  background: var(--dw-role-danger-tint);
 }
 
 .mg-notice-row {
@@ -4748,67 +4701,6 @@ button.bell-row-open:focus-visible {
   line-height: var(--dw-type-headline-line);
 }
 
-.mg-step-intro {
-  margin: 0;
-  color: var(--dw-role-text-secondary);
-  font-size: var(--dw-type-footnote-size);
-  line-height: var(--dw-type-footnote-line);
-}
-
-/* Large radio cards: a choice with a title, a line of help and an optional note. */
-.mg-choices {
-  display: grid;
-  gap: var(--dw-space-s);
-}
-
-.mg-choices-2 {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.mg-choice {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  gap: var(--dw-space-xxxs) var(--dw-space-s);
-  padding: var(--dw-space-m) var(--dw-space-l);
-  border: 1px solid var(--dw-role-separator);
-  border-radius: var(--dw-radius-standard);
-  background: var(--dw-role-card);
-  font-size: var(--dw-type-footnote-size);
-  line-height: var(--dw-type-footnote-line);
-}
-
-.mg-choice input {
-  grid-row: 1 / span 3;
-  margin: 2px 0 0;
-  accent-color: var(--dw-role-accent);
-}
-
-.mg-choice.is-selected {
-  border-color: var(--dw-role-accent);
-  background: var(--dw-role-accent-tint);
-}
-
-.mg-choice[aria-disabled="true"] {
-  color: var(--dw-role-text-tertiary);
-}
-
-.mg-choice-title {
-  font-size: var(--dw-type-subhead-medium-size);
-  font-weight: var(--dw-type-subhead-medium-weight);
-  line-height: var(--dw-type-subhead-medium-line);
-}
-
-.mg-choice-help {
-  color: var(--dw-role-text-secondary);
-}
-
-.mg-choice-note {
-  margin-top: var(--dw-space-xxs);
-  color: var(--dw-role-text-secondary);
-  font-size: var(--dw-type-caption1-size);
-  line-height: var(--dw-type-caption1-line);
-}
-
 /* Form fields with help under them (the operator fields' plain-language help, §5a). */
 .mg-form {
   display: grid;
@@ -4831,9 +4723,7 @@ button.bell-row-open:focus-visible {
 }
 
 .mg-field input,
-.mg-field select,
-.mg-field textarea,
-.mg-input {
+.mg-field select {
   padding: var(--dw-space-s) var(--dw-space-m);
   border: 1px solid var(--dw-role-field-stroke);
   border-radius: var(--dw-radius-text-field);
@@ -4841,10 +4731,6 @@ button.bell-row-open:focus-visible {
   color: var(--dw-role-text-primary);
   font: inherit;
   font-weight: var(--dw-type-footnote-weight);
-}
-
-.mg-field textarea {
-  resize: none;
 }
 
 .mg-field .mono,
@@ -4871,17 +4757,6 @@ button.bell-row-open:focus-visible {
   border-color: var(--dw-role-danger);
 }
 
-.mg-field-ok {
-  color: var(--dw-role-text-secondary);
-  font-size: var(--dw-type-caption1-size);
-  font-weight: var(--dw-type-caption1-weight);
-}
-
-.mg-field-ok::before {
-  content: "✓ ";
-  color: var(--dw-role-success);
-}
-
 .mg-field-row {
   display: flex;
   gap: var(--dw-space-s);
@@ -4891,19 +4766,6 @@ button.bell-row-open:focus-visible {
 .mg-field-row input {
   flex: 1;
   min-width: 0;
-}
-
-/* Technical box: hashes, a message to sign, a command (UX-SPEC §5.6, monospaced allowlist). */
-.mg-code {
-  margin: 0;
-  padding: var(--dw-space-sm) var(--dw-space-m);
-  border-radius: var(--dw-radius-standard);
-  background: var(--dw-role-neutral-tint);
-  font-family: var(--dw-font-mono);
-  font-size: var(--dw-type-caption1-size);
-  line-height: var(--dw-type-caption1-line);
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
 }
 
 /* The sheet's footer: secondary on the left, the primary on the right. */
@@ -5045,27 +4907,12 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-m);
 }
 
-.mg-inline {
-  display: flex;
-  align-items: center;
-  gap: var(--dw-space-s);
-}
-
 .mg-spread {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--dw-space-m);
 }
-
-.mg-progress-line {
-  display: flex;
-  align-items: center;
-  gap: var(--dw-space-s);
-  font-size: var(--dw-type-footnote-size);
-  line-height: var(--dw-type-footnote-line);
-}
-
 
 /* MG-09's own: the toolbar, the list, the pane's parts and the syncing card. */
 .mg-toolbar {

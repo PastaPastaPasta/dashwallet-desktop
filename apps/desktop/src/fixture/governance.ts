@@ -47,7 +47,7 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const eta = (height: number) => Math.round(NOW + (height - TIP) * SPACING);
 const h = (c: string) => c.repeat(Math.ceil(64 / c.length)).slice(0, 64);
 
-export interface FixtureVote {
+interface FixtureVote {
   outcome: VoteOutcomeName;
   time: number;
 }
@@ -129,7 +129,7 @@ export const MN_A = h("a1");
 export const MN_B = h("b2");
 export const MN_C = h("c3");
 
-export const FIXTURE_MASTERNODES: GovernanceWorld["masternodes"] = [
+const FIXTURE_MASTERNODES: GovernanceWorld["masternodes"] = [
   { proTxHash: MN_A, kind: "regular", weight: 1, valid: true, keyIndex: 0, keyHolders: 1 },
   { proTxHash: MN_B, kind: "evonode", weight: 4, valid: true, keyIndex: 1, keyHolders: 1 },
   { proTxHash: MN_C, kind: "regular", weight: 1, valid: false, keyIndex: 2, keyHolders: 1 },
@@ -171,10 +171,9 @@ export function syncedGovernance(): GovernanceWorld {
 }
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
-const notSynced = (w: GovernanceWorld) => fail("governance.not_synced", `not synced: ${w.sync.phase}`, { kind: "governancePhase", phase: w.sync.phase });
 
 function requireSynced(w: GovernanceWorld) {
-  if (w.sync.phase !== "synced") throw notSynced(w);
+  if (w.sync.phase !== "synced") throw fail("governance.not_synced", `not synced: ${w.sync.phase}`, { kind: "governancePhase", phase: w.sync.phase });
 }
 
 function find(w: GovernanceWorld, hash: string): ProposalDetail {
@@ -259,10 +258,9 @@ function draftProblems(draft: ProposalDraft): ProposalFieldName[] {
   return out;
 }
 
-function checkDraft(w: GovernanceWorld, draft: ProposalDraft) {
+function checkDraft(draft: ProposalDraft) {
   const fields = draftProblems(draft);
   if (fields.length > 0) throw fail("governance.invalid_proposal", `invalid proposal: ${fields.join(", ")}`, { kind: "proposalFields", fields });
-  void w;
 }
 
 /** A stable 64-hex "hash" of the draft (FNV-1a over its JSON, repeated). */
@@ -373,7 +371,7 @@ export function governanceHandlers({
     },
     governance_preview_proposal: ({ walletId, draft }, { world }) => {
       wallet(world, walletId);
-      checkDraft(world.governance, draft);
+      checkDraft(draft);
       const { start, end } = epochs(draft);
       const dataJson = JSON.stringify({ end_epoch: end, name: draft.name, payment_address: draft.paymentAddress, payment_amount: draft.paymentAmount / COIN, start_epoch: start, type: 1, url: draft.url });
       const dataHex = Array.from(new TextEncoder().encode(dataJson), (b) => b.toString(16).padStart(2, "0")).join("");
@@ -382,7 +380,7 @@ export function governanceHandlers({
     governance_create_proposal: ({ walletId, draft, grant: grantId }, ctx) => {
       const { world } = ctx;
       const w = wallet(world, walletId);
-      checkDraft(world.governance, draft);
+      checkDraft(draft);
       const hash = draftHash(draft);
       const mine = mineOf(world, walletId);
       if (mine.some((p) => p.hash === hash)) throw fail("governance.submit_refused", "submit refused: in_flight", { kind: "reason", reason: "in_flight" });
@@ -473,7 +471,7 @@ const mineRow = (n: number, name: string, state: MyProposalState, patch: Partial
 });
 
 /** One own proposal in each MG-06 state (MG-09 fixture scenarios). */
-export const EVERY_STATE: MyProposal[] = [
+const EVERY_STATE: MyProposal[] = [
   mineRow(1, "desktop-wallet-i18n", { kind: "feePaid", confirmations: 0 }),
   mineRow(2, "dash-docs-refresh", { kind: "confirming", confirmations: 4 }),
   mineRow(3, "community-meetups", { kind: "readyToSubmit", reason: "noPeerAccepted" }),

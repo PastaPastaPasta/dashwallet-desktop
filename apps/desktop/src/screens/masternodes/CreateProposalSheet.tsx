@@ -39,10 +39,10 @@ import { useNowSecs } from "./common";
 import { CredentialField, useCredential } from "./credential";
 
 type Step = 1 | 2 | 3;
-const STEPS: { n: Step; title: string }[] = [
-  { n: 1, title: "Proposal" },
-  { n: 2, title: "Payments" },
-  { n: 3, title: "Review and pay the fee" },
+const STEPS: { n: Step; title: string; heading: string }[] = [
+  { n: 1, title: "Proposal", heading: "What is the proposal?" },
+  { n: 2, title: "Payments", heading: "How should it be paid?" },
+  { n: 3, title: "Review and pay the fee", heading: "Review the proposal" },
 ];
 
 type FieldErrors = Partial<Record<ProposalFieldName, string>>;
@@ -63,7 +63,7 @@ export function CreateProposalSheet({
   const now = useNowSecs();
   const info = useGovernanceInfo();
   const refresh = useGovernanceRefresh();
-  const superblocks = useUpcomingSuperblocks(true);
+  const superblocks = useUpcomingSuperblocks();
   const id = useId();
   const [step, setStep] = useState<Step>(1);
   const [name, setName] = useState("");
@@ -339,7 +339,7 @@ export function CreateProposalSheet({
             ))}
           </ol>
           <div className="mg-step" data-testid={`create-step-${step}`}>
-            <h3 className="mg-step-title">{step === 1 ? "What is the proposal?" : step === 2 ? "How should it be paid?" : "Review the proposal"}</h3>
+            <h3 className="mg-step-title">{current.heading}</h3>
             {body}
             <p className="form-problem" role="alert" data-testid="create-general">
               {general}

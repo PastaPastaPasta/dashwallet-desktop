@@ -16,14 +16,14 @@ import type { VoteTally } from "../api/generated/VoteTally";
 import type { VotingMasternode } from "../api/generated/VotingMasternode";
 
 /** Core's `GOVERNANCE_UPDATE_MIN`: one vote change per masternode per hour (D11). */
-export const VOTE_CHANGE_SECS = 3600;
+const VOTE_CHANGE_SECS = 3600;
 /** The network accepts a proposal fully at 6 confirmations (MG-00 D16). */
-export const FULL_CONFIRMATIONS = 6;
+const FULL_CONFIRMATIONS = 6;
 /** The proposal form's choices (UX-SPEC §4.25.3). */
 export const MAX_PAYMENTS = 12;
 export const SUPERBLOCK_CHOICES = 12;
 /** Core's proposal name rule as MG-00 words it: 1–40 of `a-z 0-9 - _`. */
-export const NAME_PATTERN = /^[a-z0-9_-]{1,40}$/;
+const NAME_PATTERN = /^[a-z0-9_-]{1,40}$/;
 
 export const GovText = {
   title: "Masternodes",
@@ -46,7 +46,6 @@ export const GovText = {
   watchOnlyText: "It shows proposals and the votes peers sent. Voting and creating a proposal need the wallet that holds the keys.",
   voteWatchOnly: "Voting needs the wallet that holds the voting keys",
   createWatchOnly: "Creating a proposal needs a wallet that can sign transactions",
-  voteSyncing: "Votes can be sent once proposals finish loading",
   noVotingKey: "No masternode in this wallet can vote on this proposal",
   emptyMine: "You haven't created a proposal.",
   emptyNeedsVote: "You have voted on every open proposal.",
@@ -71,30 +70,33 @@ export function shortDate(secs: number, locale?: string): string {
 }
 
 /** "Feb 1, 2027". */
-export function longDate(secs: number, locale?: string): string {
+function longDate(secs: number, locale?: string): string {
   return new Date(secs * 1000).toLocaleDateString(locale, { month: "short", day: "numeric", year: "numeric" });
 }
 
 /** "3 PM" or "3:30 PM". */
-export function hourOf(secs: number, locale?: string): string {
+function hourOf(secs: number, locale?: string): string {
   const d = new Date(secs * 1000);
   return d.toLocaleTimeString(locale, d.getMinutes() === 0 ? { hour: "numeric" } : { hour: "numeric", minute: "2-digit" });
 }
 
 /** "Oct 31 at 2:02 PM". */
-export function dateTime(secs: number, locale?: string): string {
+function dateTime(secs: number, locale?: string): string {
   const d = new Date(secs * 1000);
   return `${shortDate(secs, locale)} at ${d.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" })}`;
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+/** Whole days, hours and minutes of a span, at least zero. */
+function splitSpan(secs: number) {
+  const s = Math.max(0, Math.round(secs));
+  return { days: Math.floor(s / 86_400), hours: Math.floor((s % 86_400) / 3600), minutes: Math.floor((s % 3600) / 60) };
+}
+
 /** A span the long way, "1 day 6 hours", "40 minutes", at most two parts. */
 export function spanLong(secs: number): string {
-  const s = Math.max(0, Math.round(secs));
-  const days = Math.floor(s / 86_400);
-  const hours = Math.floor((s % 86_400) / 3600);
-  const minutes = Math.floor((s % 3600) / 60);
+  const { days, hours, minutes } = splitSpan(secs);
   if (days > 0) return hours > 0 ? `${plural(days, "day")} ${plural(hours, "hour")}` : plural(days, "day");
   if (hours > 0) return minutes > 0 ? `${plural(hours, "hour")} ${plural(minutes, "minute")}` : plural(hours, "hour");
   return plural(Math.max(1, minutes), "minute");
@@ -102,10 +104,7 @@ export function spanLong(secs: number): string {
 
 /** The status bar's short span, "1 d 6 h", "40 min". */
 export function spanShort(secs: number): string {
-  const s = Math.max(0, Math.round(secs));
-  const days = Math.floor(s / 86_400);
-  const hours = Math.floor((s % 86_400) / 3600);
-  const minutes = Math.floor((s % 3600) / 60);
+  const { days, hours, minutes } = splitSpan(secs);
   if (days > 0) return hours > 0 ? `${days} d ${hours} h` : `${days} d`;
   if (hours > 0) return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`;
   return `${Math.max(1, minutes)} min`;
@@ -210,7 +209,7 @@ export function budgetView(info: GovernanceInfo, rows: ProposalRow[] | undefined
 
 export type ListState =
   | { kind: "disabled" }
-  | { kind: "syncing"; percent: number | null; line: string }
+  | { kind: "syncing"; line: string }
   | { kind: "failed"; text: string }
   | { kind: "ready" };
 
@@ -224,11 +223,11 @@ export function listState(sync: GovernanceSyncState): ListState {
     case "synced":
       return { kind: "ready" };
     case "waiting":
-      return { kind: "syncing", percent: null, line: "Looking for a peer that serves governance data." };
+      return { kind: "syncing", line: "Looking for a peer that serves governance data." };
     case "syncingObjects":
-      return { kind: "syncing", percent: null, line: `${fmt(sync.objects)} proposals and triggers so far. ${GovText.syncNote}` };
+      return { kind: "syncing", line: `${fmt(sync.objects)} proposals and triggers so far. ${GovText.syncNote}` };
     case "syncingVotes":
-      return { kind: "syncing", percent: null, line: `${fmt(sync.objects)} proposals and ${fmt(sync.votes)} votes so far. ${GovText.syncNote}` };
+      return { kind: "syncing", line: `${fmt(sync.objects)} proposals and ${fmt(sync.votes)} votes so far. ${GovText.syncNote}` };
   }
 }
 
@@ -451,7 +450,6 @@ export function rejectedText(reason: string): string {
 
 export interface VoteResultView {
   title: string;
-  ok: boolean;
   line: string;
   rows: { proTxHash: string; name: string; sub: string; sent: boolean }[];
 }
@@ -465,7 +463,6 @@ export function voteResult(casts: VoteCast[], nodes: VotingMasternode[], outcome
   const sentWeight = sent.reduce((s, c) => s + weightOf(c.proTxHash), 0);
   return {
     title: `${sent.length} of ${plural(casts.length, "vote")} sent`,
-    ok: sent.length === casts.length,
     line: `${outcomeText(outcome)} · weight ${sentWeight} of ${total}`,
     rows: casts.map((c) => {
       const n = byHash.get(c.proTxHash);

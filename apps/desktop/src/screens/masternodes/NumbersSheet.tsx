@@ -19,21 +19,9 @@ export function NumbersSheet({ info, network, onClose }: { info: GovernanceInfo;
     <Sheet title="Governance numbers" width="medium" testId="numbers-sheet" onClose={onClose}>
       <div className="mg-sheet-body">
         <h3 className="mg-section-title mg-flush">This cycle</h3>
-        <dl className="detail-list card-l1" data-testid="numbers-cycle">
-          {cycle.map((r) => (
-            <DetailRow key={r.label} label={r.label}>
-              {r.value}
-            </DetailRow>
-          ))}
-        </dl>
+        <NumbersList rows={cycle} testId="numbers-cycle" />
         <h3 className="mg-section-title mg-flush">Votes and budget</h3>
-        <dl className="detail-list card-l1" data-testid="numbers-votes">
-          {votes.map((r) => (
-            <DetailRow key={r.label} label={r.label}>
-              {r.value}
-            </DetailRow>
-          ))}
-        </dl>
+        <NumbersList rows={votes} testId="numbers-votes" />
         <footer className="mg-sheet-footer">
           <span />
           <span className="mg-actions">
@@ -44,5 +32,17 @@ export function NumbersSheet({ info, network, onClose }: { info: GovernanceInfo;
         </footer>
       </div>
     </Sheet>
+  );
+}
+
+function NumbersList({ rows, testId }: { rows: { label: string; value: string }[]; testId: string }) {
+  return (
+    <dl className="detail-list card-l1" data-testid={testId}>
+      {rows.map((r) => (
+        <DetailRow key={r.label} label={r.label}>
+          {r.value}
+        </DetailRow>
+      ))}
+    </dl>
   );
 }

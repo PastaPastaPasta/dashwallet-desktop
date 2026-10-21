@@ -21,6 +21,7 @@ import {
   paymentsSuffix,
   presetOutcome,
   selectionNote,
+  shortHash,
   statusChip,
   voteResult,
   voteRows,
@@ -33,13 +34,19 @@ import { CredentialField, useCredential } from "./credential";
 
 const OUTCOMES: VoteOutcomeName[] = ["yes", "no", "abstain"];
 
+/** What the result view shows once the votes went out. */
+interface VoteDone {
+  casts: VoteCast[];
+  nodes: VotingMasternode[];
+  outcome: VoteOutcomeName;
+}
+
 export function VoteSheet({ row, wallet, network, onClose }: { row: ProposalRow; wallet: WalletSummary; network: NetworkInfo; onClose: () => void }) {
   const nodes = useVotingMasternodes(wallet.walletId, row.hash);
-  const [result, setResult] = useState<{ casts: VoteCast[]; nodes: VotingMasternode[]; outcome: VoteOutcomeName } | null>(null);
+  const [result, setResult] = useState<VoteDone | null>(null);
   const [busy, setBusy] = useState(false);
-  const title = `Vote on ${row.name}`;
   return (
-    <Sheet title={title} width="medium" testId="vote-sheet" closable={!busy} onClose={onClose} focusKey={result ? "result" : nodes.data ? "form" : "loading"}>
+    <Sheet title={`Vote on ${row.name}`} width="medium" testId="vote-sheet" closable={!busy} onClose={onClose} focusKey={result ? "result" : nodes.data ? "form" : "loading"}>
       {result ? (
         <VoteResult {...result} onDone={onClose} />
       ) : nodes.isPending ? (
@@ -72,7 +79,7 @@ function VoteForm({
   busy: boolean;
   setBusy: (b: boolean) => void;
   onCancel: () => void;
-  onResult: (r: { casts: VoteCast[]; nodes: VotingMasternode[]; outcome: VoteOutcomeName }) => void;
+  onResult: (r: VoteDone) => void;
 }) {
   const b = useBackend();
   const shown = useDisplay(network);
@@ -150,7 +157,7 @@ function VoteForm({
           <span className="mg-node-result">Last vote seen</span>
         </li>
         {rows.map((r) => (
-          <li key={r.proTxHash} className="mg-node" aria-disabled={r.eligible ? undefined : true} data-testid={`vote-node-${r.proTxHash.slice(0, 8)}`}>
+          <li key={r.proTxHash} className="mg-node" aria-disabled={r.eligible ? undefined : true} data-testid={`vote-node-${shortHash(r.proTxHash)}`}>
             <input
               type="checkbox"
               id={`vote-${r.proTxHash}`}
@@ -202,7 +209,7 @@ function VoteForm({
   );
 }
 
-function VoteResult({ casts, nodes, outcome, onDone }: { casts: VoteCast[]; nodes: VotingMasternode[]; outcome: VoteOutcomeName; onDone: () => void }) {
+function VoteResult({ casts, nodes, outcome, onDone }: VoteDone & { onDone: () => void }) {
   const view = voteResult(casts, nodes, outcome);
   return (
     <div className="mg-sheet-body" data-testid="vote-result">
@@ -214,7 +221,7 @@ function VoteResult({ casts, nodes, outcome, onDone }: { casts: VoteCast[]; node
       </div>
       <ul className="mg-nodes card-l1">
         {view.rows.map((r) => (
-          <li key={r.proTxHash} className="mg-node mg-node-result-row" data-testid={`vote-result-${r.proTxHash.slice(0, 8)}`}>
+          <li key={r.proTxHash} className="mg-node mg-node-result-row" data-testid={`vote-result-${shortHash(r.proTxHash)}`}>
             <span>
               <span className="mg-node-name">{r.name}</span>
               <span className="mg-node-sub">{r.sub}</span>
