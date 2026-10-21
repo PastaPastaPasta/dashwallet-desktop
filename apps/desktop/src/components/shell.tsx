@@ -40,7 +40,20 @@ const COINJOIN: SidebarItem = {
   ),
 };
 
-/** Sections behind a feature that is off: Explore until its task, Masternodes from 1.1. CoinJoin
+/** Masternodes, last, when the wallet has something to do with them (MG-00 D1, MG-09 D3). */
+const MASTERNODES: SidebarItem = {
+  route: "masternodes",
+  title: "Masternodes",
+  icon: (
+    <>
+      <rect x="3" y="3.5" width="14" height="5" rx="1" />
+      <rect x="3" y="11.5" width="14" height="5" rx="1" />
+      <path d="M6 6h.01M6 14h.01" />
+    </>
+  ),
+};
+
+/** Sections behind a feature that is off: Explore until its task. CoinJoin
  * shows, as in dash-qt, whose `-enablecoinjoin` is on by default (D-row "sidebar"). */
 const EXPLORE_ENABLED = false;
 const EXPLORE: SidebarItem = { route: "explore", title: "Explore", icon: <path d="M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14Zm3 4-2 4-4 2 2-4 4-2Z" /> };
@@ -49,18 +62,20 @@ const EXPLORE: SidebarItem = { route: "explore", title: "Explore", icon: <path d
  * waiting), Activity, CoinJoin and Explore when enabled (DASHPAY §4). */
 const badgeText = (n: number) => (n > 99 ? "99+" : String(n));
 
-export function Sidebar({ joined, requests }: { joined: boolean; requests: number }) {
+export function Sidebar({ joined, requests, masternodes }: { joined: boolean; requests: number; masternodes: { shown: boolean; badge: number } }) {
   const route = useUi((s) => s.route);
   const contacts: SidebarItem = joined
     ? { route: "contacts", title: "Contacts", icon: CONTACTS_ICON }
     : { route: "joinDashPay", title: "Join DashPay", icon: CONTACTS_ICON };
-  const items = [HOME, PAY, RECEIVE, contacts, ACTIVITY, COINJOIN, ...(EXPLORE_ENABLED ? [EXPLORE] : [])];
+  const items = [HOME, PAY, RECEIVE, contacts, ACTIVITY, COINJOIN, ...(EXPLORE_ENABLED ? [EXPLORE] : []), ...(masternodes.shown ? [MASTERNODES] : [])];
+  const badges: Partial<Record<Route, number>> = { contacts: requests, masternodes: masternodes.badge };
   return (
     <nav className="sidebar" aria-label="Main" data-testid="sidebar">
       <ul role="list" className="sidebar-list">
         {items.map((item) => {
           const current = item.route === route;
-          const badge = item.route === "contacts" && requests > 0 ? requests : null;
+          const count = badges[item.route] ?? 0;
+          const badge = count > 0 ? count : null;
           return (
             <li key={item.route}>
               <button
@@ -75,7 +90,7 @@ export function Sidebar({ joined, requests }: { joined: boolean; requests: numbe
                 </svg>
                 <span className="sidebar-title">{item.title}</span>
                 {badge !== null && (
-                  <span className="sidebar-badge" data-testid="sidebar-contacts-badge" aria-label={`${badge} waiting`}>
+                  <span className="sidebar-badge" data-testid={`sidebar-${item.route}-badge`} aria-label={`${badge} waiting`}>
                     {badgeText(badge)}
                   </span>
                 )}
@@ -321,6 +336,7 @@ export function StatusBar({
   unitName,
   hd,
   onUnlock,
+  governance = null,
 }: {
   sync: SyncStatus | undefined;
   lock: LockStatus | undefined;
@@ -328,6 +344,8 @@ export function StatusBar({
   hd: boolean;
   /** Opens the unlock sheet: the lock state is a button while unlocked for mixing only (U-02 D12). */
   onUnlock: () => void;
+  /** Masternodes' voting item (MG-09 D7), before the sync state as in MG-00's frame. */
+  governance?: ReactNode;
 }) {
   const percent = sync && isSyncing(sync) ? syncPercent(sync) : null;
   return (
@@ -352,6 +370,7 @@ export function StatusBar({
           lock && <span>{LOCK_TEXT[lock.state]}</span>
         )}
         {sync && <span>{sync.connectedPeers === 1 ? "1 peer" : `${sync.connectedPeers} peers`}</span>}
+        {governance}
         {sync && <span>{!sync.running ? "Offline" : sync.caughtUp ? "Synced" : "Syncing"}</span>}
       </span>
     </footer>

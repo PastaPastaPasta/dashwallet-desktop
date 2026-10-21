@@ -59,7 +59,7 @@ describe("display settings", () => {
 
   it("QT137_walletDefaultsAreDashQts", () => {
     // dash-qt's defaults: DASH, two digits, the fee added to the amount; auto lock off (IOS-015).
-    expect(DEFAULT_PREFS).toEqual({ theme: null, unit: "dash", decimalDigits: 2, autohideBalance: false, autoLockSecs: null, subtractFeeByDefault: false });
+    expect(DEFAULT_PREFS).toEqual({ theme: null, unit: "dash", decimalDigits: 2, autohideBalance: false, autoLockSecs: null, subtractFeeByDefault: false, showMasternodes: false });
   });
 
   it("themeAndLanguage", async () => {

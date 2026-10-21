@@ -49,6 +49,11 @@ pub struct LaunchOptions {
     /// The chain has no Platform (a plain dashd regtest): no DashPay bring-up
     /// or Platform sync when SPV starts (as `dwcli --no-platform`).
     pub no_platform: bool,
+    /// dashd's RPC URL (`http://user:password@host:port`), where governance
+    /// looks up masternodes' ProRegTxs on regtest, which has no DAPI (MG-02
+    /// D80, as `dwcli --collateral-rpc`; MG-09 D28). Regtest only; a launch
+    /// flag only, never a renderer setting.
+    pub collateral_rpc: Option<String>,
     /// Force an appearance instead of following the system.
     pub theme: Option<ThemeName>,
     /// The window's inner size in logical pixels, instead of the configured
@@ -74,6 +79,7 @@ impl Default for LaunchOptions {
             ca_cert_path: None,
             initial_protocol_version: None,
             no_platform: false,
+            collateral_rpc: None,
             theme: None,
             window_size: None,
         }
@@ -92,6 +98,7 @@ usage: dash-wallet [options] [link]
   --ca-cert <file>       PEM CA certificate to trust for DAPI TLS (a devnet gateway)
   --protocol-version <n> Platform protocol version to start at
   --no-platform          the chain has no Platform (a plain dashd regtest)
+  --collateral-rpc <url> regtest: dashd's RPC, for governance's masternode collaterals
   --theme light|dark     force an appearance
   --window-size <WxH>    the window's inner size in logical pixels (default 1280x820)
   --help                 print this text";
@@ -173,6 +180,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
                 );
             }
             "--no-platform" => opts.no_platform = true,
+            "--collateral-rpc" => opts.collateral_rpc = Some(value("--collateral-rpc")?),
             // Without the `selftest` feature these are unknown options (E0-13 D17).
             #[cfg(feature = "selftest")]
             "--selftest" => opts.selftest = Some(PathBuf::from(value("--selftest")?)),
@@ -216,6 +224,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
             }
             _ => {}
         }
+    }
+    if opts.collateral_rpc.is_some() && opts.network != DashNetwork::Regtest {
+        return Err("--collateral-rpc: regtest only".into());
     }
     Ok(ParseOutcome::Run(Box::new(opts)))
 }
@@ -275,6 +286,19 @@ mod tests {
         assert_eq!(o.initial_protocol_version, Some(9));
         assert_eq!(o.theme, Some(ThemeName::Dark));
         assert_eq!(o.window_size, Some((1000, 620)));
+    }
+
+    #[test]
+    fn takes_a_collateral_rpc_on_regtest_only() {
+        let url = "http://dw:dw@127.0.0.1:19898";
+        let o = run(&["--network", "regtest", "--collateral-rpc", url]);
+        assert_eq!(o.collateral_rpc.as_deref(), Some(url));
+        for network in ["mainnet", "testnet", "devnet-paloma"] {
+            let refused = parse(["--network", network, "--collateral-rpc", url].map(String::from));
+            assert_eq!(refused, Err("--collateral-rpc: regtest only".into()));
+        }
+        // Mainnet by default: refused without --network as well.
+        assert!(parse(["--collateral-rpc", url].map(String::from)).is_err());
     }
 
     #[cfg(feature = "selftest")]
