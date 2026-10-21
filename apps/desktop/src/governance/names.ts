@@ -427,6 +427,9 @@ export function nameErrorText(e: unknown): string | null {
       return label ? `Voting on “${label}” has ended.` : "Voting on this name has ended.";
     case "governance.not_a_contender":
       return e.data?.kind === "contender" ? `${shortIdentity(e.data.identity)} isn't a contender for this name.` : "That identity isn't a contender for this name.";
+    case "platform.unavailable":
+    case "platform.timeout":
+      return "Couldn't reach Dash Platform. Try again in a moment.";
     default:
       return governanceErrorText(e);
   }

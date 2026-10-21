@@ -141,13 +141,14 @@ const STATES: { scenario: string; check: (page: Page) => Promise<void> }[] = [
     scenario: "names-list-unavailable",
     check: async (page) => {
       await expect(page.getByTestId("names-error")).toContainText("Couldn't read the votes on usernames");
+      await expect(page.getByTestId("names-error")).toContainText("The masternode list hasn't loaded yet.");
       await expect(page.getByTestId("names-retry")).toBeEnabled();
     },
   },
   {
     scenario: "names-platform-unavailable",
     check: async (page) => {
-      await expect(page.getByTestId("names-error")).toBeVisible();
+      await expect(page.getByTestId("names-error")).toContainText("Couldn't reach Dash Platform. Try again in a moment.");
       await expect(page.getByTestId("names-retry")).toBeEnabled();
     },
   },

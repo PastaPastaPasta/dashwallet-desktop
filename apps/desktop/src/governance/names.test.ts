@@ -269,6 +269,7 @@ describe("errors", () => {
     expect(nameErrorText(err("governance.contest_not_found", { kind: "contestLabel", label: "b0b" }))).toBe("Platform has no vote on “b0b”.");
     expect(nameErrorText(err("governance.not_a_contender", { kind: "contender", identity: ID_1 }))).toBe("8ZtW…R97P isn't a contender for this name.");
     expect(nameErrorText(err("governance.list_unavailable", null))).not.toBeNull();
+    expect(nameErrorText(err("platform.unavailable", null))).toBe("Couldn't reach Dash Platform. Try again in a moment.");
     expect(nameErrorText(new Error("boom"))).toBeNull();
     // The vectors' codes carry the data the sentences use.
     for (const e of VECTORS.errors as AppError[]) {
