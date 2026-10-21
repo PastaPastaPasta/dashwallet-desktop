@@ -24,6 +24,7 @@ use tokio::net::TcpListener;
 
 use super::avatar::{Admission, Pictures, Pipeline, Target, Whose};
 use super::avatar_cache::ThumbDir;
+use super::avatar_dhash::mobile_dhash;
 use super::avatar_fetch::{FetchError, FetchPolicy, Fetcher, MAX_BYTES, NameResolver};
 use super::avatar_image::{self, Crop, MAX_SIDE};
 use super::errors::AvatarError;
@@ -679,10 +680,10 @@ async fn androids_zoom_parameter_crops_the_picture() {
     assert!(Crop::from_zoom("0, 0.1, 1, 0.9").is_some());
 }
 
-// ---- hash and dHash are the library's ----
+// ---- the hash is the library's, the dHash the mobile wallets' (BL-190) ----
 
 #[test]
-fn hash_and_dhash_equal_the_librarys() {
+fn hash_is_the_librarys_and_dhash_the_mobile_wallets() {
     use sha2::Digest as _;
     let fixtures = [
         png(300, 200),
@@ -697,11 +698,10 @@ fn hash_and_dhash_equal_the_librarys() {
         };
         assert_eq!(ingested.sha, calculate_avatar_hash(bytes));
         assert_eq!(ingested.sha.to_vec(), sha2::Sha256::digest(bytes).to_vec());
-        assert_eq!(
-            ingested.dhash,
-            Some(calculate_dhash_fingerprint(bytes).unwrap())
-        );
-        // A read skips the second decode (D32).
+        // The whole picture as decoded (a GIF's first frame), as Android does.
+        let decoded = image::load_from_memory(bytes).unwrap();
+        assert_eq!(ingested.dhash, Some(mobile_dhash(&decoded)));
+        // A read makes none (D32).
         assert_eq!(
             avatar_image::ingest(bytes, None, false).unwrap().dhash,
             None
@@ -709,6 +709,61 @@ fn hash_and_dhash_equal_the_librarys() {
         checked += 1;
     }
     assert!(checked >= 8, "{checked}");
+}
+
+/// `BitmapFactory` does not apply EXIF orientation, so neither does the
+/// fingerprint, while the thumbnails do.
+#[test]
+fn the_dhash_is_of_the_picture_before_its_exif_orientation() {
+    // Bright left, dark right: every horizontal difference is set.
+    let sides = RgbaImage::from_fn(90, 60, |x, _| {
+        let v = 255 - (x * 2) as u8;
+        Rgba([v, v, v, 255])
+    });
+    let plain = encode(&sides, ImageFormat::Jpeg);
+    let rotated = with_exif_orientation(&plain, 6);
+    let ingested = avatar_image::ingest(&rotated, None, true).unwrap();
+    assert_eq!(ingested.dhash, Some([0xff; 8]));
+    assert_eq!(
+        ingested.dhash,
+        Some(mobile_dhash(&image::load_from_memory(&plain).unwrap()))
+    );
+    // Turned a quarter the gradient runs down the picture: no difference is set.
+    let turned = DynamicImage::ImageRgba8(image::imageops::rotate90(&sides));
+    assert_eq!(mobile_dhash(&turned), [0; 8]);
+    assert_eq!(avatar_image::decode(&rotated).unwrap().width(), 60);
+}
+
+/// `jpeg` with an EXIF APP1 segment giving `orientation`.
+fn with_exif_orientation(jpeg: &[u8], orientation: u8) -> Vec<u8> {
+    let mut tiff = b"MM\0*\0\0\0\x08\0\x01".to_vec();
+    // Tag 0x0112 (Orientation), SHORT, count 1, the value; no next IFD.
+    tiff.extend([
+        0x01,
+        0x12,
+        0,
+        3,
+        0,
+        0,
+        0,
+        1,
+        0,
+        orientation,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ]);
+    let mut body = b"Exif\0\0".to_vec();
+    body.extend(tiff);
+    let len = u16::try_from(body.len() + 2).unwrap().to_be_bytes();
+    let mut out = jpeg[..2].to_vec();
+    out.extend([0xff, 0xe1, len[0], len[1]]);
+    out.extend(body);
+    out.extend(&jpeg[2..]);
+    out
 }
 
 // ---- the cache ----

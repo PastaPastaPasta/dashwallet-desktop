@@ -85,10 +85,10 @@ to `dashpay_avatar`.
   of decoder allocations and 64 MiB of decoded picture (D24); past them `avatar.too_large`. A GIF gives its first frame only (D9). JPEG's EXIF orientation
   is applied. It runs on a blocking thread, at most 2 at once, and a panic in a decoder is caught and is
   `avatar.unsupported`.
-- **Hash and fingerprint** of the original bytes come from platform-wallet's own `calculate_avatar_hash` and
-  `calculate_dhash_fingerprint` (D6), called only after the bounded decode accepted the bytes and the thumbnails are
-  made (the full-size picture is dropped first): the library decodes the bytes again without limits of its own, so
-  this order is what bounds it.
+- **Hash and fingerprint** of the original bytes: the hash is platform-wallet's own `calculate_avatar_hash` (D6); the
+  fingerprint was its `calculate_dhash_fingerprint`, called after the bounded decode and the thumbnails because the
+  library decodes again without limits. Since DP4-03 D27 (BL-190) it is the mobile wallets' dHash, computed by the
+  engine from its one bounded decode, before the EXIF orientation and any crop.
 - **Thumbnails.** The picture (after the crop, if any) is cut to a centred square and resized (Lanczos3) to 128 and
   256 px, then encoded as 8-bit RGBA PNG. Only these re-encoded PNGs are stored or cross the facade.
 
@@ -136,7 +136,7 @@ otherwise), before the identity's lock is taken (DP4-01 D8); the write sets `ava
 | D3 | Only port 443 is fetched. | Mobile wallets allow any port; refusing others costs a picture on a non-standard port (shown as initials) and removes scanning of public hosts' other services through other users' profiles. |
 | D4 | A name with any non-public address is refused as a whole, rather than its public addresses used. | An attacker who mixes addresses gets nothing; a legitimate host never publishes private records next to public ones. |
 | D5 | No proxy: reqwest's system-proxy support is switched off (`no_proxy`). | A proxy resolves names itself, so the engine could not check where a connection goes; and the environment's `HTTPS_PROXY` must not route around the guard. The app has no proxy setting (U-04 D7). When one arrives (follow-up F2), avatars over a proxy must use it, and the address check then has to be the proxy's (or avatars off). |
-| D6 | Hash and dHash are platform-wallet's own functions, so they equal the library's by construction (a test asserts it on every fixture and every corpus seed). The read's verdict is the SHA-256 alone, matched exactly; the fingerprint is published (the library's dHash) but not compared on reading (D32). | The SHA-256 binds the bytes: a host cannot serve other bytes under it. The fingerprint is the publisher's claim as much as the hash, so with an exact hash it adds nothing against a hostile host, and a fingerprint check could only refuse pictures that are exactly what the profile names. Accepting a *near* fingerprint with another hash (DIP-15's recompressed-image case) is not done: the acceptance is "wrong hash shows initials". |
+| D6 | Hash and dHash are platform-wallet's own functions, so they equal the library's by construction (a test asserts it on every fixture and every corpus seed). Revised by DP4-03 D27 (BL-190): the hash stays the library's; the dHash published is now the mobile wallets' (`avatar_dhash.rs`), and that test asserts it. The read's verdict is the SHA-256 alone, matched exactly; the fingerprint is published (the mobile wallets' dHash since DP4-03 D27) but not compared on reading (D32). | The SHA-256 binds the bytes: a host cannot serve other bytes under it. The fingerprint is the publisher's claim as much as the hash, so with an exact hash it adds nothing against a hostile host, and a fingerprint check could only refuse pictures that are exactly what the profile names. Accepting a *near* fingerprint with another hash (DIP-15's recompressed-image case) is not done: the acceptance is "wrong hash shows initials". |
 | D7 | A mismatch is `avatar.hash_mismatch`, not `Ok(None)`; `None` is only "no avatar" or the toggle. Hosts show the initials for every error. | The code is in the contract since E0-08, and a host (or dwcli, or T2) can tell "no picture" from "a picture that failed its check". |
 | D8 | PNG, JPEG and GIF only; WebP and the rest are `avatar.unsupported`. The format is sniffed. | Those are what the mobile wallets publish (Gravatar, Imgur, camera and gallery JPEGs) and what the library's dHash decodes (its `image` features). WebP would add a decoder for no profile seen (follow-up F3). A `Content-Type` is the server's claim. |
 | D9 | A GIF, animated or not, is accepted and its first frame used. | The thumbnail is a still PNG anyway, the library's dHash (`load_from_memory`) hashes the first frame, and decoding only the first frame bounds an animation of any length. Refusing animated GIFs would show initials for pictures Android shows. |
@@ -206,3 +206,5 @@ otherwise), before the identity's lock is taken (DP4-01 D8); the write sets `ava
   compute it the way the mobile wallets do, or their 20-bit check refuses our avatars. T2 compared the library's dHash
   with fingerprints already on testnet, not with a mobile implementation; D6's "9 × 9, mean grey, bilinear" for
   Android is unverified. Check dash-wallet (Android) and the iOS DashPay fingerprint code first.
+  Done in DP4-03 D27: the published fingerprint is Android's `CocoaImageDHash`, equal on 38 of the 53 byte-exact
+  testnet avatars (all 43 Android set, with their decoder); no current reader compares it, so nothing refuses either.

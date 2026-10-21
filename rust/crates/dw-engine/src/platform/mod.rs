@@ -8,6 +8,7 @@
 pub(crate) mod attribution;
 mod avatar;
 mod avatar_cache;
+mod avatar_dhash;
 mod avatar_fetch;
 mod avatar_image;
 #[cfg(test)]
