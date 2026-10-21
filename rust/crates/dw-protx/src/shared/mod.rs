@@ -21,6 +21,10 @@
 //!   pin's `Transaction` can't decode for types 10–12 or a version-3 payload.
 //! - [`CollateralShare`] / [`PayoutShare`]: the share table and payout list
 //!   entries (`providertx.h:31-90`).
+//! - [`rules`]: Core's trivial and contextual checks of types 10–12, in
+//!   Core's order with Core's reasons, run before anything is signed
+//!   (MG-04b §5.1), and [`rules::ShareReward`], which resets a reward to the
+//!   refund script, never to an empty one (MG-04b D31).
 //!
 //! These payloads are consensus-valid only once the v24 fork is active
 //! (`GetValidatedPayload`, `specialtxman.cpp:1097-1122`).
@@ -33,6 +37,7 @@ pub mod json;
 pub mod netinfo;
 pub mod rawtx;
 pub mod registration;
+pub mod rules;
 
 pub use netinfo::ExtNetInfo;
 pub use rawtx::SpecialTx;

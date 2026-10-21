@@ -78,7 +78,7 @@ fn is_valid_payout_script(script: &ScriptBuf) -> bool {
 }
 
 /// `CBLSLazyPublicKey::Get().IsValid()` under `scheme`: a G1 point.
-fn is_valid_operator_key(key: &[u8; 48], scheme: BlsScheme) -> bool {
+pub(crate) fn is_valid_operator_key(key: &[u8; 48], scheme: BlsScheme) -> bool {
     BlsPkBytes::from_bytes(*key)
         .as_scheme(scheme)
         .canonicalize()
@@ -109,7 +109,11 @@ fn other_scheme(key: &[u8; 48], scheme: BlsScheme) -> Option<[u8; 48]> {
 }
 
 /// Whether `entry` holds `key` (in `scheme`) under either serialization.
-fn holds_operator_key(entry: &ListedMasternode, key: &[u8; 48], scheme: BlsScheme) -> bool {
+pub(crate) fn holds_operator_key(
+    entry: &ListedMasternode,
+    key: &[u8; 48],
+    scheme: BlsScheme,
+) -> bool {
     entry.operator_public_key == *key
         || other_scheme(key, scheme).is_some_and(|k| entry.operator_public_key == k)
 }
