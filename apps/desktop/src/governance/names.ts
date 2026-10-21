@@ -7,6 +7,7 @@ import { isAppError } from "../api/backend";
 import type { ContestedName } from "../api/generated/ContestedName";
 import type { ContestedNames } from "../api/generated/ContestedNames";
 import type { NameChoice } from "../api/generated/NameChoice";
+import type { NameRejectionName } from "../api/generated/NameRejectionName";
 import type { NameVoteCast } from "../api/generated/NameVoteCast";
 import type { NameVoter } from "../api/generated/NameVoter";
 import type { NameVoterState } from "../api/generated/NameVoterState";
@@ -335,7 +336,8 @@ export function lastVoteNotice(picked: NameVoterRowView[], voters: NameVoter[], 
 
 // ---------------------------------------------------------------- the result
 
-const REJECTED: Record<string, string> = {
+/** A sentence per reason dw-app passes (`NameRejectionName`, MG-11 D15): `unconfirmed` has its own. */
+const REJECTED: Record<Exclude<NameRejectionName, "unconfirmed">, string> = {
   unknown_masternode: "This masternode isn't in the current masternode list.",
   no_voting_key: "Its voting key is not in this wallet.",
   cancelled: "Not sent: the wallet locked, or the send ran out of time, before it left.",
@@ -355,7 +357,7 @@ const REJECTED: Record<string, string> = {
 };
 
 /** A `NameVoteCast.rejected` reason as a sentence (MG-09 D13's rule): never the raw value. */
-export const nameRejectedText = (reason: string) => REJECTED[reason] ?? "Platform refused the vote.";
+export const nameRejectedText = (reason: Exclude<NameRejectionName, "unconfirmed">) => REJECTED[reason];
 
 /** The sentence for an outcome Platform didn't answer (MG-07 D7): never a success claim. */
 export const UNCONFIRMED_TEXT = "Sent, but Platform didn't confirm it. It may still count: check again in a minute.";
@@ -393,12 +395,12 @@ export function nameVoteResult(casts: NameVoteCast[], voters: NameVoter[], label
   const rows = casts.map((c) => {
     const v = byHash.get(c.proTxHash);
     const name = v ? nodeName(v) : `Masternode ${shortHash(c.proTxHash)}`;
-    let state: CastState = c.rejected === null ? "counted" : c.rejected === "unconfirmed" ? "unconfirmed" : "refused";
-    let sub = state === "counted" ? `weight ${weightOf(c.proTxHash)} · Platform counted it` : state === "unconfirmed" ? UNCONFIRMED_TEXT : nameRejectedText(c.rejected!);
-    if (state === "unconfirmed" && sameChoice(now.get(c.proTxHash), choice)) {
-      state = "counted";
-      sub = `weight ${weightOf(c.proTxHash)} · Platform now shows this choice`;
-    }
+    const weight = `weight ${weightOf(c.proTxHash)}`;
+    let state: CastState, sub: string;
+    if (c.rejected === null) [state, sub] = ["counted", `${weight} · Platform counted it`];
+    else if (c.rejected !== "unconfirmed") [state, sub] = ["refused", nameRejectedText(c.rejected)];
+    else if (sameChoice(now.get(c.proTxHash), choice)) [state, sub] = ["counted", `${weight} · Platform now shows this choice`];
+    else [state, sub] = ["unconfirmed", UNCONFIRMED_TEXT];
     return { proTxHash: c.proTxHash, name, sub, state, chip: CHIPS[state] };
   });
   const counted = rows.filter((r) => r.state === "counted");

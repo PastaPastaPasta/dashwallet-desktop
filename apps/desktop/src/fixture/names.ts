@@ -11,6 +11,7 @@ import type { AppError } from "../api/generated/commands";
 import type { ContestedName } from "../api/generated/ContestedName";
 import type { ContestedNames } from "../api/generated/ContestedNames";
 import type { NameChoice } from "../api/generated/NameChoice";
+import type { NameRejectionName } from "../api/generated/NameRejectionName";
 import type { NameVoteCast } from "../api/generated/NameVoteCast";
 import type { ThemeName } from "../api/generated/ThemeName";
 import { sameChoice } from "../governance/names";
@@ -99,8 +100,8 @@ export interface NamesWorld {
   names: ContestedNames;
   /** Both calls fail as a whole: SPV has no masternode list, or Platform can't be reached. */
   unavailable: "list" | "platform" | null;
-  /** `vote_name` answers these masternodes with this `rejected` reason instead of counting. */
-  refuse: Record<string, string>;
+  /** `vote_name` answers these masternodes with this `rejected` reason, after the broadcast, instead of counting. */
+  refuse: Record<string, NameRejectionName>;
   /** An `unconfirmed` answer whose vote Platform did take: the next read shows it (MG-07 D7). */
   unconfirmedLands: boolean;
 }
@@ -198,12 +199,7 @@ export function nameHandlers({
         // Drive's 40304 for the same choice again, after the broadcast.
         if (same) return { proTxHash, transition, rejected: "already_voted" };
         const refused = n.refuse[proTxHash];
-        if (refused && !(refused === "unconfirmed" && n.unconfirmedLands))
-          return {
-            proTxHash,
-            transition: refused === "platform_unavailable" ? null : transition,
-            rejected: refused,
-          };
+        if (refused && !(refused === "unconfirmed" && n.unconfirmedLands)) return { proTxHash, transition, rejected: refused };
         if (!state) voter.current.push((state = { label, choice: null, votesUsed: 0 }));
         move(contest, state.choice, choice, voter.weight);
         state.choice = structuredClone(choice);

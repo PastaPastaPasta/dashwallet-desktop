@@ -373,3 +373,23 @@ fn every_command_has_a_vector() {
     keys.sort_unstable();
     assert_eq!(keys, names);
 }
+
+/// Every reason MG-07's fixture holds (all of §3's) crosses as itself, none
+/// read as `refused` but `refused`; an unknown one reads as `refused`.
+#[test]
+fn every_name_vote_reason_crosses_as_itself() {
+    let reasons: std::collections::BTreeSet<String> =
+        mg07::<Vec<NameVoteCast>>("name_vote_casts.json")
+            .into_iter()
+            .filter_map(|c| c.rejected)
+            .collect();
+    assert_eq!(reasons.len(), 17, "{reasons:?}");
+    for reason in &reasons {
+        let crossed = dto::NameRejectionName::from_engine(reason);
+        assert_eq!(to_json(crossed), Value::String(reason.clone()));
+    }
+    assert_eq!(
+        dto::NameRejectionName::from_engine("new_reason"),
+        dto::NameRejectionName::Refused
+    );
+}

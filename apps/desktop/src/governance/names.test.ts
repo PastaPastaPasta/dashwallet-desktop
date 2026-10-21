@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import type { AppError } from "../api/generated/AppError";
 import type { ContestedName } from "../api/generated/ContestedName";
 import type { ContestedNames } from "../api/generated/ContestedNames";
+import type { NameRejectionName } from "../api/generated/NameRejectionName";
 import type { NameVoteCast } from "../api/generated/NameVoteCast";
 import { FIXTURE_NAMES, ID_1, ID_2, VOTER_A, VOTER_B, VOTER_C } from "../fixture/names";
 import { FIXTURE_NOW, secs } from "../fixture/wallet";
@@ -42,7 +43,7 @@ const a11ce = (n = names()) => n.contests[0];
 const towards = (identity: string) => ({ kind: "towardsIdentity", identity }) as const;
 const LOCK = { kind: "lock" } as const;
 const ABSTAIN = { kind: "abstain" } as const;
-const cast = (proTxHash: string, rejected: string | null): NameVoteCast => ({ proTxHash, transition: rejected === "vote_limit" ? null : "5e".repeat(32), rejected });
+const cast = (proTxHash: string, rejected: NameRejectionName | null): NameVoteCast => ({ proTxHash, transition: rejected === "vote_limit" ? null : "5e".repeat(32), rejected });
 
 describe("names and choices", () => {
   it("compares names as DPNS does", () => {
@@ -247,14 +248,14 @@ describe("the result", () => {
     expect(checked.unconfirmed).toBe(false);
   });
 
-  it("has a sentence for every rejected reason the engine sends, never the raw value", () => {
-    const reasons = (VECTORS.results.governance_vote_name as NameVoteCast[]).map((c) => c.rejected).filter((r): r is string => r !== null && r !== "unconfirmed");
+  it("has its own sentence for every rejected reason the engine sends, never the raw value", () => {
+    // `REJECTED` is typed by dw-app's `NameRejectionName`, so tsc holds the map to the union; the
+    // vectors (MG-07's fixture: every reason once) hold the union to the engine.
+    const reasons = (VECTORS.results.governance_vote_name as NameVoteCast[])
+      .map((c) => c.rejected)
+      .filter((r): r is Exclude<NameRejectionName, "unconfirmed"> => r !== null && r !== "unconfirmed");
     expect(reasons).toHaveLength(16);
-    const fallback = nameRejectedText("no_such_reason");
-    for (const r of reasons) {
-      expect(nameRejectedText(r), r).not.toMatch(/_|^[a-z]+$/);
-      if (r !== "refused") expect(nameRejectedText(r), r).not.toBe(fallback);
-    }
+    for (const r of reasons) expect(nameRejectedText(r), r).not.toMatch(/_|^[a-z]+$/);
     expect(new Set(reasons.map(nameRejectedText)).size).toBe(reasons.length);
     // An unknown masternode in the result is named by its hash.
     const view = nameVoteResult([cast("d4".repeat(32), "unknown_masternode")], names().voters, "a11ce", LOCK);
