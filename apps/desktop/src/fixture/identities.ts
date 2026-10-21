@@ -9,6 +9,7 @@ import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { IdentityDetail } from "../api/generated/IdentityDetail";
 import type { IdentityKeyInfo } from "../api/generated/IdentityKeyInfo";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
+import { BASE58_ID } from "../dashpay/identities";
 import { IDENTITY, registered, type DashPayWorld } from "./dashpay";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureGrant, World } from "./scenarios";
@@ -95,8 +96,6 @@ export interface IdentitiesDeps {
   grant(w: World, id: string, walletId: string, kinds: GrantPurposeSpec["kind"][]): FixtureGrant | null;
   useGrant(w: World, id: string): void;
 }
-
-const BASE58_ID = /^[1-9A-HJ-NP-Za-km-z]{42,44}$/;
 
 export function identitiesHandlers(d: IdentitiesDeps): Handlers {
   const changed = ({ world, emit }: Ctx, walletId: string) =>

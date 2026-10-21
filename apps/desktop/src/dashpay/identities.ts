@@ -13,8 +13,7 @@ import type { KeyTypeName } from "../api/generated/KeyTypeName";
 import type { SecurityLevelName } from "../api/generated/SecurityLevelName";
 import { Model } from "../onboarding/model";
 import { GrantModel } from "../tools/grant";
-import { PROFILE_COPY } from "./profile";
-import { namesState } from "./status";
+import { headerModel } from "./profile";
 
 export const IDENTITIES_COPY = {
   title: "Identities",
@@ -81,13 +80,11 @@ const BY_CODE: Record<string, string> = {
   invalid_argument: IDENTITIES_COPY.find.invalid,
 };
 
-export function identityErrorText(e: unknown): string {
-  if (!isAppError(e)) return "Something went wrong.";
-  return BY_CODE[e.code] ?? `Something went wrong (${e.code}).`;
-}
-
-/** `identity_refresh_all`'s failures by code. */
 const codeText = (code: string) => BY_CODE[code] ?? `Something went wrong (${code}).`;
+
+export function identityErrorText(e: unknown): string {
+  return isAppError(e) ? codeText(e.code) : "Something went wrong.";
+}
 
 export const shortId = (id: string) => (id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-6)}` : id);
 
@@ -109,15 +106,12 @@ export interface IdentityRow {
 }
 
 export function identityRow(i: IdentitySummary): IdentityRow {
-  const names = namesState(i);
-  const username =
-    names === "named" ? `@${i.mainName}` : names === "none" ? PROFILE_COPY.noUsername : names === "unknown" ? PROFILE_COPY.notLoaded : PROFILE_COPY.updating;
-  const display = i.profile?.displayName?.trim() || null;
+  const h = headerModel(i);
   return {
     identity: i.identity,
-    username,
-    noName: names === "none",
-    initials: (Array.from(display ?? i.mainName ?? "?")[0] ?? "?").toUpperCase(),
+    username: h.username,
+    noName: h.names === "none",
+    initials: h.initials,
     isMain: i.isMain,
     index: IDENTITIES_COPY.index(i.index),
     credits: i.balance,
@@ -188,7 +182,7 @@ export const keyRows = (keys: IdentityKeyInfo[]) => [...keys].sort((a, b) => a.i
  * username, or the query to send (trimmed). The engine checks it again. */
 export type FindInput = { kind: "empty" } | { kind: "invalid" } | { kind: "query"; query: string };
 
-const BASE58_ID = /^[1-9A-HJ-NP-Za-km-z]{42,44}$/;
+export const BASE58_ID = /^[1-9A-HJ-NP-Za-km-z]{42,44}$/;
 const LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9-]{1,61}[A-Za-z0-9])$/;
 
 export function findInput(text: string): FindInput {

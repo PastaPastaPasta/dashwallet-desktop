@@ -47,7 +47,7 @@ use super::trust::{self, BoxFuture};
 use crate::{NetworkSession, WalletId};
 
 /// The names a lookup shows at most.
-pub(super) const FOUND_NAMES: u32 = 10;
+const FOUND_NAMES: u32 = 10;
 
 /// Platform's answers for the identity reads: the SDK, or a test's script.
 pub(crate) trait IdentityNet: Send + Sync {
@@ -94,7 +94,7 @@ impl IdentityNet for SdkIdentities {
 }
 
 /// The keys as the page lists them, by key id.
-pub(super) fn key_infos(keys: &BTreeMap<KeyID, IdentityPublicKey>) -> Vec<IdentityKeyInfo> {
+fn key_infos(keys: &BTreeMap<KeyID, IdentityPublicKey>) -> Vec<IdentityKeyInfo> {
     keys.values().map(key_info).collect()
 }
 
@@ -263,12 +263,10 @@ impl NetworkSession {
     async fn refresh_one(&self, wallet: WalletId, id: Identifier) -> Result<(), PlatformError> {
         let manager = self.manager()?;
         let w = (manager.get_wallet(&wallet.0).await).ok_or(PlatformError::WalletNotFound)?;
-        let owned = |state: &platform_wallet::PlatformWalletInfo| {
-            (state.identity_manager)
-                .wallet_identity(&wallet.0, &id)
-                .is_some()
-        };
-        if !owned(&*w.state().await) {
+        if (w.state().await.identity_manager)
+            .wallet_identity(&wallet.0, &id)
+            .is_none()
+        {
             return Err(IdentityError::NotFound.into());
         }
         let net = self.identity_net()?;
@@ -282,7 +280,6 @@ impl NetworkSession {
                 .ok_or(IdentityError::NotFound)?;
             fold(m, &fetched, w.persister())?;
         }
-        drop(manager);
         self.refresh_balance_of(wallet, id).await?;
         Ok(())
     }

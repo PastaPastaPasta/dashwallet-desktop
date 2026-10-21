@@ -168,7 +168,7 @@ function IdentityRowView({ row, model, balance, onKeys }: { row: IdentityRow; mo
   );
 }
 
-export function KeysTable({ keys, testId }: { keys: KeyRow[]; testId: string }) {
+function KeysTable({ keys, testId }: { keys: KeyRow[]; testId: string }) {
   const T = C.table;
   return (
     <div className="identity-keys-wrap">
