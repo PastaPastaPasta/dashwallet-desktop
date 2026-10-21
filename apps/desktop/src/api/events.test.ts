@@ -68,8 +68,8 @@ describe("event bridge", () => {
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "events", identity: "i" } })).toEqual([keys.dashpayAll]);
     // The bring-up's outcome, and sync, move the DashPay status (BL-153 D8, D9).
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "startup" } })).toEqual([keys.dashpayAll]);
-    expect(invalidationsFor({ kind: "spvStateChanged", network: "testnet", running: true })).toEqual([keys.sync, keys.dashpayStatusAll]);
-    expect(invalidationsFor({ kind: "sync", network: "testnet", status: {} as never })).toEqual([keys.sync, keys.dashpayStatusAll]);
+    expect(invalidationsFor({ kind: "spvStateChanged", network: "testnet", running: true })).toEqual([keys.sync, keys.dashpayStatusAll, dashpayKeys.syncInfoAll]);
+    expect(invalidationsFor({ kind: "sync", network: "testnet", status: {} as never })).toEqual([keys.sync, keys.dashpayStatusAll, dashpayKeys.syncInfoAll]);
     // U-06: the engine's CoinJoin signal, and a balance change (D7), re-read the wallet's mixing status.
     expect(invalidationsFor({ kind: "coinJoin", network: "testnet", walletId: "w" })).toEqual([keys.coinjoinStatus("w")]);
     const report = REPORT;

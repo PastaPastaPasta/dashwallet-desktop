@@ -33,7 +33,7 @@ X. The QT and IOS rows keep their status in `docs/parity.md` (D21).
 | Masternodes, EvoNodes: total (enabled) | `nodeInfo.masternodes/evonodes`; "—" until the list phase finished | QT-144 |
 | Memory pool: transactions, usage | `nodeInfo.mempool*`: "—" and "Requires full-node data source" on SPV (D4) | QT-144 |
 | The warning banner, most severe first | `warnings()` (D4) | QT-040 |
-| DashPay card (loops, last pass, quorum source, Sync now) | **not yet (DP6-03)** | — |
+| DashPay card (loops, last pass, pending crypto, scan verdict, quorum source, Sync now) | DP6-03: `dashpaySyncStatus`, `dashpayStatus`, `trustedQuorumsOnly`, `quorumSource`, `dashpaySyncSoon` (`docs/design/DP6-03-dashpay-info-card.md`) | IOS-114 |
 | Network traffic graph | **not yet**: the SPV client exposes no byte counters (QT-146, M6) | QT-146 |
 
 ### Console (QT-145)
@@ -228,7 +228,7 @@ Screenshots of every step, the app's and dashd's logs and `result.json` go to `$
 |---|---|
 | U-04 adopts `choose_file_path` (D2) | U-04 D19's save-as and open dialogs, Backups ▸ Show folder stays an opener question |
 | Tool view preferences into `settings.json` (D8) | console font size, Coin Selection mode and sort |
-| DP6-03 | Information's DashPay card |
+| ~~DP6-03~~ | ~~Information's DashPay card~~ (done: `docs/design/DP6-03-dashpay-info-card.md`) |
 | DP1-09, DP1-02 facade call | Repair's Finish transfers and Unrecorded asset locks (D12) |
 | M6 | network traffic (QT-146), external signer (QT-080) |
 | Engine: peer details from dash-spv (user agent, version, starting height, ping, bytes) | Peers shows "—" in those columns: `peers()` reports address and connection time only (QT-147 stays partial) |

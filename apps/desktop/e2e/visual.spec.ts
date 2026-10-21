@@ -143,6 +143,24 @@ for (const theme of THEMES) {
   }
 }
 
+// DP6-03: Information's DashPay card alone (the tab's own shot ends above it), running on SPV
+// quorum keys and in the degraded mode.
+for (const theme of THEMES) {
+  for (const scenario of ["dashpay-info-spv", "dashpay-registered"]) {
+    test(`visual tools-dashpay-card ${scenario} ${theme}`, async ({ page }) => {
+      await page.clock.setFixedTime(FIXTURE_NOW);
+      await page.goto(fixtureUrl(scenario, theme));
+      await page.getByTestId("toolbar").waitFor();
+      await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "tools", tab: "information" }));
+      const card = page.getByTestId("information-dashpay");
+      await expect(card.getByTestId("information-dashpay-rows")).toBeVisible();
+      await card.scrollIntoViewIfNeeded();
+      await fontsReady(page);
+      await expect(card).toHaveScreenshot(`${theme}-tools-dashpay-card-${scenario}.png`, { animations: "disabled", caret: "hide" });
+    });
+  }
+}
+
 const SETTINGS: SettingsView[] = ["general", "security", "wallets", "backups", "about", "exportSheet"];
 
 for (const theme of THEMES) {

@@ -13,6 +13,8 @@ import type { ContactList } from "./generated/ContactList";
 import type { ContactQueryArgs } from "./generated/ContactQueryArgs";
 import type { CredentialSpec } from "./generated/CredentialSpec";
 import type { DashPayStatus } from "./generated/DashPayStatus";
+import type { DashPaySyncStatus } from "./generated/DashPaySyncStatus";
+import type { QuorumSource } from "./generated/QuorumSource";
 import type { EligibilityName } from "./generated/EligibilityName";
 import type { ScannedContactInfo } from "./generated/ScannedContactInfo";
 import type { ScreenScanMode } from "./generated/ScreenScanMode";
@@ -270,6 +272,12 @@ export interface Backend {
   dashpayPendingSetupCount(walletId: string): Promise<number>;
   /** Asks for a DashPay pass now, in the background (Contacts opened). */
   dashpaySyncSoon(): Promise<null>;
+  /** Tools ▸ Information's DashPay card (DP6-03): the bring-up, the last pass, the loops, the quorum source. */
+  dashpaySyncStatus(walletId: string): Promise<DashPaySyncStatus>;
+  /** Where Platform proofs get their quorum keys, without a wallet (DP6-03). */
+  quorumSource(): Promise<QuorumSource>;
+  /** The developer toggle: quorum keys from the trusted service only (DP6-03 D5). */
+  trustedQuorumsOnly(): Promise<boolean>;
   /** DPNS usernames starting with `prefix` (DP2-03). */
   searchUsers(walletId: string, prefix: string, limit: number): Promise<UserHit[]>;
   // The contact pane and the bell (DP2-09).
