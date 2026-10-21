@@ -81,7 +81,7 @@ pub(crate) trait NameVoteNet: ContestNet {
     /// The voter identity's next nonce.
     fn nonce(&self, voter: [u8; 32]) -> impl Future<Output = Result<u64, PlatformError>> + Send;
     /// Broadcasts a signed transition: one attempt, no retry on another
-    /// node (D12). Runs under the permit's deadline (D16).
+    /// node (D12). A First runs under its permit's deadline (D16).
     fn broadcast(&self, bytes: Vec<u8>) -> impl Future<Output = Broadcast> + Send;
     /// Waits for the proof of a transition [`Broadcast::Accepted`] took
     /// (D12), after the permit ended.

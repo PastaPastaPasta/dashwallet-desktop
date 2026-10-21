@@ -100,6 +100,8 @@ pub(crate) struct FakeNames {
     delay: Mutex<Option<Duration>>,
     delivered: AtomicUsize,
     pending: Mutex<Option<Cast>>,
+    /// Accepted broadcasts get no proof.
+    unproved: AtomicBool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -205,7 +207,11 @@ impl NameVoteNet for FakeNames {
     }
 
     async fn wait(&self, _: Vec<u8>) -> Cast {
-        lock(&self.pending).take().unwrap_or(Cast::Counted)
+        let answer = lock(&self.pending).take().unwrap_or(Cast::Counted);
+        match self.unproved.load(Ordering::SeqCst) {
+            true => Cast::Unknown,
+            false => answer,
+        }
     }
 
     async fn diagnose(&self, _: [u8; 32], _: [u8; 20]) -> Option<&'static str> {
@@ -583,6 +589,20 @@ fn whole_call_errors_leave_the_grant_unused() {
         vote(LABEL, NameChoice::Abstain, &[A]),
         "governance.list_unavailable"
     );
+    // A malformed or repeated proTxHash is refused before the list is read.
+    for mns in [
+        vec!["zz".to_owned()],
+        vec![display_hex(&A), display_hex(&A)],
+    ] {
+        let e = n.f.engine.block_on(n.gov.vote_name(
+            n.f.wallet,
+            LABEL.into(),
+            NameChoice::Abstain,
+            mns,
+            grant.clone(),
+        ));
+        assert_eq!(e.unwrap_err().code(), "invalid_argument");
+    }
     let names = n.f.engine.block_on(n.gov.contested_names(n.f.wallet));
     assert_eq!(names.unwrap_err().code(), "governance.list_unavailable");
     *lock(&n.f.session.governance.name_list) = list;
@@ -773,6 +793,20 @@ fn a_slow_broadcast_is_cut_at_the_permit_deadline() {
     assert_eq!(lock(&n.net.sent).len(), 1);
     assert_eq!(n.net.delivered.load(Ordering::SeqCst), 0);
     assert_eq!(n.leases(), 0);
+}
+
+/// Review r2: a broadcast DAPI took whose proof never comes back is
+/// `unconfirmed` with its transition, `Sent` in the fence, and not counted.
+#[test]
+fn an_unproved_vote_is_sent_but_unconfirmed() {
+    let n = names();
+    n.net.unproved.store(true, Ordering::SeqCst);
+    let cast = n.vote(LABEL, NameChoice::Abstain, &[B], n.grant()).unwrap();
+    assert_eq!(reasons(&cast), vec![(display_hex(&B), Some("unconfirmed"))]);
+    let t = cast[0].transition.as_deref().unwrap();
+    assert_eq!(n.status(t), Some(DispatchState::Sent));
+    let appdb = n.f.session.live().unwrap().appdb;
+    assert_eq!(super::votes_used(&appdb, &B, LABEL).unwrap(), 0);
 }
 
 /// Review m1, m4: the SDK's answers as the fence and the caller see them.
