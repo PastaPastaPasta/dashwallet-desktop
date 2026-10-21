@@ -97,10 +97,15 @@ fn import(
 
 /// The regtest P2PKH address at `m/44'/1'/0'/0/0` of `phrase`.
 fn first_receive_address(phrase: &str) -> String {
+    address_at(phrase, "m/44'/1'/0'/0/0")
+}
+
+/// The regtest P2PKH address of the key at `path` of `phrase`.
+fn address_at(phrase: &str, path: &str) -> String {
     let secret = dw_vault::mnemonic::derive_secret(phrase.as_bytes(), b"", false).unwrap();
     let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &secret.seed[..]).unwrap();
     let child = master
-        .derive_priv(&DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap())
+        .derive_priv(&DerivationPath::from_str(path).unwrap())
         .unwrap();
     let pubkey = dashcore::PublicKey::new(child.private_key.public_key());
     dashcore::Address::p2pkh(&pubkey, dashcore::Network::Regtest).to_string()
@@ -504,6 +509,15 @@ fn imported_wallet_signs_after_restart_and_unlock() {
             v.authorize(GrantPurpose::SignMessage, Some(&id.0), Credential::None)
         }))
         .unwrap();
+    // MG-04 D50: no message signature by a ProTx owner key, which the
+    // wallet lists: no key for it (r2 n-3); the grant survives the refusal.
+    let owner = address_at(ABANDON_12, "m/9'/1'/3'/2'/0");
+    let refused =
+        engine.block_on(s.sign_message(id, owner.clone(), b"m".to_vec(), grant.id.clone()));
+    assert!(
+        matches!(&refused, Err(EngineError::AddressNoKey(a)) if *a == owner),
+        "{refused:?}"
+    );
     let address = first_receive_address(ABANDON_12);
     let message = b"dashwallet-desktop restart test".to_vec();
     let signature = engine

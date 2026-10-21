@@ -323,7 +323,10 @@ struct Target {
 
 /// `vote`'s proTxHashes: at least one, at most `listed`, each 64 hex
 /// characters and none twice (`invalid_argument`).
-fn parse_masternodes(texts: &[String], listed: usize) -> Result<Vec<[u8; 32]>, GovernanceError> {
+pub(super) fn parse_masternodes(
+    texts: &[String],
+    listed: usize,
+) -> Result<Vec<[u8; 32]>, GovernanceError> {
     let bad = |m: String| GovernanceError::from(EngineError::InvalidArgument(m));
     if texts.is_empty() {
         return Err(bad("no masternodes to vote with".into()));
@@ -349,7 +352,7 @@ fn parse_masternodes(texts: &[String], listed: usize) -> Result<Vec<[u8; 32]>, G
 }
 
 /// The wallet's keychain voting keys by key id, indexes 0–19.
-type Keychain = Result<HashMap<[u8; 20], u32>, SignerError>;
+pub(super) type Keychain = Result<HashMap<[u8; 20], u32>, SignerError>;
 
 /// Signs `t`'s vote, stamped with `stamp`'s time, or says why not (MG-05
 /// §5). `keychain` is filled on first use. On the blocking pool: each key
@@ -389,7 +392,7 @@ fn sign_one(
 /// wallet without a seed) leaves the attached key to try (D20); without
 /// it the vote is `signer_unavailable`, not `no_voting_key`, since the
 /// keychain may hold the key (D23).
-fn choose_key(
+pub(super) fn choose_key(
     keychain: &Keychain,
     id: [u8; 20],
     pro_tx_hash: [u8; 32],
@@ -414,7 +417,7 @@ fn choose_key(
 }
 
 /// The reason of a vault refusal while signing.
-fn refused(e: SignerError) -> &'static str {
+pub(super) fn refused(e: SignerError) -> &'static str {
     match e {
         SignerError::Locked => "cancelled",
         _ => "signer_unavailable",

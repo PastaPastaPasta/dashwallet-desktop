@@ -216,63 +216,75 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let network = this.network.core_network();
-            let wallet = this.wallet(&wallet_id).await?;
-            let end = start.saturating_add(count);
-            if role == MasternodeKeyRole::PlatformNode {
-                let state = wallet.state().await;
-                let Some(account) = state.core_wallet.accounts.provider_platform_keys.as_ref()
-                else {
-                    return Err(MasternodeFailure::WatchOnly.into());
-                };
-                let mut keys = Vec::new();
-                for pool in account.managed_account_type().address_pools() {
-                    for entry in pool.addresses.values() {
-                        if !(start..end).contains(&entry.index) {
-                            continue;
-                        }
-                        if let Some(PublicKeyType::EdDSA(pk)) = &entry.public_key
-                            && let Ok(pk32) = <[u8; 32]>::try_from(pk.as_slice())
-                        {
-                            keys.push(MasternodeKeyInfo {
-                                role,
-                                index: entry.index,
-                                derivation_path: role.path(network, entry.index),
-                                address: None,
-                                public_key_hex: hex::encode(pk32),
-                                legacy_public_key_hex: None,
-                                platform_node_id: Some(platform_node_id_hex(&pk32)),
-                            });
-                        }
-                    }
-                }
-                keys.sort_by_key(|k| k.index);
-                return Ok(keys);
-            }
-            tokio::task::spawn_blocking(move || {
-                (start..end)
-                    .map(|index| {
-                        let key = wallet
-                            .derive_provider_key_at_index(role.kind(), index, None, false)
-                            .map_err(derive_failure)?;
-                        Ok(MasternodeKeyInfo {
-                            role,
-                            index,
-                            derivation_path: role.path(network, index),
-                            address: key.address.clone(),
-                            public_key_hex: hex::encode(&key.public_key_bytes),
-                            legacy_public_key_hex: key
-                                .legacy_public_key_bytes
-                                .as_ref()
-                                .map(hex::encode),
-                            platform_node_id: None,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, EngineError>>()
-            })
-            .await?
+            this.derive_masternode_keys(wallet_id, role, start, count)
+                .await
         })
         .await
+    }
+
+    /// [`Self::masternode_keys`] for a caller that holds an operation
+    /// guard on the runtime (MG-04's key picks).
+    pub(crate) async fn derive_masternode_keys(
+        &self,
+        wallet_id: WalletId,
+        role: MasternodeKeyRole,
+        start: u32,
+        count: u32,
+    ) -> Result<Vec<MasternodeKeyInfo>, EngineError> {
+        let network = self.network.core_network();
+        let wallet = self.wallet(&wallet_id).await?;
+        let end = start.saturating_add(count);
+        if role == MasternodeKeyRole::PlatformNode {
+            let state = wallet.state().await;
+            let Some(account) = state.core_wallet.accounts.provider_platform_keys.as_ref() else {
+                return Err(MasternodeFailure::WatchOnly.into());
+            };
+            let mut keys = Vec::new();
+            for pool in account.managed_account_type().address_pools() {
+                for entry in pool.addresses.values() {
+                    if !(start..end).contains(&entry.index) {
+                        continue;
+                    }
+                    if let Some(PublicKeyType::EdDSA(pk)) = &entry.public_key
+                        && let Ok(pk32) = <[u8; 32]>::try_from(pk.as_slice())
+                    {
+                        keys.push(MasternodeKeyInfo {
+                            role,
+                            index: entry.index,
+                            derivation_path: role.path(network, entry.index),
+                            address: None,
+                            public_key_hex: hex::encode(pk32),
+                            legacy_public_key_hex: None,
+                            platform_node_id: Some(platform_node_id_hex(&pk32)),
+                        });
+                    }
+                }
+            }
+            keys.sort_by_key(|k| k.index);
+            return Ok(keys);
+        }
+        tokio::task::spawn_blocking(move || {
+            (start..end)
+                .map(|index| {
+                    let key = wallet
+                        .derive_provider_key_at_index(role.kind(), index, None, false)
+                        .map_err(derive_failure)?;
+                    Ok(MasternodeKeyInfo {
+                        role,
+                        index,
+                        derivation_path: role.path(network, index),
+                        address: key.address.clone(),
+                        public_key_hex: hex::encode(&key.public_key_bytes),
+                        legacy_public_key_hex: key
+                            .legacy_public_key_bytes
+                            .as_ref()
+                            .map(hex::encode),
+                        platform_node_id: None,
+                    })
+                })
+                .collect::<Result<Vec<_>, EngineError>>()
+        })
+        .await?
     }
 
     /// One provider private key of a wallet (IOS-083) under a `RevealSecret`

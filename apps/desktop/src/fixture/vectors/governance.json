@@ -519,6 +519,21 @@
       }
     },
     {
+      "code": "governance.contest_not_found",
+      "message": "no contest for a11ce",
+      "data": null
+    },
+    {
+      "code": "governance.contest_closed",
+      "message": "the contest for a11ce is closed",
+      "data": null
+    },
+    {
+      "code": "governance.not_a_contender",
+      "message": "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P is not a contender",
+      "data": null
+    },
+    {
       "code": "governance.not_implemented",
       "message": "not implemented: Governance.vote",
       "data": {

@@ -21,6 +21,14 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "Governance::relay_vote",
         "internal: reached through the console's `voteraw` (`console_execute`); the UI votes with `governance_vote` (MG-05)",
     ),
+    (
+        "Governance::contested_names",
+        "deferred (MG-11): the contested-name voting UI binds it (MG-07 D11)",
+    ),
+    (
+        "Governance::vote_name",
+        "deferred (MG-11): the contested-name voting UI binds it (MG-07 D11)",
+    ),
 ];
 
 commands! {

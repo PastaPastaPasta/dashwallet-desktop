@@ -40,6 +40,21 @@ pub fn legacy_of(basic: &[u8; 48]) -> Option<[u8; 48]> {
         .map(|pk| *pk.as_bytes())
 }
 
+/// The basic serialization of a listed operator key, whichever form the
+/// list holds it in: a version-1 entry's legacy bytes are re-encoded, as
+/// Core's `CBLSLazyPublicKey` re-serializes a kept key at the payload's
+/// version (`providertx_service.cpp:902-907`). `None` if neither parses.
+pub fn basic_form(listed: &[u8; 48]) -> Option<[u8; 48]> {
+    let pk = BlsPkBytes::from_bytes(*listed);
+    if pk.as_scheme(BlsScheme::Modern).canonicalize().is_ok() {
+        return Some(*listed);
+    }
+    pk.as_scheme(BlsScheme::Legacy)
+        .reencode(BlsScheme::Modern)
+        .ok()
+        .map(|pk| *pk.as_bytes())
+}
+
 /// A valid basic-serialized operator public key for tests: the G1 generator
 /// (the public key of the scalar 1), whose compressed form is fixed by the
 /// BLS12-381 spec.
@@ -75,5 +90,13 @@ mod tests {
             basic, legacy,
             "the two serializations differ in the flag bits"
         );
+    }
+
+    #[test]
+    fn a_listed_key_reads_in_its_basic_form() {
+        let basic = TEST_OPERATOR_KEY;
+        assert_eq!(basic_form(&basic), Some(basic));
+        assert_eq!(basic_form(&legacy_of(&basic).unwrap()), Some(basic));
+        assert_eq!(basic_form(&[0x11; 48]), None);
     }
 }

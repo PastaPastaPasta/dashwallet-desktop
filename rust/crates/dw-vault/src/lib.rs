@@ -54,6 +54,7 @@ mod file;
 mod lock_race_tests;
 pub mod mnemonic;
 pub mod os_store;
+mod owner;
 pub mod paths;
 mod platform;
 mod signer;
@@ -64,6 +65,7 @@ mod vote;
 pub use crypto::{CALIBRATION_TARGET, KdfParams, KdfPolicy};
 pub use error::{MnemonicError, SignerError, VaultError};
 pub use os_store::{KeyringOsStore, MemoryOsStore, OsSecretStore};
+pub use owner::OwnerKey;
 pub use paths::{is_bip44_path, is_coinjoin_path};
 pub use platform::{ContactInfoOpened, ContactInfoSealed, ScanKey};
 pub use signer::{SignerScope, VaultSigner, WalletSigner};
@@ -79,7 +81,10 @@ pub use vault::{
     OTHER_KIND, StashedLinkKind, StashedLinkMeta, Vault, WalletBackupBundle, reads_bundle_version,
     throttle_wait_secs,
 };
-pub use vote::{FundingOutcome, FundingVote, VoteSigner, VotingKey};
+pub use vote::{
+    FundingOutcome, FundingVote, NameChoice, NameVote, SignedNameVote, VoteSigner, VotingKey,
+    is_contested_label,
+};
 
 /// Directory of the vault inside a network data directory.
 pub const VAULT_DIR: &str = "vault";

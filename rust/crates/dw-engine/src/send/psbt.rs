@@ -182,9 +182,13 @@ fn ownership(
     psbt: &PartiallySignedTransaction,
     network: dashcore::Network,
 ) -> Ownership {
+    // A ProTx owner key signs owner payloads only (MG-04 D50): an input
+    // paying one is left unsigned, as another wallet's would be.
     let path_of = |script: &dashcore::ScriptBuf| -> Option<DerivationPath> {
         let address = Address::from_script(script, network).ok()?;
-        crate::coins::own_address_info(info, &address).map(|i| i.path)
+        crate::coins::own_address_info(info, &address)
+            .map(|i| i.path)
+            .filter(|p| !dw_vault::paths::is_owner_key(p, network))
     };
     let mut paths = BTreeMap::new();
     for i in 0..psbt.inputs.len() {
@@ -200,7 +204,7 @@ fn ownership(
         .iter()
         .map(|o| {
             Address::from_script(&o.script_pubkey, network)
-                .is_ok_and(|a| crate::coins::wallet_owns(info, &a))
+                .is_ok_and(|a| crate::coins::wallet_funds_address(info, &a))
         })
         .collect();
     Ownership {
@@ -216,7 +220,9 @@ pub(super) fn derivation_of(
     fingerprint: Option<Fingerprint>,
 ) -> Option<(dashcore::secp256k1::PublicKey, Fingerprint, DerivationPath)> {
     let fp = fingerprint?;
-    let a = crate::coins::own_address_info(info, address)?;
+    // Only a funds address's: a payment to a keys-only one leaves the
+    // wallet (MG-04 D55), so no signer should take it for change.
+    let a = crate::coins::own_funds_address_info(info, address)?;
     let pk = match a.public_key? {
         PublicKeyType::ECDSA(bytes) => dashcore::secp256k1::PublicKey::from_slice(&bytes).ok()?,
         _ => return None,
@@ -477,7 +483,7 @@ impl NetworkSession {
     /// `BroadcastUnknown`). Returns the txid. An input of an asset lock a
     /// funding call of any wallet signed whose step is unresolved is
     /// refused (`Invalid`, [`held_lock_input`]), read right before the send
-    /// under the coin fence of each wallet owning an input, held through the
+    /// under the coin fence of each wallet owning a signable input, held through the
     /// send (up to dash-spv's acceptance wait).
     pub async fn broadcast_psbt(
         self: &Arc<Self>,
