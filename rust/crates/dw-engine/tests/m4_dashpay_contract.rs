@@ -1418,7 +1418,9 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.stuck_top_up_fundings().await.map(drop),
             // DP6-02's.
             dp.withdraw_quote(s(), WithdrawAmount::All).await.map(drop),
-            dp.withdraw(s(), s(), WithdrawAmount::All, s()).await.map(drop),
+            dp.withdraw(s(), s(), WithdrawAmount::All, s())
+                .await
+                .map(drop),
             dp.withdrawals(s()).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");

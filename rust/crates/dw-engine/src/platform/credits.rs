@@ -322,8 +322,15 @@ impl DashPay {
         self.on_wallet(move |session, manager, wallet| async move {
             let net = SdkWithdrawals(manager.sdk_arc());
             let what = (to.as_str(), amount);
-            withdrawal::withdraw(&net, &session, &wallet, (wallet_id, &identity), what, &grant)
-                .await
+            withdrawal::withdraw(
+                &net,
+                &session,
+                &wallet,
+                (wallet_id, &identity),
+                what,
+                &grant,
+            )
+            .await
         })
         .await
     }

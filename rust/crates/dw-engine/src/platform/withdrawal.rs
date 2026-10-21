@@ -93,6 +93,9 @@ pub(super) const CORE_FEE_PER_BYTE: u32 = MIN_CORE_FEE_PER_BYTE;
 /// The withdrawals a `withdrawals` read returns at most, newest first.
 pub(super) const RECENT_WITHDRAWALS: u32 = 20;
 
+/// Documents per page of [`SdkWithdrawals`]'s read.
+const WITHDRAWALS_PAGE: u32 = 100;
+
 /// Why a signed withdrawal's broadcast failed.
 #[derive(Debug)]
 pub(crate) enum Unsent {
@@ -106,11 +109,14 @@ pub(crate) enum Unsent {
 /// What a withdrawal asks of Platform, behind a seam (as `RequestNet`):
 /// [`SdkWithdrawals`] asks the SDK; `withdrawal_tests.rs` scripts it.
 pub(crate) trait WithdrawNet: Send + Sync {
-    /// The network's protocol version, as the SDK last proved it.
+    /// The network's protocol version, as the SDK last proved it: the
+    /// SDK's seed until a proved read ratchets it, so read it after one.
     fn version(&self) -> &'static PlatformVersion;
     /// The identity's credits, proved; `None` when Platform does not know it.
-    fn balance(&self, id: Identifier)
-    -> impl Future<Output = Result<Option<u64>, PlatformError>> + Send;
+    fn balance(
+        &self,
+        id: Identifier,
+    ) -> impl Future<Output = Result<Option<u64>, PlatformError>> + Send;
     /// The identity's next nonce (the SDK's cached one, bumped).
     fn nonce(&self, id: Identifier) -> impl Future<Output = Result<u64, PlatformError>> + Send;
     /// Broadcasts `transition` and waits for its result: the identity's new
@@ -153,11 +159,9 @@ impl WithdrawNet for SdkWithdrawals {
             .broadcast_and_wait_for_affected_state::<StateTransitionProofResult>(&self.0, None)
             .await;
         match result {
-            Ok(StateTransitionProofResult::VerifiedPartialIdentity(identity)) => {
-                identity.balance.ok_or_else(|| {
-                    Unsent::Unknown(internal("the proved identity has no balance"))
-                })
-            }
+            Ok(StateTransitionProofResult::VerifiedPartialIdentity(identity)) => identity
+                .balance
+                .ok_or_else(|| Unsent::Unknown(internal("the proved identity has no balance"))),
             Ok(_) => Err(Unsent::Unknown(internal("the proof is not of an identity"))),
             Err(e @ dash_sdk::Error::StateTransitionBroadcastError(_)) => {
                 Err(Unsent::Refused(e.into()))
@@ -173,25 +177,48 @@ impl WithdrawNet for SdkWithdrawals {
         Ok(Document::fetch(&self.0, query).await?)
     }
 
+    /// Reads every page oldest first and keeps the newest `limit`: at the
+    /// pin a descending query's proof does not verify ("inverted op in a
+    /// left-to-right walk", T2 D16). Only the owner creates its withdrawals,
+    /// so the pages end.
     async fn withdrawals(
         &self,
         owner: Identifier,
         limit: u32,
     ) -> Result<Vec<Document>, PlatformError> {
-        let mut query = DocumentQuery::new(withdrawals_contract_v()?, withdrawal::NAME)
-            .map_err(|e| PlatformError::from(dash_sdk::Error::from(e)))?
-            .with_where(WhereClause {
-                field: withdrawal::properties::OWNER_ID.into(),
-                operator: WhereOperator::Equal,
-                value: Value::Identifier(owner.to_buffer()),
-            })
-            .with_order_by(OrderClause {
-                field: withdrawal::properties::UPDATED_AT.into(),
-                ascending: false,
-            });
-        query.limit = limit;
-        let documents = Document::fetch_many(&self.0, query).await?;
-        Ok(documents.into_values().flatten().collect())
+        use dash_sdk::dapi_grpc::platform::v0::get_documents_request::get_documents_request_v0::Start;
+        let contract = withdrawals_contract_v()?;
+        let mut newest = std::collections::VecDeque::new();
+        let mut start = None;
+        loop {
+            let mut query = DocumentQuery::new(Arc::clone(&contract), withdrawal::NAME)
+                .map_err(|e| PlatformError::from(dash_sdk::Error::from(e)))?
+                .with_where(WhereClause {
+                    field: withdrawal::properties::OWNER_ID.into(),
+                    operator: WhereOperator::Equal,
+                    value: Value::Identifier(owner.to_buffer()),
+                })
+                .with_order_by(OrderClause {
+                    field: withdrawal::properties::UPDATED_AT.into(),
+                    ascending: true,
+                });
+            query.limit = WITHDRAWALS_PAGE;
+            query.start = start.take();
+            let page = Document::fetch_many(&self.0, query).await?;
+            let (len, last) = (page.len(), page.keys().last().copied());
+            for document in page.into_values().flatten() {
+                if newest.len() == limit as usize {
+                    newest.pop_front();
+                }
+                newest.push_back(document);
+            }
+            match last {
+                Some(id) if len >= WITHDRAWALS_PAGE as usize => {
+                    start = Some(Start::StartAfter(id.to_buffer().to_vec()));
+                }
+                _ => return Ok(newest.into_iter().rev().collect()),
+            }
+        }
     }
 }
 
@@ -235,7 +262,10 @@ impl Rules {
 
     fn compute(version: &PlatformVersion) -> Result<Self, PlatformError> {
         let limits = &version.system_limits;
-        let structure = (version.drive_abci.validation_and_processing.state_transitions)
+        let structure = (version
+            .drive_abci
+            .validation_and_processing
+            .state_transitions)
             .identity_credit_withdrawal_state_transition
             .basic_structure;
         let platform_min = match structure {
@@ -250,11 +280,10 @@ impl Rules {
                 });
             }
         };
-        let min_fee = IdentityCreditWithdrawalTransition::V1(
-            IdentityCreditWithdrawalTransitionV1::default(),
-        )
-        .calculate_min_required_fee(version)
-        .map_err(internal)?;
+        let min_fee =
+            IdentityCreditWithdrawalTransition::V1(IdentityCreditWithdrawalTransitionV1::default())
+                .calculate_min_required_fee(version)
+                .map_err(internal)?;
         Ok(Self {
             min: platform_min.max(dust_floor(version)?),
             max: limits.max_withdrawal_amount,
@@ -268,7 +297,11 @@ impl Rules {
     ///   `platform.insufficient_credits` for the least withdrawal;
     /// - an amount: outside the range `credits.withdrawal_out_of_range`,
     ///   above the balance less the reserve `platform.insufficient_credits`.
-    pub(crate) fn credits(&self, balance: u64, amount: WithdrawAmount) -> Result<u64, CreditsError> {
+    pub(crate) fn credits(
+        &self,
+        balance: u64,
+        amount: WithdrawAmount,
+    ) -> Result<u64, CreditsError> {
         let insufficient = |credits: u64| PlatformError::InsufficientCredits {
             needed: credits.saturating_add(self.fee),
             available: balance,
@@ -306,7 +339,10 @@ fn drive_document(
     script: &CoreScript,
     version: &PlatformVersion,
 ) -> Result<Document, PlatformError> {
-    let transform = (version.drive_abci.validation_and_processing.state_transitions)
+    let transform = (version
+        .drive_abci
+        .validation_and_processing
+        .state_transitions)
         .identity_credit_withdrawal_state_transition
         .transform_into_action;
     let properties = platform_value!({
@@ -317,7 +353,8 @@ fn drive_document(
         withdrawal::properties::STATUS: DocStatus::QUEUED,
     });
     Ok(Document::V0(DocumentV0 {
-        contract_version: (transform >= 1).then_some(u32::from(version.system_data_contracts.withdrawals)),
+        contract_version: (transform >= 1)
+            .then_some(u32::from(version.system_data_contracts.withdrawals)),
         properties: properties.into_btree_string_map().map_err(internal)?,
         revision: Some(1),
         ..DocumentV0::default()
@@ -327,8 +364,8 @@ fn drive_document(
 /// What reaches `script` on Core for a withdrawal document: Platform's own
 /// conversion into its asset unlock (module doc).
 fn payout(document: &Document, version: &PlatformVersion) -> Result<u64, PlatformError> {
-    let info = (document.try_into_asset_unlock_base_transaction_info(0, version))
-        .map_err(internal)?;
+    let info =
+        (document.try_into_asset_unlock_base_transaction_info(0, version)).map_err(internal)?;
     (info.output.first())
         .map(|o| o.value)
         .ok_or_else(|| internal("the asset unlock pays nothing"))
@@ -336,7 +373,10 @@ fn payout(document: &Document, version: &PlatformVersion) -> Result<u64, Platfor
 
 /// What a withdrawal of `credits` pays out on Core, in duffs. The same for
 /// either address kind: only the dust threshold differs.
-pub(crate) fn expected_duffs(credits: u64, version: &PlatformVersion) -> Result<u64, PlatformError> {
+pub(crate) fn expected_duffs(
+    credits: u64,
+    version: &PlatformVersion,
+) -> Result<u64, PlatformError> {
     payout(&drive_document(credits, &p2pkh_probe(), version)?, version)
 }
 
@@ -412,9 +452,11 @@ async fn own(wallet: &PlatformWallet, id: Identifier) -> Result<(u32, Identity),
     let m = (state.identity_manager.managed_identity(&id))
         .filter(|m| m.wallet_id == Some(wallet.wallet_id()))
         .ok_or(PlatformError::Identity(IdentityError::NotFound))?;
-    let index = m.identity_index.ok_or_else(|| PlatformError::InvalidArgument {
-        detail: "the wallet only watches this identity; it cannot withdraw".into(),
-    })?;
+    let index = m
+        .identity_index
+        .ok_or_else(|| PlatformError::InvalidArgument {
+            detail: "the wallet only watches this identity; it cannot withdraw".into(),
+        })?;
     Ok((index, m.identity.clone()))
 }
 
@@ -425,8 +467,11 @@ async fn plan(
     id: Identifier,
     amount: WithdrawAmount,
 ) -> Result<(u64, Rules), CreditsError> {
+    let balance =
+        (net.balance(id).await?).ok_or(PlatformError::Identity(IdentityError::NotFound))?;
+    // After the proved read, which ratchets the SDK from its seed to the
+    // network's protocol version (T2 D17).
     let rules = Rules::at(net.version())?;
-    let balance = (net.balance(id).await?).ok_or(PlatformError::Identity(IdentityError::NotFound))?;
     Ok((rules.credits(balance, amount)?, rules))
 }
 
@@ -483,9 +528,14 @@ pub(crate) async fn withdraw(
     let expected = expected_duffs(credits, version)?;
     let quote = credits + rules.fee;
     let signs = (index, &me);
-    let lease = write_lease(session, wallet_id, grant, (&[FlowKind::Withdraw], quote), signs, || {
-        Ok(())
-    })
+    let lease = write_lease(
+        session,
+        wallet_id,
+        grant,
+        (&[FlowKind::Withdraw], quote),
+        signs,
+        || Ok(()),
+    )
     .await
     .map_err(platform)?;
     let permit = write_permit(&lease, "withdraw", quote)?;
@@ -498,9 +548,15 @@ pub(crate) async fn withdraw(
         }))?;
     let sent = leased(&lease, async {
         let nonce = net.nonce(id).await.map_err(Unsent::Refused)?;
-        let signed = transition(&me, (script.clone(), credits, nonce), &key, signer.clone(), version)
-            .await
-            .map_err(Unsent::Refused)?;
+        let signed = transition(
+            &me,
+            (script.clone(), credits, nonce),
+            &key,
+            signer.clone(),
+            version,
+        )
+        .await
+        .map_err(Unsent::Refused)?;
         Ok((nonce, net.broadcast(signed).await))
     })
     .await;
@@ -551,8 +607,8 @@ pub(crate) async fn recent(
     (wallet.state().await.identity_manager.managed_identity(&id))
         .filter(|m| m.wallet_id == Some(wallet.wallet_id()))
         .ok_or(PlatformError::Identity(IdentityError::NotFound))?;
-    let version = net.version();
     let mut documents = net.withdrawals(id, RECENT_WITHDRAWALS).await?;
+    let version = net.version();
     documents.retain(|d| d.owner_id() == id);
     documents.sort_by_key(|d| std::cmp::Reverse((d.updated_at(), d.created_at())));
     Ok((documents.iter())

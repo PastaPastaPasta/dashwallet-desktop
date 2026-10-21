@@ -478,7 +478,11 @@ fn flow_keys(
 /// ends the permit with no signature, a definite `Cancelled`, and the quote
 /// goes back; once a signature is out, the quote is kept whatever the call
 /// returns (fail closed), so one lease id pays for one write's quote.
-pub(super) fn write_permit(lease: &Lease, label: &str, quote: u64) -> Result<CallPermit, PlatformError> {
+pub(super) fn write_permit(
+    lease: &Lease,
+    label: &str,
+    quote: u64,
+) -> Result<CallPermit, PlatformError> {
     let quote = CallQuote {
         purpose: BudgetPurpose::Credits,
         amount: quote,

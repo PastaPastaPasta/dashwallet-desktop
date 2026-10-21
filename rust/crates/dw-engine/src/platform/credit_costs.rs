@@ -158,7 +158,12 @@ pub(crate) fn withdrawal_metered_bound(network: &PlatformVersion) -> Result<u64,
     let pricing = pricing_version(&contract, WITHDRAWAL, network)?;
     let document = document_cost(&contract, WITHDRAWAL, &pricing)?;
     Ok(document
-        .saturating_add(network.fee_version.processing.perform_network_threshold_signing)
+        .saturating_add(
+            network
+                .fee_version
+                .processing
+                .perform_network_threshold_signing,
+        )
         .saturating_add(WITHDRAWAL_IDENTITY_OPS))
 }
 

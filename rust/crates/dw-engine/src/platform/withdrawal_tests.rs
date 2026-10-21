@@ -53,7 +53,10 @@ fn the_rules_are_platforms() {
         let limits = &version.system_limits;
         assert_eq!(rules.max, limits.max_withdrawal_amount, "{v}");
         assert!(rules.min >= limits.min_withdrawal_amount, "{v}");
-        let min_fee = version.fee_version.state_transition_min_fees.credit_withdrawal;
+        let min_fee = version
+            .fee_version
+            .state_transition_min_fees
+            .credit_withdrawal;
         assert_eq!(rules.fee, min_fee, "{v}: the reserve is dpp's minimum");
         let metered = withdrawal_metered_bound(version).unwrap();
         assert!(
@@ -62,7 +65,13 @@ fn the_rules_are_platforms() {
         );
         // A real bound: the document's storage alone and the threshold
         // signing are past 100M credits.
-        assert!(metered > version.fee_version.processing.perform_network_threshold_signing);
+        assert!(
+            metered
+                > version
+                    .fee_version
+                    .processing
+                    .perform_network_threshold_signing
+        );
     }
     let at = |v| Rules::at(PlatformVersion::get(v).unwrap()).unwrap();
     // v12–13: `min_withdrawal_amount`; v14+: plus the 190-byte Core fee.
@@ -79,7 +88,11 @@ fn the_least_withdrawal_pays_out_more_than_dust() {
     for version in versions() {
         let min = Rules::at(version).unwrap().min;
         let paid = expected_duffs(min, version).unwrap();
-        assert!(paid >= p2pkh_probe().dust_value().to_sat(), "{}", version.protocol_version);
+        assert!(
+            paid >= p2pkh_probe().dust_value().to_sat(),
+            "{}",
+            version.protocol_version
+        );
         let p2sh = CoreScript::new_p2sh([1; 20]);
         assert!(paid >= p2sh.dust_value().to_sat());
     }
@@ -109,7 +122,10 @@ fn max_keeps_the_reserve_in_whole_duffs() {
         let credits = rules.credits(balance, WithdrawAmount::All).unwrap();
         assert_eq!(credits % CREDITS_PER_DUFF, 0);
         assert!(balance - credits >= rules.fee, "the reserve stays");
-        assert!(balance - credits < rules.fee + CREDITS_PER_DUFF, "and no more");
+        assert!(
+            balance - credits < rules.fee + CREDITS_PER_DUFF,
+            "and no more"
+        );
     }
     // Capped at Platform's maximum.
     let huge = rules.max + rules.fee + DASH;
@@ -161,8 +177,16 @@ fn address(network: Network, script: &CoreScript) -> String {
 
 #[test]
 fn the_destination_is_a_p2pkh_or_p2sh_address_of_the_network() {
-    let (pkh, sh) = (CoreScript::new_p2pkh([7; 20]), CoreScript::new_p2sh([8; 20]));
-    for network in [Network::Testnet, Network::Mainnet, Network::Devnet, Network::Regtest] {
+    let (pkh, sh) = (
+        CoreScript::new_p2pkh([7; 20]),
+        CoreScript::new_p2sh([8; 20]),
+    );
+    for network in [
+        Network::Testnet,
+        Network::Mainnet,
+        Network::Devnet,
+        Network::Regtest,
+    ] {
         assert_eq!(destination(network, &address(network, &pkh)).unwrap(), pkh);
         let padded = format!(" {} ", address(network, &sh));
         assert_eq!(destination(network, &padded).unwrap(), sh);
@@ -170,7 +194,10 @@ fn the_destination_is_a_p2pkh_or_p2sh_address_of_the_network() {
     let refused = |network, to: &str| destination(network, to).unwrap_err().code();
     let mainnet = address(Network::Mainnet, &pkh);
     assert_eq!(refused(Network::Testnet, &mainnet), "invalid_argument");
-    assert_eq!(refused(Network::Testnet, "not an address"), "invalid_argument");
+    assert_eq!(
+        refused(Network::Testnet, "not an address"),
+        "invalid_argument"
+    );
     assert_eq!(refused(Network::Testnet, ""), "invalid_argument");
 }
 
@@ -187,7 +214,11 @@ fn the_document_id_is_drives() {
         &entropy,
     );
     assert_eq!(document_id(&id(1), 5, &script), drive);
-    assert_ne!(document_id(&id(1), 6, &script), drive, "a new nonce, a new withdrawal");
+    assert_ne!(
+        document_id(&id(1), 6, &script),
+        drive,
+        "a new nonce, a new withdrawal"
+    );
 }
 
 // ---- The write, on a scripted Platform --------------------------------------
@@ -195,7 +226,9 @@ fn the_document_id_is_drives() {
 /// What `broadcast` answers.
 enum Answer {
     /// Platform's proved new balance: the balance less the amount and `fee`.
-    Applied { fee: u64 },
+    Applied {
+        fee: u64,
+    },
     Refused,
     Unknown,
     /// No answer, though the withdrawal landed.
@@ -204,7 +237,10 @@ enum Answer {
 
 /// Platform as a withdrawal sees it.
 struct FakeWithdrawals {
-    version: &'static PlatformVersion,
+    /// What `version` answers: the seed until a proved read.
+    version: Mutex<&'static PlatformVersion>,
+    /// The network's protocol version, which a proved read ratchets to.
+    proved: &'static PlatformVersion,
     balance: Mutex<Option<u64>>,
     nonce: AtomicU64,
     answer: Mutex<Answer>,
@@ -219,7 +255,8 @@ struct FakeWithdrawals {
 impl FakeWithdrawals {
     fn new(balance: u64) -> Arc<Self> {
         Arc::new(Self {
-            version: PlatformVersion::latest(),
+            version: Mutex::new(PlatformVersion::latest()),
+            proved: PlatformVersion::latest(),
             balance: Mutex::new(Some(balance)),
             nonce: AtomicU64::new(4),
             answer: Mutex::new(Answer::Applied { fee: 210_000_000 }),
@@ -227,6 +264,17 @@ impl FakeWithdrawals {
             documents: Mutex::default(),
             reads_fail: Mutex::new(false),
         })
+    }
+
+    /// A proved read: the SDK takes the network's version.
+    fn ratchet(&self) {
+        *self.version.lock().unwrap() = self.proved;
+    }
+
+    /// The SDK back at its regtest seed, protocol 13, as a fresh process
+    /// starts.
+    fn reseed(&self) {
+        *self.version.lock().unwrap() = PlatformVersion::get(13).unwrap();
     }
 
     fn sent(&self) -> Vec<StateTransition> {
@@ -239,7 +287,7 @@ impl FakeWithdrawals {
             panic!("not a withdrawal");
         };
         let script = w.output_script().unwrap();
-        let mut document = drive_document(w.amount(), &script, self.version).unwrap();
+        let mut document = drive_document(w.amount(), &script, self.proved).unwrap();
         let Document::V0(d) = &mut document;
         d.id = document_id(&w.identity_id(), w.nonce(), &script);
         d.owner_id = w.identity_id();
@@ -249,10 +297,11 @@ impl FakeWithdrawals {
 
 impl WithdrawNet for FakeWithdrawals {
     fn version(&self) -> &'static PlatformVersion {
-        self.version
+        *self.version.lock().unwrap()
     }
 
     async fn balance(&self, _: Identifier) -> Result<Option<u64>, PlatformError> {
+        self.ratchet();
         Ok(*self.balance.lock().unwrap())
     }
 
@@ -294,7 +343,12 @@ impl WithdrawNet for FakeWithdrawals {
             .cloned())
     }
 
-    async fn withdrawals(&self, owner: Identifier, limit: u32) -> Result<Vec<Document>, PlatformError> {
+    async fn withdrawals(
+        &self,
+        owner: Identifier,
+        limit: u32,
+    ) -> Result<Vec<Document>, PlatformError> {
+        self.ratchet();
         let documents = self.documents.lock().unwrap();
         Ok((documents.iter().rev())
             .filter(|d| d.owner_id() == owner)
@@ -362,7 +416,11 @@ impl World {
         })
     }
 
-    fn withdraw(&self, amount: WithdrawAmount, grant: &str) -> Result<WithdrawOutcome, CreditsError> {
+    fn withdraw(
+        &self,
+        amount: WithdrawAmount,
+        grant: &str,
+    ) -> Result<WithdrawOutcome, CreditsError> {
         self.withdraw_to(&self.to.clone(), amount, grant)
     }
 
@@ -379,7 +437,12 @@ impl World {
         self.f.engine.block_on(async move {
             let wallet = manager.get_wallet(&wallet.0).await.unwrap();
             let state = wallet.state().await;
-            state.identity_manager.managed_identity(&id(ME)).unwrap().identity.clone()
+            state
+                .identity_manager
+                .managed_identity(&id(ME))
+                .unwrap()
+                .identity
+                .clone()
         })
     }
 }
@@ -397,16 +460,49 @@ fn the_quote_is_the_plan_and_its_grant() {
     assert_eq!(q.credits, (balance - rules.fee) / 1000 * 1000);
     assert_eq!(q.fee_credits, rules.fee);
     assert_eq!(q.expected_duffs, q.credits / 1000 - 190);
-    assert_eq!(q.grant, GrantRequest {
-        max_duffs: 0,
-        max_credits: q.credits + q.fee_credits,
-    });
+    assert_eq!(
+        q.grant,
+        GrantRequest {
+            max_duffs: 0,
+            max_credits: q.credits + q.fee_credits,
+        }
+    );
     let q = w.quote(WithdrawAmount::Credits { credits: DASH }).unwrap();
     assert_eq!((q.credits, q.expected_duffs), (DASH, 100_000_000 - 190));
-    let refused = w.quote(WithdrawAmount::Credits { credits: 3 * DASH }).unwrap_err();
+    let refused = w
+        .quote(WithdrawAmount::Credits { credits: 3 * DASH })
+        .unwrap_err();
     assert_eq!(refused.code(), "platform.insufficient_credits");
     let refused = w.quote(WithdrawAmount::Credits { credits: 1 }).unwrap_err();
     assert_eq!(refused.code(), "credits.withdrawal_out_of_range");
+}
+
+/// T2 D17: until a proved read ratchets it, the SDK answers its seed
+/// (protocol 13 on regtest), whose range and payout are not the network's:
+/// the rules, the payout and a document's are read after the proved read.
+#[test]
+fn the_rules_are_the_proved_versions_not_the_seed() {
+    let w = World::new(3 * DASH);
+    w.net.reseed();
+    // Inside protocol 13's range, below the network's.
+    let refused = w
+        .quote(WithdrawAmount::Credits { credits: 1_100_000 })
+        .unwrap_err();
+    assert_eq!(refused.code(), "credits.withdrawal_out_of_range");
+    w.net.reseed();
+    let q = w.quote(WithdrawAmount::Credits { credits: DASH }).unwrap();
+    assert_eq!(q.expected_duffs, 100_000_000 - 190);
+    let grant = w.f.grant(q.grant.max_credits);
+    w.net.reseed();
+    let out = w
+        .withdraw(WithdrawAmount::Credits { credits: DASH }, &grant)
+        .unwrap();
+    assert_eq!(out.expected_duffs, Some(100_000_000 - 190));
+    w.net.reseed();
+    assert_eq!(
+        w.recent().unwrap()[0].expected_duffs,
+        Some(100_000_000 - 190)
+    );
 }
 
 /// The transition the write broadcasts is, byte for byte, dpp's own
@@ -427,7 +523,11 @@ fn the_transition_is_platforms_own_construction() {
 
     let me = w.me();
     let key = &me.public_keys()[&3];
-    assert_eq!(signed.signature_public_key_id(), Some(3), "the TRANSFER key");
+    assert_eq!(
+        signed.signature_public_key_id(),
+        Some(3),
+        "the TRANSFER key"
+    );
     let StateTransition::IdentityCreditWithdrawal(t) = signed else {
         panic!("a withdrawal");
     };
@@ -472,7 +572,10 @@ fn the_transition_is_platforms_own_construction() {
     let rules = rules();
     assert_eq!(out.credits, q.credits);
     assert_eq!(out.expected_duffs, Some(q.expected_duffs));
-    assert_eq!(out.remaining_credits, Some(balance - q.credits - 210_000_000));
+    assert_eq!(
+        out.remaining_credits,
+        Some(balance - q.credits - 210_000_000)
+    );
     assert!(out.remaining_credits.unwrap() >= rules.fee - 210_000_000);
     let doc = document_id(&id(ME), nonce, &w.script);
     assert_eq!(out.withdrawal, doc.to_string(Encoding::Base58));
@@ -488,18 +591,33 @@ fn refusals_keep_the_grant() {
     let grant = w.f.grant(balance);
     let code = |r: Result<WithdrawOutcome, CreditsError>| r.unwrap_err().code();
     let ask = |credits| WithdrawAmount::Credits { credits };
-    assert_eq!(code(w.withdraw(ask(1), &grant)), "credits.withdrawal_out_of_range");
-    assert_eq!(code(w.withdraw(ask(balance), &grant)), "platform.insufficient_credits");
+    assert_eq!(
+        code(w.withdraw(ask(1), &grant)),
+        "credits.withdrawal_out_of_range"
+    );
+    assert_eq!(
+        code(w.withdraw(ask(balance), &grant)),
+        "platform.insufficient_credits"
+    );
     let mainnet = address(Network::Mainnet, &w.script);
-    assert_eq!(code(w.withdraw_to(&mainnet, ask(DASH), &grant)), "invalid_argument");
+    assert_eq!(
+        code(w.withdraw_to(&mainnet, ask(DASH), &grant)),
+        "invalid_argument"
+    );
     assert!(w.f.unused(&grant));
     // A grant short of the amount plus the reserve.
     let small = w.f.grant(DASH + fee - 1);
-    assert_eq!(code(w.withdraw(ask(DASH), &small)), "platform.grant_exceeded");
+    assert_eq!(
+        code(w.withdraw(ask(DASH), &small)),
+        "platform.grant_exceeded"
+    );
     assert!(w.f.unused(&small));
     // A lease of another flow.
     let other = w.f.flow(FlowKind::ProfileEdit, vec![w.f.grant(balance)]);
-    assert_eq!(code(w.withdraw(ask(DASH), &other)), "platform.grant_invalid");
+    assert_eq!(
+        code(w.withdraw(ask(DASH), &other)),
+        "platform.grant_invalid"
+    );
     assert!(w.net.sent().is_empty());
     assert!(w.f.unused(&grant));
     // Then the same grant withdraws.
@@ -538,7 +656,11 @@ fn a_withdrawal_needs_a_held_transfer_key() {
 #[test]
 fn an_unverified_identity_withdraws_nothing() {
     let w = World::new(2 * DASH);
-    gate_session(&w.f.s, TrustMode::Enforcing, FakePlatform::new(Proof::Mismatch));
+    gate_session(
+        &w.f.s,
+        TrustMode::Enforcing,
+        FakePlatform::new(Proof::Mismatch),
+    );
     let grant = w.f.grant(2 * DASH);
     let refused = w.withdraw(WithdrawAmount::Credits { credits: DASH }, &grant);
     assert_eq!(refused.unwrap_err().code(), "platform.trust_mismatch");
@@ -583,7 +705,9 @@ fn recent_withdrawals_are_platforms_documents_newest_first() {
     let w = World::new(5 * DASH);
     assert!(w.recent().unwrap().is_empty());
     let grant = w.f.grant(2 * DASH);
-    let first = w.withdraw(WithdrawAmount::Credits { credits: DASH }, &grant).unwrap();
+    let first = w
+        .withdraw(WithdrawAmount::Credits { credits: DASH }, &grant)
+        .unwrap();
     let grant = w.f.grant(5 * DASH);
     let second = w.withdraw(WithdrawAmount::All, &grant).unwrap();
     // Platform pools the first.
