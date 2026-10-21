@@ -16,6 +16,8 @@ import {
   RECENT_SHOWN,
   resetWithdrawals,
   statusText,
+  unconfirmedIn,
+  unknownDocument,
   withdrawalRows,
   withdrawAmount,
   withdrawErrorText,
@@ -121,8 +123,19 @@ describe("the withdraw sheet (DP6-02)", () => {
     // An unknown outcome is never retried from here: a second withdrawal could double it (D7).
     expect(amountCanChange(flow.error)).toBe(false);
     expect(settled).toHaveBeenCalledTimes(1);
+    // D23: its document is kept for the identity, past closing and reopening the sheet.
+    expect([unknownDocument(flow.error), flow.unconfirmedFor("A"), flow.unconfirmedFor("B")]).toEqual(["Wd", "Wd", null]);
+    flow.close();
+    flow.begin("A");
+    expect(flow.unconfirmedFor("A")).toBe("Wd");
+    expect(unknownDocument(appError("platform.broadcast_unknown"))).toBeNull();
+    expect(unknownDocument(appError("platform.timeout", { kind: "artifact", artifact: "Wd" }))).toBeNull();
     for (const c of ["credits.withdrawal_out_of_range", "platform.insufficient_credits", "platform.grant_exceeded", "invalid_argument"] as const)
       expect(amountCanChange(appError(c)), c).toBe(true);
+    flow.next({ kind: "credits", credits: "5000000000" }, TO);
+    api.creditsWithdraw.mockRejectedValueOnce(appError("platform.insufficient_credits"));
+    await flow.withdraw(GRANT);
+    expect(flow.unconfirmedFor("A")).toBe("Wd");
     flow.back();
     expect([flow.step, flow.error]).toEqual(["form", null]);
     stop();
@@ -188,6 +201,15 @@ describe("My Profile's recent withdrawals (D11)", () => {
       at: null,
     });
     expect(withdrawalRows(undefined, COSTS, amount)).toEqual([]);
+  });
+
+  it("D23: an unknown withdrawal stays unconfirmed, read every minute, until Platform lists it", () => {
+    expect(unconfirmedIn(undefined, "Wd")).toBe("Wd");
+    expect(unconfirmedIn([doc("a", "complete")], "Wd")).toBe("Wd");
+    expect(unconfirmedIn([doc("Wd", "queued")], "Wd")).toBeNull();
+    expect(unconfirmedIn([doc("a", "complete")], null)).toBeNull();
+    expect(pollWhilePending([doc("a", "complete")], "Wd")).toBe(PENDING_POLL_MS);
+    expect(pollWhilePending([doc("Wd", "complete")], "Wd")).toBe(false);
   });
 
   it("reads again every minute while a shown row is pending, else only on signals", () => {

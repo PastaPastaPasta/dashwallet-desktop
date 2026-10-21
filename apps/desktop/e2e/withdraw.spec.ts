@@ -19,6 +19,8 @@ async function openProfile(page: Page, scenario: string, theme: Theme = "light",
 const sheet = (page: Page) => page.getByTestId("withdraw-body");
 const RECEIVE = /^y[1-9A-HJ-NP-Za-km-z]{33}$/;
 const MAINNET = "XmNfXq2kDmrNBTiDTofohRemwGur1WmgTT";
+/** The fixture's first withdrawal document (fixture/topup.ts `withdrawalId`). */
+const DOCUMENT = "Wd0001".padEnd(44, "x");
 const PLATFORM = "tdash1kzc0lmmvxmfkd8ztchz4m6j8lgdjn4pxc0quhs7";
 
 /** Opens the sheet and goes to the quote: Max, or `amount` in tDASH. */
@@ -146,15 +148,28 @@ test("IOS-070: the quote refuses an amount outside Platform's range or past the 
   await expect(page.getByTestId("withdraw-quote-error")).toContainText("Not enough credits: 1.849 tDASH needed with the fee");
 });
 
-test("IOS-070 D7: an unanswered withdrawal is not retried from the sheet", async ({ page }) => {
-  await openProfile(page, "dashpay-withdraw-lost");
+test("IOS-070 D7, D23: an unanswered withdrawal is not retried from the sheet and stays unconfirmed on My Profile", async ({ page }) => {
+  const errors = await openProfile(page, "dashpay-withdraw-lost");
   await toQuote(page);
   await page.getByTestId("withdraw-go").click();
   await authorize(page);
   await expect(page.getByTestId("withdraw-refusal")).toHaveText("It may have been sent. Check your withdrawals in My Profile before trying again.");
+  await expect(page.getByTestId("withdraw-document")).toHaveText(`Withdrawal document: ${DOCUMENT}`);
   await expect(page.getByTestId("withdraw-refused-back")).toHaveCount(0);
   await page.getByTestId("withdraw-close").click();
   await expect(page.getByTestId("withdraw-sheet")).toHaveCount(0);
+  // Platform does not list it: My Profile keeps it, and a second withdrawal is warned.
+  await expect(page.getByTestId("profile-withdraw-unconfirmed")).toContainText("Withdrawal not on Dash Platform yet");
+  await expect(page.getByTestId("profile-withdraw-unconfirmed")).toContainText(DOCUMENT);
+  await expect(page.getByTestId("profile-withdrawal")).toHaveCount(0);
+  await fontsReady(page);
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  await page.getByTestId("profile-withdraw").click();
+  await expect(page.getByTestId("withdraw-unconfirmed")).toHaveText(
+    "Your last withdrawal is not on Dash Platform yet and may still go through. Withdrawing again could send twice.",
+  );
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  expect(errors).toEqual([]);
 });
 
 test("IOS-070: a withdrawal read back after an unanswered broadcast says the balance updates", async ({ page }) => {

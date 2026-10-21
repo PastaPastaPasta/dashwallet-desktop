@@ -14,7 +14,16 @@ import { useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
 import { creditBalance } from "../../dashpay/profile";
-import { amountCanChange, WITHDRAW_COPY, withdrawAmount, withdrawalRows, withdrawErrorText, type WithdrawFlow } from "../../dashpay/withdraw";
+import {
+  amountCanChange,
+  unconfirmedIn,
+  unknownDocument,
+  WITHDRAW_COPY,
+  withdrawAmount,
+  withdrawalRows,
+  withdrawErrorText,
+  type WithdrawFlow,
+} from "../../dashpay/withdraw";
 import { useWithdrawals, useWithdrawQuote } from "../../dashpay/withdrawQueries";
 import { useDisplay } from "../../format/display";
 import { useModel } from "../../onboarding/model";
@@ -22,9 +31,12 @@ import { GrantSheet } from "../tools/common";
 
 const C = WITHDRAW_COPY;
 
-/** W1: Max or an amount, and the destination, each checked before Continue. */
-function FormStep({ flow, walletId, costs, network }: { flow: WithdrawFlow; walletId: string; costs: CostTable | undefined; network: NetworkInfo }) {
+/** W1: Max or an amount, and the destination, each checked before Continue; a warning while the
+ * last withdrawal's outcome is unknown (D23). */
+function FormStep({ flow, walletId, identity, costs, network }: { flow: WithdrawFlow; walletId: string; identity: string; costs: CostTable | undefined; network: NetworkInfo }) {
   const b = useBackend();
+  const unconfirmed = flow.unconfirmedFor(identity);
+  const recent = useWithdrawals(walletId, identity, unconfirmed);
   const id = useId();
   const shown = useDisplay(network);
   const receive = useReceiveAddress(walletId);
@@ -50,6 +62,11 @@ function FormStep({ flow, walletId, costs, network }: { flow: WithdrawFlow; wall
       }}
     >
       <p className="sheet-text">{C.form.intro}</p>
+      {unconfirmedIn(recent.data, unconfirmed) !== null && (
+        <p className="form-problem" role="status" data-testid="withdraw-unconfirmed">
+          {C.form.unconfirmed}
+        </p>
+      )}
       <fieldset className="topup-choices" aria-label={C.form.amount}>
         <label className="topup-choice" data-testid="withdraw-max">
           <input type="radio" name={`${id}-amount`} checked={flow.max} onChange={() => flow.setMax(true)} />
@@ -160,7 +177,7 @@ function ConfirmStep({ flow, walletId, credits, amount }: { flow: WithdrawFlow; 
         <DashButton variant="tintedGray" size="large" data-testid="withdraw-back" disabled={flow.running} onClick={() => flow.back()}>
           {C.confirm.back}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="withdraw-go" disabled={!q || flow.running} onClick={() => q && void flow.withdraw(q.grant)}>
+        <DashButton variant="filledBlue" size="large" data-testid="withdraw-go" disabled={!q || quote.isError || quote.isFetching || flow.running} onClick={() => q && void flow.withdraw(q.grant)}>
           {C.confirm.go}
         </DashButton>
       </div>
@@ -181,7 +198,7 @@ export function WithdrawSheet({ flow, walletId, network, costs }: { flow: Withdr
     <>
       <Sheet title={C.title} width="small" testId="withdraw-sheet" onClose={() => flow.close()}>
         <div data-testid="withdraw-body" data-step={step}>
-          {step === "form" && <FormStep flow={flow} walletId={walletId} costs={costs} network={network} />}
+          {step === "form" && flow.identity !== null && <FormStep flow={flow} walletId={walletId} identity={flow.identity} costs={costs} network={network} />}
           {step === "confirm" && <ConfirmStep flow={flow} walletId={walletId} credits={credits} amount={amount} />}
           {step === "running" && (
             <div role="status" className="topup-running">
@@ -213,6 +230,11 @@ export function WithdrawSheet({ flow, walletId, network, costs }: { flow: Withdr
               <p className="form-problem" role="alert" data-testid="withdraw-refusal">
                 {withdrawErrorText(flow.error, credits)}
               </p>
+              {unknownDocument(flow.error) !== null && (
+                <p className="sheet-text withdraw-to" data-testid="withdraw-document">
+                  {C.refused.document(unknownDocument(flow.error)!)}
+                </p>
+              )}
               <div className="sheet-actions">
                 {amountCanChange(flow.error) && (
                   <DashButton variant="tintedGray" size="large" data-testid="withdraw-refused-back" onClick={() => flow.back()}>
@@ -251,10 +273,19 @@ export function RecentWithdrawals({ flow, walletId, identity, costs, amount, dat
   amount: (duffs: number) => string;
   date: (secs: number) => string;
 }) {
-  const recent = useWithdrawals(walletId, identity);
+  const recent = useWithdrawals(walletId, identity, flow.unconfirmedFor(identity));
   const rows = withdrawalRows(recent.data, costs, amount);
+  const unconfirmed = unconfirmedIn(recent.data, flow.unconfirmedFor(identity));
   return (
     <>
+      {unconfirmed !== null && (
+        <div className="profile-row" data-testid="profile-withdraw-unconfirmed" data-pending>
+          <div>
+            <p className="profile-row-title">{C.recent.unconfirmed}</p>
+            <p className="profile-credits-line withdraw-to">{C.recent.unconfirmedText(unconfirmed)}</p>
+          </div>
+        </div>
+      )}
       {flow.unseenFor(identity) && (
         <div className="profile-row" data-testid="profile-withdraw-unseen">
           <p className="profile-row-title" role="status">

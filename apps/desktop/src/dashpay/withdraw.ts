@@ -35,6 +35,7 @@ export const WITHDRAW_COPY = {
     noCosts: "Waiting for the network's prices. Try Max, or wait a moment.",
     invalidTo: "Enter a Dash address.",
     platformTo: "This is a Dash Platform address. Withdraw to a Dash address.",
+    unconfirmed: "Your last withdrawal is not on Dash Platform yet and may still go through. Withdrawing again could send twice.",
     next: "Continue",
     cancel: "Cancel",
   },
@@ -49,6 +50,9 @@ export const WITHDRAW_COPY = {
     back: "Back",
     go: "Confirm & withdraw",
   },
+  refused: {
+    document: (id: string) => `Withdrawal document: ${id}`,
+  },
   running: {
     title: "Withdrawing…",
     text: "Dash Platform confirms the withdrawal. You can close this: My Profile shows it.",
@@ -62,6 +66,8 @@ export const WITHDRAW_COPY = {
   recent: {
     title: "Withdrawals",
     row: (amount: string) => `Withdrawal of ${amount}`,
+    unconfirmed: "Withdrawal not on Dash Platform yet",
+    unconfirmedText: (id: string) => `It may have been sent: it shows here once Dash Platform takes document ${id}.`,
     status: {
       pending: "Pending",
       complete: "Sent",
@@ -143,8 +149,16 @@ export function withdrawalRows(list: Withdrawal[] | undefined, costs: Pick<CostT
   });
 }
 
-/** D11: read again every minute while a row is pending, else only on signals. */
-export const pollWhilePending = (list: Withdrawal[] | undefined) => (listed(list).some((w) => statusText(w.status).pending) ? PENDING_POLL_MS : false);
+/** D23: the withdrawal whose outcome is unknown, while Platform does not list it. */
+export const unconfirmedIn = (list: Withdrawal[] | undefined, id: string | null) => (id !== null && !(list ?? []).some((w) => w.id === id) ? id : null);
+
+/** D11: read again every minute while a row is pending or a withdrawal unconfirmed (D23), else
+ * only on signals. */
+export const pollWhilePending = (list: Withdrawal[] | undefined, unconfirmed: string | null = null) =>
+  unconfirmedIn(list, unconfirmed) !== null || listed(list).some((w) => statusText(w.status).pending) ? PENDING_POLL_MS : false;
+
+/** The withdrawal document an unknown outcome names (D7). */
+export const unknownDocument = (e: unknown) => (hasCode(e, "platform.broadcast_unknown") && e.data?.kind === "artifact" ? e.data.artifact : null);
 
 /** A withdrawal's refusal, by code (§3's table). `credits` shows a credit figure as Dash. */
 export function withdrawErrorText(e: unknown, credits: (c: string) => string): string {
@@ -206,6 +220,8 @@ export class WithdrawFlow extends Model {
   outcome: WithdrawOutcome | null = null;
   error: unknown = null;
   running = false;
+  /** D23: the last withdrawal whose outcome is unknown, kept while the app runs. */
+  unconfirmed: { identity: string; id: string } | null = null;
   readonly grants: GrantModel;
 
   constructor(
@@ -215,6 +231,11 @@ export class WithdrawFlow extends Model {
     super();
     this.grants = new GrantModel(api);
     this.grants.subscribe(() => this.changed());
+  }
+
+  /** D23: `identity`'s withdrawal whose outcome is unknown, its document id. */
+  unconfirmedFor(identity: string): string | null {
+    return this.unconfirmed?.identity === identity ? this.unconfirmed.id : null;
   }
 
   /** A result for `identity` that came while the sheet was hidden, not yet seen. */
@@ -306,6 +327,8 @@ export class WithdrawFlow extends Model {
     } catch (e) {
       this.error = e;
       this.step = "refused";
+      const id = unknownDocument(e);
+      if (id !== null) this.unconfirmed = { identity, id };
     } finally {
       this.running = false;
       // A cancelled passphrase ran nothing: nothing to read again.
