@@ -397,6 +397,19 @@ class DwdProtx(DwdMasternodes):
         assert_equal(st["pubKeyOperator"], new_operator["public"])
         assert st["PoSeBanHeight"] > 0, st
         assert_equal((st["votingAddress"], st["payoutAddress"]), (address(provider_key(VOTING, 7)), payout_f))
+
+        def operations(height):
+            ops = {o["id"]: o for o in dw.mn(height, "operations")}
+            assert_equal(len(ops), 8)
+            assert all(state(o) == "confirmed" for o in ops.values()), ops
+            assert_equal(sorted(o["kind"] for o in ops.values()), ["registration"] * 5 + ["update_registrar"] * 3)
+            return ops
+
+        if V24:
+            # D48: the wallet's dashcore pin can't decode the version-3 ProUpServTx dashd builds
+            # below, so a block with it that the wallet's filter matches stalls the wallet's sync.
+            # The wallet's part ends here; the revive is dashd's alone.
+            ops = operations(h)
         # The operator (dashd, holding the new secret) restores the service, and with it the
         # masternode; the wallet signs nothing as operator.
         fee_source = node.getnewaddress()
@@ -411,10 +424,8 @@ class DwdProtx(DwdMasternodes):
         assert st["PoSeRevivedHeight"] > 0, st
         assert service_f in json.dumps(st["addresses"]), st
 
-        ops = {o["id"]: o for o in dw.mn(h, "operations")}
-        assert_equal(len(ops), 8)
-        assert all(state(o) == "confirmed" for o in ops.values()), ops
-        assert_equal(sorted(o["kind"] for o in ops.values()), ["registration"] * 5 + ["update_registrar"] * 3)
+        if not V24:
+            ops = operations(h)
 
         if evidence:
             os.makedirs(evidence, exist_ok=True)
