@@ -29,6 +29,7 @@ use dashcore::consensus::encode::{self, Decodable, Encodable, VarInt};
 use dashcore::hashes::{Hash, HashEngine, sha256d};
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 
+pub mod json;
 pub mod netinfo;
 pub mod rawtx;
 pub mod registration;
