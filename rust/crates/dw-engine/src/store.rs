@@ -29,7 +29,14 @@ pub(crate) struct WalletStore {
     /// Wallets `load` leaves out.
     unloaded: RwLock<HashSet<RawWalletId>>,
     tap: Arc<ChangesetTap>,
+    /// Tests: a store the predicate matches fails (`LockPoisoned`) and
+    /// reaches neither the SQLite persister nor the tap.
+    #[cfg(test)]
+    pub(crate) fail_store: std::sync::Mutex<Option<StoreFailure>>,
 }
+
+#[cfg(test)]
+pub(crate) type StoreFailure = Box<dyn Fn(&PlatformWalletChangeSet) -> bool + Send>;
 
 impl WalletStore {
     pub(crate) fn new(
@@ -41,6 +48,8 @@ impl WalletStore {
             inner,
             unloaded: RwLock::new(unloaded),
             tap,
+            #[cfg(test)]
+            fail_store: Default::default(),
         }
     }
 
@@ -97,6 +106,10 @@ impl PlatformWalletPersistence for WalletStore {
         wallet_id: RawWalletId,
         changeset: PlatformWalletChangeSet,
     ) -> Result<(), PersistenceError> {
+        #[cfg(test)]
+        if (self.fail_store.lock().unwrap().as_ref()).is_some_and(|fails| fails(&changeset)) {
+            return Err(PersistenceError::LockPoisoned);
+        }
         // The wallet as the call began: a removal (and a reimport) that
         // overtakes the record below leaves it unjournaled.
         let epoch = self.tap.epoch(WalletId(wallet_id));

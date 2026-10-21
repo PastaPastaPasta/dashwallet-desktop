@@ -11,7 +11,9 @@
 //!   re-enable a disabled key. The balance is DP1-06's ([`Balances`]),
 //!   proved with its block time, never the fetched identity's, which carries
 //!   none. The library's own `refresh_identity` replaces the whole identity
-//!   and persists no keys, so it is not used.
+//!   and persists no keys, so it is not used. The keys are stored before the
+//!   revision: a failed store leaves the old revision in memory and on disk,
+//!   so the next refresh folds the answer again (fail closed, D16).
 //! - A lookup adds nothing to the library and records nothing as verified:
 //!   it shows what Platform answered, marked `unverified` as the user search
 //!   marks its hits (m4 §5).
@@ -34,6 +36,8 @@ use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dpp::util::strings::convert_to_homograph_safe_chars;
 use dw_uri::deeplink::dpns_label;
+use platform_wallet::changeset::changeset::{IdentityChangeSet, IdentityEntry};
+use platform_wallet::changeset::{PlatformWalletChangeSet, PlatformWalletPersistence};
 
 use super::errors::{IdentityError, PlatformError};
 use super::identity::{
@@ -248,6 +252,13 @@ impl NetworkSession {
         for (_, id) in ids {
             let refreshed = self.refresh_one(wallet, id).await;
             if let Err(e) = &refreshed {
+                // The wallet or the network gone fails the whole run (contract §2.1).
+                if matches!(
+                    e,
+                    PlatformError::WalletNotFound | PlatformError::NetworkNotOpen
+                ) {
+                    return Err(refreshed.unwrap_err());
+                }
                 tracing::debug!(identity = %id, error = %e, "an identity refresh failed");
             }
             out.push(IdentityRefresh {
@@ -270,6 +281,7 @@ impl NetworkSession {
             return Err(IdentityError::NotFound.into());
         }
         let net = self.identity_net()?;
+        let store = self.live()?.store;
         {
             let locks = identity_locks(wallet, id);
             let _write = locks.write.lock().await;
@@ -278,7 +290,7 @@ impl NetworkSession {
             let m = (state.identity_manager)
                 .wallet_identity_mut(&wallet.0, &id)
                 .ok_or(IdentityError::NotFound)?;
-            fold(m, &fetched, w.persister())?;
+            fold(m, &fetched, w.persister(), (store.as_ref(), wallet))?;
         }
         self.refresh_balance_of(wallet, id).await?;
         Ok(())
@@ -317,15 +329,19 @@ impl NetworkSession {
             },
             scope.verified(),
         );
-        let names = (net.names_of(id, FOUND_NAMES).await)
+        let (names, names_scope) = trust::scoped(net.names_of(id, FOUND_NAMES)).await;
+        let names = names
             .inspect_err(|e| tracing::debug!(error = %e, "could not read the identity's names"))
             .unwrap_or_default();
+        // Each name shown counts, as in `IdentitySummary` (m4 §5).
+        let names_shown = (names.iter()).map(|n| (Held::label(n, id), names_scope.verified()));
         let b58 = id.to_string(Encoding::Base58);
         let own = (self.identity_summaries(wallet)?.iter()).any(|s| s.identity == b58);
         let provenance = self.live()?.provenance;
         let unverified = [Some(keys_shown), label_shown]
             .into_iter()
             .flatten()
+            .chain(names_shown)
             .any(|(held, verified)| !verified && provenance.is_unverified(&held.entity()));
         Ok(Some(FoundIdentity {
             identity: b58,
@@ -342,32 +358,58 @@ impl NetworkSession {
 
 /// Folds `fetched`'s keys and revision into `m` and persists them, when
 /// `fetched` is not older than `m` (module doc). The balance is left alone.
+///
+/// Each changed key is stored first, under the old revision; a key whose
+/// store fails is put back as it was, so memory stays what the store holds.
+/// The new revision is stored last, through `store` so that its failure is
+/// `storage` too, and only once every key is.
 fn fold(
     m: &mut platform_wallet::ManagedIdentity,
     fetched: &Identity,
     persister: &platform_wallet::WalletPersister,
+    store: (&dyn PlatformWalletPersistence, WalletId),
 ) -> Result<(), PlatformError> {
     if fetched.revision() < m.identity.revision() {
         return Ok(());
     }
-    let revised = fetched.revision() != m.identity.revision();
-    m.identity.set_revision(fetched.revision());
     let changed: Vec<IdentityPublicKey> = (fetched.public_keys().values())
         .filter(|k| m.identity.public_keys().get(&k.id()) != Some(*k))
         .cloned()
         .collect();
-    if changed.is_empty() && revised {
-        // Persists the snapshot, which carries the revision.
-        let status = m.status;
-        m.set_status(status, persister);
-    }
     for key in changed {
-        m.replace_key(key, persister)
-            .map_err(|e| PlatformError::Storage {
-                detail: format!("identity keys not stored: {e}"),
-            })?;
+        let id = key.id();
+        let was = m.identity.public_keys().get(&id).cloned();
+        if let Err(e) = m.replace_key(key, persister) {
+            let mut keys = m.identity.public_keys().clone();
+            match was {
+                Some(was) => keys.insert(id, was),
+                None => keys.remove(&id),
+            };
+            m.identity.set_public_keys(keys);
+            return Err(not_stored("identity keys", e));
+        }
+    }
+    let before = m.identity.revision();
+    if fetched.revision() != before {
+        m.identity.set_revision(fetched.revision());
+        let mut snapshot = IdentityChangeSet::default();
+        (snapshot.identities).insert(m.id(), IdentityEntry::from_managed(m));
+        let cs = PlatformWalletChangeSet {
+            identities: Some(snapshot),
+            ..Default::default()
+        };
+        if let Err(e) = store.0.store(store.1.0, cs) {
+            m.identity.set_revision(before);
+            return Err(not_stored("identity revision", e));
+        }
     }
     Ok(())
+}
+
+fn not_stored(what: &str, e: impl std::fmt::Display) -> PlatformError {
+    PlatformError::Storage {
+        detail: format!("{what} not stored: {e}"),
+    }
 }
 
 #[cfg(test)]

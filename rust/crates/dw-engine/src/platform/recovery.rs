@@ -693,10 +693,7 @@ impl NetworkSession {
         label: Option<String>,
     ) -> Result<(), EngineError> {
         self.set_name_pref(id, identity, MAIN_NAME_PREF, label)
-            .await?;
-        // The identities' main names re-read on it (DP6-01 review B1).
-        (self.hub.pump).mark_platform(id, [PlatformChange::Identities]);
-        Ok(())
+            .await
     }
 
     /// Stores one of `identity`'s main-name rows ([`MainNamePrefs::set`]),
@@ -711,7 +708,12 @@ impl NetworkSession {
         let wallet = id.to_string();
         let _writer = self.platform.recovery.choice_writer.lock().await;
         self.appdb_op(move |db| db.set_dp_pref(&wallet, &identity, key, value.as_deref()))
-            .await
+            .await?;
+        // No changeset carries a pref, and `identities()` reads every one
+        // (main, pending, refused, temporary, contested): it signals itself
+        // (DP6-01 D15, review N4).
+        (self.hub.pump).mark_platform(id, [PlatformChange::Identities]);
+        Ok(())
     }
 
     /// `identity`'s main-name rows as stored.

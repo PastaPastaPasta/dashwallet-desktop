@@ -18,6 +18,7 @@ use dpp::identity::{
 use dpp::platform_value::BinaryData;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
+use platform_wallet::changeset::PlatformWalletChangeSet;
 
 use crate::PlatformChange;
 use crate::platform::balances::Refreshed;
@@ -141,6 +142,8 @@ struct FakeNet {
     names_fail: bool,
     fail: Mutex<HashMap<Identifier, PlatformError>>,
     verified: bool,
+    /// The names read's proofs, when not `verified`'s.
+    names_verified: Option<bool>,
     /// Each identity fetched, and whether its write lock was held then.
     fetched: Mutex<Vec<(Identifier, bool)>>,
     /// The wallet whose locks the fetch checks.
@@ -153,21 +156,19 @@ impl IdentityNet for FakeNet {
             .wallet
             .is_some_and(|w| identity_locks(w, id).write.try_lock().is_err());
         self.fetched.lock().unwrap().push((id, held));
-        trust::note_lookup(self.verified);
         let answer = match self.fail.lock().unwrap().remove(&id) {
             Some(e) => Err(e),
             None => Ok(self.identities.lock().unwrap().get(&id).cloned()),
         };
-        Box::pin(async move { answer })
+        noted(self.verified, answer)
     }
 
     fn domain(
         &self,
         label: String,
     ) -> BoxFuture<Result<Option<(String, Identifier)>, PlatformError>> {
-        trust::note_lookup(self.verified);
         let found = self.domains.get(&label).cloned();
-        Box::pin(async move { Ok(found) })
+        noted(self.verified, Ok(found))
     }
 
     fn names_of(
@@ -183,8 +184,17 @@ impl IdentityNet for FakeNet {
                     .collect(),
             ),
         };
-        Box::pin(async move { names })
+        noted(self.names_verified.unwrap_or(self.verified), names)
     }
+}
+
+/// `answer`, its proof lookup noted when the future runs, as the SDK's are:
+/// inside the caller's `trust::scoped`.
+fn noted<T: Send + 'static>(verified: bool, answer: T) -> BoxFuture<T> {
+    Box::pin(async move {
+        trust::note_lookup(verified);
+        answer
+    })
 }
 
 fn install(f: &Fixture, net: FakeNet) -> Arc<FakeNet> {
@@ -550,6 +560,220 @@ fn find_survives_a_failed_names_read_and_marks_an_unverified_answer() {
         .unwrap()
         .unwrap();
     assert!(found.unverified);
+}
+
+/// The names a lookup shows count in `unverified` as an `IdentitySummary`'s
+/// do (m4 §5): an identity whose proofs verified, shown with names whose
+/// read did not, is unverified (review F1).
+#[test]
+fn find_counts_the_names_it_shows_in_unverified() {
+    let f = fixture(false);
+    give_identities(&f);
+    let net = FakeNet {
+        identities: Mutex::new(HashMap::from([(
+            id(STRANGER),
+            identity(STRANGER, base_keys(), 1, 1),
+        )])),
+        names: HashMap::from([(id(STRANGER), vec!["Bob".to_string()])]),
+        verified: true,
+        names_verified: Some(false),
+        ..FakeNet::default()
+    };
+    install(&f, net);
+    f.session
+        .live()
+        .unwrap()
+        .provenance
+        .fallback_in_use()
+        .unwrap();
+    let found = f
+        .engine
+        .block_on(dp(&f).find_identity(b58(STRANGER)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.names, vec!["Bob"]);
+    assert!(found.unverified, "the names read did not verify");
+
+    // The same names read verified: nothing is unverified.
+    install(
+        &f,
+        FakeNet {
+            identities: Mutex::new(HashMap::from([(
+                id(STRANGER),
+                identity(STRANGER, base_keys(), 1, 1),
+            )])),
+            names: HashMap::from([(id(STRANGER), vec!["Bob".to_string()])]),
+            verified: true,
+            ..FakeNet::default()
+        },
+    );
+    let found = f
+        .engine
+        .block_on(dp(&f).find_identity(b58(STRANGER)))
+        .unwrap()
+        .unwrap();
+    assert!(!found.unverified);
+}
+
+/// An answer at the library's own revision still folds its keys: the
+/// library stamps a local key disable with its own clock, and Platform's
+/// block time replaces it on the next refresh (review F3, D16).
+#[test]
+fn an_answer_at_the_same_revision_folds_platforms_disable_time() {
+    let f = fixture(false);
+    give_identities(&f);
+    let mut same = base_keys();
+    if let Some(IdentityPublicKey::V0(k)) = same.get_mut(&2) {
+        k.disabled_at = Some(1_699_999_990_000);
+    }
+    install(
+        &f,
+        FakeNet {
+            identities: Mutex::new(HashMap::from([(
+                id(MINE),
+                identity(MINE, same.clone(), 1_000, 1),
+            )])),
+            ..FakeNet::default()
+        },
+    );
+    balance_hook(&f, 1_000);
+    let detail = f
+        .engine
+        .block_on(dp(&f).refresh_identity(b58(MINE)))
+        .unwrap();
+    assert_eq!(detail.revision, Some(1));
+    assert_eq!(detail.public_keys[2].disabled_at, Some(1_699_999_990_000));
+    assert_eq!(held(&f, MINE).public_keys(), &same);
+}
+
+/// Fails the wallet store's next stores that `fails` matches.
+fn fail_stores(f: &Fixture, fails: impl Fn(&PlatformWalletChangeSet) -> bool + Send + 'static) {
+    *f.session.live().unwrap().store.fail_store.lock().unwrap() = Some(Box::new(fails));
+}
+
+fn heal_stores(f: &Fixture) {
+    *f.session.live().unwrap().store.fail_store.lock().unwrap() = None;
+}
+
+fn reopen(f: &mut Fixture) {
+    f.engine
+        .block_on(f.engine.close_network(crate::DashNetwork::Regtest))
+        .unwrap();
+    f.session = f
+        .engine
+        .block_on(
+            f.engine
+                .open_network(crate::DashNetwork::Regtest, options()),
+        )
+        .unwrap();
+}
+
+/// A key whose store fails leaves the old revision, in memory and on disk,
+/// and the key as it was; the next refresh folds the answer again and
+/// stores it (review F2, D16).
+#[test]
+fn a_failed_key_store_keeps_the_old_revision_and_a_retry_stores_the_key() {
+    let mut f = fixture(false);
+    give_identities(&f);
+    let mut newer = base_keys();
+    if let Some(IdentityPublicKey::V0(k)) = newer.get_mut(&1) {
+        k.disabled_at = Some(1_800_000_000_000);
+    }
+    newer.insert(3, key(3, Purpose::TRANSFER, DppSecurityLevel::CRITICAL));
+    let platform = || FakeNet {
+        identities: Mutex::new(HashMap::from([(
+            id(MINE),
+            identity(MINE, newer.clone(), 1_000, 2),
+        )])),
+        ..FakeNet::default()
+    };
+    install(&f, platform());
+    balance_hook(&f, 1_000);
+    // Key 1 stores; key 3 does not.
+    fail_stores(&f, |cs| {
+        (cs.identity_keys.as_ref()).is_some_and(|k| k.upserts.keys().any(|(_, key)| *key == 3))
+    });
+    let err = f
+        .engine
+        .block_on(dp(&f).refresh_identity(b58(MINE)))
+        .unwrap_err();
+    assert_eq!(err.code(), "storage");
+    let mut stored = base_keys();
+    stored.insert(1, newer[&1].clone());
+    let lib = held(&f, MINE);
+    assert_eq!((lib.revision(), lib.public_keys()), (1, &stored), "memory");
+    heal_stores(&f);
+    reopen(&mut f);
+    let lib = held(&f, MINE);
+    assert_eq!((lib.revision(), lib.public_keys()), (1, &stored), "disk");
+
+    install(&f, platform());
+    balance_hook(&f, 1_000);
+    f.engine
+        .block_on(dp(&f).refresh_identity(b58(MINE)))
+        .unwrap();
+    reopen(&mut f);
+    let lib = held(&f, MINE);
+    assert_eq!((lib.revision(), lib.public_keys()), (2, &newer), "retried");
+}
+
+/// A newer revision with the same keys stores the revision alone; its
+/// failed store is `storage` and leaves the old revision (review F2).
+#[test]
+fn a_failed_revision_store_is_storage_and_keeps_the_old_revision() {
+    let mut f = fixture(false);
+    give_identities(&f);
+    install(
+        &f,
+        FakeNet {
+            identities: Mutex::new(HashMap::from([(
+                id(MINE),
+                identity(MINE, base_keys(), 1_000, 3),
+            )])),
+            ..FakeNet::default()
+        },
+    );
+    balance_hook(&f, 1_000);
+    fail_stores(&f, |cs| {
+        (cs.identities.as_ref()).is_some_and(|i| i.identities.values().any(|e| e.revision == 3))
+    });
+    let err = f
+        .engine
+        .block_on(dp(&f).refresh_identity(b58(MINE)))
+        .unwrap_err();
+    assert_eq!(err.code(), "storage");
+    assert_eq!(held(&f, MINE).revision(), 1);
+    heal_stores(&f);
+    f.engine
+        .block_on(dp(&f).refresh_identity(b58(MINE)))
+        .unwrap();
+    reopen(&mut f);
+    assert_eq!(held(&f, MINE).revision(), 3);
+}
+
+/// The wallet gone mid-run fails Refresh all as a whole, not identity by
+/// identity (contract §2.1, review N2).
+#[test]
+fn refreshing_all_fails_as_a_whole_when_the_wallet_goes() {
+    let f = fixture(false);
+    give_identities(&f);
+    let net = install(
+        &f,
+        FakeNet {
+            identities: Mutex::new(HashMap::from([(
+                id(MINE),
+                identity(MINE, base_keys(), 0, 1),
+            )])),
+            ..FakeNet::default()
+        },
+    );
+    net.fail
+        .lock()
+        .unwrap()
+        .insert(id(SECOND), PlatformError::WalletNotFound);
+    balance_hook(&f, 1_000);
+    let err = f.engine.block_on(dp(&f).refresh_identities()).unwrap_err();
+    assert_eq!(err.code(), "wallet_not_found");
 }
 
 /// A restart reads the refreshed keys and revision back from the wallet's
