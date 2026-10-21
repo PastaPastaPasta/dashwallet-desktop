@@ -360,7 +360,9 @@ impl NetworkSession {
 /// `fetched` is not older than `m` (module doc). The balance is left alone.
 ///
 /// Each changed key is stored first, under the old revision; a key whose
-/// store fails is put back as it was, so memory stays what the store holds.
+/// store fails is put back as it was, so memory never runs ahead of the
+/// store (a failure the store keeps for retry may land on disk later, still
+/// Platform's answer, and the next refresh folds it into memory again).
 /// The new revision is stored last, through `store` so that its failure is
 /// `storage` too, and only once every key is.
 fn fold(
