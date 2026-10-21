@@ -1,6 +1,11 @@
-//! Dash Core's checks of the shared-masternode maintenance payloads, as pure
-//! functions returning Core's reject reason (v24.0.0-rc.3):
+//! Dash Core's checks of the shared-masternode payloads, as pure functions
+//! returning Core's reject reason (v24.0.0-rc.3):
 //!
+//! - `CProRegTx::IsTriviallyValid` for a version-3 payload
+//!   (`src/evo/providertx.cpp:265-333`), with `IsShareListTriviallyValid`
+//!   (`:63-130`) or `IsPayoutListTriviallyValid` (`:25-62`), and
+//!   `CheckProRegTx` (`src/evo/specialtxman.cpp:1148-1321`):
+//!   [`check_registration_trivial`], [`check_registration`];
 //! - `CProDisTx`, `CProUpShareTx` and `CProUpSharedRegTx::IsTriviallyValid`
 //!   (`src/evo/providertx.cpp:535-589`);
 //! - `CheckProUpShareTx`, `CheckProUpSharedRegTx`, `CheckProDisTxForList` and
@@ -13,17 +18,41 @@
 //! key from the synced list) and the height the transaction would be mined
 //! at. Signature checks are `CHashSigner::VerifyHashCanonical`
 //! (`src/messagesigner.cpp:58-90`).
+//!
+//! The prefix every contextual check shares, `GetValidatedPayload`
+//! (`specialtxman.cpp:1098-1121`), is the decoder's (MG-04b n-r2-7): a
+//! payload that doesn't decode is `bad-protx-payload`, and
+//! [`SpecialTx::from_bytes`] and the payload decoders ([`ProRegTxV3`],
+//! [`ProDisTx`], …) refuse trailing bytes, as `GetTxPayload` does
+//! (`specialtx.h:18-28`). What depends on the caller, the transaction's type
+//! (`bad-protx-type`, `:1102-1104`) and the version against `GetMax`
+//! (`bad-protx-version`, `:1113-1115`: version 3 needs v24), is checked in
+//! [`check_registration`]; the maintenance types exist only from v24 (each
+//! check's `-too-early`).
 
-use dashcore::hashes::Hash;
-use dashcore::{OutPoint, ScriptBuf, Txid};
-
-use super::rawtx::SpecialTx;
-use super::{CollateralShare, PRODIS_MAX_FEE, ProDisTx, ProUpShareTx, ProUpSharedRegTx};
-use crate::params::MAX_SHARES;
-use crate::rules::{
-    ListedMasternode, Reject, holds_operator_key, is_valid_operator_key, p2pkh_key_id, signed_by,
-};
 use dashcore::bls_sig_utils::BlsScheme;
+use dashcore::hashes::{Hash, hash160};
+use dashcore::{Network, OutPoint, ScriptBuf, Txid};
+
+use super::netinfo::{
+    ExtNetInfo, NetInfoEntry, PURPOSE_CORE_P2P, PURPOSE_PLATFORM_HTTPS, PURPOSE_PLATFORM_P2P,
+};
+use super::rawtx::SpecialTx;
+use super::registration::{
+    MN_TYPE_EVO, MN_TYPE_REGULAR, ProRegTxV3, SHARED_COLLATERAL_SCRIPT,
+    TRANSACTION_PROVIDER_REGISTER,
+};
+use super::{
+    CollateralShare, PRODIS_MAX_FEE, PayoutShare, ProDisTx, ProUpShareTx, ProUpSharedRegTx,
+};
+use crate::params::{
+    MAX_EARLY_PERIOD_BLOCKS, MAX_OPERATOR_REWARD, MAX_SHARES, MIN_SHARE_AMOUNT, MIN_SHARES,
+    collateral_amount,
+};
+use crate::rules::{
+    ListedMasternode, Reject, holds_operator_key, is_valid_operator_key, normalized, p2pkh_key_id,
+    signed_by,
+};
 
 /// A registered shared masternode, as the wallet knows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +180,427 @@ pub fn check_update_shared_registrar_trivial(p: &ProUpSharedRegTx) -> Result<(),
         return Err("bad-protx-key-null");
     }
     check_sig_count(p.sigs.len(), "bad-proupsharedreg-sig-count")
+}
+
+// ---- ProRegTx, version 3 (type 1) ----
+
+/// `MasternodePayoutShares`' size bound (`providertx.cpp:28`).
+const MAX_PAYOUTS: usize = 8;
+/// `MasternodePayoutShare::MIN_REWARD` / `MAX_REWARD` (`providertx.h:34-35`).
+const MIN_PAYOUT_REWARD: u16 = 100;
+const MAX_PAYOUT_REWARD: u16 = 10_000;
+
+/// A `CTxDestination` Core can extract (`ExtractDestination`, rc.3
+/// `script/standard.cpp:161-189`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Destination {
+    PubkeyHash([u8; 20]),
+    ScriptHash([u8; 20]),
+}
+
+/// `ExtractDestination`: P2PKH, P2SH, or P2PK with a validly sized public
+/// key (`CPubKey::ValidSize`: 33 bytes with header 2 or 3, 65 with 4, 6
+/// or 7), whose destination is its key's hash.
+fn extract_destination(script: &ScriptBuf) -> Option<Destination> {
+    if let Some(id) = p2pkh_key_id(script) {
+        return Some(Destination::PubkeyHash(id));
+    }
+    let b = script.as_bytes();
+    if script.is_p2sh() {
+        return Some(Destination::ScriptHash(b[2..22].try_into().expect("P2SH")));
+    }
+    let key = match b {
+        [33, key @ .., 0xac] if key.len() == 33 && matches!(key[0], 2 | 3) => key,
+        [65, key @ .., 0xac] if key.len() == 65 && matches!(key[0], 4 | 6 | 7) => key,
+        _ => return None,
+    };
+    Some(Destination::PubkeyHash(
+        hash160::Hash::hash(key).to_byte_array(),
+    ))
+}
+
+/// `IsShareListTriviallyValid` (`providertx.cpp:63-130`), in its order.
+/// A refund or reward script is P2PKH or P2SH, so `ExtractDestination`
+/// succeeds (`bad-protx-shares-payee-dest`, `:104-106`, can't arise).
+fn check_share_list(
+    shares: &[CollateralShare],
+    early_period_blocks: u32,
+    early_penalty: i64,
+    required_collateral: u64,
+    voting_key_id: [u8; 20],
+) -> Result<(), Reject> {
+    if shares.len() < MIN_SHARES as usize || shares.len() > MAX_SHARES as usize {
+        return Err("bad-protx-shares-count");
+    }
+    if early_period_blocks > MAX_EARLY_PERIOD_BLOCKS {
+        return Err("bad-protx-shares-early-period");
+    }
+    let mut total: u64 = 0;
+    let mut min_amount = u64::MAX;
+    for (i, share) in shares.iter().enumerate() {
+        // Bounded by the collateral first, so the sum can't overflow (`:78`).
+        if share.amount < MIN_SHARE_AMOUNT || share.amount > required_collateral {
+            return Err("bad-protx-shares-amount");
+        }
+        total += share.amount;
+        min_amount = min_amount.min(share.amount);
+        if share.owner_key_id == [0; 20] {
+            return Err("bad-protx-shares-key-null");
+        }
+        let earlier = &shares[..i];
+        if earlier.iter().any(|s| s.owner_key_id == share.owner_key_id) {
+            return Err("bad-protx-shares-dup-key");
+        }
+        if earlier
+            .iter()
+            .any(|s| s.refund_script == share.refund_script)
+        {
+            return Err("bad-protx-shares-dup-refund");
+        }
+        // An empty reward script means "the refund script" (`:96-99`), so
+        // it checks the refund again, to the same result.
+        for script in [&share.refund_script, share.effective_reward_script()] {
+            if !is_valid_payout_script(script) {
+                return Err("bad-protx-shares-payee");
+            }
+            // The voting key, then every share's owner key, this one's
+            // included (`:107-114`).
+            if pays_key(script, voting_key_id)
+                || shares.iter().any(|o| pays_key(script, o.owner_key_id))
+            {
+                return Err("bad-protx-shares-payee-reuse");
+            }
+        }
+    }
+    if total != required_collateral {
+        return Err("bad-protx-shares-amount-sum");
+    }
+    if early_penalty < 0 || early_penalty as u64 >= min_amount {
+        return Err("bad-protx-shares-penalty");
+    }
+    // A penalty without a period would still cap the unilateral bonus
+    // (`:123-128`).
+    if early_period_blocks == 0 && early_penalty != 0 {
+        return Err("bad-protx-shares-penalty");
+    }
+    Ok(())
+}
+
+/// `IsPayoutListTriviallyValid` (`providertx.cpp:25-62`): a non-shared
+/// version-3 payload's payouts (`GetOwnerPayouts`, `providertx.h:94-97`).
+/// `bad-protx-payee-dest` (`:47-50`) can't arise after `bad-protx-payee`.
+fn check_payout_list(
+    payouts: &[PayoutShare],
+    owner_key_id: [u8; 20],
+    voting_key_id: [u8; 20],
+) -> Result<(), Reject> {
+    if payouts.is_empty() || payouts.len() > MAX_PAYOUTS {
+        return Err("bad-protx-payouts-count");
+    }
+    let mut total: u32 = 0;
+    for (i, payout) in payouts.iter().enumerate() {
+        if !(MIN_PAYOUT_REWARD..=MAX_PAYOUT_REWARD).contains(&payout.reward) {
+            return Err("bad-protx-payout-reward");
+        }
+        total += u32::from(payout.reward);
+        if !is_valid_payout_script(&payout.script) {
+            return Err("bad-protx-payee");
+        }
+        if payouts[..i].iter().any(|p| p.script == payout.script) {
+            return Err("bad-protx-payee-dup");
+        }
+        if (owner_key_id != [0; 20] && pays_key(&payout.script, owner_key_id))
+            || pays_key(&payout.script, voting_key_id)
+        {
+            return Err("bad-protx-payee-reuse");
+        }
+    }
+    if total != u32::from(MAX_PAYOUT_REWARD) {
+        return Err("bad-protx-payout-reward-sum");
+    }
+    Ok(())
+}
+
+/// `IsNetInfoTriviallyValid` (`providertx.cpp:166-185`): Core P2P entries
+/// for every masternode, Platform entries for an EvoNode and never for a
+/// regular one.
+fn check_net_info_trivial(net_info: &ExtNetInfo, mn_type: u16) -> Result<(), Reject> {
+    if !net_info.has_entries(PURPOSE_CORE_P2P) {
+        return Err("bad-protx-netinfo-empty");
+    }
+    let https = net_info.has_entries(PURPOSE_PLATFORM_HTTPS);
+    let p2p = net_info.has_entries(PURPOSE_PLATFORM_P2P);
+    if mn_type == MN_TYPE_REGULAR && (https || p2p) {
+        return Err("bad-protx-netinfo-bad");
+    }
+    if mn_type == MN_TYPE_EVO && !(https && p2p) {
+        return Err("bad-protx-netinfo-empty");
+    }
+    Ok(())
+}
+
+/// `CProRegTx::IsTriviallyValid` (`providertx.cpp:265-333`) for a
+/// version-3 payload, shared or not, in Core's order:
+///
+/// 1. `bad-protx-version` (267) and `bad-protx-evo-version` (270) can't
+///    arise: [`ProRegTxV3`] is version 3 by construction.
+/// 2. `bad-protx-type` (273, `IsValidMnType`: regular or Evo), `-mode`
+///    (276).
+/// 3. Shared: `bad-protx-shares-external` (282), `-shares-owner-key` (286),
+///    `-shares-payouts` (289). Not shared: `-shares-empty-fields` (293),
+///    `bad-protx-key-null` (null owner, 296).
+/// 4. `bad-protx-key-null` (invalid operator key or null voting key, 300).
+///    `bad-protx-operator-pubkey` (303) can't arise: a version-3 key is read
+///    in the basic scheme, so a key that is only a legacy point is invalid.
+/// 5. Shared: the share list ([`check_share_list`]). Not shared: the payout
+///    list ([`check_payout_list`]).
+/// 6. `bad-protx-netinfo-version` (315) can't arise: version 3 always has
+///    an [`ExtNetInfo`]. A non-empty net info's trivial rules (318,
+///    `bad-protx-netinfo-empty`, `-netinfo-bad`), then every entry trivially
+///    valid (322-326, `bad-protx-netinfo-bad`).
+/// 7. `bad-protx-operator-reward` (328).
+pub fn check_registration_trivial(p: &ProRegTxV3) -> Result<(), Reject> {
+    if !matches!(p.mn_type, MN_TYPE_REGULAR | MN_TYPE_EVO) {
+        return Err("bad-protx-type");
+    }
+    if p.mode != 0 {
+        return Err("bad-protx-mode");
+    }
+    if p.is_shared() {
+        if p.collateral.txid != Txid::all_zeros() {
+            return Err("bad-protx-shares-external");
+        }
+        if p.owner_key_id != [0; 20] {
+            return Err("bad-protx-shares-owner-key");
+        }
+        if !p.payouts.is_empty() {
+            return Err("bad-protx-shares-payouts");
+        }
+    } else {
+        if p.early_period_blocks != 0 || p.early_penalty != 0 {
+            return Err("bad-protx-shares-empty-fields");
+        }
+        if p.owner_key_id == [0; 20] {
+            return Err("bad-protx-key-null");
+        }
+    }
+    if !is_valid_operator_key(&p.operator_public_key, BlsScheme::Modern)
+        || p.voting_key_id == [0; 20]
+    {
+        return Err("bad-protx-key-null");
+    }
+    if p.is_shared() {
+        check_share_list(
+            &p.shares,
+            p.early_period_blocks,
+            p.early_penalty,
+            collateral_amount(p.mn_type == MN_TYPE_EVO),
+            p.voting_key_id,
+        )?;
+    } else {
+        check_payout_list(&p.payouts, p.owner_key_id, p.voting_key_id)?;
+    }
+    if !p.net_info.is_empty_in_core() {
+        check_net_info_trivial(&p.net_info, p.mn_type)?;
+    }
+    if !p
+        .net_info
+        .all_entries()
+        .all(NetInfoEntry::is_trivially_valid)
+    {
+        return Err("bad-protx-netinfo-bad");
+    }
+    if p.operator_reward > MAX_OPERATOR_REWARD {
+        return Err("bad-protx-operator-reward");
+    }
+    Ok(())
+}
+
+/// `CheckProviderNetworkFields` (`providertx.cpp:212-263`) for a
+/// version-3 payload with `allow_empty` (`specialtxman.cpp:1172-1177`): an
+/// empty net info is allowed (the masternode starts PoSe-banned); otherwise
+/// its trivial rules and `ExtNetInfo::Validate` with `CheckNetInfo`'s
+/// reasons (MG-04b D5). An EvoNode needs a platform node id; its version-3
+/// platform port fields are not serialized, so are zero as required
+/// (`:233-241`).
+fn check_network_fields(p: &ProRegTxV3, network: Network) -> Result<(), Reject> {
+    // `bad-protx-netinfo-version` (`:216-218`): always an ExtNetInfo here.
+    if !p.net_info.is_empty_in_core() {
+        check_net_info_trivial(&p.net_info, p.mn_type)?;
+        if let Some(reason) = p.net_info.validate(network).reject() {
+            return Err(reason);
+        }
+    }
+    if p.mn_type == MN_TYPE_EVO && p.platform_node_id.is_none_or(|id| id == [0; 20]) {
+        return Err("bad-protx-platform-nodeid");
+    }
+    Ok(())
+}
+
+/// `IsPayoutListKeySafe` with `check_payout_collateral_reuse`
+/// (`providertx.cpp:146-164`; on for version 3, `specialtxman.cpp:1229`).
+fn check_payout_list_key_safe(
+    payouts: &[PayoutShare],
+    collateral: Destination,
+    owner_key_id: [u8; 20],
+    voting_key_id: [u8; 20],
+) -> Result<(), Reject> {
+    if collateral == Destination::PubkeyHash(owner_key_id)
+        || collateral == Destination::PubkeyHash(voting_key_id)
+    {
+        return Err("bad-protx-collateral-reuse");
+    }
+    if payouts
+        .iter()
+        .any(|p| extract_destination(&p.script) == Some(collateral))
+    {
+        return Err("bad-protx-payee-reuse");
+    }
+    Ok(())
+}
+
+/// `CheckProRegTx` (`specialtxman.cpp:1148-1321`) for a version-3 payload
+/// in `tx`, against the synced `list` at the tip, in Core's order. What an
+/// SPV wallet can't see is skipped, each at its line:
+///
+/// - `GetValidatedPayload` (1152): `bad-protx-type` (`tx`'s type, 1102),
+///   `bad-protx-version` (version 3 without v24, 1113), then
+///   [`check_registration_trivial`].
+/// - `bad-protx-version-disallowed` (1160) can't arise at version 3.
+/// - An EvoNode (1163-1170): `bad-protx-shares-evo` for a shared one,
+///   `bad-protx-payouts-evo` for more than one payout. The `evo_shares`
+///   deployment is taken as inactive: the wallet registers regular shared
+///   masternodes only (MG-04b D4), so this refuses an Evo shared
+///   registration as Core does before `evo_shares`.
+/// - The network fields (1174-1177, [`check_network_fields`]).
+/// - The collateral (1183-1221): an existing coin's value and key (1185-1202)
+///   are in Core's UTXO set, which SPV doesn't have, so they are skipped;
+///   only a non-shared payload can name one (`-shares-external`). An
+///   output of `tx`: `bad-protx-collateral-index` (1205), `-collateral`
+///   (the regular or Evo amount, 1208), then for a shared one
+///   `bad-protx-shares-collateral-script` ([`SHARED_COLLATERAL_SCRIPT`]
+///   exactly, 1213), else `-collateral-dest` (1217).
+/// - Not shared, with an output of `tx` as collateral:
+///   `bad-protx-collateral-reuse` / `bad-protx-payee-reuse` (1226-1229).
+/// - The list (1231-1288): `bad-protx-dup-netinfo-entry` for a service
+///   another collateral's masternode holds (1235-1240). Core's list holds
+///   every entry of every masternode as a unique property, services and
+///   domains of all purposes (`deterministicmns.cpp:459-470`), and the SML
+///   carries a version-3 entry's whole net info (`simplifiedmns.h:81`; the
+///   pin's `MasternodeNetInfo::Extended`), but [`ListedMasternode`] keeps
+///   only the primary service, so only that is compared here: a collision
+///   with another masternode's second Core P2P entry, its Platform entries
+///   or a domain (1241-1245) passes here and Core refuses it (MG-04b D39:
+///   platform-wallet's `MasternodeListSummary` keeps the primary endpoint
+///   only; a known gap until it and `ListedMasternode` carry every entry).
+///   `bad-protx-netinfo-entry` (1247) can't arise after the trivial checks.
+///   `bad-protx-dup-key`: owner keys (each share's, 1255-1259, or
+///   `keyIDOwner`, 1263) aren't in the SML, so are skipped;
+///   the operator key under either scheme (1260-1263, 1272).
+///   `bad-protx-dup-platformnodeid` for an EvoNode (1277-1281).
+///   `bad-protx-key-not-same` (1283-1287) applies only before DIP3
+///   enforcement, long past on every network the wallet syncs.
+/// - `bad-protx-inputs-hash` (1290).
+/// - An existing collateral's signature (`CheckStringSig`, 1295-1300) needs
+///   the coin's key: skipped. Otherwise `bad-protx-sig` for a non-empty
+///   `vchSig` (1303), and with `check_sigs` a shared payload's join
+///   signatures, each `VerifyHashCanonical` over
+///   [`ProRegTxV3::consent_hash`] by its share's owner key
+///   (`bad-protx-shares-sig`, 1306-1317).
+pub fn check_registration(
+    tx: &SpecialTx,
+    p: &ProRegTxV3,
+    list: &[ListedMasternode],
+    v24_active: bool,
+    network: Network,
+    check_sigs: bool,
+) -> Result<(), Reject> {
+    if tx.tx_type != TRANSACTION_PROVIDER_REGISTER {
+        return Err("bad-protx-type");
+    }
+    if !v24_active {
+        return Err("bad-protx-version");
+    }
+    check_registration_trivial(p)?;
+    let evo = p.mn_type == MN_TYPE_EVO;
+    if evo {
+        if p.is_shared() {
+            return Err("bad-protx-shares-evo");
+        }
+        if p.payouts.len() > 1 {
+            return Err("bad-protx-payouts-evo");
+        }
+    }
+    check_network_fields(p, network)?;
+
+    let internal = p.collateral.txid == Txid::all_zeros();
+    let collateral = if internal {
+        let vout = p.collateral.vout;
+        let out = tx
+            .output
+            .get(vout as usize)
+            .ok_or("bad-protx-collateral-index")?;
+        if out.value != collateral_amount(evo) {
+            return Err("bad-protx-collateral");
+        }
+        if p.is_shared() {
+            if out.script_pubkey.as_bytes() != SHARED_COLLATERAL_SCRIPT {
+                return Err("bad-protx-shares-collateral-script");
+            }
+        } else {
+            let dest =
+                extract_destination(&out.script_pubkey).ok_or("bad-protx-collateral-dest")?;
+            check_payout_list_key_safe(&p.payouts, dest, p.owner_key_id, p.voting_key_id)?;
+        }
+        OutPoint::new(tx.txid(), vout)
+    } else {
+        p.collateral
+    };
+
+    for entry in p.net_info.all_entries() {
+        let NetInfoEntry::Service(service) = entry else {
+            continue;
+        };
+        let Some(addr) = service.socket_addr() else {
+            continue;
+        };
+        if list.iter().any(|e| {
+            e.service.map(normalized) == Some(normalized(addr)) && e.collateral != Some(collateral)
+        }) {
+            return Err("bad-protx-dup-netinfo-entry");
+        }
+    }
+    if list
+        .iter()
+        .any(|e| holds_operator_key(e, &p.operator_public_key, BlsScheme::Modern))
+    {
+        return Err("bad-protx-dup-key");
+    }
+    if evo
+        && let Some(id) = p.platform_node_id
+        && list.iter().any(|e| e.platform_node_id == Some(id))
+    {
+        return Err("bad-protx-dup-platformnodeid");
+    }
+
+    check_inputs_hash(tx, p.inputs_hash)?;
+    if internal {
+        if !p.sig.is_empty() {
+            return Err("bad-protx-sig");
+        }
+        if p.is_shared() && check_sigs {
+            let consent = p.consent_hash(tx);
+            let all_signed = p.shares.iter().enumerate().all(|(i, share)| {
+                p.join_sigs
+                    .get(i)
+                    .is_some_and(|sig| verify_hash_canonical(consent, share.owner_key_id, sig))
+            });
+            if !all_signed {
+                return Err("bad-protx-shares-sig");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The masternode the payload names, listed and shared.
@@ -383,6 +833,7 @@ pub fn check_dissolution(
 #[cfg(test)]
 #[allow(non_snake_case)]
 mod tests {
+    use super::super::registration::NULL_JOIN_SIGNATURE;
     use super::*;
     use crate::payloads::sign_hash_compact;
     use crate::rules::p2pkh_key_id;
@@ -862,5 +1313,628 @@ mod tests {
         let mut v = p.clone();
         v.sigs.swap(1, 2);
         assert_eq!(check(&v, &[]), Err("bad-proupsharedreg-sig"));
+    }
+
+    #[test]
+    fn test_QT_127_key_change_needs_a_shared_masternode() {
+        let shares = shares();
+        let (tx, p) = key_change(&shares);
+        let not_shared = SharedMn {
+            shares: &[],
+            ..mn(&shares)
+        };
+        assert_eq!(
+            check_update_shared_registrar(&tx, &p, Some(&not_shared), &[], true, true),
+            Err("bad-proupsharedreg-not-shared")
+        );
+    }
+
+    #[test]
+    fn test_QT_127_more_than_eight_signatures_are_trivially_invalid() {
+        let mut d = ProDisTx {
+            version: 1,
+            pro_tx_hash: Txid::from_byte_array([0xAA; 32]),
+            actor_index: 0,
+            sigs: vec![[0; 65]; 8],
+        };
+        assert_eq!(check_dissolution_trivial(&d), Ok(()));
+        d.sigs.push([0; 65]);
+        assert_eq!(check_dissolution_trivial(&d), Err("bad-prodis-sig-count"));
+
+        let (_, mut k) = key_change(&shares());
+        k.sigs = vec![[0; 65]; 8];
+        assert_eq!(check_update_shared_registrar_trivial(&k), Ok(()));
+        k.sigs.push([0; 65]);
+        assert_eq!(
+            check_update_shared_registrar_trivial(&k),
+            Err("bad-proupsharedreg-sig-count")
+        );
+    }
+
+    #[test]
+    fn test_QT_127_payload_prefix_is_the_decoders() {
+        // `GetTxPayload` refuses trailing bytes (`specialtx.h:18-28`):
+        // `bad-protx-payload`, before any rule here runs.
+        let (tx, p) = registration(|_, _| {});
+        let mut bytes = p.to_payload().unwrap();
+        bytes.push(0);
+        assert!(ProRegTxV3::from_payload(&bytes).is_err());
+        let mut raw = tx.to_bytes();
+        raw.push(0);
+        assert!(SpecialTx::from_bytes(&raw).is_err());
+        let (_, k) = key_change(&shares());
+        let mut bytes = super::super::payload_bytes(&k);
+        bytes.push(0);
+        assert!(dashcore::consensus::deserialize::<ProUpSharedRegTx>(&bytes).is_err());
+    }
+
+    // ---- ProRegTx version 3 (type 1) ----
+
+    fn net(services: &[&str]) -> ExtNetInfo {
+        let addrs: Vec<std::net::SocketAddr> =
+            services.iter().map(|s| s.parse().unwrap()).collect();
+        ExtNetInfo::core_p2p(&addrs).unwrap()
+    }
+
+    fn entries(service: &str) -> Vec<NetInfoEntry> {
+        net(&[service]).entries.remove(0).1
+    }
+
+    /// A shared registration laid out as `PrepareSharedRegistration` does
+    /// (change, then the template collateral at index 1), after `edit`,
+    /// with its inputs hash, join signatures and payload filled in.
+    fn registration(edit: impl FnOnce(&mut SpecialTx, &mut ProRegTxV3)) -> (SpecialTx, ProRegTxV3) {
+        let mut tx = special(
+            TRANSACTION_PROVIDER_REGISTER,
+            vec![input(OutPoint::new(Txid::from_byte_array([5; 32]), 0))],
+            vec![
+                TxOut {
+                    value: 12_345,
+                    script_pubkey: p2pkh([0x44; 20]),
+                },
+                TxOut {
+                    value: 1_000 * COIN,
+                    script_pubkey: ScriptBuf::from_bytes(SHARED_COLLATERAL_SCRIPT.to_vec()),
+                },
+            ],
+        );
+        let mut p = ProRegTxV3 {
+            mn_type: MN_TYPE_REGULAR,
+            mode: 0,
+            collateral: OutPoint::new(Txid::all_zeros(), 1),
+            net_info: net(&["8.8.8.8:19999"]),
+            owner_key_id: [0; 20],
+            operator_public_key: crate::bls::TEST_OPERATOR_KEY,
+            voting_key_id: VOTING,
+            operator_reward: 0,
+            payouts: vec![],
+            shares: shares(),
+            join_sigs: vec![],
+            early_period_blocks: 100,
+            early_penalty: PENALTY,
+            inputs_hash: [0; 32],
+            platform_node_id: None,
+            sig: vec![],
+        };
+        edit(&mut tx, &mut p);
+        p.inputs_hash = tx.inputs_hash();
+        let consent = p.consent_hash(&tx);
+        p.join_sigs = (0..p.shares.len())
+            .map(|i| sign_hash_compact(&secret(i), &consent).unwrap())
+            .collect();
+        tx.payload = p.to_payload().unwrap();
+        (tx, p)
+    }
+
+    /// An EvoNode's net info and node id, and a 4,000 DASH collateral.
+    fn make_evo(tx: &mut SpecialTx, p: &mut ProRegTxV3) {
+        p.mn_type = MN_TYPE_EVO;
+        p.platform_node_id = Some([0x31; 20]);
+        p.net_info
+            .entries
+            .push((PURPOSE_PLATFORM_P2P, entries("8.8.8.8:22000")));
+        p.net_info
+            .entries
+            .push((PURPOSE_PLATFORM_HTTPS, entries("8.8.8.8:443")));
+        tx.output[1].value = 4_000 * COIN;
+        for (s, dash) in p.shares.iter_mut().zip([2_000, 1_000, 1_000]) {
+            s.amount = dash * COIN;
+        }
+    }
+
+    type Edit = fn(&mut ProRegTxV3);
+
+    #[test]
+    fn test_QT_126_shared_registration_trivial_rules_in_core_order() {
+        let (_, p) = registration(|_, _| {});
+        assert_eq!(check_registration_trivial(&p), Ok(()));
+        let cases: &[(Reject, Edit)] = &[
+            ("bad-protx-type", |p| p.mn_type = 2),
+            ("bad-protx-mode", |p| p.mode = 1),
+            ("bad-protx-shares-external", |p| {
+                p.collateral.txid = Txid::from_byte_array([1; 32])
+            }),
+            ("bad-protx-shares-owner-key", |p| p.owner_key_id = [1; 20]),
+            ("bad-protx-shares-payouts", |p| {
+                p.payouts = vec![PayoutShare {
+                    script: p2pkh([0x45; 20]),
+                    reward: 10_000,
+                }]
+            }),
+            ("bad-protx-key-null", |p| p.voting_key_id = [0; 20]),
+            ("bad-protx-key-null", |p| p.operator_public_key = [0x11; 48]),
+            ("bad-protx-shares-count", |p| p.shares.truncate(1)),
+            ("bad-protx-shares-count", |p| {
+                let more = p.shares[2].clone();
+                p.shares.extend(vec![more; 6]);
+            }),
+            ("bad-protx-shares-early-period", |p| {
+                p.early_period_blocks = MAX_EARLY_PERIOD_BLOCKS + 1
+            }),
+            ("bad-protx-shares-amount", |p| {
+                p.shares[0].amount = 99 * COIN
+            }),
+            ("bad-protx-shares-amount", |p| {
+                p.shares[2].amount = 1_000 * COIN + 1
+            }),
+            ("bad-protx-shares-key-null", |p| {
+                p.shares[1].owner_key_id = [0; 20]
+            }),
+            ("bad-protx-shares-dup-key", |p| {
+                p.shares[2].owner_key_id = p.shares[0].owner_key_id
+            }),
+            ("bad-protx-shares-dup-refund", |p| {
+                p.shares[1].refund_script = p.shares[0].refund_script.clone()
+            }),
+            ("bad-protx-shares-payee", |p| {
+                p.shares[0].refund_script = ScriptBuf::from_bytes(vec![0x51])
+            }),
+            ("bad-protx-shares-payee", |p| {
+                p.shares[1].reward_script = ScriptBuf::from_bytes(vec![0x51])
+            }),
+            ("bad-protx-shares-payee-reuse", |p| {
+                p.shares[0].refund_script = p2pkh(VOTING)
+            }),
+            // A later share's owner key, and the share's own.
+            ("bad-protx-shares-payee-reuse", |p| {
+                p.shares[0].reward_script = p2pkh(owner_id(2))
+            }),
+            ("bad-protx-shares-payee-reuse", |p| {
+                p.shares[1].reward_script = p2pkh(owner_id(1))
+            }),
+            ("bad-protx-shares-amount-sum", |p| p.shares[0].amount -= 1),
+            ("bad-protx-shares-penalty", |p| p.early_penalty = -1),
+            // The smallest share is 300 DASH.
+            ("bad-protx-shares-penalty", |p| {
+                p.early_penalty = 300 * COIN as i64
+            }),
+            ("bad-protx-shares-penalty", |p| p.early_period_blocks = 0),
+            // An unknown version isn't empty and has no Core P2P entry.
+            ("bad-protx-netinfo-empty", |p| {
+                p.net_info = ExtNetInfo {
+                    version: 2,
+                    entries: vec![],
+                }
+            }),
+            // A purpose with no entry isn't empty either.
+            ("bad-protx-netinfo-empty", |p| {
+                p.net_info = ExtNetInfo {
+                    version: 1,
+                    entries: vec![(PURPOSE_CORE_P2P, vec![])],
+                }
+            }),
+            ("bad-protx-netinfo-bad", |p| {
+                p.net_info
+                    .entries
+                    .push((PURPOSE_PLATFORM_P2P, entries("8.8.8.8:22000")))
+            }),
+            ("bad-protx-netinfo-bad", |p| {
+                p.net_info = net(&["0.0.0.0:19999"])
+            }),
+            ("bad-protx-operator-reward", |p| p.operator_reward = 10_001),
+        ];
+        for (reason, edit) in cases {
+            let mut q = p.clone();
+            edit(&mut q);
+            assert_eq!(check_registration_trivial(&q), Err(*reason), "{reason}");
+        }
+
+        // Core's order where two rules meet.
+        let mut q = p.clone();
+        q.mode = 1;
+        q.shares.clear();
+        q.owner_key_id = [0; 20];
+        assert_eq!(check_registration_trivial(&q), Err("bad-protx-mode"));
+        let mut q = p.clone();
+        q.shares[0].amount -= 1;
+        q.shares[2].owner_key_id = [0; 20];
+        assert_eq!(
+            check_registration_trivial(&q),
+            Err("bad-protx-shares-key-null")
+        );
+        let mut q = p.clone();
+        q.early_penalty = -1;
+        q.net_info = net(&["0.0.0.0:19999"]);
+        q.operator_reward = 10_001;
+        assert_eq!(
+            check_registration_trivial(&q),
+            Err("bad-protx-shares-penalty")
+        );
+
+        // The limits themselves pass; an empty net info is the net info's
+        // trivial rules' to skip.
+        let limits: &[Edit] = &[
+            |p| p.early_penalty = 300 * COIN as i64 - 1,
+            |p| p.early_penalty = 0,
+            |p| {
+                p.early_period_blocks = 0;
+                p.early_penalty = 0
+            },
+            |p| p.early_period_blocks = MAX_EARLY_PERIOD_BLOCKS,
+            |p| p.net_info = ExtNetInfo::default(),
+            |p| p.operator_reward = 10_000,
+            |p| {
+                let mut eight = Vec::new();
+                for i in 0..8u8 {
+                    eight.push(CollateralShare {
+                        amount: 125 * COIN,
+                        refund_script: p2pkh([0x60 + i; 20]),
+                        reward_script: ScriptBuf::new(),
+                        owner_key_id: [0x80 + i; 20],
+                    });
+                }
+                p.shares = eight;
+                p.early_penalty = 0;
+            },
+        ];
+        for edit in limits {
+            let mut q = p.clone();
+            edit(&mut q);
+            assert_eq!(check_registration_trivial(&q), Ok(()));
+        }
+    }
+
+    #[test]
+    fn test_QT_126_non_shared_v3_registration_trivial_rules() {
+        let (_, shared) = registration(|_, _| {});
+        let p = ProRegTxV3 {
+            shares: vec![],
+            join_sigs: vec![],
+            early_period_blocks: 0,
+            early_penalty: 0,
+            owner_key_id: [0x21; 20],
+            payouts: vec![PayoutShare {
+                script: p2pkh([0x45; 20]),
+                reward: 10_000,
+            }],
+            ..shared
+        };
+        assert_eq!(check_registration_trivial(&p), Ok(()));
+        let payout = |id: u8, reward| PayoutShare {
+            script: p2pkh([id; 20]),
+            reward,
+        };
+        let cases: &[(Reject, Edit)] = &[
+            ("bad-protx-shares-empty-fields", |p| {
+                p.early_period_blocks = 1
+            }),
+            ("bad-protx-shares-empty-fields", |p| p.early_penalty = 1),
+            ("bad-protx-key-null", |p| p.owner_key_id = [0; 20]),
+            ("bad-protx-payouts-count", |p| p.payouts.clear()),
+            ("bad-protx-payouts-count", |p| {
+                p.payouts = (0..9)
+                    .map(|i| PayoutShare {
+                        script: p2pkh([0x50 + i; 20]),
+                        reward: 1_000,
+                    })
+                    .collect()
+            }),
+            ("bad-protx-payout-reward", |p| p.payouts[0].reward = 99),
+            ("bad-protx-payee", |p| {
+                p.payouts[0].script = ScriptBuf::from_bytes(vec![0x51])
+            }),
+            ("bad-protx-payee-dup", |p| {
+                p.payouts[0].reward = 5_000;
+                p.payouts.push(p.payouts[0].clone());
+            }),
+            ("bad-protx-payee-reuse", |p| {
+                p.payouts[0].script = p2pkh([0x21; 20])
+            }),
+            ("bad-protx-payee-reuse", |p| {
+                p.payouts[0].script = p2pkh(VOTING)
+            }),
+            ("bad-protx-payout-reward-sum", |p| {
+                p.payouts[0].reward = 9_999
+            }),
+        ];
+        for (reason, edit) in cases {
+            let mut q = p.clone();
+            edit(&mut q);
+            assert_eq!(check_registration_trivial(&q), Err(*reason), "{reason}");
+        }
+        let mut two = p.clone();
+        two.payouts = vec![payout(0x46, 2_500), payout(0x47, 7_500)];
+        assert_eq!(check_registration_trivial(&two), Ok(()));
+    }
+
+    #[test]
+    fn test_QT_126_evo_net_info_needs_its_platform_entries() {
+        let (_, p) = registration(make_evo);
+        assert_eq!(check_registration_trivial(&p), Ok(()));
+        let mut q = p.clone();
+        q.net_info.entries.truncate(2);
+        assert_eq!(
+            check_registration_trivial(&q),
+            Err("bad-protx-netinfo-empty")
+        );
+        // A domain for Platform HTTPS is trivially fine.
+        let mut q = p.clone();
+        q.net_info.entries[2].1 = vec![NetInfoEntry::Domain {
+            name: "node.dash.org".into(),
+            port: 443,
+        }];
+        assert_eq!(check_registration_trivial(&q), Ok(()));
+    }
+
+    fn other_mn(
+        service: Option<&str>,
+        operator: [u8; 48],
+        collateral: Option<OutPoint>,
+    ) -> ListedMasternode {
+        ListedMasternode {
+            pro_tx_hash: [0xBB; 32],
+            service: service.map(|s| s.parse().unwrap()),
+            operator_public_key: operator,
+            voting_key_id: [0; 20],
+            platform_node_id: None,
+            collateral,
+        }
+    }
+
+    const UNRELATED: [u8; 48] = [0x88; 48];
+
+    #[test]
+    fn test_QT_126_shared_registration_contextual_rules_in_core_order() {
+        let net_id = Network::Testnet;
+        let (tx, p) = registration(|_, _| {});
+        let check = |tx: &SpecialTx, p: &ProRegTxV3, list: &[ListedMasternode]| {
+            check_registration(tx, p, list, true, net_id, true)
+        };
+        assert_eq!(check(&tx, &p, &[]), Ok(()));
+
+        // GetValidatedPayload's type and version, then the trivial rules.
+        let mut t = tx.clone();
+        t.tx_type = 2;
+        assert_eq!(check(&t, &p, &[]), Err("bad-protx-type"));
+        assert_eq!(
+            check_registration(&tx, &p, &[], false, net_id, true),
+            Err("bad-protx-version")
+        );
+        let mut q = p.clone();
+        q.shares[0].amount -= 1;
+        assert_eq!(check(&tx, &q, &[]), Err("bad-protx-shares-amount-sum"));
+
+        // An Evo shared registration, trivially valid.
+        let (t, q) = registration(make_evo);
+        assert_eq!(check_registration_trivial(&q), Ok(()));
+        assert_eq!(check(&t, &q, &[]), Err("bad-protx-shares-evo"));
+
+        // The network fields: Core's v3 rules on the network (D5).
+        let (t, q) = registration(|_, p| p.net_info = net(&["10.0.0.1:19999"]));
+        assert_eq!(check(&t, &q, &[]), Err("bad-protx-netinfo-addr-unroutable"));
+        assert_eq!(
+            check_registration(&t, &q, &[], true, Network::Regtest, true),
+            Ok(())
+        );
+        let (t, q) = registration(|_, p| p.net_info = net(&["8.8.8.8:8333"]));
+        assert_eq!(check(&t, &q, &[]), Err("bad-protx-netinfo-port"));
+        let (t, q) = registration(|_, p| p.net_info = net(&["8.8.8.8:19999", "8.8.8.8:19998"]));
+        assert_eq!(check(&t, &q, &[]), Err("bad-protx-dup-netinfo-entry"));
+        // Five Core P2P entries (the decoder reads at most four), and a
+        // domain outside Platform HTTPS.
+        let (t, q) = registration(|_, p| {
+            p.net_info = net(&[
+                "8.8.8.1:19999",
+                "8.8.8.2:19999",
+                "8.8.8.3:19999",
+                "8.8.8.4:19999",
+            ]);
+            p.net_info.entries[0].1.extend(entries("8.8.8.5:19999"));
+        });
+        assert_eq!(check_registration_trivial(&q), Ok(()));
+        assert_eq!(check(&t, &q, &[]), Err("bad-protx-netinfo-maxlimit"));
+        let (t, q) = registration(|_, p| {
+            p.net_info.entries[0].1.push(NetInfoEntry::Domain {
+                name: "node.dash.org".into(),
+                port: 19999,
+            })
+        });
+        assert_eq!(check_registration_trivial(&q), Ok(()));
+        assert_eq!(check(&t, &q, &[]), Err("bad-protx-netinfo-entry"));
+        // An invalid address is an invalid entry to Core's reader, refused
+        // trivially before `CheckNetInfo`'s `bad-protx-netinfo-addr`.
+        let (t, q) = registration(|_, p| p.net_info = net(&["[2001:db8::1]:19999"]));
+        assert_eq!(check(&t, &q, &[]), Err("bad-protx-netinfo-bad"));
+        // An empty service is allowed (the masternode starts PoSe-banned).
+        let (t, q) = registration(|_, p| p.net_info = ExtNetInfo::default());
+        assert_eq!(check(&t, &q, &[]), Ok(()));
+
+        // The collateral: index, amount, the template script exactly.
+        let mut q = p.clone();
+        q.collateral.vout = 2;
+        assert_eq!(check(&tx, &q, &[]), Err("bad-protx-collateral-index"));
+        let mut t = tx.clone();
+        t.output[1].value -= 1;
+        assert_eq!(check(&t, &p, &[]), Err("bad-protx-collateral"));
+        let mut t = tx.clone();
+        t.output[1].value = 4_000 * COIN;
+        assert_eq!(check(&t, &p, &[]), Err("bad-protx-collateral"));
+        let mut t = tx.clone();
+        t.output[1].script_pubkey = p2pkh([0x46; 20]);
+        assert_eq!(
+            check(&t, &p, &[]),
+            Err("bad-protx-shares-collateral-script")
+        );
+        let mut t = tx.clone();
+        let mut longer = SHARED_COLLATERAL_SCRIPT.to_vec();
+        longer.push(0x51);
+        t.output[1].script_pubkey = ScriptBuf::from_bytes(longer);
+        assert_eq!(
+            check(&t, &p, &[]),
+            Err("bad-protx-shares-collateral-script")
+        );
+
+        // The list: a service another collateral's masternode holds, in
+        // either form; this collateral's own entry may keep it.
+        for held in ["8.8.8.8:19999", "[::ffff:8.8.8.8]:19999"] {
+            assert_eq!(
+                check(&tx, &p, &[other_mn(Some(held), UNRELATED, None)]),
+                Err("bad-protx-dup-netinfo-entry"),
+                "{held}"
+            );
+        }
+        let ours = OutPoint::new(tx.txid(), 1);
+        assert_eq!(
+            check(
+                &tx,
+                &p,
+                &[other_mn(Some("8.8.8.8:19999"), UNRELATED, Some(ours))]
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            check(&tx, &p, &[other_mn(Some("8.8.8.8:19998"), UNRELATED, None)]),
+            Ok(())
+        );
+        // The operator key under either scheme, even for the same collateral.
+        let legacy = crate::bls::legacy_of(&crate::bls::TEST_OPERATOR_KEY).unwrap();
+        for key in [crate::bls::TEST_OPERATOR_KEY, legacy] {
+            assert_eq!(
+                check(&tx, &p, &[other_mn(Some("8.8.8.8:19999"), key, Some(ours))]),
+                Err("bad-protx-dup-key")
+            );
+        }
+        assert_eq!(
+            check(
+                &tx,
+                &p,
+                &[other_mn(
+                    Some("8.8.8.8:19999"),
+                    crate::bls::TEST_OPERATOR_KEY,
+                    None
+                )]
+            ),
+            Err("bad-protx-dup-netinfo-entry")
+        );
+
+        // The inputs hash, an empty vchSig, then every join signature.
+        let mut q = p.clone();
+        q.inputs_hash = [0; 32];
+        assert_eq!(check(&tx, &q, &[]), Err("bad-protx-inputs-hash"));
+        let mut q = p.clone();
+        q.sig = vec![0; 65];
+        assert_eq!(check(&tx, &q, &[]), Err("bad-protx-sig"));
+        let mut q = p.clone();
+        q.join_sigs.swap(0, 1);
+        assert_eq!(check(&tx, &q, &[]), Err("bad-protx-shares-sig"));
+        assert_eq!(
+            check_registration(&tx, &q, &[], true, net_id, false),
+            Ok(())
+        );
+        let mut q = p.clone();
+        q.join_sigs[2] = NULL_JOIN_SIGNATURE;
+        assert_eq!(check(&tx, &q, &[]), Err("bad-protx-shares-sig"));
+        // A join signature commits to every output.
+        let mut t = tx.clone();
+        t.output[0].value += 1;
+        assert_eq!(check(&t, &p, &[]), Err("bad-protx-shares-sig"));
+    }
+
+    /// A non-shared version-3 registration funding its own collateral at
+    /// index 1, after `edit`.
+    fn plain_registration(
+        edit: impl FnOnce(&mut SpecialTx, &mut ProRegTxV3),
+    ) -> (SpecialTx, ProRegTxV3) {
+        registration(|t, p| {
+            p.shares.clear();
+            p.early_period_blocks = 0;
+            p.early_penalty = 0;
+            p.owner_key_id = [0x21; 20];
+            p.payouts = vec![PayoutShare {
+                script: p2pkh([0x45; 20]),
+                reward: 10_000,
+            }];
+            t.output[1].script_pubkey = p2pkh([0x52; 20]);
+            edit(t, p);
+        })
+    }
+
+    #[test]
+    fn test_QT_126_non_shared_v3_registration_contextual_rules() {
+        let net_id = Network::Testnet;
+        let check = |tx: &SpecialTx, p: &ProRegTxV3, list: &[ListedMasternode]| {
+            check_registration(tx, p, list, true, net_id, true)
+        };
+        let (tx, p) = plain_registration(|_, _| {});
+        assert_eq!(check(&tx, &p, &[]), Ok(()));
+
+        let mut t = tx.clone();
+        t.output[1].script_pubkey = ScriptBuf::from_bytes(vec![0x51]);
+        assert_eq!(check(&t, &p, &[]), Err("bad-protx-collateral-dest"));
+        for reused in [[0x21; 20], VOTING] {
+            let mut t = tx.clone();
+            t.output[1].script_pubkey = p2pkh(reused);
+            assert_eq!(check(&t, &p, &[]), Err("bad-protx-collateral-reuse"));
+        }
+        let mut t = tx.clone();
+        t.output[1].script_pubkey = p2pkh([0x45; 20]);
+        assert_eq!(check(&t, &p, &[]), Err("bad-protx-payee-reuse"));
+        // A P2PK collateral's destination is its key's hash.
+        let sk = SecretKey::from_secret_bytes(secret(0)).unwrap();
+        let key = dashcore::PublicKey::new(sk.public_key()).to_bytes();
+        let mut p2pk = vec![33];
+        p2pk.extend_from_slice(&key);
+        p2pk.push(0xac);
+        let mut t = tx.clone();
+        t.output[1].script_pubkey = ScriptBuf::from_bytes(p2pk);
+        assert_eq!(check(&t, &p, &[]), Ok(()));
+        let mut q = p.clone();
+        q.payouts[0].script = p2pkh(owner_id(0));
+        assert_eq!(check(&t, &q, &[]), Err("bad-protx-payee-reuse"));
+        // An existing collateral: the coin and its signature are Core's to see.
+        let mut q = p.clone();
+        q.collateral = OutPoint::new(Txid::from_byte_array([9; 32]), 0);
+        q.sig = vec![1; 65];
+        assert_eq!(check(&tx, &q, &[]), Ok(()));
+
+        // EvoNodes: one payout before `evo_shares`, a node id, unique.
+        let (t, q) = plain_registration(|t, p| {
+            make_evo(t, p);
+            p.payouts = vec![
+                PayoutShare {
+                    script: p2pkh([0x46; 20]),
+                    reward: 5_000,
+                },
+                PayoutShare {
+                    script: p2pkh([0x47; 20]),
+                    reward: 5_000,
+                },
+            ];
+        });
+        assert_eq!(check_registration_trivial(&q), Ok(()));
+        assert_eq!(check(&t, &q, &[]), Err("bad-protx-payouts-evo"));
+        let (t, q) = plain_registration(make_evo);
+        assert_eq!(check(&t, &q, &[]), Ok(()));
+        let mut z = q.clone();
+        z.platform_node_id = Some([0; 20]);
+        assert_eq!(check(&t, &z, &[]), Err("bad-protx-platform-nodeid"));
+        let holder = ListedMasternode {
+            platform_node_id: Some([0x31; 20]),
+            ..other_mn(None, UNRELATED, None)
+        };
+        assert_eq!(
+            check(&t, &q, &[holder]),
+            Err("bad-protx-dup-platformnodeid")
+        );
     }
 }

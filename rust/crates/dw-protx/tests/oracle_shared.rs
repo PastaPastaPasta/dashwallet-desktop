@@ -28,8 +28,8 @@ use dw_protx::shared::netinfo::ExtNetInfo;
 use dw_protx::shared::rawtx::SpecialTx;
 use dw_protx::shared::registration::{NULL_JOIN_SIGNATURE, ProRegTxV3, SHARED_COLLATERAL_SCRIPT};
 use dw_protx::shared::rules::{
-    SharedMn, check_dissolution, check_update_share, check_update_shared_registrar,
-    verify_hash_canonical,
+    SharedMn, check_dissolution, check_registration, check_update_share,
+    check_update_shared_registrar, verify_hash_canonical,
 };
 use dw_protx::shared::{
     CollateralShare, ProDisTx, ProUpShareTx, ProUpSharedRegTx, TRANSACTION_PROVIDER_DISSOLVE,
@@ -277,6 +277,13 @@ fn test_QT_126_join_signatures_equal_dashds() {
         assert_eq!(funded.output, prepared.output);
         assert!(funded.input.iter().all(|i| !i.script_sig.is_empty()));
         assert_eq!(verdict(&c["accept"]), Ok(()));
+        // §5's rules accept what dashd accepted, and refuse the prepared
+        // registration, whose join signatures are still null.
+        let check = |tx: &SpecialTx| {
+            check_registration(tx, &payload_of(tx), &[], true, Network::Regtest, true)
+        };
+        assert_eq!(check(&funded), Ok(()), "{name}");
+        assert_eq!(check(&prepared), Err("bad-protx-shares-sig"), "{name}");
         assert_eq!(
             ProRegTxV3::pro_tx_hash(&funded).to_string(),
             str_of(&c, "pro_tx_hash")

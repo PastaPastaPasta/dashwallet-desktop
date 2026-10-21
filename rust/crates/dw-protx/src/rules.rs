@@ -349,7 +349,7 @@ pub fn check_registration_list(
 }
 
 /// An address with an IPv4-mapped IPv6 address shown as IPv4.
-fn normalized(addr: SocketAddr) -> SocketAddr {
+pub(crate) fn normalized(addr: SocketAddr) -> SocketAddr {
     match addr.ip() {
         IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
             Some(v4) => SocketAddr::new(IpAddr::V4(v4), addr.port()),

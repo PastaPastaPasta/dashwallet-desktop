@@ -10,14 +10,25 @@
 //! An unknown version (0 or above 1) is the version byte alone, as Core
 //! writes and reads it. The decoder is stricter than Core's in what it
 //! refuses rather than reads: an invalid entry (`0xff`, an unknown network,
-//! a wrong address length, an IPv4- or TorV2-in-IPv6 address), and purposes
-//! out of order or repeated, which Core reads into a different object than
-//! the bytes (`Clear()`, `std::map` insertion) and no valid payload holds.
-//! Which entries a payload may carry is a rule, not the codec's.
+//! a wrong address length, an IPv4-, TorV2- or internal-in-IPv6 address, a
+//! domain that isn't UTF-8), more than [`MAX_ENTRIES`] entries in a purpose
+//! or more than 3 purposes, and purposes out of order or repeated, which
+//! Core reads into a different object than the bytes (`Clear()`,
+//! `std::map` insertion) and no valid payload holds. Each of these is
+//! `bad-protx-payload` here where Core may give a later reason
+//! (`-netinfo-bad`, `-netinfo-maxlimit`).
+//! Which entries a payload may carry is a rule, not the codec's:
+//! [`ExtNetInfo::validate`] is Core's `ExtNetInfo::Validate` with its
+//! [`NetInfoStatus`] (MG-04b D5), [`NetInfoStatus::reject`] the reason
+//! `CheckNetInfo` gives for it, and [`ExtNetInfo::is_ip_core_p2p_only`] what
+//! the wallet supports on top.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
+use dashcore::Network;
 use dashcore::consensus::encode::{self, Decodable, Encodable, VarInt};
+
+use crate::rules::Reject;
 
 /// `ExtNetInfo::CURRENT_VERSION`.
 pub const EXT_NET_INFO_VERSION: u8 = 1;
@@ -26,7 +37,7 @@ pub const MAX_ENTRIES: usize = 4;
 /// `DOMAIN_MAX_LEN` (rc.3 `evo/netinfo.h:25`).
 pub const DOMAIN_MAX_LEN: usize = 253;
 
-/// `NetInfoPurpose` (rc.3 `evo/netinfo.h:66-76`).
+/// `NetInfoPurpose` (rc.3 `evo/netinfo.h:68-76`).
 pub const PURPOSE_CORE_P2P: u8 = 0;
 pub const PURPOSE_PLATFORM_P2P: u8 = 1;
 pub const PURPOSE_PLATFORM_HTTPS: u8 = 2;
@@ -41,6 +52,13 @@ pub const BIP155_IPV6: u8 = 2;
 pub const BIP155_TORV3: u8 = 4;
 pub const BIP155_I2P: u8 = 5;
 pub const BIP155_CJDNS: u8 = 6;
+
+/// `CJDNS_PREFIX` (rc.3 `netaddress.h:91`).
+const CJDNS_PREFIX: u8 = 0xfc;
+/// `I2P_SAM31_PORT` (rc.3 `netaddress.h:113`): an I2P service's only port.
+const I2P_SAM31_PORT: u16 = 0;
+/// `PRIVILEGED_PORTS_THRESHOLD` (rc.3 `netbase.h:328`).
+const PRIVILEGED_PORTS_THRESHOLD: u16 = 1023;
 
 fn address_size(network: u8) -> Option<usize> {
     match network {
@@ -70,8 +88,9 @@ pub struct ServiceAddr {
 }
 
 impl ServiceAddr {
-    /// The ADDRv2 form of an IP service; `None` for an IPv6 address with an
-    /// embedded IPv4, TorV2 or internal prefix.
+    /// The ADDRv2 form of an IP service, an fc00::/8 IPv6 address flipped to
+    /// CJDNS ([`Self::maybe_flip_to_cjdns`], MG-04b D5); `None` for an IPv6
+    /// address with an embedded IPv4, TorV2 or internal prefix.
     pub fn from_socket_addr(addr: SocketAddr) -> Option<Self> {
         let (network, address) = match addr.ip() {
             IpAddr::V4(ip) => (BIP155_IPV4, ip.octets().to_vec()),
@@ -82,22 +101,113 @@ impl ServiceAddr {
                 (BIP155_IPV6, ip.octets().to_vec())
             }
         };
-        Some(Self {
-            network,
-            address,
-            port: addr.port(),
-        })
+        Some(
+            Self {
+                network,
+                address,
+                port: addr.port(),
+            }
+            .maybe_flip_to_cjdns(),
+        )
+    }
+
+    /// `MaybeFlipIPv6toCJDNS` (rc.3 `netbase.cpp:833-840`), which
+    /// `ExtNetInfo::AddEntry` applies to a parsed IP (`evo/netinfo.cpp:543`):
+    /// an IPv6 address with the CJDNS prefix 0xfc (`netaddress.h:91,193`)
+    /// becomes a CJDNS address. Core flips only when CJDNS is reachable
+    /// (`-cjdnsreachable`, off by default, `init.cpp:1856-1862`); unflipped,
+    /// such an address is RFC 4193 and unroutable, so on mainnet and testnet
+    /// it is refused either way. The wallet always flips and then refuses
+    /// CJDNS (D5), so the outcome doesn't depend on the coordinator's node.
+    pub fn maybe_flip_to_cjdns(mut self) -> Self {
+        self.network = self.effective_network();
+        self
+    }
+
+    /// The address as IPv4, if it is one.
+    fn ipv4(&self) -> Option<Ipv4Addr> {
+        if self.network != BIP155_IPV4 {
+            return None;
+        }
+        <[u8; 4]>::try_from(self.address.as_slice())
+            .ok()
+            .map(Ipv4Addr::from)
+    }
+
+    /// The address as a 16-byte IPv6 or CJDNS address, if it is one.
+    fn ipv6_bytes(&self) -> Option<[u8; 16]> {
+        if !matches!(self.network, BIP155_IPV6 | BIP155_CJDNS) {
+            return None;
+        }
+        self.address.as_slice().try_into().ok()
+    }
+
+    /// The network Core would hold this service in once an fc00::/8 IPv6
+    /// address is flipped ([`Self::maybe_flip_to_cjdns`]).
+    fn effective_network(&self) -> u8 {
+        if self.network == BIP155_IPV6 && self.address.first() == Some(&CJDNS_PREFIX) {
+            BIP155_CJDNS
+        } else {
+            self.network
+        }
+    }
+
+    /// `CNetAddr::IsValid` (rc.3 `netaddress.cpp:426-453`): not the
+    /// unspecified IPv6 address, a CJDNS address with the CJDNS prefix, not
+    /// RFC 3849 documentation IPv6, not internal, not IPv4 `INADDR_ANY` or
+    /// `INADDR_NONE`. An address of the wrong size or with an embedded
+    /// prefix is not one Core reads as valid either.
+    pub fn is_valid(&self) -> bool {
+        if address_size(self.network) != Some(self.address.len()) {
+            return false;
+        }
+        match self.network {
+            BIP155_IPV4 => self
+                .ipv4()
+                .is_some_and(|ip| !ip.is_unspecified() && ip != Ipv4Addr::BROADCAST),
+            BIP155_IPV6 => {
+                let a = &self.address;
+                !a.iter().all(|b| *b == 0)
+                    && !is_embedded_ipv6(a)
+                    && !a.starts_with(&[0x20, 0x01, 0x0d, 0xb8])
+            }
+            BIP155_CJDNS => self.address[0] == CJDNS_PREFIX,
+            _ => true,
+        }
+    }
+
+    /// `CNetAddr::IsRoutable` (rc.3 `netaddress.cpp:464-471`) with
+    /// `-allowprivatenet` off (its default): valid and not RFC 1918, 2544,
+    /// 3927, 4862, 6598, 5737, 4193, 4843, 7343, local or internal. The
+    /// IPv6 ranges (`:365-393`, `:400-414`) apply to IPv6 only, so CJDNS,
+    /// Tor and I2P addresses are routable when valid.
+    pub fn is_routable(&self) -> bool {
+        if !self.is_valid() {
+            return false;
+        }
+        match (self.ipv4(), self.network) {
+            // RFC 1918, 2544, 3927, 6598, 5737 and local (`:313-341,403-405`).
+            (Some(ip), _) => crate::service::is_routable(ip),
+            (None, BIP155_IPV6) => {
+                let Some(a) = self.ipv6_bytes() else {
+                    return false;
+                };
+                let rfc4862 = a.starts_with(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0]);
+                let rfc4193 = a[0] & 0xfe == 0xfc;
+                let rfc4843 = a.starts_with(&[0x20, 0x01, 0x00]) && a[3] & 0xf0 == 0x10;
+                let rfc7343 = a.starts_with(&[0x20, 0x01, 0x00]) && a[3] & 0xf0 == 0x20;
+                let local = a == Ipv6Addr::LOCALHOST.octets();
+                !(rfc4862 || rfc4193 || rfc4843 || rfc7343 || local)
+            }
+            _ => true,
+        }
     }
 
     /// The service as an IP socket address; `None` for Tor, I2P and CJDNS.
     pub fn socket_addr(&self) -> Option<SocketAddr> {
         let ip = match self.network {
-            BIP155_IPV4 => IpAddr::V4(Ipv4Addr::from(
-                <[u8; 4]>::try_from(self.address.as_slice()).ok()?,
-            )),
-            BIP155_IPV6 => IpAddr::V6(Ipv6Addr::from(
-                <[u8; 16]>::try_from(self.address.as_slice()).ok()?,
-            )),
+            BIP155_IPV4 => IpAddr::V4(self.ipv4()?),
+            BIP155_IPV6 => IpAddr::V6(Ipv6Addr::from(self.ipv6_bytes()?)),
             _ => return None,
         };
         Some(SocketAddr::new(ip, self.port))
@@ -162,8 +272,312 @@ impl ExtNetInfo {
         self.entries.iter().all(|(_, e)| e.is_empty())
     }
 
+    /// Every entry, purposes in order (`GetEntries()` with no purpose).
+    pub fn all_entries(&self) -> impl Iterator<Item = &NetInfoEntry> {
+        self.entries.iter().flat_map(|(_, e)| e)
+    }
+
     fn known_version(&self) -> bool {
         self.version != 0 && self.version <= EXT_NET_INFO_VERSION
+    }
+
+    /// Core's `ExtNetInfo::IsEmpty` (rc.3 `evo/netinfo.h:442`): the current
+    /// version and no purpose at all. Unlike [`Self::is_empty`], an unknown
+    /// version or a purpose with no entries is not empty.
+    pub fn is_empty_in_core(&self) -> bool {
+        self.version == EXT_NET_INFO_VERSION && self.entries.is_empty()
+    }
+
+    /// `ExtNetInfo::HasEntries` (rc.3 `evo/netinfo.cpp:581-586`).
+    pub fn has_entries(&self, purpose: u8) -> bool {
+        is_valid_purpose(purpose) && !self.purpose(purpose).is_empty()
+    }
+
+    /// Whether every entry is an IPv4 or IPv6 Core P2P service, an fc00::/8
+    /// IPv6 address counting as CJDNS: what the wallet supports for a
+    /// regular shared masternode (MG-04b D5). Anything else is the engine's
+    /// `unsupported{feature: "shared_masternodes", field: "service"}`;
+    /// Core's rules are [`Self::validate`]'s.
+    pub fn is_ip_core_p2p_only(&self) -> bool {
+        self.entries.iter().all(|(purpose, entries)| {
+            *purpose == PURPOSE_CORE_P2P
+                && entries.iter().all(|e| match e {
+                    NetInfoEntry::Service(s) => {
+                        matches!(s.effective_network(), BIP155_IPV4 | BIP155_IPV6)
+                    }
+                    NetInfoEntry::Domain { .. } => false,
+                })
+        })
+    }
+
+    /// `ExtNetInfo::Validate` (rc.3 `evo/netinfo.cpp:588-638`) on `network`:
+    /// a known version with at least one purpose; no entry twice (address
+    /// and port) anywhere; per purpose, a valid purpose with 1 to
+    /// [`MAX_ENTRIES`] entries (`netinfo.h:20`) whose addresses are distinct
+    /// even across ports (`:609-611`); each entry trivially valid, a service
+    /// passing [`validate_service`], a domain only for Platform HTTPS
+    /// (`:622-626`) and passing `ValidateDomainPort`. Purposes are read in
+    /// ascending order, as Core's `std::map` holds them; out of order or
+    /// repeated (which no decoded value has) is `Malformed`.
+    pub fn validate(&self, network: Network) -> NetInfoStatus {
+        if !self.known_version() || self.entries.is_empty() {
+            return NetInfoStatus::Malformed;
+        }
+        // `HasAddrPortDuplicates` (`:383-393`): `NetInfoEntry::operator==`.
+        let all: Vec<_> = self
+            .all_entries()
+            .map(NetInfoEntry::addr_port_key)
+            .collect();
+        if has_duplicates(&all) {
+            return NetInfoStatus::Duplicate;
+        }
+        let mut previous = None;
+        for (purpose, entries) in &self.entries {
+            if !is_valid_purpose(*purpose) || previous.is_some_and(|p| p >= *purpose) {
+                return NetInfoStatus::Malformed;
+            }
+            previous = Some(*purpose);
+            if entries.is_empty() {
+                return NetInfoStatus::Malformed;
+            }
+            if entries.len() > MAX_ENTRIES {
+                return NetInfoStatus::MaxLimit;
+            }
+            // `HasAddrDuplicates` (`:401-411`): `ToStringAddr()` equality.
+            let addrs: Vec<_> = entries.iter().map(NetInfoEntry::addr_key).collect();
+            if has_duplicates(&addrs) {
+                return NetInfoStatus::Duplicate;
+            }
+            for entry in entries {
+                if !entry.is_trivially_valid() {
+                    return NetInfoStatus::Malformed;
+                }
+                let status = match entry {
+                    NetInfoEntry::Service(s) => validate_service(*purpose, s, network),
+                    NetInfoEntry::Domain { .. } if *purpose != PURPOSE_PLATFORM_HTTPS => {
+                        NetInfoStatus::BadInput
+                    }
+                    NetInfoEntry::Domain { name, port } => validate_domain_port(name, *port),
+                };
+                if status != NetInfoStatus::Success {
+                    return status;
+                }
+            }
+        }
+        NetInfoStatus::Success
+    }
+}
+
+/// `IsValidPurpose` (rc.3 `evo/netinfo.h:80-89`).
+fn is_valid_purpose(purpose: u8) -> bool {
+    purpose <= PURPOSE_PLATFORM_HTTPS
+}
+
+fn has_duplicates<T: PartialEq>(items: &[T]) -> bool {
+    items
+        .iter()
+        .enumerate()
+        .any(|(i, a)| items[..i].contains(a))
+}
+
+/// `NetInfoStatus` (rc.3 `evo/netinfo.h:27-41`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetInfoStatus {
+    BadInput,
+    Duplicate,
+    MaxLimit,
+    BadAddress,
+    BadPort,
+    BadType,
+    NotRoutable,
+    Malformed,
+    Success,
+}
+
+impl NetInfoStatus {
+    /// `CheckNetInfo`'s reject reason (rc.3 `evo/providertx.cpp:187-210`);
+    /// `None` for `Success`.
+    pub fn reject(self) -> Option<Reject> {
+        Some(match self {
+            Self::BadAddress => "bad-protx-netinfo-addr",
+            Self::BadPort => "bad-protx-netinfo-port",
+            Self::BadType => "bad-protx-netinfo-addr-type",
+            Self::NotRoutable => "bad-protx-netinfo-addr-unroutable",
+            Self::Malformed => "bad-protx-netinfo-bad",
+            Self::BadInput => "bad-protx-netinfo-entry",
+            Self::Duplicate => "bad-protx-dup-netinfo-entry",
+            Self::MaxLimit => "bad-protx-netinfo-maxlimit",
+            Self::Success => return None,
+        })
+    }
+}
+
+/// The ports `IsBadPort` lists above the privileged ones (rc.3
+/// `netbase.cpp:806-826`).
+const BAD_PORTS: [u16; 21] = [
+    1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697,
+    8332, 8333, 10080, 18332, 18333,
+];
+
+/// `IsBadPort` (rc.3 `netbase.cpp:801-831`): the privileged ports and
+/// Core's list of ports other protocols use.
+pub fn is_bad_port(port: u16) -> bool {
+    (port > 0 && port <= PRIVILEGED_PORTS_THRESHOLD) || BAD_PORTS.contains(&port)
+}
+
+/// The port rule `ValidateService` and `ValidateDomainPort` share (rc.3
+/// `evo/netinfo.cpp:470-474,486-488`): zero, or bad unless it is
+/// `IsAllowedPlatformHTTPPort`'s 443 (`:59-66`) where Platform HTTPS allows
+/// it.
+fn is_refused_port(port: u16, platform_https: bool) -> bool {
+    port == 0 || (is_bad_port(port) && !(platform_https && port == 443))
+}
+
+/// `ExtNetInfo::ValidateService` (rc.3 `evo/netinfo.cpp:452-478`) on
+/// `network`: a valid address of a known network, routable where the
+/// network requires it (`RequireRoutableExternalIP`: every network but
+/// regtest, `chainparams.cpp:292,495,687,893`), and a port that is the SAM
+/// 3.1 port for I2P, else non-zero and not [`is_bad_port`] (443 allowed for
+/// Platform HTTPS). Version 3 has no mainnet-9999 rule.
+pub fn validate_service(purpose: u8, service: &ServiceAddr, network: Network) -> NetInfoStatus {
+    if !service.is_valid() {
+        return NetInfoStatus::BadAddress;
+    }
+    if !matches!(
+        service.network,
+        BIP155_IPV4 | BIP155_IPV6 | BIP155_TORV3 | BIP155_I2P | BIP155_CJDNS
+    ) {
+        return NetInfoStatus::BadType;
+    }
+    if crate::service::requires_routable(network) && !service.is_routable() {
+        return NetInfoStatus::NotRoutable;
+    }
+    let bad = if service.network == BIP155_I2P {
+        service.port != I2P_SAM31_PORT
+    } else {
+        is_refused_port(service.port, purpose == PURPOSE_PLATFORM_HTTPS)
+    };
+    if bad {
+        return NetInfoStatus::BadPort;
+    }
+    NetInfoStatus::Success
+}
+
+/// `TLDS_BAD` and `TLDS_PRIVACY` (rc.3 `evo/netinfo.cpp:30-42`).
+const TLDS_REFUSED: [&str; 15] = [
+    ".mail",
+    ".arpa",
+    ".example",
+    ".invalid",
+    ".localhost",
+    ".test",
+    ".local",
+    ".corp",
+    ".home",
+    ".internal",
+    ".intranet",
+    ".lan",
+    ".private",
+    ".i2p",
+    ".onion",
+];
+
+/// `DomainPort::Validate() == Success` (rc.3 `evo/netinfo.cpp:90-114,
+/// 130-139`): lower case, a non-zero port, 3 to 253 characters of
+/// `[a-zA-Z0-9.-]`, no leading or trailing dot, two or more labels of 1 to
+/// 63 characters, none starting or ending with `-`.
+fn is_valid_domain(name: &str, port: u16) -> bool {
+    // `Validate` (`:132-137`), then `ValidateDomain` (`:92-112`).
+    if name.is_empty() || name.bytes().any(|b| b.is_ascii_uppercase()) || port == 0 {
+        return false;
+    }
+    if !(3..=DOMAIN_MAX_LEN).contains(&name.len()) {
+        return false;
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+    {
+        return false;
+    }
+    if name.starts_with('.') || name.ends_with('.') || !name.contains('.') {
+        return false;
+    }
+    name.split('.')
+        .all(|l| (1..=63).contains(&l.len()) && !l.starts_with('-') && !l.ends_with('-'))
+}
+
+/// `ExtNetInfo::ValidateDomainPort` (rc.3 `evo/netinfo.cpp:480-498`) for a
+/// trivially valid domain: the port as for a Platform HTTPS service, no
+/// refused TLD, and an alphabetic last label.
+fn validate_domain_port(name: &str, port: u16) -> NetInfoStatus {
+    if !is_valid_domain(name, port) {
+        return NetInfoStatus::BadInput;
+    }
+    if is_refused_port(port, true) {
+        return NetInfoStatus::BadPort;
+    }
+    if TLDS_REFUSED.iter().any(|tld| name.ends_with(tld)) {
+        return NetInfoStatus::BadInput;
+    }
+    let last = name.rsplit('.').next().unwrap_or_default();
+    if !last.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return NetInfoStatus::BadInput;
+    }
+    NetInfoStatus::Success
+}
+
+/// What `NetInfoEntry::ToStringAddr` compares: IPv4 text (which a domain
+/// can spell), IPv6 and CJDNS text (the same for the same bytes), other
+/// networks' addresses, a domain name, or an invalid entry
+/// (`"[invalid entry]"`). Tor and I2P are compared as bytes, not as their
+/// `.onion`/`.b32.i2p` text (a TorV3 name needs SHA3-256, which the
+/// dependency graph doesn't have). A domain can spell that text, and
+/// `HasAddrDuplicates` runs before the domain checks (`netinfo.cpp:609`),
+/// so a Platform HTTPS domain equal to a Tor or I2P service of the same
+/// purpose is `Duplicate` in Core and `BadInput` (its TLD) here: refused
+/// either way, under a different reason.
+#[derive(Debug, PartialEq, Eq)]
+enum AddrKey {
+    Invalid,
+    Ipv4([u8; 4]),
+    Ipv6([u8; 16]),
+    Other(u8, Vec<u8>),
+    Domain(String),
+}
+
+impl NetInfoEntry {
+    /// `NetInfoEntry::IsTriviallyValid` (rc.3 `evo/netinfo.cpp:209-234`):
+    /// Core's reader keeps an invalid service or domain as an invalid entry
+    /// (`netinfo.h:243-263`), which this is false for.
+    pub fn is_trivially_valid(&self) -> bool {
+        match self {
+            Self::Service(s) => s.is_valid(),
+            Self::Domain { name, port } => is_valid_domain(name, *port),
+        }
+    }
+
+    /// `operator==`'s key (`netinfo.cpp:141-152`): the entry itself, every
+    /// invalid entry alike.
+    fn addr_port_key(&self) -> Option<&Self> {
+        self.is_trivially_valid().then_some(self)
+    }
+
+    fn addr_key(&self) -> AddrKey {
+        if !self.is_trivially_valid() {
+            return AddrKey::Invalid;
+        }
+        match self {
+            Self::Service(s) => match (s.ipv4(), s.ipv6_bytes()) {
+                (Some(ip), _) => AddrKey::Ipv4(ip.octets()),
+                (_, Some(v6)) => AddrKey::Ipv6(v6),
+                _ => AddrKey::Other(s.network, s.address.clone()),
+            },
+            Self::Domain { name, .. } => match name.parse::<Ipv4Addr>() {
+                Ok(ip) if ip.to_string() == *name => AddrKey::Ipv4(ip.octets()),
+                _ => AddrKey::Domain(name.clone()),
+            },
+        }
     }
 }
 
@@ -385,5 +799,308 @@ mod tests {
         ] {
             assert!(deserialize::<ExtNetInfo>(bad).is_err(), "{bad:?}");
         }
+    }
+
+    // ---- D5: Core's v3 rules (ExtNetInfo::Validate) ----
+
+    fn info(services: &[&str]) -> ExtNetInfo {
+        let addrs: Vec<SocketAddr> = services.iter().map(|s| s.parse().unwrap()).collect();
+        ExtNetInfo::core_p2p(&addrs).unwrap()
+    }
+
+    /// The one entry of `service`'s Core P2P net info.
+    fn service(text: &str) -> NetInfoEntry {
+        info(&[text]).entries[0].1[0].clone()
+    }
+
+    fn one(purpose: u8, entries: Vec<NetInfoEntry>) -> ExtNetInfo {
+        ExtNetInfo {
+            version: 1,
+            entries: vec![(purpose, entries)],
+        }
+    }
+
+    const ALL: [Network; 4] = [
+        Network::Mainnet,
+        Network::Testnet,
+        Network::Devnet,
+        Network::Regtest,
+    ];
+
+    #[test]
+    fn test_QT_126_v3_net_info_has_no_mainnet_port_rule() {
+        for network in ALL {
+            for port in [9999, 19999, 26656] {
+                let i = info(&[&format!("8.8.8.8:{port}")]);
+                assert_eq!(i.validate(network), NetInfoStatus::Success, "{network:?}");
+            }
+        }
+        let v6 = info(&["[2a01:4f8::1]:9999", "8.8.4.4:9999"]);
+        assert_eq!(v6.validate(Network::Mainnet), NetInfoStatus::Success);
+        assert!(v6.is_ip_core_p2p_only());
+    }
+
+    #[test]
+    fn test_QT_126_v3_net_info_ports_zero_and_bad_are_refused() {
+        for port in [0, 1, 80, 443, 1023, 1719, 6667, 8333, 10080, 18333] {
+            let i = info(&[&format!("8.8.8.8:{port}")]);
+            assert_eq!(
+                i.validate(Network::Mainnet),
+                NetInfoStatus::BadPort,
+                "{port}"
+            );
+        }
+        for port in [1024, 1718, 8334, 18334, 65535] {
+            let i = info(&[&format!("8.8.8.8:{port}")]);
+            assert_eq!(
+                i.validate(Network::Mainnet),
+                NetInfoStatus::Success,
+                "{port}"
+            );
+        }
+        // 443 is allowed for Platform HTTPS only.
+        let https = one(PURPOSE_PLATFORM_HTTPS, vec![service("8.8.8.8:443")]);
+        assert_eq!(https.validate(Network::Mainnet), NetInfoStatus::Success);
+        assert_eq!(
+            NetInfoStatus::BadPort.reject(),
+            Some("bad-protx-netinfo-port")
+        );
+    }
+
+    #[test]
+    fn test_QT_126_v3_net_info_addresses_are_distinct_across_ports() {
+        let same = info(&["8.8.8.8:19999", "8.8.8.8:20000"]);
+        assert_eq!(same.validate(Network::Testnet), NetInfoStatus::Duplicate);
+        let twice = info(&["8.8.8.8:19999", "8.8.8.8:19999"]);
+        assert_eq!(twice.validate(Network::Testnet), NetInfoStatus::Duplicate);
+        assert_eq!(
+            NetInfoStatus::Duplicate.reject(),
+            Some("bad-protx-dup-netinfo-entry")
+        );
+        // The same address may serve two purposes on different ports, not on the same one.
+        let mut two = ExtNetInfo {
+            version: 1,
+            entries: vec![
+                (PURPOSE_CORE_P2P, vec![service("8.8.8.8:19999")]),
+                (PURPOSE_PLATFORM_P2P, vec![service("8.8.8.8:22000")]),
+            ],
+        };
+        assert_eq!(two.validate(Network::Testnet), NetInfoStatus::Success);
+        assert!(!two.is_ip_core_p2p_only());
+        two.entries[1].1[0] = service("8.8.8.8:19999");
+        assert_eq!(two.validate(Network::Testnet), NetInfoStatus::Duplicate);
+        // A domain spelling an IPv4 address is that address (`ToStringAddr`).
+        let https = one(
+            PURPOSE_PLATFORM_HTTPS,
+            vec![
+                service("8.8.8.8:443"),
+                NetInfoEntry::Domain {
+                    name: "8.8.8.8".into(),
+                    port: 8443,
+                },
+            ],
+        );
+        assert_eq!(https.validate(Network::Mainnet), NetInfoStatus::Duplicate);
+    }
+
+    #[test]
+    fn test_QT_126_v3_net_info_holds_at_most_four_per_purpose() {
+        let four = info(&[
+            "8.8.8.1:1024",
+            "8.8.8.2:1024",
+            "8.8.8.3:1024",
+            "8.8.8.4:1024",
+        ]);
+        assert_eq!(four.validate(Network::Mainnet), NetInfoStatus::Success);
+        let mut five = four.clone();
+        five.entries[0].1.push(service("8.8.8.5:1024"));
+        assert_eq!(five.validate(Network::Mainnet), NetInfoStatus::MaxLimit);
+        assert_eq!(
+            NetInfoStatus::MaxLimit.reject(),
+            Some("bad-protx-netinfo-maxlimit")
+        );
+        // The codec can't write a fifth entry the decoder would read.
+        assert!(deserialize::<ExtNetInfo>(&serialize(&five)).is_err());
+    }
+
+    #[test]
+    fn test_QT_126_v3_net_info_routable_everywhere_but_regtest() {
+        for unroutable in [
+            "10.1.2.3:19999",
+            "172.16.0.1:19999",
+            "192.168.1.1:19999",
+            "127.0.0.1:19999",
+            "100.64.0.1:19999",
+            "169.254.1.1:19999",
+            "198.18.0.1:19999",
+            "192.0.2.1:19999",
+            "198.51.100.1:19999",
+            "203.0.113.1:19999",
+            "[::1]:19999",
+            "[fe80::1]:19999",
+            "[2001:10::1]:19999",
+            "[2001:20::1]:19999",
+        ] {
+            let i = info(&[unroutable]);
+            for network in [Network::Mainnet, Network::Testnet, Network::Devnet] {
+                assert_eq!(
+                    i.validate(network),
+                    NetInfoStatus::NotRoutable,
+                    "{unroutable}"
+                );
+            }
+            assert_eq!(
+                i.validate(Network::Regtest),
+                NetInfoStatus::Success,
+                "{unroutable}"
+            );
+        }
+        // RFC 4862 is fe80::/64 only (`netaddress.cpp:365-369`).
+        assert_eq!(
+            info(&["[fe80:1::1]:19999"]).validate(Network::Mainnet),
+            NetInfoStatus::Success
+        );
+        // fd00::/8 is RFC 4193 too, and not CJDNS.
+        let ula = info(&["[fd00::1]:19999"]);
+        assert_eq!(ula.validate(Network::Testnet), NetInfoStatus::NotRoutable);
+        assert!(ula.is_ip_core_p2p_only());
+        // Invalid everywhere: unspecified, broadcast, RFC 3849 documentation
+        // IPv6. Core's reader keeps such a service as an invalid entry, so
+        // `Validate` finds it `Malformed` before `ValidateService` would
+        // say `BadAddress`.
+        for invalid in [
+            "0.0.0.0:19999",
+            "255.255.255.255:19999",
+            "[2001:db8::1]:19999",
+        ] {
+            let i = info(&[invalid]);
+            assert_eq!(
+                i.validate(Network::Regtest),
+                NetInfoStatus::Malformed,
+                "{invalid}"
+            );
+            let NetInfoEntry::Service(s) = &i.purpose(PURPOSE_CORE_P2P)[0] else {
+                panic!()
+            };
+            assert!(!s.is_routable());
+            assert_eq!(
+                validate_service(PURPOSE_CORE_P2P, s, Network::Regtest),
+                NetInfoStatus::BadAddress
+            );
+        }
+        assert_eq!(
+            NetInfoStatus::NotRoutable.reject(),
+            Some("bad-protx-netinfo-addr-unroutable")
+        );
+    }
+
+    #[test]
+    fn test_QT_126_fc00_ipv6_flips_to_cjdns_and_the_wallet_refuses_it() {
+        let i = info(&["[fc00::1]:19999"]);
+        let NetInfoEntry::Service(s) = &i.purpose(PURPOSE_CORE_P2P)[0] else {
+            panic!()
+        };
+        assert_eq!(s.network, BIP155_CJDNS);
+        assert_eq!(s.socket_addr(), None);
+        // A valid, routable CJDNS address for Core; not a service the wallet supports.
+        assert_eq!(i.validate(Network::Mainnet), NetInfoStatus::Success);
+        assert!(!i.is_ip_core_p2p_only());
+        // dash-qt without -cjdnsreachable writes it as IPv6: unroutable
+        // (RFC 4193) outside regtest, and still CJDNS to the wallet.
+        let mut unflipped = i.clone();
+        let NetInfoEntry::Service(s) = &mut unflipped.entries[0].1[0] else {
+            panic!()
+        };
+        s.network = BIP155_IPV6;
+        assert_eq!(
+            unflipped.validate(Network::Testnet),
+            NetInfoStatus::NotRoutable
+        );
+        assert_eq!(unflipped.validate(Network::Regtest), NetInfoStatus::Success);
+        assert!(!unflipped.is_ip_core_p2p_only());
+    }
+
+    #[test]
+    fn test_QT_126_v3_net_info_domains_only_for_platform_https() {
+        let domain = |name: &str, port: u16| NetInfoEntry::Domain {
+            name: name.into(),
+            port,
+        };
+        let ok = domain("node.dash.org", 443);
+        assert_eq!(
+            one(PURPOSE_PLATFORM_HTTPS, vec![ok.clone()]).validate(Network::Mainnet),
+            NetInfoStatus::Success
+        );
+        for purpose in [PURPOSE_CORE_P2P, PURPOSE_PLATFORM_P2P] {
+            assert_eq!(
+                one(purpose, vec![ok.clone()]).validate(Network::Mainnet),
+                NetInfoStatus::BadInput
+            );
+        }
+        for (bad, status) in [
+            (domain("node.example", 443), NetInfoStatus::BadInput),
+            (domain("node.onion", 443), NetInfoStatus::BadInput),
+            (domain("node.d4sh", 443), NetInfoStatus::BadInput),
+            (domain("node.dash.org", 80), NetInfoStatus::BadPort),
+            (domain("Node.dash.org", 443), NetInfoStatus::Malformed),
+            (domain("dash", 443), NetInfoStatus::Malformed),
+            (domain("-a.dash.org", 443), NetInfoStatus::Malformed),
+            (domain("node.dash.org", 0), NetInfoStatus::Malformed),
+        ] {
+            assert_eq!(
+                one(PURPOSE_PLATFORM_HTTPS, vec![bad.clone()]).validate(Network::Mainnet),
+                status,
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            NetInfoStatus::BadInput.reject(),
+            Some("bad-protx-netinfo-entry")
+        );
+    }
+
+    #[test]
+    fn test_QT_126_v3_net_info_structure_rules() {
+        // No purpose, an unknown version, an empty purpose, an unknown purpose.
+        assert_eq!(
+            ExtNetInfo::default().validate(Network::Regtest),
+            NetInfoStatus::Malformed
+        );
+        let mut v = info(&["8.8.8.8:19999"]);
+        v.version = 2;
+        assert_eq!(v.validate(Network::Regtest), NetInfoStatus::Malformed);
+        assert!(!v.is_empty_in_core());
+        let empty_purpose = one(PURPOSE_CORE_P2P, vec![]);
+        assert_eq!(
+            empty_purpose.validate(Network::Regtest),
+            NetInfoStatus::Malformed
+        );
+        assert!(!empty_purpose.is_empty_in_core());
+        assert!(!empty_purpose.has_entries(PURPOSE_CORE_P2P));
+        let mut unknown = info(&["8.8.8.8:19999"]);
+        unknown.entries[0].0 = 3;
+        assert_eq!(unknown.validate(Network::Regtest), NetInfoStatus::Malformed);
+        assert!(ExtNetInfo::default().is_empty_in_core());
+        assert_eq!(
+            NetInfoStatus::Malformed.reject(),
+            Some("bad-protx-netinfo-bad")
+        );
+        assert_eq!(NetInfoStatus::Success.reject(), None);
+        // I2P takes port 0 only.
+        let i2p = |port| {
+            one(
+                PURPOSE_CORE_P2P,
+                vec![NetInfoEntry::Service(ServiceAddr {
+                    network: BIP155_I2P,
+                    address: vec![7; 32],
+                    port,
+                })],
+            )
+        };
+        assert_eq!(i2p(0).validate(Network::Mainnet), NetInfoStatus::Success);
+        assert_eq!(
+            i2p(19999).validate(Network::Mainnet),
+            NetInfoStatus::BadPort
+        );
     }
 }
