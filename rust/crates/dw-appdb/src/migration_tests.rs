@@ -21,6 +21,7 @@ const LOCK_INPUTS: i64 = 2026101401;
 const GOV_REGISTRATIONS: i64 = 2026101901;
 const MG_PROPOSALS: i64 = 2026102001;
 const PROTX_OPS: i64 = 2026102101;
+const SHARED_SESSIONS: i64 = 2026102201;
 
 const DP_TABLES: [&str; 10] = [
     "dp_avatar",
@@ -82,7 +83,7 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), PROTX_OPS);
+    assert_eq!(db.schema_version().unwrap(), SHARED_SESSIONS);
     drop(db);
 
     let conn = Connection::open(&path).unwrap();
@@ -101,7 +102,8 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
             LOCK_INPUTS,
             GOV_REGISTRATIONS,
             MG_PROPOSALS,
-            PROTX_OPS
+            PROTX_OPS,
+            SHARED_SESSIONS
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -143,7 +145,7 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
     }
 
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), PROTX_OPS);
+    assert_eq!(db.schema_version().unwrap(), SHARED_SESSIONS);
     assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "Main".into())]);
     assert_eq!(
         db.label(W, crate::LabelKind::Tx, "t").unwrap().as_deref(),
@@ -171,7 +173,8 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
             LOCK_INPUTS,
             GOV_REGISTRATIONS,
             MG_PROPOSALS,
-            PROTX_OPS
+            PROTX_OPS,
+            SHARED_SESSIONS
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -189,7 +192,7 @@ fn reopening_and_rerunning_change_nothing() {
     }
     for _ in 0..3 {
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), PROTX_OPS);
+        assert_eq!(db.schema_version().unwrap(), SHARED_SESSIONS);
         db.conn()
             .execute(
                 "INSERT OR IGNORE INTO dp_main_identity (wallet_id, identity) VALUES (?1, 'id1')",
@@ -221,7 +224,8 @@ fn reopening_and_rerunning_change_nothing() {
             LOCK_INPUTS,
             GOV_REGISTRATIONS,
             MG_PROPOSALS,
-            PROTX_OPS
+            PROTX_OPS,
+            SHARED_SESSIONS
         ]
     );
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_main_identity"), 1);
@@ -289,6 +293,11 @@ fn shipped_migrations_are_unchanged() {
                 CHECKSUM_MG_PROPOSALS
             ),
             (PROTX_OPS, "mg_protx_ops".to_string(), CHECKSUM_PROTX_OPS),
+            (
+                SHARED_SESSIONS,
+                "mg_shared_sessions".to_string(),
+                CHECKSUM_SHARED_SESSIONS
+            ),
         ]
     );
 }
@@ -306,6 +315,7 @@ const CHECKSUM_LOCK_INPUTS: u64 = 5402975231604979268;
 const CHECKSUM_GOV_REGISTRATIONS: u64 = 16553696798211738698;
 const CHECKSUM_MG_PROPOSALS: u64 = 6981014660522877648;
 const CHECKSUM_PROTX_OPS: u64 = 8127766132692660851;
+const CHECKSUM_SHARED_SESSIONS: u64 = 10802667430796242021;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -756,7 +766,7 @@ fn verification_records_without_a_digest_verify_nothing() {
         .unwrap();
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), PROTX_OPS);
+    assert_eq!(db.schema_version().unwrap(), SHARED_SESSIONS);
     assert!(db.verified_entities().unwrap().is_empty(), "the old row");
     assert_eq!(
         count(
@@ -856,6 +866,11 @@ fn insert_any_row(conn: &Connection, table: &str, wallet: &str) -> usize {
             ("purpose", _) => "'send'",
             ("reason", _) => "'manual'",
             ("retryable", _) => "0",
+            ("id", _) if table == "shared_mn_sessions" => {
+                "'0000000000000000000000000000000000000000000000000000000000000000'"
+            }
+            ("kind", _) if table == "shared_mn_sessions" => "'registration'",
+            ("role", _) => "'coordinator'",
             ("kind", _) if table == "labels" => "'tx'",
             (_, "BLOB") => "zeroblob(32)",
             (_, "INTEGER") => "1",
