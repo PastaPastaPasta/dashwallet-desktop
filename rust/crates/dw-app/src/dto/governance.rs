@@ -807,7 +807,10 @@ impl NameRejectionName {
     /// Platform's `refused`.
     pub fn from_engine(reason: &str) -> Self {
         serde_json::from_value(serde_json::Value::String(reason.to_owned())).unwrap_or_else(|_| {
-            tracing::warn!(reason, "a name vote rejection reason this build doesn't know");
+            tracing::warn!(
+                reason,
+                "a name vote rejection reason this build doesn't know"
+            );
             Self::Unknown
         })
     }

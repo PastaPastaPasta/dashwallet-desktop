@@ -237,6 +237,8 @@ export function nameScenarios(base: (theme: ThemeName | null, patch?: (n: NamesW
     "names-list-unavailable": (t: ThemeName | null) => base(t, (n) => (n.unavailable = "list")),
     /** Platform can't be reached. */
     "names-platform-unavailable": (t: ThemeName | null) => base(t, (n) => (n.unavailable = "platform")),
+    /** a11ce's voting ends in three hours and 15 seconds: off the sheet's 30 s ticks (review n1). */
+    "names-ending-odd": (t: ThemeName | null) => base(t, (n) => (contest(n, A11CE).endsAt = NOW + 3 * 3600 + 15)),
     /** a11ce's voting ends in three hours. */
     "names-ending": (t: ThemeName | null) => base(t, (n) => (contest(n, A11CE).endsAt = NOW + 3 * 3600)),
     /** a11ce's voting ended ten minutes ago by the app's clock. The engine lists only contests ending

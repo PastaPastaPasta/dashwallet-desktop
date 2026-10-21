@@ -207,6 +207,20 @@ test("Vote sends nothing once the end time passed, without waiting for the clock
   expect(await calls(page, "governance_vote_name")).toBe(0);
 });
 
+test("Vote goes off at the end time itself, not at the clock's next 30 s tick (review n1)", async ({ page }) => {
+  await open(page, "names-ending-odd", "light", "installed");
+  await page.getByTestId("name-vote").click();
+  await page.getByTestId("name-choice-lock").click();
+  await page.getByTestId("name-vote-passphrase").fill("demo");
+  await expect(page.getByTestId("name-vote-send")).toBeEnabled();
+  // The sheet's 30 s tick runs on whole half-minutes from its mount and the end is 15 s off them, so
+  // from the end to half a second after it only the timer to the end can close the sheet.
+  const end = FIXTURE_NOW.getTime() + (3 * 3600 + 15) * 1000;
+  await page.clock.runFor(end + 500 - (await page.evaluate(() => Date.now())));
+  await expect(page.getByTestId("name-vote-closed")).toHaveText("Voting on this name has ended.");
+  await expect(page.getByTestId("name-vote-send")).toBeDisabled();
+});
+
 test("Vote goes off when the contest ends under the open sheet", async ({ page }) => {
   await open(page, "names-ending", "light", "installed");
   await page.getByTestId("name-vote").click();

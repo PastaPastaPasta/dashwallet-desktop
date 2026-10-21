@@ -129,7 +129,7 @@ describe("fixture contested names", () => {
   });
 
   it("builds every names scenario", async () => {
-    for (const s of ["names-empty", "names-no-voters", "names-ending", "names-ended", "names-partial", "names-watch-only", "names-check-fails", "names-still-unconfirmed"] as ScenarioName[]) {
+    for (const s of ["names-empty", "names-no-voters", "names-ending", "names-ended", "names-partial", "names-watch-only", "names-check-fails", "names-still-unconfirmed", "names-ending-odd"] as ScenarioName[]) {
       install(s);
       await cmd.governanceContestedNames(W);
     }

@@ -1198,7 +1198,7 @@ the node and its CLI. `CLAUDE.md` "Product scope" changes accordingly (task S-01
 **UX.**
 
 - A sidebar item "Masternodes" appears when the wallet holds masternode keys or a collateral, or in advanced mode. It
-  has two tabs, My masternodes and Governance.
+  has three tabs, My masternodes, Governance and Username voting (amended by MG-11 D1).
 - Voting is a sheet listing the user's eligible masternodes.
 - The registration wizard runs collateral → operator details → keys → review → submit, with plain-language help for
   each operator field.

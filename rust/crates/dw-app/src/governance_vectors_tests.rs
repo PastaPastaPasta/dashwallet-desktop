@@ -375,7 +375,7 @@ fn every_command_has_a_vector() {
 }
 
 /// Every reason MG-07's fixture holds (all of §3's) crosses as itself, none
-/// read as `refused` but `refused`; an unknown one reads as `refused`.
+/// read as `refused` but `refused`; an unknown one reads as `unknown`.
 #[test]
 fn every_name_vote_reason_crosses_as_itself() {
     let reasons: std::collections::BTreeSet<String> =
