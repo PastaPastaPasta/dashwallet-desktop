@@ -8,6 +8,7 @@ import type { ContestStatus } from "../api/generated/ContestStatus";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
+import type { QuorumSource } from "../api/generated/QuorumSource";
 import type { DispatchStateName } from "../api/generated/DispatchStateName";
 import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
@@ -19,6 +20,7 @@ import type { LockOutcome } from "../api/generated/LockOutcome";
 import type { LockStatus } from "../api/generated/LockStatus";
 import type { RecentNotice } from "../api/generated/RecentNotice";
 import type { ShellSync } from "../api/generated/ShellSync";
+import type { SyncPassReport } from "../api/generated/SyncPassReport";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
@@ -33,7 +35,7 @@ import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
-import { buildRows, caughtUp, FUNDED_BALANCES, makeIds, prng, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
+import { buildRows, caughtUp, FIXTURE_NOW, FUNDED_BALANCES, makeIds, prng, secs, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
 export const FIXTURE_PASSPHRASE = "demo";
 export const FIXTURE_WALLET_ID = "a1".repeat(32);
@@ -63,6 +65,9 @@ export interface World {
   dashpay: DashPayWorld;
   /** Another wallet's own DashPay state, by wallet id; a wallet not here shares `dashpay`. */
   dashpayOf?: Record<string, DashPayWorld>;
+  /** The session's quorum source and the developer toggle (E0-10b; DP6-03). The default is the
+   * degraded mode's `trusted` (DEC-168). */
+  trust: { source: QuorumSource; trustedOnly: boolean };
   leases: Lease[];
   /** The vault grants `authorize` issued since the last lock or unlock (each revokes them all). */
   grants: FixtureGrant[];
@@ -176,6 +181,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     wallets: [main],
     sync: caughtUp(),
     dashpay: noIdentity(),
+    trust: { source: "trusted", trustedOnly: false },
     leases: [],
     grants: [],
     flowLeases: {},
@@ -466,11 +472,36 @@ function withContest(w: World, state: ContestStatus["state"]): World {
   return w;
 }
 
-/** The wallet's DashPay status set to `status`, no identity on file (DP1-08). */
+/** The wallet's DashPay status set to `status`, no identity on file (DP1-08). The bring-up's
+ * outcome says the same: a `startupIncomplete` status's own; a watch-only wallet's bring-up does
+ * not run and is read-only (bringup.rs `admit`). Tools ▸ Information reads both (DP6-03). */
 function withStatus(w: World, status: DashPayStatus): World {
-  w.dashpay = { ...noIdentity(), status };
+  const d = noIdentity();
+  if (status.kind === "startupIncomplete") d.startup = { ...d.startup, startup: status.startup };
+  if (status.kind === "noIdentity" && status.reason === "watchOnly") d.startup = { ...d.startup, startup: "notRun", readOnly: true, finishedAt: null };
+  w.dashpay = { ...d, status };
   return w;
 }
+
+/** DP6-03: `dashpay-registered` with the session's quorum source, the toggle and a sync report. */
+function withSyncInfo(t: ThemeName | null, trust: World["trust"], lastPass: SyncPassReport | null = null): World {
+  const w = base(t);
+  w.dashpay = registered();
+  w.trust = trust;
+  if (lastPass) w.dashpay.lastPass = lastPass;
+  return w;
+}
+
+/** A pass that ended 5 s before FIXTURE_NOW after 3 s. */
+const pass = (found: Partial<SyncPassReport>): SyncPassReport => ({
+  startedAt: secs(FIXTURE_NOW) - 8,
+  finishedAt: secs(FIXTURE_NOW) - 5,
+  newRequests: 0,
+  newContacts: 0,
+  newPayments: 0,
+  failureCode: null,
+  ...found,
+});
 
 /** Syncing: filters 60% through, the masternode list not started (65% in all). */
 function syncing(): SyncStatus {
@@ -625,6 +656,51 @@ const SCENARIOS = {
   },
   /** The bring-up could not finish its discovery. */
   "dashpay-look-failed": (t) => withStatus(base(t), { kind: "startupIncomplete", startup: "discoveryFailed" }),
+  // DP6-03: Tools ▸ Information's DashPay card. `dashpay-registered` is its degraded mode (the
+  // default quorum source, DEC-168); the states without an identity are the scenarios above.
+  /** Quorum keys from SPV, a pass that found two requests and a contact, two contact accounts
+   * waiting to be built: the card says Running. Forward-looking: the engine reports no pass yet
+   * (`last_pass` is `None`, DP6-03 D4/F2), so the Last pass row is ahead of today's engine. */
+  "dashpay-info-spv": (t) => {
+    const w = withSyncInfo(t, { source: "spv", trustedOnly: false }, pass({ newRequests: 2, newContacts: 1 }));
+    w.dashpay.startup = { ...w.dashpay.startup, contactAccountsPending: 2 };
+    return w;
+  },
+  /** Before masternode sync: the trusted service's keys, results unverified. */
+  "dashpay-info-fallback": (t) => withSyncInfo(t, { source: "trustedFallback", trustedOnly: false }),
+  /** The developer toggle: the trusted service only. */
+  "dashpay-info-trusted-only": (t) => withSyncInfo(t, { source: "trusted", trustedOnly: true }),
+  /** The last pass failed with `platform.unavailable`. Forward-looking, as `dashpay-info-spv`'s
+   * pass: no engine reports one yet (DP6-03 D4/F2). */
+  "dashpay-info-pass-failed": (t) => withSyncInfo(t, { source: "spv", trustedOnly: false }, pass({ failureCode: "platform.unavailable" })),
+  /** No identity, which Platform proved within its 7 days: the bring-up did not run (bringup.rs),
+   * and the card still says Not set up. */
+  "dashpay-info-no-identity-proven": (t) => {
+    const w = base(t);
+    w.dashpay.startup = { ...w.dashpay.startup, startup: "notRun", finishedAt: null };
+    return w;
+  },
+  /** An identity on file whose bring-up runs, before SPV and the loops start (every launch,
+   * bringup.rs `supervise`): Starting, not Stopped (DP6-03 D19). */
+  "dashpay-info-bringup-running": (t) => {
+    const w = withSyncInfo(t, { source: "spv", trustedOnly: false });
+    w.dashpay.startup = { ...w.dashpay.startup, startup: "starting", finishedAt: null };
+    w.sync = { ...w.sync, running: false, connectedPeers: 0 };
+    return w;
+  },
+  /** An identity on file whose bring-up ended with contact accounts still to build (the library's
+   * `PartialAccountsPending`, the common case for them): the identity settles it, Running. */
+  "dashpay-info-identity-incomplete": (t) => {
+    const w = withSyncInfo(t, { source: "spv", trustedOnly: false });
+    w.dashpay.startup = { ...w.dashpay.startup, startup: "partialAccountsPending", contactAccountsPending: 3 };
+    return w;
+  },
+  /** SPV stopped: the loops do not run, so Sync now has nothing to run. */
+  "dashpay-info-stopped": (t) => {
+    const w = withSyncInfo(t, { source: "spv", trustedOnly: false });
+    w.sync = { ...w.sync, running: false, connectedPeers: 0 };
+    return w;
+  },
   /** A registration whose row is not listed (yet): the card's generic line. */
   "dashpay-registering-unread": (t) => {
     const w = base(t);

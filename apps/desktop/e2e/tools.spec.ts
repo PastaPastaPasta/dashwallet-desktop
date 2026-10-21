@@ -87,7 +87,8 @@ test.describe("Information", () => {
     await tools(page, "information");
     await expect(page.getByTestId("information-banner")).toBeVisible();
     await expect(page.getByTestId("tools-information")).toContainText("Requires full-node data source");
-    await expect(page.getByTestId("information-dashpay-not-yet")).toContainText("Not yet (DP6-03).");
+    // The DashPay card is DP6-03's (e2e/dashpay-info.spec.ts).
+    await expect(page.getByTestId("information-dashpay")).toBeVisible();
     await expect(page.getByTestId("information-traffic-not-yet")).toContainText("Not yet (M6).");
     expect(errors).toEqual([]);
   });
