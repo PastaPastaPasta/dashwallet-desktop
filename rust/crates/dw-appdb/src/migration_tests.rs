@@ -19,6 +19,7 @@ const REMOVED_WALLETS: i64 = 2026101302;
 const DP_EVENTS_PAGE: i64 = 2026101303;
 const LOCK_INPUTS: i64 = 2026101401;
 const GOV_REGISTRATIONS: i64 = 2026101901;
+const MG_PROPOSALS: i64 = 2026102001;
 const PROTX_OPS: i64 = 2026102101;
 
 const DP_TABLES: [&str; 10] = [
@@ -99,6 +100,7 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
             DP_EVENTS_PAGE,
             LOCK_INPUTS,
             GOV_REGISTRATIONS,
+            MG_PROPOSALS,
             PROTX_OPS
         ]
     );
@@ -168,6 +170,7 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
             DP_EVENTS_PAGE,
             LOCK_INPUTS,
             GOV_REGISTRATIONS,
+            MG_PROPOSALS,
             PROTX_OPS
         ]
     );
@@ -217,6 +220,7 @@ fn reopening_and_rerunning_change_nothing() {
             DP_EVENTS_PAGE,
             LOCK_INPUTS,
             GOV_REGISTRATIONS,
+            MG_PROPOSALS,
             PROTX_OPS
         ]
     );
@@ -279,6 +283,11 @@ fn shipped_migrations_are_unchanged() {
                 "governance_registrations".to_string(),
                 CHECKSUM_GOV_REGISTRATIONS
             ),
+            (
+                MG_PROPOSALS,
+                "mg_proposals".to_string(),
+                CHECKSUM_MG_PROPOSALS
+            ),
             (PROTX_OPS, "mg_protx_ops".to_string(), CHECKSUM_PROTX_OPS),
         ]
     );
@@ -295,6 +304,7 @@ const CHECKSUM_REMOVED_WALLETS: u64 = 15219075048203792465;
 const CHECKSUM_DP_EVENTS_PAGE: u64 = 3406283282772175885;
 const CHECKSUM_LOCK_INPUTS: u64 = 5402975231604979268;
 const CHECKSUM_GOV_REGISTRATIONS: u64 = 16553696798211738698;
+const CHECKSUM_MG_PROPOSALS: u64 = 6981014660522877648;
 const CHECKSUM_PROTX_OPS: u64 = 8127766132692660851;
 
 #[test]
@@ -812,7 +822,8 @@ fn an_installation_with_wallets_starts_latched() {
 fn wallet_scoped_tables(conn: &Connection) -> Vec<String> {
     conn.prepare(
         "SELECT m.name FROM sqlite_master m, pragma_table_info(m.name) c
-         WHERE m.type = 'table' AND c.name = 'wallet_id' AND m.name != 'removed_wallets'
+         WHERE m.type = 'table' AND c.name = 'wallet_id'
+           AND m.name NOT IN ('removed_wallets', 'mg_proposals_kept')
          ORDER BY m.name",
     )
     .unwrap()
@@ -846,7 +857,7 @@ fn insert_any_row(conn: &Connection, table: &str, wallet: &str) -> usize {
             ("reason", _) => "'manual'",
             ("retryable", _) => "0",
             ("kind", _) if table == "labels" => "'tx'",
-            ("digest", "BLOB") => "zeroblob(32)",
+            (_, "BLOB") => "zeroblob(32)",
             (_, "INTEGER") => "1",
             _ => "'x'",
         })

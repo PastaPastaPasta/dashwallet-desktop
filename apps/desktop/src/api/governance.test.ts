@@ -66,6 +66,19 @@ function contractEnums(): Map<string, string[]> {
   return enums;
 }
 
+/** The §3 `MyProposalState` variants (an enum with fields, so not one of `contractEnums`): each
+ * variant's camelCase `kind` with its camelCase field names. */
+function contractStateVariants(): Map<string, string[]> {
+  const body = section("## 3. Surface").match(/^pub enum MyProposalState \{\n((?: {4}.*\n)*)\}/m);
+  expect(body, "MyProposalState in §3").not.toBeNull();
+  const variants = new Map<string, string[]>();
+  for (const m of body![1].matchAll(/^ {4}(\w+)(?: \{ (.*) \})?,$/gm)) {
+    const fields = m[2] ? m[2].split(", ").map((f) => camel(f.split(":")[0])) : [];
+    variants.set(m[1][0].toLowerCase() + m[1].slice(1), fields);
+  }
+  return variants;
+}
+
 /** The §3 Rust types that cross as JSON numbers, strings and booleans. */
 const JSON_TYPES: Record<string, string> = { u32: "number", u64: "number", i64: "number", f64: "number", String: "string", bool: "boolean" };
 
@@ -96,6 +109,14 @@ function expectRecord(c: Contract, record: string, value: unknown, at: string, s
   }
 }
 
+/** Checks a `MyProposalState`: `{ kind, ...fields }`, the kind a §3 variant carrying exactly its fields. */
+function expectState(value: unknown, at: string) {
+  const { kind, ...rest } = value as { kind: string };
+  const variants = contractStateVariants();
+  expect([...variants.keys()], at).toContain(kind);
+  expect(Object.keys(rest).sort(), `${at}: ${kind}`).toEqual([...variants.get(kind)!].sort());
+}
+
 /** Checks that `value` is of the §3 type `type`: `null` for a `None`, an array for a `Vec`. */
 function expectValue(c: Contract, type: string, value: unknown, at: string, seen: Set<string>) {
   const [, option, list, leaf] = type.match(/^(Option<)?(Vec<)?(\w+)>?>?$/) ?? [];
@@ -104,7 +125,8 @@ function expectValue(c: Contract, type: string, value: unknown, at: string, seen
   expect(Array.isArray(value), at).toBe(list !== undefined);
   for (const [i, v] of (list ? (value as unknown[]) : [value]).entries()) {
     const there = list ? `${at}[${i}]` : at;
-    if (c.records.has(leaf)) expectRecord(c, leaf, v, there, seen);
+    if (leaf === "MyProposalState") expectState(v, there);
+    else if (c.records.has(leaf)) expectRecord(c, leaf, v, there, seen);
     else if (c.enums.has(leaf)) expect(c.enums.get(leaf), `${there}: ${leaf}`).toContain(v);
     else {
       expect(JSON_TYPES[leaf], `${there}: ${leaf} is a §3 record, enum or JSON leaf`).toBeDefined();
@@ -115,7 +137,7 @@ function expectValue(c: Contract, type: string, value: unknown, at: string, seen
 }
 
 /** §3 records no bound command returns: the `proposals` argument and the unbound calls' (D93). */
-const NOT_RETURNED = ["ProposalQuery", "RawVote", "VoteRelayed"];
+const NOT_RETURNED = ["ProposalDraft", "ProposalQuery", "RawVote", "VoteRelayed"];
 
 /** The codes §4 lists for `GovernanceError`. */
 function contractCodes(): string[] {
@@ -143,7 +165,7 @@ afterEach(() => {
 describe("governance contract", () => {
   it("binds every mg-engine call or says why not", () => {
     const listed = contractCalls();
-    expect(listed).toHaveLength(15);
+    expect(listed).toHaveLength(19);
     const bound = listed.filter((c) => !(c in NOT_BOUND)).map((c) => `governance_${c}`);
     expect(governanceCommands().sort()).toEqual(bound.sort());
     for (const c of Object.keys(NOT_BOUND)) expect(listed, c).toContain(c);
@@ -152,7 +174,7 @@ describe("governance contract", () => {
 
   it("knows every governance code of mg-engine §4", () => {
     const codes = contractCodes();
-    expect(codes).toHaveLength(7);
+    expect(codes).toHaveLength(9);
     const union = cmd.ERROR_CODES.filter((c) => c.startsWith("governance."));
     expect([...union].sort()).toEqual([...codes].sort());
     // dw-app's own mapping reaches each of them, with an ErrorData class the fixture can inject.
@@ -173,6 +195,15 @@ describe("governance contract", () => {
     const hash = r.governance_proposal.row.hash;
     const outpoint = r.governance_current_votes[1].outpoint;
     const mn = r.governance_voting_masternodes[0].proTxHash;
+    const draft = {
+      name: "wallet-fund",
+      url: "https://example.org/wallet",
+      paymentAddress: "yP8A3cbdxRtLRduy5mXDsBnJtMzHWs6ZXr",
+      paymentAmount: 10_000_000_000,
+      paymentCount: 2,
+      firstSuperblockHeight: 2_354_256,
+      coins: [],
+    };
     // Typed by command, so a command added without a call here fails tsc.
     const run: { [K in GovernanceCommand]: () => Promise<CommandResults[K]> } = {
       governance_sync_enabled: () => cmd.governanceSyncEnabled(),
@@ -187,6 +218,10 @@ describe("governance contract", () => {
       governance_current_votes: () => cmd.governanceCurrentVotes(hash, outpoint),
       governance_voting_masternodes: () => cmd.governanceVotingMasternodes("ab".repeat(32), hash),
       governance_vote: () => cmd.governanceVote("ab".repeat(32), hash, "no", [mn], "grant-1"),
+      governance_preview_proposal: () => cmd.governancePreviewProposal("ab".repeat(32), draft),
+      governance_create_proposal: () => cmd.governanceCreateProposal("ab".repeat(32), draft, "grant-1"),
+      governance_my_proposals: () => cmd.governanceMyProposals("ab".repeat(32)),
+      governance_submit_proposal: () => cmd.governanceSubmitProposal("ab".repeat(32), hash),
     };
     for (const call of Object.values(run)) await call();
     expect(calls.map(([name]) => name).sort()).toEqual(Object.keys(run).sort());
@@ -195,13 +230,18 @@ describe("governance contract", () => {
     expect(calls).toContainEqual(["governance_proposals", { query: { scope: "current", text: "wallet" } }]);
     expect(calls).toContainEqual(["governance_current_votes", { hash, outpoint }]);
     expect(calls).toContainEqual(["governance_voting_masternodes", { walletId: "ab".repeat(32), proposal: hash }]);
+    expect(calls).toContainEqual(["governance_preview_proposal", { walletId: "ab".repeat(32), draft }]);
+    expect(calls).toContainEqual(["governance_create_proposal", { walletId: "ab".repeat(32), draft, grant: "grant-1" }]);
+    expect(calls).toContainEqual(["governance_submit_proposal", { walletId: "ab".repeat(32), hash }]);
     expect(calls).toContainEqual(["governance_vote", { walletId: "ab".repeat(32), proposal: hash, outcome: "no", masternodes: [mn], grant: "grant-1" }]);
   });
 
   it("mirrors each §3 enum of a record field, variant for variant", () => {
     const c: Contract = { records: contractRecords(), enums: contractEnums() };
     const used = new Set([...c.records.values()].flat().map(([, t]) => t.match(/(\w+)>*$/)![1]).filter((t) => !(t in JSON_TYPES) && !c.records.has(t)));
-    expect([...used].sort()).toEqual(["GovernanceSyncPhase", "MasternodeType", "ProposalScope", "ProposalStatus", "VoteOutcome", "VoteSignal"]);
+    // `MyProposalState` carries fields, so `expectState` holds it (and the generated union below).
+    expect([...used].sort()).toEqual(["GovernanceSyncPhase", "MasternodeType", "MyProposalState", "ProposalScope", "ProposalStatus", "VoteOutcome", "VoteSignal"]);
+    used.delete("MyProposalState");
     for (const e of used) {
       // dw-app's mirror, `<Enum>Name`, as ts-rs writes it.
       const ts = readFileSync(new URL(`./generated/${e}Name.ts`, import.meta.url), "utf8");
@@ -238,6 +278,13 @@ describe("governance contract", () => {
     // A shared key's vote is the key's, not each masternode's (mg-engine §2.4).
     const shared = r.governance_voting_masternodes.find((m) => m.keyHolders > 1);
     expect([shared?.currentVote, shared?.keyLastVote]).toEqual([null, "abstain"]);
+    // The wallet's proposals cover every state, and a state's camelCase kind reaches the renderer.
+    expect(r.governance_my_proposals.map((p) => p.state.kind).sort()).toEqual([...contractStateVariants().keys()].sort());
+    expect(r.governance_my_proposals[1].state).toEqual({ kind: "readyToSubmit", reason: "noPeerAccepted" });
+    expect(r.governance_upcoming_superblocks.map((d) => d.cutoffSoon)).toEqual([true, false]);
+    const invalid = VECTORS.errors.find((e) => e.code === "governance.invalid_proposal");
+    expect(invalid?.data).toEqual({ kind: "proposalFields", fields: ["name", "payment_address"] });
+    expect(VECTORS.errors.find((e) => e.code === "governance.submit_refused")?.data).toEqual({ kind: "reason", reason: "public" });
     const notSynced = VECTORS.errors.find((e) => e.code === "governance.not_synced");
     expect(notSynced?.data).toEqual({ kind: "governancePhase", phase: "syncingVotes" });
   });

@@ -495,7 +495,7 @@ fn rejection_reason(r: VoteRejection) -> &'static str {
 }
 
 /// `"<txid>-<n>"` (Core `ToStringShort`).
-fn parse_outpoint(text: &str) -> Result<OutPoint, GovernanceError> {
+pub(super) fn parse_outpoint(text: &str) -> Result<OutPoint, GovernanceError> {
     let bad = || EngineError::InvalidArgument(format!("not an outpoint \"<txid>-<n>\": {text:?}"));
     let (txid, n) = text.rsplit_once('-').ok_or_else(bad)?;
     let txid = Txid::from_str(txid).map_err(|_| bad())?;

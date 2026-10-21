@@ -9,7 +9,7 @@
 //! outpoints. Locks are taken in the order `applied`, `list`, store, and
 //! none is held across an await.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
@@ -29,7 +29,7 @@ use tokio::task::JoinHandle;
 
 use super::collateral::{self, CollateralSource, Collaterals};
 use crate::events::{EngineEvent, EventSink, unix_now};
-use crate::{DashNetwork, NetworkSession};
+use crate::{DashNetwork, NetworkSession, WalletId};
 
 /// `governance.sync_enabled` in app.sqlite (global scope per network
 /// session's own database).
@@ -131,12 +131,31 @@ pub(crate) struct GovernanceRuntime {
     /// The resolver found collaterals: the follower hands them over.
     pub(super) resolved_changed: Arc<Notify>,
     applied: Mutex<Applied>,
+    /// The wallet's own proposals' submission paces (MG-06 §2.2).
+    pub(super) paces: super::proposals::Paces,
+    /// One proposal pass at a time.
+    pub(super) proposal_tick: tokio::sync::Mutex<()>,
+    /// The wallet's own proposals whose fee is being handed off.
+    pub(super) in_flight: InFlight,
+    /// The proposal fee's broadcast, faked (tests).
+    #[cfg(test)]
+    pub(super) fee_broadcaster: Mutex<Option<Arc<dyn crate::send::TestBroadcaster>>>,
     /// `set_resolved` calls, for the tests.
     #[cfg(test)]
     pub(super) resolved_sets: AtomicUsize,
     /// `changed` calls, for the tests.
     #[cfg(test)]
     pub(super) changes: AtomicUsize,
+    /// `resync` calls, for the tests.
+    #[cfg(test)]
+    pub(super) resyncs: AtomicUsize,
+    /// Reads of a wallet's history for proposal fees, for the tests.
+    #[cfg(test)]
+    pub(super) fee_scans: AtomicUsize,
+    /// Proposal ticks only from the test: the follower's, at the real
+    /// clock, would interleave with a test's moved one.
+    #[cfg(test)]
+    pub(super) manual_ticks: AtomicBool,
 }
 
 impl GovernanceRuntime {
@@ -181,10 +200,21 @@ impl GovernanceRuntime {
             collaterals: Arc::default(),
             resolved_changed: Arc::default(),
             applied: Mutex::default(),
+            paces: Default::default(),
+            proposal_tick: Default::default(),
+            in_flight: Default::default(),
+            #[cfg(test)]
+            fee_broadcaster: Mutex::default(),
             #[cfg(test)]
             resolved_sets: AtomicUsize::new(0),
             #[cfg(test)]
             changes: AtomicUsize::new(0),
+            #[cfg(test)]
+            resyncs: AtomicUsize::new(0),
+            #[cfg(test)]
+            fee_scans: AtomicUsize::new(0),
+            #[cfg(test)]
+            manual_ticks: AtomicBool::new(false),
         }
     }
 
@@ -216,6 +246,13 @@ impl GovernanceRuntime {
             loop {
                 let Some(s) = weak.upgrade() else { return };
                 s.governance.refresh(&s).await;
+                #[cfg(test)]
+                let tick = !s.governance.manual_ticks.load(Ordering::SeqCst);
+                #[cfg(not(test))]
+                let tick = true;
+                if tick {
+                    s.governance().tick().await;
+                }
                 let resolved = Arc::clone(&s.governance.resolved_changed);
                 drop(s);
                 tokio::select! {
@@ -274,6 +311,8 @@ impl GovernanceRuntime {
 
     /// Ends the current run or backoff and starts a new run.
     pub fn resync(&self) {
+        #[cfg(test)]
+        self.resyncs.fetch_add(1, Ordering::SeqCst);
         self.resync.notify_one();
     }
 
@@ -479,4 +518,35 @@ async fn sync_loop(session: Weak<NetworkSession>, mut stop: watch::Receiver<bool
         p.next_retry_at = None;
     }
     (shared.on_change)();
+}
+
+/// The wallet's own proposals whose fee is being handed to the network:
+/// a create's from the save until its outcome is recorded, a [Submit]'s
+/// for the whole call (review r1 M-1).
+#[derive(Debug, Default)]
+pub(super) struct InFlight(std::sync::Mutex<HashSet<(WalletId, [u8; 32])>>);
+
+impl InFlight {
+    fn set(&self) -> std::sync::MutexGuard<'_, HashSet<(WalletId, [u8; 32])>> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Marks `key` in flight until the mark drops; `None` while it is.
+    pub(super) fn begin(&self, key: (WalletId, [u8; 32])) -> Option<Flight<'_>> {
+        let marked = self.set().insert(key);
+        // Built only when marked: a mark dropped here would unmark it.
+        marked.then(|| Flight { set: self, key })
+    }
+}
+
+/// One proposal's in-flight mark ([`InFlight::begin`]).
+pub(super) struct Flight<'a> {
+    set: &'a InFlight,
+    key: (WalletId, [u8; 32]),
+}
+
+impl Drop for Flight<'_> {
+    fn drop(&mut self) {
+        self.set.set().remove(&self.key);
+    }
 }

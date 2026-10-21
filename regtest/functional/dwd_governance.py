@@ -34,13 +34,20 @@ Checks, in order:
     signed by the operator key only, and v24 has no RPC that signs one (`vote-conf` is gone,
     #5552), so it refuses the voting-key votes `vote-alias` signs; after Core's maintenance pass
     (`mockscheduler`) the wallet's flags, signal results and `gobject list` filters are Core's
-    (operator votes themselves: unit tests only, D90).
+    (operator votes themselves: unit tests only, D90);
+ 7. the wallet's own proposal (MG-06 T1): dwcli validates (Core's `gobject check` agrees), pays
+    the 1 DASH fee (one OP_RETURN of the object hash, P2PKH change) and submits on its own at the
+    fee's first confirmation (a Core peer fetches it and holds it postponed); no node lists it at
+    1–5 confirmations (MG-06 D19); from 6 every node lists it with dwcli's hash and fee txid; the
+    masternodes vote yes and dwcli, synced again, shows it public. No node logs the object
+    invalid (a 0-confirmation announcement would, MG-06 D6).
 
 Run (DWCLI = a built dwcli):
   DWCLI=<target>/debug/dwcli DWD_PYTHON=<venv>/bin/python DASHCORE_DIR=<dashcore> \\
       regtest/functional/run.sh dwd_governance.py
 """
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -62,6 +69,9 @@ SUPERBLOCK_CYCLE = 20
 MATURITY_WINDOW = 10
 PASSPHRASE = "dwd governance regtest"
 OUTCOME_CODES = {"yes": 1, "no": 2, "abstain": 3}
+# The BIP39 test vector: dwcli's wallet for check 7 (regtest coins only).
+PHRASE = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
 
 
 class Dwcli:
@@ -75,7 +85,7 @@ class Dwcli:
         with open(self.passfile, "w", encoding="utf8") as f:
             f.write(PASSPHRASE + "\n")
 
-    def run(self, *args, timeout=900, options=()):
+    def run(self, *args, timeout=900, options=(), stdin=None):
         cmd = [
             self.binary,
             "--datadir", os.path.join(self.datadir, "data"),
@@ -89,7 +99,7 @@ class Dwcli:
         ] + list(args)
         env = dict(os.environ)
         env.setdefault("DWCLI_LOG", "warn,dw_governance=debug,dw_engine::governance=debug")
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout, env=env)
         self.log.info(f"dwcli {' '.join(args)} -> {p.returncode}\n{p.stdout}{p.stderr[-6000:]}")
         if p.returncode != 0:
             raise AssertionError(f"dwcli {args} failed: {p.stderr[-3000:]}")
@@ -98,10 +108,10 @@ class Dwcli:
     def governance(self, *args, timeout=900, options=()):
         """Runs `dwcli governance` (after the global `options`); returns its lines grouped by kind."""
         out = {"govstate": [], "govinfo": [], "offinfo": [], "proposal": [], "votes": {}, "relayed": [],
-               "relay_error": [], "console": []}
+               "relay_error": [], "console": [], "preview": [], "created": [], "mine": []}
         for line in self.run("governance", *args, timeout=timeout, options=options):
             kind, _, rest = line.partition(" ")
-            if kind in ("govstate", "govinfo", "offinfo", "proposal", "relayed"):
+            if kind in ("govstate", "govinfo", "offinfo", "proposal", "relayed", "preview", "created", "mine"):
                 out[kind].append(json.loads(rest))
             elif kind == "votes":
                 h, _, body = rest.partition(" ")
@@ -420,7 +430,88 @@ class DwdGovernance(DashTestFramework):
             assert_equal(kind, "result")
             assert_equal(sorted(json.loads(text)), sorted(node.gobject("list", signal, "proposals")))
         assert_equal(sorted(node.gobject("list", "valid", "proposals")), sorted([p0, p1]))
+
+        self.own_proposal(dwcli)
         self.log.info("governance suite passed")
+
+    def own_proposal(self, dwcli):
+        self.log.info("7. the wallet's own proposal: fee, auto-submit at 1, listed from 6, public")
+        node = self.nodes[0]
+        with contextlib.ExitStack() as stack:
+            # An announcement before a peer has the fee's block is refused as invalid and scored
+            # (MG-06 D6, D21).
+            refused = ["Governance object is invalid", "Can't find collateral tx",
+                       "is not mined yet"]
+            for n in self.nodes:
+                stack.enter_context(n.assert_debug_log([], unexpected_msgs=refused, timeout=0))
+            dwcli.run("init-vault")
+            wallet = " ".join(dwcli.run("import", "--birth-height", "0", stdin=PHRASE)).split()[-1]
+            address = dwcli.run("receive", "--next")[-1].split()[1]
+            funding = node.sendtoaddress(address, 3)
+            self.generate(node, 1)
+            dwcli.run("sync", "--txid", funding, "--confirmations", "1", "--timeout-secs", "300")
+
+            tip = node.getblockcount()
+            first = FIRST_SUPERBLOCK + ((tip - FIRST_SUPERBLOCK) // SUPERBLOCK_CYCLE + 2) * SUPERBLOCK_CYCLE
+            payee = node.getnewaddress()
+            spec = f"dwd_p7:https://example.org/p7:{payee}:{duffs('2.2')}:2:{first}"
+            out = dwcli.governance("--sync-height", str(tip), "--wallet", wallet, "--propose", spec)
+            preview, created = out["preview"][0], out["created"][0]
+            h, fee_txid = created["hash"], created["fee_txid"]
+            # The object's time and epochs are stamped when it is created (MG-06 D3); the review
+            # step shows the same proposal as if created then.
+            assert_equal((created["name"], created["payment_address"], created["payment_amount"]),
+                         ("dwd_p7", payee, duffs("2.2")))
+            assert_equal(created["state"], {"kind": "fee_paid", "confirmations": 0})
+            # Core's checks agree with the wallet's (`ValidateProposal`).
+            assert_equal(node.gobject("check", preview["data_hex"]), {"Object status": "OK"})
+            # Core's `GenBudgetSystemCollateralTx` shape: P2PKH change only (MG-06 D1).
+            self.wait_until(lambda: fee_txid in node.getrawmempool(), timeout=30)
+            fee = node.getrawtransaction(fee_txid, True)
+            data = [o for o in fee["vout"] if o["scriptPubKey"]["type"] == "nulldata"]
+            assert_equal(len(data), 1)
+            assert_equal(Decimal(str(data[0]["value"])), Decimal(1))
+            assert_equal(data[0]["scriptPubKey"]["hex"], "6a20" + bytes.fromhex(h)[::-1].hex())
+            for o in fee["vout"]:
+                assert o["scriptPubKey"]["type"] in ("nulldata", "pubkeyhash"), o
+
+            self.log.info("7. one confirmation: dwcli submits on its own, the peer holds it postponed")
+            self.generate(node, 1)
+            out = dwcli.governance("--sync-height", str(node.getblockcount()), "--wallet", wallet,
+                                   "--wait-mine", "confirming", "--timeout-secs", "300")
+            # The governance peers (the masternodes) that fetched it hold it postponed.
+            postponed = f"Not enough fee confirmations for: {h}"
+            self.wait_until(lambda: any(postponed in open(n.debug_log_path, encoding="utf-8").read()
+                                        for n in self.nodes), timeout=30)
+            mine = [m for m in out["mine"] if m["hash"] == h]
+            assert_equal(mine[-1]["state"], {"kind": "confirming", "confirmations": 1})
+            assert mine[-1]["submitted_at"] is not None
+
+            # Postponed below 6 confirmations: no node lists it (MG-06 D19).
+            for confirmations in range(1, 6):
+                assert_equal(node.getrawtransaction(fee_txid, True)["confirmations"], confirmations)
+                for n in self.nodes:
+                    assert h not in n.gobject("list", "all", "proposals"), (confirmations, n.index)
+                self.generate(node, 1)
+            assert_equal(node.getrawtransaction(fee_txid, True)["confirmations"], 6)
+            for n in self.nodes:
+                self.wait_until(lambda: h in n.gobject("list", "all", "proposals"), timeout=60)
+                got = n.gobject("get", h)
+                assert_equal(got["CollateralHash"], fee_txid)
+                data = json.loads(got["DataString"])
+                assert_equal((data["name"], data["start_epoch"], data["end_epoch"]),
+                             ("dwd_p7", created["start_epoch"], created["end_epoch"]))
+
+            self.log.info("7. the masternodes vote yes; dwcli, synced again, shows it public")
+            node.gobject("vote-many", h, "funding", "yes")
+            self.wait_until(lambda: self.core_counts(h) == (3 + 4, 0, 0), timeout=30)
+            out = dwcli.governance("--sync-height", str(node.getblockcount()), "--wallet", wallet,
+                                   "--wait-mine", "public", "--timeout-secs", "300")
+            mine = [m for m in out["mine"] if m["hash"] == h]
+            assert_equal(mine[-1]["state"]["kind"], "public")
+            assert_equal(mine[-1]["fee_txid"], fee_txid)
+            rows = {r["hash"]: r for r in out["proposal"]}
+            assert_equal(rows[h]["tally"]["yes"]["estimate"], 3 + 4)
 
 
 if __name__ == "__main__":

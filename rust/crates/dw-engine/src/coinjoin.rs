@@ -661,12 +661,10 @@ fn compute_balances(
     )
 }
 
-/// The full derivation path of `address` in the wallet.
+/// The full derivation path of `address` in the wallet; a DashPay
+/// contact's address is not the wallet's (MG-05 D19).
 fn path_of(info: &ManagedWalletInfo, address: &Address) -> Option<DerivationPath> {
-    info.all_managed_accounts()
-        .into_iter()
-        .find_map(|a| a.get_address_info(address))
-        .map(|i| i.path)
+    crate::coins::own_address_info(info, address).map(|i| i.path)
 }
 
 /// `scriptSig` of a P2PKH input: `<DER signature ‖ sighash type> <pubkey>`.

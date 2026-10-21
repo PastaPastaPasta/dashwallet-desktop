@@ -120,8 +120,53 @@ impl Default for Progress {
 /// on `getdata`.
 #[derive(Debug, Default)]
 struct Outbox {
-    items: HashMap<[u8; 32], (u32, Vec<u8>)>,
-    unannounced: Vec<InvItem>,
+    items: HashMap<[u8; 32], OutItem>,
+    /// The last round handed out ([`OutItem::round`]).
+    rounds: u64,
+    /// The peers that fetched each own object since it was last queued
+    /// (MG-06 D6).
+    fetched: HashMap<[u8; 32], Vec<SocketAddr>>,
+}
+
+#[derive(Debug)]
+struct OutItem {
+    kind: u32,
+    payload: Vec<u8>,
+    /// A peer is announced the item once per round: a new round (queued
+    /// again after [`Shared::withdraw_object`]) announces it to every peer
+    /// again, and a peer never hears the same round twice on one
+    /// connection (MG-06 D19).
+    round: u64,
+}
+
+impl Outbox {
+    /// Queues `hash` in a new round, with no fetch yet.
+    fn queue(&mut self, kind: u32, hash: [u8; 32], payload: Vec<u8>) {
+        self.fetched.remove(&hash);
+        self.rounds += 1;
+        let round = self.rounds;
+        self.items.insert(
+            hash,
+            OutItem {
+                kind,
+                payload,
+                round,
+            },
+        );
+    }
+
+    fn withdraw(&mut self, hash: &[u8; 32]) -> bool {
+        self.fetched.remove(hash);
+        self.items.remove(hash).is_some()
+    }
+
+    /// `addr` fetched the queued object `hash`.
+    fn note_fetch(&mut self, hash: [u8; 32], addr: SocketAddr) {
+        let fetchers = self.fetched.entry(hash).or_default();
+        if !fetchers.contains(&addr) {
+            fetchers.push(addr);
+        }
+    }
 }
 
 /// State shared between the sync task and readers.
@@ -177,17 +222,58 @@ impl Shared {
     /// later runs once those are, and served on `getdata`.
     /// Returns how many peers are connected. The caller stored the vote.
     pub fn relay_vote(&self, vote: &GovernanceVote) -> u32 {
-        let item = InvItem {
-            kind: INV_GOVERNANCE_VOTE,
-            hash: vote.hash(),
-        };
-        {
-            let mut o = self.outbox();
-            o.items.insert(item.hash, (item.kind, vote.encode()));
-            o.unannounced.push(item);
-        }
+        (self.outbox()).queue(INV_GOVERNANCE_VOTE, vote.hash(), vote.encode());
         self.relay.notify_one();
         self.progress().peers
+    }
+
+    /// Queues the wallet's own (proposal) object for relay as
+    /// [`Self::relay_vote`] does a vote. The caller stored it and makes
+    /// sure its fee has a confirmation: a Core peer penalises an object
+    /// whose fee has none (MG-06 D6). Queuing an object already queued
+    /// changes nothing.
+    pub fn relay_object(&self, object: &GovernanceObject) -> u32 {
+        let hash = object.hash();
+        let queued = {
+            let mut o = self.outbox();
+            let new = !o.items.contains_key(&hash);
+            if new {
+                o.queue(INV_GOVERNANCE_OBJECT, hash, object.encode());
+            }
+            new
+        };
+        if queued {
+            self.relay.notify_one();
+        }
+        self.progress().peers
+    }
+
+    /// Takes a queued object out: neither announced nor served any more
+    /// (its fee is back at no confirmation, MG-06 D6). Queued again, it is
+    /// a new round, announced to every peer (MG-06 D7).
+    pub fn withdraw_object(&self, hash: &[u8; 32]) -> bool {
+        self.outbox().withdraw(hash)
+    }
+
+    /// Whether `hash` is queued for relay.
+    pub fn is_queued(&self, hash: &[u8; 32]) -> bool {
+        self.outbox().items.contains_key(hash)
+    }
+
+    /// The peers that fetched the queued object `hash` since it was last
+    /// queued, in order.
+    pub fn object_fetchers(&self, hash: &[u8; 32]) -> Vec<SocketAddr> {
+        self.outbox().fetched.get(hash).cloned().unwrap_or_default()
+    }
+
+    /// Records a fetch of the queued object `hash` by `addr`, as a peer's
+    /// `getdata` does (for the engine's tests). Not queued: nothing.
+    #[doc(hidden)]
+    pub fn note_object_fetch(&self, hash: &[u8; 32], addr: SocketAddr) {
+        let mut o = self.outbox();
+        if o.items.contains_key(hash) {
+            o.note_fetch(*hash, addr);
+        }
     }
 
     fn refresh(&self, peers: &[PeerState], base_bytes: u64) {
@@ -417,6 +503,9 @@ struct PeerState {
     parent_fetches: HashSet<[u8; 32]>,
     /// Parents asked of it, for any peer's orphan votes.
     parents_asked: HashSet<[u8; 32]>,
+    /// The wallet's own items announced to it → the round announced
+    /// ([`OutItem::round`]).
+    own_sent: HashMap<[u8; 32], u64>,
 }
 
 #[derive(Default)]
@@ -456,6 +545,7 @@ impl PeerState {
             refill: false,
             parent_fetches: HashSet::new(),
             parents_asked: HashSet::new(),
+            own_sent: HashMap::new(),
         }
     }
 
@@ -753,27 +843,26 @@ impl Run {
         }
     }
 
-    fn announce_outbox(&self, only_new: bool) {
+    /// Announces to each peer the queued items it has not heard in their
+    /// current round.
+    fn announce_outbox(&mut self) {
         if !self.announce_open {
             return;
         }
-        let items: Vec<InvItem> = {
-            let mut o = self.shared.outbox();
-            if only_new {
-                std::mem::take(&mut o.unannounced)
-            } else {
-                o.unannounced.clear();
-                o.items
-                    .iter()
-                    .map(|(h, (k, _))| InvItem { kind: *k, hash: *h })
-                    .collect()
+        let o = self.shared.outbox();
+        for p in &mut self.peers {
+            let mut items = Vec::new();
+            for (hash, i) in &o.items {
+                if p.own_sent.insert(*hash, i.round) != Some(i.round) {
+                    items.push(InvItem {
+                        kind: i.kind,
+                        hash: *hash,
+                    });
+                }
             }
-        };
-        if items.is_empty() {
-            return;
-        }
-        for p in &self.peers {
-            p.peer.send_inv(&items);
+            if !items.is_empty() {
+                p.peer.send_inv(&items);
+            }
         }
     }
 
@@ -1501,14 +1590,22 @@ impl Run {
     }
 
     fn on_get_data(&self, from: usize, items: Vec<InvItem>) {
-        let answers: Vec<(u32, Vec<u8>)> = {
-            let o = self.shared.outbox();
-            items
-                .iter()
-                .filter_map(|i| o.items.get(&i.hash).cloned())
-                .collect()
-        };
         let Some(p) = self.peer(from) else { return };
+        let addr = p.peer.addr;
+        let answers: Vec<(u32, Vec<u8>)> = {
+            let mut o = self.shared.outbox();
+            let mut answers = Vec::new();
+            for i in &items {
+                let Some(item) = o.items.get(&i.hash) else {
+                    continue;
+                };
+                answers.push((item.kind, item.payload.clone()));
+                if item.kind == INV_GOVERNANCE_OBJECT {
+                    o.note_fetch(i.hash, addr);
+                }
+            }
+            answers
+        };
         for (kind, payload) in answers {
             match kind {
                 INV_GOVERNANCE_OBJECT => p.peer.send_object(payload),
@@ -2252,7 +2349,7 @@ async fn run_inner(
     }
     run.changed();
     run.announce_open = true;
-    run.announce_outbox(false);
+    run.announce_outbox();
 
     // Follow relays until stopped or every peer is gone.
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -2270,7 +2367,7 @@ async fn run_inner(
                     run.record_vote_syncs();
                 }
             }
-            _ = shared.relay.notified() => run.announce_outbox(true),
+            _ = shared.relay.notified() => run.announce_outbox(),
             ev = rx.recv() => {
                 let Some(ev) = ev else { return Err(SyncError::PeersLost) };
                 run.handle(ev.from, ev.event);
