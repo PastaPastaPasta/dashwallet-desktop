@@ -53,7 +53,7 @@ from dwd_masternodes import (COIN, COLLATERAL, OWNER, PHRASE, SPORK_OFF, VOTING,
 EVO_COLLATERAL = 4_000 * COIN
 # chainparams.cpp:873-874 (rc.3): regtest's nDefaultPlatformP2PPort / nDefaultPlatformHTTPPort.
 PLATFORM_PORTS = (22_200, 22_201)
-from test_framework.util import assert_equal, p2p_port
+from test_framework.util import assert_equal, p2p_port, softfork_active
 
 
 def state(op):
@@ -66,10 +66,19 @@ def handed_off(op):
     return True
 
 
+# DWD_MG04_V24=1: the second run (MG-04 §7, D1), with v24 active from early in the chain, as Core's
+# feature tests set it (rc.3 test/functional/feature_protx_version.py:59): plain BIP9 (no EHF), a
+# 10-block window. dashd's own RPCs then build version-3 payloads; the wallet's stay version 2.
+V24 = os.environ.get("DWD_MG04_V24") == "1"
+V24_PARAMS = "-vbparams=v24:0:999999999999:0:10:8:6:5:0"
+
+
 class DwdProtx(DwdMasternodes):
     def set_test_params(self):
         # The framework wants it defined here; the network is the masternodes suite's.
         super().set_test_params()
+        if V24:
+            self.extra_args = [args + [V24_PARAMS] for args in self.extra_args]
 
     def prepare_network(self):
         """As `dwd_masternodes.py`: InstantSend and ChainLocks off, then whole DIP24 cycles until
@@ -119,6 +128,13 @@ class DwdProtx(DwdMasternodes):
         node = self.nodes[0]
         dw = Dwcli(os.environ["DWCLI"], os.path.join(self.options.tmpdir, "dwcli"), p2p_port(0), self.log)
         evidence = os.environ.get("DWD_MG04_EVIDENCE")
+        if V24:
+            for _ in range(30):
+                if softfork_active(node, "v24"):
+                    break
+                self.mine(10)
+            assert softfork_active(node, "v24"), node.getdeploymentinfo()["deployments"]["v24"]
+            self.log.info(f"v24 active at height {self.tip()}")
         self.prepare_network()
         self.fund_node(2 * EVO_COLLATERAL + 3 * COLLATERAL + 100 * COIN)
 
@@ -383,8 +399,10 @@ class DwdProtx(DwdMasternodes):
         fee_source = node.getnewaddress()
         node.sendtoaddress(fee_source, 1)
         self.mine()
-        node.protx("update_service", hash_f, service_f, new_operator["secret"], "", fee_source)
+        revive = node.protx("update_service", hash_f, service_f, new_operator["secret"], "", fee_source)
         h = self.mine()
+        # dashd builds its own payloads at the tip's version (D1): 3 once v24 is active.
+        assert_equal(node.getrawtransaction(revive, True)["proUpServTx"]["version"], 3 if V24 else 2)
         st = self.core_info(hash_f)[1]
         assert_equal(st["PoSeBanHeight"], -1)
         assert st["PoSeRevivedHeight"] > 0, st
