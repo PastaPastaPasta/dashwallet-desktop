@@ -2,7 +2,7 @@
 // boxes apply as they change, the numbers with one Save (checked against `coinjoin_limits`
 // first), Restore defaults after a confirmation. The ranges and defaults are the engine's.
 
-import { useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
 import type { CoinJoinLimits } from "../../api/generated/CoinJoinLimits";
 import type { CoinJoinSettings } from "../../api/generated/CoinJoinSettings";
 import { DashButton } from "../../components/basics";
@@ -18,6 +18,8 @@ const FIELDS: { field: FormField; label: string; hint?: string }[] = [
   { field: "denomsGoal", label: `${CoinJoinText.inputsPerDenomination}: ${CoinJoinText.denomsTarget}` },
   { field: "denomsHardCap", label: `${CoinJoinText.inputsPerDenomination}: ${CoinJoinText.denomsMaximum}`, hint: CoinJoinText.inputsPerDenominationTip },
 ];
+
+const NONE: Partial<CoinJoinSettings> = {};
 
 export function CoinJoinTab() {
   const settings = useCoinJoinSettings();
@@ -42,8 +44,11 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
   /** One write at a time: a second answer could arrive first (U-04 D36). */
   const [saving, setSaving] = useState(false);
   const [restoring, setRestoring] = useState(false);
-  /** A box as clicked, until the engine has answered (U-04 D36). */
-  const [turning, setTurning] = useState<Partial<CoinJoinSettings>>({});
+  /** A box as clicked, until the engine refuses it or the read after the write reaches this form
+   * (U-04 D36). That read comes through CoinJoinTab a render after the write resolves (the query
+   * notifies on a timeout): clearing on the answer alone flipped the box back for a frame. */
+  const [turning, setTurning] = useState(NONE);
+  useEffect(() => setTurning(NONE), [current]);
   const shown = { ...current, ...turning };
   const saved = formOf(current);
   const form = { ...saved, ...edits };
@@ -105,14 +110,13 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
           onChange={(e) => {
             const p = patch(e.target.checked);
             setTurning(p);
-            void write({ ...current, ...p })
-              .then((ok) => {
-                if (!ok || p.multiSession !== false) return;
-                // Parallel sessions went off with it: what was typed there is dropped.
-                setEdits(({ maxSessions: _, ...rest }) => rest);
-                setWrong((w) => (w === "maxSessions" ? null : w));
-              })
-              .finally(() => setTurning({}));
+            void write({ ...current, ...p }).then((ok) => {
+              if (!ok) return setTurning(NONE);
+              if (p.multiSession !== false) return;
+              // Parallel sessions went off with it: what was typed there is dropped.
+              setEdits(({ maxSessions: _, ...rest }) => rest);
+              setWrong((w) => (w === "maxSessions" ? null : w));
+            });
           }}
         />
         {label}
