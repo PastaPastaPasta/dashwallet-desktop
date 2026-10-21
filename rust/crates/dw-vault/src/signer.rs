@@ -81,8 +81,10 @@ pub enum SignerScope {
     /// address key (an existing collateral's proof), and a ProUpRegTx's
     /// payload signature ([`KeyUse::OwnerPayload`]) with a keychain owner
     /// key `m/9'/coin'/3'/2'/i` or the `owner` key attached to that
-    /// masternode (MG-04 D11, D12). An owner key signs no digest it is
-    /// given. Like `PlatformFunding`, the vault cannot see the debit of
+    /// masternode (MG-04 D11, D12), and a shared masternode's owner
+    /// signatures (consent, ProUpShareTx, ProUpSharedRegTx, ProDisTx) with
+    /// a keychain owner key only (MG-04b D11). An owner key signs no digest
+    /// it is given. Like `PlatformFunding`, the vault cannot see the debit of
     /// what it signs; the engine checks it against the grant's cap first
     /// (MG-05 §2). No operator or platform-node key is in reach.
     MasternodeOwner,
@@ -109,8 +111,11 @@ pub(crate) enum KeyUse {
     /// A governance vote's key id, or a signature over the digest of a
     /// funding vote the vault builds ([`crate::VoteSigner`]).
     Vote,
-    /// A ProUpRegTx's owner signature over the hash of a payload the vault
-    /// hashes itself ([`VaultSigner::sign_update_registrar`]).
+    /// An owner signature over the digest of a payload or transaction the
+    /// vault hashes itself: a ProUpRegTx's
+    /// ([`VaultSigner::sign_update_registrar`]) or a shared masternode's
+    /// ([`VaultSigner::sign_shared_consent`] and its siblings, MG-04b
+    /// §6.2).
     OwnerPayload,
 }
 

@@ -2691,6 +2691,7 @@ dependencies = [
  "dw-compat",
  "dw-fs",
  "dw-message",
+ "dw-protx",
  "dw-testutil",
  "dw-uri",
  "dw-vault",
