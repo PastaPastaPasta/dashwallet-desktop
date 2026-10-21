@@ -47,9 +47,9 @@ use super::sync::ListSnapshot;
 use super::voting::{Keychain, VOTING_KEY_INDEXES, choose_key, parse_masternodes, refused};
 use super::{Governance, GovernanceError};
 use crate::events::unix_now;
-use crate::masternode_keys::MasternodeKeyRole;
+use crate::masternode_keys::{MasternodeKeyInfo, MasternodeKeyRole};
 use crate::masternodes::AttachedKeyRole;
-use crate::masternodes::follow::{load_notes, read_list};
+use crate::masternodes::follow::{Notes, load_notes, read_list};
 use crate::platform::contest_watch::{ContestNet, ENDS_PAGE, POLL_PAGE, Poll, SdkContests};
 use crate::platform::lease::{
     AdmitRequest, ArtifactId, ArtifactKind, DispatchScope, Lease, Outcome, Verdict,
@@ -351,6 +351,155 @@ fn vault_choice(choice: &NameChoice) -> Result<dw_vault::NameChoice, GovernanceE
     })
 }
 
+/// The listed masternodes the wallet votes for, in list order, with the key
+/// each votes with: a keychain voting key, else the attached one the list's
+/// key id matches (D3).
+fn name_voters<'a>(
+    list: &'a [MasternodeListSummary],
+    keys: &[MasternodeKeyInfo],
+    notes: &Notes,
+) -> Vec<(&'a MasternodeListSummary, NameVotingKey)> {
+    let keychain: HashMap<[u8; 20], u32> = keys
+        .iter()
+        .filter_map(|k| {
+            let pk = hex::decode(&k.public_key_hex).ok()?;
+            Some((
+                dashcore::hashes::hash160::Hash::hash(&pk).to_byte_array(),
+                k.index,
+            ))
+        })
+        .collect();
+    list.iter()
+        .filter_map(|e| {
+            if let Some(&index) = keychain.get(&e.voting_key_id) {
+                return Some((e, NameVotingKey::Keychain { index }));
+            }
+            let shown = display_hex(&e.pro_tx_hash);
+            let attached = notes.key_ids.get(&(shown, AttachedKeyRole::Voting));
+            (attached == Some(&e.voting_key_id)).then_some((e, NameVotingKey::Attached))
+        })
+        .collect()
+}
+
+/// The DPNS contests still open, soonest ending first, with their first
+/// page of contenders.
+async fn open_contests(net: &impl NameVoteNet) -> Result<Vec<ContestedName>, GovernanceError> {
+    let now = unix_now();
+    let ends = net.end_page(now, ENDS_PAGE).await?;
+    let mut open: Vec<(String, u64)> = ends.into_iter().filter(|(_, end)| *end > now).collect();
+    open.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    let polls: Vec<Result<Poll, PlatformError>> = futures_util::stream::iter(&open)
+        .map(|(label, _)| net.page(label, POLL_PAGE))
+        .buffered(POLLS_AT_ONCE)
+        .collect()
+        .await;
+    let mut contests = Vec::with_capacity(open.len());
+    for ((label, ends_at), poll) in open.into_iter().zip(polls) {
+        let poll = poll?;
+        // Resolved after the end-date page was read.
+        if poll.winner.is_some() {
+            continue;
+        }
+        contests.push(ContestedName {
+            contenders_complete: poll.contenders.len() < usize::from(POLL_PAGE),
+            contenders: (poll.contenders.iter())
+                .map(|(id, votes)| NameContender {
+                    identity: id.to_string(Encoding::Base58),
+                    votes: *votes,
+                })
+                .collect(),
+            label,
+            ends_at,
+            lock_votes: poll.lock_votes,
+            abstain_votes: poll.abstain_votes,
+        });
+    }
+    Ok(contests)
+}
+
+/// `e`'s standing in the listed contests: its present choices, proved, and
+/// the votes this app saw it use.
+async fn name_voter(
+    net: &impl NameVoteNet,
+    appdb: &Arc<AppDb>,
+    labels: &[String],
+    e: &MasternodeListSummary,
+    key: NameVotingKey,
+) -> Result<NameVoter, GovernanceError> {
+    let (wire, platform) = (e.pro_tx_hash, platform_order(&e.pro_tx_hash));
+    let mut choices = net.votes_of(platform).await?;
+    let (db, labels) = (Arc::clone(appdb), labels.to_vec());
+    let used = tokio::task::spawn_blocking(move || {
+        (labels.into_iter())
+            .map(|l| Ok((votes_used(&db, &wire, &l)?, l)))
+            .collect::<Result<Vec<_>, EngineError>>()
+    })
+    .await
+    .map_err(EngineError::from)??;
+    let current = used
+        .into_iter()
+        .filter_map(|(votes_used, label)| {
+            let choice = choices.remove(&label);
+            (choice.is_some() || votes_used > 0).then_some(NameVoterState {
+                label,
+                choice,
+                votes_used,
+            })
+        })
+        .collect();
+    Ok(NameVoter {
+        pro_tx_hash: display_hex(&e.pro_tx_hash),
+        kind: if e.is_evonode {
+            MasternodeType::Evonode
+        } else {
+            MasternodeType::Regular
+        },
+        weight: ListSnapshot::weight(e),
+        valid: e.is_valid,
+        key,
+        current,
+    })
+}
+
+/// `label`'s poll can take a vote for `choice` (`vault`, checked): it exists,
+/// is not resolved or past its end, and lists the identity voted for (D8,
+/// D9).
+async fn check_open_poll(
+    net: &impl NameVoteNet,
+    label: &str,
+    choice: &NameChoice,
+    vault: dw_vault::NameChoice,
+) -> Result<(), GovernanceError> {
+    let now = unix_now();
+    // From an hour back, as the watch reads it: a poll stays in the
+    // index until the block that resolves it (D8).
+    let ends = net.end_page(now.saturating_sub(3600), ENDS_PAGE).await?;
+    let poll = net.page(label, POLL_PAGE).await?;
+    let closed = || GovernanceError::ContestClosed {
+        label: label.to_owned(),
+    };
+    if poll.winner.is_some() {
+        return Err(closed());
+    }
+    if poll.contenders.is_empty() {
+        return Err(GovernanceError::ContestNotFound {
+            label: label.to_owned(),
+        });
+    }
+    if ends.get(label).is_some_and(|end| *end <= now) {
+        return Err(closed());
+    }
+    if let NameChoice::TowardsIdentity { identity } = choice
+        && let dw_vault::NameChoice::TowardsIdentity(id) = vault
+        && !poll.contenders.iter().any(|(c, _)| c.to_buffer() == id)
+    {
+        return Err(GovernanceError::NotAContender {
+            identity: identity.clone(),
+        });
+    }
+    Ok(())
+}
+
 impl Governance {
     /// The open DPNS contests, soonest ending first, and the wallet's
     /// masternodes that can vote on them, with their present choices and
@@ -379,16 +528,6 @@ impl Governance {
             .session
             .masternode_keys(wallet, MasternodeKeyRole::Voting, 0, VOTING_KEY_INDEXES)
             .await?;
-        let keychain: HashMap<[u8; 20], u32> = keys
-            .iter()
-            .filter_map(|k| {
-                let pk = hex::decode(&k.public_key_hex).ok()?;
-                Some((
-                    dashcore::hashes::hash160::Hash::hash(&pk).to_byte_array(),
-                    k.index,
-                ))
-            })
-            .collect();
         let appdb = self.session.live()?.appdb;
         let notes = {
             let appdb = Arc::clone(&appdb);
@@ -397,86 +536,14 @@ impl Governance {
                 .map_err(EngineError::from)?
                 .map_err(EngineError::from)?
         };
-        let voters: Vec<(&MasternodeListSummary, NameVotingKey)> = list
-            .iter()
-            .filter_map(|e| {
-                if let Some(&index) = keychain.get(&e.voting_key_id) {
-                    return Some((e, NameVotingKey::Keychain { index }));
-                }
-                let shown = display_hex(&e.pro_tx_hash);
-                let attached = notes.key_ids.get(&(shown, AttachedKeyRole::Voting));
-                (attached == Some(&e.voting_key_id)).then_some((e, NameVotingKey::Attached))
-            })
-            .collect();
+        let voters = name_voters(&list, &keys, &notes);
 
         let net = net?;
-        let now = unix_now();
-        let ends = net.end_page(now, ENDS_PAGE).await?;
-        let mut open: Vec<(String, u64)> = ends.into_iter().filter(|(_, end)| *end > now).collect();
-        open.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-        let polls: Vec<Result<Poll, PlatformError>> = futures_util::stream::iter(&open)
-            .map(|(label, _)| net.page(label, POLL_PAGE))
-            .buffered(POLLS_AT_ONCE)
-            .collect()
-            .await;
-        let mut contests = Vec::with_capacity(open.len());
-        for ((label, ends_at), poll) in open.into_iter().zip(polls) {
-            let poll = poll?;
-            // Resolved after the end-date page was read.
-            if poll.winner.is_some() {
-                continue;
-            }
-            contests.push(ContestedName {
-                contenders_complete: poll.contenders.len() < usize::from(POLL_PAGE),
-                contenders: (poll.contenders.iter())
-                    .map(|(id, votes)| NameContender {
-                        identity: id.to_string(Encoding::Base58),
-                        votes: *votes,
-                    })
-                    .collect(),
-                label,
-                ends_at,
-                lock_votes: poll.lock_votes,
-                abstain_votes: poll.abstain_votes,
-            });
-        }
-
+        let contests = open_contests(net).await?;
+        let labels: Vec<String> = contests.iter().map(|c| c.label.clone()).collect();
         let mut out = Vec::with_capacity(voters.len());
         for (e, key) in voters {
-            let (wire, platform) = (e.pro_tx_hash, platform_order(&e.pro_tx_hash));
-            let mut choices = net.votes_of(platform).await?;
-            let labels: Vec<String> = contests.iter().map(|c| c.label.clone()).collect();
-            let db = Arc::clone(&appdb);
-            let used = tokio::task::spawn_blocking(move || {
-                (labels.into_iter())
-                    .map(|l| Ok((votes_used(&db, &wire, &l)?, l)))
-                    .collect::<Result<Vec<_>, EngineError>>()
-            })
-            .await
-            .map_err(EngineError::from)??;
-            let current = used
-                .into_iter()
-                .filter_map(|(votes_used, label)| {
-                    let choice = choices.remove(&label);
-                    (choice.is_some() || votes_used > 0).then_some(NameVoterState {
-                        label,
-                        choice,
-                        votes_used,
-                    })
-                })
-                .collect();
-            out.push(NameVoter {
-                pro_tx_hash: display_hex(&e.pro_tx_hash),
-                kind: if e.is_evonode {
-                    MasternodeType::Evonode
-                } else {
-                    MasternodeType::Regular
-                },
-                weight: ListSnapshot::weight(e),
-                valid: e.is_valid,
-                key,
-                current,
-            });
+            out.push(name_voter(net, &appdb, &labels, e, key).await?);
         }
         Ok(ContestedNames {
             contests,
@@ -530,31 +597,7 @@ impl Governance {
         let list = self.name_list().await?;
         let targets = parse_masternodes(&masternodes, list.len())?;
         let net = net?;
-        let now = unix_now();
-        // From an hour back, as the watch reads it: a poll stays in the
-        // index until the block that resolves it (D8).
-        let ends = net.end_page(now.saturating_sub(3600), ENDS_PAGE).await?;
-        let poll = net.page(&label, POLL_PAGE).await?;
-        let closed = || GovernanceError::ContestClosed {
-            label: label.clone(),
-        };
-        if poll.winner.is_some() {
-            return Err(closed());
-        }
-        if poll.contenders.is_empty() {
-            return Err(GovernanceError::ContestNotFound { label });
-        }
-        if ends.get(&label).is_some_and(|end| *end <= now) {
-            return Err(closed());
-        }
-        if let NameChoice::TowardsIdentity { identity } = &choice
-            && let dw_vault::NameChoice::TowardsIdentity(id) = vault_choice
-            && !poll.contenders.iter().any(|(c, _)| c.to_buffer() == id)
-        {
-            return Err(GovernanceError::NotAContender {
-                identity: identity.clone(),
-            });
-        }
+        check_open_poll(net, &label, &choice, vault_choice).await?;
         let allowed = net.votes_allowed();
 
         let _op = self.session.enter().await?;
@@ -577,6 +620,16 @@ impl Governance {
                 .map_err(EngineError::from)?,
             )
         };
+        let batch = Batch {
+            net,
+            lease: &lease,
+            signer,
+            keychain,
+            appdb,
+            allowed,
+            label: &label,
+            choice: vault_choice,
+        };
         let mut out = Vec::with_capacity(targets.len());
         for wire in targets {
             let target = Target {
@@ -586,18 +639,7 @@ impl Governance {
                     .find(|e| e.pro_tx_hash == wire)
                     .map(|e| e.voting_key_id),
             };
-            let vote = |nonce| NameVote {
-                pro_tx_hash: platform_order(&wire),
-                label: label.clone(),
-                choice: vault_choice,
-                nonce,
-            };
-            let cast = self
-                .cast_one(
-                    net, &lease, &signer, &keychain, &appdb, &target, allowed, &label, vote,
-                )
-                .await;
-            let (transition, rejected) = match cast {
+            let (transition, rejected) = match batch.cast_one(&target).await {
                 Ok(hash) => (Some(hex::encode(hash)), None),
                 Err((hash, reason)) => (hash.map(hex::encode), Some(reason.into())),
             };
@@ -609,148 +651,6 @@ impl Governance {
         }
         lease.end();
         Ok(out)
-    }
-
-    /// One masternode's vote: the key, the nonce, the vault's signature,
-    /// then the fence and the broadcast (MG-07 §2). The transition's hash,
-    /// or why the vote does not count with the hash when it was broadcast.
-    #[allow(clippy::too_many_arguments)]
-    async fn cast_one(
-        &self,
-        net: &impl NameVoteNet,
-        lease: &Lease,
-        signer: &Arc<VoteSigner>,
-        keychain: &Arc<Keychain>,
-        appdb: &Arc<AppDb>,
-        t: &Target,
-        allowed: u32,
-        label: &str,
-        vote: impl FnOnce(u64) -> NameVote,
-    ) -> Result<[u8; 32], (Option<[u8; 32]>, &'static str)> {
-        let no_hash = |reason| (None, reason);
-        let id = t.voting_key_id.ok_or(no_hash("unknown_masternode"))?;
-        let used = {
-            let (db, mn, label) = (Arc::clone(appdb), t.wire, label.to_owned());
-            tokio::task::spawn_blocking(move || votes_used(&db, &mn, &label))
-                .await
-                .map_err(|_| no_hash("signer_unavailable"))?
-                .map_err(|_| no_hash("signer_unavailable"))?
-        };
-        if used >= allowed {
-            return Err(no_hash("vote_limit"));
-        }
-        let key = {
-            let (signer, keychain, mn) = (Arc::clone(signer), Arc::clone(keychain), t.wire);
-            tokio::task::spawn_blocking(move || choose_key(&keychain, id, mn, |k| signer.key_id(k)))
-                .await
-                .map_err(|_| no_hash("signer_unavailable"))?
-                .map_err(no_hash)?
-        };
-        let platform = platform_order(&t.wire);
-        let nonce = net
-            .nonce(voter_identity(&platform, &id))
-            .await
-            .map_err(|_| no_hash("platform_unavailable"))?;
-        let fields = vote(nonce);
-        let signed = {
-            let signer = Arc::clone(signer);
-            tokio::task::spawn_blocking(move || signer.sign_name_vote(&key, &fields))
-                .await
-                .map_err(|_| no_hash("signer_unavailable"))?
-                .map_err(|e: SignerError| no_hash(refused(e)))?
-        };
-        let hash = signed.hash;
-        let outcome = self.hand_off_name(net, lease, signed.bytes, hash).await?;
-        let rejected = match outcome {
-            Cast::Counted => {
-                self.record_used(appdb, t.wire, label, used + 1).await;
-                return Ok(hash);
-            }
-            Cast::Refused {
-                refusal: Refusal::VoteLimit { used: counted },
-                ..
-            } => {
-                self.record_used(appdb, t.wire, label, u32::from(counted).max(used))
-                    .await;
-                "vote_limit"
-            }
-            Cast::Refused {
-                refusal: Refusal::VotingKey,
-                ..
-            } => net.diagnose(platform, id).await.unwrap_or("refused"),
-            Cast::Refused {
-                refusal: Refusal::Reason(r),
-                ..
-            } => r,
-            Cast::NotSent => "platform_unavailable",
-            Cast::Unknown => "unconfirmed",
-        };
-        Err((Some(hash), rejected))
-    }
-
-    /// One signed transition through the dispatch fence (MG-05 §4, MG-07
-    /// §2): admitted under the lease's scope, then handed off by the
-    /// broadcast. A refusal of the fence is `Err` with no hash.
-    async fn hand_off_name(
-        &self,
-        net: &impl NameVoteNet,
-        lease: &Lease,
-        bytes: Vec<u8>,
-        hash: [u8; 32],
-    ) -> Result<Cast, (Option<[u8; 32]>, &'static str)> {
-        let wallet = lease.wallet();
-        let table = Arc::clone(&lease.table);
-        let verdict = lease
-            .scope(async move {
-                table
-                    .admit(AdmitRequest {
-                        wallet,
-                        artifact: ArtifactId(hash),
-                        kind: ArtifactKind::Vote,
-                        tracked_row: false,
-                        scope: DispatchScope::current(),
-                    })
-                    .await
-            })
-            .await;
-        // A consensus refusal at the broadcast never left DAPI's CheckTx.
-        let outcome = |c: &Cast| match c {
-            Cast::Counted | Cast::Refused { executed: true, .. } => Outcome::Sent,
-            Cast::Refused {
-                executed: false, ..
-            }
-            | Cast::NotSent => Outcome::NotSent,
-            Cast::Unknown => Outcome::MaybeSent,
-        };
-        match verdict {
-            Verdict::First(permit) => {
-                let c = net.cast(bytes).await;
-                permit.finish(outcome(&c));
-                Ok(c)
-            }
-            Verdict::Resend(guard) | Verdict::FirstUnleased(guard) => {
-                let c = net.cast(bytes).await;
-                guard.finish(outcome(&c));
-                Ok(c)
-            }
-            // The lease was revoked: a lock ended the batch.
-            Verdict::Refused { .. } => Err((None, "cancelled")),
-            // The same transition is in flight, or its outcome is still
-            // being resolved.
-            Verdict::Deferred => Err((None, "in_flight")),
-        }
-    }
-
-    /// Records the votes Platform took; a failed write only lowers the
-    /// lower bound (D6).
-    async fn record_used(&self, appdb: &Arc<AppDb>, pro_tx_hash: [u8; 32], label: &str, used: u32) {
-        let (db, label) = (Arc::clone(appdb), label.to_owned());
-        let written =
-            tokio::task::spawn_blocking(move || set_votes_used(&db, &pro_tx_hash, &label, used))
-                .await;
-        if !matches!(written, Ok(Ok(()))) {
-            tracing::warn!("a name vote's count was not recorded");
-        }
     }
 
     /// The synced SPV list's entries, or `governance.list_unavailable`.
@@ -793,6 +693,163 @@ fn sdk_names(session: &NetworkSession) -> Result<SdkNames, PlatformError> {
 struct Target {
     wire: [u8; 32],
     voting_key_id: Option<[u8; 20]>,
+}
+
+/// A failed vote: the transition's hash once it was broadcast, and why it
+/// does not count.
+type Rejection = (Option<[u8; 32]>, &'static str);
+
+fn no_hash(reason: &'static str) -> Rejection {
+    (None, reason)
+}
+
+/// A blocking task or a store read that did not run to its end.
+fn unavailable<E>(_: E) -> Rejection {
+    no_hash("signer_unavailable")
+}
+
+/// What the masternodes of one `vote_name` call share.
+struct Batch<'a, N> {
+    net: &'a N,
+    lease: &'a Lease,
+    signer: Arc<VoteSigner>,
+    keychain: Arc<Keychain>,
+    appdb: Arc<AppDb>,
+    /// Platform's votes per masternode and poll.
+    allowed: u32,
+    label: &'a str,
+    choice: dw_vault::NameChoice,
+}
+
+impl<N: NameVoteNet> Batch<'_, N> {
+    /// One masternode's vote: the key, the nonce, the vault's signature,
+    /// then the fence and the broadcast (MG-07 §2). The transition's hash,
+    /// or why the vote does not count with the hash when it was broadcast.
+    async fn cast_one(&self, t: &Target) -> Result<[u8; 32], Rejection> {
+        let id = t.voting_key_id.ok_or(no_hash("unknown_masternode"))?;
+        let used = {
+            let (db, mn, label) = (Arc::clone(&self.appdb), t.wire, self.label.to_owned());
+            tokio::task::spawn_blocking(move || votes_used(&db, &mn, &label))
+                .await
+                .map_err(unavailable)?
+                .map_err(unavailable)?
+        };
+        if used >= self.allowed {
+            return Err(no_hash("vote_limit"));
+        }
+        let key = {
+            let (signer, keychain, mn) =
+                (Arc::clone(&self.signer), Arc::clone(&self.keychain), t.wire);
+            tokio::task::spawn_blocking(move || choose_key(&keychain, id, mn, |k| signer.key_id(k)))
+                .await
+                .map_err(unavailable)?
+                .map_err(no_hash)?
+        };
+        let platform = platform_order(&t.wire);
+        let nonce = (self.net)
+            .nonce(voter_identity(&platform, &id))
+            .await
+            .map_err(|_| no_hash("platform_unavailable"))?;
+        let fields = NameVote {
+            pro_tx_hash: platform,
+            label: self.label.to_owned(),
+            choice: self.choice,
+            nonce,
+        };
+        let signed = {
+            let signer = Arc::clone(&self.signer);
+            tokio::task::spawn_blocking(move || signer.sign_name_vote(&key, &fields))
+                .await
+                .map_err(unavailable)?
+                .map_err(|e: SignerError| no_hash(refused(e)))?
+        };
+        let hash = signed.hash;
+        let outcome = self.hand_off(signed.bytes, hash).await?;
+        let rejected = match outcome {
+            Cast::Counted => {
+                self.record_used(t.wire, used + 1).await;
+                return Ok(hash);
+            }
+            Cast::Refused {
+                refusal: Refusal::VoteLimit { used: counted },
+                ..
+            } => {
+                self.record_used(t.wire, u32::from(counted).max(used)).await;
+                "vote_limit"
+            }
+            Cast::Refused {
+                refusal: Refusal::VotingKey,
+                ..
+            } => self.net.diagnose(platform, id).await.unwrap_or("refused"),
+            Cast::Refused {
+                refusal: Refusal::Reason(r),
+                ..
+            } => r,
+            Cast::NotSent => "platform_unavailable",
+            Cast::Unknown => "unconfirmed",
+        };
+        Err((Some(hash), rejected))
+    }
+
+    /// One signed transition through the dispatch fence (MG-05 §4, MG-07
+    /// §2): admitted under the lease's scope, then handed off by the
+    /// broadcast. A refusal of the fence is `Err` with no hash.
+    async fn hand_off(&self, bytes: Vec<u8>, hash: [u8; 32]) -> Result<Cast, Rejection> {
+        let wallet = self.lease.wallet();
+        let table = Arc::clone(&self.lease.table);
+        let verdict = self
+            .lease
+            .scope(async move {
+                table
+                    .admit(AdmitRequest {
+                        wallet,
+                        artifact: ArtifactId(hash),
+                        kind: ArtifactKind::Vote,
+                        tracked_row: false,
+                        scope: DispatchScope::current(),
+                    })
+                    .await
+            })
+            .await;
+        // A consensus refusal at the broadcast never left DAPI's CheckTx.
+        let outcome = |c: &Cast| match c {
+            Cast::Counted | Cast::Refused { executed: true, .. } => Outcome::Sent,
+            Cast::Refused {
+                executed: false, ..
+            }
+            | Cast::NotSent => Outcome::NotSent,
+            Cast::Unknown => Outcome::MaybeSent,
+        };
+        match verdict {
+            Verdict::First(permit) => {
+                let c = self.net.cast(bytes).await;
+                permit.finish(outcome(&c));
+                Ok(c)
+            }
+            Verdict::Resend(guard) | Verdict::FirstUnleased(guard) => {
+                let c = self.net.cast(bytes).await;
+                guard.finish(outcome(&c));
+                Ok(c)
+            }
+            // The lease was revoked: a lock ended the batch.
+            Verdict::Refused { .. } => Err(no_hash("cancelled")),
+            // The same transition is in flight, or its outcome is still
+            // being resolved.
+            Verdict::Deferred => Err(no_hash("in_flight")),
+        }
+    }
+
+    /// Records the votes Platform took; a failed write only lowers the
+    /// lower bound (D6).
+    async fn record_used(&self, pro_tx_hash: [u8; 32], used: u32) {
+        let (db, label) = (Arc::clone(&self.appdb), self.label.to_owned());
+        let written =
+            tokio::task::spawn_blocking(move || set_votes_used(&db, &pro_tx_hash, &label, used))
+                .await;
+        if !matches!(written, Ok(Ok(()))) {
+            tracing::warn!("a name vote's count was not recorded");
+        }
+    }
 }
 
 #[cfg(test)]

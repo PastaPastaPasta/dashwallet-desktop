@@ -156,10 +156,7 @@ impl VoteSigner {
     /// list entry names as its voting key id. `NoSecret` for an attached
     /// key that is missing or no secp256k1 secret.
     pub fn key_id(&self, key: &VotingKey) -> Result<[u8; 20], SignerError> {
-        self.with_secret(key, |secret| {
-            let public = PublicKey::from_secret_key(secret);
-            hash160::Hash::hash(&public.serialize()).to_byte_array()
-        })
+        self.with_secret(key, key_id_of)
     }
 
     /// The 65-byte compact signature of `vote` with `key`, over the
@@ -195,8 +192,7 @@ impl VoteSigner {
             )));
         }
         let (voting_address, signature) = self.with_secret(key, |secret| {
-            let public = PublicKey::from_secret_key(secret);
-            let address = hash160::Hash::hash(&public.serialize()).to_byte_array();
+            let address = key_id_of(secret);
             let unsigned = vote.transition(address, BinaryData::default());
             let data = unsigned.signable_bytes().map_err(protocol)?;
             let digest = Message::from_digest(sha256d::Hash::hash(&data).to_byte_array());
@@ -229,6 +225,12 @@ impl VoteSigner {
             }
         }
     }
+}
+
+/// The hash160 of `secret`'s compressed public key.
+fn key_id_of(secret: &SecretKey) -> [u8; 20] {
+    let public = PublicKey::from_secret_key(secret);
+    hash160::Hash::hash(&public.serialize()).to_byte_array()
 }
 
 /// Core's `SignCompact` of `digest`: the header `27 + recid + 4` (a

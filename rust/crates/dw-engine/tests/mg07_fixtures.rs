@@ -137,7 +137,10 @@ fn check<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(name: &s
     let path = fixture(name);
     let want = serde_json::to_string_pretty(&sample).unwrap() + "\n";
     if std::env::var_os("DW_BLESS").is_some() {
-        assert!(std::env::var_os("CI").is_none(), "refusing DW_BLESS under CI");
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "refusing DW_BLESS under CI"
+        );
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &want).unwrap();
         panic!("blessed {name}; review it and re-run without DW_BLESS");
