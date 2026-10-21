@@ -654,8 +654,8 @@ impl Masternodes {
             s.require_wallet(&wallet)?;
             let _flight = s.claim_operation(wallet, &operation)?;
             let row = s.op_row(wallet, &operation).await?;
-            // An update resends only while nothing later on its masternode
-            // is or may go out, held against a new update (D43).
+            // An update resends only while no other update of its
+            // masternode would race it, held against a new update (D43, D49).
             let update = row.kind == "update_registrar";
             let _updating = match update {
                 true => Some(s.masternodes.update_lock().await),
@@ -672,8 +672,8 @@ impl Masternodes {
                     state: state_name(state).into(),
                 });
             }
-            if update && let Some(later) = s.later_operation(&row).await? {
-                return Err(MasternodesError::UpdateSuperseded { operation: later });
+            if update && let Some(conflict) = s.resend_conflict(&row).await? {
+                return Err(conflict);
             }
             let tx = ops::signed_tx(&row)
                 .ok_or_else(|| EngineError::Internal("stored signed transaction".into()))?;

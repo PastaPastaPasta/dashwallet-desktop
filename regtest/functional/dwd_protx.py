@@ -307,8 +307,8 @@ class DwdProtx(DwdMasternodes):
         payout_f = f["terms"]["payout_address"]
 
         def mn_unless_pending(*args):
-            """`dw.mn` on F, or None while D43 refuses a kept key: the wallet's history shows an
-            update in a block the list hasn't reached yet (masternodes.update_pending)."""
+            """`dw.mn` on F, or None while D43 and D49 refuse an update: the wallet's history shows
+            an update in a block the list hasn't reached yet (masternodes.update_pending)."""
             p = dw.run("mn", "--sync-height", str(h), "--sync-timeout", "600", "update-registrar",
                        hash_f, *args, check=False)
             line = json.loads(p.stdout.strip().splitlines()[-1])

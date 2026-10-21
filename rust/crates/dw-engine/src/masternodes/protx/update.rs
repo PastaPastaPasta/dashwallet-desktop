@@ -135,7 +135,8 @@ impl NetworkSession {
 
     /// The id of an operation on masternode `hash` (wire order) that the
     /// synced list at `list_height` may not show yet: signed, not sent
-    /// (resendable) or sent, or confirmed above the list's height (D43).
+    /// (resendable) or sent, or confirmed above the list's height (D43,
+    /// D49). A conflicted one never will be, and holds nothing.
     async fn unlisted_operation(
         &self,
         hash: [u8; 32],
@@ -157,37 +158,42 @@ impl NetworkSession {
             .map(|(r, _)| r.id))
     }
 
-    /// The id of another update of the masternode of the update `row`,
-    /// saved no earlier than it (`created_at` is in seconds: two updates of
-    /// one second block each other), that is or may still go out:
-    /// resending `row` after it would restore the keys and payout it
-    /// replaced (D43).
-    pub(crate) async fn later_operation(
+    /// What a resend of the update `row` would race (D43, D49): another
+    /// update of its masternode saved no earlier (`created_at` is in
+    /// seconds: two of one second block each other) that is or may go out,
+    /// which the resend would undo (`UpdateSuperseded`); or an earlier one
+    /// handed off and not in a block, which it could be mined before
+    /// (`UpdatePending`).
+    pub(crate) async fn resend_conflict(
         &self,
         row: &MasternodeOpRow,
-    ) -> Result<Option<String>, MasternodesError> {
+    ) -> Result<Option<MasternodesError>, MasternodesError> {
         let Some(shown) = row.pro_tx_hash.as_deref() else {
             return Err(
                 EngineError::Internal("an update row without its ProTx hash".into()).into(),
             );
         };
-        Ok(self
-            .ops_on(shown)
-            .await?
-            .into_iter()
-            .find(|(r, state)| {
-                r.id != row.id
-                    && r.kind == row.kind
-                    && r.created_at >= row.created_at
-                    && matches!(
-                        state,
-                        ProTxOperationState::Signed
-                            | ProTxOperationState::NotSent
-                            | ProTxOperationState::Sent
-                            | ProTxOperationState::Confirmed { .. }
-                    )
-            })
-            .map(|(r, _)| r.id))
+        for (r, state) in self.ops_on(shown).await? {
+            if r.id == row.id || r.kind != row.kind {
+                continue;
+            }
+            let later = r.created_at >= row.created_at;
+            if later
+                && matches!(
+                    state,
+                    ProTxOperationState::Signed
+                        | ProTxOperationState::NotSent
+                        | ProTxOperationState::Sent
+                        | ProTxOperationState::Confirmed { .. }
+                )
+            {
+                return Ok(Some(MasternodesError::UpdateSuperseded { operation: r.id }));
+            }
+            if !later && state == ProTxOperationState::Sent {
+                return Ok(Some(MasternodesError::UpdatePending { operation: r.id }));
+            }
+        }
+        Ok(None)
     }
 
     /// Resolves `req` against the synced list and the wallet (§4 steps 1,
@@ -229,11 +235,10 @@ impl NetworkSession {
                 ),
                 None => return Err(MasternodesError::NoOwnerKey),
             };
-        // A kept key is the list's: refused while one of the wallet's own
-        // operations on this masternode may not be in it yet (D43).
-        if (req.operator == KeepOr::Keep || req.voting == KeepOr::Keep)
-            && let Some(operation) = self.unlisted_operation(hash, ctx.list_height).await?
-        {
+        // Refused while an operation on this masternode may not be in the
+        // list yet: a kept key is the list's (D43), and two updates out at
+        // once may be mined in either order (D49).
+        if let Some(operation) = self.unlisted_operation(hash, ctx.list_height).await? {
             return Err(MasternodesError::UpdatePending { operation });
         }
 

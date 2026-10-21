@@ -80,16 +80,16 @@ pub enum MasternodesError {
     /// the masternode's owner key id, or the id isn't known (MG-04 D12).
     #[error("no owner key of this masternode")]
     NoOwnerKey,
-    /// ProUpRegTx: a key is kept while an operation of the wallet that may
-    /// change it (`operation`, its id) isn't in the synced list yet; every
-    /// key must be given (MG-04 D43).
+    /// ProUpRegTx: an operation on this masternode (`operation`, its id,
+    /// maybe another loaded wallet's) isn't in the synced list yet: an
+    /// update now could keep a key it changes, or be mined before it
+    /// (MG-04 D43, D49).
     #[error(
-        "operation {operation} may change this masternode's keys before the list shows it: give every key"
+        "operation {operation} on this masternode isn't in the list yet: wait for it, or end it (discard it if never sent, else abandon its transaction)"
     )]
     UpdatePending { operation: String },
     /// Resending a ProUpRegTx that `operation` (its id, maybe another
-    /// loaded wallet's), saved no earlier, would undo: discard this one, or
-    /// send a new update with every key (MG-04 D43).
+    /// loaded wallet's), saved no earlier, would undo (MG-04 D43).
     #[error("operation {operation} came after this update: resending it would undo that one")]
     UpdateSuperseded { operation: String },
     /// A lease refused (MG-05 D12).

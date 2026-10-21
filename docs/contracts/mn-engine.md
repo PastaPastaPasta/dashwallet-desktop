@@ -92,11 +92,11 @@ wallet's masternodes and its saved operations: keys in use (`masternodes.protx_r
 0–19 is in use), a listed service (`bad-protx-dup-netinfo-entry`), the collateral (`masternodes.collateral_unavailable`,
 MG-04 D23). An operation id is 32 lower-case hex (`invalid_argument` otherwise), then `masternodes.operation_not_found`,
 then `masternodes.in_flight` while another call on it runs, then `masternodes.operation_state{state}` when the call
-doesn't apply to its state, then (a resent update) `masternodes.update_superseded{operation}` (MG-04 D43). An `UpdateRegistrarRequest` is checked first on its own (`invalid_argument`, the ProTx
+doesn't apply to its state, then (a resent update) `masternodes.update_superseded{operation}` for a later update, or `masternodes.update_pending{operation}` for an earlier one handed off and not in a block (MG-04 D43, D49). An `UpdateRegistrarRequest` is checked first on its own (`invalid_argument`, the ProTx
 hash among it), then against the synced list (`masternodes.list_unavailable`, `masternodes.not_found` when not
 listed), then the masternode (`masternodes.unsupported{feature: "shared_masternodes"}` for a version-3 one), then its
-owner key (`masternodes.no_owner_key`, MG-04 D12), then a kept key while an operation of a loaded wallet on the
-masternode may not be in the list yet (`masternodes.update_pending{operation}`, MG-04 D43), then a keychain key to pick
+owner key (`masternodes.no_owner_key`, MG-04 D12), then any update while an operation of a loaded wallet on the
+masternode may not be in the list yet (`masternodes.update_pending{operation}`, MG-04 D43, D49), then a keychain key to pick
 (`masternodes.keys_exhausted`), then Core's rules (`masternodes.protx_refused`:
 `bad-protx-dup-key`, `bad-protx-payee-reuse`, `bad-protx-collateral-reuse`, …). A grant is the lease's: `MasternodeOp` for the wallet, its cap covering the fee
 (`send.grant_exceeded`, nothing signed); its refusals come through `Platform`/`Engine` unchanged (MG-05 D12). Each
@@ -115,7 +115,7 @@ signing call saves its row durably, with its inputs locked (MG-04 D25), before t
 | `preview_update_registrar(wallet: WalletId, request: UpdateRegistrarRequest)` | async | `UpdateRegistrarPreview`: the masternode's terms as they read after the update (a `NewAddress` payout empty, MG-04 D41), the payload version, the fee and `total_debit` (the fee), the owner key that would sign (`OwnerKeySource`), which of the operator key, voting key and payout change (`payout_changes` is `None` when the wallet holds no payout of it, MG-04 D10), and `pose_bans` (a new operator key bans the masternode until the operator's service update). Issues, locks and signs nothing. Refusals as above, then the funding's `send.*`. **Implemented.** | `MasternodesError` |
 | `update_registrar(wallet: WalletId, request: UpdateRegistrarRequest, grant: String)` | async | A version-2 ProUpRegTx under a `key_change` lease: the operator and voting keys kept from the synced list or set (an operator public key given or the keychain's), the payout named (MG-04 D10), funded and sorted as `register`'s, the payload signed by the masternode's owner key (a keychain key 0–19, else an attached `owner` key matched to its ProRegTx, MG-04 D11, D12), saved and handed off as `register` does. Returns the `ProTxOperation` (`kind: update_registrar`, `pro_tx_hash` the masternode's). **Implemented.** | `MasternodesError` |
 | `operations(wallet: WalletId)` | async | Every `ProTxOperation` of the wallet, newest first, its state derived now (§5). Settled rows' input locks are released on the way (MG-04 D25). **Implemented.** | `MasternodesError` |
-| `resend_operation(wallet: WalletId, operation: String, grant: String)` | async | Hands a `signed`, `not_sent` or `sent` row's saved bytes to the fence again (MG-04 D7): under its own lease, charged the row's fee, its inputs reserved again (`send.outpoint_unavailable` when another owner holds one). The same txid, so a resend of bytes that may be out is the fence's resend. An `update_registrar` row is refused while another update of its masternode saved no earlier is `signed`, `not_sent`, `sent` or `confirmed` (`masternodes.update_superseded{operation}`, MG-04 D43). **Implemented.** | `MasternodesError` |
+| `resend_operation(wallet: WalletId, operation: String, grant: String)` | async | Hands a `signed`, `not_sent` or `sent` row's saved bytes to the fence again (MG-04 D7): under its own lease, charged the row's fee, its inputs reserved again (`send.outpoint_unavailable` when another owner holds one). The same txid, so a resend of bytes that may be out is the fence's resend. An `update_registrar` row is refused while another update of its masternode saved no earlier is `signed`, `not_sent`, `sent` or `confirmed` (`masternodes.update_superseded{operation}`, MG-04 D43), or an earlier one is `sent` and not in a block (`masternodes.update_pending{operation}`, MG-04 D49). **Implemented.** | `MasternodesError` |
 | `discard_operation(wallet: WalletId, operation: String)` | async | Deletes a `needs_signature`, `inputs_spent`, `signed` or `not_sent` row, unlocking its inputs and the collateral it locked (MG-04 D6). A row whose bytes may be out (`sent_at` set) is never deleted: `masternodes.operation_state`. **Implemented.** | `MasternodesError` |
 | `release_collateral(wallet: WalletId, pro_tx_hash: String)` | async | Unlocks the collateral coin of one of the wallet's masternodes and remembers the release, so the follower leaves it unlocked (MG-04 D9). Sends nothing. `invalid_argument`, `masternodes.not_found` (not the wallet's), `masternodes.collateral_unavailable` (no resolved collateral). **Implemented.** | `MasternodesError` |
 | `lock_collateral(wallet: WalletId, pro_tx_hash: String)` | async | Locks it again and forgets the release. Refuses as `release_collateral`. **Implemented.** | `MasternodesError` |
@@ -581,12 +581,17 @@ a hash's shape (D23).
 - `masternodes.no_owner_key`: a ProUpRegTx needs the masternode's owner key, and no keychain owner key 0–19 nor an
   attached `owner` key matched to its ProRegTx has it, or no loaded wallet holds the ProRegTx that names it (MG-04
   D12).
-- `masternodes.update_pending{operation}`: a ProUpRegTx keeps the operator or voting key while `operation` (the id of
-  a loaded wallet's ProTx on the same masternode) is signed, not sent or sent, or confirmed above the list's height, so
-  the list may not show its keys yet. Giving every key is allowed (MG-04 D43).
+- `masternodes.update_pending{operation}`: a ProUpRegTx while `operation` (the id of a loaded wallet's ProTx on the
+  same masternode) is signed, not sent or sent, or confirmed above the list's height: the list may not show its keys
+  yet, and two updates out at once may be mined in either order. Also a resend of an update while an earlier one is
+  sent and not in a block. Wait for the list, or discard `operation` while it is not sent; for a resend, discarding
+  the row being resent (while it is not sent) also ends the refusal. One that never lists (dropped): abandon its
+  transaction (`abandon_transaction`), unlock one of its inputs and spend it; once that spend is in a block
+  `operation` reads `conflicted` and blocks nothing (MG-04 D43, D49).
 - `masternodes.update_superseded{operation}`: `resend_operation` of a ProUpRegTx that `operation`, a later update of
-  the same masternode (maybe another loaded wallet's) that is or may go out, would undo. Discard this row, or send a
-  new update giving every key (MG-04 D43). `update_pending`'s `operation` may also be another loaded wallet's.
+  the same masternode (maybe another loaded wallet's) that is or may go out, would undo. Discard this row while it is
+  not sent; a sent one ends as `update_pending` says (MG-04 D43, D49). `update_pending`'s `operation` may also be
+  another loaded wallet's.
 - `Platform(PlatformError)`: a lease's refusal (MG-05 D12), its code unchanged.
 - `Engine(EngineError)`: `network_not_open`, `wallet_not_found`, `invalid_argument`, `vault` (a locked vault among
   them), `storage`,
