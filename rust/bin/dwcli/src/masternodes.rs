@@ -483,8 +483,26 @@ fn wait_for_list(
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+    // At start dash-spv replays the stored lists, which read synced, then
+    // asks a peer for the tip's QRInfo, and the list reads unsynced until
+    // the answer: the list must stay synced for a while (MG-04 D45).
+    let mut steady = 0;
+    while steady < LIST_STEADY_CHECKS {
+        if Instant::now() >= deadline {
+            return Err(MasternodesError::ListUnavailable.into());
+        }
+        steady = if mn.list_state()?.synced {
+            steady + 1
+        } else {
+            0
+        };
+        std::thread::sleep(Duration::from_millis(250));
+    }
     Ok(())
 }
+
+/// [`wait_for_list`]: 250 ms checks the list must read synced in a row (2 s).
+const LIST_STEADY_CHECKS: u32 = 8;
 
 fn command(
     engine: &Engine,
