@@ -1487,6 +1487,98 @@ fn a_payment_to_an_own_provider_key_leaves_the_wallet() {
     );
 }
 
+/// MG-04 D55 (review r3 m-1), across every account the wallet derives: a
+/// payment to any keys-only account's address (identity, asset-lock,
+/// provider) leaves the wallet, so a fee-only grant refuses it; one to a
+/// funds account's address (BIP44/BIP32, CoinJoin) stays, so the same grant
+/// takes it and the output shows as the wallet's.
+#[test]
+fn only_a_funds_account_keeps_a_payment_in_the_wallet() {
+    let f = fixture(false);
+    let (id, inner) = (f.wallet, Arc::clone(&f.session));
+    let accounts = f
+        .engine
+        .block_on(f.session.on_runtime(async move {
+            let wallet = inner.wallet(&id).await?;
+            let state = wallet.state().await;
+            let mut accounts = Vec::new();
+            for account in state.core_wallet.all_managed_accounts() {
+                let ty = account.managed_account_type();
+                if ty.is_contact_owned() {
+                    continue;
+                }
+                let name = format!("{ty:?}");
+                let name = name.split([' ', '{', '(']).next().unwrap().to_string();
+                let address = ty
+                    .address_pools()
+                    .into_iter()
+                    .flat_map(|pool| pool.addresses.values())
+                    .map(|info| info.address.clone())
+                    .next()
+                    .unwrap_or_else(|| panic!("{name} has no address"));
+                assert!(
+                    crate::coins::wallet_owns(&state.core_wallet, &address),
+                    "{name}"
+                );
+                let funds = crate::coins::wallet_funds_address(&state.core_wallet, &address);
+                accounts.push((name, address.to_string(), funds));
+            }
+            Ok::<_, EngineError>(accounts)
+        }))
+        .unwrap();
+    let names = |funds: bool| {
+        let mut n: Vec<_> = accounts
+            .iter()
+            .filter(|(_, _, f)| *f == funds)
+            .map(|(name, _, _)| name.as_str())
+            .collect();
+        n.sort_unstable();
+        n.dedup();
+        n
+    };
+    assert_eq!(
+        names(false),
+        [
+            "AssetLockAddressTopUp",
+            "AssetLockShieldedAddressTopUp",
+            "IdentityInvitation",
+            "IdentityRegistration",
+            "IdentityTopUpNotBoundToIdentity",
+            "ProviderOperatorKeys",
+            "ProviderOwnerKeys",
+            "ProviderPlatformKeys",
+            "ProviderVotingKeys",
+        ]
+    );
+    assert_eq!(names(true), ["CoinJoin", "Standard"]);
+
+    for (seed, (name, address, funds)) in (10u8..).zip(&accounts) {
+        f.credit(seed, COIN);
+        let draft = f.draft(vec![pay(address, 10_000_000)]);
+        let fee = f.engine.block_on(draft.estimate()).unwrap().fee;
+        let r = f.engine.block_on(draft.prepare(f.spend_grant(fee)));
+        if *funds {
+            let p = r.unwrap_or_else(|e| panic!("{name}: a self-transfer is capped: {e:?}"));
+            let s = p.summary();
+            assert_eq!(s.external_sent, 0, "{name}");
+            assert!(
+                s.outputs.iter().all(|o| o.is_mine),
+                "{name}: {:?}",
+                s.outputs
+            );
+        } else {
+            assert_eq!(
+                send_failure(r),
+                SendFailure::GrantExceeded {
+                    max_duffs: fee,
+                    outflow: 10_000_000 + fee
+                },
+                "{name}"
+            );
+        }
+    }
+}
+
 /// MG-05 r2 N2: the same claim through `create_unsigned` itself: a draft
 /// paying a contact's address gets no derivation record for that output,
 /// while its own input and change get theirs.
