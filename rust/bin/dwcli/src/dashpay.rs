@@ -590,6 +590,21 @@ pub enum InviteCmd {
     Pending,
     /// Delete a stashed link.
     Forget { link_id: String },
+    /// Test-only (DP5-02 T2): fund an invitation of `--duffs` from the
+    /// wallet and write its link to `--out` (0600, never printed). The
+    /// voucher key is derived from the wallet's phrase in `--phrase-file`.
+    #[cfg(feature = "invitation-create-test")]
+    Create {
+        #[arg(long)]
+        duffs: u64,
+        /// The inviter's username, the link's `du`.
+        #[arg(long)]
+        username: Option<String>,
+        #[arg(long)]
+        phrase_file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 /// Parses a facade enum from its serde (snake-case) name, so the CLI and
@@ -1993,6 +2008,43 @@ fn profile_cmd(ctx: &Ctx, cmd: ProfileCmd) -> Result<Value, CliError> {
     }
 }
 
+/// `invite create` (DP5-02 T2): a `PlatformOp` grant of the lock and a fee
+/// allowance, the engine's test-support maker, and the link to a new 0600
+/// file.
+#[cfg(feature = "invitation-create-test")]
+fn create_invitation(
+    ctx: &Ctx,
+    duffs: u64,
+    username: Option<String>,
+    phrase_file: &Path,
+    path: &Path,
+) -> Result<Value, CliError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let dp = ctx.dashpay()?;
+    let caps = GrantRequest {
+        max_duffs: duffs + 100_000,
+        max_credits: 0,
+    };
+    let grant = ctx.platform_op(&dp, caps)?;
+    let phrase = Zeroizing::new(std::fs::read(phrase_file)?);
+    let phrase = phrase.trim_ascii();
+    let link = ctx.block_on(dw_engine::test_support::create_invitation(
+        ctx.session,
+        dp.wallet_id(),
+        grant,
+        duffs,
+        username,
+        phrase,
+    ))?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(link.as_bytes())?;
+    out(json!({"out": path, "duffs": duffs}))
+}
+
 fn invite_cmd(ctx: &Ctx, cmd: InviteCmd, stdin: &mut dyn Read) -> Result<Value, CliError> {
     let session = ctx.session;
     match cmd {
@@ -2019,6 +2071,13 @@ fn invite_cmd(ctx: &Ctx, cmd: InviteCmd, stdin: &mut dyn Read) -> Result<Value, 
         InviteCmd::Status { link_id } => out(ctx.block_on(session.invitation_status(link_id))?),
         InviteCmd::Pending => out(ctx.block_on(session.pending_invitations())?),
         InviteCmd::Forget { link_id } => out(ctx.block_on(session.forget_invitation(link_id))?),
+        #[cfg(feature = "invitation-create-test")]
+        InviteCmd::Create {
+            duffs,
+            username,
+            phrase_file,
+            out: path,
+        } => create_invitation(ctx, duffs, username, &phrase_file, &path),
     }
 }
 
@@ -2095,7 +2154,7 @@ mod tests {
     ];
 
     /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04, DP2-01,
-    /// DP2-03, DP1-02, DP2-02, DP1-06, DP3-01, DP4-01), with the
+    /// DP2-03, DP1-02, DP2-02, DP1-06, DP3-01, DP4-01, DP5-02), with the
     /// line each prints on the tests' wallet, which has no identity and no
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
@@ -2131,6 +2190,10 @@ mod tests {
         ("dashpay sync-status", SYNC_STATUS),
         ("dashpay leases", r#"{"ok":true,"result":[]}"#),
         ("identity register --label alice", NO_PLATFORM),
+        (
+            "identity register --label alice --invitation-id L --quote-only",
+            NO_PLATFORM,
+        ),
         (
             "identity register --label alice --existing-identity I",
             NO_PLATFORM,
@@ -2231,11 +2294,12 @@ mod tests {
         ("invite claim --label alice", INVITATION_INVALID),
         ("invite stash", INVITATION_INVALID),
         ("invite pending", r#"{"ok":true,"result":[]}"#),
-        (
-            "invite forget L",
-            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a stashed link id","params":{"detail":"not a stashed link id"}}}"#,
-        ),
+        ("invite forget L", NOT_STASHED),
+        // DP5-02.
+        ("invite status L", NOT_STASHED),
     ];
+
+    const NOT_STASHED: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a stashed link id","params":{"detail":"not a stashed link id"}}}"#;
 
     const INVITATION_INVALID: &str = r#"{"ok":false,"error":{"code":"invitation.invalid","message":"invitation invalid","params":{}}}"#;
 
@@ -2975,7 +3039,8 @@ mod tests {
             alice["result"]
         );
         let err = run(&engine, &session, &crate::test_stub::STUB_ARGS.join(" ")).unwrap_err();
-        assert_eq!(err.params, json!({"call": crate::test_stub::STUB_CALL}));
+        assert_eq!(err.code, crate::test_stub::STUB_CODE);
+        assert_eq!(err.params, json!({"detail": crate::test_stub::STUB_DETAIL}));
         engine.block_on(engine.shutdown()).unwrap();
     }
 

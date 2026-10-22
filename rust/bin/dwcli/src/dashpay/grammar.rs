@@ -104,6 +104,8 @@ fn value_type(cmd: &str, arg: &str) -> Option<Ty> {
         ("prepare-avatar", "gravatar") => Ty::Text(254),
         ("pictures", "set") => Ty::Enum(&["on", "off"]),
         (_, "input_file" | "faucet_proof_file" | "avatar_file") => Ty::Path,
+        // DP5-02 T2's test-only `invite create`.
+        ("create", "phrase_file" | "out") => Ty::Path,
         (_, "display_name" | "alias" | "text") => Ty::Text(256),
         (_, "public_message" | "note") => Ty::Text(1024),
         // `profile show`'s JSON: texts, an avatar URL (2048) and its hashes.

@@ -29,6 +29,12 @@ tracing = { workspace = true }
 url = "2"
 zeroize = { workspace = true }
 
+[features]
+# DP5-02 T2's `dashpay invite create`: an invitation funded by the wallet,
+# for a devnet's claim tests. Debug builds only (`main.rs` refuses it
+# otherwise), so no release or dist build has the command (DP5-02 D18).
+invitation-create-test = ["dw-engine/test-support"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Debug builds' fault injection (`-spawn-fail`) lowers RLIMIT_NPROC.
 libc = "0.2"
