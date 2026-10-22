@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 #[path = "../src/test_stub.rs"]
 mod test_stub;
-use test_stub::{STUB_ARGS, STUB_CALL, stub_request};
+use test_stub::{STUB_ARGS, STUB_CODE, STUB_DETAIL, stub_request};
 
 fn dwcli(dir: &Path, args: &[&str], stdin: &[u8]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_dwcli"))
@@ -62,15 +62,15 @@ fn dashpay_commands_print_one_json_line() {
         json!({
             "ok": false,
             "error": {
-                "code": "platform.not_implemented",
-                "message": format!("not implemented: {STUB_CALL}"),
-                "params": {"call": STUB_CALL},
+                "code": STUB_CODE,
+                "message": format!("invalid argument: {STUB_DETAIL}"),
+                "params": {"detail": STUB_DETAIL},
             },
         })
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains(&format!("not implemented: {STUB_CALL}")),
+        stderr.contains(&format!("invalid argument: {STUB_DETAIL}")),
         "{stderr}"
     );
 
@@ -110,7 +110,7 @@ fn dashpay_commands_print_one_json_line() {
         .collect();
     assert_eq!(lines.len(), 3, "{stdout}");
     assert_eq!(lines[0]["id"], 1);
-    assert_eq!(lines[0]["error"]["params"]["call"], STUB_CALL);
+    assert_eq!(lines[0]["error"]["params"]["detail"], STUB_DETAIL);
     assert_eq!(lines[1]["id"], 2);
     assert_eq!(lines[2], json!({"ok": true, "result": {"requests": 2}}));
 

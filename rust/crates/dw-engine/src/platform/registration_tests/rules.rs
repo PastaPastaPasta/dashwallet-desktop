@@ -69,6 +69,41 @@ impl RegistrationLib for Hooked {
         self.fake.funding_hold()
     }
 
+    fn claim_hold(&self) -> Option<RegistrationWait> {
+        self.fake.claim_hold()
+    }
+
+    async fn invitation(
+        &self,
+        link_id: &str,
+    ) -> Result<
+        (
+            crate::platform::invitations::InvitationStatus,
+            Option<String>,
+        ),
+        crate::platform::errors::InvitationError,
+    > {
+        self.fake.invitation(link_id).await
+    }
+
+    async fn claim_invitation(
+        &self,
+        link: &str,
+        index: u32,
+        permit: &CallPermit,
+    ) -> Result<String, flow::ClaimError> {
+        self.fake.claim_invitation(link, index, permit).await
+    }
+
+    async fn request_inviter(
+        &self,
+        identity: &str,
+        inviter: &str,
+        lease: &Lease,
+    ) -> Result<(), crate::platform::errors::ContactError> {
+        self.fake.request_inviter(identity, inviter, lease).await
+    }
+
     async fn funding_permit(
         &self,
         lease: &Lease,

@@ -13,8 +13,9 @@ publish.workspace = true
 # platform-wallet shielded wallet and its SqlitePersister tables.
 shielded = ["platform-wallet/shielded", "platform-wallet-storage/shielded"]
 # A request through a session's own SDK for dwcli's log redaction test
-# (MG-03 D37), enabled only by dwcli's dev-dependency. The module also needs
-# `debug_assertions`, so a release or dist build never has it (D40).
+# (MG-03 D37), and DP5-02's invitation maker, enabled only by dwcli's
+# dev-dependency and its `invitation-create-test` feature. The module also
+# needs `debug_assertions`, so a release or dist build never has it (D40).
 test-support = []
 
 [[example]]

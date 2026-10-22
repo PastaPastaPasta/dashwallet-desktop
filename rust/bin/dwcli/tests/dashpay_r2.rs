@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 #[path = "../src/test_stub.rs"]
 mod test_stub;
-use test_stub::{STUB_ARGS, STUB_CALL, stub_request};
+use test_stub::{STUB_ARGS, STUB_DETAIL, stub_request};
 
 fn dwcli(dir: &Path, args: &[&str], env: &[(&str, &str)], stdin: &[u8]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_dwcli"))
@@ -74,7 +74,7 @@ fn secrets_in_args_are_refused_by_the_grammar() {
             "bad arguments: argument 3 is surplus: `invite stash` takes no more"
         );
     }
-    assert_eq!(got[3]["error"]["params"]["call"], STUB_CALL);
+    assert_eq!(got[3]["error"]["params"]["detail"], STUB_DETAIL);
     assert_eq!(got[4], json!({"ok": true, "result": {"requests": 4}}));
     assert!(!text(&out).contains(SECRET), "{}", text(&out));
 }
@@ -124,7 +124,7 @@ fn a_session_probes_after_a_task_panic() {
         (got[0]["id"].clone(), got[0]["error"]["code"].clone()),
         (json!(1), json!("internal"))
     );
-    assert_eq!(got[1]["error"]["params"]["call"], STUB_CALL);
+    assert_eq!(got[1]["error"]["params"]["detail"], STUB_DETAIL);
     assert_eq!(got[2], json!({"ok": true, "result": {"requests": 2}}));
     assert!(!text(&out).contains("PANIC-SECRET"), "{}", text(&out));
 

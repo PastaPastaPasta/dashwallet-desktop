@@ -384,6 +384,9 @@ enum Call {
     RegisterIdentity,
     RegisterName,
     CreateProfile,
+    /// DP5-02: the invitation's claim and the request to the inviter.
+    Claim,
+    Request,
 }
 
 /// Where a scripted call hangs, as a kill -9 would leave it.
@@ -458,6 +461,19 @@ struct World {
     /// What each `register_identity` call meets, in order; none left, it
     /// creates the identity at once.
     identity_script: VecDeque<IdentityAttempt>,
+    /// What `invitation` reports (DP5-02); `None`: [`invitation::valid`].
+    invitation: Option<super::invitations::InvitationStatus>,
+    /// How each `claim_invitation` call ends, in order; none left, it
+    /// creates the identity.
+    claim_script: VecDeque<invitation::ClaimScript>,
+    claims: u32,
+    /// Whether each claim's lease held a funding signer.
+    claim_funders: Vec<bool>,
+    /// What the claim hold says.
+    claim_wait: Option<RegistrationWait>,
+    /// Contact requests on Platform: (from, to).
+    requests: Vec<(String, String)>,
+    request_error: Option<super::errors::ContactError>,
 }
 
 /// One `register_identity` call as step 2's retries play out inside it
@@ -980,6 +996,122 @@ impl RegistrationLib for Fake {
     async fn credit_balance(&self, _: &str) -> Result<Option<u64>, PlatformError> {
         Ok(Some(0))
     }
+
+    fn claim_hold(&self) -> Option<RegistrationWait> {
+        if self.startup_hold.load(Ordering::SeqCst) {
+            let session = self.session.upgrade().expect("the fixture's session");
+            return match session.dashpay_startup(&self.wallet) {
+                Ok(s) => flow::startup_hold(s.startup),
+                Err(_) => Some(RegistrationWait::Sync),
+            };
+        }
+        self.w().claim_wait
+    }
+
+    async fn invitation(
+        &self,
+        _: &str,
+    ) -> Result<
+        (super::invitations::InvitationStatus, Option<String>),
+        super::errors::InvitationError,
+    > {
+        use super::invitations::InvitationStatus;
+        let status = (self.w().invitation.clone()).unwrap_or_else(invitation::valid);
+        let identity = matches!(status, InvitationStatus::Valid { .. })
+            .then(|| flow::b58(&flow::identity_for(invitation::outpoint())));
+        Ok((status, identity))
+    }
+
+    async fn claim_invitation(
+        &self,
+        link: &str,
+        index: u32,
+        permit: &CallPermit,
+    ) -> Result<String, flow::ClaimError> {
+        use flow::ClaimError;
+        use invitation::ClaimScript;
+        assert_eq!(link, invitation::LINK, "the stash's link");
+        permit
+            .identity_signer(&[index])
+            .map_err(|e| ClaimError::Failed(e.into()))?;
+        let funder = permit.lease().uncounted_funding_signer().is_ok();
+        self.w().claim_funders.push(funder);
+        self.maybe_hang(Call::Claim, When::Before).await;
+        self.w().claims += 1;
+        let id = flow::b58(&flow::identity_for(invitation::outpoint()));
+        // The library adopts an identity it made with these keys.
+        if self
+            .w()
+            .identities
+            .iter()
+            .any(|(i, own)| *i == index && *own == id)
+        {
+            return Ok(id);
+        }
+        let script = self.w().claim_script.pop_front();
+        match script {
+            Some(ClaimScript::Claimed) => return Err(ClaimError::Claimed),
+            Some(ClaimScript::Invalid) => return Err(ClaimError::Invalid),
+            Some(ClaimScript::NotChainLocked) => return Err(ClaimError::NotChainLocked),
+            Some(ClaimScript::Unavailable) => {
+                return Err(ClaimError::Failed(PlatformError::Unavailable));
+            }
+            Some(ClaimScript::LandsThenUnavailable) => {
+                permit.note_released();
+                self.create_identity(invitation::outpoint(), index);
+                return Err(ClaimError::Failed(PlatformError::Unavailable));
+            }
+            Some(ClaimScript::OtherId) => {
+                permit.note_released();
+                return Ok(invitation::OTHER.into());
+            }
+            Some(ClaimScript::OtherAppearsThenUnavailable) => {
+                self.w().identities.push((index, invitation::OTHER.into()));
+                return Err(ClaimError::Failed(PlatformError::Unavailable));
+            }
+            Some(ClaimScript::ConsumedOurs) => {
+                // Platform holds our identity; the library's own lookup
+                // failed, so it refused the claim as consumed and recorded
+                // nothing. The engine's lookup reads the verdict.
+                permit.note_released();
+                self.w().identity_creates += 1;
+                let keys = invitation::our_keys();
+                let landed = invitation::landed(&keys);
+                return flow::consumed_lookup(|| async { Ok(landed.clone()) }, &keys).await;
+            }
+            None => {}
+        }
+        permit.note_released();
+        let id = self.create_identity(invitation::outpoint(), index);
+        self.maybe_hang(Call::Claim, When::After).await;
+        Ok(id)
+    }
+
+    async fn request_inviter(
+        &self,
+        identity: &str,
+        inviter: &str,
+        lease: &Lease,
+    ) -> Result<(), super::errors::ContactError> {
+        use super::contacts::Eligibility;
+        use super::errors::ContactError;
+        lease
+            .available(super::flows::BudgetPurpose::Credits)
+            .map_err(PlatformError::from)?;
+        self.maybe_hang(Call::Request, When::Before).await;
+        if let Some(e) = self.w().request_error.clone() {
+            return Err(e);
+        }
+        let pair = (identity.to_owned(), inviter.to_owned());
+        if self.w().requests.contains(&pair) {
+            return Err(ContactError::Ineligible {
+                reason: Eligibility::PendingOutgoing,
+            });
+        }
+        self.w().requests.push(pair);
+        self.maybe_hang(Call::Request, When::After).await;
+        Ok(())
+    }
 }
 
 /// A kill inside the funding call before its signature: the step's marker
@@ -1389,16 +1521,8 @@ fn the_funding_cap_and_balance_are_checked_before_a_row_exists() {
         .block_on(registration::quote(&*lib, &req))
         .unwrap_err();
     assert_eq!(err.code(), "invalid_argument");
-    // Invitation funding is DP5-02's; the faucet is off.
+    // The faucet is off (invitations: `registration_tests/invitation.rs`).
     let mut req = request(PLAIN);
-    req.funding = RegistrationFunding::Invitation {
-        link_id: "l1".into(),
-    };
-    let err = f
-        .engine
-        .block_on(registration::quote(&*lib, &req))
-        .unwrap_err();
-    assert_eq!(err.code(), "platform.not_implemented");
     req.funding = RegistrationFunding::FaucetAssetLock {
         key: "k".into(),
         proof: "00".into(),
@@ -1752,12 +1876,13 @@ fn a_signature_lost_before_its_store_leaves_the_step_maybe_sent() {
 fn rows_this_build_cannot_run_fail_and_free_the_slot() {
     let f = fixture(false);
     let lib = f.fake();
-    let mut invitation = core_row(PLAIN);
-    invitation.funding = Funding::Invitation {
-        link_id: "l1".into(),
+    let mut faucet = core_row(PLAIN);
+    faucet.funding = Funding::FaucetAssetLock {
+        key: "k1".into(),
+        proof: "00".into(),
     }
     .encode();
-    let invitation = f.insert(invitation);
+    let faucet = f.insert(faucet);
     let mut newer = core_row("frank2");
     newer.funding = r#"{"v":2,"kind":"core_balance","lock_duffs":1}"#.into();
     let newer = f.insert(newer);
@@ -1776,7 +1901,7 @@ fn rows_this_build_cannot_run_fail_and_free_the_slot() {
     f.settle(started.unwrap().parse().unwrap());
     let statuses = f.statuses(&lib);
     for (draft, code) in [
-        (invitation, "invitation.invalid"),
+        (faucet, "platform.feature_off"),
         (newer, "registration.unsupported"),
         (odd_phase, "registration.unsupported"),
     ] {
@@ -1790,7 +1915,7 @@ fn rows_this_build_cannot_run_fail_and_free_the_slot() {
         assert!(!s.funds_committed);
     }
     // DEC-171 (3): what this build cannot read stays as it is, never
-    // advanced and never deleted; an invitation row it reads is deleted.
+    // advanced and never deleted; a faucet row it reads is deleted.
     for draft in [newer, odd_phase] {
         assert_eq!(
             f.discard(&lib, draft).unwrap_err().code(),
@@ -1799,7 +1924,7 @@ fn rows_this_build_cannot_run_fail_and_free_the_slot() {
         f.drive(&lib, draft, Some(f.lease()), true);
         assert_eq!(f.row(draft).error, None, "nothing written");
     }
-    f.discard(&lib, invitation).unwrap();
+    f.discard(&lib, faucet).unwrap();
     assert_eq!(lib.counts(), (1, 1), "only the new registration funded");
 }
 
@@ -3993,6 +4118,7 @@ fn another_lock_awaiting_its_resend_holds_the_funding_without_failing_the_row() 
     assert_eq!(lib.counts(), (1, 1));
 }
 
+mod invitation;
 mod ledger;
 mod rules;
 mod step2;

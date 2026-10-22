@@ -102,9 +102,17 @@ pub(crate) enum Funding {
     /// The identity is in the row's `identity` column only, set at Draft,
     /// so the two cannot disagree after a partial update.
     ExistingIdentity,
-    /// The link itself is a bearer credential in the vault
-    /// (`invitation/<link_id>`), never here.
-    Invitation { link_id: String },
+    /// The link itself is a bearer credential in the vault's link stash
+    /// (DP5-01), never here. `inviter`: the identity the link's username
+    /// resolved to at the start (DP5-02 D14), sent a contact request once
+    /// the identity exists; the link is wiped before that step. `identity`:
+    /// the id the claim creates, from the voucher's outpoint at the start
+    /// (D26), the only identity the row adopts.
+    Invitation {
+        link_id: String,
+        inviter: Option<String>,
+        identity: String,
+    },
     /// Developer builds: `key` is a `prepare_faucet_lock` key id (the
     /// engine re-derives the private key) and `proof` the faucet's public
     /// `assetLockProof` hex. The outpoint goes to `asset_lock_outpoint`.
@@ -128,8 +136,18 @@ impl Funding {
                 json!({"v": v, "kind": "core_balance", "lock_duffs": lock_duffs})
             }
             Funding::ExistingIdentity => json!({"v": v, "kind": "existing_identity"}),
-            Funding::Invitation { link_id } => {
-                json!({"v": v, "kind": "invitation", "link_id": link_id})
+            Funding::Invitation {
+                link_id,
+                inviter,
+                identity,
+            } => {
+                let mut value = json!({
+                    "v": v, "kind": "invitation", "link_id": link_id, "identity": identity,
+                });
+                if let Some(inviter) = inviter {
+                    value["inviter"] = json!(inviter);
+                }
+                value
             }
             Funding::FaucetAssetLock { key, proof } => {
                 json!({"v": v, "kind": "faucet_asset_lock", "key": key, "proof": proof})
@@ -154,6 +172,11 @@ impl Funding {
                 "existing_identity" => Funding::ExistingIdentity,
                 "invitation" => Funding::Invitation {
                     link_id: field("link_id")?,
+                    inviter: match value.get("inviter") {
+                        None => None,
+                        Some(inviter) => Some(inviter.as_str()?.to_owned()),
+                    },
+                    identity: field("identity")?,
                 },
                 "faucet_asset_lock" => Funding::FaucetAssetLock {
                     key: field("key")?,
@@ -234,6 +257,13 @@ mod tests {
             Funding::ExistingIdentity,
             Funding::Invitation {
                 link_id: "abc".into(),
+                inviter: None,
+                identity: "Carol1dentity".into(),
+            },
+            Funding::Invitation {
+                link_id: "abc".into(),
+                inviter: Some("Bob1nviter".into()),
+                identity: "Carol1dentity".into(),
             },
             Funding::FaucetAssetLock {
                 key: "k1".into(),
@@ -262,6 +292,11 @@ mod tests {
             r#"{"v":1,"kind":"core_balance","lock_duffs":"1"}"#,
             r#"{"kind":"core_balance","lock_duffs":1}"#,
             r#"{"v":1,"kind":"invitation"}"#,
+            r#"{"v":1,"kind":"invitation","link_id":"abc","identity":"C","inviter":7}"#,
+            r#"{"v":1,"kind":"invitation","link_id":"abc","identity":7}"#,
+            // No build wrote an invitation row without its identity (D26):
+            // DP1-02 refused invitations at the start.
+            r#"{"v":1,"kind":"invitation","link_id":"abc"}"#,
             "core_balance",
             "",
             "wallet",

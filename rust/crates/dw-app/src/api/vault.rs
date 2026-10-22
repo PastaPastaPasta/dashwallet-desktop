@@ -45,6 +45,10 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: reached through `NetworkSession::take_stashed_link` (`open_stashed_link`), which passes only the kinds it hands back",
     ),
     (
+        "Vault::read_stashed_invitation",
+        "internal: the engine's invitation status and claim read the stashed link in place (DP5-02 D13); never handed to a host",
+    ),
+    (
         "Vault::forget_stashed_link",
         "internal: reached through `NetworkSession::forget_invitation` (`forget_invitation`) and `NetworkSession::forget_stashed_link` (`dismiss_stashed_link`)",
     ),

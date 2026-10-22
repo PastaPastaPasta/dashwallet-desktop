@@ -131,7 +131,7 @@ impl VaultIdentitySigner {
     /// ([`keys_policy::derive_keys`]). Public material only: no signature
     /// is made, so none is counted. Refused once [`Self::only_keys`]
     /// narrowed the signer, so the narrowing cannot be stepped around.
-    pub(crate) async fn derive_public_keys(
+    pub async fn derive_public_keys(
         &self,
         identity_index: u32,
         specs: &[KeySpec],
