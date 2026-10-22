@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 35
+Contract-Version: 36
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -71,7 +71,7 @@ type is `pub(crate)`.
 | `payments.rs` | DP3-01, DP3-02 | `payment_lock`, `resolve_payment_lock`, `contact_activity`, `frequent_contacts` |
 | `notifications.rs` | DP2-05 | `events`, `unread_count`, `mark_read` |
 | `profile.rs` | DP4-01, DP4-02 | `profile`, `profile_limits`, `prepare_avatar`, `avatar_upload_available`, `upload_avatar`, `update_profile`, `avatar`, `NetworkSession.load_contact_pictures`, `set_load_contact_pictures` |
-| `credits.rs` | DP1-06, DP6-02 | `cost_table`, `top_up_quote`, `top_up`, `pending_top_ups`, `stuck_top_up_fundings`, `resume_top_up`, `resolve_top_up`, `withdraw_quote`, `withdraw` |
+| `credits.rs` | DP1-06, DP6-02 | `cost_table`, `top_up_quote`, `top_up`, `pending_top_ups`, `stuck_top_up_fundings`, `resume_top_up`, `resolve_top_up`, `withdraw_quote`, `withdraw`, `withdrawals` |
 | `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_link`, `stashed_links`, `take_stashed_link`, `forget_stashed_link`, `stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
 | `errors.rs` | E0-05 (the mapping, §6) and each domain's owner | the error enums of §4 |
@@ -189,7 +189,7 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 `discover_identities` (§2.1), DP1-03's names calls in §2.3 (`check_username`, `name_availability`,
 `register_name`, `set_main_name`, `main_name`), DP2-01's contacts read model in §2.4 (`contacts`, `contact`,
 `pending_setup_count`), and DP2-03's user search, links and scans (`search_users` and `resolve_user` in §2.3,
-`my_user_link` and `verify_scanned` in §2.4), DP1-02's registration calls in §2.2, and DP1-06's `refresh_balance` (§2.1) and credits calls in §2.8 (not the withdrawals), with DP1-10's `stuck_top_up_fundings`. Each row says whether its call is implemented. Kind is `sync`, `async` or `free, pure` (§1).
+`my_user_link` and `verify_scanned` in §2.4), DP1-02's registration calls in §2.2, and DP1-06's `refresh_balance` (§2.1) and credits calls in §2.8, with DP1-10's `stuck_top_up_fundings` and DP6-02's withdrawals. Each row says whether its call is implemented. Kind is `sync`, `async` or `free, pure` (§1).
 
 ### 2.1 Status and identity
 
@@ -313,7 +313,7 @@ bodies decided where the rows leave room:
   `registration.not_synced`: "Wait until the wallet has finished syncing, then try again."
   A `Cancelled` row is discarded, never resumed: to register again the user starts a new registration. A row this build cannot run reads as failed, not retryable: a
   `funding`, `initial_profile`, `phase` or lock outpoint it does not know is `registration.unsupported`, and
-  `FaucetAssetLock` is `platform.feature_off`. An `Invitation` row runs (DP5-02, item 62). The failure is derived when read, never written: an unknown row is never funded, advanced
+  `FaucetAssetLock` is `platform.feature_off`. An `Invitation` row runs (DP5-02, item 63). The failure is derived when read, never written: an unknown row is never funded, advanced
   or deleted (`discard_registration` refuses it), and stays as written for the build that can read it. Every
   encoding of the row, the profile included, is read before anything is funded.
 - **`label`** is stored as typed; a `temporary_label` is kept only for a contested label and must itself be
@@ -514,8 +514,9 @@ bodies decided where the rows leave room:
 | `stuck_top_up_fundings()` | async | The wallet's top-up funding steps whose outcome is unknown (`MaybeSent`) or still being recorded (`WillBeSent`), the steps `top_up` refuses with `platform.broadcast_unknown` or `platform.will_be_sent`, ordered by identity index then attempt: the step `topup/<index>-<k>/funding`, the identity index, the identity id when the wallet holds that index, and the state (§7 item 54). A step leaves the list once its outcome settles, which for Repair's `resolve_stuck_funding` is when its self-spend is ChainLocked (`DispatchResolved`); until then it stays listed. Until the dispatch journal is read, or while a top-up step's marker cannot be read by this build, it is `platform.unavailable` (retry): a list without that step would hide what refuses the top-up. **Implemented (DP1-10).** | `CreditsError` |
 | `resume_top_up(txid, grant)` | async | Applies the tracked top-up lock `txid`, waiting up to 30 s for its proof first (a lock not yet sent is sent again; one a funding call of this process is still recording is `platform.will_be_sent`); the outcome as `top_up`'s. A lock the library holds applied (Platform's proved apply) reads `AlreadyApplied` with the balance read again; any other, a resolved or historical one too, is applied again (Platform takes a lock once). The grant is redeemed only for the apply, so `AlreadyApplied`, `ProofWaiting` and `platform.will_be_sent` keep it. The apply signs with the lock's one-time funding key, which only a grant with a funding budget unlocks: the grant needs `max_duffs` ≥ 1, none of which is spent. Tools ▸ Repair "Finish transfers" (`finish_asset_locks`) also applies every proved top-up lock, under its grant. **Implemented (DP1-06).** | `CreditsError` |
 | `resolve_top_up(txid)` | async | The user's resolution of the pending top-up lock `txid` that has its proof (they saw its credits arrive): a `consumption_unknown` one, or one a resume answered `ConsumptionUnknown` before its ChainLock let the library mark it final. Recorded in the dispatch journal, so it no longer pends nor blocks the identity's top-ups, across restarts, a removal and import of the wallet, and whatever status the library moves the lock to. `resume_top_up` and Finish still apply it, so a lock Platform had not taken is not lost. Any other txid (unknown, without a proof, applied or resolved) is `invalid_argument`; until the journal is read, or when its write fails, `platform.unavailable`. Needs no grant. **Implemented (DP1-06, Sol r1).** | `CreditsError` |
-| `withdraw_quote(identity, amount)` | async | The credits taken, the fee in credits, the duffs expected at `to`, and the `grant` to ask for; `All` leaves the fee reserve (DP6-02). | `CreditsError` |
-| `withdraw(identity, to, amount, grant)` | async | Credits to the Core address `to`. | `CreditsError` |
+| `withdraw_quote(identity, amount)` | async | What a withdrawal takes and pays out at the network's protocol version (§7 item 62): `credits` taken, `fee_credits` (the fee reserve: dpp's minimum fee for a withdrawal, or a bound on the fee Platform meters if higher; Platform charges what it meters, at most this), `expected_duffs` (Platform's own conversion of the withdrawal document: the credits in duffs, less the asset unlock's Core fee from protocol version 14), and the `grant` to ask for (`max_credits` = `credits + fee_credits`, no duffs). `All` is the balance less the reserve, in whole duffs, at most Platform's maximum. Refuses an identity that is not the wallet's (`identity.not_found`) or that it only watches (`invalid_argument`), an amount outside Platform's range, raised so the payout is no dust (`credits.withdrawal_out_of_range{min, max}`), an amount above the balance less the reserve, or `All` below the least withdrawal (`platform.insufficient_credits{needed, available}`), and a protocol version that takes no withdrawals (`invalid_argument`). **Implemented (DP6-02).** | `CreditsError` |
+| `withdraw(identity, to, amount, grant)` | async | Withdraws to `to`, a P2PKH or P2SH address of the network (anything else `invalid_argument`), at Core fee rate 1 with pooling `Never`. The money-move gate first (item 55, as `top_up`), then under the identity's write lock the quote's refusals against the balance read again, then the grant or `Withdraw` lease (`platform.grant_exceeded` below the quote's `max_credits`, `platform.grant_invalid` for another flow's lease), and a CRITICAL ECDSA TRANSFER key the vault holds (`identity.keys_missing{transfer}`), and, when an earlier withdrawal of the identity in this session is unconfirmed, its documents read back at least as recent as the nonce read (one there: `credits.withdrawal_landed{artifact}` naming it; a read from further back: `platform.unavailable`), all before the grant is redeemed. It signs dpp's own transition with that key, at the unconfirmed one's nonce while Platform would take it (D24), and returns `WithdrawOutcome{credits, expected_duffs, remaining_credits, withdrawal}`: the proved balance after, at least the amount below the one read under the lock, and the withdrawal document's id. Any other answer reads back the documents signed at its nonce with their amounts: this one's is the outcome with `remaining_credits` from the answer, if any; an earlier one's is `credits.withdrawal_landed{artifact}` (this one sent, its grant spent, never to execute); none leaves a refusal Platform answered with its consensus error as that refusal, and anything else (a wait with no cause, a transport error, a CheckTx refusal of a resend, a balance that did not drop) as `platform.broadcast_unknown{artifact}` with the document id, never retried. **Implemented (DP6-02).** | `CreditsError` |
+| `withdrawals(identity)` | async | The identity's withdrawal documents on Platform (`identityRecent`), the most recently updated first, at most 20: id, credits, `expected_duffs`, the address paid, `WithdrawalStatus` and the document's times (§5). Re-read on `Platform{Credits}`; a queued withdrawal moves on Platform's schedule, so the host also re-reads while one is not `Complete`. **Implemented (DP6-02).** | `CreditsError` |
 
 ### 2.9 Link stash and invitations (on `NetworkSession`)
 
@@ -541,7 +542,7 @@ entry. No call quotes a link in an error.
 
 **Done (DP5-01, Contract-Version 30, item 56):** `stash_link`, `stashed_links`, `take_stashed_link`,
 `forget_stashed_link`, `stash_invitation`, `pending_invitations` and `forget_invitation`. **Done (DP5-02,
-Contract-Version 35, item 62):** `invitation_status`, and the claim as `start_registration`'s `Invitation` funding
+Contract-Version 36, item 63):** `invitation_status`, and the claim as `start_registration`'s `Invitation` funding
 (§2.2); decisions in `docs/design/DP5-02-invitation-claim.md`.
 
 ### 2.10 Facade
@@ -568,7 +569,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: bf1d42775789625418ac4380920fefe28f5cc7d5f927124a74ae34c0b22a2132 version: 35 -->
+<!-- surface-sha256: 6fb3c52e0cad1be18183b88c60b024f52a16d72c4f373a15fec889b967cc52ba version: 36 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -782,6 +783,28 @@ pub struct WithdrawOutcome {
     pub credits: u64,
     pub expected_duffs: Option<u64>,
     pub remaining_credits: Option<u64>,
+    pub withdrawal: String,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WithdrawalStatus {
+    Queued,
+    Pooled,
+    Broadcasted,
+    Complete,
+    Expired,
+    Failed,
+    Unknown,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Withdrawal {
+    pub id: String,
+    pub credits: Option<u64>,
+    pub expected_duffs: Option<u64>,
+    pub to: Option<String>,
+    pub status: WithdrawalStatus,
+    pub created_at: Option<u64>,
+    pub updated_at: Option<u64>,
 }
 impl DashPay {
     pub fn cost_table(&self) -> Result<CostTable, CreditsError>;
@@ -793,6 +816,7 @@ impl DashPay {
     pub async fn resolve_top_up(&self, txid: String) -> Result<(), CreditsError>;
     pub async fn withdraw_quote(&self, identity: String, amount: WithdrawAmount) -> Result<WithdrawQuote, CreditsError>;
     pub async fn withdraw(&self, identity: String, to: String, amount: WithdrawAmount, grant: String) -> Result<WithdrawOutcome, CreditsError>;
+    pub async fn withdrawals(&self, identity: String) -> Result<Vec<Withdrawal>, CreditsError>;
 }
 // src/platform/dashpay.rs
 pub struct DashPay {
@@ -951,6 +975,8 @@ pub enum CreditsError {
     BelowMinimum { min: u64 },
     CoinsLocked,
     TopUpPending { txid: String },
+    WithdrawalOutOfRange { min: u64, max: u64 },
+    WithdrawalLanded { artifact: String },
     Platform(PlatformError),
 }
 impl CreditsError {
@@ -1685,7 +1711,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 | `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired`, `contact.scan_unverified`, `contact.no_username`, `contact.details_too_long` |
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
 | `AvatarError` | `avatar.too_large`, `avatar.unsupported`, `avatar.fetch_failed`, `avatar.hash_mismatch`, `avatar.upload_unconfigured` |
-| `CreditsError` | `credits.funding_insufficient`, `credits.below_minimum`, `credits.coins_locked`, `credits.top_up_pending` |
+| `CreditsError` | `credits.funding_insufficient`, `credits.below_minimum`, `credits.coins_locked`, `credits.top_up_pending`, `credits.withdrawal_out_of_range`, `credits.withdrawal_landed` |
 
 - `PlatformError` carries the m1 common codes (`invalid_argument`, `network_not_open`, `wallet_not_found`, `storage`,
   `internal`), unprefixed as in m1 §4. m1's common `not_implemented` is `platform.not_implemented{call}` here, so a
@@ -1749,8 +1775,14 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   For a registration, `needs_grant` shows in the row as `waiting: Authorize` (vault unlocked) or `Unlock` (locked).
 - **Credits.** A top-up spends Core duffs, so its shortfall is `credits.funding_insufficient{needed, available}` in
   duffs, not `platform.insufficient_credits` (credits, "top up your credits"). A cap hit is `platform.grant_exceeded`;
-  below `top_up_min_duffs` is `credits.below_minimum{min}`. A withdrawal larger than the balance is
-  `platform.insufficient_credits`. `credits.coins_locked` is `registration.coins_locked` for a top-up (a held-back coin
+  below `top_up_min_duffs` is `credits.below_minimum{min}`. A withdrawal larger than the balance less its fee
+  reserve is `platform.insufficient_credits{needed, available}` (credits); one outside what Platform takes is
+  `credits.withdrawal_out_of_range{min, max}` (credits, DP6-02). `credits.withdrawal_landed{artifact}` is a
+  withdrawal that does not go through because the identity's last withdrawal, whose outcome was unknown, did (its
+  document `artifact` read back; DP6-02 D24). Read before signing, nothing was sent and the grant is unredeemed; read
+  after (the two shared a nonce), this one was sent at a nonce now used and its grant is spent. The host says so and
+  offers no retry.
+  `credits.coins_locked` is `registration.coins_locked` for a top-up (a held-back coin
   the pinned asset-lock builder would select). `credits.top_up_pending{txid}` is an earlier top-up of the identity not
   applied yet: the host offers `resume_top_up(txid)`, never a second funding; when its `PendingTopUp` is
   `consumption_unknown`, or a resume answered `ConsumptionUnknown`, also "My credits arrived" (`resolve_top_up(txid)`).
@@ -1944,7 +1976,7 @@ The shapes are in §3. What they mean, where the name does not say:
 - **`RegistrationQuote`.** `total_duffs = lock_duffs + fee_duffs`; `grant` is the `PlatformOp{max_duffs, max_credits}`
   to ask for: `max_duffs` covers the lock and fee, `max_credits` the identity creation, the name and the profile.
   An invitation's quote has `lock_duffs` the invitation's funding, `fee_duffs`, `total_duffs`, `available_duffs`
-  and `max_duffs` 0, and `max_credits` with the request to the inviter (item 62).
+  and `max_duffs` 0, and `max_credits` with the request to the inviter (item 63).
 - **`GrantRequest`** (in every quote, and from `grant_request`): the caps of the `PlatformOp` grant an action needs,
   computed with the engine's own fee bound (E0-04 §4.2), so a host never sizes `max_credits` from `cost_table()`. The
   engine charges no more than it quoted; a quote that went stale (a fee change) is `platform.grant_exceeded`, and the
@@ -2060,7 +2092,11 @@ The shapes are in §3. What they mean, where the name does not say:
   top-up of this wallet funded is final and Platform's consumption of it unknown (`resolve_top_up`).
   **`StuckTopUpFunding`**: a step `stuck_top_up_fundings` lists; `identity_index` is `u32::MAX` for a step name it
   cannot parse and `identity` is `None` when the wallet holds no identity at that index. **`WithdrawQuote`**:
-  the credits taken, the fee in credits and the duffs expected.
+  the credits taken, the fee reserve in credits and the duffs expected (§2.8). **`WithdrawOutcome`**: `withdrawal` is
+  the withdrawal document's id, as `withdrawals` lists it. **`Withdrawal`**: one withdrawal document; `to` is `None`
+  when its script is no address of the network, `expected_duffs` when Platform's conversion refuses it.
+  **`WithdrawalStatus`**: the document's `status` (`Queued`, `Pooled`, `Broadcasted`, `Complete`, `Expired`,
+  `Failed`), `Unknown` for one this version does not know; `Failed` is terminal and Platform keeps the credits.
 - **`Counterparty`** is the record history and transaction records gain as `counterparty` (DP3-02, item 47); here
   it is also the inviter in `InvitationStatus::Valid`. In a history record its `username` comes from the contacts'
   username cache (filled in the background; a landing name sends `Platform{Contacts}`) and its `display_name` and
@@ -3019,9 +3055,37 @@ renames or reshapes them takes the next version bump:
     with the old revision kept (D16); `refresh_identities` fails as a whole when the wallet or the network goes (D9);
     a found identity's names count in `unverified` (D7).
 
-**From DP5-02** (version 35):
+**From DP6-02** (version 35):
 
-62. **The invitation claim (DP5-02 D1–D25, version 35).** `invitation_status` is implemented (§2.9), and
+62. **Withdrawals (DP6-02 D1–D12, version 35).** `withdraw_quote` and `withdraw` are implemented; new: `withdrawals`,
+    the records `Withdrawal` and `WithdrawalStatus`, `WithdrawOutcome.withdrawal`, and the code
+    `credits.withdrawal_out_of_range{min, max}` and `credits.withdrawal_landed{artifact}`. E0-13's bindings regenerate for them; dwcli gains
+    `identity withdraw` (with `--quote-only` for the quote) and `identity withdrawals`. Decisions in
+    `docs/design/DP6-02-withdraw-credits.md`.
+    - **Platform's figures.** The range is Drive's structure check at the network's version (`min_withdrawal_amount`,
+      plus the Core fee from structure v2, up to `max_withdrawal_amount`), raised so the payout clears Core's P2PKH
+      dust threshold. The reserve is the larger of dpp's `calculate_min_required_fee` (400,000,000 credits at every
+      known fee version) and a bound on the metered fee (the withdrawal document at Drive's estimate, doubled as the
+      cost table's, the threshold-signing charge and 20,000,000 credits of identity operations), which a test holds
+      under the minimum at every version. `expected_duffs` is dpp's `try_into_asset_unlock_base_transaction_info` on
+      the document Drive writes.
+    - **The key.** A CRITICAL ECDSA TRANSFER key, never OWNER (Platform refuses an OWNER key with an output script of
+      the user's choice). The transition is dpp's `try_from_identity` with the SDK's choices; a test holds its bytes
+      equal to the SDK's call.
+    - **Unknown outcomes.** The document id is fixed by the nonce and the script (Drive's entropy), so a failure after
+      signing reads it back; `broadcast_unknown{artifact}` names it. There is no journal row: the host reads
+      `withdrawals` before it offers another withdrawal.
+    - **Executed, and the nonce (DP6-02 D24, review r1 m1–m3).** A withdrawal is executed only on a proved balance at
+      least the amount below the one read under the identity's lock, or its document read back with the amount; a
+      refusal is read back too. The nonce is never the SDK cache's: the session's next withdrawal of the identity
+      first reads the unconfirmed one's documents back (`credits.withdrawal_landed` when one went through), then
+      signs at its nonce while Platform's nonce rule would take it, so at most one of them executes; at a nonce
+      signed more than once only the document counts. `Withdrawal.credits` is `Option` (`None` when the document's
+      amount does not read).
+
+**From DP5-02** (version 36):
+
+63. **The invitation claim (DP5-02 D1–D25, version 36).** `invitation_status` is implemented (§2.9), and
     `start_registration` runs `Invitation{link_id}` funding. No signature, type or §4 code changes; §3's listing
     gains `impl InvitationNet for SdkInvitations`, the crate-private network seam of the invitation checks. Decisions
     in `docs/design/DP5-02-invitation-claim.md`.
@@ -3037,10 +3101,10 @@ renames or reshapes them takes the next version bump:
       wallet with no coins and no sync claims. `KeysPrepared → IdentityRegistered` is the library's
       `claim_invitation`, under the identity step's permit, after the same wait: an identity at the row's index is
       adopted (a restored row, or a claim whose answer was lost); a link gone from the stash fails
-      `invitation.expired`, not retryable; a sealed link while locked waits for Unlock; a lock consumed and not by this seed's keys fails
-      `invitation.claimed`, not retryable (another device, or the inviter's reclaim), once the engine's own lookup
-      finds no identity there or one with other keys (a failed lookup waits); a stale islock before the
-      ChainLock waits for it. Then DP1-02's name and profile steps, unchanged.
+      `invitation.expired`, not retryable; a sealed link while locked waits for Unlock; a lock consumed and not by
+      this seed's keys fails `invitation.claimed`, not retryable (another device, or the inviter's reclaim), once
+      the engine's own lookup finds no identity there or one with other keys (a failed lookup waits); a stale
+      islock before the ChainLock waits for it. Then DP1-02's name and profile steps, unchanged.
     - **The link** stays stashed until the identity is recorded, then is deleted; `invitation_status` reads
       `Expired` after that.
     - **The request to the inviter.** An invitation with an inviter passes `ProfileCreated` and sends DP2-02's

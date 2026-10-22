@@ -332,6 +332,11 @@ pub enum IdentityCmd {
         #[arg(long)]
         quote_only: bool,
     },
+    /// The identity's recent withdrawals on Platform, newest first.
+    Withdrawals {
+        #[command(flatten)]
+        who: Who,
+    },
     /// Credit costs and thresholds.
     Costs,
 }
@@ -797,6 +802,8 @@ fn credits_params(e: &CreditsError) -> Value {
         CreditsError::BelowMinimum { min } => json!({"min": min}),
         CreditsError::CoinsLocked => json!({}),
         CreditsError::TopUpPending { txid } => json!({"txid": txid}),
+        CreditsError::WithdrawalOutOfRange { min, max } => json!({"min": min, "max": max}),
+        CreditsError::WithdrawalLanded { artifact } => json!({"artifact": artifact}),
         CreditsError::Platform(p) => platform_params(p),
     }
 }
@@ -1636,6 +1643,10 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
             let outcome = ctx.block_on(dp.withdraw(identity, to, amount, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
+        IdentityCmd::Withdrawals { who } => {
+            let identity = who.or_main(&dp)?;
+            out(ctx.block_on(dp.withdrawals(identity))?)
+        }
         IdentityCmd::Costs => out(dp.cost_table()?),
     }
 }
@@ -2309,6 +2320,15 @@ mod tests {
             NOT_IDENTIFIER,
         ),
         ("identity top-up-pending", r#"{"ok":true,"result":[]}"#),
+        (
+            "identity withdraw --identity I --credits 5 --to yA",
+            NOT_IDENTIFIER,
+        ),
+        (
+            "identity withdraw --identity I --all --quote-only",
+            NOT_IDENTIFIER,
+        ),
+        ("identity withdrawals --identity I", NOT_IDENTIFIER),
         ("identity top-up-stuck", r#"{"ok":true,"result":[]}"#),
         (
             "identity top-up-resume abababababababababababababababababababababababababababababababab",
@@ -2431,6 +2451,7 @@ mod tests {
             "DashPay.withdraw_quote",
         ),
         ("identity costs", "DashPay.cost_table"),
+        ("identity withdrawals --identity I", "DashPay.withdrawals"),
         ("identity top-up-pending", "DashPay.pending_top_ups"),
         ("identity top-up-stuck", "DashPay.stuck_top_up_fundings"),
         (

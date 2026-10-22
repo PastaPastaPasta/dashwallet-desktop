@@ -43,6 +43,7 @@
     "allow-credits-resolve-top-up",
     "allow-credits-withdraw-quote",
     "allow-credits-withdraw",
+    "allow-credits-withdrawals",
     "allow-grant-request",
     "allow-dispatch-status",
     "allow-resolve-stuck-funding",

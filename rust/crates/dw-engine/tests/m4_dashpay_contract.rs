@@ -128,6 +128,10 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.avatar",
     "NetworkSession.load_contact_pictures",
     "NetworkSession.set_load_contact_pictures",
+    // DP6-02: withdrawals.
+    "DashPay.withdraw_quote",
+    "DashPay.withdraw",
+    "DashPay.withdrawals",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -167,7 +171,8 @@ const FACADE: &[&str] = &[
 /// their tests (DP4-01), the names checks (DP1-08), and the avatar
 /// pipeline's guard, decoder, cache and tests (DP4-02), the mobile
 /// wallets' dHash (DP4-03 D27), the Identities page's reads with their
-/// tests (DP6-01), and the invitation checks with their tests (DP5-02).
+/// tests (DP6-01), the withdrawal with its network seam and tests (DP6-02),
+/// and the invitation checks with their tests (DP5-02).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -231,6 +236,8 @@ const NOT_FACADE: &[&str] = &[
     "trust_tests.rs",
     "users.rs",
     "users_tests.rs",
+    "withdrawal.rs",
+    "withdrawal_tests.rs",
 ];
 
 const BEGIN: &str = "<!-- BEGIN GENERATED: dashpay-surface -->";
@@ -1021,6 +1028,10 @@ fn error_codes_match_the_contract() {
             CreditsError::TopUpPending {
                 txid: String::new(),
             },
+            CreditsError::WithdrawalOutOfRange { min: 0, max: 0 },
+            CreditsError::WithdrawalLanded {
+                artifact: String::new(),
+            },
         ],
         CreditsError::code,
     );
@@ -1431,11 +1442,15 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.resume_top_up(s(), s()).await.map(drop),
             dp.resolve_top_up(s()).await.map(drop),
             dp.stuck_top_up_fundings().await.map(drop),
+            // DP6-02's.
+            dp.withdraw_quote(s(), WithdrawAmount::All).await.map(drop),
+            dp.withdraw(s(), s(), WithdrawAmount::All, s())
+                .await
+                .map(drop),
+            dp.withdrawals(s()).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }
-        c.stub(dp.withdraw_quote(s(), WithdrawAmount::All).await);
-        c.stub(dp.withdraw(s(), s(), WithdrawAmount::All, s()).await);
     });
 
     let mut want: BTreeSet<String> = facade_calls().into_keys().collect();

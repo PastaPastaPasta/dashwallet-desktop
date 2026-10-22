@@ -21,7 +21,7 @@ Platform is read **at the pin**, PastaPastaPasta/platform `82fb33aff8`, which ca
 | Kill matrix, statuses, zero duffs, mutants | `registration_tests/invitation.rs` |
 | Signing equality with Platform's own construction | `rust/crates/dw-engine/tests/dp5_02_claim_signing.rs` |
 | Test-only `invite create` | `dw-engine/src/test_support.rs` (`create_invitation`), dwcli feature `invitation-create-test`, build check `rust/bin/dwcli/tests/invite_create_gate.rs` |
-| Contract | [m4 §2.2, §2.9, §7 item 62](../contracts/m4-dashpay-engine.md), Contract-Version 35 |
+| Contract | [m4 §2.2, §2.9, §7 item 63](../contracts/m4-dashpay-engine.md), Contract-Version 36 |
 
 ## 1. Status
 
@@ -155,7 +155,7 @@ No new §4 code: `invitation.invalid`, `invitation.claimed`, `invitation.expired
 `name.unavailable_for_invite`, `registration.funding_insufficient`, `platform.*` already exist. So no Swift
 `engineCodes` change; the contract text changes, so the Swift T0 suite runs.
 
-m4 delta, Contract-Version 34 → 35, item 62:
+m4 delta, Contract-Version 35 → 36, item 63:
 - §2.9 `invitation_status` implemented (no longer a stub), with §1's detection and §2's preview rules.
 - §2.2 registration: `Invitation` funding is implemented; its quote (§3 step 5) and refusals (§3 steps 1–4); an
   `Invitation` row runs (no longer `invitation.invalid` when read); its phases; the request (§4).
