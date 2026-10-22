@@ -56,7 +56,14 @@ pub struct XpubKey(pub ExtendedPubKey);
 impl Ord for XpubKey {
     fn cmp(&self, other: &Self) -> Ordering {
         let fields = |x: &ExtendedPubKey| {
-            (x.network, x.depth, x.parent_fingerprint, x.child_number, x.public_key, x.chain_code)
+            (
+                x.network,
+                x.depth,
+                x.parent_fingerprint,
+                x.child_number,
+                x.public_key,
+                x.chain_code,
+            )
         };
         fields(&self.0).cmp(&fields(&other.0))
     }
@@ -147,10 +154,7 @@ mod tests {
 
     use super::*;
 
-    /// Dash has no taproot: a taproot pair is kept in `unknown` and written
-    /// back unchanged (upstream parsed these into `tap_*` fields).
-    #[test]
-    fn taproot_pairs_are_carried_as_unknown() {
+    fn one_in_one_out() -> PartiallySignedTransaction {
         let tx = Transaction {
             version: 2,
             lock_time: 0,
@@ -166,7 +170,22 @@ mod tests {
             }],
             special_transaction_payload: None,
         };
-        let mut psbt = PartiallySignedTransaction::from_unsigned_tx(tx).unwrap();
+        PartiallySignedTransaction::from_unsigned_tx(tx).unwrap()
+    }
+
+    /// Where `needle` first occurs in `bytes`.
+    fn at(bytes: &[u8], needle: &[u8]) -> usize {
+        bytes
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .unwrap()
+    }
+
+    /// Dash has no taproot: a taproot pair is kept in `unknown` and written
+    /// back unchanged (upstream parsed these into `tap_*` fields).
+    #[test]
+    fn taproot_pairs_are_carried_as_unknown() {
+        let mut psbt = one_in_one_out();
         // PSBT_IN_TAP_KEY_SIG and PSBT_OUT_TAP_INTERNAL_KEY.
         let tap_in = raw::Key {
             type_value: 0x13,
@@ -185,5 +204,73 @@ mod tests {
         assert_eq!(back.serialize(), bytes);
         assert_eq!(back.inputs[0].unknown[&tap_in], vec![7; 64]);
         assert_eq!(back.outputs[0].unknown[&tap_out], vec![8; 32]);
+    }
+
+    /// The maps keyed by `SigKey` and `XpubKey` write their pairs in the
+    /// order of the derives #1144 removed, not in the keys' byte order: an
+    /// uncompressed key before a compressed one, and an xpub's key before
+    /// its chain code (BL-187 D7).
+    #[test]
+    fn signatures_and_xpubs_keep_the_pre_1144_order() {
+        use dashcore::Network;
+        use dashcore::crypto::ecdsa;
+        use dashcore::secp256k1::{self, Message, SecretKey, ecdsa as secp_ecdsa};
+        use dashcore::sighash::EcdsaSighashType;
+        use key_wallet::bip32::{ChainCode, ExtendedPrivKey};
+
+        let inner = |n: u8| {
+            secp256k1::PublicKey::from_secret_key(&SecretKey::from_secret_bytes([n; 32]).unwrap())
+        };
+        // libsecp256k1 orders keys by their compressed encoding.
+        let mut by_point: Vec<_> = (1..=4).map(inner).collect();
+        by_point.sort_by_key(|k| k.serialize());
+        let expected = [
+            PublicKey::new_uncompressed(by_point[1]),
+            PublicKey::new_uncompressed(by_point[3]),
+            PublicKey::new(by_point[0]),
+            PublicKey::new(by_point[2]),
+        ];
+
+        let mut psbt = one_in_one_out();
+        let sig = secp_ecdsa::sign(
+            Message::from_digest([1; 32]),
+            &SecretKey::from_secret_bytes([1; 32]).unwrap(),
+        );
+        for pk in [expected[2], expected[1], expected[3], expected[0]] {
+            psbt.inputs[0].partial_sigs.insert(
+                SigKey(pk),
+                ecdsa::Signature {
+                    sig,
+                    hash_ty: EcdsaSighashType::All,
+                },
+            );
+        }
+
+        // An xpub encodes Testnet and Regtest alike, and reads back as Testnet.
+        let master = ExtendedPrivKey::new_master(Network::Testnet, &[9; 32]).unwrap();
+        let mut a = ExtendedPubKey::from_priv(&master);
+        let mut b = a;
+        b.public_key = inner(5);
+        if a.public_key.serialize() > b.public_key.serialize() {
+            std::mem::swap(&mut a.public_key, &mut b.public_key);
+        }
+        a.chain_code = ChainCode::from_bytes([0xee; 32]);
+        b.chain_code = ChainCode::from_bytes([0x11; 32]);
+        let source = (master.fingerprint(), Default::default());
+        psbt.xpub.insert(XpubKey(b), source.clone());
+        psbt.xpub.insert(XpubKey(a), source);
+
+        let bytes = psbt.serialize();
+        let sigs: Vec<usize> = expected
+            .iter()
+            .map(|pk| at(&bytes, &pk.to_bytes()))
+            .collect();
+        assert!(sigs.is_sorted(), "{sigs:?}");
+        assert!(a.encode() > b.encode(), "the byte order would put b first");
+        assert!(at(&bytes, &a.encode()) < at(&bytes, &b.encode()));
+
+        let back = PartiallySignedTransaction::deserialize(&bytes).unwrap();
+        assert_eq!(back, psbt);
+        assert_eq!(back.serialize(), bytes);
     }
 }

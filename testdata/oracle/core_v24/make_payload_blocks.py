@@ -45,8 +45,9 @@ def main(src, dst):
             t = txs.get(txid)
             if t is None or t["core"]["type"] not in PAYLOAD_KEYS:
                 continue
-            key = PAYLOAD_KEYS[t["core"]["type"]]
-            special.append({"txid": txid, "type": t["core"]["type"], "payload": t["core"][key]})
+            core = t["core"]
+            special.append({"txid": txid, "type": core["type"],
+                            "payload": core[PAYLOAD_KEYS[core["type"]]]})
         if not special:
             sys.exit(f"{source}: no provider transaction")
         out.append({"source": source, "carries": carries, "height": b["height"],

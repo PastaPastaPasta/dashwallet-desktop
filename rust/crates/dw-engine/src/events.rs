@@ -926,3 +926,126 @@ impl PumpTarget for SessionPump {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use dashcore::hashes::Hash;
+    use dashcore::{BlockHash, OutPoint, Transaction, TxIn};
+    use key_wallet::account::StandardAccountType;
+    use key_wallet::managed_account::transaction_record::{
+        TransactionDirection, TransactionRecord,
+    };
+    use key_wallet::transaction_checking::{BlockInfo, TransactionType};
+
+    use super::*;
+
+    struct NoEvents;
+
+    impl EventSink for NoEvents {
+        fn emit(&self, _: EngineEvent) {}
+    }
+
+    const W: WalletId = WalletId([7; 32]);
+
+    fn tx(n: u8) -> Transaction {
+        Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::from_byte_array([n; 32]), 0),
+                ..Default::default()
+            }],
+            output: Vec::new(),
+            special_transaction_payload: None,
+        }
+    }
+
+    fn in_block(t: &Transaction, height: u32) -> TransactionRecord {
+        TransactionRecord::new(
+            t.clone(),
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            TransactionContext::InBlock(BlockInfo::new(height, BlockHash::all_zeros(), 0)),
+            TransactionType::Standard,
+            TransactionDirection::Incoming,
+            Vec::new(),
+            Vec::new(),
+            1_000,
+        )
+    }
+
+    fn truncated(
+        height: u32,
+        removed: Vec<Txid>,
+        unconfirmed: Vec<Txid>,
+        balance: u64,
+    ) -> WalletEvent {
+        WalletEvent::ChainTruncated {
+            wallet_id: W.0,
+            height,
+            txids: removed,
+            unconfirmed_txids: unconfirmed,
+            restored_outpoints: Vec::new(),
+            balance: WalletCoreBalance::new(balance, 0, 0, 0),
+            account_balances: BTreeMap::new(),
+        }
+    }
+
+    /// dash-spv truncated the wallet at a fork: the hub's history, heights and balance
+    /// follow it, and hosts hear of each.
+    #[test]
+    fn a_fork_truncation_lowers_the_wallet_and_its_history() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        let (kept, removed, locked) = (tx(1), tx(2), tx(3));
+        hub.apply_wallet_event(&WalletEvent::BlockProcessed {
+            wallet_id: W.0,
+            height: 110,
+            chain_lock: None,
+            inserted: vec![
+                in_block(&kept, 100),
+                in_block(&removed, 108),
+                in_block(&locked, 109),
+            ],
+            updated: Vec::new(),
+            matured: Vec::new(),
+            balance: WalletCoreBalance::new(3_000, 0, 0, 0),
+            account_balances: BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        });
+        hub.apply_wallet_event(&WalletEvent::SyncHeightAdvanced {
+            wallet_id: W.0,
+            height: 110,
+        });
+        hub.pump.take_wallet_marks();
+
+        hub.apply_wallet_event(&truncated(
+            105,
+            vec![removed.txid()],
+            vec![locked.txid()],
+            2_000,
+        ));
+
+        let state = hub.wallet_state(&W).unwrap();
+        assert_eq!((state.synced_height, state.processed_height), (105, 105));
+        assert_eq!(state.balances().unwrap().confirmed, 2_000);
+        assert!(hub.history.get(&W, &removed.txid()).is_none());
+        let entry = hub.history.get(&W, &locked.txid()).unwrap();
+        assert_eq!(entry.context, TransactionContext::Mempool);
+        assert!(entry.instant_locked);
+        assert!(hub.history.get(&W, &kept.txid()).is_some());
+        let (balances, history) = hub.pump.take_wallet_marks();
+        assert!(balances.contains(&W));
+        let Some(TxidSet::Some(changed)) = history.get(&W) else {
+            panic!("history marks: {history:?}");
+        };
+        assert!(changed.contains(&removed.txid()) && changed.contains(&locked.txid()));
+
+        // Truncated below the first scanned block: the balance is unknown again, so
+        // hosts hear of it although the amount didn't change.
+        hub.apply_wallet_event(&truncated(0, Vec::new(), Vec::new(), 2_000));
+        assert!(hub.wallet_state(&W).unwrap().balances().is_none());
+        assert!(hub.pump.take_wallet_marks().0.contains(&W));
+    }
+}
