@@ -1050,6 +1050,13 @@ impl Ledger {
             // DEC-171 (3): what this build cannot read, it does not delete.
             return Some("the registration was written by a newer version");
         }
+        // DP5-03 D24: a claim refused for the seed's other identity stays
+        // until the discovery records an identity, which DP5-02 D7 then
+        // refuses claims for. Discarded before, it frees the refused index
+        // for the next claim, which Platform refuses and charges again.
+        if self.identities.is_empty() && super::registration_flow::claim_found_identity(row) {
+            return Some("the claim's refusal stands until the wallet's identity is found");
+        }
         self.committed(row)
             .then_some("the registration's funds are committed")
     }

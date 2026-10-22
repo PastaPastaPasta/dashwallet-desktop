@@ -424,10 +424,14 @@ pub(crate) fn is_duplicate_keys(e: &dash_sdk::Error) -> bool {
 /// it comes only for a lock partially consumed whose used tags hold this
 /// transition's signable bytes, after the fully consumed check. Only an
 /// IdentityCreate Platform refused and charged writes a tag: its identifier,
-/// its keys' structure or proof of possession (`advanced_structure` v0), or
-/// its keys already in state (`state` v0, v1). So the identical claim was
-/// refused and did not land; of those refusals only the keys in state can
-/// meet a claim whose identifier, keys and signatures the library builds.
+/// its keys' structure or proof of possession (`advanced_structure` v0), its
+/// keys already in state (`state` v0, v1), or, in `state` v1, a key's
+/// contract bounds or one already expired. So the identical claim was
+/// refused and did not land, and is refused again. Of those refusals only
+/// the keys in state can meet a claim whose identifier, keys and signatures
+/// the library builds: its keys carry no expiry, and their DashPay contract
+/// bounds hold on a network with the DashPay contract (another network's
+/// refusal is mislabelled, not stranded: it never passes).
 pub(crate) fn is_claim_replay(e: &dash_sdk::Error, outpoint: &OutPoint) -> bool {
     use dpp::consensus::ConsensusError as C;
     use dpp::consensus::basic::BasicError;
@@ -1145,10 +1149,10 @@ pub(crate) fn claim_discard_refused(
 }
 
 /// A claim row stopped on `invitation.already_has_identity` (DP5-03 D24):
-/// another identity of the seed holds the index the wallet's claims use,
-/// and the discovery has not found it yet. While one is on file a claim's
-/// start is refused: Platform would refuse the same keys again, and charge
-/// the voucher again.
+/// the seed has an identity the discovery has not recorded yet. While one is
+/// on file a claim's start is refused, as DP5-02 D7 refuses it once that
+/// identity is recorded (the next claim, at the next index, would make the
+/// seed a second identity), and the row is not discarded until then.
 pub(crate) fn claim_found_identity(row: &RegistrationRow) -> bool {
     !row.retryable && row.error.as_deref() == Some(InvitationError::AlreadyHasIdentity.code())
 }

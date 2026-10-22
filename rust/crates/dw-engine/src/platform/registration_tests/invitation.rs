@@ -1064,6 +1064,9 @@ fn a_claim_row_is_discarded_only_while_nothing_landed() {
     let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
     f.drive(&lib, draft, Some(claim_lease(&f)), true);
     assert!(!held(&f, &link_id), "let go once failed for good");
+    // D24: kept while it is the only sign of the seed's identity.
+    assert_eq!(discard_code(&f, &lib, draft), Err("invalid_argument"));
+    lib.w().identities.push((0, OTHER.into()));
     assert_eq!(discard_code(&f, &lib, draft), Ok(()));
 
     // The identity registered, the name not yet: refused.
@@ -1227,9 +1230,9 @@ fn duplicate_keys_are_recognised_in_every_shape() {
 }
 
 /// DP5-03 D24: a claim refused for the seed's other identity refuses the
-/// next claim's start, before a row or a call, until it is discarded. A Core
-/// registration is not refused by it, nor is a claim by a row that ends
-/// another way.
+/// next claim's start, of any link, before a row, a call or the grant's
+/// use. A Core registration is not refused by it, nor is a claim by a row
+/// that ends another way.
 #[test]
 fn a_claim_refused_for_its_keys_refuses_the_next_claim() {
     let f = fixture(false);
@@ -1240,8 +1243,7 @@ fn a_claim_refused_for_its_keys_refuses_the_next_claim() {
         .push_back(invitation::ClaimScript::DuplicateKeys);
     let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
     f.drive(&lib, draft, Some(claim_lease(&f)), true);
-    let start = |req: RegistrationRequest, duffs: u64| {
-        let grant = f.grant(duffs, 10 * COIN * 1000, Credential::None);
+    let start_with = |req: RegistrationRequest, grant: String| {
         f.engine
             .block_on(registration::start(
                 &f.session,
@@ -1252,13 +1254,20 @@ fn a_claim_refused_for_its_keys_refuses_the_next_claim() {
             ))
             .map_err(|e| e.code())
     };
-    assert_eq!(
-        start(invite(&link_id), 0),
-        Err("invitation.already_has_identity")
-    );
+    let start =
+        |req: RegistrationRequest| start_with(req, f.grant(0, 10 * COIN * 1000, Credential::None));
+    // Any link's claim, and the refusal leaves the grant.
+    let other = stash_other(&f);
+    let grant = f.grant(0, 10 * COIN * 1000, Credential::None);
+    for link in [&link_id, &other] {
+        assert_eq!(
+            start_with(invite(link), grant.clone()),
+            Err("invitation.already_has_identity")
+        );
+    }
     assert_eq!((f.rows().len(), lib.w().claims), (1, 1));
     // A Core registration's refusal is its own (the grant has no duffs).
-    assert_eq!(start(request(PLAIN), 0), Err("platform.grant_exceeded"));
+    assert_eq!(start(request(PLAIN)), Err("platform.grant_exceeded"));
     let fail = |code: &str, retryable: bool| {
         let row = f.row(draft);
         let failed = RegistrationChange {
@@ -1272,9 +1281,9 @@ fn a_claim_refused_for_its_keys_refuses_the_next_claim() {
     };
     // A row that may run again is the start's blocker before the gate.
     fail("invitation.already_has_identity", true);
-    assert_eq!(start(invite(&link_id), 0), Err("registration.in_progress"));
+    assert_eq!(start(invite(&link_id)), Err("registration.in_progress"));
     fail("invitation.expired", false);
-    let started = start(invite(&link_id), 0).expect("another code refuses nothing");
+    let started = start_with(invite(&link_id), grant).expect("another code refuses nothing");
     f.settle(started.parse().unwrap());
 }
 
