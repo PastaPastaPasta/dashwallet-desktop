@@ -1,9 +1,9 @@
 # MG masternodes engine contract (`dw-engine` facade)
 
-Contract-Version: 6
+Contract-Version: 7
 
 Status: **draft**, 2026-10-17 (ROADMAP MG-03; version 2 after the Sol r1 review: D23–D28; version 3 after Sol r2: D30–D32; version 4 adds MG-04's ProTx owner flows, §2.3, citing
-[`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on; version 5, after MG-04's r2 review, adds `operation` to `masternodes.protx_refused`; version 6 adds MG-04b slice 1a's shared-masternode sessions, §2.4, citing [`MG-04b-shared-masternodes.md`](../design/MG-04b-shared-masternodes.md)'s D-rows as "MG-04b D1" and so on). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
+[`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on; version 5, after MG-04's r2 review, adds `operation` to `masternodes.protx_refused`; version 6 adds MG-04b slice 1a's shared-masternode sessions, §2.4, citing [`MG-04b-shared-masternodes.md`](../design/MG-04b-shared-masternodes.md)'s D-rows as "MG-04b D1" and so on; version 7, after the slice's validator review, binds `lock_shared_terms` to a revision and `approve_shared` to a consent hash, and adds `SharedSession.consent_hash`, MG-04b D56). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
 the changes in §1 below.
@@ -147,9 +147,13 @@ Refusals, in order (MG-04b §7): arguments (`invalid_argument`), `wallet_not_fou
 `lock_shared_terms`, `approve_shared` and `preview_update_share`; `can_send` false for `sign_shared_funding`; `field:
 "service"` for a coordinator service that isn't IPv4, MG-04b D5), the list (`masternodes.list_unavailable`,
 `masternodes.shared_too_early`, `masternodes.shared_registration_unknown`), the session
-(`masternodes.shared_session_not_found`, `masternodes.in_flight`, `masternodes.shared_stage{stage}`), the message
+(`masternodes.shared_session_not_found`, `masternodes.in_flight`, `masternodes.shared_stage{stage}`; then, for lock and
+approve, `masternodes.shared_message{reason: "conflict"}` when the session isn't the copy the caller reviewed,
+MG-04b D56; then, for lock, approve and sign, `shared_stage{stage: "dead"}` when a reserved input is no longer this
+session's locked, unspent coin, MG-04b D17, D50), the message
 (`masternodes.shared_message{reason, share}`), Core's rules (`masternodes.protx_refused{reason}`, Core's reasons
-verbatim), the consent checks (`masternodes.shared_funding_mismatch{reason, needed}`), then the lease (`Platform`)
+verbatim), the consent checks (`masternodes.shared_funding_mismatch{reason, needed}`; at lock the fee floor's
+`fee_low` before the coordinator's own-side checks, MG-04b §3.1 step 3), then the lease (`Platform`)
 and the funding's `send.*`. No refusal repeats pasted text (MG-00 D36). Every call that changes a session sends §6's
 event. A session's coins are locked from the save that records its contribution until the session is discarded or
 settles (`confirmed`, `conflicted`, `dead`); its keys count as in use for §2.3's registrations too.
@@ -164,11 +168,11 @@ settles (`confirmed`, `conflicted`, `dead`); its keys count as in use for §2.3'
 | `import_shared_message(wallet: WalletId, text: String, target: Option<String>)` | async | Applies a pasted or opened message by MG-04b §3.0's table: a new participant session from an Invitation (`invited`, no coin touched), or the next copy of a held one; a re-pasted copy changes nothing (`changed: false`). Signs nothing. In 1a a sigs envelope, a standby or a targeted bare array is `unsupported`; a bare array without a target is `shared_message{reason: "parse"}`. **Implemented.** | `MasternodesError` |
 | `join_shared(wallet: WalletId, session: String, request: JoinSharedRequest)` | async | Participant, `invited`: fills the named share (or the single open one), picks its owner key, issues its refund address, locks coins for the share, records its contribution, returns the Details. **Implemented.** | `MasternodesError` |
 | `shared_message(wallet: WalletId, session: String)` | async | `SharedMessage`: the message to copy now, its code and Core's file name (`shared-mn-session-<CODE>.json`). **Implemented.** | `MasternodesError` |
-| `lock_shared_terms(wallet: WalletId, session: String, grant: String)` | async | Coordinator, `draft` with every row and contribution in (else `shared_stage{stage: "incomplete"}`): freezes the registration, runs MG-04b §3.1 step 3's checks and the fee floor (`shared_funding_mismatch{reason: "fee_low", needed}`), checks its reservation, signs its shares' consent (charged 0), returns Locked Terms. **Implemented.** | `MasternodesError` |
+| `lock_shared_terms(wallet: WalletId, session: String, revision: u32, grant: String)` | async | Coordinator, `draft`, at `revision`: the `SharedSession.revision` the coordinator reviewed, from the session record (`shared_session`, or `mn shared show`); another revision now (a reply absorbed since) is `shared_message{reason: "conflict"}` (MG-04b D56). Then every row and contribution in (else `shared_stage{stage: "incomplete"}`): freezes the registration, runs MG-04b §3.1 step 3's checks and the fee floor (`shared_funding_mismatch{reason: "fee_low", needed}`), checks its reservation, signs its shares' consent (charged 0), returns Locked Terms. **Implemented.** | `MasternodesError` |
 | `unlock_shared_terms(wallet: WalletId, session: String)` | async | Coordinator: back to `draft` before `combined`, the approvals dropped, `revision` + 1. **Implemented.** | `MasternodesError` |
-| `approve_shared(wallet: WalletId, session: String, grant: String)` | async | Participant, `signing`: MG-04b §4's checks on the frozen registration against its recorded side, then its shares' consent signatures (charged 0), returns the Approval; approving again returns the same. **Implemented.** | `MasternodesError` |
+| `approve_shared(wallet: WalletId, session: String, consent_hash: String, grant: String)` | async | Participant, `signing`, of `consent_hash`: the `SharedSession.consent_hash` the participant reviewed, from the session record, exactly as it shows it; another one now (a re-locked copy imported since, MG-04b M-1 case 2) is `shared_message{reason: "conflict"}` and signs nothing (MG-04b D56). Then MG-04b §4's checks on the frozen registration against its recorded side, then its shares' consent signatures (charged 0), returns the Approval; approving again returns the same. **Implemented.** | `MasternodesError` |
 | `sign_shared_funding(wallet: WalletId, session: String, grant: String)` | async | Participant, `combined`: refuses `unsupported` while `can_send` is false. Otherwise §4's checks and every approval verified, then its inputs signed (charged its debit, refunded if signing fails), `out_at` written durably with the signed copy before anything returns, and the Signed Contribution returned. **Implemented** (refusing at the pin). | `MasternodesError` |
-| `discard_shared_session(wallet: WalletId, session: String)` | async | Deletes a session nothing of which may be out and unlocks its coins; one with `out_at` set is `shared_stage` (MG-04b D17). **Implemented.** | `MasternodesError` |
+| `discard_shared_session(wallet: WalletId, session: String)` | async | Deletes a session nothing of which may be out and unlocks its coins; one with `out_at` set is `shared_stage` (MG-04b D17). Both read the stored row, so a session whose envelope no longer parses can be discarded (MG-04b D57). **Implemented.** | `MasternodesError` |
 | `preview_update_share(wallet: WalletId, request: UpdateShareRequest)` | async | `UpdateSharePreview`: the ProUpShareTx this wallet would build for one of its shares of a confirmed registration of its sessions, Core's §5.1 rules run on it, its fee. `share_not_mine`, `shared_too_early` (tip ≤ the registration's height, or the masternode not in the synced list, MG-04b m-16), `shared_registration_unknown`. Issues, locks and signs nothing. **Implemented.** | `MasternodesError` |
 
 ## 3. Surface (generated)
@@ -177,7 +181,7 @@ Generated by `mn_masternodes_contract.rs` from the facade's source files; `DW_BL
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: masternodes-surface -->
-<!-- surface-sha256: 107bdb00b8a08fe080fa5aef27dd12c7150b3d088aadae1680e09e5b1de25df6 version: 6 -->
+<!-- surface-sha256: 602ecdfc8ac2789bb86e5b1c418b88e99142a87e1be1d6f37ea2b45574a53834 version: 7 -->
 
 ```rust
 // src/masternodes/errors.rs
@@ -603,9 +607,9 @@ impl Masternodes {
     pub async fn import_shared_message(&self, wallet: WalletId, text: String, target: Option<String>) -> Result<SharedImport, MasternodesError>;
     pub async fn join_shared(&self, wallet: WalletId, session: String, request: JoinSharedRequest) -> Result<SharedOutcome, MasternodesError>;
     pub async fn shared_message(&self, wallet: WalletId, session: String) -> Result<SharedMessage, MasternodesError>;
-    pub async fn lock_shared_terms(&self, wallet: WalletId, session: String, grant: String) -> Result<SharedOutcome, MasternodesError>;
+    pub async fn lock_shared_terms(&self, wallet: WalletId, session: String, revision: u32, grant: String) -> Result<SharedOutcome, MasternodesError>;
     pub async fn unlock_shared_terms(&self, wallet: WalletId, session: String) -> Result<SharedOutcome, MasternodesError>;
-    pub async fn approve_shared(&self, wallet: WalletId, session: String, grant: String) -> Result<SharedOutcome, MasternodesError>;
+    pub async fn approve_shared(&self, wallet: WalletId, session: String, consent_hash: String, grant: String) -> Result<SharedOutcome, MasternodesError>;
     pub async fn sign_shared_funding(&self, wallet: WalletId, session: String, grant: String) -> Result<SharedOutcome, MasternodesError>;
     pub async fn discard_shared_session(&self, wallet: WalletId, session: String) -> Result<(), MasternodesError>;
     pub async fn preview_update_share(&self, wallet: WalletId, request: UpdateShareRequest) -> Result<UpdateSharePreview, MasternodesError>;
@@ -739,6 +743,7 @@ pub struct SharedSession {
     pub role: SharedRole,
     pub stage: SharedStage,
     pub revision: u32,
+    pub consent_hash: Option<String>,
     pub rows: Vec<ShareRow>,
     pub terms: ShareTermsView,
     pub node_run_by: String,
@@ -863,8 +868,9 @@ a hash's shape (D23).
   `dead` among them), or to its role (`coordinator`, `participant`: the role the call needs); `replied` for a fee
   change after another party's reply (MG-04b D33), `incomplete` for a lock before every row and contribution is in.
 - `masternodes.shared_message{reason, share}`: a pasted or opened message is refused: `not_shared`, `too_large`,
-  `parse`, `network`, `other_session`, `terms_changed`, `older`, `conflict`, `bad_signature` (with `share`),
-  `not_participant`, `labels`, `row_changed`. Never the text (MG-00 D36).
+  `parse`, `network`, `other_session`, `terms_changed`, `older`, `conflict` (also a lock or approval of a copy other
+  than the session's current one, MG-04b D56), `bad_signature` (with `share`), `not_participant`, `labels`. A change
+  to this wallet's own row is `shared_funding_mismatch{reason: "row_changed"}`. Never the text (MG-00 D36).
 - `masternodes.shared_funding_mismatch{reason, needed}`: a consent or funding check of MG-04b §4 fails:
   `foreign_input`, `overdraw`, `row_changed`, `contribution_changed`, `time_lock`, `template`, `join_signature`,
   `not_own_inputs`, `fee_low` (with `needed`, the minimum fee in duffs).
@@ -962,6 +968,10 @@ Shared-masternode sessions (§2.4, MG-04b §3): `SharedStage`, derived on every 
 | `signing` | The terms are locked; approvals being gathered. |
 | `combined` | Every share approved; the funding inputs being signed. |
 | `funding_signed` | Some funding inputs signed. |
+
+`SharedSession.revision` is the envelope's revision and `consent_hash` the frozen registration's `consentHash` as
+the envelope shows it (`None` in a draft): `lock_shared_terms` and `approve_shared` take them back from the record
+the caller reviewed (MG-04b D56).
 
 `SharedSession.next` says what this wallet does next (`join`, `copy`, `wait`, `lock`, `approve`, `sign`, `send`,
 `nothing`), and `warnings` lists `zero_penalty`, `empty_service` and `unvalued_inputs` (another party's inputs this

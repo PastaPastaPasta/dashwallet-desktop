@@ -549,6 +549,93 @@ fn test_QT_126_a_swapped_payout_is_not_the_envelopes() {
     assert_eq!(reparse(&session), Err(EnvelopeError::Parse("protx")));
 }
 
+/// `NetInfoMatches` (fixes-1a M7, M8): each entry passes `AddEntry`'s
+/// `ValidateService` on the session's network, and only a comma or an
+/// ASCII space of PCRE2's `\s` separates entries.
+#[test]
+fn test_QT_126_service_entries_match_as_add_entry_takes_them() {
+    use funding::net_info_matches as matches;
+    let net = |addrs: &[&str]| {
+        let addrs: Vec<std::net::SocketAddr> = addrs.iter().map(|a| a.parse().unwrap()).collect();
+        crate::shared::ExtNetInfo::core_p2p(&addrs).unwrap()
+    };
+    let pair = net(&["1.2.3.4:19999", "5.6.7.8:19999"]);
+    for addrs in [
+        "1.2.3.4:19999,5.6.7.8:19999",
+        " 1.2.3.4:19999 ,\t5.6.7.8:19999\r\n",
+        "1.2.3.4:19999\x0b5.6.7.8:19999",
+        "1.2.3.4:19999\x0c,,5.6.7.8:19999",
+    ] {
+        assert!(matches(&pair, addrs, Network::Testnet), "{addrs:?}");
+    }
+    // Qt's `\s` without Unicode properties: a no-break space, an em space
+    // or a next-line is part of the entry, which then doesn't parse.
+    for addrs in [
+        "1.2.3.4:19999\u{a0}5.6.7.8:19999",
+        "1.2.3.4:19999\u{2003}5.6.7.8:19999",
+        "1.2.3.4:19999\u{85}5.6.7.8:19999",
+    ] {
+        assert!(!matches(&pair, addrs, Network::Regtest), "{addrs:?}");
+    }
+
+    // Routable where the network requires it (every network but regtest).
+    for (addr, network, want) in [
+        ("10.0.0.1:19999", Network::Testnet, false),
+        ("10.0.0.1:19999", Network::Mainnet, false),
+        ("127.0.0.1:19999", Network::Testnet, false),
+        ("10.0.0.1:19999", Network::Regtest, true),
+        ("127.0.0.1:19999", Network::Regtest, true),
+        // Bad ports and invalid addresses, everywhere.
+        ("1.2.3.4:0", Network::Regtest, false),
+        ("1.2.3.4:22", Network::Regtest, false),
+        ("1.2.3.4:8333", Network::Testnet, false),
+        ("0.0.0.0:19999", Network::Regtest, false),
+        ("1.2.3.4:19999", Network::Testnet, true),
+    ] {
+        assert_eq!(
+            matches(&net(&[addr]), addr, network),
+            want,
+            "{addr} {network:?}"
+        );
+    }
+
+    // The payload check runs it on the session's network: dashd's regtest
+    // registration (loopback services) isn't one testnet would take, while
+    // every other field still reads the same there.
+    let mut session = at(Stage::Frozen);
+    let frozen = funding::decode_frozen(&session).unwrap();
+    assert!(funding::payload_matches_envelope(&session, &frozen));
+    session.network = Network::Testnet;
+    assert!(
+        funding::key_id_of(&session.terms.voting_address, Network::Testnet).is_some(),
+        "the addresses read on testnet too"
+    );
+    assert!(!funding::payload_matches_envelope(&session, &frozen));
+}
+
+/// `payloadMatchesEnvelope`'s operator key (fixes-1a M6) is
+/// `pubKeyOperator.Get().ToString()`: bytes that aren't a G1 point read as
+/// Core's invalid key, 48 zero bytes, so terms naming those bytes never
+/// match them.
+#[test]
+fn test_QT_126_an_operator_key_that_is_not_a_point_never_matches_its_bytes() {
+    use crate::shared::{ProRegTxV3, SpecialTx};
+    let mut session = at(Stage::Frozen);
+    let mut tx = SpecialTx::from_bytes(&hex::decode(&session.protx).unwrap()).unwrap();
+    let mut p = ProRegTxV3::from_payload(&tx.payload).unwrap();
+    p.operator_public_key = [0x11; 48];
+    tx.payload = p.to_payload().unwrap();
+    session.protx = hex::encode(tx.to_bytes());
+    session.consent_hash = ProRegTxV3::display_hash(&p.consent_hash(&tx));
+    session.terms.operator_pub_key = "11".repeat(48);
+    let frozen = funding::decode_frozen(&session).unwrap();
+    assert!(!funding::payload_matches_envelope(&session, &frozen));
+    assert_eq!(reparse(&session), Err(EnvelopeError::Parse("protx")));
+    // What Core shows for it instead.
+    session.terms.operator_pub_key = "00".repeat(48);
+    assert!(funding::payload_matches_envelope(&session, &frozen));
+}
+
 #[test]
 fn test_QT_126_combined_and_signed_stages_check_signatures_and_inputs() {
     // Combined: every share signed, each verifying.

@@ -417,8 +417,8 @@ impl NetworkSession {
         Ok(())
     }
 
-    /// Replaces this wallet's contribution and reservation (join, fee
-    /// change) in one write with its locks, then its share map.
+    /// Replaces this wallet's contribution, share map and reservation
+    /// (join, fee change) in one write with its locks.
     pub(crate) async fn replace_contribution(
         &self,
         wallet: WalletId,
@@ -430,52 +430,41 @@ impl NetworkSession {
         let (w, id) = (wallet.to_string(), l.row.id.clone());
         let reserved = json(&recorded.inputs)?;
         let contribution = json(recorded)?;
+        let my_shares = my_shares_json(recorded)?;
         let envelope = session.to_text();
-        let replaced = {
-            let (w, id, contribution) = (w.clone(), id.clone(), contribution.clone());
-            self.appdb_op(move |db| {
+        let replaced = self
+            .appdb_op(move |db| {
                 db.replace_shared_session_reservation_durable(
                     &w,
                     &id,
                     &reserved,
                     Some(&contribution),
+                    &my_shares,
                     &envelope,
                     now,
                     now,
                 )
             })
-            .await?
-        };
+            .await?;
         if !replaced {
             return Err(MasternodesError::SharedSessionNotFound);
         }
-        let update = SharedSessionUpdate {
-            envelope: session.to_text(),
-            my_shares: my_shares_json(recorded)?,
-            contribution: Some(contribution),
-            approved_terms: l.row.approved_terms.clone(),
-            signed_tx: None,
-            txid: None,
-            last_error: None,
-            updated_at: now,
-        };
-        self.appdb_op(move |db| db.update_shared_session_durable(&w, &id, &update))
-            .await?;
         self.masternodes.local_change();
         Ok(())
     }
 
     /// §4's checks before a consent or funding signature, in §7's order:
     /// the frozen registration (`check_frozen`, D12's template), Core's
-    /// rules (§5), at `combined` every join signature (D12), then this
-    /// wallet's own side (`check_consent`, D16, m-1) and, at lock, the fee
-    /// floor (D26). Returns the registration checked.
+    /// rules (§5), at `combined` every join signature (D12), at lock the fee
+    /// floor (`fee_floor`, §3.1 step 3, D26), then this wallet's own side
+    /// (`check_consent`, D16, m-1). Returns the registration checked.
     pub(crate) fn consent_checks(
         &self,
         l: &Loaded,
         ctx: &Context,
         unspent: &HashSet<OutPoint>,
         combined: bool,
+        fee_floor: Option<&Recorded>,
     ) -> Result<Frozen, MasternodesError> {
         let network = self.network.core_network();
         let frozen = check_frozen(&l.session).map_err(envelope_refusal)?;
@@ -491,6 +480,9 @@ impl NetworkSession {
         if combined {
             check_join_signatures(&l.session, &frozen)
                 .map_err(|_| funding_refusal("join_signature"))?;
+        }
+        if let Some(rec) = fee_floor {
+            check_fee_floor(&frozen, rec)?;
         }
         let rec = l
             .recorded
@@ -543,7 +535,9 @@ impl NetworkSession {
 
     /// The follower's pass over the wallet's sessions (§11): a session
     /// read `confirmed`, `conflicted` or `dead` releases its locks; one out
-    /// and open never does (D17).
+    /// and open never does (D17). A session a call holds in flight waits
+    /// for the next pass; the others are read again under the mark, and the
+    /// release writes only while their reservation is still the one read.
     pub(crate) async fn shared_follow_pass(
         &self,
         wallet: WalletId,
@@ -555,7 +549,16 @@ impl NetworkSession {
         let chain = self.shared_chain(wallet).await?;
         let network = self.network.core_network();
         let mut released = false;
-        for row in rows {
+        for listed in rows {
+            if reserved_of(&listed).is_empty() {
+                continue;
+            }
+            let Some(_flight) = self.try_claim_shared_session(wallet, &listed.id) else {
+                continue;
+            };
+            let Some(row) = self.shared_row(wallet, &listed.id).await? else {
+                continue;
+            };
             if reserved_of(&row).is_empty() {
                 continue;
             }
@@ -567,12 +570,12 @@ impl NetworkSession {
                 SharedStage::Confirmed { .. } | SharedStage::Conflicted | SharedStage::Dead { .. }
             );
             if settled {
-                let (w, id) = (wallet.to_string(), l.row.id.clone());
-                self.appdb_op(move |db| {
-                    db.release_shared_session_locks_durable(&w, &id, now_secs())
-                })
-                .await?;
-                released = true;
+                let (w, id, expected) = (wallet.to_string(), l.row.id.clone(), l.row.reserved);
+                released |= self
+                    .appdb_op(move |db| {
+                        db.release_shared_session_locks_durable(&w, &id, &expected, now_secs())
+                    })
+                    .await?;
             }
         }
         if released {

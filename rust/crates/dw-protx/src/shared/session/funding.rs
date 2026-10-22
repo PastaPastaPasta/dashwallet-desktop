@@ -13,12 +13,14 @@ use dashcore::hashes::Hash;
 use dashcore::{Address, Network, OutPoint, ScriptBuf, TxIn, TxOut, Txid};
 
 use super::super::envelope::{EnvelopeError, decode_base64, decode_tx_hex, is_hex};
+use super::super::netinfo::{NetInfoStatus, PURPOSE_CORE_P2P, ServiceAddr, validate_service};
 use super::super::registration::{
     MN_TYPE_REGULAR, SHARED_COLLATERAL_SCRIPT, TRANSACTION_PROVIDER_REGISTER,
 };
 use super::super::rules::verify_hash_canonical;
 use super::super::{ExtNetInfo, ProRegTxV3, SpecialTx};
 use super::{Contribution, Session, Stage};
+use crate::bls::is_valid_basic_public;
 use crate::params::MASTERNODE_COLLATERAL;
 
 /// `IsTxidHex`: 64 hex digits, either case.
@@ -157,20 +159,42 @@ pub fn decode_frozen(session: &Session) -> Result<Frozen, EnvelopeError> {
     })
 }
 
-/// `NetInfoMatches` (`mnsharesession.cpp:160-170`): the entries of
-/// `coreP2PAddrs`, split on commas and whitespace, added as Core P2P
-/// services, give exactly the payload's net info. An entry Core's
-/// `AddEntry` would refuse, or one that isn't a numeric `ip:port`
-/// (MG-04b D5: no domains or privacy networks), never matches.
-pub fn net_info_matches(net_info: &ExtNetInfo, addrs: &str) -> bool {
-    let entries: Option<Vec<SocketAddr>> = addrs
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|e| !e.is_empty())
-        .map(|e| e.parse().ok())
-        .collect();
+/// A separator of `NetInfoMatches`' `[,\s]+` (`mnsharesession.cpp:166`): a
+/// comma, or what PCRE2's `\s` matches without Unicode properties (the
+/// expression sets no `UseUnicodePropertiesOption`): HT, LF, VT, FF, CR and
+/// space. A no-break space or any other non-ASCII space is part of an entry.
+pub fn is_service_separator(c: char) -> bool {
+    matches!(c, ',' | '\t' | '\n' | '\x0b' | '\x0c' | '\r' | ' ')
+}
+
+/// The entries of a `coreP2PAddrs` as `NetInfoMatches` splits them, empty
+/// ones skipped (`Qt::SkipEmptyParts`).
+pub fn service_entries(addrs: &str) -> impl Iterator<Item = &str> {
+    addrs.split(is_service_separator).filter(|e| !e.is_empty())
+}
+
+/// `NetInfoMatches` (`mnsharesession.cpp:160-170`) on `network`: the
+/// entries of `coreP2PAddrs` ([`service_entries`]), each added as a Core
+/// P2P service, give exactly the payload's net info. An entry Core's
+/// `ExtNetInfo::AddEntry` (rc.3 `evo/netinfo.cpp:500-551`) would refuse
+/// never matches: its `ValidateService` ([`validate_service`]: a valid,
+/// known-network address, routable where `network` requires it, a port
+/// that isn't zero or bad), a repeated address (`IsAddrDuplicate`), or more
+/// than `MAX_ENTRIES_EXTNETINFO` (`ProcessCandidate`); and one that isn't a
+/// numeric `ip:port` (MG-04b D5: no domains or privacy networks).
+pub fn net_info_matches(net_info: &ExtNetInfo, addrs: &str, network: Network) -> bool {
+    let entries: Option<Vec<SocketAddr>> = service_entries(addrs).map(|e| e.parse().ok()).collect();
     let Some(entries) = entries else {
         return false;
     };
+    let services_valid = entries.iter().all(|a| {
+        ServiceAddr::from_socket_addr(*a).is_some_and(|s| {
+            validate_service(PURPOSE_CORE_P2P, &s, network) == NetInfoStatus::Success
+        })
+    });
+    if !services_valid {
+        return false;
+    }
     // `IsAddrDuplicate`: one address once per purpose, whatever the port.
     if entries
         .iter()
@@ -180,6 +204,19 @@ pub fn net_info_matches(net_info: &ExtNetInfo, addrs: &str) -> bool {
         return false;
     }
     ExtNetInfo::core_p2p(&entries).is_some_and(|expected| &expected == net_info)
+}
+
+/// `pubKeyOperator.Get().ToString(false)` (`mnsharesession.cpp:1023`): the
+/// key's hex when Core reads it as valid ([`is_valid_basic_public`]), else
+/// the hex of Core's invalid object, 48 zero bytes (`ToBytes`, rc.3
+/// `bls/bls.h:125-131`). A payload key that isn't a point never shows as
+/// its own bytes.
+fn operator_key_string(key: &[u8; 48]) -> String {
+    if is_valid_basic_public(key) {
+        hex::encode(key)
+    } else {
+        hex::encode([0u8; 48])
+    }
 }
 
 /// `payloadMatchesEnvelope`: the frozen registration's share table, terms
@@ -206,11 +243,12 @@ pub fn payload_matches_envelope(session: &Session, frozen: &Frozen) -> bool {
 
     let t = &session.terms;
     if key_id_of(&t.voting_address, network) != Some(payload.voting_key_id)
-        || !hex::encode(payload.operator_public_key).eq_ignore_ascii_case(&t.operator_pub_key)
+        || !operator_key_string(&payload.operator_public_key)
+            .eq_ignore_ascii_case(&t.operator_pub_key)
         || t.operator_reward != i32::from(payload.operator_reward)
         || t.early_period_blocks != payload.early_period_blocks
         || t.early_penalty != payload.early_penalty
-        || !net_info_matches(&payload.net_info, &t.core_p2p_addrs)
+        || !net_info_matches(&payload.net_info, &t.core_p2p_addrs, network)
     {
         return false;
     }

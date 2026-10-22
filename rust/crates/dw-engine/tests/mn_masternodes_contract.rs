@@ -1120,11 +1120,11 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
                 .map(drop),
             mn.join_shared(wallet, "zz".into(), join()).await.map(drop),
             mn.shared_message(wallet, "zz".into()).await.map(drop),
-            mn.lock_shared_terms(wallet, "zz".into(), "g".into())
+            mn.lock_shared_terms(wallet, "zz".into(), 1, "g".into())
                 .await
                 .map(drop),
             mn.unlock_shared_terms(wallet, "zz".into()).await.map(drop),
-            mn.approve_shared(wallet, "zz".into(), "g".into())
+            mn.approve_shared(wallet, "zz".into(), String::new(), "g".into())
                 .await
                 .map(drop),
             mn.sign_shared_funding(wallet, "zz".into(), "g".into())
@@ -1138,10 +1138,10 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
         for refused in [
             mn.start_shared(wallet, shared()).await.map(drop),
             mn.join_shared(wallet, hash.clone(), join()).await.map(drop),
-            mn.lock_shared_terms(wallet, hash.clone(), "g".into())
+            mn.lock_shared_terms(wallet, hash.clone(), 1, "g".into())
                 .await
                 .map(drop),
-            mn.approve_shared(wallet, hash.clone(), "g".into())
+            mn.approve_shared(wallet, hash.clone(), String::new(), "g".into())
                 .await
                 .map(drop),
             mn.sign_shared_funding(wallet, hash.clone(), "g".into())

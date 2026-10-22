@@ -9,8 +9,9 @@
 //! `MasternodeOp` grant and signs with the vault's shared owner signer
 //! (keychain owner keys only, D11); nothing signs as operator. Refusals
 //! come in §7's order: arguments, `wallet_not_found`, `unsupported`, the
-//! list, the session, the message, Core's rules, the consent checks, the
-//! lease.
+//! list, the session (its stage, the copy the caller reviewed, D56, and
+//! its reservation, D17), the message, Core's rules, the consent checks,
+//! the lease.
 
 pub(super) use self::store::check_session_id;
 
@@ -39,8 +40,7 @@ use dw_protx::shared::{ProUpShareTx, SpecialTx, TRANSACTION_PROVIDER_UPDATE_SHAR
 
 use self::build::{ServiceProblem, coordinator_services, participant_services_ok};
 use self::flow::{
-    OwnRow, check_fee_floor, check_placeholder, check_reward, put_own_side, recorded_of,
-    signer_refusal,
+    OwnRow, check_placeholder, check_reward, put_own_side, recorded_of, signer_refusal,
 };
 use self::store::{
     Approved, Loaded, bad_signature, envelope_refusal, message_name, message_refusal,
@@ -538,11 +538,14 @@ impl Masternodes {
     /// Coordinator (§3.1 step 3): builds the registration (§2.4), runs
     /// Core's rules, the fee floor (D26) and its own consent checks (§4),
     /// signs its consent under a `SharedMasternode` lease (charged 0) and
-    /// returns Locked Terms, `revision` unchanged.
+    /// returns Locked Terms, `revision` unchanged. `revision` is the
+    /// session record's the coordinator reviewed: another one (a reply
+    /// absorbed since) is `shared_message{conflict}` (D56).
     pub async fn lock_shared_terms(
         &self,
         wallet: WalletId,
         session: String,
+        revision: u32,
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
         check_session_id(&session)?;
@@ -557,6 +560,9 @@ impl Masternodes {
                     SharedStage::Draft,
                 )
                 .await?;
+            if i64::from(l.session.revision) != i64::from(revision) {
+                return Err(message_refusal("conflict"));
+            }
             let complete = l.session.shares.iter().all(|r| {
                 !r.owner_address.is_empty()
                     && !r.refund_address.is_empty()
@@ -567,6 +573,8 @@ impl Masternodes {
                     stage: "incomplete".into(),
                 });
             }
+            let rec = l.recorded.clone().ok_or_else(unrecorded)?;
+            s.reserved_inputs(wallet, &l, &rec.outpoints()).await?;
             let mut frozen_session = l.session.clone();
             build::freeze(&mut frozen_session)?;
             let locked = Loaded {
@@ -574,10 +582,7 @@ impl Masternodes {
                 ..l.clone()
             };
             let (_, unspent) = s.op_view(wallet).await?;
-            let rec = l.recorded.clone().ok_or_else(unrecorded)?;
-            let frozen = s.consent_checks(&locked, &ctx, &unspent, false)?;
-            check_fee_floor(&frozen, &rec)?;
-            s.reserved_inputs(wallet, &l, &rec.outpoints()).await?;
+            let frozen = s.consent_checks(&locked, &ctx, &unspent, false, Some(&rec))?;
             s.consent_and_save(wallet, &grant, &l, locked.session, &frozen, &rec)
                 .await?;
             outcome(&s, wallet, &session).await
@@ -614,11 +619,14 @@ impl Masternodes {
     /// Participant (§3.2 step 4): §4's checks on the locked registration,
     /// then its consent signature under a `SharedMasternode` lease
     /// (charged 0). Returns the Approval, `revision` unchanged; an approved
-    /// session returns its Approval again without signing.
+    /// session returns its Approval again without signing. `consent_hash`
+    /// is the session record's the participant reviewed: another one (a
+    /// re-locked copy imported since) is `shared_message{conflict}` (D56).
     pub async fn approve_shared(
         &self,
         wallet: WalletId,
         session: String,
+        consent_hash: String,
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
         check_session_id(&session)?;
@@ -633,6 +641,11 @@ impl Masternodes {
                     SharedStage::Signing,
                 )
                 .await?;
+            if consent_hash != l.session.consent_hash {
+                return Err(message_refusal("conflict"));
+            }
+            let rec = l.recorded.clone().ok_or_else(unrecorded)?;
+            s.reserved_inputs(wallet, &l, &rec.outpoints()).await?;
             if l.own_approval() {
                 return outcome(&s, wallet, &session).await;
             }
@@ -640,9 +653,7 @@ impl Masternodes {
                 return Err(unsupported(Some("service")));
             }
             let (_, unspent) = s.op_view(wallet).await?;
-            let frozen = s.consent_checks(&l, &ctx, &unspent, false)?;
-            let rec = l.recorded.clone().ok_or_else(unrecorded)?;
-            s.reserved_inputs(wallet, &l, &rec.outpoints()).await?;
+            let frozen = s.consent_checks(&l, &ctx, &unspent, false, None)?;
             s.consent_and_save(wallet, &grant, &l, l.session.clone(), &frozen, &rec)
                 .await?;
             outcome(&s, wallet, &session).await
@@ -677,10 +688,10 @@ impl Masternodes {
                     SharedStage::Combined,
                 )
                 .await?;
-            let (_, unspent) = s.op_view(wallet).await?;
-            let frozen = s.consent_checks(&l, &ctx, &unspent, true)?;
             let rec = l.recorded.clone().ok_or_else(unrecorded)?;
             let own = s.reserved_inputs(wallet, &l, &rec.outpoints()).await?;
+            let (_, unspent) = s.op_view(wallet).await?;
+            let frozen = s.consent_checks(&l, &ctx, &unspent, true, None)?;
             s.sign_funding(wallet, &grant, &l, &frozen.tx, &own, rec.debit())
                 .await?;
             outcome(&s, wallet, &session).await
@@ -689,7 +700,9 @@ impl Masternodes {
     }
 
     /// Deletes a session nothing of which may be out (D17) and unlocks its
-    /// coins; one that may be out is `shared_stage{stage}`.
+    /// coins; one that may be out is `shared_stage{stage}`. Both are read
+    /// from the stored row, so a session whose envelope no longer parses
+    /// can still be discarded (D57).
     pub async fn discard_shared_session(
         &self,
         wallet: WalletId,
@@ -699,10 +712,17 @@ impl Masternodes {
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             let _flight = s.claim_shared_session(wallet, &session)?;
-            let l = s.shared_loaded(wallet, &session).await?;
-            if l.out() {
-                let chain = s.shared_chain(wallet).await?;
-                return Err(stage_refusal(store::derive_stage(&l, &chain)));
+            let row = s
+                .shared_row(wallet, &session)
+                .await?
+                .ok_or(MasternodesError::SharedSessionNotFound)?;
+            if row.out_at.is_some() {
+                let role = store::role_of(&row.role);
+                let stage = match Loaded::of(row, s.network.core_network()) {
+                    Ok(l) => store::derive_stage(&l, &s.shared_chain(wallet).await?),
+                    Err(_) => store::out_stage(role),
+                };
+                return Err(stage_refusal(stage));
             }
             let (w, id) = (wallet.to_string(), session.clone());
             let deleted = s

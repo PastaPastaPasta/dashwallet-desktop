@@ -30,6 +30,18 @@ pub fn parse_public_hex(text: &str) -> Result<[u8; 48], BlsError> {
     Ok(out)
 }
 
+/// Whether Core's `CBLSLazyPublicKey::Get()` reads `key` as a valid key in
+/// the basic serialization (rc.3 `bls/bls.h:100-122,492-511`): a G1 point
+/// (`SetBytes`; the decode refuses the point at infinity, which Core's
+/// `impl == ImplType()` resets) that serializes back to the same bytes
+/// (`CheckMalleable`).
+pub fn is_valid_basic_public(key: &[u8; 48]) -> bool {
+    BlsPkBytes::from_bytes(*key)
+        .as_scheme(BlsScheme::Modern)
+        .canonicalize()
+        .is_ok_and(|pk| pk.as_bytes() == key)
+}
+
 /// The legacy serialization of a basic-serialized public key (for matching
 /// a list entry registered before v19).
 pub fn legacy_of(basic: &[u8; 48]) -> Option<[u8; 48]> {
@@ -90,6 +102,21 @@ mod tests {
             basic, legacy,
             "the two serializations differ in the flag bits"
         );
+    }
+
+    #[test]
+    fn test_QT_126_a_lazy_key_is_valid_as_core_reads_it() {
+        assert!(is_valid_basic_public(&TEST_OPERATOR_KEY));
+        // Not a point; all zeros; the point at infinity; a valid key's
+        // legacy form, which isn't a basic encoding.
+        assert!(!is_valid_basic_public(&[0x11; 48]));
+        assert!(!is_valid_basic_public(&[0; 48]));
+        let mut infinity = [0; 48];
+        infinity[0] = 0xc0;
+        assert!(!is_valid_basic_public(&infinity));
+        assert!(!is_valid_basic_public(
+            &legacy_of(&TEST_OPERATOR_KEY).unwrap()
+        ));
     }
 
     #[test]

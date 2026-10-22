@@ -152,6 +152,25 @@ pub(crate) fn json<T: Serialize>(value: &T) -> Result<String, MasternodesError> 
         .map_err(|e| EngineError::Internal(format!("encoding a shared session: {e}")).into())
 }
 
+/// The `role` column read back: anything but `coordinator` is a
+/// participant.
+pub(crate) fn role_of(column: &str) -> SharedRole {
+    match column {
+        "coordinator" => SharedRole::Coordinator,
+        _ => SharedRole::Participant,
+    }
+}
+
+/// The stage of a session that may be out (`out_at` set), with nothing of
+/// it in a block: the coordinator's hand-off, a participant's Signed
+/// Contribution.
+pub(crate) fn out_stage(role: SharedRole) -> SharedStage {
+    match role {
+        SharedRole::Coordinator => SharedStage::Sent,
+        SharedRole::Participant => SharedStage::FundingSigned,
+    }
+}
+
 pub(crate) fn role_name(role: SharedRole) -> &'static str {
     match role {
         SharedRole::Coordinator => "coordinator",
@@ -273,10 +292,7 @@ impl Loaded {
         };
         let json = Json::read(row.envelope.as_bytes()).ok_or_else(corrupt)?;
         let mut session = Session::from_json(&json, network).map_err(|_| corrupt())?;
-        let role = match row.role.as_str() {
-            "coordinator" => SharedRole::Coordinator,
-            _ => SharedRole::Participant,
-        };
+        let role = role_of(&row.role);
         let recorded: Option<Recorded> = match &row.contribution {
             Some(c) => Some(serde_json::from_str(c).map_err(|_| corrupt())?),
             None => None,
@@ -436,10 +452,7 @@ pub(crate) fn derive_stage(l: &Loaded, chain: &ChainView) -> SharedStage {
         if chain.spent_in_block(&own, txid.as_ref()) {
             return SharedStage::Conflicted;
         }
-        return match l.role {
-            SharedRole::Coordinator => SharedStage::Sent,
-            SharedRole::Participant => SharedStage::FundingSigned,
-        };
+        return out_stage(l.role);
     }
     if !own.is_empty() && own.iter().any(|o| !chain.unspent.contains(o)) {
         return SharedStage::Dead {
@@ -600,6 +613,7 @@ pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
         role: l.role,
         stage,
         revision: u32::try_from(s.revision).unwrap_or(0),
+        consent_hash: opt(&s.consent_hash),
         rows,
         terms: terms_view(s),
         node_run_by: s.operator_secret_holder.clone(),

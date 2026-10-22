@@ -314,20 +314,43 @@ impl Fx {
         .unwrap()
     }
 
+    /// `lock_shared_terms` on the revision the session record shows now.
     fn lock(&self, w: usize, id: &str) -> Result<SharedOutcome, MasternodesError> {
+        self.lock_at(w, id, self.session_of(w, id).revision)
+    }
+
+    fn lock_at(
+        &self,
+        w: usize,
+        id: &str,
+        revision: u32,
+    ) -> Result<SharedOutcome, MasternodesError> {
         let grant = self.grant(w, 0);
         self.run(
             self.mn()
-                .lock_shared_terms(self.wallets[w], id.to_string(), grant),
+                .lock_shared_terms(self.wallets[w], id.to_string(), revision, grant),
         )
     }
 
+    /// `approve_shared` on the consent hash the session record shows now.
     fn approve(&self, w: usize, id: &str) -> Result<SharedOutcome, MasternodesError> {
+        let hash = self.session_of(w, id).consent_hash.unwrap_or_default();
+        self.approve_with(w, id, &hash)
+    }
+
+    fn approve_with(
+        &self,
+        w: usize,
+        id: &str,
+        consent_hash: &str,
+    ) -> Result<SharedOutcome, MasternodesError> {
         let grant = self.grant(w, 0);
-        self.run(
-            self.mn()
-                .approve_shared(self.wallets[w], id.to_string(), grant),
-        )
+        self.run(self.mn().approve_shared(
+            self.wallets[w],
+            id.to_string(),
+            consent_hash.to_string(),
+            grant,
+        ))
     }
 
     fn sign(&self, w: usize, id: &str, max: u64) -> Result<SharedOutcome, MasternodesError> {
@@ -742,11 +765,11 @@ fn test_QT_126_calls_refuse_in_order() {
         f.run(mn.set_shared_fee(unknown, bad.clone(), FEE))
             .unwrap_err(),
         f.run(mn.shared_message(unknown, bad.clone())).unwrap_err(),
-        f.run(mn.lock_shared_terms(unknown, bad.clone(), "g".into()))
+        f.run(mn.lock_shared_terms(unknown, bad.clone(), 1, "g".into()))
             .unwrap_err(),
         f.run(mn.unlock_shared_terms(unknown, bad.clone()))
             .unwrap_err(),
-        f.run(mn.approve_shared(unknown, bad.clone(), "g".into()))
+        f.run(mn.approve_shared(unknown, bad.clone(), String::new(), "g".into()))
             .unwrap_err(),
         f.run(mn.sign_shared_funding(unknown, bad.clone(), "g".into()))
             .unwrap_err(),
@@ -776,9 +799,9 @@ fn test_QT_126_calls_refuse_in_order() {
             },
         ))
         .unwrap_err(),
-        f.run(mn.lock_shared_terms(w, good.clone(), "g".into()))
+        f.run(mn.lock_shared_terms(w, good.clone(), 1, "g".into()))
             .unwrap_err(),
-        f.run(mn.approve_shared(w, good.clone(), "g".into()))
+        f.run(mn.approve_shared(w, good.clone(), String::new(), "g".into()))
             .unwrap_err(),
         f.run(f.pin().sign_shared_funding(w, good.clone(), "g".into()))
             .unwrap_err(),
@@ -811,7 +834,7 @@ fn test_QT_126_calls_refuse_in_order() {
     // Then the session.
     for e in [
         f.run(mn.shared_session(w, good.clone())).unwrap_err(),
-        f.run(mn.lock_shared_terms(w, good.clone(), "g".into()))
+        f.run(mn.lock_shared_terms(w, good.clone(), 1, "g".into()))
             .unwrap_err(),
         f.run(mn.discard_shared_session(w, good.clone()))
             .unwrap_err(),
@@ -1433,4 +1456,137 @@ fn test_QT_126_funding_never_signs_over_a_scriptsig_on_our_input() {
     assert_funding(f.import(1, &forged.to_text()).unwrap_err(), "foreign_input");
     assert_ne!(f.session_of(1, &id).stage, SharedStage::Combined);
     assert!(f.row(1, &id).out_at.is_none());
+}
+
+/// fixes-1a M1 (D57): discarding reads the stored row, not the envelope. A
+/// session whose envelope no longer parses is deleted and its coins
+/// unlocked; one that is out stays, refused at its stage, locks kept.
+#[test]
+fn test_QT_126_an_unreadable_session_can_be_discarded() {
+    let f = fx(2, true);
+    let id = two_joined(&f);
+    let corrupt = |w: usize| {
+        let r = f.row(w, &id);
+        let update = dw_appdb::SharedSessionUpdate {
+            envelope: "{\"not\": \"an envelope\"".into(),
+            my_shares: r.my_shares,
+            contribution: r.contribution,
+            approved_terms: r.approved_terms,
+            signed_tx: None,
+            txid: None,
+            last_error: None,
+            updated_at: r.updated_at,
+        };
+        assert!(
+            f.db()
+                .update_shared_session_durable(&f.wallets[w].to_string(), &id, &update)
+                .unwrap()
+        );
+    };
+    let discard = |w: usize| f.run(f.mn().discard_shared_session(f.wallets[w], id.clone()));
+
+    assert!(!f.locked(0).is_empty());
+    corrupt(0);
+    assert!(
+        f.run(f.mn().shared_session(f.wallets[0], id.clone()))
+            .is_err(),
+        "the envelope doesn't parse"
+    );
+    discard(0).unwrap();
+    assert!(
+        f.db()
+            .shared_session(&f.wallets[0].to_string(), &id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(f.locked(0).is_empty(), "its coins are unlocked");
+
+    let held = f.locked(1);
+    assert!(!held.is_empty());
+    assert!(
+        f.db()
+            .mark_shared_session_out_durable(&f.wallets[1].to_string(), &id, &[7], "tx", 1)
+            .unwrap()
+    );
+    corrupt(1);
+    assert_stage(discard(1).unwrap_err(), "funding_signed");
+    assert!(f.row(1, &id).out_at.is_some(), "an out row stays");
+    assert_eq!(f.locked(1), held);
+}
+
+/// fixes-1a M2 (D56): consent binds to the copy the caller reviewed. A
+/// lock on the revision before a reply absorbed since, and an approval of
+/// the consent hash before a re-locked copy imported since, are
+/// `shared_message{conflict}` and sign nothing; the current values sign.
+#[test]
+fn test_QT_126_consent_binds_to_the_reviewed_copy() {
+    let f = fx(3, true);
+    f.credit(0, 1, 401 * COIN);
+    f.credit(1, 2, 300 * COIN + 50_000);
+    f.credit(2, 3, 350 * COIN);
+    let inv = start(&f, 0, request(&[("A", 400), ("B", 300), ("C", 300)], FEE)).unwrap();
+    let id = inv.session.id.clone();
+    assert_eq!(inv.session.consent_hash, None, "a draft has none");
+    for w in [1, 2] {
+        f.imported(w, &inv.message.text);
+    }
+    let (b, c) = (f.join(1, &id), f.join(2, &id));
+    f.imported(0, &b.message.text);
+    let reviewed = f.session_of(0, &id).revision;
+    f.imported(0, &c.message.text);
+    assert_eq!(f.session_of(0, &id).revision, reviewed + 1);
+    assert_message(f.lock_at(0, &id, reviewed).unwrap_err(), "conflict");
+    assert_eq!(f.session_of(0, &id).stage, SharedStage::Draft);
+    let locked = f.lock_at(0, &id, reviewed + 1).unwrap();
+    assert_eq!(
+        locked.session.consent_hash.as_deref(),
+        Some(parse(&locked.message.text).consent_hash.as_str())
+    );
+
+    let (s, _) = f.imported(1, &locked.message.text);
+    let seen = s
+        .consent_hash
+        .expect("locked terms carry their consent hash");
+    // M-1 case 2: a re-locked copy with other terms, imported concurrently.
+    let mut relocked = parse(&locked.message.text);
+    super::build::unfreeze(&mut relocked);
+    relocked.terms.early_penalty += 1;
+    super::build::freeze(&mut relocked).unwrap();
+    let (s, _) = f.imported(1, &relocked.to_text());
+    assert_eq!(
+        (s.stage, s.next),
+        (SharedStage::Signing, SharedNext::Approve)
+    );
+    assert_ne!(s.consent_hash.as_deref(), Some(seen.as_str()));
+    assert_message(f.approve_with(1, &id, &seen).unwrap_err(), "conflict");
+    assert!(
+        parse(&f.message(1, &id)).signature_for(1).is_none(),
+        "nothing signed"
+    );
+    let approval = parse(&f.approve(1, &id).unwrap().message.text);
+    assert!(approval.signature_for(1).is_some());
+    assert_eq!(Some(approval.consent_hash), s.consent_hash);
+}
+
+/// fixes-1a M4: the follower's pass leaves a session a call holds in
+/// flight for the next pass, which then releases it.
+#[test]
+fn test_QT_126_the_follow_pass_waits_for_a_session_in_flight() {
+    let f = fx(1, true);
+    f.credit(0, 1, 501 * COIN);
+    let inv = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE)).unwrap();
+    let id = inv.session.id.clone();
+    let reserved = f.locked(0);
+    f.spend(0, *reserved.iter().next().unwrap());
+    assert!(matches!(
+        f.session_of(0, &id).stage,
+        SharedStage::Dead { .. }
+    ));
+    let flight = f.session.claim_shared_session(f.wallets[0], &id).unwrap();
+    f.run(f.session.protx_follow_pass()).unwrap();
+    assert_eq!(f.locked(0), reserved, "held in flight: kept this pass");
+    drop(flight);
+    f.run(f.session.protx_follow_pass()).unwrap();
+    assert!(f.locked(0).is_empty());
+    assert_eq!(f.row(0, &id).reserved, "[]");
 }

@@ -26,6 +26,7 @@ use dw_engine::masternodes::{
     UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
 };
 use dw_engine::{Engine, EngineError, NetworkSession, WalletId};
+use dw_protx::params::MAX_ENVELOPE_BYTES;
 use dw_vault::GrantPurpose;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -268,12 +269,25 @@ enum SharedCommand {
     },
     /// Coordinator: freeze the terms and sign this wallet's consent (a
     /// `MasternodeOp` grant capped at 0); prints the Locked Terms.
-    Lock { session: String },
+    Lock {
+        session: String,
+        /// The `revision` `show` printed for the table reviewed: another
+        /// one now (a reply absorbed since) is refused `conflict`.
+        #[arg(long)]
+        revision: u32,
+    },
     /// Coordinator: back to a draft before the funding is combined.
     Unlock { session: String },
     /// Participant: check the locked registration and sign this wallet's
     /// consent (a `MasternodeOp` grant capped at 0); prints the Approval.
-    Approve { session: String },
+    Approve {
+        session: String,
+        /// The `consent_hash` `show` printed for the terms reviewed:
+        /// another one now (a re-locked copy imported since) is refused
+        /// `conflict`.
+        #[arg(long)]
+        consent_hash: String,
+    },
     /// Delete a session nothing of which may be out, and unlock its coins.
     Discard { session: String },
     /// Preview the ProUpShareTx that would change a share's reward address
@@ -897,23 +911,33 @@ fn command(
 }
 
 /// The message text on stdin, whole. It is never in argv and no failure
-/// quotes it; invalid UTF-8 is the facade's `shared_message{parse}` (MG-04b
-/// D34), whose reader takes a string.
+/// quotes it. At most [`MAX_ENVELOPE_BYTES`] + 1 bytes are read: more is
+/// the facade's `shared_message{too_large}`, before invalid UTF-8 is its
+/// `shared_message{parse}` (MG-04b D34), whose reader takes a string.
 fn read_message() -> Result<String, Failure> {
+    read_message_from(std::io::stdin().lock())
+}
+
+fn read_message_from(input: impl Read) -> Result<String, Failure> {
+    let refused = |reason: &str| -> Failure {
+        MasternodesError::SharedMessage {
+            reason: reason.into(),
+            share: None,
+        }
+        .into()
+    };
     let mut bytes = Vec::new();
-    std::io::stdin()
+    input
+        .take(MAX_ENVELOPE_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| Failure {
             code: "invalid_argument".into(),
             message: "reading the message from stdin failed".into(),
         })?;
-    String::from_utf8(bytes).map_err(|_| {
-        MasternodesError::SharedMessage {
-            reason: "parse".into(),
-            share: None,
-        }
-        .into()
-    })
+    if bytes.len() > MAX_ENVELOPE_BYTES {
+        return Err(refused("too_large"));
+    }
+    String::from_utf8(bytes).map_err(|_| refused("parse"))
 }
 
 /// `mn shared …`: one facade call each. `lock` and `approve` charge nothing,
@@ -959,16 +983,22 @@ fn shared_command(
             }
             value(message)
         }
-        SharedCommand::Lock { session: id } => {
+        SharedCommand::Lock {
+            session: id,
+            revision,
+        } => {
             let grant = masternode_grant(session, passphrase, w, 0)?;
-            value(engine.block_on(mn.lock_shared_terms(w, id, grant))?)
+            value(engine.block_on(mn.lock_shared_terms(w, id, revision, grant))?)
         }
         SharedCommand::Unlock { session: id } => {
             value(engine.block_on(mn.unlock_shared_terms(w, id))?)
         }
-        SharedCommand::Approve { session: id } => {
+        SharedCommand::Approve {
+            session: id,
+            consent_hash,
+        } => {
             let grant = masternode_grant(session, passphrase, w, 0)?;
-            value(engine.block_on(mn.approve_shared(w, id, grant))?)
+            value(engine.block_on(mn.approve_shared(w, id, consent_hash, grant))?)
         }
         SharedCommand::Discard { session: id } => {
             engine.block_on(mn.discard_shared_session(w, id))?;
@@ -1090,9 +1120,9 @@ mod tests {
             &["join", SESSION, "--share-index", "1", "--reward", "new"],
             &["message", SESSION],
             &["message", SESSION, "--out", "f.json"],
-            &["lock", SESSION],
+            &["lock", SESSION, "--revision", "3"],
             &["unlock", SESSION],
-            &["approve", SESSION],
+            &["approve", SESSION, "--consent-hash", HASH],
             &["discard", SESSION],
             &[
                 "preview-update-share",
@@ -1123,8 +1153,13 @@ mod tests {
             &["join", SESSION, "--reward", ""],
             &["message"],
             &["lock"],
+            // Lock and approve name the copy reviewed (MG-04b D56).
+            &["lock", SESSION],
+            &["lock", SESSION, "--revision", "-1"],
+            &["lock", SESSION, "--revision", "x"],
             &["unlock"],
             &["approve"],
+            &["approve", SESSION],
             &["discard"],
             &["start"],
             // The update names its reward, and both numbers.
@@ -1144,6 +1179,51 @@ mod tests {
         for name in ["sign", "send", "abandon", "update-share"] {
             assert_eq!(refused(&[name, SESSION]), Some(InvalidSubcommand), "{name}");
         }
+    }
+
+    /// MG-04b D56: lock and approve carry the revision and consent hash
+    /// the session record showed.
+    #[test]
+    fn test_QT_126_lock_and_approve_name_the_copy_reviewed() {
+        let a = shared(&["lock", SESSION, "--revision", "7"]).unwrap();
+        assert!(matches!(
+            a.command,
+            SharedCommand::Lock { ref session, revision: 7 } if session == SESSION
+        ));
+        let a = shared(&["approve", SESSION, "--consent-hash", HASH]).unwrap();
+        assert!(matches!(
+            a.command,
+            SharedCommand::Approve { ref session, ref consent_hash }
+                if session == SESSION && consent_hash == HASH
+        ));
+    }
+
+    /// fixes-1a Nit 4: stdin is read up to the envelope limit + 1 bytes;
+    /// more is `too_large` before any UTF-8 check, and an endless input
+    /// ends there.
+    #[test]
+    fn test_QT_126_a_message_is_read_bounded() {
+        let reason = |r: Result<String, Failure>| {
+            let Err(f) = r else {
+                panic!("read");
+            };
+            assert_eq!(f.code, "masternodes.shared_message");
+            f.message
+        };
+        assert_eq!(
+            read_message_from(&b"{\"a\": 1}"[..]).ok().as_deref(),
+            Some("{\"a\": 1}")
+        );
+        let at_limit = vec![b' '; MAX_ENVELOPE_BYTES];
+        assert_eq!(
+            read_message_from(&at_limit[..]).ok().map(|t| t.len()),
+            Some(MAX_ENVELOPE_BYTES)
+        );
+        assert!(reason(read_message_from(std::io::repeat(b'x'))).ends_with(": too_large"));
+        let mut invalid = vec![0xff];
+        invalid.extend(vec![b' '; MAX_ENVELOPE_BYTES]);
+        assert!(reason(read_message_from(&invalid[..])).ends_with(": too_large"));
+        assert!(reason(read_message_from(&[0xff, b' '][..])).ends_with(": parse"));
     }
 
     #[test]

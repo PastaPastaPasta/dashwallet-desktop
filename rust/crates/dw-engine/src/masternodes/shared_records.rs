@@ -214,7 +214,14 @@ pub struct SharedSession {
     pub kind: SharedKind,
     pub role: SharedRole,
     pub stage: SharedStage,
+    /// The envelope's `revision`: what `lock_shared_terms` takes back from
+    /// the coordinator that reviewed this table (D56).
     pub revision: u32,
+    /// The frozen registration's consent digest as the envelope shows it
+    /// (`consentHash`, display order), from the locked terms on: what
+    /// `approve_shared` takes back from the participant that reviewed it
+    /// (D56). `None` in a draft.
+    pub consent_hash: Option<String>,
     pub rows: Vec<ShareRow>,
     pub terms: ShareTermsView,
     /// `operatorSecretHolder`: who runs the node, as the coordinator wrote it.

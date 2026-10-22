@@ -215,6 +215,19 @@ impl Drop for InFlight {
     }
 }
 
+/// [`InFlight`] for a caller that holds the session by reference (the
+/// follower's pass), released when it is dropped.
+pub(crate) struct InFlightRef<'a> {
+    session: &'a NetworkSession,
+    key: (WalletId, String),
+}
+
+impl Drop for InFlightRef<'_> {
+    fn drop(&mut self) {
+        self.session.masternodes.protx_in_flight().remove(&self.key);
+    }
+}
+
 /// Where a test stops a hand-off, as a crash there would (MG-04 §7, the
 /// manager's slice-2 addition). Nothing after the point runs, so the row is
 /// left as the crash would leave it.
@@ -312,6 +325,19 @@ impl NetworkSession {
             session: Arc::clone(self),
             key,
         })
+    }
+
+    /// [`Self::claim_shared_session`] without waiting or refusing: `None`
+    /// while a call holds the session.
+    pub(crate) fn try_claim_shared_session(
+        &self,
+        wallet: WalletId,
+        id: &str,
+    ) -> Option<InFlightRef<'_>> {
+        let key = (wallet, id.to_string());
+        let claimed = self.masternodes.protx_in_flight().insert(key.clone());
+        // Built only when claimed: dropping one releases the key.
+        claimed.then(|| InFlightRef { session: self, key })
     }
 
     pub(crate) async fn op_row(

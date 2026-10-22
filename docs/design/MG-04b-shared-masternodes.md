@@ -569,7 +569,8 @@ Every signing call takes one `MasternodeOp{max_duffs}` grant for the acting wall
 The registration's charge is MG-05 §2's net debit applied **outside** `TxDraft::prepare`: the shared registration is
 not a `TxDraft` (its other outputs, the collateral template and other parties' change, aren't this wallet's), so the
 engine computes `I − C` from the session's recorded contribution (§4) and charges it in the same J step that hands
-out the funding signer, before signing, with MG-05's `platform.grant_exceeded` when it doesn't fit (D18).
+out the funding signer, before signing, with `send.grant_exceeded` when it doesn't fit (D18; the lease's
+`Exceeded` as `TxDraft` reports it, `send::lease_failure`).
 
 The fence (E0-04 §5, MG-04 §2): the coordinator's registration send, `update_share`, `dissolve`, `send_standby` and a
 complete maintenance send are row-less `CoreTx` artifacts through `PreparedTx::assembled` and `TxDraft::broadcast`,
@@ -594,12 +595,12 @@ current pin that is every row marked †.
 | `import_shared_message(wallet, text, target)` | async | — | 1a | Detects and applies a pasted or opened message (§2.1) by §3.0's table: creates or advances a creation session, a maintenance session, or stores a standby (§9.4). `target`: an optional maintenance session, required for a bare signatures array (§2.5). Returns `SharedImport`. Signs nothing. |
 | `join_shared(wallet, session, request)` | async | — | 1a | Participant: fills its row, reserves its share, records its contribution, returns the Details. |
 | `shared_message(wallet, session)` | async | — | 1a | The message to copy or save now: text, code, Core's file name (`shared-mn-session-<CODE>.json`). |
-| `lock_shared_terms(wallet, session, grant)` | async | `MasternodeOp` | 1a | Coordinator: builds the registration, §3.1 step 3's checks, signs its consent, returns Locked Terms. |
+| `lock_shared_terms(wallet, session, revision, grant)` | async | `MasternodeOp` | 1a | Coordinator: at the `revision` it reviewed (else `shared_message{conflict}`, D56), builds the registration, §3.1 step 3's checks, signs its consent, returns Locked Terms. |
 | `unlock_shared_terms(wallet, session)` | async | — | 1a | Coordinator: back to draft before `combined`. |
-| `approve_shared(wallet, session, grant)` | async | `MasternodeOp` | 1a | Participant: §4's checks, consent signatures, returns the Approval. |
+| `approve_shared(wallet, session, consent_hash, grant)` | async | `MasternodeOp` | 1a | Participant: of the `consent_hash` it reviewed (else `shared_message{conflict}`, D56), §4's checks, consent signatures, returns the Approval. |
 | `sign_shared_funding(wallet, session, grant)` † | async | `MasternodeOp` | 1a (refusing) | Participant: signs its inputs on the combined transaction, saves it with `out_at`, returns the Signed Contribution. In 1a it is on the facade and **always refuses** (`can_send` false); the in-process three-wallet test reaches the signed registration through a test-support capability override, never by removing the check. The override (r2-m4) is an explicit argument of a constructor in `dw-engine`'s `test_support` module, under MG-03 D40's gate `cfg(all(debug_assertions, feature = "test-support"))`: no environment variable, global or config key, and no dwcli command or flag reaches it; a release-profile check proves it absent. |
 | `send_shared_registration(wallet, session, grant)` † | async | `MasternodeOp` | 1b | Coordinator: signs its inputs once every other input is signed, saves, hands off; `resend` the same way. |
-| `discard_shared_session(wallet, session)` | async | — | 1a | Deletes a session nothing of which may be out (D17) and unlocks its coins. |
+| `discard_shared_session(wallet, session)` | async | — | 1a | Deletes a session nothing of which may be out (D17) and unlocks its coins, from the stored row (an envelope that no longer parses doesn't block it, D57). |
 | `abandon_shared_session(wallet, session, grant)` † | async | `MasternodeOp` | 1b | A session that may be out (`out_at` set, not `confirmed`): MG-04 D49's abandon, spending one of the wallet's reserved inputs to a fresh address of its own; the row is kept, read `conflicted` once that spend is in a block, and its locks are then released (D26). For a funder's `stale` key change the input is a fee input. |
 | `preview_update_share(wallet, request)` | async | — | 1a | The ProUpShareTx it would build for one of this wallet's shares, §5.1 run on it. |
 | `update_share(wallet, request, grant)` † | async | `MasternodeOp` | 1b | A `ProTxOperation` of kind `update_share`. |
@@ -616,8 +617,9 @@ current pin that is every row marked †.
 | `operations`, `resend_operation`, `discard_operation` | | | 1b | MG-04's, now also over `update_share` (1b) and `dissolve` (2) rows. |
 
 **dwcli (slice 1a).** `dwcli mn shared <cmd>` is one facade call each and prints MG-03 §9's JSON line; `--wallet W`
-(default: the oldest wallet) goes with every command. The message text is read from stdin, never argv. `lock` and
-`approve` take a `MasternodeOp` grant capped at 0. There is no `sign`, `send`, `abandon` or `update-share` before 1b.
+(default: the oldest wallet) goes with every command. The message text is read from stdin, never argv, at most
+2 MiB + 1 bytes of it (`too_large` beyond, before the UTF-8 check). `lock` and `approve` take a `MasternodeOp` grant
+capped at 0, and the `revision` or `consent_hash` that `mn shared show` printed for the copy reviewed (D56). There is no `sign`, `send`, `abandon` or `update-share` before 1b.
 
 | Command | Facade call |
 |---|---|
@@ -629,17 +631,20 @@ current pin that is every row marked †.
 | `mn shared import [--target <session>]` (text on stdin) | `import_shared_message` |
 | `mn shared join <session> [--share-index N] [--reward refund\|new\|ADDR]` | `join_shared` |
 | `mn shared message <session> [--out FILE]` | `shared_message` |
-| `mn shared lock <session>` / `unlock <session>` | `lock_shared_terms` / `unlock_shared_terms` |
-| `mn shared approve <session>` | `approve_shared` |
+| `mn shared lock <session> --revision N` / `unlock <session>` | `lock_shared_terms` / `unlock_shared_terms` |
+| `mn shared approve <session> --consent-hash H` | `approve_shared` |
 | `mn shared discard <session>` | `discard_shared_session` |
 | `mn shared preview-update-share <hash> --share-index N --reward refund\|new\|ADDR` | `preview_update_share` |
 
 Refusals, in order, as MG-04 §2.3: arguments (`invalid_argument`; a session id is 64 lower-case hex, creation and
 maintenance alike, D28, m-17), `wallet_not_found`, `masternodes.unsupported{feature: "shared_masternodes"}` (v24 not
 `active` for creation; `can_send` false for a † call), the list (`list_unavailable`, `shared_too_early`,
-`shared_registration_unknown`), the session (`shared_session_not_found`, `in_flight`, `shared_stage{stage}`), the
-message (`shared_message{reason}`), Core's rules (`protx_refused{reason}`), the consent checks
-(`shared_funding_mismatch{reason}`), then the lease (`Platform`) and the send (`send.*`).
+`shared_registration_unknown`), the session (`shared_session_not_found`, `in_flight`, `shared_stage{stage}`; then
+lock's and approve's `shared_message{conflict}` for a copy other than the one reviewed, D56; then lock's, approve's and
+sign's `shared_stage{dead}` for a reservation no longer held, D17, D50), the message (`shared_message{reason}`),
+Core's rules (`protx_refused{reason}`), the consent checks (`shared_funding_mismatch{reason}`; at lock the fee
+floor's `fee_low` comes before the coordinator's own-side checks, §3.1 step 3), then the lease (`Platform`) and the
+send (`send.*`).
 
 **MG-04's registrar calls refuse a shared masternode (m-13, D30).** `preview_update_registrar` and
 `update_registrar` refuse `protx_refused{reason: "bad-protx-shared-mn"}` before building when the masternode is
@@ -692,6 +697,7 @@ pub struct SharedSession {
     pub id: String, pub code: String,     // 64 hex (D28, §3.3); session code (6 upper-case hex)
     pub message_code: String,             // the current envelope's fingerprint, XXXX-XXXX (§2.3)
     pub kind: SharedKind, pub role: SharedRole, pub stage: SharedStage, pub revision: u32,
+    pub consent_hash: Option<String>,     // `consentHash` as the envelope shows it, from the locked terms on (D56)
     pub rows: Vec<ShareRow>, pub terms: ShareTermsView, pub fee: Option<u64>,
     pub pro_tx_hash: Option<String>, pub txid: Option<String>,
     pub reserved: Vec<String>,            // this wallet's locked outpoints
@@ -1028,6 +1034,11 @@ MG-05's FlowKind gains `SharedMasternode` (1a) and `Dissolution` (2) (MG-05 D8).
 | D53 | **`start_shared` refuses fewer than `MIN_SHARES` (2) rows as `invalid_argument`**, before Core's `bad-protx-shares-count` would apply. | A one-row table isn't a shared masternode; a request-shape error is the caller's, not Core's. |
 | D54 | **The follow pass releases the coin locks of `confirmed`, `conflicted` and `dead` sessions.** | D17 keeps them until then; after that the coins are spent or the session can't spend them, and kept locks would hide spendable coins. |
 | D55 | **A joined participant importing a re-fee'd Invitation at the same revision gets `conflict`**; per D33 it discards and joins again. | D33 refuses the stale reply at the coordinator; the participant's side sees two different Invitations at one revision, which §3.0 calls a conflict. |
+| D56 | **Consent binds to the copy reviewed: `lock_shared_terms` takes the `revision` and `approve_shared` the `consent_hash` the caller read from the session record (`SharedSession.revision`, `.consent_hash`, exactly as shown); another value now is `shared_message{conflict}`.** It is checked right after the session's role and stage (for lock, before `incomplete`; for approve, before an approved session's Approval is returned again), then the reservation (D17, D50), before any message, rule or consent check. | Every session call claims the in-flight mark, so an import absorbed between the user's review and the call (a reply bumping the revision, M-1 case 2's re-lock moving the digest) would otherwise get a signature over a table or terms the user never saw. The record already shows both values, and dash-qt's dialog only signs what it displays. |
+| D57 | **`discard_shared_session` reads `out_at` from the stored row**: unset, the row is deleted and its `reserved` unlocked without parsing the envelope; set, it refuses `shared_stage` with the derived stage, or, when the envelope no longer parses, `sent` (coordinator) or `funding_signed` (participant), the stage an out row with nothing in a block derives. | A row this version can't read (a downgrade, a bug) must not hold its coins locked for ever; D17 only needs `out_at`, which the appdb's delete already checks. |
+| D58 | **`payloadMatchesEnvelope`'s operator key is Core's `pubKeyOperator.Get().ToString()`**: the key's hex only when Core reads it as valid (a G1 point, not infinity, re-serializing to the same bytes); any other payload key reads as 48 zero bytes, so terms naming its own bytes don't match. | rc.3 `CBLSLazyWrapper::Get` returns its invalid object for such bytes, whose `ToString` is zeros (`bls/bls.h:125-131,492-511`). Terms of 96 zeros would match it, as in Core; Core's rules then refuse the key (`bad-protx-key-null`) before any signature. |
+| D59 | **`NetInfoMatches` runs `AddEntry`'s per-entry checks on the session's network** (`ValidateService`: a valid address of a known network, routable except on regtest, a non-zero port not in `IsBadPort`), and splits `coreP2PAddrs` on commas and ASCII HT, LF, VT, FF, CR and space only. | Core adds each entry through `ExtNetInfo::AddEntry` (rc.3 `evo/netinfo.cpp:500-551`); Qt's `[,\s]+` has no `UseUnicodePropertiesOption`, so PCRE2's `\s` is the ASCII set and a no-break space is part of an entry. |
+| D60 | **The follower's pass skips a session another call holds in flight, re-reads the others under the mark, and releases a session's locks only while its `reserved` is still the value it judged** (`release_shared_session_locks_durable`'s `expected`). | Without the mark the pass could unlock coins a concurrent `set_shared_fee` had just re-reserved; the conditional write also covers a writer that doesn't take the mark. |
 
 ### Follow-ups
 

@@ -20,7 +20,7 @@ use dw_protx::shared::registration::{
 };
 use dw_protx::shared::session::consent::P2PKH_DUST;
 use dw_protx::shared::session::funding::{
-    check_frozen, decode_frozen, funding_parts, key_id_of, script_for,
+    check_frozen, decode_frozen, funding_parts, key_id_of, script_for, service_entries,
 };
 use dw_protx::shared::session::merge::check_join_signatures;
 use dw_protx::shared::session::{MAX_CONTRIBUTION_INPUTS, Session, Stage};
@@ -44,13 +44,6 @@ pub(crate) enum ServiceProblem {
     Unsupported,
 }
 
-/// The entries of a `coreP2PAddrs`, split on commas and whitespace as
-/// `NetInfoMatches` splits them.
-fn entries(text: &str) -> impl Iterator<Item = &str> {
-    text.split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|e| !e.is_empty())
-}
-
 fn parse_entry(entry: &str) -> Result<SocketAddr, ServiceProblem> {
     entry.parse().map_err(|_| {
         // A host name, a bracketed or bare IPv6, an onion: a kind, not a typo.
@@ -67,7 +60,7 @@ fn parse_entry(entry: &str) -> Result<SocketAddr, ServiceProblem> {
 /// D5 for the coordinator's request: required, numeric IPv4 `a.b.c.d:port`
 /// entries only.
 pub(crate) fn coordinator_services(text: &str) -> Result<Vec<SocketAddr>, ServiceProblem> {
-    let parsed = entries(text)
+    let parsed = service_entries(text)
         .map(parse_entry)
         .collect::<Result<Vec<_>, _>>()?;
     if parsed.is_empty() {
@@ -83,7 +76,7 @@ pub(crate) fn coordinator_services(text: &str) -> Result<Vec<SocketAddr>, Servic
 /// service is accepted; anything else (an fc00::/8 address flipped to
 /// CJDNS first, as Core does) is refused.
 pub(crate) fn participant_services_ok(text: &str) -> bool {
-    let Ok(parsed) = entries(text)
+    let Ok(parsed) = service_entries(text)
         .map(parse_entry)
         .collect::<Result<Vec<_>, _>>()
     else {
@@ -113,7 +106,7 @@ pub(crate) fn participant_services_ok(text: &str) -> bool {
 /// builds it (the empty info for an empty service). `None`: not one Core
 /// can carry (more than four entries, an address without an IP form).
 pub(crate) fn net_info_of(text: &str) -> Option<ExtNetInfo> {
-    let parsed = entries(text)
+    let parsed = service_entries(text)
         .map(|e| e.parse::<SocketAddr>().ok())
         .collect::<Option<Vec<_>>>()?;
     ExtNetInfo::core_p2p(&parsed)
@@ -422,5 +415,20 @@ mod tests {
         assert!(participant_services_ok("[2001:db8::1]:9999"));
         assert!(!participant_services_ok("[fc00::1]:9999"));
         assert!(!participant_services_ok("example.com:9999"));
+    }
+
+    /// fixes-1a M8: entries split as `NetInfoMatches`' `[,\s]+` without
+    /// Unicode properties: a no-break space joins two entries into one
+    /// that doesn't parse; an ASCII vertical tab separates them.
+    #[test]
+    fn test_QT_126_services_split_on_ascii_space_only() {
+        let joined = "1.2.3.4:9999\u{a0}5.6.7.8:9999";
+        assert!(coordinator_services(joined).is_err());
+        assert!(!participant_services_ok(joined));
+        assert_eq!(net_info_of(joined), None);
+        let split = "1.2.3.4:9999\x0b5.6.7.8:9999";
+        assert_eq!(coordinator_services(split).unwrap().len(), 2);
+        assert!(participant_services_ok(split));
+        assert!(net_info_of(split).is_some());
     }
 }

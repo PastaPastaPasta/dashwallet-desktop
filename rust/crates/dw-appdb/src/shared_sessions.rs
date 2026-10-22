@@ -238,10 +238,11 @@ impl AppDb {
         })
     }
 
-    /// Replaces a session's reservation (MG-04b D33, `set_shared_fee`), in
-    /// one synced transaction: the old outpoints are unlocked, the new
-    /// ones (`reserved`, a JSON array of `"txid:vout"`) locked, and the
-    /// row's `reserved`, `contribution` and `envelope` replaced. An
+    /// Replaces a session's reservation (MG-04b D33, `set_shared_fee`, and
+    /// a participant's join), in one synced transaction: the old outpoints
+    /// are unlocked, the new ones (`reserved`, a JSON array of
+    /// `"txid:vout"`) locked, and the row's `reserved`, `contribution`,
+    /// `my_shares` and `envelope` replaced. An
     /// outpoint in both stays locked. `false`, and nothing written, when
     /// the session is gone or is out: its coins are never released then.
     #[expect(clippy::too_many_arguments, reason = "one replaced reservation")]
@@ -251,6 +252,7 @@ impl AppDb {
         id: &str,
         reserved: &str,
         contribution: Option<&str>,
+        my_shares: &str,
         envelope: &str,
         updated_at: u64,
         now: u64,
@@ -271,14 +273,15 @@ impl AppDb {
             unlock_reserved(&tx, wallet_id, &old, now)?;
             lock_reserved(&tx, wallet_id, reserved, now)?;
             tx.execute(
-                "UPDATE shared_mn_sessions SET reserved = ?3, contribution = ?4, envelope = ?5,
-                     updated_at = ?6
+                "UPDATE shared_mn_sessions SET reserved = ?3, contribution = ?4, my_shares = ?5,
+                     envelope = ?6, updated_at = ?7
                  WHERE wallet_id = ?1 AND id = ?2",
                 params![
                     wallet_id,
                     id,
                     reserved,
                     contribution,
+                    my_shares,
                     envelope,
                     sql_u64(updated_at)
                 ],
@@ -341,12 +344,16 @@ impl AppDb {
 
     /// Unlocks a session's coins and forgets that it held them (`reserved`
     /// becomes `[]`), keeping the row, in one synced transaction: for a
-    /// session that is confirmed, conflicted or dead. Idempotent; `false`
-    /// when the session is gone.
+    /// session that is confirmed, conflicted or dead. `expected` is the
+    /// `reserved` value the caller judged the session by: when the row's
+    /// is another now (a fee change re-reserved it since), nothing is
+    /// unlocked or written. Idempotent; `false` when the session is gone
+    /// or its `reserved` isn't `expected`.
     pub fn release_shared_session_locks_durable(
         &self,
         wallet_id: &str,
         id: &str,
+        expected: &str,
         now: u64,
     ) -> Result<bool> {
         self.durably(|conn| {
@@ -358,10 +365,10 @@ impl AppDb {
                     |r| r.get(0),
                 )
                 .optional()?;
-            let Some(reserved) = reserved else {
+            if reserved.as_deref() != Some(expected) {
                 return Ok(false);
-            };
-            unlock_reserved(&tx, wallet_id, &reserved, now)?;
+            }
+            unlock_reserved(&tx, wallet_id, expected, now)?;
             tx.execute(
                 "UPDATE shared_mn_sessions SET reserved = '[]' WHERE wallet_id = ?1 AND id = ?2",
                 params![wallet_id, id],
@@ -592,6 +599,7 @@ mod tests {
                 &id(1),
                 &new,
                 Some("{\"total\":8}"),
+                "{\"1\":3}",
                 "{\"rev\":2}",
                 40,
                 2
@@ -601,6 +609,7 @@ mod tests {
         let r = db.shared_session(W, &id(1)).unwrap().unwrap();
         assert_eq!(r.reserved, new);
         assert_eq!(r.contribution.as_deref(), Some("{\"total\":8}"));
+        assert_eq!(r.my_shares, "{\"1\":3}");
         assert_eq!(r.envelope, "{\"rev\":2}");
         assert_eq!(r.updated_at, 40);
         assert_eq!(active_locks(&db), pairs(&[("mine", 0), ("u", 1), ("v", 2)]));
@@ -618,6 +627,7 @@ mod tests {
                 &id(1),
                 &reserved(&[("w", 0)]),
                 None,
+                "{}",
                 "{\"rev\":3}",
                 41,
                 3
@@ -636,6 +646,7 @@ mod tests {
                 &id(2),
                 &reserved(&[("w", 0)]),
                 None,
+                "{}",
                 "{}",
                 42,
                 4
@@ -658,6 +669,7 @@ mod tests {
                 &id(1),
                 &reserved(&[("w", 0)]),
                 None,
+                "{}",
                 "{}",
                 42,
                 4
@@ -749,12 +761,13 @@ mod tests {
     #[test]
     fn releasing_the_locks_keeps_the_row() {
         let db = AppDb::open_in_memory().unwrap();
+        let held = reserved(&[("t", 0), ("u", 1)]);
         db.insert_shared_session_durable(W, &row(1, &[("t", 0), ("u", 1)]), 1)
             .unwrap();
         db.mark_shared_session_out_durable(W, &id(1), &[7], "tx", 30)
             .unwrap();
         assert!(
-            db.release_shared_session_locks_durable(W, &id(1), 40)
+            db.release_shared_session_locks_durable(W, &id(1), &held, 40)
                 .unwrap()
         );
         assert!(active_locks(&db).is_empty());
@@ -763,14 +776,36 @@ mod tests {
         // Idempotent: a later lock of the same outpoint is not released.
         db.lock_manual(W, "t", 0, 41).unwrap();
         assert!(
-            db.release_shared_session_locks_durable(W, &id(1), 42)
+            db.release_shared_session_locks_durable(W, &id(1), "[]", 42)
                 .unwrap()
         );
         assert_eq!(active_locks(&db), pairs(&[("t", 0)]));
         assert!(
-            !db.release_shared_session_locks_durable(W, &id(2), 42)
+            !db.release_shared_session_locks_durable(W, &id(2), "[]", 42)
                 .unwrap()
         );
+    }
+
+    /// fixes-1a M4: a release judged on a `reserved` that has since been
+    /// replaced (a fee change re-reserved the session's coins) changes
+    /// nothing: neither the new locks nor the row.
+    #[test]
+    fn a_release_of_a_replaced_reservation_changes_nothing() {
+        let db = AppDb::open_in_memory().unwrap();
+        let read = reserved(&[("t", 0)]);
+        db.insert_shared_session_durable(W, &row(1, &[("t", 0)]), 1)
+            .unwrap();
+        let now = reserved(&[("t", 0), ("v", 2)]);
+        assert!(
+            db.replace_shared_session_reservation_durable(W, &id(1), &now, None, "{}", "{}", 2, 2)
+                .unwrap()
+        );
+        assert!(
+            !db.release_shared_session_locks_durable(W, &id(1), &read, 3)
+                .unwrap()
+        );
+        assert_eq!(active_locks(&db), pairs(&[("t", 0), ("v", 2)]));
+        assert_eq!(db.shared_session(W, &id(1)).unwrap().unwrap().reserved, now);
     }
 
     #[test]

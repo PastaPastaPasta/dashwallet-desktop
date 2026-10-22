@@ -117,9 +117,15 @@ fn test_QT_126_shared_commands_on_a_datadir_without_a_wallet_report_wallet_not_f
         ),
         (vec!["mn", "shared", "join", SESSION], b""),
         (vec!["mn", "shared", "message", SESSION], b""),
-        (vec!["mn", "shared", "lock", SESSION], b""),
+        (
+            vec!["mn", "shared", "lock", SESSION, "--revision", "3"],
+            b"",
+        ),
         (vec!["mn", "shared", "unlock", SESSION], b""),
-        (vec!["mn", "shared", "approve", SESSION], b""),
+        (
+            vec!["mn", "shared", "approve", SESSION, "--consent-hash", SECRET],
+            b"",
+        ),
         (vec!["mn", "shared", "discard", SESSION], b""),
         (
             vec![
@@ -186,9 +192,13 @@ fn test_QT_126_shared_refusals_are_the_facades_codes_and_quote_nothing() {
 
     // The creation calls need v24 to be active, which a fresh wallet hasn't
     // seen; the grant they take is capped at 0 and never charged.
-    for command in ["lock", "approve", "join"] {
-        let out = run(&["mn", "shared", command, SESSION], b"");
-        assert_eq!(code(&out), "masternodes.unsupported", "{command}");
+    for args in [
+        &["lock", SESSION, "--revision", "1"][..],
+        &["approve", SESSION, "--consent-hash", SECRET],
+        &["join", SESSION],
+    ] {
+        let out = run(&[&["mn", "shared"][..], args].concat(), b"");
+        assert_eq!(code(&out), "masternodes.unsupported", "{args:?}");
     }
     let shares = ["me:10000000000000", "you:10000000000000"];
     let out = run(&start_args(&shares), b"");
