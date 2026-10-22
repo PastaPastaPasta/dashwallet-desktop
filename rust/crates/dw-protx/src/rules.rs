@@ -282,13 +282,14 @@ pub fn check_external_collateral(
 }
 
 /// Whether `sig` is a 65-byte compact signature over `hash` by the key
-/// with hash160 `key_id` (`CPubKey::RecoverCompact`, compressed or not).
+/// with hash160 `key_id`, compressed or not: what Core's legacy
+/// `CHashSigner::VerifyHash` accepts. Shared-masternode signatures use
+/// Core's canonical check instead (MG-04b).
 pub fn signed_by(sig: &[u8], hash: [u8; 32], key_id: [u8; 20]) -> bool {
     let Ok(mut sig) = <[u8; 65]>::try_from(sig) else {
         return false;
     };
-    // Core reads any header byte, as `(h - 27) & 3` and `(h - 27) & 4`;
-    // `from_slice` refuses one outside 27..=34 (rust-dashcore #1144).
+    // As `VerifyHash` reads the header; `from_slice` alone is narrower.
     sig[0] = 27 + (sig[0].wrapping_sub(27) & 7);
     let Ok(sig) = MessageSignature::from_slice(&sig) else {
         return false;
@@ -633,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn signed_by_reads_any_header_byte_as_core_does() {
+    fn signed_by_accepts_what_core_verifyhash_accepts() {
         let secret = [0x11u8; 32];
         let hash = [0x22u8; 32];
         let public = dashcore::PublicKey {
@@ -645,7 +646,6 @@ mod tests {
         let key_id = public.pubkey_hash().to_byte_array();
         let sig = crate::payloads::sign_hash_compact(&secret, &hash).unwrap();
         assert!(signed_by(&sig, hash, key_id));
-        // Core keeps the header's low three bits above 27 and drops the rest.
         for header in [sig[0].wrapping_add(8), sig[0].wrapping_sub(8)] {
             let mut moved = sig;
             moved[0] = header;
