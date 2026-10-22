@@ -5056,6 +5056,94 @@ button.bell-row-open:focus-visible {
   justify-content: space-between;
 }
 
+/* Username voting (MG-11): the tally rows, the choice list of the vote sheet. */
+/* A selected row's tint under its "Ends in" chip keeps the text at AA, as a contact row's (axe). */
+.mg-row .chip-warning {
+  background: linear-gradient(var(--dw-role-warning-tint), var(--dw-role-warning-tint)), var(--dw-role-card);
+}
+
+.mg-names-intro {
+  margin: 0 0 var(--dw-space-m);
+}
+
+.mg-tally {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mg-tally-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--dw-space-s);
+  row-gap: var(--dw-space-xxxs);
+  font-size: var(--dw-type-footnote-size);
+}
+
+.mg-tally-title {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  min-width: 0;
+}
+
+.mg-tally-votes {
+  font-variant-numeric: tabular-nums;
+}
+
+.mg-tally-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-progress-track);
+}
+
+.mg-tally-fill {
+  background: var(--dw-role-accent);
+}
+
+.mg-tally-lock {
+  background: var(--dw-role-danger);
+}
+
+.mg-tally-abstain {
+  background: var(--dw-role-text-tertiary);
+}
+
+.mg-choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.mg-choice {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  padding: var(--dw-space-xs) var(--dw-space-s);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-card);
+}
+
+.mg-choice:has(input:checked) {
+  box-shadow: inset 0 0 0 2px var(--dw-role-accent);
+}
+
+.mg-choice-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
 .page-masternodes .mg-notice {
   margin-bottom: var(--dw-space-l);
 }

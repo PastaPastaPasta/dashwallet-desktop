@@ -38,6 +38,7 @@ import type { ContactRecipient } from "./ContactRecipient";
 import type { ContactRequestOutcome } from "./ContactRequestOutcome";
 import type { ContactSummaryInfo } from "./ContactSummaryInfo";
 import type { ContestStatus } from "./ContestStatus";
+import type { ContestedNames } from "./ContestedNames";
 import type { CoreExportFormatName } from "./CoreExportFormatName";
 import type { CoreExportReport } from "./CoreExportReport";
 import type { CoreImportReport } from "./CoreImportReport";
@@ -94,7 +95,9 @@ import type { MnemonicCheck } from "./MnemonicCheck";
 import type { MnemonicLanguageName } from "./MnemonicLanguageName";
 import type { MyProposal } from "./MyProposal";
 import type { NameAvailability } from "./NameAvailability";
+import type { NameChoice } from "./NameChoice";
 import type { NameOutcome } from "./NameOutcome";
+import type { NameVoteCast } from "./NameVoteCast";
 import type { NetworkData } from "./NetworkData";
 import type { NetworkInfo } from "./NetworkInfo";
 import type { NodeSummary } from "./NodeSummary";
@@ -2267,6 +2270,29 @@ export function governanceVote(walletId: string, proposal: string, outcome: Vote
 }
 
 /**
+ * The open DPNS contests with their tallies, the wallet's masternodes
+ * that can vote on names, each with its present choice and the votes
+ * this app saw it use per contest, and `votesAllowed` (MG-07 §1). Needs
+ * the SPV masternode list (`governance.list_unavailable`) and Platform
+ * (`platform.unavailable`), not governance sync.
+ */
+export function governanceContestedNames(walletId: string): Promise<ContestedNames> {
+  return invoke<ContestedNames>("governance_contested_names", { walletId });
+}
+
+/**
+ * Casts `choice` on the poll of `label` with each masternode
+ * (proTxHash) under one `Governance` grant of the wallet: one result
+ * per masternode, in order (MG-07 §1). Argument and contest errors
+ * (`governance.contest_not_found`, `contest_closed`,
+ * `not_a_contender`) fail the call before the grant is used; lease
+ * errors are `platform.*`.
+ */
+export function governanceVoteName(walletId: string, label: string, choice: NameChoice, masternodes: Array<string>, grant: string): Promise<Array<NameVoteCast>> {
+  return invoke<Array<NameVoteCast>>("governance_vote_name", { walletId, label, choice, masternodes, grant });
+}
+
+/**
  * The review step of the Create Proposal wizard: the proposal's hash,
  * data, epochs and fees as if created now. Reserves, signs and saves
  * nothing. `governance.invalid_proposal` lists every failing field
@@ -2619,6 +2645,8 @@ export type CommandArgs = {
   governance_current_votes: { hash: string; outpoint: string | null };
   governance_voting_masternodes: { walletId: string; proposal: string };
   governance_vote: { walletId: string; proposal: string; outcome: VoteOutcomeName; masternodes: Array<string>; grant: string };
+  governance_contested_names: { walletId: string };
+  governance_vote_name: { walletId: string; label: string; choice: NameChoice; masternodes: Array<string>; grant: string };
   governance_preview_proposal: { walletId: string; draft: ProposalDraft };
   governance_create_proposal: { walletId: string; draft: ProposalDraft; grant: string };
   governance_my_proposals: { walletId: string };
@@ -2891,6 +2919,8 @@ export type CommandResults = {
   governance_current_votes: Array<CurrentVoteRow>;
   governance_voting_masternodes: Array<VotingMasternode>;
   governance_vote: Array<VoteCast>;
+  governance_contested_names: ContestedNames;
+  governance_vote_name: Array<NameVoteCast>;
   governance_preview_proposal: ProposalPreview;
   governance_create_proposal: MyProposal;
   governance_my_proposals: Array<MyProposal>;
@@ -3165,6 +3195,8 @@ export const COMMANDS: Record<CommandName, string> = {
   governance_current_votes: "governance",
   governance_voting_masternodes: "governance",
   governance_vote: "governance",
+  governance_contested_names: "governance",
+  governance_vote_name: "governance",
   governance_preview_proposal: "governance",
   governance_create_proposal: "governance",
   governance_my_proposals: "governance",

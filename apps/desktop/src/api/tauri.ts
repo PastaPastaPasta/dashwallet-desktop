@@ -235,6 +235,8 @@ export class IpcBackend implements Backend {
   governanceProposal = cmd.governanceProposal;
   governanceVotingMasternodes = cmd.governanceVotingMasternodes;
   governanceVote = cmd.governanceVote;
+  governanceContestedNames = cmd.governanceContestedNames;
+  governanceVoteName = cmd.governanceVoteName;
   governancePreviewProposal = cmd.governancePreviewProposal;
   governanceCreateProposal = cmd.governanceCreateProposal;
   governanceMyProposals = cmd.governanceMyProposals;

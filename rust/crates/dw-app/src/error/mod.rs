@@ -276,6 +276,12 @@ pub enum ErrorData {
     /// `governance.invalid_proposal`: every draft field that failed, in
     /// wizard order.
     ProposalFields { fields: Vec<ProposalFieldName> },
+    /// `governance.contest_not_found`, `governance.contest_closed`: the
+    /// normalized DPNS label (MG-07 D13).
+    ContestLabel { label: String },
+    /// `governance.not_a_contender`: the identity id (base58) the poll does
+    /// not list (MG-07 D13).
+    Contender { identity: String },
     /// `platform.not_implemented`, `governance.not_implemented`,
     /// `not_implemented`: the call that is not.
     Call { call: String },

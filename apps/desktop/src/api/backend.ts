@@ -86,6 +86,9 @@ import type { ProposalQuery } from "./generated/ProposalQuery";
 import type { ProposalRow } from "./generated/ProposalRow";
 import type { SuperblockDate } from "./generated/SuperblockDate";
 import type { VoteCast } from "./generated/VoteCast";
+import type { ContestedNames } from "./generated/ContestedNames";
+import type { NameChoice } from "./generated/NameChoice";
+import type { NameVoteCast } from "./generated/NameVoteCast";
 import type { VoteOutcomeName } from "./generated/VoteOutcomeName";
 import type { VotingMasternode } from "./generated/VotingMasternode";
 import type { RescanStart } from "./generated/RescanStart";
@@ -453,6 +456,12 @@ export interface Backend {
   governanceMyProposals(walletId: string): Promise<MyProposal[]>;
   /** [Submit] (MG-06 D24). */
   governanceSubmitProposal(walletId: string, hash: string): Promise<MyProposal>;
+  // Contested DPNS names (MG-11 over MG-07): need the SPV masternode list and Platform, not
+  // governance sync.
+  /** The open contests, the wallet's masternodes that can vote on names, and the vote limit. */
+  governanceContestedNames(walletId: string): Promise<ContestedNames>;
+  /** One name vote per masternode under one `governance` grant; one result each, in order. */
+  governanceVoteName(walletId: string, label: string, choice: NameChoice, masternodes: string[], grant: string): Promise<NameVoteCast[]>;
   /** Subscribes to engine events; returns the unsubscribe function. */
   onEvent(listener: (event: AppEvent) => void): Promise<() => void>;
   /** Subscribes to the shell's events (menus, tray, deep links). */

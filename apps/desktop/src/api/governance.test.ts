@@ -29,8 +29,6 @@ const NOT_BOUND: Record<string, string> = {
   governance: "the handle: every command takes it from the open session",
   superblock_budget: "a free function of a height; governance_upcoming_superblocks gives each budget",
   relay_vote: "Core's voteraw, which the console runs",
-  contested_names: "deferred: MG-11's contested-name voting UI binds it (MG-07 D11)",
-  vote_name: "deferred: MG-11's contested-name voting UI binds it (MG-07 D11)",
 };
 
 /** The text of the `##`-level section that starts with `heading`. */
@@ -68,11 +66,13 @@ function contractEnums(): Map<string, string[]> {
   return enums;
 }
 
-/** The §3 `MyProposalState` variants (an enum with fields, so not one of `contractEnums`): each
- * variant's camelCase `kind` with its camelCase field names. */
-function contractStateVariants(): Map<string, string[]> {
-  const body = section("## 3. Surface").match(/^pub enum MyProposalState \{\n((?: {4}.*\n)*)\}/m);
-  expect(body, "MyProposalState in §3").not.toBeNull();
+/** The §3 enums with fields (so not `contractEnums`), each `{ kind, ...fields }` in JSON. */
+const TAGGED = ["MyProposalState", "NameChoice", "NameVotingKey"];
+
+/** A §3 enum with fields (`TAGGED`): each variant's camelCase `kind` with its camelCase field names. */
+function contractVariants(name: string): Map<string, string[]> {
+  const body = section("## 3. Surface").match(new RegExp(`^pub enum ${name} \\{\\n((?: {4}.*\\n)*)\\}`, "m"));
+  expect(body, `${name} in §3`).not.toBeNull();
   const variants = new Map<string, string[]>();
   for (const m of body![1].matchAll(/^ {4}(\w+)(?: \{ (.*) \})?,$/gm)) {
     const fields = m[2] ? m[2].split(", ").map((f) => camel(f.split(":")[0])) : [];
@@ -111,10 +111,10 @@ function expectRecord(c: Contract, record: string, value: unknown, at: string, s
   }
 }
 
-/** Checks a `MyProposalState`: `{ kind, ...fields }`, the kind a §3 variant carrying exactly its fields. */
-function expectState(value: unknown, at: string) {
+/** Checks a `TAGGED` enum's value: `{ kind, ...fields }`, the kind a §3 variant carrying exactly its fields. */
+function expectTagged(name: string, value: unknown, at: string) {
   const { kind, ...rest } = value as { kind: string };
-  const variants = contractStateVariants();
+  const variants = contractVariants(name);
   expect([...variants.keys()], at).toContain(kind);
   expect(Object.keys(rest).sort(), `${at}: ${kind}`).toEqual([...variants.get(kind)!].sort());
 }
@@ -127,7 +127,7 @@ function expectValue(c: Contract, type: string, value: unknown, at: string, seen
   expect(Array.isArray(value), at).toBe(list !== undefined);
   for (const [i, v] of (list ? (value as unknown[]) : [value]).entries()) {
     const there = list ? `${at}[${i}]` : at;
-    if (leaf === "MyProposalState") expectState(v, there);
+    if (TAGGED.includes(leaf)) expectTagged(leaf, v, there);
     else if (c.records.has(leaf)) expectRecord(c, leaf, v, there, seen);
     else if (c.enums.has(leaf)) expect(c.enums.get(leaf), `${there}: ${leaf}`).toContain(v);
     else {
@@ -138,13 +138,8 @@ function expectValue(c: Contract, type: string, value: unknown, at: string, seen
   }
 }
 
-/** §3 records no bound command returns: the `proposals` argument and the unbound calls' (D93,
- * MG-07 D11). */
-const NOT_RETURNED = ["ContestedName", "ContestedNames", "NameContender", "NameVoteCast", "NameVoter", "NameVoterState", "ProposalDraft", "ProposalQuery", "RawVote", "VoteRelayed"];
-
-/** §3 enums with fields that only the unbound contested-name records carry: MG-11 mirrors them
- * when it binds the calls (MG-07 D11). */
-const NOT_MIRRORED = ["NameChoice", "NameVotingKey"];
+/** §3 records no bound command returns: the `proposals` argument and `relay_vote`'s (D93). */
+const NOT_RETURNED = ["ProposalDraft", "ProposalQuery", "RawVote", "VoteRelayed"];
 
 /** The codes §4 lists for `GovernanceError`. */
 function contractCodes(): string[] {
@@ -202,6 +197,8 @@ describe("governance contract", () => {
     const hash = r.governance_proposal.row.hash;
     const outpoint = r.governance_current_votes[1].outpoint;
     const mn = r.governance_voting_masternodes[0].proTxHash;
+    const contender = r.governance_contested_names.contests[0].contenders[0].identity;
+    const voter = r.governance_contested_names.voters[0].proTxHash;
     const draft = {
       name: "wallet-fund",
       url: "https://example.org/wallet",
@@ -229,6 +226,8 @@ describe("governance contract", () => {
       governance_create_proposal: () => cmd.governanceCreateProposal("ab".repeat(32), draft, "grant-1"),
       governance_my_proposals: () => cmd.governanceMyProposals("ab".repeat(32)),
       governance_submit_proposal: () => cmd.governanceSubmitProposal("ab".repeat(32), hash),
+      governance_contested_names: () => cmd.governanceContestedNames("ab".repeat(32)),
+      governance_vote_name: () => cmd.governanceVoteName("ab".repeat(32), "a11ce", { kind: "towardsIdentity", identity: contender }, [voter], "grant-1"),
     };
     for (const call of Object.values(run)) await call();
     expect(calls.map(([name]) => name).sort()).toEqual(Object.keys(run).sort());
@@ -241,23 +240,19 @@ describe("governance contract", () => {
     expect(calls).toContainEqual(["governance_create_proposal", { walletId: "ab".repeat(32), draft, grant: "grant-1" }]);
     expect(calls).toContainEqual(["governance_submit_proposal", { walletId: "ab".repeat(32), hash }]);
     expect(calls).toContainEqual(["governance_vote", { walletId: "ab".repeat(32), proposal: hash, outcome: "no", masternodes: [mn], grant: "grant-1" }]);
+    expect(calls).toContainEqual(["governance_contested_names", { walletId: "ab".repeat(32) }]);
+    expect(calls).toContainEqual([
+      "governance_vote_name",
+      { walletId: "ab".repeat(32), label: "a11ce", choice: { kind: "towardsIdentity", identity: contender }, masternodes: [voter], grant: "grant-1" },
+    ]);
   });
 
   it("mirrors each §3 enum of a record field, variant for variant", () => {
     const c: Contract = { records: contractRecords(), enums: contractEnums() };
     const used = new Set([...c.records.values()].flat().map(([, t]) => t.match(/(\w+)>*$/)![1]).filter((t) => !(t in JSON_TYPES) && !c.records.has(t)));
-    // `MyProposalState` carries fields, so `expectState` holds it (and the generated union below).
+    // The `TAGGED` enums carry fields, so `expectTagged` holds them, not a `<Enum>Name` mirror.
     expect([...used].sort()).toEqual(["GovernanceSyncPhase", "MasternodeType", "MyProposalState", "NameChoice", "NameVotingKey", "ProposalScope", "ProposalStatus", "VoteOutcome", "VoteSignal"]);
-    used.delete("MyProposalState");
-    // An enum left unmirrored is carried only by records no bound command returns (review n3): a
-    // bound record carrying one fails here, not by skipping its mirror. MG-11 empties both lists.
-    for (const [record, fields] of c.records) {
-      for (const [field, type] of fields) {
-        const leaf = type.match(/(\w+)>*$/)![1];
-        if (NOT_MIRRORED.includes(leaf)) expect(NOT_RETURNED, `${record}.${field}: ${leaf}`).toContain(record);
-      }
-    }
-    for (const e of NOT_MIRRORED) used.delete(e);
+    for (const e of TAGGED) used.delete(e);
     for (const e of used) {
       // dw-app's mirror, `<Enum>Name`, as ts-rs writes it.
       const ts = readFileSync(new URL(`./generated/${e}Name.ts`, import.meta.url), "utf8");
@@ -295,7 +290,7 @@ describe("governance contract", () => {
     const shared = r.governance_voting_masternodes.find((m) => m.keyHolders > 1);
     expect([shared?.currentVote, shared?.keyLastVote]).toEqual([null, "abstain"]);
     // The wallet's proposals cover every state, and a state's camelCase kind reaches the renderer.
-    expect(r.governance_my_proposals.map((p) => p.state.kind).sort()).toEqual([...contractStateVariants().keys()].sort());
+    expect(r.governance_my_proposals.map((p) => p.state.kind).sort()).toEqual([...contractVariants("MyProposalState").keys()].sort());
     expect(r.governance_my_proposals[1].state).toEqual({ kind: "readyToSubmit", reason: "noPeerAccepted" });
     expect(r.governance_upcoming_superblocks.map((d) => d.cutoffSoon)).toEqual([true, false]);
     const invalid = VECTORS.errors.find((e) => e.code === "governance.invalid_proposal");
@@ -303,5 +298,16 @@ describe("governance contract", () => {
     expect(VECTORS.errors.find((e) => e.code === "governance.submit_refused")?.data).toEqual({ kind: "reason", reason: "public" });
     const notSynced = VECTORS.errors.find((e) => e.code === "governance.not_synced");
     expect(notSynced?.data).toEqual({ kind: "governancePhase", phase: "syncingVotes" });
+    // The contested names cover every variant of the two enums with fields (MG-11).
+    const names = r.governance_contested_names;
+    expect([...new Set(names.voters.map((v) => v.key.kind))].sort()).toEqual([...contractVariants("NameVotingKey").keys()].sort());
+    const choices = names.voters.flatMap((v) => v.current.map((s) => s.choice?.kind)).filter((k) => k !== undefined);
+    expect([...new Set(choices)].sort()).toEqual([...contractVariants("NameChoice").keys()].sort());
+    expect(names.voters[0].key).toEqual({ kind: "keychain", index: 0 });
+    // Every `rejected` reason reaches the renderer as the engine's snake-case value, and one vote counts.
+    expect(r.governance_vote_name.filter((c) => c.rejected === null)).toHaveLength(1);
+    // The three contest codes carry what the UI names (MG-07 D13).
+    expect(VECTORS.errors.find((e) => e.code === "governance.contest_closed")?.data).toEqual({ kind: "contestLabel", label: "a11ce" });
+    expect(VECTORS.errors.find((e) => e.code === "governance.not_a_contender")?.data?.kind).toBe("contender");
   });
 });

@@ -108,6 +108,17 @@ export function useTurnOnGovernance() {
   return { turnOn: () => m.mutate(), busy };
 }
 
+/** Platform's open contested names and the wallet's voters (MG-11). Outside the `governance`
+ * prefix: the reads go to Platform, not the synced store, so a `governance` event (MG-02's
+ * sync, up to once a second) doesn't re-read them; a timer, a vote and Try again do (MG-11 D3). */
+export const contestedNamesKey = (walletId: string) => ["contestedNames", walletId] as const;
+const NAMES_REFRESH_MS = 60_000;
+
+export function useContestedNames(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: contestedNamesKey(walletId), queryFn: () => b.governanceContestedNames(walletId), refetchInterval: NAMES_REFRESH_MS });
+}
+
 /** Re-reads every governance query (after a vote, a create or a submit). */
 export function useGovernanceRefresh() {
   const client = useQueryClient();
