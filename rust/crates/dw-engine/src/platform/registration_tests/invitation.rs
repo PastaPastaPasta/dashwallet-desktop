@@ -1214,6 +1214,7 @@ fn duplicate_keys_are_recognised_in_every_shape() {
         dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(broadcast(Some(state)))),
     ] {
         assert!(flow::is_duplicate_keys(&e), "{e:?}");
+        assert!(flow::claim_refused_for_keys(&e, &OutPoint::null()), "{e:?}");
     }
     for e in [
         broadcast(None),
@@ -1222,6 +1223,111 @@ fn duplicate_keys_are_recognised_in_every_shape() {
         dash_sdk::Error::Generic("duplicated identity public key id".into()),
     ] {
         assert!(!flow::is_duplicate_keys(&e), "{e:?}");
+    }
+}
+
+/// DP5-03 D24: a claim refused for the seed's other identity refuses the
+/// next claim's start, before a row or a call, until it is discarded. A Core
+/// registration is not refused by it, nor is a claim by a row that ends
+/// another way.
+#[test]
+fn a_claim_refused_for_its_keys_refuses_the_next_claim() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let link_id = stash(&f);
+    lib.w()
+        .claim_script
+        .push_back(invitation::ClaimScript::DuplicateKeys);
+    let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
+    f.drive(&lib, draft, Some(claim_lease(&f)), true);
+    let start = |req: RegistrationRequest, duffs: u64| {
+        let grant = f.grant(duffs, 10 * COIN * 1000, Credential::None);
+        f.engine
+            .block_on(registration::start(
+                &f.session,
+                f.wallet,
+                Arc::clone(&lib),
+                req,
+                grant,
+            ))
+            .map_err(|e| e.code())
+    };
+    assert_eq!(
+        start(invite(&link_id), 0),
+        Err("invitation.already_has_identity")
+    );
+    assert_eq!((f.rows().len(), lib.w().claims), (1, 1));
+    // A Core registration's refusal is its own (the grant has no duffs).
+    assert_eq!(start(request(PLAIN), 0), Err("platform.grant_exceeded"));
+    let fail = |code: &str, retryable: bool| {
+        let row = f.row(draft);
+        let failed = RegistrationChange {
+            failure: Some(Some((code.into(), retryable))),
+            ..Default::default()
+        };
+        let wallet = f.wallet.to_string();
+        (f.appdb())
+            .update_registration(&wallet, draft, row.owner, &row.phase, true, &failed, 2)
+            .unwrap();
+    };
+    // A row that may run again is the start's blocker before the gate.
+    fail("invitation.already_has_identity", true);
+    assert_eq!(start(invite(&link_id), 0), Err("registration.in_progress"));
+    fail("invitation.expired", false);
+    let started = start(invite(&link_id), 0).expect("another code refuses nothing");
+    f.settle(started.parse().unwrap());
+}
+
+/// DP5-03 D24: Platform's replay refusal of the claim's own lock reads as
+/// the refusal it repeats; another lock's, or another refusal, does not.
+#[test]
+fn a_replayed_claim_is_recognised_for_its_own_lock_only() {
+    use dash_sdk::error::StateTransitionBroadcastError;
+    use dpp::consensus::ConsensusError;
+    use dpp::consensus::basic::BasicError;
+    use dpp::consensus::basic::identity::{
+        IdentityAssetLockStateTransitionReplayError,
+        IdentityAssetLockTransactionOutPointAlreadyConsumedError,
+    };
+    let own = OutPoint::new(Txid::from_byte_array([7; 32]), 1);
+    let replay = |txid: Txid, vout: usize| -> ConsensusError {
+        BasicError::IdentityAssetLockStateTransitionReplayError(
+            IdentityAssetLockStateTransitionReplayError::new(txid, vout, [0; 32].into()),
+        )
+        .into()
+    };
+    let broadcast = |cause: ConsensusError| {
+        dash_sdk::Error::StateTransitionBroadcastError(StateTransitionBroadcastError {
+            code: 1,
+            message: "refused".into(),
+            cause: Some(cause),
+        })
+    };
+    let check_tx = |e: ConsensusError| {
+        dash_sdk::Error::Protocol(dpp::ProtocolError::ConsensusError(Box::new(e)))
+    };
+    let ours = replay(own.txid, 1);
+    for e in [
+        broadcast(ours.clone()),
+        check_tx(ours.clone()),
+        dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(broadcast(ours))),
+    ] {
+        assert!(flow::is_claim_replay(&e, &own), "{e:?}");
+        assert!(flow::claim_refused_for_keys(&e, &own), "{e:?}");
+        assert!(!flow::is_duplicate_keys(&e), "{e:?}");
+    }
+    let consumed: ConsensusError =
+        BasicError::IdentityAssetLockTransactionOutPointAlreadyConsumedError(
+            IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(own.txid, 1),
+        )
+        .into();
+    for e in [
+        broadcast(replay(own.txid, 0)),
+        broadcast(replay(Txid::from_byte_array([8; 32]), 1)),
+        check_tx(consumed),
+        dash_sdk::Error::Generic("is trying to be replayed".into()),
+    ] {
+        assert!(!flow::claim_refused_for_keys(&e, &own), "{e:?}");
     }
 }
 

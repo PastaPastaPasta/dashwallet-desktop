@@ -706,13 +706,23 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
     let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
     let leases = Arc::clone(&session.leases);
     let (l, i, p) = (locks.clone(), identities.clone(), past.clone());
-    let (blocking, passed) = flow::ledger_op(session, wallet, move |db, flows| {
+    let (blocking, passed, found) = flow::ledger_op(session, wallet, move |db, flows| {
         let ledger = Ledger::read(db, flows, &leases, wallet, l, i)?;
-        Ok((ledger.blocking_past(&p), passed_releases(&ledger, &p)))
+        let found = ledger.rows().iter().any(flow::claim_found_identity);
+        Ok((
+            ledger.blocking_past(&p),
+            passed_releases(&ledger, &p),
+            found,
+        ))
     })
     .await?;
     if let Some(draft) = blocking {
         return Err(RegistrationError::InProgress { draft });
+    }
+    // D24: a claim refused for the seed's other identity refuses the next
+    // claim too, until the discovery finds that identity (DP5-02 D7).
+    if found && matches!(plan.funding, Funding::Invitation { .. }) {
+        return Err(InvitationError::AlreadyHasIdentity.into());
     }
     may_pass(&*lib, &passed).await?;
     if let Funding::CoreBalance { lock_duffs } = plan.funding {

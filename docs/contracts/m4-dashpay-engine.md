@@ -3131,7 +3131,7 @@ renames or reshapes them takes the next version bump:
 
 **From DP5-03** (version 37):
 
-64. **The claim screen's engine follow-ups (DP5-03 D7, D8, D11–D13, version 37).** Decisions in
+64. **The claim screen's engine follow-ups (DP5-03 D7, D8, D11–D13, D24, version 37).** Decisions in
     `docs/design/DP5-03-claim-screen.md`. No §4 code changes.
     - **The opt-out (D7).** `RegistrationFunding::Invitation` gains `request_inviter`. `false` stores no inviter in
       the row's funding: the quote counts no request credits and no request step runs.
@@ -3154,4 +3154,7 @@ renames or reshapes them takes the next version bump:
       wallets).
     - **Duplicate keys (D13).** Platform's refusal of the claim's keys as already used by an identity
       (`DuplicatedIdentityPublicKeyIdStateError`, or its basic form from protocol versions before 7) fails the row
-      `invitation.already_has_identity`, not retryable.
+      `invitation.already_has_identity`, not retryable; so does Platform's replay refusal of the claim's own lock
+      (`IdentityAssetLockStateTransitionReplayError`: the same claim refused before, its answer lost; D24). While
+      the wallet keeps a claim row failed for good with that code, a claim's start, of any link, is refused
+      `invitation.already_has_identity` before a row is written (D24): the next claim would use the same index.

@@ -390,28 +390,58 @@ pub(crate) enum ClaimError {
     Failed(PlatformError),
 }
 
+/// The consensus error a refusal carries, as the broadcast, the wait stream
+/// or CheckTx reports it, under any retry envelope.
+fn consensus_of(e: &dash_sdk::Error) -> Option<&dpp::consensus::ConsensusError> {
+    match e {
+        dash_sdk::Error::StateTransitionBroadcastError(e) => e.cause.as_ref(),
+        dash_sdk::Error::Protocol(dpp::ProtocolError::ConsensusError(e)) => Some(&**e),
+        dash_sdk::Error::NoAvailableAddressesToRetry(last) => consensus_of(last),
+        _ => None,
+    }
+}
+
 /// Platform's refusal of an IdentityCreate whose keys are already in state
 /// (DP5-03 D13): `DuplicatedIdentityPublicKeyIdStateError` since protocol
 /// v7, `DuplicatedIdentityPublicKeyIdBasicError` before it (rs-drive-abci
-/// `validate_unique_identity_public_key_hashes_in_state`), as the broadcast,
-/// the wait stream or CheckTx carries it, under any retry envelope.
+/// `validate_unique_identity_public_key_hashes_in_state`).
 pub(crate) fn is_duplicate_keys(e: &dash_sdk::Error) -> bool {
     use dpp::consensus::ConsensusError as C;
     use dpp::consensus::basic::BasicError;
     use dpp::consensus::state::state_error::StateError;
-    let consensus = match e {
-        dash_sdk::Error::StateTransitionBroadcastError(e) => e.cause.as_ref(),
-        dash_sdk::Error::Protocol(dpp::ProtocolError::ConsensusError(e)) => Some(&**e),
-        dash_sdk::Error::NoAvailableAddressesToRetry(last) => return is_duplicate_keys(last),
-        _ => None,
-    };
     matches!(
-        consensus,
+        consensus_of(e),
         Some(
             C::StateError(StateError::DuplicatedIdentityPublicKeyIdStateError(_))
                 | C::BasicError(BasicError::DuplicatedIdentityPublicKeyIdBasicError(_))
         )
     )
+}
+
+/// Platform's refusal of a claim it refused before (DP5-03 D24):
+/// `IdentityAssetLockStateTransitionReplayError` for `outpoint`. At the pin
+/// (rs-drive-abci `verify_asset_lock_is_not_spent_and_has_enough_balance_v0`)
+/// it comes only for a lock partially consumed whose used tags hold this
+/// transition's signable bytes, after the fully consumed check. Only an
+/// IdentityCreate Platform refused and charged writes a tag: its identifier,
+/// its keys' structure or proof of possession (`advanced_structure` v0), or
+/// its keys already in state (`state` v0, v1). So the identical claim was
+/// refused and did not land; of those refusals only the keys in state can
+/// meet a claim whose identifier, keys and signatures the library builds.
+pub(crate) fn is_claim_replay(e: &dash_sdk::Error, outpoint: &OutPoint) -> bool {
+    use dpp::consensus::ConsensusError as C;
+    use dpp::consensus::basic::BasicError;
+    matches!(
+        consensus_of(e),
+        Some(C::BasicError(BasicError::IdentityAssetLockStateTransitionReplayError(r)))
+            if r.transaction_id() == outpoint.txid && r.output_index() == outpoint.vout as usize
+    )
+}
+
+/// Platform's refusal of the claim's keys (DP5-03 D13), or a replay of
+/// that refusal for the claim's own lock (D24): [`ClaimError::DuplicateKeys`].
+pub(crate) fn claim_refused_for_keys(e: &dash_sdk::Error, outpoint: &OutPoint) -> bool {
+    is_duplicate_keys(e) || is_claim_replay(e, outpoint)
 }
 
 /// The outpoint a claim spends, from its link's funding, or why the claim
@@ -1112,6 +1142,15 @@ pub(crate) fn claim_discard_refused(
                 || code == InvitationError::Claimed.code()
         });
     (released && !disproved).then_some("the claim may have reached the network")
+}
+
+/// A claim row stopped on `invitation.already_has_identity` (DP5-03 D24):
+/// another identity of the seed holds the index the wallet's claims use,
+/// and the discovery has not found it yet. While one is on file a claim's
+/// start is refused: Platform would refuse the same keys again, and charge
+/// the voucher again.
+pub(crate) fn claim_found_identity(row: &RegistrationRow) -> bool {
+    !row.retryable && row.error.as_deref() == Some(InvitationError::AlreadyHasIdentity.code())
 }
 
 /// The link of an open claim row: an invitation's, neither `Done` nor
@@ -3311,7 +3350,9 @@ impl RegistrationLib for PwLib {
             Err(E::Sdk(e)) if is_asset_lock_already_consumed(&e, &outpoint) => {
                 self.consumed_claim(outpoint, &keys).await
             }
-            Err(E::Sdk(e)) if is_duplicate_keys(&e) => Err(ClaimError::DuplicateKeys),
+            Err(E::Sdk(e)) if claim_refused_for_keys(&e, &outpoint) => {
+                Err(ClaimError::DuplicateKeys)
+            }
             Err(e) => Err(ClaimError::Failed(e.into())),
         }
     }
