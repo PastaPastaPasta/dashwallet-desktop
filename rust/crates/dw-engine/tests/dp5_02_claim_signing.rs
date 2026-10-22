@@ -29,7 +29,6 @@ use dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dpp::identity::v0::IdentityV0;
 use dpp::identity::{Identity, IdentityPublicKey};
-use dpp::native_bls::NativeBlsModule;
 use dpp::platform_value::BinaryData;
 use dpp::prelude::{AssetLockProof, Identifier};
 use dpp::serialization::PlatformSerializable;
@@ -198,7 +197,7 @@ async fn transition<S: Signer<IdentityPublicKey>>(
         proof,
         &VOUCHER,
         signer,
-        &NativeBlsModule,
+        &dpp::native_bls::NativeBlsModule,
         0,
         PlatformVersion::latest(),
     )

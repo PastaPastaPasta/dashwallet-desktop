@@ -80,7 +80,8 @@ const FORBIDDEN: &[&str] = &[
 
 /// Where hits are allowed. Only dw-coinjoin's test operator key and the
 /// tests that use it, which play a masternode signing CoinJoin queue
-/// messages (MG-01 D9); they sign no wallet transaction. None of it is in a
+/// messages (MG-01 D9); they sign no wallet transaction. And the one BLS
+/// module argument of DP5-02's signing test, which holds no key. None of it is in a
 /// library build (D21): `dash-pkc` is a dev-dependency only
 /// ([`dash_pkc_stays_a_dev_dependency`]), and [`region_escapes`] closes the
 /// ways around a region that name no forbidden token.
@@ -114,6 +115,13 @@ const ALLOWED: &[(&str, Allowed)] = &[
         Allowed::File,
     ),
     ("rust/crates/dw-coinjoin/tests/session.rs", Allowed::File),
+    // DP5-02 D23: Platform's IdentityCreate builder takes a BLS module. The
+    // claim's transition has no BLS key and its outer signature is ECDSA, so
+    // the module signs nothing; one argument, in a test.
+    (
+        "rust/crates/dw-engine/tests/dp5_02_claim_signing.rs",
+        Allowed::Text("        &dpp::native_bls::NativeBlsModule,\n"),
+    ),
 ];
 
 const THIS_FILE: &str = "rust/crates/dw-protx/tests/no_operator_signing.rs";

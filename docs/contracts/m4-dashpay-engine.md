@@ -3021,7 +3021,7 @@ renames or reshapes them takes the next version bump:
 
 **From DP5-02** (version 35):
 
-62. **The invitation claim (DP5-02 D1–D22, version 35).** `invitation_status` is implemented (§2.9), and
+62. **The invitation claim (DP5-02 D1–D23, version 35).** `invitation_status` is implemented (§2.9), and
     `start_registration` runs `Invitation{link_id}` funding. No signature, type or §4 code changes; §3's listing
     gains `impl InvitationNet for SdkInvitations`, the crate-private network seam of the invitation checks. Decisions
     in `docs/design/DP5-02-invitation-claim.md`.
