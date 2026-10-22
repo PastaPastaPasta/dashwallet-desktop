@@ -78,6 +78,7 @@ page (`page-joinDashPay`), width `formMaxWidth`, a `card-l1` section `claim` wit
 | D20 | Engine `registration_resume_grant(draft)` (m4 §2.2, facade `DashPay::registration_resume_grant`): a claim row's resume grant from the row alone, `max_duffs` 0 and `max_credits` the steps it has left: the identity's create without an identity, the name (and a temporary name) before `NameRegistered`, the initial profile, and with an inviter the request before `Done`. A Core row is `invalid_argument`. A row with no step left that costs credits (`Done`; `NameRegistered` or later with no inviter and no profile) gets a zero grant: none of those steps signs with an identity key. The fixture computes the same sums for what it models (no temporary names or profiles, D17). | Opus r1 H1: the invitation's status reads `claimed` once the row's own claim landed, so a host cannot size a resume from it; this was F3. |
 | D21 | UI review fixes (Opus r1): the Join page's failed claim row says each invitation code in the claim's words (`failureText`, L1); the claim screen reads the registration rows before the status and shows the rows' error first (L2), and a failed refetch of rows already read keeps the screen (Opus r2 6); a paste refusal other than `invitation.invalid` says its own error (L6), and the fixture's `stash_invitation` refuses other text with `invitation.invalid` as the engine does (it said `invalid_argument`); the request's recipient without a username is the identity id without `@`, and the inviter card leads with the proved `@username`, the profile's display name beside it (nits). | The status is judged against the row (F7), so it must not run on rows that failed to load. |
 | D22 | Contract-Version stays 37 for this task: review r1's `registration_resume_grant` was blessed at 37 by setting §3's recorded mark back to the base's 36 first. | Version 37 has not left this branch; one version per change, as items 56 and 63. |
+| D23 | Gate load flakes (load 35–180): the gate's Playwright step failed 7 WebKit tests in specs this task does not touch, each on a 30 s timeout: `dashpay-info.spec.ts` D3 Sync now, `onboarding.spec.ts` axe ×3, `governance.spec.ts` create light and dark, `names.spec.ts` "Vote goes off at the end time itself". Rerun alone, those four specs on WebKit passed but for the last three; those passed alone with one worker (load 178). Every other gate step passed. The gate's first run also failed two `dw-app` tests on this task's own gaps (the `registration_resume_grant` capability grant, a coverage row for `Vault::retain_stashed_link_holds`), fixed in 8d0c2ec1. | Brief rule: rerun alone before blaming the code; none of the failing specs reads a claim row or the claim screen. |
 
 ## Engine and contract (m4 item 64, Contract-Version 37)
 
@@ -103,7 +104,9 @@ page (`page-joinDashPay`), width `formMaxWidth`, a `card-l1` section `claim` wit
   verdict), with mutants (record `/work/scratch/dw-dp5-03/mut/MUTANTS.md`).
 - GL: the real app (Tauri, `agent-gui`) on a fresh profile: a syntactically valid invitation link (made up, funding
   nobody) opened before a wallet exists, onboarding, the welcome entry's claim screen, and a second link opened in the
-  wallet (Join entry). No real claim or invitation. Screenshots under `/work/scratch/dw-dp5-03/gl/`.
+  wallet (Join entry). No real claim or invitation. Screenshots under `/work/scratch/dw-dp5-03/gl/`: with no Platform on
+  the run, the welcome entry reads `checkFailed` (Try again, Not now); a forwarded mainnet invitation reads "another Dash
+  network" and a bad txid "not valid", both checked locally; Dismiss forgets the shown link and returns to the Join page.
 
 ## Reviews
 
