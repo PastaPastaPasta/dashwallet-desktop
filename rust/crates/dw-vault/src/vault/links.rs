@@ -1120,6 +1120,44 @@ impl Vault {
         id: &str,
         kinds: &[StashedLinkKind],
     ) -> Result<Option<(StashedLinkKind, Zeroizing<String>)>, VaultError> {
+        let opened = self.open_stashed_link_in(state, id, kinds)?;
+        let Some((entry, text)) = opened else {
+            return Ok(None);
+        };
+        self.delete_entry(&entry)?;
+        state.forget(id);
+        Ok(Some((entry.kind, text)))
+    }
+
+    /// The invitation `id`'s text and when its entry expires, left in the
+    /// stash (DP5-01 D16): DP5-02's status and claim read it until the
+    /// claim is durable, then `forget_stashed_link` deletes it. Engine-internal:
+    /// never handed to a host. As [`Self::take_stashed_link`] otherwise:
+    /// `Ok(None)` when there is no such entry (an unreadable one is deleted),
+    /// `Locked` for a sealed entry without the data key, `InvalidArgument`
+    /// for another kind.
+    pub fn read_stashed_invitation(
+        &self,
+        id: &str,
+    ) -> Result<Option<(Zeroizing<String>, u64)>, VaultError> {
+        if !is_link_id(id) {
+            return Err(VaultError::InvalidArgument("not a stashed link id".into()));
+        }
+        self.load_stash_key();
+        let mut state = self.links_state();
+        let opened = self.open_stashed_link_in(&mut state, id, &[StashedLinkKind::Invitation]);
+        self.note_unsealed();
+        Ok(opened?.map(|(entry, text)| (text, entry.expires_at)))
+    }
+
+    /// Opens the entry `id` under the stash mutex, deleting it only when it
+    /// has expired or can never open.
+    fn open_stashed_link_in(
+        &self,
+        state: &mut LinkState,
+        id: &str,
+        kinds: &[StashedLinkKind],
+    ) -> Result<Option<(EntryFile, Zeroizing<String>)>, VaultError> {
         let now = self.now();
         let Some(entry) = read_entry(&self.entry_path(id), id) else {
             return Ok(None);
@@ -1149,9 +1187,7 @@ impl Vault {
                 return Ok(None);
             }
         };
-        self.delete_entry(&entry)?;
-        state.forget(id);
-        Ok(Some((entry.kind, text)))
+        Ok(Some((entry, text)))
     }
 
     /// Deletes the entry `id` without opening it, when its kind is one of

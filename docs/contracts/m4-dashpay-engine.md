@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 33
+Contract-Version: 34
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -309,10 +309,8 @@ bodies decided where the rows leave room:
   the call fails closed): "This wallet can't yet tell when the earlier registration's payment was sent. Try again later." On
   `registration.not_synced`: "Wait until the wallet has finished syncing, then try again."
   A `Cancelled` row is discarded, never resumed: to register again the user starts a new registration. A row this build cannot run reads as failed, not retryable: a
-  `funding`, `initial_profile`, `phase` or lock outpoint it does not know is `registration.unsupported`, an
-  `Invitation` row is `invitation.invalid` (until DP5-02 the invitation-claim path does not exist;
-  `start_registration` refuses `Invitation` funding with `platform.not_implemented`), and `FaucetAssetLock` is
-  `platform.feature_off`. The failure is derived when read, never written: an unknown row is never funded, advanced
+  `funding`, `initial_profile`, `phase` or lock outpoint it does not know is `registration.unsupported`, and
+  `FaucetAssetLock` is `platform.feature_off`. An `Invitation` row runs (DP5-02, item 61). The failure is derived when read, never written: an unknown row is never funded, advanced
   or deleted (`discard_registration` refuses it), and stays as written for the build that can read it. Every
   encoding of the row, the profile included, is read before anything is funded.
 - **`label`** is stored as typed; a `temporary_label` is kept only for a contested label and must itself be
@@ -534,12 +532,14 @@ entry. No call quotes a link in an error.
 | `NetworkSession.take_stashed_link(link_id)` | async | A payment or contact link's text, once, as `TakenLink::Link`: the entry is deleted before it returns; `None` when it is gone (taken, expired, unreadable). An invitation is `TakenLink::Invitation` in every lock state: never handed back nor opened, and it stays. Otherwise a locked vault is `platform.signer_unavailable` and keeps the link; a malformed id is `invalid_argument`. | `PlatformError` |
 | `NetworkSession.forget_stashed_link(link_id)` | async | Deletes a stashed link of any kind without opening it: the user dismissed it. Works locked; an id the stash no longer has is `Ok`; a malformed id is `invalid_argument`. | `PlatformError` |
 | `NetworkSession.stash_invitation(link)` | async | `stash_link` for an invitation link only; returns the id. Anything else is `invitation.invalid`, and the error never quotes it. | `InvitationError` |
-| `NetworkSession.invitation_status(link_id)` | async | `Valid{inviter, funding_duffs, contested_allowed, expires_at}`, `Claimed`, `Invalid{reason}` or `Expired`. | `InvitationError` |
+| `NetworkSession.invitation_status(link_id)` | async | `Valid{inviter, funding_duffs, contested_allowed, expires_at}`, `Claimed`, `Invalid{reason}` or `Expired`, from the stashed link, which stays stashed. Works before any wallet exists. `Invalid`: `Malformed` (the link does not parse, or its funding transaction is not an asset lock paying the voucher key, or its islock does not lock it), `WrongNetwork`, `AssetLockNotFound` (DAPI has the transaction in neither byte order after five tries 3 s apart). `Claimed`: an identity exists at the claim's id; one-way, so a lock spent another way still reads `Valid` and the claim reports it. `Expired`: the stash no longer has the id (the link itself never expires). `funding_duffs` is the voucher's credit output; `contested_allowed` is `funding_duffs ≥` 0.25 DASH. `inviter` is the identity DPNS holds the link's `du` for, with its DashPay profile, never the link's own display name or avatar; `None` without a `du` or a DPNS name. A DPNS or transport failure is the call's `platform.*` error. A sealed entry while locked is `platform.signer_unavailable`; another kind of link `invitation.invalid`; a malformed id `invalid_argument`. | `InvitationError` |
 | `NetworkSession.pending_invitations()` | async | The ids of the stashed invitation links, oldest first: the replay after a restart or after onboarding (DP5-01). | `InvitationError` |
 | `NetworkSession.forget_invitation(link_id)` | async | Deletes a stashed invitation: the user dismissed it, or the claim finished. An id the stash no longer has is `Ok`; one of another kind of link is `invitation.invalid`; a malformed id is `invalid_argument`. | `InvitationError` |
 
 **Done (DP5-01, Contract-Version 30, item 56):** `stash_link`, `stashed_links`, `take_stashed_link`,
-`forget_stashed_link`, `stash_invitation`, `pending_invitations` and `forget_invitation`. `invitation_status` stays a stub until DP5-02.
+`forget_stashed_link`, `stash_invitation`, `pending_invitations` and `forget_invitation`. **Done (DP5-02,
+Contract-Version 34, item 61):** `invitation_status`, and the claim as `start_registration`'s `Invitation` funding
+(§2.2); decisions in `docs/design/DP5-02-invitation-claim.md`.
 
 ### 2.10 Facade
 
@@ -565,7 +565,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 3bf37c8517c87e9fa44c3cb1e7cfe9026a1e9b247803e5299160a37b1e78a114 version: 33 -->
+<!-- surface-sha256: 0ec5343cb10eff2805226c6b71d28422a8e5d3c8649cb746b8955f72ae07e0b9 version: 34 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1200,6 +1200,7 @@ impl NetworkSession {
     pub async fn pending_invitations(self: &Arc<Self>) -> Result<Vec<String>, InvitationError>;
     pub async fn forget_invitation(self: &Arc<Self>, link_id: String) -> Result<(), InvitationError>;
 }
+impl InvitationNet for SdkInvitations;
 // src/platform/names.rs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsernameCheck {
@@ -1892,7 +1893,7 @@ The shapes are in §3. What they mean, where the name does not say:
   - `name_failure` and `profile_failure`: the code a name or initial-profile step ended with after the identity was
     registered (§2.2 "Settled after the identity"), on a `Done` row. The UI offers `register_name` for the identity,
     or the profile edit.
-- **`RegistrationFunding`.** `CoreBalance`, `Invitation{link_id}` (a `stash_invitation` id),
+- **`RegistrationFunding`.** `CoreBalance`, `Invitation{link_id}` (a `stash_invitation` id; DP5-02, below),
   `ExistingIdentity{identity}` (the id goes to the row's `identity` column), and `FaucetAssetLock{key, proof}` for
   developer builds:
   - The faucet's `POST /api/asset-lock-proof` takes only a compressed public key and returns the `assetLockProof`
@@ -1914,6 +1915,8 @@ The shapes are in §3. What they mean, where the name does not say:
   without a URL is `invalid_argument`.
 - **`RegistrationQuote`.** `total_duffs = lock_duffs + fee_duffs`; `grant` is the `PlatformOp{max_duffs, max_credits}`
   to ask for: `max_duffs` covers the lock and fee, `max_credits` the identity creation, the name and the profile.
+  An invitation's quote has `lock_duffs` the invitation's funding, `fee_duffs`, `total_duffs`, `available_duffs`
+  and `max_duffs` 0, and `max_credits` with the request to the inviter (item 61).
 - **`GrantRequest`** (in every quote, and from `grant_request`): the caps of the `PlatformOp` grant an action needs,
   computed with the engine's own fee bound (E0-04 §4.2), so a host never sizes `max_credits` from `cost_table()`. The
   engine charges no more than it quoted; a quote that went stale (a fee change) is `platform.grant_exceeded`, and the
@@ -2972,3 +2975,29 @@ renames or reshapes them takes the next version bump:
     `prepare`, fenced at the hand-off and refunded on a definite `NotSent` or an `abandon`. Any other grant kind is
     `platform.grant_invalid`. A resend of a saved fee (`Governance.submit_proposal`) takes no lease. Decisions in
     `docs/design/MG-06-proposals.md`.
+
+**From DP5-02** (version 34):
+
+61. **The invitation claim (DP5-02 D1–D18, version 34).** `invitation_status` is implemented (§2.9), and
+    `start_registration` runs `Invitation{link_id}` funding. No signature, type or §4 code changes. Decisions in
+    `docs/design/DP5-02-invitation-claim.md`.
+    - **Start.** Refused, before a row is written: a wallet with an identity (`invitation.already_has_identity`), a
+      link that is `Claimed`, `Expired` or `Invalid` (`invitation.claimed`, `.expired`, `.invalid`), a contested
+      label without `contested_allowed` (`name.unavailable_for_invite`), and credits the invitation's funding
+      does not cover (`registration.funding_insufficient{needed, available}`, in duffs). The quote's duffs are 0
+      but `lock_duffs` (§2.2's `RegistrationQuote`); a grant with `max_duffs` 0 gives the lease no funding signer,
+      so the flow signs no Core input. The row's `funding` stores the link id and the inviter's identity, never
+      the link.
+    - **The claim.** `Draft → KeysPrepared` waits for the identity discovery and the trust gate, not for SPV: a
+      wallet with no coins and no sync claims. `KeysPrepared → IdentityRegistered` is the library's
+      `claim_invitation`, under the identity step's permit: an identity at the row's index is adopted (a restored
+      row, or a claim whose answer was lost); a link gone from the stash fails `invitation.expired`, not
+      retryable; a sealed link while locked waits for Unlock; a lock consumed and not by this seed's keys fails
+      `invitation.claimed`, not retryable (another device, or the inviter's reclaim); a stale islock before the
+      ChainLock waits for it. Then DP1-02's name and profile steps, unchanged.
+    - **The link** stays stashed until the identity is recorded, then is deleted; `invitation_status` reads
+      `Expired` after that.
+    - **The request to the inviter.** An invitation with an inviter passes `ProfileCreated` and sends DP2-02's
+      contact request to them, under the registration's lease (its `PlatformOp` grant counts the request's
+      credits), before `Done`. Our request already on Platform, or a contact already, counts as sent; a refusal
+      known to repeat is logged and the row ends `Done`; the network waits.

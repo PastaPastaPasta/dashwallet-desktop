@@ -102,9 +102,14 @@ pub(crate) enum Funding {
     /// The identity is in the row's `identity` column only, set at Draft,
     /// so the two cannot disagree after a partial update.
     ExistingIdentity,
-    /// The link itself is a bearer credential in the vault
-    /// (`invitation/<link_id>`), never here.
-    Invitation { link_id: String },
+    /// The link itself is a bearer credential in the vault's link stash
+    /// (DP5-01), never here. `inviter`: the identity the link's username
+    /// resolved to at the start (DP5-02 D14), sent a contact request once
+    /// the identity exists; the link is wiped before that step.
+    Invitation {
+        link_id: String,
+        inviter: Option<String>,
+    },
     /// Developer builds: `key` is a `prepare_faucet_lock` key id (the
     /// engine re-derives the private key) and `proof` the faucet's public
     /// `assetLockProof` hex. The outpoint goes to `asset_lock_outpoint`.
@@ -128,9 +133,12 @@ impl Funding {
                 json!({"v": v, "kind": "core_balance", "lock_duffs": lock_duffs})
             }
             Funding::ExistingIdentity => json!({"v": v, "kind": "existing_identity"}),
-            Funding::Invitation { link_id } => {
-                json!({"v": v, "kind": "invitation", "link_id": link_id})
-            }
+            Funding::Invitation { link_id, inviter } => match inviter {
+                Some(inviter) => {
+                    json!({"v": v, "kind": "invitation", "link_id": link_id, "inviter": inviter})
+                }
+                None => json!({"v": v, "kind": "invitation", "link_id": link_id}),
+            },
             Funding::FaucetAssetLock { key, proof } => {
                 json!({"v": v, "kind": "faucet_asset_lock", "key": key, "proof": proof})
             }
@@ -154,6 +162,10 @@ impl Funding {
                 "existing_identity" => Funding::ExistingIdentity,
                 "invitation" => Funding::Invitation {
                     link_id: field("link_id")?,
+                    inviter: match value.get("inviter") {
+                        None => None,
+                        Some(inviter) => Some(inviter.as_str()?.to_owned()),
+                    },
                 },
                 "faucet_asset_lock" => Funding::FaucetAssetLock {
                     key: field("key")?,
@@ -234,6 +246,11 @@ mod tests {
             Funding::ExistingIdentity,
             Funding::Invitation {
                 link_id: "abc".into(),
+                inviter: None,
+            },
+            Funding::Invitation {
+                link_id: "abc".into(),
+                inviter: Some("Bob1nviter".into()),
             },
             Funding::FaucetAssetLock {
                 key: "k1".into(),
@@ -262,6 +279,7 @@ mod tests {
             r#"{"v":1,"kind":"core_balance","lock_duffs":"1"}"#,
             r#"{"kind":"core_balance","lock_duffs":1}"#,
             r#"{"v":1,"kind":"invitation"}"#,
+            r#"{"v":1,"kind":"invitation","link_id":"abc","inviter":7}"#,
             "core_balance",
             "",
             "wallet",
@@ -269,6 +287,14 @@ mod tests {
         ] {
             assert_eq!(Funding::decode(text), Decoded::Unsupported, "{text}");
         }
+        // DP5-01's rows, before the inviter (DP5-02 D14).
+        assert_eq!(
+            Funding::decode(r#"{"v":1,"kind":"invitation","link_id":"abc"}"#),
+            Decoded::Known(Funding::Invitation {
+                link_id: "abc".into(),
+                inviter: None
+            })
+        );
         // A newer build's extra field within version 1 is ignored.
         assert_eq!(
             Funding::decode(r#"{"v":1,"kind":"core_balance","lock_duffs":5,"note":"x"}"#),

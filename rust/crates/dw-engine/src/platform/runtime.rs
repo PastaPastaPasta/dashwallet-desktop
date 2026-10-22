@@ -119,6 +119,9 @@ pub(crate) struct PlatformRuntime {
     pub(crate) avatars: super::avatar::AvatarRuntime,
     /// The registration flows running in this process (DP1-02).
     pub(crate) registrations: Arc<super::registration_flow::Flows>,
+    /// A test's network for the invitation checks (DP5-02).
+    #[cfg(test)]
+    pub(crate) invitation_net: Mutex<Option<Arc<dyn super::invitation_check::InvitationNet>>>,
     /// When the contest watch last checked each row (DP1-04).
     pub(crate) contests: super::contest_watch::ContestsRuntime,
     /// The balances spent since their refresh, and the balance pass
@@ -364,6 +367,8 @@ impl PlatformRuntime {
             users: Default::default(),
             avatars: Default::default(),
             registrations: Default::default(),
+            #[cfg(test)]
+            invitation_net: Mutex::new(None),
             contests: Default::default(),
             balances: Default::default(),
             payments: Default::default(),

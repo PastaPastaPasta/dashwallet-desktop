@@ -357,7 +357,10 @@ fn first_auth_key(
 /// The levels of the key `flow`'s transition signs with ([`flow_keys`]).
 fn flow_levels(flow: FlowKind) -> &'static [SecurityLevel] {
     match flow {
+        // DP5-02 §4: a claim's request to its inviter, under the
+        // registration's lease.
         FlowKind::ContactRequest
+        | FlowKind::Registration
         | FlowKind::Accept
         | FlowKind::AcceptAndPay
         | FlowKind::PrivateDetails
@@ -419,7 +422,10 @@ fn flow_keys(
         })
     };
     match flow {
+        // DP5-02 §4: a claim's request to its inviter, under the
+        // registration's lease.
         FlowKind::ContactRequest
+        | FlowKind::Registration
         | FlowKind::Accept
         | FlowKind::AcceptAndPay
         | FlowKind::PrivateDetails
@@ -575,6 +581,9 @@ pub(super) fn wait_to_confirm(
 
 /// `DashPay::send_request` (m4 §2.4). The scan is claimed first and given
 /// up for its proof only once nothing else refuses (`users::send_seam`).
+/// `flows`: the flows a lease id `grant` may be of (the facade's
+/// `[ContactRequest]`; an invitation claim's request to its inviter runs
+/// under its `[Registration]` lease, DP5-02 §4).
 pub(super) async fn send(
     net: &impl RequestNet,
     session: &Arc<NetworkSession>,
@@ -582,6 +591,7 @@ pub(super) async fn send(
     wallet_id: WalletId,
     (identity, to, scan): (String, String, Option<String>),
     grant: String,
+    flows: &[FlowKind],
 ) -> Result<RequestOutcome, ContactError> {
     // A refusal below drops the claim, which releases the scan.
     let intent = session.send_request_intent(wallet_id, &identity, &to, scan.as_deref())?;
@@ -600,7 +610,6 @@ pub(super) async fn send(
         reason => return Err(ContactError::Ineligible { reason }),
     }
     wait_to_confirm(intent.auto_accept.as_ref(), &session.trust)?;
-    let flows = [FlowKind::ContactRequest];
     let expiry = intent.auto_accept.as_ref().map(|c| u64::from(c.expiry));
     let ready = || match expiry {
         Some(expiry) if expiry <= crate::events::unix_now() + SCAN_MARGIN_SECS => {
@@ -613,7 +622,7 @@ pub(super) async fn send(
         session,
         (own.index()?, &own.identity),
         (wallet_id, &grant),
-        (&flows, CONTACT_REQUEST_CREDITS, "send_request"),
+        (flows, CONTACT_REQUEST_CREDITS, "send_request"),
         ready,
     )
     .await?;

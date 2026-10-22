@@ -12,8 +12,11 @@ use serde::{Deserialize, Serialize};
 
 use super::contest_watch::watch_of;
 use super::dashpay::DashPay;
-use super::errors::{IdentityError, PlatformError, RegistrationError};
-use super::flows::{BudgetPurpose, FlowKind, GrantRequest, LeaseStateView};
+use super::errors::{IdentityError, InvitationError, NameError, PlatformError, RegistrationError};
+use super::flows::{
+    BudgetPurpose, CONTACT_REQUEST_CREDITS, FlowKind, GrantRequest, LeaseStateView,
+};
+use super::invitations::InvitationStatus;
 use super::lease::Lease;
 use super::names::valid_label;
 use super::registration_flow::{self as flow, PwLib, RegistrationLib};
@@ -78,10 +81,11 @@ pub struct FaucetLockKey {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistrationQuote {
     pub contested: bool,
-    /// Duffs locked into the asset lock.
+    /// Duffs locked into the asset lock (an invitation's: the inviter's).
     pub lock_duffs: u64,
     pub fee_duffs: u64,
-    /// `lock_duffs + fee_duffs`: what the grant must cover.
+    /// `lock_duffs + fee_duffs` of the wallet's coins: what the grant must
+    /// cover. 0 for an invitation, whose lock the inviter paid.
     pub total_duffs: u64,
     /// Credits the identity keeps after the name and profile.
     pub remaining_credits: u64,
@@ -351,11 +355,10 @@ struct Plan {
     protected_coins: usize,
 }
 
-/// `call` names the facade call in `platform.not_implemented`.
+/// What `req` costs and how it is funded, for the quote and the start.
 async fn plan<L: RegistrationLib>(
     lib: &L,
     req: &RegistrationRequest,
-    call: &str,
 ) -> Result<Plan, RegistrationError> {
     let check = valid_label(&req.label)?;
     let temp_label = match (&req.temporary_label, check.contested) {
@@ -377,13 +380,8 @@ async fn plan<L: RegistrationLib>(
         Some(p) => Some(ProfileRecord::without_avatar(p)),
         None => None,
     };
-    match &req.funding {
-        // DP5-02 seam: the invitation-claim path.
-        RegistrationFunding::Invitation { .. } => {
-            return Err(PlatformError::NotImplemented { call: call.into() }.into());
-        }
-        RegistrationFunding::FaucetAssetLock { .. } => return Err(faucet_off().into()),
-        RegistrationFunding::CoreBalance | RegistrationFunding::ExistingIdentity { .. } => {}
+    if let RegistrationFunding::FaucetAssetLock { .. } = &req.funding {
+        return Err(faucet_off().into());
     }
     let mut credits = lib.name_credits(&req.label).await?;
     if let Some(temp) = &temp_label {
@@ -441,18 +439,77 @@ async fn plan<L: RegistrationLib>(
                 ..base
             })
         }
-        RegistrationFunding::Invitation { .. } | RegistrationFunding::FaucetAssetLock { .. } => {
-            unreachable!("refused above")
+        RegistrationFunding::Invitation { link_id } => {
+            invitation_plan(lib, link_id, credits, base).await
         }
+        RegistrationFunding::FaucetAssetLock { .. } => unreachable!("refused above"),
     }
+}
+
+/// The plan of an invitation's claim (DP5-02 §3): the invitation pays for
+/// everything, so nothing comes from the wallet's coins and the grant asks
+/// for no duffs (D8). Refused when the wallet has an identity (D7), the
+/// invitation is not `Valid`, it cannot buy a contested name, or its value
+/// does not cover what the plan writes.
+async fn invitation_plan<L: RegistrationLib>(
+    lib: &L,
+    link_id: &str,
+    credits: u64,
+    base: Plan,
+) -> Result<Plan, RegistrationError> {
+    if !lib.identities().await.is_empty() {
+        return Err(InvitationError::AlreadyHasIdentity.into());
+    }
+    let (inviter, funding_duffs, contested_allowed) = match lib.invitation(link_id).await? {
+        InvitationStatus::Valid {
+            inviter,
+            funding_duffs,
+            contested_allowed,
+            ..
+        } => (
+            inviter.map(|i| i.identity),
+            funding_duffs,
+            contested_allowed,
+        ),
+        InvitationStatus::Claimed => return Err(InvitationError::Claimed.into()),
+        InvitationStatus::Expired => return Err(InvitationError::Expired.into()),
+        InvitationStatus::Invalid { .. } => return Err(InvitationError::Invalid.into()),
+    };
+    if base.contested && !contested_allowed {
+        return Err(NameError::UnavailableForInvite.into());
+    }
+    let mut credits = credits.saturating_add(flow::IDENTITY_CREATE_CREDITS);
+    if inviter.is_some() {
+        credits = credits.saturating_add(CONTACT_REQUEST_CREDITS);
+    }
+    let credits_held = funding_duffs.saturating_mul(flow::CREDITS_PER_DUFF);
+    if credits_held < credits {
+        return Err(RegistrationError::FundingInsufficient {
+            needed: credits.div_ceil(flow::CREDITS_PER_DUFF),
+            available: funding_duffs,
+        });
+    }
+    Ok(Plan {
+        funding: Funding::Invitation {
+            link_id: link_id.to_owned(),
+            inviter,
+        },
+        lock_duffs: funding_duffs,
+        credits,
+        credits_held,
+        ..base
+    })
 }
 
 pub(crate) async fn quote<L: RegistrationLib>(
     lib: &L,
     req: &RegistrationRequest,
 ) -> Result<RegistrationQuote, RegistrationError> {
-    let plan = plan(lib, req, "DashPay.registration_quote").await?;
-    let total_duffs = plan.lock_duffs.saturating_add(plan.fee_duffs);
+    let plan = plan(lib, req).await?;
+    let total_duffs = match plan.funding {
+        Funding::Invitation { .. } => 0,
+        _ => plan.lock_duffs.saturating_add(plan.fee_duffs),
+    };
     let proof_authority = match plan.funding {
         Funding::CoreBalance { .. } => flow::PROOF_AUTHORITY_DUFFS,
         _ => 0,
@@ -543,7 +600,7 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
     grant: String,
     past: &[String],
 ) -> Result<String, RegistrationError> {
-    let plan = plan(&*lib, &req, "DashPay.start_registration").await?;
+    let plan = plan(&*lib, &req).await?;
     let past = past
         .iter()
         .map(|p| past_draft(p).ok_or_else(|| invalid(format!("{p} names no registration"))))
@@ -846,7 +903,14 @@ fn idle_wait<L: RegistrationLib>(
         };
     }
     let unfunded = phase.is_some_and(Phase::unfunded) && row.identity.is_none();
-    if unfunded && let Some(hold) = lib.funding_hold() {
+    // A claim waits for no sync (DP5-02 D9).
+    let claim = matches!(flow::interpret(row), Ok((_, Funding::Invitation { .. })));
+    let hold = if claim {
+        lib.claim_hold()
+    } else {
+        lib.funding_hold()
+    };
+    if unfunded && let Some(hold) = hold {
         if hold == RegistrationWait::Startup {
             session.platform.retry_startup(wallet);
         }

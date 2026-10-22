@@ -53,9 +53,12 @@ use dw_appdb::{
 use dw_vault::LockState;
 use tokio::time::Instant;
 
-use super::errors::{NameError, PlatformError, RegistrationError};
+use super::contacts::Eligibility;
+use super::errors::{ContactError, InvitationError, NameError, PlatformError, RegistrationError};
 use super::flows::{BudgetPurpose, LeaseStateView};
 use super::identity_writes::identity_locks;
+use super::invitation_check::Voucher;
+use super::invitations::{InvitationInvalidReason, InvitationStatus};
 use super::lease::mode_b::TrackedRow;
 use super::lease::{CallPermit, CallStep, DraftKey, FundingKey, Lease, LeaseTable};
 use super::names::NameOutcome;
@@ -336,6 +339,67 @@ pub(crate) trait RegistrationLib: Send + Sync {
         &self,
         identity: &str,
     ) -> impl Future<Output = Result<Option<u64>, PlatformError>> + Send;
+    /// What holds an invitation's claim (DP5-02 D9): [`Self::funding_hold`]
+    /// without SPV's sync, since no Core funds move: DP3-04's trust gate
+    /// and the bring-up's answer about the seed's identity indexes.
+    fn claim_hold(&self) -> Option<RegistrationWait>;
+    /// `NetworkSession::invitation_status` of the stashed link `link_id`.
+    fn invitation(
+        &self,
+        link_id: &str,
+    ) -> impl Future<Output = Result<InvitationStatus, InvitationError>> + Send;
+    /// platform-wallet's `claim_invitation` of the link `link` (its text,
+    /// read from the stash) for keys 0–5 of `identity_index`, their
+    /// witnesses signed by `permit`'s counting identity signer; the
+    /// transition's own signature is the voucher key's, in the library.
+    /// Builds no Core transaction. The identity created, or adopted when it
+    /// carries exactly these keys (the library's idempotent claim).
+    fn claim_invitation(
+        &self,
+        link: &str,
+        identity_index: u32,
+        permit: &CallPermit,
+    ) -> impl Future<Output = Result<String, ClaimError>> + Send;
+    /// DP2-02's contact request from `identity` to `inviter`, under the
+    /// registration's `lease` (DP5-02 §4).
+    fn request_inviter(
+        &self,
+        identity: &str,
+        inviter: &str,
+        lease: &Lease,
+    ) -> impl Future<Output = Result<(), ContactError>> + Send;
+}
+
+/// How an invitation's claim failed (DP5-02 §3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ClaimError {
+    /// The lock is spent and the identity at its id is not ours, or there
+    /// is none (claimed elsewhere, or used another way).
+    Claimed,
+    /// The link cannot be claimed on this network, or does not parse.
+    Invalid,
+    /// A stale islock, and the funding block is not chain-locked yet.
+    NotChainLocked,
+    Failed(PlatformError),
+}
+
+/// The outpoint a claim spends, from its link's funding, or why the claim
+/// cannot run now. A link without an islock waits for its funding's
+/// ChainLock (D21): the library's claim would refuse its proof as invalid
+/// data.
+pub(crate) fn claim_outpoint(
+    has_islock: bool,
+    funding: Result<Result<Voucher, InvitationInvalidReason>, PlatformError>,
+) -> Result<OutPoint, ClaimError> {
+    match funding {
+        Ok(Ok(voucher)) if !has_islock && !voucher.chain_locked => Err(ClaimError::NotChainLocked),
+        Ok(Ok(voucher)) => Ok(voucher.outpoint),
+        Ok(Err(InvitationInvalidReason::AssetLockNotFound)) => {
+            Err(ClaimError::Failed(PlatformError::Unavailable))
+        }
+        Ok(Err(_)) => Err(ClaimError::Invalid),
+        Err(e) => Err(ClaimError::Failed(e)),
+    }
 }
 
 /// One flow's state in this process (the session's Platform runtime),
@@ -888,11 +952,8 @@ pub(crate) fn canonical(outpoint: OutPoint) -> LockOutpoint {
 /// the code it fails with when this build cannot run it. A phase, funding,
 /// profile or outpoint this build does not know is
 /// `registration.unsupported`: such a row is never funded, discarded or
-/// advanced. An invitation row is `invitation.invalid` (DP5-02 seam: the
-/// link is a bearer credential in the vault of the machine that stashed it
-/// only, so a restored row cannot use it, and none can before DP5-02); a
-/// faucet row is `platform.feature_off` (developer builds only, and this
-/// build has none).
+/// advanced. A faucet row is `platform.feature_off` (developer builds only,
+/// and this build has none).
 pub(crate) fn interpret(row: &RegistrationRow) -> Result<(Phase, Funding), &'static str> {
     let profile_known = row
         .initial_profile
@@ -908,12 +969,13 @@ pub(crate) fn interpret(row: &RegistrationRow) -> Result<(Phase, Funding), &'sta
         return Err(unsupported());
     };
     match funding {
-        Funding::Invitation { .. } => Err(super::errors::InvitationError::Invalid.code()),
         Funding::FaucetAssetLock { .. } => Err(PlatformError::FeatureOff {
             feature: String::new(),
         }
         .code()),
-        Funding::CoreBalance { .. } | Funding::ExistingIdentity => Ok((phase, funding)),
+        Funding::CoreBalance { .. } | Funding::ExistingIdentity | Funding::Invitation { .. } => {
+            Ok((phase, funding))
+        }
     }
 }
 
@@ -1544,10 +1606,18 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         {
             return self.to_phase(row, Phase::FundingSent).await;
         }
+        // DP5-02 D13: once the identity is recorded the link has done its
+        // work; it is wiped, and again at every later step until that holds.
+        if let Funding::Invitation { link_id, .. } = &funding
+            && phase >= Phase::IdentityRegistered
+        {
+            self.forget_link(link_id).await;
+        }
         match phase {
             Phase::Draft => self.prepare_keys(row, &funding).await,
             Phase::KeysPrepared => match funding {
                 Funding::CoreBalance { lock_duffs } => self.fund(row, lock_duffs).await,
+                Funding::Invitation { link_id, .. } => self.claim_invitation(row, &link_id).await,
                 _ => Ok(Step::Fail(internal(), false)),
             },
             Phase::FundingSent | Phase::ProofWaiting => self.create_identity(row, phase).await,
@@ -1557,7 +1627,13 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             Phase::NameRequested if row.name_error.is_some() => self.profile(row).await,
             Phase::NameRequested => self.names(row).await,
             Phase::NameRegistered | Phase::Contested => self.profile(row).await,
-            Phase::ProfileCreated => self.to_phase(row, Phase::Done).await,
+            Phase::ProfileCreated => match funding {
+                Funding::Invitation {
+                    inviter: Some(inviter),
+                    ..
+                } => self.request_inviter(row, &inviter).await,
+                _ => self.to_phase(row, Phase::Done).await,
+            },
             Phase::Done => Ok(Step::Stop),
         }
     }
@@ -1639,8 +1715,23 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 )
                 .await;
         }
-        if let Some(step) = self.funding_hold() {
+        let hold = match funding {
+            Funding::Invitation { .. } => self.lib.claim_hold().map(|wait| match wait {
+                RegistrationWait::Sync | RegistrationWait::Startup => Step::Wait(wait),
+                other => Step::Park(other),
+            }),
+            _ => self.funding_hold(),
+        };
+        if let Some(step) = hold {
             return Ok(step);
+        }
+        // DP5-02 D7, again once the bring-up has found the seed's identities.
+        if matches!(funding, Funding::Invitation { .. }) && !self.lib.identities().await.is_empty()
+        {
+            return Ok(Step::Fail(
+                InvitationError::AlreadyHasIdentity.code(),
+                false,
+            ));
         }
         self.assign_index(row).await
     }
@@ -2144,6 +2235,139 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         }
     }
 
+    /// KeysPrepared → IdentityRegistered for an invitation (DP5-02 §3): the
+    /// library's claim with the link from the stash, under the identity
+    /// step's permit as [`Self::create_identity`]. No Core funds: the step
+    /// never funds, and the lease has no funding signer (D8).
+    async fn claim_invitation(
+        &self,
+        row: &RegistrationRow,
+        link_id: &str,
+    ) -> Result<Step, PlatformError> {
+        let Some(index) = row.identity_index else {
+            return Ok(Step::Fail(internal(), false));
+        };
+        let registered = |id: String| RegistrationChange {
+            phase: Some(Phase::IdentityRegistered.as_str().into()),
+            identity: Some(id),
+            ..Default::default()
+        };
+        // D11: the seed's identity at the row's index is this flow's (a
+        // restored row, or a claim whose record was lost).
+        if let Some(id) = self.identity_at(index).await {
+            return self.advance(row, registered(id)).await;
+        }
+        let link = match self.session.read_invitation(link_id.to_owned()).await {
+            Ok(Some((link, _))) => link,
+            // D12: nothing else can make the identity.
+            Ok(None) => return Ok(Step::Fail(InvitationError::Expired.code(), false)),
+            Err(InvitationError::Platform(PlatformError::SignerUnavailable)) => {
+                return Ok(Step::Park(RegistrationWait::Unlock));
+            }
+            Err(InvitationError::Platform(e)) => return Ok(self.failed(&e)),
+            Err(e) => return Ok(Step::Fail(e.code(), false)),
+        };
+        let Some(lease) = self.lease() else {
+            return Ok(Step::Park(self.authority_wait()));
+        };
+        let in_call = match self.flows().enter_call(self.claim) {
+            Ok(in_call) => in_call,
+            Err(step) => return Ok(step),
+        };
+        let step = identity_step(row.id);
+        let (claimed, locked) = lease
+            .scope_step(Some(step.clone()), async {
+                let call = (lease.call_permit_step(&step, None, CallStep::Resumable(step.clone())))
+                    .await
+                    .map_err(PlatformError::from)?;
+                let claimed = self.lib.claim_invitation(&link, index, &call).await;
+                let locked = call.signatures().locked();
+                call.finish(claimed.is_ok());
+                Ok::<_, PlatformError>((claimed, locked))
+            })
+            .await
+            .unwrap_or_else(|e| (Err(ClaimError::Failed(e)), false));
+        drop((in_call, link));
+        let e = match claimed {
+            Ok(id) => return self.advance(row, registered(id)).await,
+            Err(e) => e,
+        };
+        if let Some(id) = self.identity_at(index).await {
+            return self.advance(row, registered(id)).await;
+        }
+        Ok(match e {
+            ClaimError::Claimed => Step::Fail(InvitationError::Claimed.code(), false),
+            ClaimError::Invalid => Step::Fail(InvitationError::Invalid.code(), false),
+            ClaimError::NotChainLocked => Step::Wait(RegistrationWait::ChainLock),
+            ClaimError::Failed(e) => {
+                if locked || self.authority_wait() == RegistrationWait::Unlock {
+                    Step::Park(self.authority_wait())
+                } else {
+                    self.failed(&e)
+                }
+            }
+        })
+    }
+
+    /// Wipes the claimed link from the stash (D13); a failure is logged and
+    /// the next step tries again.
+    async fn forget_link(&self, link_id: &str) {
+        if let Err(e) = self.session.forget_invitation(link_id.to_owned()).await {
+            tracing::warn!(
+                draft = self.draft(),
+                code = e.code(),
+                "the claimed invitation stays stashed"
+            );
+        }
+    }
+
+    /// ProfileCreated → Done for an invitation naming an inviter: DP2-02's
+    /// request to them (DP5-02 §4). Our request on Platform already, or a
+    /// contact already, counts as sent; a refusal known to repeat is logged
+    /// and the row ends `Done` (D15); the network waits and an authority
+    /// the run lacks parks it, as at every step after the identity.
+    async fn request_inviter(
+        &self,
+        row: &RegistrationRow,
+        inviter: &str,
+    ) -> Result<Step, PlatformError> {
+        let Some(identity) = row.identity.as_deref() else {
+            return Ok(Step::Fail(internal(), false));
+        };
+        let Some(lease) = self.lease() else {
+            return Ok(Step::Park(self.authority_wait()));
+        };
+        let in_call = match self.flows().enter_call(self.claim) {
+            Ok(in_call) => in_call,
+            Err(step) => return Ok(step),
+        };
+        let sent = self.lib.request_inviter(identity, inviter, &lease).await;
+        drop(in_call);
+        let refused = match sent {
+            Ok(())
+            | Err(
+                ContactError::AlreadyContact
+                | ContactError::RequestPending
+                | ContactError::Ineligible {
+                    reason: Eligibility::PendingOutgoing | Eligibility::AlreadyContact,
+                },
+            ) => return self.to_phase(row, Phase::Done).await,
+            Err(e) => match e.platform() {
+                Some(e) => match self.after_identity(e)? {
+                    Step::Fail(code, _) => code,
+                    step => return Ok(step),
+                },
+                None => e.code(),
+            },
+        };
+        tracing::info!(
+            draft = row.id,
+            code = refused,
+            "the request to the inviter was refused"
+        );
+        self.to_phase(row, Phase::Done).await
+    }
+
     /// A funding call of this process signed the tracked lock at `outpoint`
     /// and its record is not durable yet (P2b's resume gate).
     async fn unrecorded(&self, outpoint: OutPoint) -> bool {
@@ -2275,7 +2499,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
     /// never settles it.
     async fn profile(&self, row: &RegistrationRow) -> Result<Step, PlatformError> {
         let Some(text) = row.initial_profile.as_deref() else {
-            return self.to_phase(row, Phase::Done).await;
+            return self.to_phase(row, after_profile(row)).await;
         };
         let Decoded::Known(profile) = ProfileRecord::decode(text) else {
             return Ok(Step::Fail(unsupported(), false));
@@ -2284,7 +2508,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             return Ok(Step::Fail(internal(), false));
         };
         let settled = |code: &'static str| RegistrationChange {
-            phase: Some(Phase::Done.as_str().into()),
+            phase: Some(after_profile(row).as_str().into()),
             profile_error: Some(code.into()),
             ..Default::default()
         };
@@ -2418,6 +2642,20 @@ pub(crate) fn refused_for_good(e: &PlatformError) -> bool {
             | PlatformError::NotImplemented { .. }
             | PlatformError::Identity(super::errors::IdentityError::KeysMissing { .. })
     )
+}
+
+/// The phase after the profile step: `ProfileCreated` for an invitation
+/// whose inviter is still to be asked (DP5-02 §4), else `Done`.
+fn after_profile(row: &RegistrationRow) -> Phase {
+    match interpret(row) {
+        Ok((
+            _,
+            Funding::Invitation {
+                inviter: Some(_), ..
+            },
+        )) => Phase::ProfileCreated,
+        _ => Phase::Done,
+    }
 }
 
 /// Platform's profile already says what `wanted` sets; the fields `wanted`
@@ -2749,15 +2987,86 @@ impl RegistrationLib for PwLib {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .caught_up();
-        // DP3-04: no funding while Platform writes wait for masternode sync
-        // (`Enforcing`); SPV caught up is another reading (§3).
-        if !synced || self.session.trust.writes_wait() {
+        if !synced {
+            return Some(RegistrationWait::Sync);
+        }
+        self.claim_hold()
+    }
+
+    fn claim_hold(&self) -> Option<RegistrationWait> {
+        // DP3-04: no funding or claim while Platform writes wait for
+        // masternode sync (`Enforcing`); SPV caught up is another reading
+        // (§3).
+        if self.session.trust.writes_wait() {
             return Some(RegistrationWait::Sync);
         }
         match self.session.dashpay_startup(&self.wallet_id) {
             Ok(s) => startup_hold(s.startup),
             Err(_) => Some(RegistrationWait::Sync),
         }
+    }
+
+    async fn invitation(&self, link_id: &str) -> Result<InvitationStatus, InvitationError> {
+        self.session.invitation_status(link_id.to_owned()).await
+    }
+
+    async fn claim_invitation(
+        &self,
+        link: &str,
+        identity_index: u32,
+        permit: &CallPermit,
+    ) -> Result<String, ClaimError> {
+        use platform_wallet::PlatformWalletError as E;
+        use platform_wallet::error::is_asset_lock_already_consumed;
+        let failed = |e: PlatformError| ClaimError::Failed(e);
+        let Some(parsed) = super::invitation_check::parse(link) else {
+            return Err(ClaimError::Invalid);
+        };
+        // The outpoint the claim spends, to read a "consumed" refusal as
+        // this lock's (the library refetches the same transaction).
+        let net = self.session.invitation_net().map_err(failed)?;
+        let funding = super::invitation_check::funding(&*net, &parsed).await;
+        let outpoint = claim_outpoint(parsed.islock_hex.is_some(), funding)?;
+        let identity_signer =
+            (permit.identity_signer(&[identity_index])).map_err(|e| failed(e.into()))?;
+        let keys = identity_signer
+            .derive_public_keys(identity_index, &super::keys_policy::registration_specs())
+            .await
+            .map_err(|e| failed(e.into()))?;
+        let claimed = self
+            .wallet
+            .identity()
+            .claim_invitation(parsed, identity_index, keys, &identity_signer, None)
+            .await;
+        match claimed {
+            Ok(identity) => Ok(b58(&identity.id())),
+            Err(E::InvitationNetworkMismatch { .. }) => Err(ClaimError::Invalid),
+            Err(E::AssetLockNotChainLocked(_)) => Err(ClaimError::NotChainLocked),
+            Err(E::Sdk(e)) if is_asset_lock_already_consumed(&e, &outpoint) => {
+                Err(ClaimError::Claimed)
+            }
+            Err(e) => Err(failed(e.into())),
+        }
+    }
+
+    async fn request_inviter(
+        &self,
+        identity: &str,
+        inviter: &str,
+        lease: &Lease,
+    ) -> Result<(), ContactError> {
+        let net = super::requests::SdkRequests(Arc::clone(&self.sdk));
+        super::requests::send(
+            &net,
+            &self.session,
+            &self.wallet,
+            self.wallet_id,
+            (identity.to_owned(), inviter.to_owned(), None),
+            super::lease::lease_string(&lease.id()),
+            &[super::flows::FlowKind::Registration],
+        )
+        .await
+        .map(drop)
     }
 
     async fn funding_permit(
