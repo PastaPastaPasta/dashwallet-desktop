@@ -12,8 +12,9 @@
 use dashcore::consensus::{deserialize, serialize};
 use dashcore::hashes::Hash;
 use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
+use dashcore::sml::masternode_list_entry::net_info::{self, Bip155Network};
 use dashcore::transaction::special_transaction::TransactionPayload;
-use dw_protx::shared::netinfo::{NetInfoEntry, PURPOSE_CORE_P2P};
+use dw_protx::shared::netinfo::{NetInfoEntry, PURPOSE_CORE_P2P, ServiceAddr};
 use dw_protx::shared::{ProDisTx, ProRegTxV3, ProUpShareTx, ProUpSharedRegTx, SpecialTx};
 use serde_json::Value;
 
@@ -45,6 +46,35 @@ fn transactions(doc: &Value) -> Vec<Vec<u8>> {
     out
 }
 
+/// dashcore's net-info entry as dw-protx's (BIP155 network ids).
+fn entry_of(e: &net_info::NetInfoEntry) -> NetInfoEntry {
+    match e {
+        net_info::NetInfoEntry::Service {
+            network,
+            addr,
+            port,
+        } => {
+            let network = match network {
+                Bip155Network::Ipv4 => 1,
+                Bip155Network::Ipv6 => 2,
+                Bip155Network::TorV3 => 4,
+                Bip155Network::I2p => 5,
+                Bip155Network::Cjdns => 6,
+            };
+            NetInfoEntry::Service(ServiceAddr {
+                network,
+                address: addr.clone(),
+                port: *port,
+            })
+        }
+        net_info::NetInfoEntry::Domain { host, port } => NetInfoEntry::Domain {
+            name: host.clone(),
+            port: *port,
+        },
+        net_info::NetInfoEntry::Invalid => panic!("dashcore read an invalid net-info entry"),
+    }
+}
+
 fn sigs<T: AsRef<[u8]>>(sigs: &[T]) -> Vec<Vec<u8>> {
     sigs.iter().map(|s| s.as_ref().to_vec()).collect()
 }
@@ -67,15 +97,19 @@ fn test_QT_126_dashcore_reads_the_shared_transactions_as_dw_protx_does() {
                     let q = ProRegTxV3::from_payload(&ours.payload).unwrap();
                     assert_eq!(serialize(&p), ours.payload);
                     assert_eq!(p.version, 3);
+                    assert_eq!(p.masternode_type as u16, q.mn_type);
+                    assert_eq!(p.masternode_mode, q.mode);
                     assert_eq!(p.collateral_outpoint, q.collateral);
                     let MasternodeNetInfo::Extended(net) = &p.service_address else {
                         panic!("a version-3 registration has extended net info");
                     };
                     assert_eq!(net.version, q.net_info.version);
-                    let counts: Vec<usize> = net.purposes.iter().map(|(_, e)| e.len()).collect();
-                    let ours: Vec<usize> =
-                        q.net_info.entries.iter().map(|(_, e)| e.len()).collect();
-                    assert_eq!(counts, ours);
+                    let entries: Vec<(u8, Vec<NetInfoEntry>)> = net
+                        .purposes
+                        .iter()
+                        .map(|(purpose, e)| (*purpose as u8, e.iter().map(entry_of).collect()))
+                        .collect();
+                    assert_eq!(entries, q.net_info.entries);
                     let primary = match q.net_info.purpose(PURPOSE_CORE_P2P).first() {
                         Some(NetInfoEntry::Service(s)) => s.socket_addr(),
                         _ => None,
@@ -84,7 +118,24 @@ fn test_QT_126_dashcore_reads_the_shared_transactions_as_dw_protx_does() {
                     assert_eq!(p.owner_key_hash.to_byte_array(), q.owner_key_id);
                     assert_eq!(p.operator_public_key.as_ref(), &q.operator_public_key);
                     assert_eq!(p.voting_key_hash.to_byte_array(), q.voting_key_id);
+                    assert_eq!(p.operator_reward, q.operator_reward);
+                    assert!(p.script_payout.is_empty());
+                    let payouts: Vec<_> = (p.payouts.iter().flatten())
+                        .map(|s| (s.script_payout.clone(), s.reward))
+                        .collect();
+                    let ours: Vec<_> = q
+                        .payouts
+                        .iter()
+                        .map(|s| (s.script.clone(), s.reward))
+                        .collect();
+                    assert_eq!(payouts, ours);
                     assert_eq!(p.inputs_hash.to_byte_array(), q.inputs_hash);
+                    assert_eq!(p.signature, q.sig);
+                    assert_eq!(
+                        p.platform_node_id.map(|id| id.to_byte_array()),
+                        q.platform_node_id
+                    );
+                    assert_eq!((p.platform_p2p_port, p.platform_http_port), (None, None));
                     let shared = p.shared_collateral.expect("a shared registration");
                     assert_eq!(shared.shares.len(), q.shares.len());
                     for (a, b) in shared.shares.iter().zip(&q.shares) {
