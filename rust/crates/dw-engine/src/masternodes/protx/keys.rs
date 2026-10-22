@@ -212,6 +212,22 @@ impl NetworkSession {
             .await?)
     }
 
+    /// The key ids of the keychain owner keys 0–19, by index.
+    pub(crate) async fn owner_key_ids(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<(u32, [u8; 20])>, MasternodesError> {
+        let network = self.network.core_network();
+        let keys = self
+            .keys_of(wallet, MasternodeKeyRole::Owner, 0, KEY_INDEXES)
+            .await?;
+        Ok(keys
+            .iter()
+            .filter_map(|k| secp_pick(k, network))
+            .filter_map(|p| Some((p.index?, p.key_id)))
+            .collect())
+    }
+
     /// The owner key: the keychain's at `index`, or its lowest unused one.
     /// One the wallet already uses is refused as Core would (`bad-protx-dup-key`).
     pub(crate) async fn pick_owner(

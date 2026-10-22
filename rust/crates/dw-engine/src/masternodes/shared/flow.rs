@@ -182,22 +182,20 @@ impl NetworkSession {
 
     /// Every owner key of every share of the wallet's sessions, and the
     /// keys their terms name, count as in use (D10). A session whose
-    /// envelope no longer parses still holds the owner keys its
-    /// `my_shares` column names (D64).
+    /// envelope no longer parses still holds the keychain owner keys its
+    /// `my_shares` column names; an index that names none holds nothing
+    /// (D64).
     pub(crate) async fn shared_keys_in_use(
         &self,
         wallet: WalletId,
         used: &mut InUse,
     ) -> Result<(), MasternodesError> {
         let network = self.network.core_network();
+        let mut unreadable = Vec::new();
         for row in self.shared_rows(wallet).await? {
             let owners = owner_indexes(&row.my_shares);
             let Ok(l) = Loaded::of(row, network) else {
-                let none = InUse::default();
-                for index in owners {
-                    let key = self.pick_owner(wallet, Some(index), &none).await?;
-                    used.owner.insert(key.key_id);
-                }
+                unreadable.extend(owners);
                 continue;
             };
             for share in &l.session.shares {
@@ -208,6 +206,14 @@ impl NetworkSession {
             if let Ok(key) = dw_protx::bls::parse_public_hex(&l.session.terms.operator_pub_key) {
                 used.operator.insert(key);
             }
+        }
+        if !unreadable.is_empty() {
+            let keys = self.owner_key_ids(wallet).await?;
+            used.owner.extend(
+                keys.into_iter()
+                    .filter(|(index, _)| unreadable.contains(index))
+                    .map(|(_, id)| id),
+            );
         }
         Ok(())
     }

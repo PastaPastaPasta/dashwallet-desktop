@@ -1750,6 +1750,28 @@ fn test_QT_126_an_unreadable_session_keeps_its_owner_key() {
     assert_ne!(second.rows[0].owner_address, first.rows[0].owner_address);
 }
 
+/// D64: an unreadable session whose `my_shares` names no keychain owner key
+/// (an index past 19) holds no key and blocks no other call.
+#[test]
+fn test_QT_126_an_unreadable_session_naming_no_owner_key_blocks_nothing() {
+    let f = fx(1, true);
+    f.credit(0, 1, 501 * COIN);
+    f.credit(0, 2, 501 * COIN);
+    let first = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE))
+        .unwrap()
+        .session;
+    f.rewrite(0, &first.id, |u| {
+        u.envelope = "{\"not\": \"an envelope\"".into();
+        u.my_shares = "{\"0\":25}".into();
+    });
+    let keys = f.run(f.mn().registration_keys(
+        f.wallets[0],
+        crate::masternodes::records::MasternodeType::Regular,
+    ));
+    assert_eq!(keys.unwrap().owner.address, first.rows[0].owner_address);
+    start(&f, 0, request(&[("A", 500), ("B", 500)], FEE)).unwrap();
+}
+
 /// D65 (review NIT-1): the funding step signs only the copy whose consent
 /// hash is the one this wallet approved, whatever else it checks.
 #[test]
