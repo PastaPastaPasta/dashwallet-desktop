@@ -415,7 +415,7 @@ export function presetOutcome(nodes: VotingMasternode[]): VoteOutcomeName | null
 }
 
 /** "2 masternodes · weight 8 · no fee", for the checked eligible rows. */
-export function selectionNote(picked: NodeRowView[]): string {
+export function selectionNote(picked: Pick<NodeRowView, "weight">[]): string {
   const weight = picked.reduce((s, r) => s + r.weight, 0);
   return `${plural(picked.length, "masternode")} · weight ${weight} · no fee`;
 }

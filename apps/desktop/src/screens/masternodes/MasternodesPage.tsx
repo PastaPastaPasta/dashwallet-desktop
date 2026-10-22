@@ -1,7 +1,8 @@
 // Masternodes ▸ Governance (MG-09, UX-SPEC §4.25.1, §4.25.3): the clock and budget cards, the
-// proposal list with search, filters and sort, the detail pane, and Mine. Until MG-10 adds My
-// masternodes the page has no tab bar (D1). The sheets (vote, create, numbers) live here, so a
-// list that changes under an open sheet (a filter, a re-sort, a resync) keeps it (D31).
+// proposal list with search, filters and sort, the detail pane, and Mine. MG-11 adds the tab bar
+// with Username voting (NamesTab.tsx, MG-11 D1); MG-10 adds My masternodes to it. The sheets
+// (vote, create, numbers) live here, so a list that changes under an open sheet (a filter, a
+// re-sort, a resync) keeps it (D31).
 
 import { useMemo, useState } from "react";
 import { errorMessage } from "../../api/backend";
@@ -34,16 +35,27 @@ import {
   type SortOrder,
 } from "../../governance/model";
 import { useGovernanceInfo, useGovernanceRefresh, useGovernanceSyncState, useMyProposals, useProposals, useTurnOnGovernance, useVotingByProposal } from "../../governance/queries";
+import { NameText } from "../../governance/names";
+import { Tabs, type Tab } from "../Routes";
 import { MoreMenu, Notice, StatusChip, useNowSecs, VoteBar } from "./common";
 import { CreateProposalSheet } from "./CreateProposalSheet";
 import { MineList } from "./Mine";
+import { NamesTab } from "./NamesTab";
 import { NumbersSheet } from "./NumbersSheet";
 import { ProposalPane } from "./ProposalPane";
 import { VoteSheet } from "./VoteSheet";
 
 const SEARCH_DEBOUNCE_MS = 200;
 
+type MasternodesTab = "governance" | "names";
+const TABS: Tab<MasternodesTab>[] = [
+  { id: "governance", title: "Governance" },
+  { id: "names", title: NameText.tab },
+];
+
 export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; network: NetworkInfo }) {
+  // Page state, not `ui`: the page opens on Governance (MG-11 D2).
+  const [tab, setTab] = useState<MasternodesTab>("governance");
   const [showEnded, setShowEnded] = useState(false);
   const [filter, setFilter] = useState<ListFilter>("all");
   const [sheet, setSheet] = useState<"create" | "numbers" | null>(null);
@@ -130,27 +142,32 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
       <div className="page-column">
         <header className="top-intro mg-header">
           <h1 className="top-intro-title">{GovText.title}</h1>
-          <span className="mg-header-actions">
-            <MoreMenu
-              testId="governance-more"
-              items={[
-                { id: "ended", title: showEnded ? GovText.hideEnded : GovText.showEnded, onSelect: () => setShowEnded((s) => !s) },
-                ...(info.data ? [{ id: "numbers", title: GovText.numbers, onSelect: () => setSheet("numbers") }] : []),
-              ]}
-            />
-            <DashButton
-              variant="filledBlue"
-              size="small"
-              data-testid="governance-create"
-              disabled={wallet.watchOnly}
-              title={wallet.watchOnly ? GovText.createWatchOnly : undefined}
-              onClick={() => setSheet("create")}
-            >
-              {GovText.create}
-            </DashButton>
-          </span>
+          {/* Governance's actions; Username voting has none (MG-11 D2). */}
+          {tab === "governance" && (
+            <span className="mg-header-actions">
+              <MoreMenu
+                testId="governance-more"
+                items={[
+                  { id: "ended", title: showEnded ? GovText.hideEnded : GovText.showEnded, onSelect: () => setShowEnded((s) => !s) },
+                  ...(info.data ? [{ id: "numbers", title: GovText.numbers, onSelect: () => setSheet("numbers") }] : []),
+                ]}
+              />
+              <DashButton
+                variant="filledBlue"
+                size="small"
+                data-testid="governance-create"
+                disabled={wallet.watchOnly}
+                title={wallet.watchOnly ? GovText.createWatchOnly : undefined}
+                onClick={() => setSheet("create")}
+              >
+                {GovText.create}
+              </DashButton>
+            </span>
+          )}
         </header>
-        {body}
+        <Tabs label="Masternodes" tabs={TABS} current={tab} onSelect={setTab} testId="masternodes-tabs">
+          {tab === "governance" ? body : <NamesTab wallet={wallet} network={network} />}
+        </Tabs>
       </div>
       {sheet === "numbers" && info.data && <NumbersSheet info={info.data} network={network} onClose={() => setSheet(null)} />}
       {sheet === "create" && (

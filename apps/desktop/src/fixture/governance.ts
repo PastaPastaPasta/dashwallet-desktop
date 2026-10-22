@@ -26,6 +26,7 @@ import type { VoteTally } from "../api/generated/VoteTally";
 import type { VotingMasternode } from "../api/generated/VotingMasternode";
 import type { WeightRange } from "../api/generated/WeightRange";
 import type { Ctx, Handlers } from "./handlers";
+import { nameHandlers, nameScenarios, newNamesWorld, type NamesWorld } from "./names";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import { FIXTURE_NOW, secs } from "./wallet";
 
@@ -68,6 +69,8 @@ export interface GovernanceWorld {
   refuse: Record<string, string>;
   /** `governance.list_unavailable` while SPV has no masternode list. */
   listUnavailable: boolean;
+  /** The contested DPNS names and their voters (MG-11, fixture/names.ts). */
+  names: NamesWorld;
   /** By wallet id, newest first. */
   mine: Record<string, MyProposal[]>;
   /** A [Submit] whose resend fails, or whose new run finds no peer again. */
@@ -172,6 +175,7 @@ export const newGovernanceWorld = (): GovernanceWorld => ({
   votes: { [h("1")]: { [MN_A]: { outcome: "yes", time: NOW - 40 * 60 } }, [h("2")]: { [MN_A]: { outcome: "yes", time: NOW - 3 * 86_400 }, [MN_B]: { outcome: "yes", time: NOW - 3 * 86_400 } } },
   refuse: {},
   listUnavailable: false,
+  names: newNamesWorld(),
   mine: {},
   submitFails: false,
   networkFee: FEE_NETWORK,
@@ -309,6 +313,7 @@ export function governanceHandlers({
   useGrant: (w: World, id: string) => void;
 }): Handlers {
   return {
+    ...nameHandlers({ wallet, grant, useGrant }),
     governance_sync_enabled: (_, { world }) => world.governance.enabled,
     governance_set_sync_enabled: ({ enabled }, ctx) => {
       const g = ctx.world.governance;
@@ -517,6 +522,11 @@ function governanceBase(base: Base, theme: ThemeName | null, patch: Partial<Gove
 export function governanceScenarios(base: Base) {
   const id = (w: World) => w.wallets[0].summary.walletId;
   return {
+    ...nameScenarios((t, patch) => {
+      const w = governanceBase(base, t);
+      patch?.(w.governance.names);
+      return w;
+    }),
     /** The `gov-list` mock: synced, three voting masternodes (one banned), one own proposal confirming. */
     governance: (t: ThemeName | null) => {
       const w = governanceBase(base, t);

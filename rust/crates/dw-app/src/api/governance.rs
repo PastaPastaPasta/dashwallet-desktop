@@ -5,9 +5,9 @@
 //! `governance.*` codes.
 
 use crate::dto::governance::{
-    CurrentVoteRow, GovernanceClock, GovernanceInfo, GovernanceSyncState, MyProposal,
-    ProposalDetail, ProposalDraft, ProposalPreview, ProposalQuery, ProposalRow, SuperblockDate,
-    VoteCast, VoteOutcomeName, VotingMasternode,
+    ContestedNames, CurrentVoteRow, GovernanceClock, GovernanceInfo, GovernanceSyncState,
+    MyProposal, NameChoice, NameVoteCast, ProposalDetail, ProposalDraft, ProposalPreview,
+    ProposalQuery, ProposalRow, SuperblockDate, VoteCast, VoteOutcomeName, VotingMasternode,
 };
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
@@ -20,14 +20,6 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     (
         "Governance::relay_vote",
         "internal: reached through the console's `voteraw` (`console_execute`); the UI votes with `governance_vote` (MG-05)",
-    ),
-    (
-        "Governance::contested_names",
-        "deferred (MG-11): the contested-name voting UI binds it (MG-07 D11)",
-    ),
-    (
-        "Governance::vote_name",
-        "deferred (MG-11): the contested-name voting UI binds it (MG-07 D11)",
     ),
 ];
 
@@ -142,6 +134,46 @@ commands! {
             .governance()
             .await?
             .vote(wallet, proposal, outcome.into(), masternodes, grant)
+            .await?;
+        Ok(cast.into_iter().map(Into::into).collect())
+    }
+
+    /// The open DPNS contests with their tallies, the wallet's masternodes
+    /// that can vote on names, each with its present choice and the votes
+    /// this app saw it use per contest, and `votesAllowed` (MG-07 §1). Needs
+    /// the SPV masternode list (`governance.list_unavailable`) and Platform
+    /// (`platform.unavailable`), not governance sync.
+    #[facade("Governance::contested_names")]
+    fn governance_contested_names(state, wallet_id: String) -> ContestedNames {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let names = state
+            .governance()
+            .await?
+            .contested_names(wallet)
+            .await?;
+        Ok(names.into())
+    }
+
+    /// Casts `choice` on the poll of `label` with each masternode
+    /// (proTxHash) under one `Governance` grant of the wallet: one result
+    /// per masternode, in order (MG-07 §1). Argument and contest errors
+    /// (`governance.contest_not_found`, `contest_closed`,
+    /// `not_a_contender`) fail the call before the grant is used; lease
+    /// errors are `platform.*`.
+    #[facade("Governance::vote_name")]
+    fn governance_vote_name(
+        state,
+        wallet_id: String,
+        label: String,
+        choice: NameChoice,
+        masternodes: Vec<String>,
+        grant: String,
+    ) -> Vec<NameVoteCast> {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let cast = state
+            .governance()
+            .await?
+            .vote_name(wallet, label, choice.into(), masternodes, grant)
             .await?;
         Ok(cast.into_iter().map(Into::into).collect())
     }

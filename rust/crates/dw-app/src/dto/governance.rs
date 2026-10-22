@@ -572,6 +572,276 @@ impl From<engine::VoteCast> for VoteCast {
     }
 }
 
+/// A masternode's choice in a contested DPNS name's poll (MG-07 §1): the
+/// argument of `governance_vote_name` and a voter's present choice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum NameChoice {
+    /// For the contender with this identity id (base58).
+    TowardsIdentity {
+        identity: String,
+    },
+    Abstain,
+    /// Nobody gets the name.
+    Lock,
+}
+
+impl From<engine::NameChoice> for NameChoice {
+    fn from(c: engine::NameChoice) -> Self {
+        use engine::NameChoice as E;
+        match c {
+            E::TowardsIdentity { identity } => Self::TowardsIdentity { identity },
+            E::Abstain => Self::Abstain,
+            E::Lock => Self::Lock,
+        }
+    }
+}
+
+impl From<NameChoice> for engine::NameChoice {
+    fn from(c: NameChoice) -> Self {
+        match c {
+            NameChoice::TowardsIdentity { identity } => Self::TowardsIdentity { identity },
+            NameChoice::Abstain => Self::Abstain,
+            NameChoice::Lock => Self::Lock,
+        }
+    }
+}
+
+/// One contender of a contested name, with its weighted votes (`null`:
+/// Platform gave no tally).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NameContender {
+    pub identity: String,
+    pub votes: Option<u32>,
+}
+
+impl From<engine::NameContender> for NameContender {
+    fn from(c: engine::NameContender) -> Self {
+        let engine::NameContender { identity, votes } = c;
+        NameContender { identity, votes }
+    }
+}
+
+/// An open DPNS contest (MG-07 §1). `endsAt` is when voting ends (Unix s);
+/// `contendersComplete` is false for a full first page (100, MG-07 D9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ContestedName {
+    /// The normalized label (`a-hj-km-np-z01-`).
+    pub label: String,
+    pub ends_at: u64,
+    pub contenders: Vec<NameContender>,
+    pub lock_votes: Option<u32>,
+    pub abstain_votes: Option<u32>,
+    pub contenders_complete: bool,
+}
+
+impl From<engine::ContestedName> for ContestedName {
+    fn from(c: engine::ContestedName) -> Self {
+        let engine::ContestedName {
+            label,
+            ends_at,
+            contenders,
+            lock_votes,
+            abstain_votes,
+            contenders_complete,
+        } = c;
+        ContestedName {
+            label,
+            ends_at,
+            contenders: contenders.into_iter().map(Into::into).collect(),
+            lock_votes,
+            abstain_votes,
+            contenders_complete,
+        }
+    }
+}
+
+/// Which of the wallet's keys a masternode votes names with (MG-07 D3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum NameVotingKey {
+    /// The keychain's voting key at `index`.
+    Keychain { index: u32 },
+    /// The masternode's attached `voting` key.
+    Attached,
+}
+
+impl From<engine::NameVotingKey> for NameVotingKey {
+    fn from(k: engine::NameVotingKey) -> Self {
+        use engine::NameVotingKey as E;
+        match k {
+            E::Keychain { index } => Self::Keychain { index },
+            E::Attached => Self::Attached,
+        }
+    }
+}
+
+/// A voter's standing in one listed contest: its present choice as
+/// Platform proved it, and the votes this app saw Platform take from it, a
+/// lower bound of Platform's own count (MG-07 D6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NameVoterState {
+    pub label: String,
+    pub choice: Option<NameChoice>,
+    pub votes_used: u32,
+}
+
+impl From<engine::NameVoterState> for NameVoterState {
+    fn from(s: engine::NameVoterState) -> Self {
+        let engine::NameVoterState {
+            label,
+            choice,
+            votes_used,
+        } = s;
+        NameVoterState {
+            label,
+            choice: choice.map(Into::into),
+            votes_used,
+        }
+    }
+}
+
+/// One of the wallet's masternodes that can vote on names (MG-07 D3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NameVoter {
+    pub pro_tx_hash: String,
+    pub kind: MasternodeTypeName,
+    /// Platform's strength of its vote: 1, or 4 for an evonode.
+    pub weight: u32,
+    pub valid: bool,
+    pub key: NameVotingKey,
+    /// The listed contests it has a choice or a vote in.
+    pub current: Vec<NameVoterState>,
+}
+
+impl From<engine::NameVoter> for NameVoter {
+    fn from(v: engine::NameVoter) -> Self {
+        let engine::NameVoter {
+            pro_tx_hash,
+            kind,
+            weight,
+            valid,
+            key,
+            current,
+        } = v;
+        NameVoter {
+            pro_tx_hash,
+            kind: kind.into(),
+            weight,
+            valid,
+            key: key.into(),
+            current: current.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// `governance_contested_names`'s answer (MG-07 §1): the open contests,
+/// soonest ending first, the voters in list order, and the votes a
+/// masternode has per poll (one and its changes).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ContestedNames {
+    pub contests: Vec<ContestedName>,
+    pub voters: Vec<NameVoter>,
+    pub votes_allowed: u32,
+}
+
+impl From<engine::ContestedNames> for ContestedNames {
+    fn from(n: engine::ContestedNames) -> Self {
+        let engine::ContestedNames {
+            contests,
+            voters,
+            votes_allowed,
+        } = n;
+        ContestedNames {
+            contests: contests.into_iter().map(Into::into).collect(),
+            voters: voters.into_iter().map(Into::into).collect(),
+            votes_allowed,
+        }
+    }
+}
+
+/// Why a masternode's name vote does not count: the engine's
+/// `NameVoteCast.rejected` reasons (MG-07 §3) as a closed set, so the
+/// renderer has a sentence for each (MG-11 D15). `unconfirmed` may still
+/// count; `refused` is Platform's catch-all; `unknown` is a reason this
+/// build doesn't know (MG-11 review n4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum NameRejectionName {
+    UnknownMasternode,
+    NoVotingKey,
+    Cancelled,
+    SignerUnavailable,
+    InFlight,
+    VoteLimit,
+    PlatformUnavailable,
+    Unconfirmed,
+    AlreadyVoted,
+    ContestClosed,
+    ContestNotFound,
+    MasternodeNotFound,
+    WrongVotingKey,
+    ChoiceNotAllowed,
+    NoVoterIdentity,
+    VotingKeyDisabled,
+    Refused,
+    Unknown,
+}
+
+impl NameRejectionName {
+    /// The engine's reason; one this build doesn't know is `unknown`, and
+    /// logged, so a new engine reason shows up rather than passing as
+    /// Platform's `refused`.
+    pub fn from_engine(reason: &str) -> Self {
+        serde_json::from_value(serde_json::Value::String(reason.to_owned())).unwrap_or_else(|_| {
+            tracing::warn!(
+                reason,
+                "a name vote rejection reason this build doesn't know"
+            );
+            Self::Unknown
+        })
+    }
+}
+
+/// One masternode's vote of a `governance_vote_name` batch (MG-07 §3):
+/// `transition` once it was broadcast; `rejected` says why the vote does
+/// not count (`unconfirmed`: it may, re-read the tally).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NameVoteCast {
+    pub pro_tx_hash: String,
+    pub transition: Option<String>,
+    pub rejected: Option<NameRejectionName>,
+}
+
+impl From<engine::NameVoteCast> for NameVoteCast {
+    fn from(c: engine::NameVoteCast) -> Self {
+        let engine::NameVoteCast {
+            pro_tx_hash,
+            transition,
+            rejected,
+        } = c;
+        NameVoteCast {
+            pro_tx_hash,
+            transition,
+            rejected: rejected.as_deref().map(NameRejectionName::from_engine),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SuperblockDate {
