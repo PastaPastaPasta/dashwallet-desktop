@@ -1266,9 +1266,9 @@ impl Vault {
 
     /// Holds the entry `id` (`held`) or lets it go (DP5-03 D12): a held
     /// entry does not expire and is never evicted, until it is deleted
-    /// (taken) or let go; it is not forgotten. Works in every lock state and opens
-    /// nothing. `Ok(false)` when there is no entry `id` to hold; letting go
-    /// of one without a hold is `Ok(true)`.
+    /// (taken) or let go; it is not forgotten. Works in every lock state
+    /// and opens nothing. `Ok(false)` when there is no entry `id` to hold;
+    /// letting go of one without a hold is `Ok(true)`.
     pub fn hold_stashed_link(&self, id: &str, held: bool) -> Result<bool, VaultError> {
         if !is_link_id(id) {
             return Err(VaultError::InvalidArgument("not a stashed link id".into()));

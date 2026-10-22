@@ -851,8 +851,8 @@ export const HANDLERS: Handlers = {
   dismiss_stashed_link: ({ linkId }, { world }) => {
     // DP5-03 D12: the vault keeps an invitation an open claim row of any wallet holds.
     const claims = [world.dashpay, ...Object.values(world.dashpayOf ?? {})].flatMap((dp) => dp.registrations);
-    const open = (r: (typeof claims)[number]) => r.phase !== "done" && !(r.phase === "failed" && r.failure?.retryable === false);
-    if (claims.some((r) => r.invitation?.linkId === linkId && open(r))) throw fail("invalid_argument", "the invitation is in use by a claim in progress");
+    const held = claims.some((r) => r.invitation?.linkId === linkId && r.phase !== "done" && !(r.phase === "failed" && r.failure?.retryable === false));
+    if (held) throw fail("invalid_argument", "the invitation is in use by a claim in progress");
     const i = stashIndex(world, linkId);
     if (i >= 0) world.stash.splice(i, 1);
     return null;
