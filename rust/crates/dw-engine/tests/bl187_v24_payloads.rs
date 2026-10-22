@@ -72,12 +72,10 @@ fn entry_string(entry: &NetInfoEntry) -> String {
             addr,
             port,
         } => match network {
-            Bip155Network::Ipv4 => {
-                format!(
-                    "{}:{port}",
-                    std::net::Ipv4Addr::from(<[u8; 4]>::try_from(&addr[..]).unwrap())
-                )
-            }
+            Bip155Network::Ipv4 => format!(
+                "{}:{port}",
+                std::net::Ipv4Addr::from(<[u8; 4]>::try_from(&addr[..]).unwrap())
+            ),
             Bip155Network::Ipv6 => format!(
                 "[{}]:{port}",
                 std::net::Ipv6Addr::from(<[u8; 16]>::try_from(&addr[..]).unwrap())
@@ -235,9 +233,10 @@ fn check_special(tx: &Transaction, special: &Value) {
                         );
                         // Core prints `RewardScript()`: an empty reward
                         // script pays the refund script (`providertx.h:80`).
-                        let reward = match ours.script_reward.is_empty() {
-                            true => &ours.script_refund,
-                            false => &ours.script_reward,
+                        let reward = if ours.script_reward.is_empty() {
+                            &ours.script_refund
+                        } else {
+                            &ours.script_reward
                         };
                         assert_eq!(
                             hex::encode(reward.as_bytes()),
@@ -437,13 +436,12 @@ fn with_unknown_version() -> Crafted {
 
 /// `crafted`'s block decodes, re-encodes to the same bytes with the same merkle root,
 /// and keeps the rewritten transaction's payload raw, byte for byte, as `tx_type`;
-/// every other payload in the block is typed.
+/// it is the only raw payload in the block.
 fn check_kept_raw(crafted: &Crafted, tx_type: u16) {
     let block: Block = deserialize(&crafted.block).unwrap();
     assert_eq!(serialize(&block), crafted.block);
     assert!(block.check_merkle_root());
-    let (raw, typed): (Vec<&Transaction>, Vec<&Transaction>) =
-        block.txdata.iter().partition(|t| is_raw(t));
+    let raw: Vec<&Transaction> = block.txdata.iter().filter(|t| is_raw(t)).collect();
     assert_eq!(raw.len(), 1);
     assert_eq!(
         serialize(raw[0]),
@@ -457,7 +455,6 @@ fn check_kept_raw(crafted: &Crafted, tx_type: u16) {
         }
         other => panic!("not raw: {other:?}"),
     }
-    assert!(typed.iter().all(|t| !is_raw(t)));
 }
 
 /// A special type this crate doesn't know (crafted from a Core type 10 transaction by

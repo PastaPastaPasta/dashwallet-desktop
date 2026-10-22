@@ -180,6 +180,15 @@ pub(crate) mod fixtures {
         })
     }
 
+    /// A payload's `scriptPayout`: version 3 has `payouts` instead.
+    fn script_payout(version: u16, seed: u8) -> ScriptBuf {
+        if version >= SHARED_PAYLOAD_VERSION {
+            ScriptBuf::new()
+        } else {
+            payout(seed)
+        }
+    }
+
     /// A version-3 payload's one payout, all of the reward to `payout(seed)`.
     fn payouts(version: u16, seed: u8) -> Option<Vec<MasternodePayoutShare>> {
         (version >= SHARED_PAYLOAD_VERSION).then(|| {
@@ -206,7 +215,7 @@ pub(crate) mod fixtures {
         reward: u16,
         outputs: Vec<TxOut>,
     ) -> Transaction {
-        let mut payload = ProviderRegistrationPayload {
+        let payload = ProviderRegistrationPayload {
             version,
             masternode_type: if evonode {
                 ProviderMasternodeType::HighPerformance
@@ -220,7 +229,7 @@ pub(crate) mod fixtures {
             operator_public_key: BLSPublicKey::from([2; 48]),
             voting_key_hash: PubkeyHash::from_byte_array([3; 20]),
             operator_reward: reward,
-            script_payout: payout(4),
+            script_payout: script_payout(version, 4),
             inputs_hash: InputsHash::all_zeros(),
             signature: Vec::new(),
             platform_node_id: None,
@@ -234,9 +243,6 @@ pub(crate) mod fixtures {
                 early_penalty: 0,
             }),
         };
-        if version >= SHARED_PAYLOAD_VERSION {
-            payload.script_payout = ScriptBuf::new();
-        }
         Transaction {
             version: 3,
             lock_time: 0,
@@ -253,20 +259,17 @@ pub(crate) mod fixtures {
     }
 
     pub(crate) fn update_v(version: u16, pro_tx_hash: Txid, payout_seed: u8) -> Transaction {
-        let mut payload = ProviderUpdateRegistrarPayload {
+        let payload = ProviderUpdateRegistrarPayload {
             version,
             pro_tx_hash,
             provider_mode: 0,
             operator_public_key: BLSPublicKey::from([2; 48]),
             voting_key_hash: PubkeyHash::from_byte_array([5; 20]),
-            script_payout: payout(payout_seed),
+            script_payout: script_payout(version, payout_seed),
             inputs_hash: InputsHash::all_zeros(),
             payload_sig: Vec::new(),
             payouts: payouts(version, payout_seed),
         };
-        if version >= SHARED_PAYLOAD_VERSION {
-            payload.script_payout = ScriptBuf::new();
-        }
         Transaction {
             version: 3,
             lock_time: 1,
