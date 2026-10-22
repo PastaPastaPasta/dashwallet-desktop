@@ -340,6 +340,8 @@ export class WithdrawFlow extends Model {
       if (got) {
         this.outcome = got.value;
         this.step = "done";
+        // D24: the engine signs only once the unconfirmed one can no longer execute, or at its nonce.
+        if (this.unconfirmed?.identity === identity) this.unconfirmed = null;
       } else this.step = "confirm";
     } catch (e) {
       this.error = e;

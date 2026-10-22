@@ -111,6 +111,28 @@ describe("the withdraw sheet (DP6-02)", () => {
     stop();
   });
 
+  it("N5: a withdrawal that goes through clears its identity's unconfirmed one", async () => {
+    const { flow, api } = setup();
+    api.creditsWithdraw.mockRejectedValueOnce(appError("platform.broadcast_unknown", { kind: "artifact", artifact: "Wd" }));
+    flow.begin("A");
+    flow.next({ kind: "credits", credits: "5000000000" }, TO);
+    await flow.withdraw(GRANT);
+    expect(flow.unconfirmedFor("A")).toBe("Wd");
+    // Another identity's success says nothing of A's.
+    api.creditsWithdraw.mockResolvedValueOnce(OUTCOME);
+    flow.close();
+    flow.begin("B");
+    flow.next({ kind: "credits", credits: "5000000000" }, TO);
+    await flow.withdraw(GRANT);
+    expect([flow.step, flow.unconfirmedFor("A")]).toEqual(["done", "Wd"]);
+    api.creditsWithdraw.mockResolvedValueOnce(OUTCOME);
+    flow.close();
+    flow.begin("A");
+    flow.next({ kind: "credits", credits: "5000000000" }, TO);
+    await flow.withdraw(GRANT);
+    expect([flow.step, flow.unconfirmedFor("A")]).toEqual(["done", null]);
+  });
+
   it("a refusal keeps its error; Back when another amount or address may pass", async () => {
     const { flow, api } = setup();
     const settled = vi.fn();
