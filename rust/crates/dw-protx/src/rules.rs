@@ -197,8 +197,7 @@ pub fn check_network_fields(
     let (Some(p2p), Some(http)) = (p.platform_p2p_port, p.platform_http_port) else {
         return Err("bad-protx-platform-p2p-port");
     };
-    service::check_platform_ports(network, service.port(), p2p, http).map_err(|e| match e
-    {
+    service::check_platform_ports(network, service.port(), p2p, http).map_err(|e| match e {
         ServiceError::BadPlatformPort("P2P", _) => "bad-protx-platform-p2p-port",
         ServiceError::BadPlatformPort(_, _) => "bad-protx-platform-http-port",
         _ => "bad-protx-platform-dup-ports",
@@ -285,7 +284,13 @@ pub fn check_external_collateral(
 /// Whether `sig` is a 65-byte compact signature over `hash` by the key
 /// with hash160 `key_id` (`CPubKey::RecoverCompact`, compressed or not).
 pub fn signed_by(sig: &[u8], hash: [u8; 32], key_id: [u8; 20]) -> bool {
-    let Ok(sig) = MessageSignature::from_slice(sig) else {
+    let Ok(mut sig) = <[u8; 65]>::try_from(sig) else {
+        return false;
+    };
+    // Core reads any header byte, as `(h - 27) & 3` and `(h - 27) & 4`;
+    // `from_slice` refuses one outside 27..=34 (rust-dashcore #1144).
+    sig[0] = 27 + (sig[0].wrapping_sub(27) & 7);
+    let Ok(sig) = MessageSignature::from_slice(&sig) else {
         return false;
     };
     let Ok(public) = sig.signature.recover_ecdsa(Message::from_digest(hash)) else {
@@ -625,6 +630,31 @@ mod tests {
             check_registration_list(&p, collateral, &list),
             Err("bad-protx-dup-platformnodeid")
         );
+    }
+
+    #[test]
+    fn signed_by_reads_any_header_byte_as_core_does() {
+        let secret = [0x11u8; 32];
+        let hash = [0x22u8; 32];
+        let public = dashcore::PublicKey {
+            compressed: true,
+            inner: dashcore::secp256k1::PublicKey::from_secret_key(
+                &dashcore::secp256k1::SecretKey::from_secret_bytes(secret).unwrap(),
+            ),
+        };
+        let key_id = public.pubkey_hash().to_byte_array();
+        let sig = crate::payloads::sign_hash_compact(&secret, &hash).unwrap();
+        assert!(signed_by(&sig, hash, key_id));
+        // Core keeps the header's low three bits above 27 and drops the rest.
+        for header in [sig[0].wrapping_add(8), sig[0].wrapping_sub(8)] {
+            let mut moved = sig;
+            moved[0] = header;
+            assert!(signed_by(&moved, hash, key_id), "header {header}");
+        }
+        let mut uncompressed = sig;
+        uncompressed[0] -= 4;
+        assert!(!signed_by(&uncompressed, hash, key_id));
+        assert!(!signed_by(&sig[..64], hash, key_id));
     }
 
     #[test]

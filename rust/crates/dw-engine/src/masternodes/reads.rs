@@ -195,11 +195,11 @@ impl WalletView {
     }
 
     /// A version-3 entry was ever in the synced list, or a version-3
-    /// provider transaction is known (D30). The pinned library doesn't
-    /// decode a version-3 masternode's share scripts (BL-187), so any one
-    /// of them may pay a script of the wallet's, a version-2 row's payout
-    /// script included: every coinbase output to the wallet is then
-    /// `unattributed`.
+    /// provider transaction is known (D30). Nothing here reads a version-3
+    /// masternode's share scripts yet (the pinned library decodes them since
+    /// BL-187; MG-03b), so any one of them may pay a script of the wallet's,
+    /// a version-2 row's payout script included: every coinbase output to
+    /// the wallet is then `unattributed`.
     fn shares_possible(&self) -> bool {
         self.notes.any_shared_seen
             || !self.notes.shared_seen.is_empty()

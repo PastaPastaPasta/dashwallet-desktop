@@ -108,8 +108,7 @@ impl PartiallySignedTransaction {
         let mut tx: Option<Transaction> = None;
         let mut version: Option<u32> = None;
         let mut unknowns: BTreeMap<raw::Key, Vec<u8>> = Default::default();
-        let mut xpub_map: BTreeMap<XpubKey, (Fingerprint, DerivationPath)> =
-            Default::default();
+        let mut xpub_map: BTreeMap<XpubKey, (Fingerprint, DerivationPath)> = Default::default();
         let mut proprietary: BTreeMap<raw::ProprietaryKey, Vec<u8>> = Default::default();
 
         loop {
@@ -178,7 +177,10 @@ impl PartiallySignedTransaction {
                                 let derivation = DerivationPath::from(path);
                                 // Keys, according to BIP-174, must be unique
                                 if xpub_map
-                                    .insert(XpubKey(xpub), (Fingerprint::from(fingerprint), derivation))
+                                    .insert(
+                                        XpubKey(xpub),
+                                        (Fingerprint::from(fingerprint), derivation),
+                                    )
                                     .is_some()
                                 {
                                     return Err(Error::XPubKey("Repeated global xpub key"));

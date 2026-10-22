@@ -44,9 +44,9 @@ impl OwnedMasternode {
 
 /// The first ProRegTx/ProUpRegTx version with Core v24's `payouts` and
 /// `shares` in place of `scriptPayout` (`ProTxVersion::ExtAddr`,
-/// `evo/providertx.h`). The pinned library reads every version with the
-/// version-2 layout: only the fields before the service (type, mode,
-/// collateral) and, in a ProUpRegTx, the ProTx hash come out right.
+/// `evo/providertx.h`). The pinned library decodes version 3 (BL-187), but
+/// the wallet's masternode rows read only version 2's fields: a version-3
+/// payload stays unsupported here until MG-03b reads the rest.
 const SHARED_PAYLOAD_VERSION: u16 = 3;
 
 /// The ProTx hash (wire order) of a ProRegTx or ProUpRegTx of version 3 or
@@ -130,7 +130,7 @@ pub(crate) fn aggregate(txs: &[(u32, u32, Transaction)]) -> Vec<OwnedMasternode>
                 registration.and_then(|(tx, p)| checked_collateral(tx, p, record.is_evonode));
             let shared_unsupported = shared.contains(&record.pro_tx_hash);
             OwnedMasternode {
-                // after the service in the version-3 layout: misread
+                // a version-3 row reads none of its later fields (MG-03b)
                 operator_reward: registration
                     .filter(|_| !shared_unsupported)
                     .map(|(_, p)| p.operator_reward),
@@ -146,16 +146,48 @@ pub(crate) fn aggregate(txs: &[(u32, u32, Transaction)]) -> Vec<OwnedMasternode>
 pub(crate) mod fixtures {
     use super::*;
     use dashcore::blockdata::transaction::special_transaction::provider_registration::{
-        ProviderMasternodeType, ProviderRegistrationPayload,
+        MasternodePayoutShare, ProviderMasternodeType, ProviderRegistrationPayload,
+        SharedCollateral,
     };
     use dashcore::blockdata::transaction::special_transaction::provider_update_registrar::ProviderUpdateRegistrarPayload;
     use dashcore::bls_sig_utils::BLSPublicKey;
     use dashcore::hash_types::{InputsHash, PubkeyHash};
     use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
+    use dashcore::sml::masternode_list_entry::net_info::{
+        Bip155Network, ExtNetInfo, NetInfoEntry, NetInfoPurpose,
+    };
     use dashcore::{ScriptBuf, TxIn, TxOut};
 
     pub(crate) fn payout(seed: u8) -> ScriptBuf {
         ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array([seed; 20]))
+    }
+
+    /// A version-3 payload's service is an `ExtNetInfo`; before, an address.
+    fn service(version: u16) -> MasternodeNetInfo {
+        if version < SHARED_PAYLOAD_VERSION {
+            return MasternodeNetInfo::Legacy("127.0.0.1:19899".parse().unwrap());
+        }
+        MasternodeNetInfo::Extended(ExtNetInfo {
+            version: 1,
+            purposes: vec![(
+                NetInfoPurpose::CoreP2P,
+                vec![NetInfoEntry::Service {
+                    network: Bip155Network::Ipv4,
+                    addr: vec![127, 0, 0, 1],
+                    port: 19899,
+                }],
+            )],
+        })
+    }
+
+    /// A version-3 payload's one payout, all of the reward to `payout(seed)`.
+    fn payouts(version: u16, seed: u8) -> Option<Vec<MasternodePayoutShare>> {
+        (version >= SHARED_PAYLOAD_VERSION).then(|| {
+            vec![MasternodePayoutShare {
+                script_payout: payout(seed),
+                reward: 10_000,
+            }]
+        })
     }
 
     pub(crate) fn registration(
@@ -174,7 +206,7 @@ pub(crate) mod fixtures {
         reward: u16,
         outputs: Vec<TxOut>,
     ) -> Transaction {
-        let payload = ProviderRegistrationPayload {
+        let mut payload = ProviderRegistrationPayload {
             version,
             masternode_type: if evonode {
                 ProviderMasternodeType::HighPerformance
@@ -183,7 +215,7 @@ pub(crate) mod fixtures {
             },
             masternode_mode: 0,
             collateral_outpoint: collateral,
-            service_address: MasternodeNetInfo::Legacy("127.0.0.1:19899".parse().unwrap()),
+            service_address: service(version),
             owner_key_hash: PubkeyHash::from_byte_array([1; 20]),
             operator_public_key: BLSPublicKey::from([2; 48]),
             voting_key_hash: PubkeyHash::from_byte_array([3; 20]),
@@ -194,9 +226,17 @@ pub(crate) mod fixtures {
             platform_node_id: None,
             platform_p2p_port: None,
             platform_http_port: None,
-            payouts: None,
-            shared_collateral: None,
+            payouts: payouts(version, 4),
+            shared_collateral: (version >= SHARED_PAYLOAD_VERSION).then(|| SharedCollateral {
+                shares: Vec::new(),
+                join_sigs: Vec::new(),
+                early_period_blocks: 0,
+                early_penalty: 0,
+            }),
         };
+        if version >= SHARED_PAYLOAD_VERSION {
+            payload.script_payout = ScriptBuf::new();
+        }
         Transaction {
             version: 3,
             lock_time: 0,
@@ -213,7 +253,7 @@ pub(crate) mod fixtures {
     }
 
     pub(crate) fn update_v(version: u16, pro_tx_hash: Txid, payout_seed: u8) -> Transaction {
-        let payload = ProviderUpdateRegistrarPayload {
+        let mut payload = ProviderUpdateRegistrarPayload {
             version,
             pro_tx_hash,
             provider_mode: 0,
@@ -222,8 +262,11 @@ pub(crate) mod fixtures {
             script_payout: payout(payout_seed),
             inputs_hash: InputsHash::all_zeros(),
             payload_sig: Vec::new(),
-            payouts: None,
+            payouts: payouts(version, payout_seed),
         };
+        if version >= SHARED_PAYLOAD_VERSION {
+            payload.script_payout = ScriptBuf::new();
+        }
         Transaction {
             version: 3,
             lock_time: 1,
@@ -372,7 +415,7 @@ mod tests {
         let shared = registration_v(3, null(0), false, 250, coins(&[MASTERNODE_COLLATERAL]));
         let out = aggregate(&[(10, 0, shared.clone())]);
         assert!(out[0].shared_unsupported);
-        assert_eq!(out[0].operator_reward, None, "misread in the v3 layout");
+        assert_eq!(out[0].operator_reward, None, "not read until MG-03b");
         // the fields before the service still resolve the collateral
         assert_eq!(
             out[0].collateral,
@@ -398,9 +441,9 @@ mod tests {
     /// Core v24 bytes of a version-3 ProRegTx (`CProRegTx`'s
     /// `SERIALIZE_METHODS`: an `ExtNetInfo` service, then `payouts` and
     /// `shares` where version 2 has `scriptPayout`), which the pinned
-    /// library refuses: such a transaction never reaches the wallet.
+    /// library decodes since BL-187: the masternode is then shared.
     #[test]
-    fn the_pinned_library_refuses_core_v24_version_3_registration_bytes() {
+    fn the_pinned_library_decodes_core_v24_version_3_registration_bytes() {
         use dashcore::consensus::{Encodable, deserialize};
         let mut payload = Vec::new();
         3u16.consensus_encode(&mut payload).unwrap(); // nVersion = ExtAddr
@@ -436,6 +479,20 @@ mod tests {
             .unwrap();
         0u32.consensus_encode(&mut tx).unwrap(); // lock time
         payload.consensus_encode(&mut tx).unwrap(); // vExtraPayload
-        assert!(deserialize::<Transaction>(&tx).is_err());
+        let tx: Transaction = deserialize(&tx).unwrap();
+        let Some(TransactionPayload::ProviderRegistrationPayloadType(p)) =
+            &tx.special_transaction_payload
+        else {
+            panic!("not a ProRegTx: {tx:?}");
+        };
+        assert_eq!(p.version, 3);
+        let rewards: Vec<_> = p
+            .payouts
+            .iter()
+            .flatten()
+            .map(|s| (&s.script_payout, s.reward))
+            .collect();
+        assert_eq!(rewards, [(&payout(4), 6000), (&payout(5), 4000)]);
+        assert!(aggregate(&[(10, 0, tx)])[0].shared_unsupported);
     }
 }

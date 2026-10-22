@@ -196,7 +196,10 @@ fn input_complete(psbt: &PartiallySignedTransaction, index: usize) -> bool {
     }
     spent_output(psbt, index)
         .and_then(|out| {
-            p2pkh_key(&out.script_pubkey, psbt.inputs[index].partial_sigs.keys().map(|k| &k.0))
+            p2pkh_key(
+                &out.script_pubkey,
+                psbt.inputs[index].partial_sigs.keys().map(|k| &k.0),
+            )
         })
         .is_some()
 }
