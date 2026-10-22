@@ -178,7 +178,7 @@ describe("the withdraw sheet (DP6-02)", () => {
     );
     expect(withdrawErrorText(appError("platform.broadcast_unknown"), credits)).toBe("It may have been sent. Check your withdrawals in My Profile before trying again.");
     expect(withdrawErrorText(appError("credits.withdrawal_landed"), credits)).toBe(
-      "Your last withdrawal went through after all, so this one was not sent. Withdraw again only if you want a second one.",
+      "Your last withdrawal went through after all, so this one does not. Withdraw again only if you want a second one.",
     );
     expect(withdrawErrorText(appError("platform.trust_mismatch"), credits)).toBe("This identity's data could not be verified against the network. Nothing was withdrawn.");
     expect(withdrawErrorText(appError("invalid_argument"), credits)).toBe("Enter a Dash address of this network.");

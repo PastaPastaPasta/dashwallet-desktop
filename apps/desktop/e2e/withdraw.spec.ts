@@ -166,7 +166,7 @@ test("IOS-070 D7, D23: an unanswered withdrawal is not retried from the sheet an
   expect(await seriousAxeViolations(page)).toEqual([]);
   await page.getByTestId("profile-withdraw").click();
   await expect(page.getByTestId("withdraw-unconfirmed")).toHaveText(
-    "Your last withdrawal is not on Dash Platform yet and may still go through. If you withdraw again, only one of the two goes through.",
+    "Your last withdrawal is not on Dash Platform yet and may still go through. If you withdraw again, at most one of the two goes through.",
   );
   expect(await seriousAxeViolations(page)).toEqual([]);
   expect(errors).toEqual([]);
@@ -188,7 +188,7 @@ test("IOS-070 D24: a withdrawal after an unconfirmed one that went through is re
   await page.getByTestId("withdraw-go").click();
   await authorize(page);
   await expect(page.getByTestId("withdraw-refusal")).toHaveText(
-    "Your last withdrawal went through after all, so this one was not sent. Withdraw again only if you want a second one.",
+    "Your last withdrawal went through after all, so this one does not. Withdraw again only if you want a second one.",
   );
   await expect(page.getByTestId("withdraw-document")).toHaveText(`Withdrawal document: ${DOCUMENT}`);
   await fontsReady(page);

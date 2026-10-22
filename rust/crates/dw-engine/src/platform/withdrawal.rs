@@ -282,16 +282,23 @@ impl WithdrawalNonces {
     /// `state`: the unconfirmed one's while Drive's rule would still take
     /// it (unused, within 24 of the newest, and past the floor), so at most
     /// one of them executes; else one past the newest, Platform's or the
-    /// session's.
-    fn next(&self, id: Identifier, state: u64) -> u64 {
+    /// session's. A `state` too far behind the unconfirmed nonce to take it
+    /// decides nothing (`platform.unavailable`): it is from before that
+    /// withdrawal was signed.
+    fn next(&self, id: Identifier, state: u64) -> Result<u64, PlatformError> {
         let n = self.get(id);
+        let tip = state & IDENTITY_NONCE_VALUE_FILTER;
         if let Some((k, _)) = n.unconfirmed
             && k >= n.floor
-            && takes(state, k, id)
         {
-            return k;
+            if takes(state, k, id) {
+                return Ok(k);
+            }
+            if k > tip {
+                return Err(PlatformError::Unavailable);
+            }
         }
-        ((state & IDENTITY_NONCE_VALUE_FILTER) + 1).max(n.floor)
+        Ok((tip + 1).max(n.floor))
     }
 
     /// The withdrawals signed at `id`'s unconfirmed nonce, if it has one.
@@ -338,20 +345,31 @@ fn takes(state: u64, k: u64, id: Identifier) -> bool {
     }
 }
 
+/// Reads of a withdrawal's document before one recent enough decides: the
+/// SDK asks another node each time, and one a block behind is common.
+const READ_BACK_TRIES: usize = 3;
+
 /// Which of `signed` executed, by its document read back with its amount;
 /// `None` when none did. Each read is at least as recent as `height`, so a
-/// node behind cannot hide one; a read from further back decides nothing
-/// (`platform.unavailable`).
+/// node behind cannot hide one; when [`READ_BACK_TRIES`] reads all come
+/// from further back, nothing is decided (`platform.unavailable`).
 async fn landed(
     net: &impl WithdrawNet,
     signed: &[Signed],
     height: u64,
 ) -> Result<Option<Signed>, PlatformError> {
     for s in signed {
-        let (document, at) = net.withdrawal(s.document).await?;
-        if at < height {
-            return Err(PlatformError::Unavailable);
-        }
+        let mut tries = 0;
+        let document = loop {
+            let (document, at) = net.withdrawal(s.document).await?;
+            if at >= height {
+                break document;
+            }
+            tries += 1;
+            if tries == READ_BACK_TRIES {
+                return Err(PlatformError::Unavailable);
+            }
+        };
         if document.is_some_and(|d| amount_of(&d) == Some(s.credits)) {
             return Ok(Some(*s));
         }
@@ -382,7 +400,7 @@ async fn nonce_for(
         nonces.executed(id, k);
         return Err(landed_error(s));
     }
-    Ok(nonces.next(id, state))
+    Ok(nonces.next(id, state)?)
 }
 
 /// The newest `limit` documents of pages read oldest first: `page(start)`

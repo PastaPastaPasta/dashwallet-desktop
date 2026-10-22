@@ -273,7 +273,9 @@ struct FakeWithdrawals {
     /// does.
     lag: Mutex<Option<(u64, u64)>>,
     /// The document reads come from a node at height 0, which has none.
-    stale_reads: Mutex<bool>,
+    /// How many of the next document reads come from before every nonce
+    /// read.
+    stale_reads: Mutex<usize>,
     answer: Mutex<Answer>,
     /// The transitions broadcast.
     sent: Mutex<Vec<StateTransition>>,
@@ -305,7 +307,7 @@ impl FakeWithdrawals {
             used: Mutex::new((1..=4).collect()),
             height: Mutex::new(1),
             lag: Mutex::default(),
-            stale_reads: Mutex::new(false),
+            stale_reads: Mutex::new(0),
             answer: Mutex::new(Answer::Applied { fee: FEE }),
             sent: Mutex::default(),
             pending: Mutex::default(),
@@ -471,9 +473,12 @@ impl WithdrawNet for FakeWithdrawals {
         if *self.reads_fail.lock().unwrap() {
             return Err(PlatformError::Unavailable);
         }
-        if *self.stale_reads.lock().unwrap() {
+        let mut stale = self.stale_reads.lock().unwrap();
+        if *stale > 0 {
+            *stale -= 1;
             return Ok((None, 0));
         }
+        drop(stale);
         let documents = self.documents.lock().unwrap();
         let document = documents.iter().find(|d| d.id() == id).cloned();
         Ok((document, *self.height.lock().unwrap()))
@@ -895,7 +900,8 @@ fn a_retry_after_an_unknown_outcome_cannot_execute_twice() {
 }
 
 /// D24: the read-back before signing is at least as recent as the nonce
-/// read; a node behind it decides nothing, and nothing is signed.
+/// read; a node behind it is asked again, and when every try is behind
+/// nothing is decided and nothing is signed.
 #[test]
 fn a_read_back_older_than_the_nonce_decides_nothing() {
     let w = World::new(10 * DASH);
@@ -904,13 +910,13 @@ fn a_read_back_older_than_the_nonce_decides_nothing() {
     w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap_err();
     let k = nonce_of(&w.net.sent()[0]);
     w.net.execute_pending();
-    *w.net.stale_reads.lock().unwrap() = true;
+    *w.net.stale_reads.lock().unwrap() = READ_BACK_TRIES;
     let grant = w.f.grant(2 * DASH);
     let refused = w.withdraw(ask, &grant).unwrap_err();
     assert_eq!(refused.code(), "platform.unavailable");
     assert!(w.f.unused(&grant));
     assert_eq!(w.net.sent().len(), 1);
-    *w.net.stale_reads.lock().unwrap() = false;
+    *w.net.stale_reads.lock().unwrap() = READ_BACK_TRIES - 1;
     assert_eq!(w.withdraw(ask, &grant).unwrap_err(), went_through(&w, k));
     assert_eq!(w.net.landed(), 1);
 }
@@ -972,9 +978,12 @@ fn a_document_of_another_amount_is_not_this_withdrawal() {
         let k = nonce_of(&w.net.sent()[0]);
         assert_eq!(first.unwrap_err(), unconfirmed(&w, k));
         w.net.answer(retry);
-        let again = w.withdraw(two, &w.f.grant(3 * DASH));
+        let grant = w.f.grant(3 * DASH);
+        let again = w.withdraw(two, &grant);
         if landed == DASH {
+            // Signed and sent at the used nonce: its grant is spent.
             assert_eq!(again.unwrap_err(), went_through(&w, k));
+            assert!(!w.f.unused(&grant));
         } else {
             let out = again.unwrap();
             assert_eq!((out.credits, out.remaining_credits), (2 * DASH, None));
@@ -1256,4 +1265,28 @@ fn max_stays_within_the_quotes_grant() {
         w.withdraw(WithdrawAmount::All, &grant).unwrap().credits,
         q.credits
     );
+}
+
+/// D24: the unconfirmed nonce is reused only past the floor, and only by
+/// Drive's rule for the stored nonce: none stored takes 0 to 23, where an
+/// update from 0 would take 24. A state too far behind the unconfirmed
+/// nonce to take it decides nothing.
+#[test]
+fn the_unconfirmed_nonce_is_reused_only_where_drive_takes_it() {
+    let id = Identifier::from([7; 32]);
+    let at = |unconfirmed: u64, floor: u64| {
+        let nonces = WithdrawalNonces::default();
+        let signed = Signed { document: Identifier::from([8; 32]), credits: DASH };
+        nonces.signed(id, unconfirmed, signed);
+        if floor > 0 {
+            nonces.update(id, |n| n.floor = floor);
+        }
+        nonces
+    };
+    assert_eq!(at(5, 0).next(id, 4).unwrap(), 5);
+    assert_eq!(at(5, 6).next(id, 4).unwrap(), 6, "below the floor");
+    assert_eq!(at(23, 0).next(id, 0).unwrap(), 23);
+    assert_eq!(at(24, 0).next(id, 0), Err(PlatformError::Unavailable), "none stored takes up to 23");
+    assert_eq!(at(40, 0).next(id, 4), Err(PlatformError::Unavailable), "a state from before it");
+    assert_eq!(at(5, 0).next(id, 5).unwrap(), 6, "used at the tip");
 }

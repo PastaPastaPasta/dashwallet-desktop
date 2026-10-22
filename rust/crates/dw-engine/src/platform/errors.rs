@@ -494,9 +494,12 @@ pub enum CreditsError {
     #[error("a withdrawal takes {min} to {max} credits")]
     WithdrawalOutOfRange { min: u64, max: u64 },
     /// The identity's last withdrawal, whose outcome was unknown, executed
-    /// after all (its document `artifact` read back), so this one was not
-    /// sent: at most one of them goes through (DP6-02 D24).
-    #[error("the earlier withdrawal {artifact} went through; nothing was sent")]
+    /// after all (its document `artifact` read back), so this one does not:
+    /// at most one of them goes through (DP6-02 D24). Read before signing,
+    /// nothing was sent and the grant is unredeemed; read after (the two
+    /// shared a nonce), this one was sent at a nonce now used, its grant
+    /// spent.
+    #[error("the earlier withdrawal {artifact} went through; this one does not")]
     WithdrawalLanded { artifact: String },
     #[error(transparent)]
     Platform(#[from] PlatformError),
