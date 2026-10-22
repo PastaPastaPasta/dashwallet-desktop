@@ -771,6 +771,8 @@ fn test_QT_126_calls_refuse_in_order() {
             .unwrap_err(),
         f.run(mn.approve_shared(unknown, bad.clone(), String::new(), "g".into()))
             .unwrap_err(),
+        f.run(mn.approve_shared(unknown, good.clone(), "zz".into(), "g".into()))
+            .unwrap_err(),
         f.run(mn.sign_shared_funding(unknown, bad.clone(), "g".into()))
             .unwrap_err(),
         f.run(mn.discard_shared_session(unknown, bad.clone()))

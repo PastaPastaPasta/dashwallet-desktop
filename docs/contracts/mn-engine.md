@@ -146,7 +146,7 @@ Refusals, in order (MG-04b §7): arguments (`invalid_argument`), `wallet_not_fou
 `masternodes.unsupported{feature: "shared_masternodes"}` (v24 not `active` for `start_shared`, `join_shared`,
 `lock_shared_terms`, `approve_shared` and `preview_update_share`; `can_send` false for `sign_shared_funding`; `field:
 "service"` for a coordinator service that isn't IPv4, MG-04b D5; `approve_shared` can only judge the service from the
-session's terms, so it refuses it after the session checks below), the list (`masternodes.list_unavailable`,
+session's terms, so it refuses it after the session checks below, and never for a session it already approved), the list (`masternodes.list_unavailable`,
 `masternodes.shared_too_early`, `masternodes.shared_registration_unknown`), the session
 (`masternodes.shared_session_not_found`, `masternodes.in_flight`, `masternodes.shared_stage{stage}`; then, for lock and
 approve, `masternodes.shared_message{reason: "conflict"}` when the session isn't the copy the caller reviewed,

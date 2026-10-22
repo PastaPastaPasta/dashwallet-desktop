@@ -1141,7 +1141,7 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.lock_shared_terms(wallet, hash.clone(), 1, "g".into())
                 .await
                 .map(drop),
-            mn.approve_shared(wallet, hash.clone(), String::new(), "g".into())
+            mn.approve_shared(wallet, hash.clone(), hash.clone(), "g".into())
                 .await
                 .map(drop),
             mn.sign_shared_funding(wallet, hash.clone(), "g".into())
