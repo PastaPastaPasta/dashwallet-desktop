@@ -119,6 +119,9 @@ page (`page-joinDashPay`), width `formMaxWidth`, a `card-l1` section `claim` wit
 - Opus r3 (code-review-validator, on the m1 fix): ACCEPT WITH NITS. N-a (the gate's reason is D7, not a second
   charge, while the row is kept), N-b (dwcli discards; the discard is now refused, D24), N-c (state v1's other charged
   refusals named), N-e (any link, the grant kept, in the test) fixed; N-d is F10.
+- Opus r4 (code-review-validator, on the discard guard): ACCEPT WITH NITS. N1: the fixture's discard models neither
+  D11's nor D24's refusal; it makes no such row (no duplicate-key claim) and the window never discards one, so it is
+  left. N2 (assert the message) optional, not taken.
 
 ## Follow-ups
 
