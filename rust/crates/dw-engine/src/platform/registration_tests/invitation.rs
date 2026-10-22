@@ -1385,6 +1385,7 @@ fn a_released_claim_whose_link_went_is_not_discarded() {
         (row.error.as_deref(), row.retryable),
         (Some("invitation.expired"), false)
     );
+    assert!(!held(&f, &link_id), "let go once failed for good");
     assert_eq!(discard_code(&f, &lib, draft), Err("invalid_argument"));
     assert_eq!(lib.w().claims, 1);
 }
@@ -1444,6 +1445,15 @@ fn holds_settle_across_wallets_and_at_the_bring_up() {
     f.engine.block_on(f.session.settle_invitation_holds());
     assert!(!held(&f, &link_id));
     assert!(stashed(&f, &link_id) && stashed(&f, &other), "entries kept");
+    // A newer build's claim row (a phase this build does not know) is
+    // open: its hold stays (DEC-171 (3), Opus r2 9).
+    hold(&other);
+    f.insert(NewRegistration {
+        phase: "aPhaseOfANewerBuild".into(),
+        ..invitation_row(&other, None)
+    });
+    f.engine.block_on(f.session.settle_invitation_holds());
+    assert!(held(&f, &other));
 }
 
 /// Another wallet of the network.
@@ -1457,4 +1467,29 @@ fn stash_other(f: &Fixture) -> String {
                 .stash_invitation(BearerSecret::new(format!("{LINK}&n=2"))),
         )
         .unwrap()
+}
+
+/// DP5-03 D12 (Opus r2 E20): a claim the index assignment fails for good
+/// (every identity index used) lets its link go too.
+#[test]
+fn a_claim_without_an_identity_index_lets_its_link_go() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let link_id = stash(&f);
+    f.engine
+        .block_on(f.session.hold_invitation(link_id.clone(), true));
+    f.insert(NewRegistration {
+        identity_index: Some(crate::platform::registration_ledger::MAX_IDENTITY_INDEX),
+        phase: Phase::KeysPrepared.as_str().into(),
+        ..core_row(PLAIN)
+    });
+    let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
+    f.drive(&lib, draft, Some(claim_lease(&f)), true);
+    let row = f.row(draft);
+    assert_eq!(
+        (phase(&row), row.error.as_deref(), row.retryable),
+        (Phase::Draft, Some("internal"), false)
+    );
+    assert!(stashed(&f, &link_id) && !held(&f, &link_id));
+    assert_eq!(lib.w().claims, 0);
 }

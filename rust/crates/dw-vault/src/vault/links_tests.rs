@@ -1079,3 +1079,42 @@ fn retaining_holds_lets_go_of_the_others() {
     assert_eq!(v.retain_stashed_link_holds(&[]).unwrap(), 1);
     assert!(!hold(&a.id));
 }
+
+/// DP5-03 D12 (Opus r1 M2): sealing plaintext to `stash.pub` collapses
+/// duplicates (two windows stashed the link before the vault existed),
+/// but never a held one.
+#[test]
+fn sealing_to_the_public_key_keeps_a_held_duplicate() {
+    let plaintext = |f: &Fixture| {
+        let other = Fixture::new();
+        let left = other
+            .open()
+            .stash_link(StashedLinkKind::Invitation, INVITE)
+            .unwrap();
+        std::fs::copy(
+            other.links_dir().join(format!("{}.dwl", left.id)),
+            f.links_dir().join(format!("{}.dwl", left.id)),
+        )
+        .unwrap();
+        left.id
+    };
+    for held in [false, true] {
+        let f = Fixture::new();
+        let v = f.open();
+        v.create(Some(b"pass")).unwrap();
+        v.lock();
+        let (a, b) = (plaintext(&f), plaintext(&f));
+        assert_ne!(a, b);
+        if held {
+            v.hold_stashed_link(&a, true).unwrap();
+            v.hold_stashed_link(&b, true).unwrap();
+        }
+        drop(v);
+        let v = f.open();
+        assert!(
+            !f.disk_text().contains("cPlantedSecretKey"),
+            "sealed at open"
+        );
+        assert_eq!(ids(&v).len(), if held { 2 } else { 1 }, "held: {held}");
+    }
+}

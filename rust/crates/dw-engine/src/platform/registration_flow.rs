@@ -1115,13 +1115,14 @@ pub(crate) fn claim_discard_refused(
 }
 
 /// The link of an open claim row: an invitation's, neither `Done` nor
-/// failed for good (DP5-03 D12: its stash entry is held).
+/// failed for good (DP5-03 D12: its stash entry is held). A row this build
+/// cannot run (DEC-171 (3)) may be a newer build's open claim: it is open.
 pub(crate) fn open_claim_link(row: &RegistrationRow) -> Option<String> {
-    let Ok((phase, Funding::Invitation { link_id, .. })) = interpret(row) else {
+    let Decoded::Known(Funding::Invitation { link_id, .. }) = Funding::decode(&row.funding) else {
         return None;
     };
-    let ended =
-        (phase == Phase::Done && row.error.is_none()) || (row.error.is_some() && !row.retryable);
+    let done = Phase::parse(&row.phase) == Some(Phase::Done) && row.error.is_none();
+    let ended = done || (row.error.is_some() && !row.retryable);
     (!ended).then_some(link_id)
 }
 
