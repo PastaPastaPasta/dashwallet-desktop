@@ -169,6 +169,21 @@ impl Fx {
         self.engine.block_on(f)
     }
 
+    /// Runs `calls` with wallet `w`'s coin fence held for their first two
+    /// seconds, so concurrent calls all reach the fence (or, without it,
+    /// race past it) before any of them goes on (D63).
+    fn fenced<T>(&self, w: usize, calls: impl Future<Output = T>) -> T {
+        let (session, wallet) = (Arc::clone(&self.session), self.wallets[w]);
+        self.run(async move {
+            let fence = session.coin_fence(wallet).await.unwrap();
+            let release = async move {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                drop(fence);
+            };
+            tokio::join!(calls, release).0
+        })
+    }
+
     fn grant(&self, w: usize, max_duffs: u64) -> String {
         self.session
             .vault()
@@ -1649,7 +1664,7 @@ fn test_QT_126_concurrent_starts_take_different_keys() {
     f.credit(0, 1, 501 * COIN);
     f.credit(0, 2, 501 * COIN);
     let (m1, m2, w) = (f.mn(), f.mn(), f.wallets[0]);
-    let (a, b) = f.run(async move {
+    let (a, b) = f.fenced(0, async move {
         tokio::join!(
             m1.start_shared(w, request(&[("A", 500), ("B", 500)], FEE)),
             m2.start_shared(w, request(&[("A", 500), ("B", 500)], FEE)),
@@ -1682,7 +1697,7 @@ fn test_QT_126_concurrent_joins_take_different_keys() {
         share_index: Some(1),
         reward: RewardChoice::Refund,
     };
-    let (a, b) = f.run(async move {
+    let (a, b) = f.fenced(1, async move {
         tokio::join!(
             m1.join_shared(w, ids[0].clone(), join()),
             m2.join_shared(w, ids[1].clone(), join()),
