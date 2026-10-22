@@ -31,10 +31,9 @@ export const CLAIM_COPY = {
     // D4 (F7): DPNS proves the name, not who sent the link.
     checked: (username: string) => `Dash Wallet checked that @${username} is a DashPay username. It cannot check who sent you this link.`,
     unnamed: "This invitation does not name who sent it.",
-    paid: "Paid by the invitation: nothing is paid from this wallet.",
   },
+  paid: "Paid by the invitation: nothing is paid from this wallet.",
   confirm: {
-    paid: "Paid by the invitation: nothing is paid from this wallet.",
     // D6 (Opus-h r1 n3).
     recipient: (username: string) =>
       `A contact request will go to @${username}. It carries your new identity's extended public key for payments between you, so @${username} can see the payments you make to each other.`,
@@ -141,16 +140,15 @@ export function claimModel(i: ClaimInputs): ClaimModel {
     case "expired":
       return base("expired", [CLAIM_COPY.expired.title, CLAIM_COPY.expired.text], [act("notNow")]);
     case "invalid": {
-      const line =
-        s.reason === "malformed"
-          ? CLAIM_COPY.invalid.malformed
-          : s.reason === "wrongNetwork"
-            ? CLAIM_COPY.invalid.wrongNetwork(i.network)
-            : CLAIM_COPY.invalid.assetLockNotFound;
-      return base("invalid", [line], s.reason === "assetLockNotFound" ? [act("retry"), act("dismiss")] : [act("dismiss")]);
+      const lines = {
+        malformed: CLAIM_COPY.invalid.malformed,
+        wrongNetwork: CLAIM_COPY.invalid.wrongNetwork(i.network),
+        assetLockNotFound: CLAIM_COPY.invalid.assetLockNotFound,
+      };
+      return base("invalid", [lines[s.reason]], s.reason === "assetLockNotFound" ? [act("retry"), act("dismiss")] : [act("dismiss")]);
     }
     case "valid":
-      return base("invited", [CLAIM_COPY.invited.paid], [act("accept"), act("notNow"), act("dismiss")], { inviter: inviterCard(s.inviter) });
+      return base("invited", [CLAIM_COPY.paid], [act("accept"), act("notNow"), act("dismiss")], { inviter: inviterCard(s.inviter) });
   }
 }
 

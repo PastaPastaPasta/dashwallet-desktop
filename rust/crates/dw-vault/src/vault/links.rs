@@ -470,6 +470,18 @@ fn open_old(path: &Path) -> Option<(std::fs::File, u64)> {
     Some((f, meta.len()))
 }
 
+/// A new file at `path` open for writing, 0600; fails when the name is taken.
+fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)
+}
+
 /// Writes `bytes` to `tmp` (created new, 0600), syncs it and renames it to
 /// `path`, then syncs the directory. With `scrub_old`, the file `path`
 /// named before is overwritten with zeros only after that (best effort,
@@ -486,14 +498,7 @@ fn write_replacing(
     scrub(tmp);
     remove_any(tmp)?;
     {
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut f = opts.open(tmp)?;
+        let mut f = create_private(tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
     }
@@ -1254,14 +1259,7 @@ impl Vault {
         }
         // Whatever else takes the name (a directory, a link) is cleared.
         remove_any(&path)?;
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        opts.open(&path)?.sync_all()?;
+        create_private(&path)?.sync_all()?;
         sync_dir(&self.links_dir())?;
         Ok(true)
     }

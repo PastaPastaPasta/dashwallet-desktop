@@ -114,7 +114,7 @@ describe("C3–C9: the invitation before a claim", () => {
     const m = claimModel(inputs());
     expect(m.state).toBe("invited");
     expect(m.actions.map((a) => a.kind)).toEqual(["accept", "notNow", "dismiss"]);
-    expect(m.lines).toEqual([CLAIM_COPY.invited.paid]);
+    expect(m.lines).toEqual([CLAIM_COPY.paid]);
     expect(m.inviter).toEqual({
       name: "Bob Builder",
       username: "bob",

@@ -24,7 +24,7 @@ import { Avatar } from "../contacts/Avatar";
 import { ErrorLine, StepHeader } from "./Registration";
 
 /** Leaves the claim screen (D3): welcome goes Home, Join stays on the Join page. */
-export function leaveClaim(entry: ClaimEntry) {
+function leaveClaim(entry: ClaimEntry) {
   if (entry === "welcome") navigate("home", { invitation: null });
   else ui.set({ invitation: null });
 }
@@ -145,7 +145,7 @@ export function ClaimConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationW
       <StepHeader n={2} step={REG_COPY.confirm.step} title={REG_COPY.confirm.title} id={`${id}-title`} />
       <p className="registration-line">{REG_COPY.confirm.message(wiz.label)}</p>
       <p className="registration-line" data-testid="claim-paid">
-        {CLAIM_COPY.confirm.paid}
+        {CLAIM_COPY.paid}
       </p>
       {quote.isError && <p className="registration-line registration-problem">{REG_COPY.confirm.quoteFailed}</p>}
       {contested && <p className="registration-line">{REG_COPY.confirm.contested}</p>}
@@ -174,7 +174,7 @@ export function ClaimConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationW
           {REG_COPY.confirm.accept}
         </label>
       )}
-      <ErrorLine wiz={wiz} inputs={inputs} claim />
+      <ErrorLine wiz={wiz} inputs={inputs} />
       <div className="registration-actions">
         <DashButton variant="tintedGray" data-testid="registration-back" disabled={wiz.running !== null} onClick={() => wiz.back()}>
           {REG_COPY.confirm.back}

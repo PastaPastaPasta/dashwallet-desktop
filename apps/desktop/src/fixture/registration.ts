@@ -438,12 +438,11 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
   const network = world.launch.network.dirName;
   // A claim checks its invitation (draft), then claims it (keysPrepared): no lock, no proof.
   const claim = row.invitation !== null;
-  const step = claim && row.phase === "keysPrepared" ? "proofWaiting" : row.phase;
-  switch (claim && row.phase === "draft" ? "claimDraft" : step) {
-    case "claimDraft":
-      row.phase = "keysPrepared";
-      break;
+  switch (claim && row.phase === "keysPrepared" ? "proofWaiting" : row.phase) {
     case "draft":
+      if (claim) row.phase = "keysPrepared";
+      else Object.assign(row, { phase: "proofWaiting", waiting: runningWait("proofWaiting") });
+      break;
     case "keysPrepared":
     case "fundingSent":
       Object.assign(row, { phase: "proofWaiting", waiting: runningWait("proofWaiting") });
