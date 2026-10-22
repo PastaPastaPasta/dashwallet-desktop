@@ -1662,6 +1662,37 @@ fn test_QT_126_concurrent_starts_take_different_keys() {
     assert_ne!(f.row(0, &a.id).reserved, f.row(0, &b.id).reserved);
 }
 
+/// D63: the same for a participant joining two sessions at once.
+#[test]
+fn test_QT_126_concurrent_joins_take_different_keys() {
+    let f = fx(2, true);
+    f.credit(0, 1, 501 * COIN);
+    f.credit(0, 2, 501 * COIN);
+    f.credit(1, 3, 501 * COIN);
+    f.credit(1, 4, 501 * COIN);
+    let ids: Vec<String> = (0..2)
+        .map(|_| {
+            let inv = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE)).unwrap();
+            f.imported(1, &inv.message.text);
+            inv.session.id
+        })
+        .collect();
+    let (m1, m2, w) = (f.mn(), f.mn(), f.wallets[1]);
+    let join = || crate::masternodes::JoinSharedRequest {
+        share_index: Some(1),
+        reward: RewardChoice::Refund,
+    };
+    let (a, b) = f.run(async move {
+        tokio::join!(
+            m1.join_shared(w, ids[0].clone(), join()),
+            m2.join_shared(w, ids[1].clone(), join()),
+        )
+    });
+    let (a, b) = (a.unwrap().session, b.unwrap().session);
+    assert_ne!(a.rows[1].owner_address, b.rows[1].owner_address);
+    assert_ne!(f.row(1, &a.id).reserved, f.row(1, &b.id).reserved);
+}
+
 /// D64 (review MIN-2): a session whose envelope no longer parses still
 /// holds the owner key its `my_shares` column names, so the next
 /// registration takes another one.
