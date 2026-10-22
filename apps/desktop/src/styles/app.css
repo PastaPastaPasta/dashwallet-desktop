@@ -2752,6 +2752,87 @@ button {
   line-height: var(--dw-type-subhead-line);
 }
 
+/* Settings ▸ Advanced ▸ Identities (DP6-01) */
+.identities-actions,
+.identity-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
+}
+
+.identities-list,
+.identity-names {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.identity-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-m);
+  padding: var(--dw-space-m) 0;
+}
+
+.identity-row + .identity-row {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.identity-row-text {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.identity-row-text p,
+.identity-found p {
+  margin: 0;
+}
+
+.identity-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.identity-badge {
+  padding: 0 var(--dw-space-xs);
+  border-radius: var(--dw-radius-badge);
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.identity-badge-warn {
+  background: var(--dw-role-warning-tint);
+}
+
+.identity-names li {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.identity-find,
+.identity-keys-wrap {
+  width: 100%;
+}
+
+.identity-keys-wrap {
+  overflow-x: auto;
+}
+
+.identity-find-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--dw-space-s);
+}
+
 .settings-list {
   margin: 0;
   padding-left: var(--dw-space-xl);

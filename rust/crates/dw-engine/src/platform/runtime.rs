@@ -134,6 +134,10 @@ pub(crate) struct PlatformRuntime {
     pub(crate) absence_expiries: super::banner::AbsenceExpiries,
     /// The money-move trust gate's waits (DP3-04, `money_gate.rs`).
     pub(crate) money_gate: super::money_gate::MoneyGate,
+    /// Tests: the Identities page's network in place of the SDK
+    /// (`identity_reads.rs`).
+    #[cfg(test)]
+    pub(crate) identity_net: Mutex<Option<Arc<dyn super::identity_reads::IdentityNet>>>,
     /// Tests: holds the next bring-up between building its keys and
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
@@ -374,6 +378,8 @@ impl PlatformRuntime {
             payments: Default::default(),
             absence_expiries: Default::default(),
             money_gate: Default::default(),
+            #[cfg(test)]
+            identity_net: Mutex::new(None),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
         }

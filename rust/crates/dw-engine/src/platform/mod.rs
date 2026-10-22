@@ -32,6 +32,7 @@ mod dashpay;
 mod errors;
 mod flows;
 mod identity;
+mod identity_reads;
 mod identity_writes;
 mod invitation_check;
 mod invitations;
@@ -108,8 +109,8 @@ pub use flows::{
     GrantAction, GrantRequest, LeaseStateView, LeaseView, ParkReason, RevokeCause,
 };
 pub use identity::{
-    IdentityDetail, IdentityKeyInfo, IdentitySummary, KeyPurpose, KeyType, NamesCheck,
-    SecurityLevel,
+    FoundBy, FoundIdentity, IdentityDetail, IdentityKeyInfo, IdentityRefresh, IdentitySummary,
+    KeyPurpose, KeyType, NamesCheck, SecurityLevel,
 };
 pub use invitations::{
     InvitationInvalidReason, InvitationStatus, StashedLink, StashedLinkKind, TakenLink,
