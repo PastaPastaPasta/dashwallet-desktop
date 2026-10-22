@@ -23,8 +23,8 @@ export const SavedLinksText = {
   held: "This invitation is being claimed. Finish that claim first.",
 } as const;
 
-/** Why a link was not removed: the one id the window sends is a stashed link's, so the engine's
- * `invalid_argument` is a claim's hold (DP5-03 D12). */
+/** Why a link was not removed. `invalid_argument` is also a malformed id's, but the window sends only
+ * ids the stash listed, so only a claim's hold reaches this today (DP5-03 D12, Opus-h r1 n3). */
 export function removeErrorText(e: unknown): string {
   return hasCode(e, "invalid_argument") ? SavedLinksText.held : errorMessage(e);
 }
