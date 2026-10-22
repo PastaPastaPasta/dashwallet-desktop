@@ -34,7 +34,7 @@ use quote::ToTokens;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-/// Calls with real bodies: all of MG-03's and MG-04's.
+/// Calls with real bodies: all of MG-03's, MG-04's and MG-04b slice 1a's.
 const IMPLEMENTED: &[&str] = &[
     "NetworkSession.masternodes",
     "Masternodes.list_state",
@@ -62,6 +62,20 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.discard_operation",
     "Masternodes.release_collateral",
     "Masternodes.lock_collateral",
+    "Masternodes.shared_capability",
+    "Masternodes.shared_sessions",
+    "Masternodes.shared_session",
+    "Masternodes.start_shared",
+    "Masternodes.set_shared_fee",
+    "Masternodes.import_shared_message",
+    "Masternodes.join_shared",
+    "Masternodes.shared_message",
+    "Masternodes.lock_shared_terms",
+    "Masternodes.unlock_shared_terms",
+    "Masternodes.approve_shared",
+    "Masternodes.sign_shared_funding",
+    "Masternodes.discard_shared_session",
+    "Masternodes.preview_update_share",
 ];
 
 /// The facade's files in `src/masternodes/` (mn-engine.md §0). A new file
@@ -73,13 +87,17 @@ const FACADE: &[&str] = &[
     "protx_records.rs",
     "reads.rs",
     "records.rs",
+    "shared.rs",
+    "shared_records.rs",
     "tracking.rs",
 ];
 
 /// Files of `src/masternodes/` that are not part of the facade: the
 /// provider-transaction aggregation, the list reader with its follower, and
-/// the ProTx keys, builder and operations behind `protx.rs`.
-const NOT_FACADE: &[&str] = &["aggregate.rs", "follow.rs", "protx"];
+/// the ProTx keys, builder and operations behind `protx.rs`, and the
+/// shared-masternode session store, builder and import table behind
+/// `shared.rs`.
+const NOT_FACADE: &[&str] = &["aggregate.rs", "follow.rs", "protx", "shared"];
 
 const BEGIN: &str = "<!-- BEGIN GENERATED: masternodes-surface -->";
 const END: &str = "<!-- END GENERATED: masternodes-surface -->";
@@ -744,6 +762,19 @@ fn error_codes_match_the_contract() {
             MasternodesError::NoOwnerKey,
             MasternodesError::UpdatePending { operation: hash() },
             MasternodesError::UpdateSuperseded { operation: hash() },
+            MasternodesError::SharedSessionNotFound,
+            MasternodesError::SharedStage { stage: hash() },
+            MasternodesError::SharedMessage {
+                reason: hash(),
+                share: None,
+            },
+            MasternodesError::SharedFundingMismatch {
+                reason: hash(),
+                needed: None,
+            },
+            MasternodesError::ShareNotMine,
+            MasternodesError::SharedTooEarly,
+            MasternodesError::SharedRegistrationUnknown,
         ],
         MasternodesError::code,
     );
@@ -1039,6 +1070,109 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             assert_eq!(code(refused), "masternodes.list_unavailable");
         }
 
+        // Shared masternodes (MG-04b §7): arguments, the wallet, v24 (not
+        // seen on this session) or `can_send`, then the session.
+        let shared = || StartSharedRequest {
+            shares: ["A", "B"]
+                .into_iter()
+                .map(|label| ShareSlot {
+                    label: label.into(),
+                    amount: 500 * 100_000_000,
+                })
+                .collect(),
+            terms: ShareTerms {
+                service: "1.2.3.4:19999".into(),
+                operator: OperatorChoice::NextUnused,
+                operator_reward: 0,
+                voting: VotingChoice::NextUnused,
+                early_period_blocks: 0,
+                early_penalty: 0,
+            },
+            fee: 100_000,
+            reward: RewardChoice::Refund,
+            node_run_by: None,
+        };
+        let share = |hash: &str| UpdateShareRequest {
+            pro_tx_hash: hash.into(),
+            share_index: 0,
+            reward: RewardChoice::Refund,
+        };
+        let join = || JoinSharedRequest {
+            share_index: None,
+            reward: RewardChoice::Refund,
+        };
+        let cap = mn.shared_capability(wallet).await.unwrap();
+        assert_eq!(
+            (cap.v24, cap.evonode_shares, cap.can_send),
+            (Activation::Unknown, Activation::Inactive, false)
+        );
+        assert!(mn.shared_sessions(wallet).await.unwrap().is_empty());
+        for refused in [
+            mn.shared_session(wallet, "zz".into()).await.map(drop),
+            mn.start_shared(wallet, StartSharedRequest { fee: 0, ..shared() })
+                .await
+                .map(drop),
+            mn.set_shared_fee(wallet, "zz".into(), 1_000)
+                .await
+                .map(drop),
+            mn.import_shared_message(wallet, "{}".into(), Some("zz".into()))
+                .await
+                .map(drop),
+            mn.join_shared(wallet, "zz".into(), join()).await.map(drop),
+            mn.shared_message(wallet, "zz".into()).await.map(drop),
+            mn.lock_shared_terms(wallet, "zz".into(), "g".into())
+                .await
+                .map(drop),
+            mn.unlock_shared_terms(wallet, "zz".into()).await.map(drop),
+            mn.approve_shared(wallet, "zz".into(), "g".into())
+                .await
+                .map(drop),
+            mn.sign_shared_funding(wallet, "zz".into(), "g".into())
+                .await
+                .map(drop),
+            mn.discard_shared_session(wallet, "zz".into()).await,
+            mn.preview_update_share(wallet, share("zz")).await.map(drop),
+        ] {
+            assert_eq!(code(refused), "invalid_argument");
+        }
+        for refused in [
+            mn.start_shared(wallet, shared()).await.map(drop),
+            mn.join_shared(wallet, hash.clone(), join()).await.map(drop),
+            mn.lock_shared_terms(wallet, hash.clone(), "g".into())
+                .await
+                .map(drop),
+            mn.approve_shared(wallet, hash.clone(), "g".into())
+                .await
+                .map(drop),
+            mn.sign_shared_funding(wallet, hash.clone(), "g".into())
+                .await
+                .map(drop),
+            mn.preview_update_share(wallet, share(&hash))
+                .await
+                .map(drop),
+        ] {
+            assert_eq!(code(refused), "masternodes.unsupported");
+        }
+        for refused in [
+            mn.shared_session(wallet, hash.clone()).await.map(drop),
+            mn.set_shared_fee(wallet, hash.clone(), 1_000)
+                .await
+                .map(drop),
+            mn.shared_message(wallet, hash.clone()).await.map(drop),
+            mn.unlock_shared_terms(wallet, hash.clone()).await.map(drop),
+            mn.discard_shared_session(wallet, hash.clone()).await,
+        ] {
+            assert_eq!(code(refused), "masternodes.shared_session_not_found");
+        }
+        let e = mn
+            .import_shared_message(wallet, "not a message".into(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&e, MasternodesError::SharedMessage { reason, .. } if reason == "not_shared"),
+            "{e:?}"
+        );
+
         // Operations: none yet.
         assert!(mn.operations(wallet).await.unwrap().is_empty());
         let op = || "00".repeat(16);
@@ -1243,6 +1377,39 @@ fn errors_never_quote_a_secret_shaped_argument() {
             (
                 "release_collateral",
                 mn.release_collateral(as_wallet, secret()).await,
+            ),
+            (
+                "shared_session",
+                mn.shared_session(as_wallet, secret()).await.map(drop),
+            ),
+            (
+                "import_shared_message",
+                mn.import_shared_message(as_wallet, secret(), Some(secret()))
+                    .await
+                    .map(drop),
+            ),
+            (
+                "sign_shared_funding",
+                mn.sign_shared_funding(as_wallet, secret(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "discard_shared_session",
+                mn.discard_shared_session(as_wallet, secret()).await,
+            ),
+            (
+                "preview_update_share",
+                mn.preview_update_share(
+                    as_wallet,
+                    UpdateShareRequest {
+                        pro_tx_hash: secret(),
+                        share_index: 0,
+                        reward: RewardChoice::Address { address: secret() },
+                    },
+                )
+                .await
+                .map(drop),
             ),
         ]
     });

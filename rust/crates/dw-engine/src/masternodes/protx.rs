@@ -5,8 +5,8 @@
 //! transaction to `TxDraft`'s fenced path (§2). The lease ends when the
 //! call returns.
 
-mod build;
-mod keys;
+pub(crate) mod build;
+pub(crate) mod keys;
 pub(crate) mod ops;
 #[cfg(test)]
 mod tests;
@@ -40,12 +40,12 @@ use crate::send::{SendFailure, SpendCharge, lease_failure};
 use crate::{EngineError, NetworkSession, WalletId};
 
 /// Change pays a P2PKH script (a fresh BIP44 internal address, D2).
-const CHANGE_LEN: usize = 25;
+pub(crate) const CHANGE_LEN: usize = 25;
 
 impl Masternodes {
     /// [`Self::op`], with a `wallet_not_found` that doesn't repeat the
     /// caller's 64 hex (MG-03 D23).
-    async fn protx_op<T, F, Fut>(&self, f: F) -> Result<T, MasternodesError>
+    pub(super) async fn protx_op<T, F, Fut>(&self, f: F) -> Result<T, MasternodesError>
     where
         T: Send + 'static,
         F: FnOnce(Arc<NetworkSession>) -> Fut + Send + 'static,

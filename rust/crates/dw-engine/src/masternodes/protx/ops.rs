@@ -227,6 +227,9 @@ pub(crate) enum CrashPoint {
     Saved,
     /// Handed off, its outcome not recorded.
     HandedOff,
+    /// A shared session's signed copy saved with `out_at`, not returned
+    /// (MG-04b D17).
+    SharedOut,
 }
 
 /// The test seam of the ProTx hand-off: the library's broadcast faked, and
@@ -239,6 +242,10 @@ pub(crate) struct Seam {
     pub list: std::sync::Mutex<Option<Vec<platform_wallet::masternode::MasternodeListSummary>>>,
     /// The stand-in list's height.
     pub list_height: std::sync::Mutex<u32>,
+    /// Shared registrations in a block at a height, added to the wallet's
+    /// history by their ProTx hash: the pin can't decode a version-3
+    /// ProRegTx into it (BL-187).
+    pub shared_mined: std::sync::Mutex<Vec<(Txid, dashcore::Transaction, u32)>>,
 }
 
 #[cfg(test)]
@@ -279,6 +286,24 @@ impl NetworkSession {
         if id.len() != 32 || !id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
             return Err(EngineError::InvalidArgument("not an operation id".into()).into());
         }
+        let key = (wallet, id.to_string());
+        if !self.masternodes.protx_in_flight().insert(key.clone()) {
+            return Err(MasternodesError::InFlight);
+        }
+        Ok(InFlight {
+            session: Arc::clone(self),
+            key,
+        })
+    }
+
+    /// Marks shared session `(wallet, id)` in flight (MG-04b §9.2): its
+    /// 64-hex id never names an operation (32 hex).
+    pub(crate) fn claim_shared_session(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        id: &str,
+    ) -> Result<InFlight, MasternodesError> {
+        crate::masternodes::shared::check_session_id(id)?;
         let key = (wallet, id.to_string());
         if !self.masternodes.protx_in_flight().insert(key.clone()) {
             return Err(MasternodesError::InFlight);
@@ -555,6 +580,7 @@ impl NetworkSession {
         for id in ids {
             let wallet = WalletId(id);
             self.settle_operation_locks(wallet).await?;
+            self.shared_follow_pass(wallet).await?;
             let Some(_fence) = self.try_coin_fence(wallet).await? else {
                 continue;
             };

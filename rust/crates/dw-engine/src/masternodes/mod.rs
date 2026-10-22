@@ -16,6 +16,8 @@ mod protx;
 mod protx_records;
 mod reads;
 mod records;
+mod shared;
+mod shared_records;
 mod tracking;
 
 use std::sync::Arc;
@@ -33,6 +35,12 @@ pub use records::{
     MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus, MasternodeType,
     RegistrationFacts, UntrackOutcome,
 };
+pub use shared_records::{
+    Activation, DeadReason, JoinSharedRequest, KeyBase, RewardChoice, ShareRow, ShareSlot,
+    ShareTerms, ShareTermsView, SharedCapability, SharedImport, SharedKind, SharedMessage,
+    SharedNext, SharedOutcome, SharedRole, SharedSession, SharedStage, SharedWarning,
+    StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
+};
 pub use tracking::MAX_MASTERNODE_LABEL;
 
 use crate::{EngineError, NetworkSession};
@@ -42,6 +50,10 @@ use crate::{EngineError, NetworkSession};
 #[derive(Clone)]
 pub struct Masternodes {
     pub(super) session: Arc<NetworkSession>,
+    /// The shared-masternode capability override (MG-04b r2-m4): only the
+    /// test-support constructor sets it.
+    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
+    shared_send: bool,
 }
 
 impl NetworkSession {
@@ -49,6 +61,8 @@ impl NetworkSession {
     pub fn masternodes(self: &Arc<Self>) -> Masternodes {
         Masternodes {
             session: Arc::clone(self),
+            #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
+            shared_send: false,
         }
     }
 }

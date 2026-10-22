@@ -606,6 +606,8 @@ impl NetworkSession {
                 external_collaterals.insert(hash, address.script_pubkey());
             }
         }
+        // A shared session's keys are the wallet's too (MG-04b D10).
+        self.shared_keys_in_use(wallet, &mut used).await?;
         Ok(Context {
             listed: listed(&list, &owned),
             list_height: list.height,

@@ -94,6 +94,7 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     case "governance":
       return [keys.governanceAll];
     // No screen reads these yet (the notice and masternode views come with their tasks).
+    // `masternodes` also follows a shared-masternode session change (mn-engine §6, MG-04b).
     case "newTransactions":
     case "notice":
     case "masternodes":
