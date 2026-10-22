@@ -38,8 +38,11 @@ export interface CreditsWorld {
   /** DP6-02: Platform's withdrawal documents of the wallet's identities, newest first. */
   withdrawals: Withdrawal[];
   /** What the next `withdraw` comes to: Platform's answer, an unanswered broadcast whose document
-   * is not found (`unknown`), or one whose document is (`landed`). */
-  nextWithdraw: "applied" | "unknown" | "landed";
+   * is not found (`unknown`), or one whose document is (`landed`); `lostLanded`: unanswered and not
+   * found, then it executes before the next withdrawal, which reads it back and is refused (D24). */
+  nextWithdraw: "applied" | "unknown" | "landed" | "lostLanded";
+  /** `lostLanded`'s withdrawal, executing unseen, and what it takes. */
+  lost: { doc: Withdrawal; total: bigint } | null;
 }
 
 export const newCreditsWorld = (patch: Partial<CreditsWorld> = {}): CreditsWorld => ({
@@ -50,6 +53,7 @@ export const newCreditsWorld = (patch: Partial<CreditsWorld> = {}): CreditsWorld
   locks: 0,
   withdrawals: [],
   nextWithdraw: "applied",
+  lost: null,
   ...patch,
 });
 
@@ -232,15 +236,27 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
       const credits = withdrawPlan(BigInt(me.balance ?? "0"), amount);
       const total = credits + WITHDRAW_RULES.fee;
       const expectedDuffs = withdrawPayout(credits);
+      const c = creditsOf(dp);
+      // D24: the unconfirmed one is read back before the grant; it went through, so nothing is sent.
+      const lost = c.lost;
+      if (lost) {
+        c.lost = null;
+        c.nextWithdraw = "applied";
+        c.withdrawals = [lost.doc, ...c.withdrawals];
+        apply(ctx, walletId, dp, identity, -lost.total);
+        throw fail("credits.withdrawal_landed", "the earlier withdrawal went through", { kind: "artifact", artifact: lost.doc.id });
+      }
       const g = d.grant(world, grant, walletId, ["platformOp"]);
       if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
       if (BigInt(g.grant.purpose.maxCredits) < total)
         throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: String(total), remaining: g.grant.purpose.maxCredits });
       d.useGrant(world, grant);
-      const c = creditsOf(dp);
       const id = withdrawalId(c.withdrawals.length + 1);
-      if (c.nextWithdraw === "unknown") throw fail("platform.broadcast_unknown", "withdrawal outcome unknown", { kind: "artifact", artifact: id });
       const at = FIXTURE_NOW.getTime() + c.withdrawals.length * 1000;
+      if (c.nextWithdraw === "lostLanded")
+        c.lost = { doc: { id, credits: String(credits), expectedDuffs, to: to.trim(), status: "queued", createdAt: at, updatedAt: at }, total };
+      if (c.nextWithdraw === "unknown" || c.nextWithdraw === "lostLanded")
+        throw fail("platform.broadcast_unknown", "withdrawal outcome unknown", { kind: "artifact", artifact: id });
       c.withdrawals = [{ id, credits: String(credits), expectedDuffs, to: to.trim(), status: "queued", createdAt: at, updatedAt: at }, ...c.withdrawals];
       const remaining = apply(ctx, walletId, dp, identity, -total);
       return { credits: String(credits), expectedDuffs, remainingCredits: c.nextWithdraw === "landed" ? null : remaining, withdrawal: id } satisfies WithdrawOutcome;

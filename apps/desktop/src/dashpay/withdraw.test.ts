@@ -13,6 +13,7 @@ import {
   onWithdrawSettled,
   PENDING_POLL_MS,
   pollWhilePending,
+  refusalDocument,
   RECENT_SHOWN,
   resetWithdrawals,
   statusText,
@@ -138,6 +139,13 @@ describe("the withdraw sheet (DP6-02)", () => {
     expect(flow.unconfirmedFor("A")).toBe("Wd");
     flow.back();
     expect([flow.step, flow.error]).toEqual(["form", null]);
+    // D24: the next one found the unconfirmed one went through; nothing is pending any more.
+    api.creditsWithdraw.mockRejectedValueOnce(appError("credits.withdrawal_landed", { kind: "artifact", artifact: "Wd" }));
+    flow.next({ kind: "credits", credits: "5000000000" }, TO);
+    await flow.withdraw(GRANT);
+    expect([flow.step, refusalDocument(flow.error), unknownDocument(flow.error), flow.unconfirmedFor("A")]).toEqual(["refused", "Wd", null, null]);
+    expect(amountCanChange(flow.error)).toBe(false);
+    expect(refusalDocument(appError("platform.broadcast_unknown", { kind: "artifact", artifact: "Wu" }))).toBe("Wu");
     stop();
   });
 
@@ -169,6 +177,9 @@ describe("the withdraw sheet (DP6-02)", () => {
       "This identity has no transfer key in this wallet, so it cannot withdraw.",
     );
     expect(withdrawErrorText(appError("platform.broadcast_unknown"), credits)).toBe("It may have been sent. Check your withdrawals in My Profile before trying again.");
+    expect(withdrawErrorText(appError("credits.withdrawal_landed"), credits)).toBe(
+      "Your last withdrawal went through after all, so this one was not sent. Withdraw again only if you want a second one.",
+    );
     expect(withdrawErrorText(appError("platform.trust_mismatch"), credits)).toBe("This identity's data could not be verified against the network. Nothing was withdrawn.");
     expect(withdrawErrorText(appError("invalid_argument"), credits)).toBe("Enter a Dash address of this network.");
     expect(withdrawErrorText(appError("platform.grant_invalid"), credits)).toBe("It stopped with platform.grant_invalid.");

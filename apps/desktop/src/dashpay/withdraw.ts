@@ -35,7 +35,7 @@ export const WITHDRAW_COPY = {
     noCosts: "Waiting for the network's prices. Try Max, or wait a moment.",
     invalidTo: "Enter a Dash address.",
     platformTo: "This is a Dash Platform address. Withdraw to a Dash address.",
-    unconfirmed: "Your last withdrawal is not on Dash Platform yet and may still go through. A new withdrawal now takes its place: only one of the two can go through.",
+    unconfirmed: "Your last withdrawal is not on Dash Platform yet and may still go through. If you withdraw again, only one of the two goes through.",
     next: "Continue",
     cancel: "Cancel",
   },
@@ -171,6 +171,10 @@ export const pollWhilePending = (list: Withdrawal[] | undefined, unconfirmed: st
 /** The withdrawal document an unknown outcome names (D7). */
 export const unknownDocument = (e: unknown) => (hasCode(e, "platform.broadcast_unknown") && e.data?.kind === "artifact" ? e.data.artifact : null);
 
+/** The document a refusal names: an unknown outcome's, or the earlier withdrawal that went through (D24). */
+export const refusalDocument = (e: unknown) =>
+  unknownDocument(e) ?? (hasCode(e, "credits.withdrawal_landed") && e.data?.kind === "artifact" ? e.data.artifact : null);
+
 /** A withdrawal's refusal, by code (§3's table). `credits` shows a credit figure as Dash. */
 export function withdrawErrorText(e: unknown, credits: (c: string) => string): string {
   if (!isAppError(e)) return failureText(e);
@@ -185,6 +189,8 @@ export function withdrawErrorText(e: unknown, credits: (c: string) => string): s
       return "Enter a Dash address of this network.";
     case "platform.broadcast_unknown":
       return "It may have been sent. Check your withdrawals in My Profile before trying again.";
+    case "credits.withdrawal_landed":
+      return "Your last withdrawal went through after all, so this one was not sent. Withdraw again only if you want a second one.";
     case "platform.context_unavailable":
       return "Waiting for the network to sync and verify this identity. Try again shortly.";
     case "platform.trust_mismatch":
@@ -340,6 +346,8 @@ export class WithdrawFlow extends Model {
       this.step = "refused";
       const id = unknownDocument(e);
       if (id !== null) this.unconfirmed = { identity, id };
+      // D24: the unconfirmed one went through, and no later one is pending.
+      else if (hasCode(e, "credits.withdrawal_landed") && this.unconfirmed?.identity === identity) this.unconfirmed = null;
     } finally {
       this.running = false;
       // A cancelled passphrase ran nothing: nothing to read again.

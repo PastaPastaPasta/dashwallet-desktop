@@ -493,6 +493,11 @@ pub enum CreditsError {
     /// protocol version, `min` to `max` credits (DP6-02).
     #[error("a withdrawal takes {min} to {max} credits")]
     WithdrawalOutOfRange { min: u64, max: u64 },
+    /// The identity's last withdrawal, whose outcome was unknown, executed
+    /// after all (its document `artifact` read back), so this one was not
+    /// sent: at most one of them goes through (DP6-02 D24).
+    #[error("the earlier withdrawal {artifact} went through; nothing was sent")]
+    WithdrawalLanded { artifact: String },
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -505,6 +510,7 @@ impl CreditsError {
             Self::CoinsLocked => "credits.coins_locked",
             Self::TopUpPending { .. } => "credits.top_up_pending",
             Self::WithdrawalOutOfRange { .. } => "credits.withdrawal_out_of_range",
+            Self::WithdrawalLanded { .. } => "credits.withdrawal_landed",
             Self::Platform(e) => e.code(),
         }
     }

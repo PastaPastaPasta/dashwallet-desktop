@@ -3396,6 +3396,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.coins_locked",
   "credits.top_up_pending",
   "credits.withdrawal_out_of_range",
+  "credits.withdrawal_landed",
   "governance.sync_disabled",
   "governance.not_synced",
   "governance.proposal_not_found",

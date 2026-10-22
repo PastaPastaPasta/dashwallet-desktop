@@ -250,6 +250,9 @@ enum Answer {
     /// No answer; the transitions pending meanwhile execute, and this one
     /// never does.
     EarlierLands,
+    /// The transitions pending meanwhile execute, this one never does, and
+    /// a node answers the proved balance after them.
+    EarlierLandsLyingSuccess,
 }
 
 /// What a withdrawal Drive executes is charged on top of its amount.
@@ -264,8 +267,13 @@ struct FakeWithdrawals {
     balance: Mutex<Option<u64>>,
     /// The identity's nonces Drive took.
     used: Mutex<BTreeSet<u64>>,
-    /// The nonce state a node behind the chain answers, if one does.
-    lag: Mutex<Option<u64>>,
+    /// The chain's height: each execution is a block.
+    height: Mutex<u64>,
+    /// The nonce state and height a node behind the chain answers, if one
+    /// does.
+    lag: Mutex<Option<(u64, u64)>>,
+    /// The document reads come from a node at height 0, which has none.
+    stale_reads: Mutex<bool>,
     answer: Mutex<Answer>,
     /// The transitions broadcast.
     sent: Mutex<Vec<StateTransition>>,
@@ -295,7 +303,9 @@ impl FakeWithdrawals {
             proved: PlatformVersion::latest(),
             balance: Mutex::new(Some(balance)),
             used: Mutex::new((1..=4).collect()),
+            height: Mutex::new(1),
             lag: Mutex::default(),
+            stale_reads: Mutex::new(false),
             answer: Mutex::new(Answer::Applied { fee: FEE }),
             sent: Mutex::default(),
             pending: Mutex::default(),
@@ -323,9 +333,14 @@ impl FakeWithdrawals {
         *self.answer.lock().unwrap() = answer;
     }
 
-    /// A node `state` behind the chain answers the nonce reads.
-    fn lag(&self, state: u64) {
-        *self.lag.lock().unwrap() = Some(state);
+    /// The nonce state and height now, as a node that stops here answers.
+    fn snapshot(&self) -> (u64, u64) {
+        (self.state(), *self.height.lock().unwrap())
+    }
+
+    /// A node stopped at `snapshot` answers the nonce reads.
+    fn lag(&self, snapshot: (u64, u64)) {
+        *self.lag.lock().unwrap() = Some(snapshot);
     }
 
     /// The withdrawal documents on Platform.
@@ -360,6 +375,7 @@ impl FakeWithdrawals {
             return false;
         }
         self.used.lock().unwrap().insert(w.nonce());
+        *self.height.lock().unwrap() += 1;
         let mut balance = self.balance.lock().unwrap();
         let Some(after) = balance.unwrap().checked_sub(w.amount() + fee) else {
             return false;
@@ -397,9 +413,9 @@ impl WithdrawNet for FakeWithdrawals {
         Ok(*self.balance.lock().unwrap())
     }
 
-    async fn nonce_state(&self, _: Identifier) -> Result<u64, PlatformError> {
+    async fn nonce_state(&self, _: Identifier) -> Result<(u64, u64), PlatformError> {
         let lag = *self.lag.lock().unwrap();
-        Ok(lag.unwrap_or_else(|| self.state()))
+        Ok(lag.unwrap_or_else(|| self.snapshot()))
     }
 
     async fn broadcast(&self, transition: StateTransition) -> Result<u64, Unsent> {
@@ -444,16 +460,23 @@ impl WithdrawNet for FakeWithdrawals {
                 self.execute_pending();
                 Err(unknown())
             }
+            Answer::EarlierLandsLyingSuccess => {
+                self.execute_pending();
+                Ok(self.balance_now())
+            }
         }
     }
 
-    async fn withdrawal(&self, id: Identifier) -> Result<Option<Document>, PlatformError> {
+    async fn withdrawal(&self, id: Identifier) -> Result<(Option<Document>, u64), PlatformError> {
         if *self.reads_fail.lock().unwrap() {
             return Err(PlatformError::Unavailable);
         }
-        Ok((self.documents.lock().unwrap().iter())
-            .find(|d| d.id() == id)
-            .cloned())
+        if *self.stale_reads.lock().unwrap() {
+            return Ok((None, 0));
+        }
+        let documents = self.documents.lock().unwrap();
+        let document = documents.iter().find(|d| d.id() == id).cloned();
+        Ok((document, *self.height.lock().unwrap()))
     }
 
     async fn withdrawals(
@@ -787,36 +810,43 @@ fn an_unverified_identity_withdraws_nothing() {
     assert!(w.net.sent().is_empty());
 }
 
-/// Signed, refused by Platform: that refusal. Signed, unanswered: the
-/// document decides; none read back is `platform.broadcast_unknown`
-/// naming it, and nothing is sent again.
+/// Signed, unanswered: the document decides; none read back is
+/// `platform.broadcast_unknown` naming it, and nothing is sent again.
+/// Signed, refused by Platform with no document: that refusal.
 #[test]
 fn a_failed_broadcast_after_signing() {
     let w = World::new(5 * DASH);
     let ask = WithdrawAmount::Credits { credits: DASH };
 
-    *w.net.answer.lock().unwrap() = Answer::Refused;
+    w.net.answer(Answer::Unknown);
+    *w.net.reads_fail.lock().unwrap() = true;
+    let unknown = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap_err();
+    assert_eq!(unknown, unconfirmed(&w, nonce_of(&w.net.sent()[0])));
+
+    // While the unconfirmed one cannot be read back, nothing is signed.
+    let grant = w.f.grant(2 * DASH);
+    let unread = w.withdraw(ask, &grant).unwrap_err();
+    assert_eq!(unread.code(), "platform.unavailable");
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.net.sent().len(), 1);
+
+    *w.net.reads_fail.lock().unwrap() = false;
+    w.net.answer(Answer::Refused);
     let refused = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap_err();
     assert_eq!(refused.code(), "platform.insufficient_credits");
 
-    *w.net.answer.lock().unwrap() = Answer::Unknown;
-    *w.net.reads_fail.lock().unwrap() = true;
-    let unknown = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap_err();
-    let StateTransition::IdentityCreditWithdrawal(t) = &w.net.sent()[1] else {
-        panic!("a withdrawal");
-    };
-    let doc = document_id(&id(ME), t.nonce(), &w.script).to_string(Encoding::Base58);
-    assert_eq!(
-        unknown,
-        CreditsError::Platform(PlatformError::BroadcastUnknown { artifact: doc })
-    );
-
     // Landed after all: read back, with no proved balance.
-    *w.net.reads_fail.lock().unwrap() = false;
-    *w.net.answer.lock().unwrap() = Answer::LandedUnanswered;
+    w.net.answer(Answer::LandedUnanswered);
     let out = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap();
     assert_eq!((out.credits, out.remaining_credits), (DASH, None));
     assert_eq!(w.net.sent().len(), 3, "nothing sent again");
+}
+
+/// `credits.withdrawal_landed` naming the document `nonce` and the
+/// script fix.
+fn went_through(w: &World, nonce: u64) -> CreditsError {
+    let artifact = document_id(&id(ME), nonce, &w.script).to_string(Encoding::Base58);
+    CreditsError::WithdrawalLanded { artifact }
 }
 
 fn unconfirmed(w: &World, nonce: u64) -> CreditsError {
@@ -848,12 +878,41 @@ fn a_retry_after_an_unknown_outcome_cannot_execute_twice() {
     assert_eq!(nonce_of(&w.net.sent()[1]), k, "the first one's nonce");
     assert_eq!(first.unwrap_err(), unconfirmed(&w, k));
     assert_eq!(again.unwrap_err(), unconfirmed(&w, k));
-    // Seen executed, the nonce is not offered again.
+    // Review r1 validator M1: the next withdrawal reads the unconfirmed
+    // ones back first; the first went through unseen, so nothing is sent
+    // and the grant is kept.
     w.net.answer(Answer::Applied { fee: FEE });
+    let kept = grant();
+    let refused = w.withdraw(WithdrawAmount::Credits { credits: DASH }, &kept);
+    assert_eq!(refused.unwrap_err(), went_through(&w, k));
+    assert!(w.f.unused(&kept));
+    assert_eq!(w.net.sent().len(), 2);
+    // Asked again, it is a second withdrawal, past the used nonces.
     w.withdraw(WithdrawAmount::Credits { credits: DASH }, &grant())
         .unwrap();
     assert_eq!(nonce_of(&w.net.sent()[2]), k + 2);
     assert_eq!(w.recent().unwrap().len(), 2);
+}
+
+/// D24: the read-back before signing is at least as recent as the nonce
+/// read; a node behind it decides nothing, and nothing is signed.
+#[test]
+fn a_read_back_older_than_the_nonce_decides_nothing() {
+    let w = World::new(10 * DASH);
+    let ask = WithdrawAmount::Credits { credits: DASH };
+    w.net.answer(Answer::Pending);
+    w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap_err();
+    let k = nonce_of(&w.net.sent()[0]);
+    w.net.execute_pending();
+    *w.net.stale_reads.lock().unwrap() = true;
+    let grant = w.f.grant(2 * DASH);
+    let refused = w.withdraw(ask, &grant).unwrap_err();
+    assert_eq!(refused.code(), "platform.unavailable");
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.net.sent().len(), 1);
+    *w.net.stale_reads.lock().unwrap() = false;
+    assert_eq!(w.withdraw(ask, &grant).unwrap_err(), went_through(&w, k));
+    assert_eq!(w.net.landed(), 1);
 }
 
 /// D24: after a withdrawal seen executed, a node behind the chain answers
@@ -863,7 +922,7 @@ fn a_retry_after_an_unknown_outcome_cannot_execute_twice() {
 fn a_node_behind_a_seen_withdrawal_does_not_bring_its_nonce_back() {
     let w = World::new(10 * DASH);
     let ask = WithdrawAmount::Credits { credits: DASH };
-    let before = w.net.state();
+    let before = w.net.snapshot();
     let first = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap();
     w.net.lag(before);
     let second = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap();
@@ -894,11 +953,44 @@ fn a_success_without_the_balance_drop_is_unconfirmed() {
     assert_eq!(w.net.balance_now(), balance - DASH - FEE);
 }
 
-/// The document read back counts only with this withdrawal's amount: a
-/// retry at the same nonce and address of another amount names the same
-/// document, and the earlier one's landing is not this one's.
+/// The document read back counts only with its amount: a retry at the
+/// same nonce and address of another amount names the same document, and
+/// the amount on it says which of the two executed.
 #[test]
 fn a_document_of_another_amount_is_not_this_withdrawal() {
+    let (one, two) = (
+        WithdrawAmount::Credits { credits: DASH },
+        WithdrawAmount::Credits { credits: 2 * DASH },
+    );
+    for (retry, landed) in [
+        (Answer::EarlierLands, DASH),
+        (Answer::LandedUnanswered, 2 * DASH),
+    ] {
+        let w = World::new(10 * DASH);
+        w.net.answer(Answer::Pending);
+        let first = w.withdraw(one, &w.f.grant(2 * DASH));
+        let k = nonce_of(&w.net.sent()[0]);
+        assert_eq!(first.unwrap_err(), unconfirmed(&w, k));
+        w.net.answer(retry);
+        let again = w.withdraw(two, &w.f.grant(3 * DASH));
+        if landed == DASH {
+            assert_eq!(again.unwrap_err(), went_through(&w, k));
+        } else {
+            let out = again.unwrap();
+            assert_eq!((out.credits, out.remaining_credits), (2 * DASH, None));
+        }
+        w.net.execute_pending();
+        let recent = w.recent().unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].credits, Some(landed));
+    }
+}
+
+/// Validator m2: at a nonce signed twice, the earlier withdrawal's
+/// execution drops the balance too, so a node's proved balance is no
+/// success: the documents decide.
+#[test]
+fn at_a_shared_nonce_the_balance_drop_is_no_proof() {
     let w = World::new(10 * DASH);
     w.net.answer(Answer::Pending);
     let first = w.withdraw(
@@ -907,15 +999,11 @@ fn a_document_of_another_amount_is_not_this_withdrawal() {
     );
     let k = nonce_of(&w.net.sent()[0]);
     assert_eq!(first.unwrap_err(), unconfirmed(&w, k));
-    w.net.answer(Answer::EarlierLands);
-    let retry = w.withdraw(
-        WithdrawAmount::Credits { credits: 2 * DASH },
-        &w.f.grant(3 * DASH),
-    );
-    assert_eq!(retry.unwrap_err(), unconfirmed(&w, k));
-    let recent = w.recent().unwrap();
-    assert_eq!(recent.len(), 1);
-    assert_eq!(recent[0].credits, Some(DASH));
+    w.net.answer(Answer::EarlierLandsLyingSuccess);
+    let half = WithdrawAmount::Credits { credits: DASH / 2 };
+    let again = w.withdraw(half, &w.f.grant(2 * DASH));
+    assert_eq!(again.unwrap_err(), went_through(&w, k));
+    assert_eq!(w.net.landed(), 1);
 }
 
 /// Review r1 m3 (D21): a refusal is one node's unproved answer, so the
@@ -929,6 +1017,12 @@ fn a_refusal_with_the_document_on_platform_is_done() {
     let out = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap();
     assert_eq!((out.credits, out.remaining_credits), (DASH, None));
     w.net.answer(Answer::Refused);
+    let refused = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap_err();
+    assert_eq!(refused.code(), "platform.insufficient_credits");
+    // A refusal whose read-back fails stays the refusal.
+    let w = World::new(10 * DASH);
+    w.net.answer(Answer::Refused);
+    *w.net.reads_fail.lock().unwrap() = true;
     let refused = w.withdraw(ask, &w.f.grant(2 * DASH)).unwrap_err();
     assert_eq!(refused.code(), "platform.insufficient_credits");
 }

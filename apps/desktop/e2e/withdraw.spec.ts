@@ -166,9 +166,36 @@ test("IOS-070 D7, D23: an unanswered withdrawal is not retried from the sheet an
   expect(await seriousAxeViolations(page)).toEqual([]);
   await page.getByTestId("profile-withdraw").click();
   await expect(page.getByTestId("withdraw-unconfirmed")).toHaveText(
-    "Your last withdrawal is not on Dash Platform yet and may still go through. A new withdrawal now takes its place: only one of the two can go through.",
+    "Your last withdrawal is not on Dash Platform yet and may still go through. If you withdraw again, only one of the two goes through.",
   );
   expect(await seriousAxeViolations(page)).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test("IOS-070 D24: a withdrawal after an unconfirmed one that went through is refused, naming it", async ({ page }) => {
+  const errors = await openProfile(page, "dashpay-withdraw-lost-landed");
+  await toQuote(page);
+  await page.getByTestId("withdraw-go").click();
+  await authorize(page);
+  await expect(page.getByTestId("withdraw-document")).toHaveText(`Withdrawal document: ${DOCUMENT}`);
+  await page.getByTestId("withdraw-close").click();
+  await expect(page.getByTestId("profile-withdraw-unconfirmed")).toContainText(DOCUMENT);
+  // The next one reads it back first: it went through, so nothing is sent.
+  await page.getByTestId("profile-withdraw").click();
+  await expect(page.getByTestId("withdraw-unconfirmed")).toBeVisible();
+  await page.getByTestId("withdraw-next").click();
+  await expect(page.getByTestId("withdraw-go")).toBeEnabled();
+  await page.getByTestId("withdraw-go").click();
+  await authorize(page);
+  await expect(page.getByTestId("withdraw-refusal")).toHaveText(
+    "Your last withdrawal went through after all, so this one was not sent. Withdraw again only if you want a second one.",
+  );
+  await expect(page.getByTestId("withdraw-document")).toHaveText(`Withdrawal document: ${DOCUMENT}`);
+  await fontsReady(page);
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  await page.getByTestId("withdraw-close").click();
+  await expect(page.getByTestId("profile-withdraw-unconfirmed")).toHaveCount(0);
+  await expect(page.getByTestId("profile-withdrawal")).toHaveCount(1);
   expect(errors).toEqual([]);
 });
 

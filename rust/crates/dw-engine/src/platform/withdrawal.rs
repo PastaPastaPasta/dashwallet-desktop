@@ -37,9 +37,11 @@
 //! with the amount. A refusal Platform answered with no such document is
 //! that refusal; any other answer is `platform.broadcast_unknown` naming
 //! the document, and nothing retries it. The nonce is never the SDK's
-//! cache's: a later withdrawal of the session signs at the unconfirmed
-//! one's nonce while Platform would still take it ([`WithdrawalNonces`]),
-//! so at most one of the two executes.
+//! cache's ([`WithdrawalNonces`]): a later withdrawal of the session first
+//! reads back the unconfirmed one's documents (one there executed, and the
+//! new one is refused as `credits.withdrawal_landed`), then signs at its
+//! nonce while Platform would still take it, so at most one of them
+//! executes.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -56,7 +58,9 @@ use dpp::data_contract::DataContract;
 use dpp::document::{Document, DocumentV0, DocumentV0Getters};
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::core_script::CoreScript;
-use dpp::identity::identity_nonce::{IDENTITY_NONCE_VALUE_FILTER, validate_identity_nonce_update};
+use dpp::identity::identity_nonce::{
+    IDENTITY_NONCE_VALUE_FILTER, validate_identity_nonce_update, validate_new_identity_nonce,
+};
 use dpp::identity::signer::Signer;
 use dpp::identity::{Identity, IdentityPublicKey};
 use dpp::platform_value::btreemap_extensions::BTreeValueMapHelper;
@@ -123,23 +127,24 @@ pub(crate) trait WithdrawNet: Send + Sync {
         id: Identifier,
     ) -> impl Future<Output = Result<Option<u64>, PlatformError>> + Send;
     /// The identity's nonce as Drive stores it (the newest nonce and the
-    /// missing-revision bits above it), proved; 0 when Platform has none.
-    /// Never the SDK's cache (D24).
+    /// missing-revision bits above it), proved, and the block height of
+    /// the proof; 0 when Platform has none. Never the SDK's cache (D24).
     fn nonce_state(
         &self,
         id: Identifier,
-    ) -> impl Future<Output = Result<u64, PlatformError>> + Send;
+    ) -> impl Future<Output = Result<(u64, u64), PlatformError>> + Send;
     /// Broadcasts `transition` and waits for its result: the identity's new
     /// balance, proved.
     fn broadcast(
         &self,
         transition: StateTransition,
     ) -> impl Future<Output = Result<u64, Unsent>> + Send;
-    /// The withdrawal document `id`, proved; `None` when it is not there.
+    /// The withdrawal document `id`, proved, `None` when it is not there,
+    /// and the block height of the proof.
     fn withdrawal(
         &self,
         id: Identifier,
-    ) -> impl Future<Output = Result<Option<Document>, PlatformError>> + Send;
+    ) -> impl Future<Output = Result<(Option<Document>, u64), PlatformError>> + Send;
     /// `owner`'s withdrawal documents, the most recently updated first, at
     /// most `limit`.
     fn withdrawals(
@@ -160,9 +165,9 @@ impl WithdrawNet for SdkWithdrawals {
         Ok(IdentityBalance::fetch(&self.0, id).await?)
     }
 
-    async fn nonce_state(&self, id: Identifier) -> Result<u64, PlatformError> {
-        let state = IdentityNonceFetcher::fetch(&self.0, id).await?;
-        Ok(state.map_or(0, |IdentityNonceFetcher(n)| n))
+    async fn nonce_state(&self, id: Identifier) -> Result<(u64, u64), PlatformError> {
+        let (state, at) = IdentityNonceFetcher::fetch_with_metadata(&self.0, id, None).await?;
+        Ok((state.map_or(0, |IdentityNonceFetcher(n)| n), at.height))
     }
 
     async fn broadcast(&self, transition: StateTransition) -> Result<u64, Unsent> {
@@ -170,21 +175,23 @@ impl WithdrawNet for SdkWithdrawals {
         let result = transition
             .broadcast_and_wait_for_affected_state::<StateTransitionProofResult>(&self.0, None)
             .await;
-        // Every other identity-nonce write takes the SDK's cache: step it
-        // past this nonce, so they do not reuse it (D24).
-        if let Some(owner) = owner
-            && let Err(e) = self.0.get_identity_nonce(owner, true, None).await
-        {
-            tracing::info!("advancing the SDK's nonce cache: {e}");
+        // Every other identity-nonce write takes the SDK's cache: re-read
+        // it from Platform and step it, so they take a later nonce (D24).
+        if let Some(owner) = owner {
+            self.0.refresh_identity_nonce(&owner).await;
+            if let Err(e) = self.0.get_identity_nonce(owner, true, None).await {
+                tracing::info!("advancing the SDK's nonce cache: {e}");
+            }
         }
         settled(result)
     }
 
-    async fn withdrawal(&self, id: Identifier) -> Result<Option<Document>, PlatformError> {
+    async fn withdrawal(&self, id: Identifier) -> Result<(Option<Document>, u64), PlatformError> {
         let query = DocumentQuery::new(withdrawals_contract_v()?, withdrawal::NAME)
             .map_err(|e| PlatformError::from(dash_sdk::Error::from(e)))?
             .with_document_id(&id);
-        Ok(Document::fetch(&self.0, query).await?)
+        let (document, at) = Document::fetch_with_metadata(&self.0, query, None).await?;
+        Ok((document, at.height))
     }
 
     /// Reads every page oldest first and keeps the newest `limit`: at the
@@ -253,41 +260,58 @@ fn settled(result: Result<StateTransitionProofResult, dash_sdk::Error>) -> Resul
 #[derive(Default)]
 pub(crate) struct WithdrawalNonces(Mutex<HashMap<Identifier, Nonces>>);
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 struct Nonces {
-    /// The nonce of the last withdrawal signed and not seen executed.
-    unconfirmed: Option<u64>,
+    /// The nonce of the last withdrawals signed and not seen executed, and
+    /// each one signed at it.
+    unconfirmed: Option<(u64, Vec<Signed>)>,
     /// Past every withdrawal seen executed: a node behind it never hands
     /// back a nonce this session saw used.
     floor: u64,
 }
 
+/// A withdrawal signed: its document and amount.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Signed {
+    document: Identifier,
+    credits: u64,
+}
+
 impl WithdrawalNonces {
     /// The nonce `id`'s next withdrawal signs at, given its proved nonce
     /// `state`: the unconfirmed one's while Drive's rule would still take
-    /// it (`validate_identity_nonce_update`: unused and within 24 of the
-    /// newest), so at most one of the two executes; else one past the
-    /// newest, Platform's or the session's.
+    /// it (unused, within 24 of the newest, and past the floor), so at most
+    /// one of them executes; else one past the newest, Platform's or the
+    /// session's.
     fn next(&self, id: Identifier, state: u64) -> u64 {
         let n = self.get(id);
-        if let Some(k) = n.unconfirmed
-            && validate_identity_nonce_update(state, k, id).is_valid()
+        if let Some((k, _)) = n.unconfirmed
+            && k >= n.floor
+            && takes(state, k, id)
         {
             return k;
         }
         ((state & IDENTITY_NONCE_VALUE_FILTER) + 1).max(n.floor)
     }
 
-    /// A withdrawal at `nonce` is signed: it may execute from now on.
-    fn signed(&self, id: Identifier, nonce: u64) {
-        self.update(id, |n| n.unconfirmed = Some(nonce));
+    /// The withdrawals signed at `id`'s unconfirmed nonce, if it has one.
+    fn unconfirmed(&self, id: Identifier) -> Option<(u64, Vec<Signed>)> {
+        self.get(id).unconfirmed
     }
 
-    /// The withdrawal at `nonce` executed.
+    /// A withdrawal at `nonce` is signed: it may execute from now on.
+    fn signed(&self, id: Identifier, nonce: u64, signed: Signed) {
+        self.update(id, |n| match &mut n.unconfirmed {
+            Some((k, all)) if *k == nonce => all.push(signed),
+            unconfirmed => *unconfirmed = Some((nonce, vec![signed])),
+        });
+    }
+
+    /// A withdrawal at `nonce` executed.
     fn executed(&self, id: Identifier, nonce: u64) {
         self.update(id, |n| {
             n.floor = n.floor.max(nonce + 1);
-            if n.unconfirmed == Some(nonce) {
+            if n.unconfirmed.as_ref().is_some_and(|(k, _)| *k == nonce) {
                 n.unconfirmed = None;
             }
         });
@@ -295,13 +319,70 @@ impl WithdrawalNonces {
 
     fn get(&self, id: Identifier) -> Nonces {
         let map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        map.get(&id).copied().unwrap_or_default()
+        map.get(&id).cloned().unwrap_or_default()
     }
 
     fn update(&self, id: Identifier, change: impl FnOnce(&mut Nonces)) {
         let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         change(map.entry(id).or_default());
     }
+}
+
+/// Whether Drive takes nonce `k` from an identity whose stored nonce is
+/// `state` (0: none stored), by its own rule.
+fn takes(state: u64, k: u64, id: Identifier) -> bool {
+    if state == 0 {
+        validate_new_identity_nonce(k, id).is_valid()
+    } else {
+        validate_identity_nonce_update(state, k, id).is_valid()
+    }
+}
+
+/// Which of `signed` executed, by its document read back with its amount;
+/// `None` when none did. Each read is at least as recent as `height`, so a
+/// node behind cannot hide one; a read from further back decides nothing
+/// (`platform.unavailable`).
+async fn landed(
+    net: &impl WithdrawNet,
+    signed: &[Signed],
+    height: u64,
+) -> Result<Option<Signed>, PlatformError> {
+    for s in signed {
+        let (document, at) = net.withdrawal(s.document).await?;
+        if at < height {
+            return Err(PlatformError::Unavailable);
+        }
+        if document.is_some_and(|d| amount_of(&d) == Some(s.credits)) {
+            return Ok(Some(*s));
+        }
+    }
+    Ok(None)
+}
+
+/// `credits.withdrawal_landed` naming `s`'s document.
+fn landed_error(s: Signed) -> CreditsError {
+    CreditsError::WithdrawalLanded {
+        artifact: s.document.to_string(Encoding::Base58),
+    }
+}
+
+/// The nonce a withdrawal of `id` signs at (D24), read before its grant is
+/// redeemed. An unconfirmed withdrawal's documents are read back first, at
+/// least as recent as the nonce: one there executed, so this withdrawal is
+/// `credits.withdrawal_landed` naming it, and nothing is signed.
+async fn nonce_for(
+    net: &impl WithdrawNet,
+    nonces: &WithdrawalNonces,
+    id: Identifier,
+) -> Result<u64, CreditsError> {
+    let (state, height) = net.nonce_state(id).await?;
+    if let Some((k, signed)) = nonces.unconfirmed(id)
+        && let Some(s) = landed(net, &signed, height).await?
+    {
+        nonces.executed(id, k);
+        return Err(landed_error(s));
+    }
+    Ok(nonces.next(id, state))
 }
 
 /// The newest `limit` documents of pages read oldest first: `page(start)`
@@ -637,6 +718,8 @@ pub(crate) async fn withdraw(
     let version = net.version();
     let expected = expected_duffs(credits, version)?;
     let quote = credits + rules.fee;
+    let nonces = &session.withdrawal_nonces;
+    let nonce = nonce_for(net, nonces, id).await?;
     let signs = (index, &me);
     let lease = write_lease(
         session,
@@ -656,10 +739,12 @@ pub(crate) async fn withdraw(
         .ok_or(PlatformError::Identity(IdentityError::KeysMissing {
             purpose: KeyPurpose::Transfer,
         }))?;
-    let nonces = &session.withdrawal_nonces;
+    let doc = document_id(&id, nonce, &script);
+    let this = Signed {
+        document: doc,
+        credits,
+    };
     let sent = leased(&lease, async {
-        let state = net.nonce_state(id).await.map_err(Unsent::Refused)?;
-        let nonce = nonces.next(id, state);
         let signed = transition(
             &me,
             (script.clone(), credits, nonce),
@@ -667,20 +752,15 @@ pub(crate) async fn withdraw(
             signer.clone(),
             version,
         )
-        .await
-        .map_err(Unsent::Refused)?;
-        nonces.signed(id, nonce);
-        Ok((nonce, net.broadcast(signed).await))
+        .await?;
+        nonces.signed(id, nonce, this);
+        Ok::<_, PlatformError>(net.broadcast(signed).await)
     })
     .await;
     drop(signer);
-    permit.finish(matches!(sent, Ok((_, Ok(_)))));
-    let (nonce, broadcast) = match sent {
-        Ok(sent) => sent,
-        // Nothing signed, so nothing went out.
-        Err(Unsent::Refused(e) | Unsent::Unknown(e)) => return Err(e.into()),
-    };
-    let doc = document_id(&id, nonce, &script);
+    permit.finish(matches!(sent, Ok(Ok(_))));
+    // Nothing signed, so nothing went out.
+    let broadcast = sent.map_err(CreditsError::from)?;
     let withdrawal = doc.to_string(Encoding::Base58);
     let done = |remaining| WithdrawOutcome {
         credits,
@@ -688,28 +768,42 @@ pub(crate) async fn withdraw(
         remaining_credits: remaining,
         withdrawal: withdrawal.clone(),
     };
+    // Every withdrawal signed at this nonce: at most one executes.
+    let rivals = (nonces.unconfirmed(id))
+        .filter(|(k, _)| *k == nonce)
+        .map_or_else(|| vec![this], |(_, all)| all);
     // A proved balance is the identity's state after the wait, not proof
     // that this transition executed (rs-sdk's `wait_for_affected_state`):
-    // only a drop by the amount is (D24).
+    // only a drop by the amount is, and at a nonce signed more than once,
+    // where an earlier one's execution drops it too, this document (D24).
+    let dropped =
+        (broadcast.as_ref().ok().copied()).filter(|b| b.saturating_add(credits) <= before);
     let failure = match broadcast {
-        Ok(balance) if balance.saturating_add(credits) <= before => {
+        Ok(balance) if dropped.is_some() && rivals.len() == 1 => {
             nonces.executed(id, nonce);
             return Ok(done(Some(balance)));
+        }
+        Ok(_) if dropped.is_some() => {
+            Unsent::Unknown(internal("the nonce was signed more than once"))
         }
         Ok(balance) => Unsent::Unknown(internal(format!(
             "the proved balance {balance} is not {credits} below {before}"
         ))),
         Err(failure) => failure,
     };
-    // Signed, so it may have landed: the withdrawal's document with this
-    // amount decides, and a failed read decides nothing. A refusal is one
-    // node's unproved answer (D21), so it is read back too.
+    // Signed, so it may have landed: the documents signed at this nonce
+    // with their amounts decide, and a failed read decides nothing. A
+    // refusal is one node's unproved answer (D21), so it is read back too.
     let (Unsent::Refused(e) | Unsent::Unknown(e)) = &failure;
     tracing::info!(identity = %identity, "a withdrawal's broadcast failed: {e}");
-    match net.withdrawal(doc).await {
-        Ok(Some(d)) if amount_of(&d) == Some(credits) => {
+    match landed(net, &rivals, 0).await {
+        Ok(Some(s)) => {
             nonces.executed(id, nonce);
-            Ok(done(None))
+            if s == this {
+                Ok(done(dropped))
+            } else {
+                Err(landed_error(s))
+            }
         }
         read => {
             if let Err(again) = read {

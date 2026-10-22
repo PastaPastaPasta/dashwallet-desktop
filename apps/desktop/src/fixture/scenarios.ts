@@ -923,6 +923,9 @@ const SCENARIOS = {
   "dashpay-withdraw-lost": (t) => withCredits(base(t), { nextWithdraw: "unknown" }),
   /** The next withdrawal's broadcast goes unanswered but its document is read back (§3). */
   "dashpay-withdraw-landed": (t) => withCredits(base(t), { nextWithdraw: "landed" }),
+  /** The next withdrawal goes unanswered and unlisted, then executes before the one after it,
+   * which is refused naming it (D24). */
+  "dashpay-withdraw-lost-landed": (t) => withCredits(base(t), { nextWithdraw: "lostLanded" }),
   /** "alice" contested with no temporary name: Create instant username (R1, D13). */
   "dashpay-contest-no-temporary": (t) => {
     const w = contestPending(base(t), 1_900_000_000);

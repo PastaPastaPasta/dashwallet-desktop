@@ -788,6 +788,7 @@ fn credits_params(e: &CreditsError) -> Value {
         CreditsError::CoinsLocked => json!({}),
         CreditsError::TopUpPending { txid } => json!({"txid": txid}),
         CreditsError::WithdrawalOutOfRange { min, max } => json!({"min": min, "max": max}),
+        CreditsError::WithdrawalLanded { artifact } => json!({"artifact": artifact}),
         CreditsError::Platform(p) => platform_params(p),
     }
 }

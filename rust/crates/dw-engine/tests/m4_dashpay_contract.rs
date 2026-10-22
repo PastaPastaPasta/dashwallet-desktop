@@ -1026,6 +1026,9 @@ fn error_codes_match_the_contract() {
                 txid: String::new(),
             },
             CreditsError::WithdrawalOutOfRange { min: 0, max: 0 },
+            CreditsError::WithdrawalLanded {
+                artifact: String::new(),
+            },
         ],
         CreditsError::code,
     );

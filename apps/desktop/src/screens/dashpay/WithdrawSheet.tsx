@@ -16,8 +16,8 @@ import { Sheet } from "../../components/sheet";
 import { creditBalance } from "../../dashpay/profile";
 import {
   amountCanChange,
+  refusalDocument,
   unconfirmedIn,
-  unknownDocument,
   WITHDRAW_COPY,
   withdrawAmount,
   withdrawalRows,
@@ -195,7 +195,7 @@ export function WithdrawSheet({ flow, walletId, network, costs }: { flow: Withdr
   // A credit figure as Dash at the table's rate, else in credits (as the credits block).
   const credits = (c: string) => creditBalance(c, costs, discreet, amount, shown.masked());
   const { step, outcome } = flow;
-  const unknown = unknownDocument(flow.error);
+  const named = refusalDocument(flow.error);
   return (
     <>
       <Sheet title={C.title} width="small" testId="withdraw-sheet" onClose={() => flow.close()}>
@@ -232,9 +232,9 @@ export function WithdrawSheet({ flow, walletId, network, costs }: { flow: Withdr
               <p className="form-problem" role="alert" data-testid="withdraw-refusal">
                 {withdrawErrorText(flow.error, credits)}
               </p>
-              {unknown !== null && (
+              {named !== null && (
                 <p className="sheet-text" data-testid="withdraw-document">
-                  {C.refused.document} <span className="withdraw-to">{unknown}</span>
+                  {C.refused.document} <span className="withdraw-to">{named}</span>
                 </p>
               )}
               <div className="sheet-actions">
