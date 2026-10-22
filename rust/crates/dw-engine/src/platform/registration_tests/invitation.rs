@@ -399,6 +399,8 @@ fn a_claim_spent_elsewhere_fails_for_good_and_spends_nothing() {
     assert!(w.requests.is_empty());
     drop(w);
     assert!(stashed(&f, &link_id), "the user dismisses it");
+    // Consumed by another claim: proved not ours, so discarded (D11).
+    assert_eq!(discard_code(&f, &lib, draft), Ok(()));
     // A link this build cannot claim fails the same way.
     let lib = f.fake();
     lib.w()
@@ -500,9 +502,8 @@ fn a_restart_at_the_claim_waits_for_discovery_before_the_link() {
     f.kill(draft);
     lib.w().hang = None;
     let index = f.row(draft).identity_index.expect("keys prepared");
-    f.engine
-        .block_on(f.session.forget_invitation(link_id))
-        .unwrap();
+    // Held, the link is not forgotten; gone from the disk, it is gone.
+    gone(&f, &link_id);
     lib.w().claim_wait = Some(RegistrationWait::Startup);
     let lease = claim_lease(&f);
     f.drive(&lib, draft, Some(lease.clone()), false);
@@ -977,6 +978,14 @@ fn discard_code(f: &Fixture, lib: &Arc<Fake>, draft: i64) -> Result<(), &'static
     f.discard(lib, draft).map_err(|e| e.code())
 }
 
+/// The stash entry `link_id` deleted out of band (another process, a
+/// restore): an open claim's hold keeps it from the vault's own deletes.
+fn gone(f: &Fixture, link_id: &str) {
+    let links = f.session.vault().dir().join("links");
+    std::fs::remove_file(links.join(format!("{link_id}.dwl"))).unwrap();
+    assert!(!stashed(f, link_id));
+}
+
 /// DP5-02 F5 (DP5-03 D11, D12): `start` holds the claim's link; a claim
 /// that released its signatures and failed retryably cannot be discarded
 /// (it may have landed), and resumes to one identity.
@@ -1285,4 +1294,167 @@ fn the_opt_out_and_the_refused_request_are_on_the_row() {
         f.status(&lib, f.insert(core_row("other1"))).invitation,
         None
     );
+}
+
+/// DP5-03 D20 (Opus r1 H1): a claim row's resume grant is the row's own,
+/// with no duffs: the credits of the steps it has left, whatever the
+/// invitation's status reads now. A Core row has none.
+#[test]
+fn a_claim_rows_resume_grant_is_its_own() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let link_id = stash(&f);
+    let grant = |row: NewRegistration| {
+        let draft = f.insert(row);
+        f.engine
+            .block_on(registration::resume_grant(
+                &f.session,
+                f.wallet,
+                &*lib,
+                &draft.to_string(),
+            ))
+            .map(|g| (g.max_duffs, g.max_credits))
+            .map_err(|e| e.code())
+    };
+    let at = |phase: Phase, inviter: Option<&str>| NewRegistration {
+        phase: phase.as_str().into(),
+        identity_index: Some(0),
+        identity: (phase >= Phase::IdentityRegistered).then(claimed_id),
+        temp_label: None,
+        initial_profile: None,
+        ..invitation_row(&link_id, inviter)
+    };
+    let all = flow::IDENTITY_CREATE_CREDITS + NAME_CREDITS + CONTACT_REQUEST_CREDITS;
+    assert_eq!(grant(at(Phase::Draft, Some(INVITER))), Ok((0, all)));
+    assert_eq!(
+        grant(at(Phase::KeysPrepared, None)),
+        Ok((0, flow::IDENTITY_CREATE_CREDITS + NAME_CREDITS)),
+        "opted out: no request"
+    );
+    assert_eq!(
+        grant(NewRegistration {
+            temp_label: Some("bob-tmp-1".into()),
+            initial_profile: core_row(PLAIN).initial_profile,
+            ..at(Phase::Draft, Some(INVITER))
+        }),
+        Ok((0, all + NAME_CREDITS + flow::PROFILE_CREDITS)),
+        "the temporary name and the profile"
+    );
+    assert_eq!(
+        grant(at(Phase::IdentityRegistered, Some(INVITER))),
+        Ok((0, NAME_CREDITS + CONTACT_REQUEST_CREDITS))
+    );
+    assert_eq!(
+        grant(at(Phase::NameRegistered, Some(INVITER))),
+        Ok((0, CONTACT_REQUEST_CREDITS))
+    );
+    assert_eq!(grant(at(Phase::Done, Some(INVITER))), Ok((0, 0)));
+    // The row's claim landed: the invitation reads claimed, the grant holds.
+    lib.w().invitation = Some(InvitationStatus::Claimed);
+    assert_eq!(
+        grant(at(Phase::IdentityRegistered, Some(INVITER))),
+        Ok((0, NAME_CREDITS + CONTACT_REQUEST_CREDITS))
+    );
+    assert_eq!(grant(core_row(PLAIN)), Err("invalid_argument"));
+}
+
+/// DP5-02 F5 (Opus r1 M1): after its signatures were released, a claim
+/// whose link then went is still refused a discard: the link's absence
+/// does not prove the claim did not land. Its hold is let go.
+#[test]
+fn a_released_claim_whose_link_went_is_not_discarded() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let link_id = stash(&f);
+    lib.w()
+        .claim_script
+        .push_back(invitation::ClaimScript::ReleasedThenUnavailable);
+    let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
+    let lease = claim_lease(&f);
+    f.drive(&lib, draft, Some(lease.clone()), false);
+    assert!(held(&f, &link_id));
+    // Held, the vault does not forget it; gone from the disk, it is gone.
+    let forgot = f
+        .engine
+        .block_on(f.session.forget_invitation(link_id.clone()));
+    assert!(forgot.is_err(), "{forgot:?}");
+    gone(&f, &link_id);
+    f.drive(&lib, draft, Some(lease), true);
+    let row = f.row(draft);
+    assert_eq!(
+        (row.error.as_deref(), row.retryable),
+        (Some("invitation.expired"), false)
+    );
+    assert_eq!(discard_code(&f, &lib, draft), Err("invalid_argument"));
+    assert_eq!(lib.w().claims, 1);
+}
+
+/// DP5-03 D12 (Opus r1 M3, L4): the stash is the network's; a claim that
+/// ends lets its link go unless another wallet's open claim names it, and
+/// the bring-up lets go of every hold no open claim names.
+#[test]
+fn holds_settle_across_wallets_and_at_the_bring_up() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let link_id = stash(&f);
+    let other = stash_other(&f);
+    let hold = |id: &str| {
+        f.engine
+            .block_on(f.session.hold_invitation(id.into(), true))
+    };
+    hold(&link_id);
+    hold(&other);
+    // Another wallet's open claim of the same link, failed retryably.
+    let theirs = f
+        .appdb()
+        .insert_registration(THEIRS, &invitation_row(&link_id, None), 1)
+        .unwrap();
+    let row = f.appdb().registration_row(THEIRS, theirs).unwrap().unwrap();
+    let failed = RegistrationChange {
+        failure: Some(Some(("platform.unavailable".into(), true))),
+        ..Default::default()
+    };
+    f.appdb()
+        .update_registration(THEIRS, theirs, row.owner, &row.phase, false, &failed, 2)
+        .unwrap();
+    let row = f.appdb().registration_row(THEIRS, theirs).unwrap().unwrap();
+    assert_eq!(
+        (row.error.as_deref(), row.retryable),
+        (Some("platform.unavailable"), true)
+    );
+    // Ours fails for good: the link stays held for theirs.
+    lib.w().identities.push((0, OTHER.into()));
+    let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
+    f.drive(&lib, draft, Some(claim_lease(&f)), true);
+    assert_eq!(
+        f.row(draft).error.as_deref(),
+        Some("invitation.already_has_identity")
+    );
+    assert!(held(&f, &link_id), "another wallet's claim holds it");
+    // The bring-up: `other` names no open claim.
+    f.engine.block_on(f.session.settle_invitation_holds());
+    assert!(held(&f, &link_id) && !held(&f, &other));
+    // Theirs ends (here: removed with its wallet); the next bring-up lets go.
+    let row = f.appdb().registration_row(THEIRS, theirs).unwrap().unwrap();
+    assert!(
+        f.appdb()
+            .delete_registration(THEIRS, theirs, row.owner, &row.phase, None)
+            .unwrap()
+    );
+    f.engine.block_on(f.session.settle_invitation_holds());
+    assert!(!held(&f, &link_id));
+    assert!(stashed(&f, &link_id) && stashed(&f, &other), "entries kept");
+}
+
+/// Another wallet of the network.
+const THEIRS: &str = "00000000-0000-4000-8000-0000000000aa";
+
+/// A second stashed invitation, not [`LINK`].
+fn stash_other(f: &Fixture) -> String {
+    f.engine
+        .block_on(
+            f.session
+                .stash_invitation(BearerSecret::new(format!("{LINK}&n=2"))),
+        )
+        .unwrap()
 }

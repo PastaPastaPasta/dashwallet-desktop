@@ -266,6 +266,17 @@ impl AppDb {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Every flow of every wallet (DP5-03: the stash's holds are per
+    /// network, not per wallet).
+    pub fn all_registration_rows(&self) -> Result<Vec<RegistrationRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM dp_registration ORDER BY id"
+        ))?;
+        let rows = stmt.query_map([], read_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn registration_row(&self, wallet_id: &str, id: i64) -> Result<Option<RegistrationRow>> {
         Ok(self
             .conn()

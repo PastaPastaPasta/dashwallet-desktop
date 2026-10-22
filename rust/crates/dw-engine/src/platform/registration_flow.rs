@@ -1086,8 +1086,9 @@ pub(crate) fn is_core_balance(row: &RegistrationRow) -> bool {
 /// Why an invitation row must not be discarded (DP5-03 D11, DP5-02 F5):
 /// its identity exists and its name step has not ended, or its identity
 /// step may have released signatures (`step`, the call step's marker:
-/// standing or `Sent`) and the claim has not failed for good. Either way
-/// a discard could leave an identity on Platform that no step finishes.
+/// standing or `Sent`) and no refusal proved the claim did not land.
+/// Either way a discard could leave an identity on Platform that no step
+/// finishes.
 pub(crate) fn claim_discard_refused(
     row: &RegistrationRow,
     step: CallStepStatus,
@@ -1102,8 +1103,26 @@ pub(crate) fn claim_discard_refused(
         return Some("the claim's identity exists; its name is not registered yet");
     }
     let released = matches!(step, CallStepStatus::Marked { .. } | CallStepStatus::Sent);
-    let failed_for_good = row.error.is_some() && !row.retryable;
-    (released && !failed_for_good).then_some("the claim may have reached the network")
+    // Only a refusal that proves the claim did not land frees it: Platform
+    // refused its keys, or another claim consumed the lock. A link gone
+    // from the stash proves nothing.
+    let disproved = !row.retryable
+        && row.error.as_deref().is_some_and(|code| {
+            code == InvitationError::AlreadyHasIdentity.code()
+                || code == InvitationError::Claimed.code()
+        });
+    (released && !disproved).then_some("the claim may have reached the network")
+}
+
+/// The link of an open claim row: an invitation's, neither `Done` nor
+/// failed for good (DP5-03 D12: its stash entry is held).
+pub(crate) fn open_claim_link(row: &RegistrationRow) -> Option<String> {
+    let Ok((phase, Funding::Invitation { link_id, .. })) = interpret(row) else {
+        return None;
+    };
+    let ended =
+        (phase == Phase::Done && row.error.is_none()) || (row.error.is_some() && !row.retryable);
+    (!ended).then_some(link_id)
 }
 
 /// A row this build cannot read (DEC-171 (3)).
@@ -1534,6 +1553,10 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 return Ok(());
             };
             if row.error.is_some() {
+                // Whichever write failed it (DP5-03 D12).
+                if !row.retryable {
+                    self.settle_link(&row).await;
+                }
                 return Ok(());
             }
             match self.step(&row).await? {
@@ -1586,14 +1609,18 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             ..Default::default()
         };
         let written = self.write(row, change).await?;
-        // A claim failed for good lets its link go (DP5-03 D12).
-        if !retryable
-            && written == Written::Applied
-            && let Ok((_, Funding::Invitation { link_id, .. })) = interpret(row)
-        {
-            self.session.hold_invitation(link_id, false).await;
+        if !retryable && written == Written::Applied {
+            self.settle_link(row).await;
         }
         Ok(())
+    }
+
+    /// A claim failed for good lets its link go, unless another open claim
+    /// names it (DP5-03 D12).
+    async fn settle_link(&self, row: &RegistrationRow) {
+        if let Ok((_, Funding::Invitation { link_id, .. })) = interpret(row) {
+            self.session.settle_invitation_hold(link_id).await;
+        }
     }
 
     async fn ledger(&self) -> Result<Ledger, PlatformError> {
@@ -2494,6 +2521,10 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
     /// Wipes the claimed link from the stash (D13); a failure is logged and
     /// the next step tries again.
     async fn forget_link(&self, link_id: &str) {
+        // Spent: the claim lets go of it first (DP5-03 D12).
+        self.session
+            .hold_invitation(link_id.to_owned(), false)
+            .await;
         if let Err(e) = self.session.forget_invitation(link_id.to_owned()).await {
             tracing::warn!(
                 draft = self.draft(),

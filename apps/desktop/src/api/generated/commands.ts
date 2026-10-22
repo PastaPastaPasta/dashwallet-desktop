@@ -1464,6 +1464,14 @@ export function registrationQuote(walletId: string, request: RegistrationRequest
 }
 
 /**
+ * An invitation claim row's resume grant: no duffs, and the credits
+ * of the steps it has left, from the row (DP5-03 D20).
+ */
+export function registrationResumeGrant(walletId: string, draft: string): Promise<GrantRequest> {
+  return invoke<GrantRequest>("registration_resume_grant", { walletId, draft });
+}
+
+/**
  * Starts a registration under `grant` (a grant id or a lease id); the
  * draft id. Progress is `registrations`.
  */
@@ -2544,6 +2552,7 @@ export type CommandArgs = {
   identity_refresh_balance: { walletId: string; identity: string };
   set_main_identity: { walletId: string; identity: string };
   registration_quote: { walletId: string; request: RegistrationRequest };
+  registration_resume_grant: { walletId: string; draft: string };
   start_registration: { walletId: string; request: RegistrationRequest; grant: string };
   start_registration_past_unknown_funding: { walletId: string; request: RegistrationRequest; grant: string; past: Array<string> };
   registrations: { walletId: string };
@@ -2818,6 +2827,7 @@ export type CommandResults = {
   identity_refresh_balance: string | null;
   set_main_identity: null;
   registration_quote: RegistrationQuote;
+  registration_resume_grant: GrantRequest;
   start_registration: string;
   start_registration_past_unknown_funding: string;
   registrations: Array<RegistrationStatus>;
@@ -3094,6 +3104,7 @@ export const COMMANDS: Record<CommandName, string> = {
   identity_refresh_balance: "identity",
   set_main_identity: "identity",
   registration_quote: "identity",
+  registration_resume_grant: "identity",
   start_registration: "identity",
   start_registration_past_unknown_funding: "identity",
   registrations: "identity",

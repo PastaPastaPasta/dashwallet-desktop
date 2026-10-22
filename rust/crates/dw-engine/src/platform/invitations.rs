@@ -327,6 +327,45 @@ impl NetworkSession {
         }
     }
 
+    /// Lets go of `link_id`'s hold unless an open claim row of a wallet
+    /// names it (DP5-03 D12): the stash is the network's, shared by its
+    /// wallets.
+    pub(crate) async fn settle_invitation_hold(self: &Arc<Self>, link_id: String) {
+        match self.open_claim_links().await {
+            Ok(open) if open.contains(&link_id) => {}
+            Ok(_) => self.hold_invitation(link_id, false).await,
+            Err(e) => tracing::warn!(code = e.code(), "the claims' rows were not read"),
+        }
+    }
+
+    /// Lets go of every hold no open claim row names: rows that ended while
+    /// the process was killed, or with a removed wallet (DP5-03 D12). At
+    /// the start of the session's bring-up.
+    pub(crate) async fn settle_invitation_holds(self: &Arc<Self>) {
+        let settled = match self.open_claim_links().await {
+            Ok(open) => {
+                self.stash_call(move |v| v.retain_stashed_link_holds(&open))
+                    .await
+            }
+            Err(e) => Err(e),
+        };
+        match settled {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(n, "invitation holds of ended claims let go"),
+            Err(e) => tracing::warn!(code = e.code(), "the invitation holds were not settled"),
+        }
+    }
+
+    /// The links of every wallet's open claim rows.
+    async fn open_claim_links(self: &Arc<Self>) -> Result<Vec<String>, PlatformError> {
+        let db = self.live()?.appdb;
+        let rows = crate::coins::appdb_job(db, |db| db.all_registration_rows()).await?;
+        Ok(rows
+            .iter()
+            .filter_map(super::registration_flow::open_claim_link)
+            .collect())
+    }
+
     /// The checks' network: the session's SDK, or a test's.
     pub(crate) fn invitation_net(
         self: &Arc<Self>,

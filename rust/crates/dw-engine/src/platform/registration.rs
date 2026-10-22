@@ -236,6 +236,17 @@ impl DashPay {
             .await
     }
 
+    pub async fn registration_resume_grant(
+        &self,
+        draft: String,
+    ) -> Result<GrantRequest, RegistrationError> {
+        let wallet = self.wallet_id;
+        self.on_lib(move |session, _, lib| async move {
+            resume_grant(&session, wallet, &*lib, &draft).await
+        })
+        .await
+    }
+
     pub async fn start_registration(
         &self,
         req: RegistrationRequest,
@@ -557,6 +568,41 @@ pub(crate) async fn quote<L: RegistrationLib>(
             max_duffs: total_duffs.saturating_add(proof_authority),
             max_credits: plan.credits,
         },
+    })
+}
+
+/// A claim row's resume grant (DP5-03 D20), from the row alone: no duffs,
+/// and the credits of the steps it has left. Never from the invitation's
+/// status, which reads `Claimed` once the row's own claim has landed.
+pub(crate) async fn resume_grant<L: RegistrationLib>(
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    lib: &L,
+    draft: &str,
+) -> Result<GrantRequest, RegistrationError> {
+    let row = registration_row(session, wallet, draft).await?;
+    let Ok((phase, Funding::Invitation { inviter, .. })) = flow::interpret(&row) else {
+        return Err(invalid("not an invitation's claim"));
+    };
+    let mut credits = 0u64;
+    if row.identity.is_none() {
+        credits = credits.saturating_add(flow::IDENTITY_CREATE_CREDITS);
+    }
+    if phase < Phase::NameRegistered {
+        credits = credits.saturating_add(lib.name_credits(&row.label).await?);
+        if let Some(temp) = &row.temp_label {
+            credits = credits.saturating_add(lib.name_credits(temp).await?);
+        }
+    }
+    if row.initial_profile.is_some() {
+        credits = credits.saturating_add(flow::PROFILE_CREDITS);
+    }
+    if inviter.is_some() && phase < Phase::Done {
+        credits = credits.saturating_add(CONTACT_REQUEST_CREDITS);
+    }
+    Ok(GrantRequest {
+        max_duffs: 0,
+        max_credits: credits,
     })
 }
 
@@ -1178,7 +1224,7 @@ pub(crate) async fn discard<L: RegistrationLib + 'static>(
         return Err(e);
     }
     if let Ok((_, Funding::Invitation { link_id, .. })) = flow::interpret(&row) {
-        session.hold_invitation(link_id, false).await;
+        session.settle_invitation_hold(link_id).await;
     }
     flow::signal(session, wallet, row.id);
     tracing::info!(draft = row.id, "registration discarded");
