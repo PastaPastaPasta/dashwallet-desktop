@@ -1,9 +1,9 @@
 # MG masternodes engine contract (`dw-engine` facade)
 
-Contract-Version: 7
+Contract-Version: 8
 
 Status: **draft**, 2026-10-17 (ROADMAP MG-03; version 2 after the Sol r1 review: D23–D28; version 3 after Sol r2: D30–D32; version 4 adds MG-04's ProTx owner flows, §2.3, citing
-[`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on; version 5, after MG-04's r2 review, adds `operation` to `masternodes.protx_refused`; version 6 adds MG-04b slice 1a's shared-masternode sessions, §2.4, citing [`MG-04b-shared-masternodes.md`](../design/MG-04b-shared-masternodes.md)'s D-rows as "MG-04b D1" and so on; version 7, after the slice's validator review, binds `lock_shared_terms` to a revision and `approve_shared` to a consent hash, and adds `SharedSession.consent_hash`, MG-04b D56). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
+[`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on; version 5, after MG-04's r2 review, adds `operation` to `masternodes.protx_refused`; version 6 adds MG-04b slice 1a's shared-masternode sessions, §2.4, citing [`MG-04b-shared-masternodes.md`](../design/MG-04b-shared-masternodes.md)'s D-rows as "MG-04b D1" and so on; version 7, after the slice's validator review, binds `lock_shared_terms` to a revision and `approve_shared` to a consent hash, and adds `SharedSession.consent_hash`, MG-04b D56; version 8 adds `sign_shared_funding`'s consent-hash refusal, MG-04b D65). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
 the changes in §1 below.
@@ -138,7 +138,7 @@ coordinator or participant up to the participants' signed contributions; the coo
 hand-off are slice 1b. Messages pass as text (`SharedMessage.text`, Core's file name with it). A session id is 64
 lower-case hex. **Nothing here hands bytes to the network**, and the one call that produces bytes the network could
 accept (`sign_shared_funding`) refuses `masternodes.unsupported{feature: "shared_masternodes"}` while `can_send` is
-false, which it is on every build that ships (BL-187, MG-04b D1); only `dw-engine`'s debug `test-support` module can
+false, which it is on every build that ships until slice 1b (MG-04b D1, DEC-338); only `dw-engine`'s debug `test-support` module can
 construct a facade with it set (MG-04b r2-m4), and `tests/mg04b_release_check.rs` proves that absent from a release
 build.
 
@@ -172,7 +172,7 @@ settles (`confirmed`, `conflicted`, `dead`); its keys count as in use for §2.3'
 | `lock_shared_terms(wallet: WalletId, session: String, revision: u32, grant: String)` | async | Coordinator, `draft`, at `revision`: the `SharedSession.revision` the coordinator reviewed, from the session record (`shared_session`, or `mn shared show`); another revision now (a reply absorbed since) is `shared_message{reason: "conflict"}` (MG-04b D56). Then every row and contribution in (else `shared_stage{stage: "incomplete"}`): freezes the registration, runs MG-04b §3.1 step 3's checks and the fee floor (`shared_funding_mismatch{reason: "fee_low", needed}`), checks its reservation, signs its shares' consent (charged 0), returns Locked Terms. **Implemented.** | `MasternodesError` |
 | `unlock_shared_terms(wallet: WalletId, session: String)` | async | Coordinator: back to `draft` before `combined`, the approvals dropped, `revision` + 1. **Implemented.** | `MasternodesError` |
 | `approve_shared(wallet: WalletId, session: String, consent_hash: String, grant: String)` | async | Participant, `signing`, of `consent_hash`: the `SharedSession.consent_hash` the participant reviewed, from the session record (64 hex, compared ignoring case; another shape is `invalid_argument`). It binds what is signed: a re-lock that changes only envelope-side text keeps the hash; another one now (a re-locked copy imported since, MG-04b M-1 case 2) is `shared_message{reason: "conflict"}` and signs nothing (MG-04b D56). Then MG-04b §4's checks on the frozen registration against its recorded side, then its shares' consent signatures (charged 0), returns the Approval; approving again returns the same. **Implemented.** | `MasternodesError` |
-| `sign_shared_funding(wallet: WalletId, session: String, grant: String)` | async | Participant, `combined`: refuses `unsupported` while `can_send` is false. Otherwise §4's checks and every approval verified, then its inputs signed (charged its debit, refunded if signing fails), `out_at` written durably with the signed copy before anything returns, and the Signed Contribution returned. **Implemented** (refusing at the pin). | `MasternodesError` |
+| `sign_shared_funding(wallet: WalletId, session: String, grant: String)` | async | Participant, `combined`: refuses `unsupported` while `can_send` is false. Otherwise §4's checks and every approval verified, and a copy whose consent hash isn't the one this wallet approved refused `masternodes.shared_message{reason: "conflict"}` (MG-04b D65), then its inputs signed (charged its debit, refunded if signing fails), `out_at` written durably with the signed copy before anything returns, and the Signed Contribution returned. **Implemented** (refusing until slice 1b). | `MasternodesError` |
 | `discard_shared_session(wallet: WalletId, session: String)` | async | Deletes a session nothing of which may be out and unlocks its coins; one with `out_at` set is `shared_stage` (MG-04b D17). Both read the stored row, so a session whose envelope no longer parses can be discarded (MG-04b D57). **Implemented.** | `MasternodesError` |
 | `preview_update_share(wallet: WalletId, request: UpdateShareRequest)` | async | `UpdateSharePreview`: the ProUpShareTx this wallet would build for one of its shares of a confirmed registration of its sessions, Core's §5.1 rules run on it, its fee. `share_not_mine`, `shared_too_early` (tip ≤ the registration's height, or the masternode not in the synced list, MG-04b m-16), `shared_registration_unknown`. Issues, locks and signs nothing. **Implemented.** | `MasternodesError` |
 
@@ -182,7 +182,7 @@ Generated by `mn_masternodes_contract.rs` from the facade's source files; `DW_BL
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: masternodes-surface -->
-<!-- surface-sha256: 602ecdfc8ac2789bb86e5b1c418b88e99142a87e1be1d6f37ea2b45574a53834 version: 7 -->
+<!-- surface-sha256: 602ecdfc8ac2789bb86e5b1c418b88e99142a87e1be1d6f37ea2b45574a53834 version: 8 -->
 
 ```rust
 // src/masternodes/errors.rs

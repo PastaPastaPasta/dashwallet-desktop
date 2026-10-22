@@ -31,6 +31,12 @@ in the appendix.
 
 ## 0. Blocker: the dashcore pin (BL-187)
 
+**Since BL-187** (desktop main 534bb7c7, follow-merged at a1c4ece1, DEC-338) the pin is rust-dashcore 626c91d1 with
+platform fork 35e96ca16b: it decodes a version-3 ProRegTx with its `SharedCollateral` and types 10–12, and a block
+holding them reaches dash-spv. The wallet keeps its own codecs (D2), which `tests/dashcore_shared.rs` holds equal to
+dashcore's on every dashd vector (D62). `can_send` stays false in slice 1a; slice 1b lifts it together with M3 and the
+hand-off calls (§13, DEC-338). The rest of this section is the state before BL-187.
+
 **This row cannot hand a shared-masternode transaction to the network, nor keep syncing once one is mined, at the
 desktop's dashcore pin** (`8fe0a381`, patched to PastaPastaPasta/rust-dashcore-dashpay `d3d50520a`, D1):
 - a shared registration is a **version-3** ProRegTx with a share table (rc.3 `src/evo/providertx.h:162-227`); the
@@ -587,7 +593,7 @@ current pin that is every row marked †.
 
 | Call | Kind | Grant | Slice | Does |
 |---|---|---|---|---|
-| `shared_capability(wallet)` | async | — | 1a | `SharedCapability`: v24 `active` / `inactive` / `unknown` (D3), evonode shares always `inactive` (D4), and `can_send` (`false` until BL-187, D1). |
+| `shared_capability(wallet)` | async | — | 1a | `SharedCapability`: v24 `active` / `inactive` / `unknown` (D3), evonode shares always `inactive` (D4), and `can_send` (`false` through slice 1a; 1b lifts it, D1). |
 | `shared_sessions(wallet)` | async | — | 1a | Every `SharedSession` of the wallet (creation and maintenance), newest first, state derived on read. |
 | `shared_session(wallet, session)` | async | — | 1a | One `SharedSession`. |
 | `start_shared(wallet, request)` | async | — | 1a | Coordinator: checks `StartSharedRequest` (§5, D28), picks keys, reserves share + fee, saves the draft. Returns the session and its Invitation (`SharedMessage`). |
@@ -979,7 +985,7 @@ MG-05's FlowKind gains `SharedMasternode` (1a) and `Dissolution` (2) (MG-05 D8).
 
 | D | Decision | Why |
 |---|---|---|
-| D1 | **The hand-off and the regtest acceptance wait for BL-187**, extended by #1136: a graph-wide `[patch]` to a rust-dashcore with #1136, #1138, #1152 and #1156 on top of `d3d50520a` (or platform's next pin). Until then `shared_capability().can_send` is `false`; every call that produces bytes the network accepts refuses while it is: `sign_shared_funding` (on the facade from 1a, refusing), and the hand-off calls (`send_shared_registration`, `abandon_shared_session`, `update_share`, `dissolve`, `export_standby`, `send_standby`, `send_maintenance`), which aren't on the facade before their slice. The row is ready only as slice 1a. | §0: the pin can neither represent nor decode a version-3 ProRegTx or types 10–12, every hand-off needs a typed `dashcore::Transaction` (`send/mod.rs` `PreparedTx::assembled`), and the wallet would stall on the first block holding one (MG-04 D48, MG-03 D25, BL-187). The probe showed #1138 needs #1136. Hand-rolled broadcasting of raw bytes would still leave the sync stalled. DEC-09 makes the pin move the manager's. **DEC-310 (10-21):** none of the four is in the desktop pin nor in platform v5.0-dev's (d631aaca, v0.45.0), so the bump is a platform-fork branch, a separate pin task the manager staffs; part 1 ends at slice 1a until it lands. **DEC-311 (M-2):** a participant's Signed Contribution is broadcastable by whoever holds the rest (H-9), and a dash-qt coordinator signs its own inputs at combine (`sharedmncreatedialog.cpp:2576-2591`), so the wallet's may be the last signature; testnet's v24 window opened 2026-09-24 (`chainparams.cpp:421-428`), and a mined version-3 ProRegTx spending the wallet's inputs would stall its sync (MG-04 D48). So `sign_shared_funding` is gated like the hand-offs; consent (`approve_shared`) moves nothing and stays. **The test-only override (r2-m4, DEC-312)** lives only in `dw-engine::test_support`, compiled under MG-03 D40's `cfg(all(debug_assertions, feature = "test-support"))` (`dw-engine/src/lib.rs:48-53`), and is an explicit per-engine constructor argument; dwcli enables `test-support` for its own tests but has no command or flag that reaches it, and the gate builds `dw-engine` with `--release --features test-support` and runs a `cfg(not(debug_assertions))` test asserting `can_send` is false. |
+| D1 | **The hand-off and the regtest acceptance wait for BL-187**, extended by #1136: a graph-wide `[patch]` to a rust-dashcore with #1136, #1138, #1152 and #1156 on top of `d3d50520a` (or platform's next pin). Until then `shared_capability().can_send` is `false`; every call that produces bytes the network accepts refuses while it is: `sign_shared_funding` (on the facade from 1a, refusing), and the hand-off calls (`send_shared_registration`, `abandon_shared_session`, `update_share`, `dissolve`, `export_standby`, `send_standby`, `send_maintenance`), which aren't on the facade before their slice. The row is ready only as slice 1a. | §0: the pin can neither represent nor decode a version-3 ProRegTx or types 10–12, every hand-off needs a typed `dashcore::Transaction` (`send/mod.rs` `PreparedTx::assembled`), and the wallet would stall on the first block holding one (MG-04 D48, MG-03 D25, BL-187). The probe showed #1138 needs #1136. Hand-rolled broadcasting of raw bytes would still leave the sync stalled. DEC-09 makes the pin move the manager's. **DEC-310 (10-21):** none of the four is in the desktop pin nor in platform v5.0-dev's (d631aaca, v0.45.0), so the bump is a platform-fork branch, a separate pin task the manager staffs; part 1 ends at slice 1a until it lands. **DEC-311 (M-2):** a participant's Signed Contribution is broadcastable by whoever holds the rest (H-9), and a dash-qt coordinator signs its own inputs at combine (`sharedmncreatedialog.cpp:2576-2591`), so the wallet's may be the last signature; testnet's v24 window opened 2026-09-24 (`chainparams.cpp:421-428`), and a mined version-3 ProRegTx spending the wallet's inputs would stall its sync (MG-04 D48). So `sign_shared_funding` is gated like the hand-offs; consent (`approve_shared`) moves nothing and stays. **The test-only override (r2-m4, DEC-312)** lives only in `dw-engine::test_support`, compiled under MG-03 D40's `cfg(all(debug_assertions, feature = "test-support"))` (`dw-engine/src/lib.rs:48-53`), and is an explicit per-engine constructor argument; dwcli enables `test-support` for its own tests but has no command or flag that reaches it, and the gate builds `dw-engine` with `--release --features test-support` and runs a `cfg(not(debug_assertions))` test asserting `can_send` is false. BL-187 merged (534bb7c7, DEC-338): the pin now represents and decodes all of it, and `can_send` stays false through 1a; slice 1b lifts it with M3 and the hand-off calls. |
 | D2 | Codecs stay `dw-protx`'s own (raw `Encodable` structs and byte builders), as the type 10–12 ones already are, also after BL-187; the engine converts to dashcore's types only at the hand-off. | The oracle compares bytes the wallet writes itself, independent of the dashcore revision; after the pin moves, a unit test compares `dw-protx`'s bytes with dashcore's encoding of the same transaction. |
 | D3 | On every network v24 is `active` once the synced list holds a version-3 entry or a version-3 provider transaction is known (MG-03's `any_shared_seen`), else `unknown`; `inactive` is never inferred from chain parameters (m-14). Creation needs `active`. The regtest harness lets dashd register one version-3 masternode first. Mainnet's `NEVER_ACTIVE` (`chainparams.cpp:213`, marked `// TODO`) is kept only as a pin-tied test that mainnet reads `unknown` at the rc.3 pin. | SPV sees no deployment state; a version-3 entry is valid only after v24 (`specialtxman.cpp:1112-1116,1158-1161`), and an EHF deployment never deactivates, so it proves activation on any network, including a mainnet release that sets a start time. A registration sent before activation is refused silently (MG-04 D5) and holds coins until abandoned, so `unknown` doesn't create. MG-00 D33: the engine reports, the UI never assumes. |
 | D4 | Regular masternodes only. A shared evonode is refused (`invalid_argument`), and `evonode_shares` reads `inactive` everywhere; the codecs still read and hash evonode payloads (the platform node id in the consent digest, rc.3's change) for a masternode created elsewhere. | `evo_shares` is `NEVER_ACTIVE` on mainnet (`chainparams.cpp:222`), and no masternode signs it at rc.3 (`llmq/ehf_signals.cpp:53-55`), so it can't activate on any EHF network; only a regtest with `useehf=0` has it. UX-SPEC §4.25.8 already disables Evonode. Accepted, DEC-310. |
@@ -1040,14 +1046,32 @@ MG-05's FlowKind gains `SharedMasternode` (1a) and `Dissolution` (2) (MG-05 D8).
 | D59 | **`NetInfoMatches` runs `AddEntry`'s per-entry checks on the session's network** (`ValidateService`: a valid address of a known network, routable except on regtest, a non-zero port not in `IsBadPort`), and splits `coreP2PAddrs` on commas and ASCII HT, LF, VT, FF, CR and space only. | Core adds each entry through `ExtNetInfo::AddEntry` (rc.3 `evo/netinfo.cpp:500-551`); Qt's `[,\s]+` has no `UseUnicodePropertiesOption`, so PCRE2's `\s` is the ASCII set and a no-break space is part of an entry. |
 | D60 | **The follower's pass skips a session another call holds in flight, re-reads the others under the mark, and releases a session's locks only while its `reserved` is still the value it judged** (`release_shared_session_locks_durable`'s `expected`). | Without the mark the pass could unlock coins a concurrent `set_shared_fee` had just re-reserved; the conditional write also covers a writer that doesn't take the mark. A row changed since the pass listed it (a call re-reserved it, possibly onto coins newer than the pass's chain snapshot) waits for the next pass too (review r2 m1). While the pass holds a session's mark, a user call on it gets `in_flight` and retries (r2 m2). |
 | D61 | **Every v24 shared-masternode signature (join, consent, ProUpShareTx, ProUpSharedRegTx, ProDisTx) is checked as `CHashSigner::VerifyHashCanonical`** (rc.3 `messagesigner.cpp:58-88`): 65 bytes, header 27–34, low S, then `RecoverCompact`'s key. `shared::rules::verify_hash_canonical` recovers the key itself and never goes through `rules::signed_by`, which stays Core's legacy `VerifyHash` for the ProRegTx/ProUpRegTx owner checks (BL-187 review). | `RecoverCompact` masks the header, so headers past 34 recover the same key, and `(r, n − s)` with the other parity does too; Core refuses both on these types, so a wallet that took them would hold, merge or combine a signature no node accepts. `oracle_shared.rs`'s `test_QT_126_shared_signatures_are_checked_canonically` refuses the high-S and header forms of dashd's own signatures on every path with Core's reason and passes the originals. |
+| D62 | **dw-protx's shared codecs and the BL-187 pin's read dashd's transactions alike.** `tests/dashcore_shared.rs` decodes every transaction of `shared_registration.json` and `shared_maintenance.json` (templates, combined and final registrations, maintenance transactions, their mutations) with both: the same bytes back, the same txid, dashcore's payload re-encoded to the bytes dw-protx decoded, and every field equal (`ProviderRegistrationPayload` v3 with `SharedCollateral`, `ProviderDissolvePayload`, `ProviderUpdateSharePayload`, `ProviderUpdateSharedRegistrarPayload`). The codecs stay the wallet's own (D2); 1b converts a `SpecialTx` to a `dashcore::Transaction` by its bytes at the hand-off. | D2's planned cross-check, now that the pin decodes these types (BL-187 D14). Where the two overlap they agree on all 19 vector transactions and all four payload types. |
+| D63 | **`start_shared` and `join_shared` hold the wallet's coin fence from `protx_context` through the session row's write**; `shared_reserve` takes that fence as an argument, and `set_shared_fee` takes it the same way. Two creation calls of one wallet at once (start + start, join + join, start + join) serialize, so the second reads the first one's keys and coins in use. | Review r1 (Opus-h MAJ-1) reproduced two concurrent `start_shared` calls taking the same owner key (`pick_owner` reads a `used` set from before any guard), which 1b would later lock, fund and send into `bad-protx-dup-key`. `issue_address` doesn't take the fence, so holding it across the key and address picks can't deadlock. MG-04's `register` has the same window; its fix is a separate row (Follow-ups). |
+| D64 | **A session whose envelope no longer parses still holds the owner keys its `my_shares` column names** (`{share: owner_index}`, which the engine alone writes); `shared_keys_in_use` counts them. Its terms' voting and operator keys can't be read without the envelope. | Review r1 MIN-2: skipping the row (D52) freed its owner key for the next registration while its coins stayed locked. |
+| D65 | **`sign_shared_funding` signs only a copy whose consent hash is the one this wallet approved**, compared after §4's checks; another is `shared_message{reason: "conflict"}`. | Review r1 NIT-1: the join-signature re-check already binds it, indirectly (13c was equivalent); the explicit compare states D56's rule at the funding step and survives later changes to how approvals merge. |
+| D66 | **The rules' operator-key check is Core's `CheckMalleable` too**: the 48 bytes must decode to a G1 point under the payload's scheme and serialize back to the same bytes (rc.3 `bls/bls.h:211-219,492-511`), for MG-04's ProRegTx/ProUpRegTx rules and the shared types (§5, types 10 and 12). | Review r1 Sol nit 2. The legacy reader ignores the first byte's unused flag bits: the generator's legacy key with `0x20` or `0x40` set decodes to the same point and was accepted (a probe found 44 such single-byte variants of it, none in the basic serialization the shared types use). |
+| D67 | **`ExtNetInfo`'s decoder reads purpose and entry counts as Core's map and vector readers do** (up to `MAX_SIZE`, nothing reserved ahead of the bytes), so five entries in a purpose or a fourth, unknown purpose decode and `validate` gives Core's `bad-protx-netinfo-maxlimit` or `-bad`. Purposes out of order or repeated, and entries Core's reader would `Clear()`, still fail as `bad-protx-payload`; an unknown ProRegTx version stops at the decoder (Core's `bad-protx-version`), as the wallet reads version-3 shared messages only. | Review r1 Sol nit 1. Core's own vectors (`src/test/evo_deterministicmns_tests.cpp:833-918`) are the tests, and a five-entry registration round-trips its payload bytes to the rules. |
 
 ### Follow-ups
 
-- BL-187 with #1136 (D1): a platform-fork pin branch, staffed separately by the manager (DEC-310); add the owner key
-  ids 0–19 as filter elements to its (or MG-03b's) scope (D29).
+- MG-03b's scope: the owner key ids 0–19 as filter elements (D29). BL-187 merged without them.
 - MG-10b copy: the coordinator pays the registration's network fee; participants pay none (D9, replacing MG-00 D41).
 - MG-03b: reading other parties' reward changes (ProUpShareTx by ProTx hash) and per-share payouts; until then the
   wallet's own share's reward is known from its own operations only.
+- **MG-03b, the v3 payouts gap.** Since BL-187 the pin decodes a version-3 ProRegTx's `payouts` and
+  `shared_collateral` (and a v3 ProUpRegTx's `payouts`), but MG-03's masternode rows still read version 2's fields only
+  (BL-187 D12, D27): a shared or v3 masternode's row shows no payout list, operator reward or share table. MG-04b's
+  views take the shares from the wallet's own session and registration (D29), so 1a and 1b don't depend on it; MG-03b
+  reads `payouts` and the share table into the rows.
+- **Before 1b sends (DEC-338): M3 as shared engine code** that MG-04's fee locks also adopt (BL-346). (a) An unlock
+  (coin control's `unlock_outpoints`, `unlock_reserved` on discard and the follower's release, MG-04's fee locks)
+  never releases an outpoint another live row reserves (a shared session or an MG-04 operation) or a row that is out
+  reserves; (b) `reserved_inputs` and `shared_candidates`' `also` refuse or exclude an outpoint another row reserves,
+  so a reservation stays exclusive inside the engine whoever unlocked it; (c) a row-level release for an out row
+  that no longer parses, keyed by its stored `reserved` and `txid` (review r2 nit 5).
+- MG-04's `register` picks its keys before it takes the coin fence, the window D63 closes for shared sessions; a
+  separate row takes the fence there the same way (Opus-h r1).
 - Foreign-input valuation through DAPI's Core `getTransaction` (D26), turning the unvalued-inputs warning into Core's
   hard `fundingCheck` where DAPI answers.
 - A one-call abandon that also voids every pending key change of a masternode the wallet funds (D25, D26).
@@ -1057,24 +1081,22 @@ MG-05's FlowKind gains `SharedMasternode` (1a) and `Dissolution` (2) (MG-05 D8).
   `join_shared`, so a refused call doesn't take receive addresses (MG-04's register has the same order; issuing is
   bounded by the pool and refuses `gap_limit` rather than pass it).
 - Review r1 of slice 1a (Opus, on 9aa6571e), not fixed in 1a, before 1b sends:
-  - (M3) give coin locks an owner, or have coin control's `unlock_outpoints` refuse an outpoint reserved by a session
-    that is out, so D17 holds outside the engine too; MG-04's fee locks share the gap;
-  - (M5) pick the owner key and write the session row under one per-wallet guard, so two concurrent
-    `start_shared`/`join_shared` calls can't take the same owner key; MG-04 has the same window;
+  - (M3) ruled for before 1b sends (DEC-338), above;
+  - (M5) fixed in 1a (D63);
   - (M9) an oracle envelope generated by rc.3's `MnShareSession::toJson`, so `toJsonBody`'s order and `fromJson`'s
     checks are proven against dash-qt rather than by inspection, and `check_registration` compared with dashd's verdicts
     for the mutated join signatures;
   - (nits) `SocketAddr` refuses some forms Core's `Lookup` takes (`[1.2.3.4]:port`, inet_aton, `::ffff:`); a blank
     `tx` in a sigs envelope (part 2); a negative int16 `nVersion`'s encoding; duplicate share indices in
     `SigsEnvelope::to_json`.
-- A session that is out but no longer parses keeps its reserved coins locked once it settles (the follower can't read
-  it and discard refuses it, D57); `abandon_shared_session` (1b) or a row-level release closes it (review r2 nit 5).
 - `approve_shared` can refuse `unsupported{service}` after the session checks, since it needs the session's terms
   (review r2 nit 4); mn-engine §2.4 lists it with the session's refusals.
-- dw-protx `rules::is_valid_operator_key` (MG-04 and §5) decodes the key but doesn't require it to serialize back to
-  the same bytes (Core's `CheckMalleable`); use `bls::is_valid_basic_public` (D58) there too.
-- Carry every net-info entry in platform-wallet's `MasternodeListSummary` (with BL-187's pin branch) and in
+- Carry every net-info entry in platform-wallet's `MasternodeListSummary` (BL-187's pin decodes them, D62) and in
   `ListedMasternode`, so §5's `bad-protx-dup-netinfo-entry` sees them all (D39); before slice 1b sends.
+- Part 2: the vault's ProUpShareTx and ProUpSharedRegTx signers take the registration and check the key's share, as
+  `sign_dissolution` does; they have no 1a caller (review r1 of 1a, Opus-h NIT-3).
+- 1b: a depth before the follower reads an out session `conflicted` and releases its locks, since a reorg can undo the
+  spend that made it so (Core behaves the same; no funds are lost, at worst a later conflict) (Opus-h NIT-4).
 
 ## Appendix: review r1 responses (DEC-311)
 
@@ -1151,3 +1173,21 @@ Review r2 (Opus, on aca5a407) was ACCEPT WITH NITS; DEC-312 accepted the design 
 | n-r2-8 | The shared ProRegTx rules and D5's net-info rules land in 1a with Core-order tests | `shared/rules.rs`, `shared/netinfo.rs` |
 | n-r2-9 | Escaped, control-character and non-ASCII keys added to the UniValue inputs | `testdata/oracle/univalue/` |
 | n-r2-10 | The P2PKH fee floor is a floor only for P2PKH foreign inputs | D26 |
+
+## Appendix: slice 1a review r1 responses (DEC-338)
+
+Review r1 of 1a at 780c5f93: Sol (dw-protx, Core parity) ACCEPT WITH NITS, Opus-h (engine, vault, store, funds)
+CHANGES REQUIRED for MAJ-1. DEC-338 ruled items 1–6 into 1a and M3 before 1b sends.
+
+| # | Response | Where |
+|---|---|---|
+| Opus-h MAJ-1 (M5) | Fixed: one coin fence from the key picks to the row's write | D63 |
+| Opus-h MIN-1 (M3) | Ruled for before 1b sends, as shared engine code (BL-346) | Follow-ups |
+| Opus-h MIN-2 | Fixed: an unreadable row's owner keys from `my_shares` | D64 |
+| Opus-h NIT-1 | Fixed: the funding step compares the approved consent hash | D65 |
+| Opus-h NIT-2 | Fixed: an engine test reaches `approve_shared` with a moved own row (mutant E) | `shared/tests.rs` |
+| Opus-h NIT-3 | Not in 1a: the share-update signers have no 1a caller; part 2 binds their key to a share as `sign_dissolution` does | Follow-ups |
+| Opus-h NIT-4 | For 1b: a depth before releasing a `conflicted` session's locks | Follow-ups |
+| Sol nit 1 | Fixed: oversized net info decodes to Core's reason | D67 |
+| Sol nit 2 | Fixed: `CheckMalleable` in the rules' operator-key check | D66 |
+| Sol slice boundary | Already a follow-up before 1b sends: every net-info entry in the list model (D39) | Follow-ups |
