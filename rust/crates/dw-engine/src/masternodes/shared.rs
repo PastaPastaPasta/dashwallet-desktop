@@ -36,7 +36,9 @@ use dw_protx::shared::session::funding::{
 };
 use dw_protx::shared::session::merge::add_signature;
 use dw_protx::shared::session::{Session, Share, Stage, Terms};
-use dw_protx::shared::{ProUpShareTx, SpecialTx, TRANSACTION_PROVIDER_UPDATE_SHARE, payload_bytes};
+use dw_protx::shared::{
+    ProRegTxV3, ProUpShareTx, SpecialTx, TRANSACTION_PROVIDER_UPDATE_SHARE, payload_bytes,
+};
 
 use self::build::{ServiceProblem, coordinator_services, participant_services_ok};
 use self::flow::{
@@ -281,6 +283,9 @@ impl Masternodes {
             if service.is_err() {
                 return Err(unsupported(Some("service")));
             }
+            // The fence from the keys to the row's write (D63): another
+            // creation call can't take the same owner key or coins.
+            let fence = s.coin_fence(wallet).await?;
             let mut ctx = s.protx_context(wallet).await?;
 
             // The draft's table and terms, labels first (D28).
@@ -317,7 +322,7 @@ impl Masternodes {
 
             // The reservation: share + fee, under the fence (D9).
             let target = request.shares[0].amount.saturating_add(request.fee);
-            let (fence, selected, change) = s.shared_reserve(wallet, &[], target, None).await?;
+            let (selected, change) = s.shared_reserve(&fence, &[], target, None).await?;
             let rec = recorded_of(
                 0,
                 &own,
@@ -375,8 +380,9 @@ impl Masternodes {
             }
             let target = rec.amount.saturating_add(fee);
             let reuse = rec.change.as_ref().map(|c| c.address.clone());
-            let (fence, selected, change) = s
-                .shared_reserve(wallet, &rec.outpoints(), target, reuse.as_deref())
+            let fence = s.coin_fence(wallet).await?;
+            let (selected, change) = s
+                .shared_reserve(&fence, &rec.outpoints(), target, reuse.as_deref())
                 .await?;
             let new = recorded_of(
                 rec.share_index,
@@ -474,7 +480,10 @@ impl Masternodes {
             let network = s.network.core_network();
             check_reward(&request.reward, network)?;
             s.require_wallet(&wallet)?;
-            let mut ctx = v24_context(&s, wallet).await?;
+            require_v24(&s).await?;
+            // The fence from the keys to the row's write (D63).
+            let fence = s.coin_fence(wallet).await?;
+            let mut ctx = s.protx_context(wallet).await?;
             let (_flight, l) = s
                 .claim_loaded(
                     wallet,
@@ -507,7 +516,7 @@ impl Masternodes {
 
             let row = next.shares[index].clone();
             let target = u64::try_from(row.amount).unwrap_or(0);
-            let (fence, selected, change) = s.shared_reserve(wallet, &[], target, None).await?;
+            let (selected, change) = s.shared_reserve(&fence, &[], target, None).await?;
             let rec = recorded_of(index, &own, &row, &selected, change, None);
             put_own_side(&mut next, &rec)?;
             next.revision += 1;
@@ -696,6 +705,12 @@ impl Masternodes {
             let own = s.reserved_inputs(wallet, &l, &rec.outpoints()).await?;
             let (_, unspent) = s.op_view(wallet).await?;
             let frozen = s.consent_checks(&l, &ctx, &unspent, true, None)?;
+            // D56 at the funding step: the copy is the one this wallet
+            // approved (D65).
+            let approved = l.approved.as_ref().map(|a| a.consent_hash.as_str());
+            if approved != Some(ProRegTxV3::display_hash(&frozen.consent_hash).as_str()) {
+                return Err(message_refusal("conflict"));
+            }
             s.sign_funding(wallet, &grant, &l, &frozen.tx, &own, rec.debit())
                 .await?;
             outcome(&s, wallet, &session).await

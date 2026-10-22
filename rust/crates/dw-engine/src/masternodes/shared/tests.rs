@@ -1639,3 +1639,126 @@ fn test_QT_126_the_follow_pass_waits_for_a_session_in_flight() {
     assert!(f.locked(0).is_empty());
     assert_eq!(f.row(0, &id).reserved, "[]");
 }
+
+/// D63 (review MAJ-1, M5): two creation calls on one wallet at once take
+/// different keys and coins. The coin fence is held from the keys' pick to
+/// the row's write, so the second call sees the first one's keys in use.
+#[test]
+fn test_QT_126_concurrent_starts_take_different_keys() {
+    let f = fx(1, true);
+    f.credit(0, 1, 501 * COIN);
+    f.credit(0, 2, 501 * COIN);
+    let (m1, m2, w) = (f.mn(), f.mn(), f.wallets[0]);
+    let (a, b) = f.run(async move {
+        tokio::join!(
+            m1.start_shared(w, request(&[("A", 500), ("B", 500)], FEE)),
+            m2.start_shared(w, request(&[("A", 500), ("B", 500)], FEE)),
+        )
+    });
+    let (a, b) = (a.unwrap().session, b.unwrap().session);
+    assert_ne!(a.rows[0].owner_address, b.rows[0].owner_address);
+    assert_ne!(a.terms.voting_address, b.terms.voting_address);
+    assert_ne!(a.terms.operator_public_key, b.terms.operator_public_key);
+    assert_ne!(f.row(0, &a.id).reserved, f.row(0, &b.id).reserved);
+}
+
+/// D64 (review MIN-2): a session whose envelope no longer parses still
+/// holds the owner key its `my_shares` column names, so the next
+/// registration takes another one.
+#[test]
+fn test_QT_126_an_unreadable_session_keeps_its_owner_key() {
+    let f = fx(1, true);
+    f.credit(0, 1, 501 * COIN);
+    f.credit(0, 2, 501 * COIN);
+    let first = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE))
+        .unwrap()
+        .session;
+    let r = f.row(0, &first.id);
+    let update = dw_appdb::SharedSessionUpdate {
+        envelope: "{\"not\": \"an envelope\"".into(),
+        my_shares: r.my_shares,
+        contribution: r.contribution,
+        approved_terms: r.approved_terms,
+        signed_tx: None,
+        txid: None,
+        last_error: None,
+        updated_at: r.updated_at,
+    };
+    assert!(
+        f.db()
+            .update_shared_session_durable(&f.wallets[0].to_string(), &first.id, &update)
+            .unwrap()
+    );
+    let second = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE))
+        .unwrap()
+        .session;
+    assert_ne!(second.rows[0].owner_address, first.rows[0].owner_address);
+}
+
+/// D65 (review NIT-1): the funding step signs only the copy whose consent
+/// hash is the one this wallet approved, whatever else it checks.
+#[test]
+fn test_QT_126_funding_signs_only_the_approved_consent_hash() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    let request = f.message(0, &id);
+    f.imported(1, &request);
+    let r = f.row(1, &id);
+    let mut approved: serde_json::Value =
+        serde_json::from_str(r.approved_terms.as_deref().unwrap()).unwrap();
+    approved["consent_hash"] = "00".repeat(32).into();
+    let update = dw_appdb::SharedSessionUpdate {
+        envelope: r.envelope,
+        my_shares: r.my_shares,
+        contribution: r.contribution,
+        approved_terms: Some(approved.to_string()),
+        signed_tx: None,
+        txid: None,
+        last_error: None,
+        updated_at: r.updated_at,
+    };
+    assert!(
+        f.db()
+            .update_shared_session_durable(&f.wallets[1].to_string(), &id, &update)
+            .unwrap()
+    );
+    assert_message(f.sign(1, &id, 301 * COIN).unwrap_err(), "conflict");
+    assert!(f.row(1, &id).out_at.is_none());
+    assert!(f.row(1, &id).signed_tx.is_none());
+}
+
+/// Review NIT-2 (mutant E): `approve_shared` refuses `row_changed` when
+/// this wallet's row in the session is no longer the one it recorded,
+/// even with the import guard passed (here the record moved under it).
+#[test]
+fn test_QT_126_approve_refuses_a_moved_own_row() {
+    let f = fx(2, true);
+    let id = two_joined(&f);
+    let locked = f.lock(0, &id).unwrap();
+    f.imported(1, &locked.message.text);
+    let r = f.row(1, &id);
+    let mut rec: serde_json::Value =
+        serde_json::from_str(r.contribution.as_deref().unwrap()).unwrap();
+    rec["reward_address"] = locked.session.rows[0]
+        .refund_address
+        .clone()
+        .unwrap()
+        .into();
+    let update = dw_appdb::SharedSessionUpdate {
+        envelope: r.envelope,
+        my_shares: r.my_shares,
+        contribution: Some(rec.to_string()),
+        approved_terms: r.approved_terms,
+        signed_tx: None,
+        txid: None,
+        last_error: None,
+        updated_at: r.updated_at,
+    };
+    assert!(
+        f.db()
+            .update_shared_session_durable(&f.wallets[1].to_string(), &id, &update)
+            .unwrap()
+    );
+    assert_funding(f.approve(1, &id).unwrap_err(), "row_changed");
+    assert!(parse(&f.message(1, &id)).signature_for(1).is_none());
+}

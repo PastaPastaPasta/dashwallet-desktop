@@ -181,7 +181,9 @@ impl NetworkSession {
     }
 
     /// Every owner key of every share of the wallet's sessions, and the
-    /// keys their terms name, count as in use (D10).
+    /// keys their terms name, count as in use (D10). A session whose
+    /// envelope no longer parses still holds the owner keys its
+    /// `my_shares` column names (D64).
     pub(crate) async fn shared_keys_in_use(
         &self,
         wallet: WalletId,
@@ -189,7 +191,13 @@ impl NetworkSession {
     ) -> Result<(), MasternodesError> {
         let network = self.network.core_network();
         for row in self.shared_rows(wallet).await? {
+            let owners = owner_indexes(&row.my_shares);
             let Ok(l) = Loaded::of(row, network) else {
+                let none = InUse::default();
+                for index in owners {
+                    let key = self.pick_owner(wallet, Some(index), &none).await?;
+                    used.owner.insert(key.key_id);
+                }
                 continue;
             };
             for share in &l.session.shares {
@@ -285,22 +293,20 @@ impl NetworkSession {
         Ok((selected, change))
     }
 
-    /// The reservation of a contribution (D9): the coin fence, then
-    /// `target` selected from the candidates (and `also`, see
-    /// [`Self::shared_candidates`]). The caller holds the fence until the
-    /// reservation is written.
+    /// The reservation of a contribution (D9): `target` selected from the
+    /// candidates (and `also`, see [`Self::shared_candidates`]) under the
+    /// wallet's coin fence, which the caller took before it picked the
+    /// keys and holds until the row is written (D63).
     pub(crate) async fn shared_reserve(
         &self,
-        wallet: WalletId,
+        fence: &CoinFence,
         also: &[OutPoint],
         target: u64,
         reuse: Option<&str>,
-    ) -> Result<(CoinFence, Selected, Option<RecordedChange>), MasternodesError> {
-        let fence = self.coin_fence(wallet).await?;
-        let w = self.wallet(&wallet).await?;
-        let candidates = self.shared_candidates(&fence, &w, also).await?;
-        let (selected, change) = self.shared_selection(&w, candidates, target, reuse).await?;
-        Ok((fence, selected, change))
+    ) -> Result<(Selected, Option<RecordedChange>), MasternodesError> {
+        let w = self.wallet(&fence.wallet_id()).await?;
+        let candidates = self.shared_candidates(fence, &w, also).await?;
+        self.shared_selection(&w, candidates, target, reuse).await
     }
 
     /// This wallet's coins of `outpoints` with their scripts and key paths,
@@ -606,6 +612,14 @@ fn my_shares_json(rec: &Recorded) -> Result<String, MasternodesError> {
         rec.share_index.to_string(),
         rec.owner_index,
     )]))
+}
+
+/// The keychain owner indexes a `my_shares` column names (none when it
+/// doesn't read: the engine alone writes it).
+fn owner_indexes(my_shares: &str) -> Vec<u32> {
+    serde_json::from_str::<BTreeMap<String, u32>>(my_shares)
+        .map(|m| m.into_values().collect())
+        .unwrap_or_default()
 }
 
 /// Core's rules on `session`'s terms, stand-ins in its empty rows (§5):
