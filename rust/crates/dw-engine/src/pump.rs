@@ -195,6 +195,17 @@ impl EventPump {
         self.take(|p| std::mem::take(&mut p.news))
     }
 
+    /// Takes the pending balance and history marks without delivering them.
+    #[cfg(test)]
+    pub(crate) fn take_wallet_marks(&self) -> (BTreeSet<WalletId>, BTreeMap<WalletId, TxidSet>) {
+        self.take(|p| {
+            (
+                std::mem::take(&mut p.balances),
+                std::mem::take(&mut p.history),
+            )
+        })
+    }
+
     /// `txids = None` asks hosts to reload the whole history.
     pub(crate) fn mark_history(&self, wallet: WalletId, txids: Option<&[Txid]>) {
         self.with_pending(|p| {

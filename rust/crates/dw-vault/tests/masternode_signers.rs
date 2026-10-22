@@ -405,6 +405,7 @@ fn update(pro_tx_hash: [u8; 32]) -> ProviderUpdateRegistrarPayload {
         )),
         inputs_hash: dashcore::hash_types::InputsHash::from_byte_array([0x55; 32]),
         payload_sig: Vec::new(),
+        payouts: None,
     }
 }
 

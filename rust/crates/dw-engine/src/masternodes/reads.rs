@@ -195,11 +195,11 @@ impl WalletView {
     }
 
     /// A version-3 entry was ever in the synced list, or a version-3
-    /// provider transaction is known (D30). The pinned library doesn't
-    /// decode a version-3 masternode's share scripts (BL-187), so any one
-    /// of them may pay a script of the wallet's, a version-2 row's payout
-    /// script included: every coinbase output to the wallet is then
-    /// `unattributed`.
+    /// provider transaction is known (D30). Nothing here reads a version-3
+    /// masternode's share scripts yet (the pinned library decodes them since
+    /// BL-187; MG-03b), so any one of them may pay a script of the wallet's,
+    /// a version-2 row's payout script included: every coinbase output to
+    /// the wallet is then `unattributed`.
     fn shares_possible(&self) -> bool {
         self.notes.any_shared_seen
             || !self.notes.shared_seen.is_empty()
@@ -519,8 +519,8 @@ impl WalletView {
         }
     }
 
-    /// A shared masternode's keys and payout are misread, so left out
-    /// (D25).
+    /// A shared masternode's keys and payout aren't read yet (MG-03b), so
+    /// left out (D25).
     fn registration_facts(&self, o: &OwnedMasternode) -> RegistrationFacts {
         let r = &o.record;
         let address = |id: Option<[u8; 20]>| {
@@ -932,11 +932,16 @@ mod tests {
 
     const NOW: u64 = 1_800_000_000;
 
+    /// Pays the registration's reward to `payout(seed)`: its `scriptPayout`,
+    /// or from version 3 its one payout.
     fn with_payout(mut tx: Transaction, seed: u8) -> Transaction {
         if let Some(TransactionPayload::ProviderRegistrationPayloadType(p)) =
             &mut tx.special_transaction_payload
         {
-            p.script_payout = payout(seed);
+            match &mut p.payouts {
+                Some(payouts) => payouts[0].script_payout = payout(seed),
+                None => p.script_payout = payout(seed),
+            }
         }
         tx
     }
@@ -1126,8 +1131,8 @@ mod tests {
         list
     }
 
-    /// The pinned library can't read a version-3 masternode's share
-    /// scripts (BL-187), so once one was in the list, now or before, any
+    /// Nothing reads a version-3 masternode's share scripts yet (MG-03b),
+    /// so once one was in the list, now or before, any
     /// coinbase output to a version-2 row's payout script may be a share:
     /// it is unattributed, out of the row's and the wallet's total, and
     /// counted in `unattributed_30d` (D30).

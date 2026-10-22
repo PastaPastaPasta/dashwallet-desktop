@@ -19,7 +19,8 @@
 use dashcore::hashes::{Hash, hash160};
 use dashcore::secp256k1::ecdsa::RecoverableSignature;
 use dashcore::secp256k1::{Message, PublicKey};
-use dashcore::signer::{CompactSignature, double_sha};
+use dashcore::sign_message::MessageSignature;
+use dashcore::signer::double_sha;
 use key_wallet::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
 use key_wallet::dip9::{
     DASHPAY_CONTACT_INFO_ENC_TO_USER_ID_CHILD, DASHPAY_CONTACT_INFO_PRIVATE_DATA_CHILD,
@@ -133,7 +134,7 @@ impl VaultSigner {
                 Message::from_digest(digest),
                 &x.private_key,
             );
-            Ok(sig.to_compact_signature(true))
+            Ok(MessageSignature::new(sig, true).serialize())
         })?
     }
 
