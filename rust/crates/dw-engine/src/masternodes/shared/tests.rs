@@ -289,6 +289,28 @@ impl Fx {
             .expect("a stored session")
     }
 
+    /// Writes wallet `w`'s stored row of session `id` back as `edit`
+    /// leaves it, the outcome columns unset.
+    fn rewrite(&self, w: usize, id: &str, edit: impl FnOnce(&mut dw_appdb::SharedSessionUpdate)) {
+        let r = self.row(w, id);
+        let mut update = dw_appdb::SharedSessionUpdate {
+            envelope: r.envelope,
+            my_shares: r.my_shares,
+            contribution: r.contribution,
+            approved_terms: r.approved_terms,
+            signed_tx: None,
+            txid: None,
+            last_error: None,
+            updated_at: r.updated_at,
+        };
+        edit(&mut update);
+        assert!(
+            self.db()
+                .update_shared_session_durable(&self.wallets[w].to_string(), id, &update)
+                .unwrap()
+        );
+    }
+
     fn import(&self, w: usize, text: &str) -> Result<SharedImport, MasternodesError> {
         self.run(
             self.mn()
@@ -1719,22 +1741,9 @@ fn test_QT_126_an_unreadable_session_keeps_its_owner_key() {
     let first = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE))
         .unwrap()
         .session;
-    let r = f.row(0, &first.id);
-    let update = dw_appdb::SharedSessionUpdate {
-        envelope: "{\"not\": \"an envelope\"".into(),
-        my_shares: r.my_shares,
-        contribution: r.contribution,
-        approved_terms: r.approved_terms,
-        signed_tx: None,
-        txid: None,
-        last_error: None,
-        updated_at: r.updated_at,
-    };
-    assert!(
-        f.db()
-            .update_shared_session_durable(&f.wallets[0].to_string(), &first.id, &update)
-            .unwrap()
-    );
+    f.rewrite(0, &first.id, |u| {
+        u.envelope = "{\"not\": \"an envelope\"".into()
+    });
     let second = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE))
         .unwrap()
         .session;
@@ -1749,25 +1758,12 @@ fn test_QT_126_funding_signs_only_the_approved_consent_hash() {
     let id = three_approved(&f);
     let request = f.message(0, &id);
     f.imported(1, &request);
-    let r = f.row(1, &id);
-    let mut approved: serde_json::Value =
-        serde_json::from_str(r.approved_terms.as_deref().unwrap()).unwrap();
-    approved["consent_hash"] = "00".repeat(32).into();
-    let update = dw_appdb::SharedSessionUpdate {
-        envelope: r.envelope,
-        my_shares: r.my_shares,
-        contribution: r.contribution,
-        approved_terms: Some(approved.to_string()),
-        signed_tx: None,
-        txid: None,
-        last_error: None,
-        updated_at: r.updated_at,
-    };
-    assert!(
-        f.db()
-            .update_shared_session_durable(&f.wallets[1].to_string(), &id, &update)
-            .unwrap()
-    );
+    f.rewrite(1, &id, |u| {
+        let mut approved: serde_json::Value =
+            serde_json::from_str(u.approved_terms.as_deref().unwrap()).unwrap();
+        approved["consent_hash"] = "00".repeat(32).into();
+        u.approved_terms = Some(approved.to_string());
+    });
     assert_message(f.sign(1, &id, 301 * COIN).unwrap_err(), "conflict");
     assert!(f.row(1, &id).out_at.is_none());
     assert!(f.row(1, &id).signed_tx.is_none());
@@ -1782,29 +1778,16 @@ fn test_QT_126_approve_refuses_a_moved_own_row() {
     let id = two_joined(&f);
     let locked = f.lock(0, &id).unwrap();
     f.imported(1, &locked.message.text);
-    let r = f.row(1, &id);
-    let mut rec: serde_json::Value =
-        serde_json::from_str(r.contribution.as_deref().unwrap()).unwrap();
-    rec["reward_address"] = locked.session.rows[0]
-        .refund_address
-        .clone()
-        .unwrap()
-        .into();
-    let update = dw_appdb::SharedSessionUpdate {
-        envelope: r.envelope,
-        my_shares: r.my_shares,
-        contribution: Some(rec.to_string()),
-        approved_terms: r.approved_terms,
-        signed_tx: None,
-        txid: None,
-        last_error: None,
-        updated_at: r.updated_at,
-    };
-    assert!(
-        f.db()
-            .update_shared_session_durable(&f.wallets[1].to_string(), &id, &update)
+    f.rewrite(1, &id, |u| {
+        let mut rec: serde_json::Value =
+            serde_json::from_str(u.contribution.as_deref().unwrap()).unwrap();
+        rec["reward_address"] = locked.session.rows[0]
+            .refund_address
+            .clone()
             .unwrap()
-    );
+            .into();
+        u.contribution = Some(rec.to_string());
+    });
     assert_funding(f.approve(1, &id).unwrap_err(), "row_changed");
     assert!(parse(&f.message(1, &id)).signature_for(1).is_none());
 }
