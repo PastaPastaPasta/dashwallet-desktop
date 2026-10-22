@@ -12,14 +12,18 @@
 
 use std::sync::Arc;
 
+use dpp::prelude::Identifier;
 use dw_uri::deeplink::{DeepLink, classify_link, normalize_invitation};
 use dw_vault::{ALL_LINK_KINDS, StashedLinkKind as VaultKind, StashedLinkMeta};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use super::dashpay::{BearerSecret, stub};
+use super::dashpay::BearerSecret;
 use super::errors::{InvitationError, PlatformError};
+use super::invitation_check::{Checked, Fetched, InvitationNet, check};
 use super::payments::Counterparty;
+use super::registration_flow::identity_for;
+use super::trust::BoxFuture;
 use crate::NetworkSession;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,12 +240,90 @@ impl NetworkSession {
         Ok(self.stash_as(StashedLinkKind::Invitation, link).await?.id)
     }
 
-    #[expect(unused_variables, reason = "stub until DP5-02")]
+    /// What the stashed invitation `link_id` is worth now (DP5-02 §1, §2):
+    /// `Valid` with its inviter, value and the stash's expiry; `Claimed`
+    /// when an identity exists at the id its claim would make (one-way: a
+    /// lock spent another way shows at the claim); `Invalid` with why;
+    /// `Expired` when the stash no longer holds it. A transport error is
+    /// the call's `platform.*` error.
     pub async fn invitation_status(
         self: &Arc<Self>,
         link_id: String,
     ) -> Result<InvitationStatus, InvitationError> {
-        stub("NetworkSession.invitation_status")
+        Ok(self.invitation_claim(link_id).await?.0)
+    }
+
+    /// [`Self::invitation_status`], with the id of the identity a `Valid`
+    /// link's claim creates (DP5-02 D26).
+    pub(crate) async fn invitation_claim(
+        self: &Arc<Self>,
+        link_id: String,
+    ) -> Result<(InvitationStatus, Option<Identifier>), InvitationError> {
+        let Some((text, expires_at)) = self.read_invitation(link_id).await? else {
+            return Ok((InvitationStatus::Expired, None));
+        };
+        let session = Arc::clone(self);
+        let checked = (self.rt)
+            .spawn(async move {
+                let _op = session.enter().await.map_err(PlatformError::from)?;
+                let net = session.invitation_net()?;
+                check(&*net, &text).await
+            })
+            .await
+            .map_err(|e| PlatformError::from(crate::EngineError::from(e)))??;
+        Ok(match checked {
+            Checked::Valid {
+                inviter,
+                funding_duffs,
+                outpoint,
+            } => (
+                InvitationStatus::Valid {
+                    inviter,
+                    funding_duffs,
+                    contested_allowed: Checked::contested_allowed(funding_duffs),
+                    expires_at: Some(expires_at),
+                },
+                Some(identity_for(outpoint)),
+            ),
+            Checked::Claimed => (InvitationStatus::Claimed, None),
+            Checked::Invalid(reason) => (InvitationStatus::Invalid { reason }, None),
+        })
+    }
+
+    /// The stashed invitation's text and expiry, left in the stash (DP5-02
+    /// D13): engine-internal, never handed to a host. `None` when the stash
+    /// no longer holds it; another kind of link is `invitation.invalid`; a
+    /// sealed one while locked `platform.signer_unavailable`.
+    pub(crate) async fn read_invitation(
+        self: &Arc<Self>,
+        link_id: String,
+    ) -> Result<Option<(Zeroizing<String>, u64)>, InvitationError> {
+        let read = self
+            .vault_op(move |v| v.read_stashed_invitation(&link_id))
+            .await;
+        match read {
+            Err(crate::EngineError::Vault(dw_vault::VaultError::InvalidArgument(d)))
+                if d == dw_vault::OTHER_KIND =>
+            {
+                Err(InvitationError::Invalid)
+            }
+            read => Ok(read.map_err(PlatformError::from)?),
+        }
+    }
+
+    /// The checks' network: the session's SDK, or a test's.
+    pub(crate) fn invitation_net(
+        self: &Arc<Self>,
+    ) -> Result<Arc<dyn InvitationNet>, PlatformError> {
+        #[cfg(test)]
+        if let Some(net) = super::runtime::guard(&self.platform.invitation_net).clone() {
+            return Ok(net);
+        }
+        let sdk = self.manager()?.sdk_arc();
+        Ok(Arc::new(SdkInvitations {
+            session: Arc::clone(self),
+            sdk,
+        }))
     }
 
     /// The ids of the stashed links, oldest first, for the replay after a
@@ -270,5 +352,43 @@ impl NetworkSession {
             Some(kind) if kind != VaultKind::Invitation => Err(InvitationError::Invalid),
             _ => Ok(()),
         }
+    }
+}
+
+/// [`InvitationNet`] over the session's SDK.
+struct SdkInvitations {
+    session: Arc<NetworkSession>,
+    sdk: Arc<dash_sdk::Sdk>,
+}
+
+impl InvitationNet for SdkInvitations {
+    fn network(&self) -> dashcore::Network {
+        self.sdk.network
+    }
+
+    fn transaction(&self, txid: String) -> BoxFuture<Result<Option<Fetched>, PlatformError>> {
+        let sdk = Arc::clone(&self.sdk);
+        Box::pin(async move {
+            let fetched = sdk.get_transaction(&txid).await?;
+            Ok(fetched.map(|f| Fetched {
+                transaction: f.transaction,
+                chain_locked: f.is_chain_locked,
+            }))
+        })
+    }
+
+    fn identity_exists(&self, id: Identifier) -> BoxFuture<Result<bool, PlatformError>> {
+        use dash_sdk::platform::Fetch;
+        let sdk = Arc::clone(&self.sdk);
+        Box::pin(async move { Ok(dpp::identity::Identity::fetch(&sdk, id).await?.is_some()) })
+    }
+
+    fn inviter(&self, username: String) -> BoxFuture<Result<Option<Counterparty>, PlatformError>> {
+        let session = Arc::clone(&self.session);
+        Box::pin(async move { session.inviter_of(&username).await })
+    }
+
+    fn pause(&self) -> BoxFuture<()> {
+        Box::pin(tokio::time::sleep(super::invitation_check::FETCH_PAUSE))
     }
 }

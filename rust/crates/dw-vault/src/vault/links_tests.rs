@@ -861,3 +861,56 @@ fn errors_and_debug_never_quote_a_link() {
         .unwrap_err();
     assert!(!format!("{e} {e:?}").contains("Planted"));
 }
+
+/// DP5-02: an invitation is read as often as the claim needs and stays
+/// stashed, sealed as before, until it is forgotten; it expires as any
+/// entry does, and another kind is neither read nor deleted.
+#[test]
+fn an_invitation_is_read_in_place_until_forgotten() {
+    let f = Fixture::new();
+    let v = f.open();
+    v.create(Some(b"pass")).unwrap();
+    let meta = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    let read = |v: &Vault| {
+        v.read_stashed_invitation(&meta.id)
+            .unwrap()
+            .map(|(t, at)| (t.as_str().to_owned(), at))
+    };
+    for _ in 0..2 {
+        assert_eq!(read(&v), Some((INVITE.to_owned(), meta.expires_at)));
+    }
+    assert_eq!(f.entry_files(), 1);
+    assert!(!f.disk_text().contains("cPlantedSecretKey"), "still sealed");
+    // Locked after a restart: the entry stays for the unlock.
+    drop(v);
+    let v = f.open();
+    assert!(matches!(
+        v.read_stashed_invitation(&meta.id),
+        Err(VaultError::Locked)
+    ));
+    assert_eq!(f.entry_files(), 1);
+    v.unlock(b"pass", UnlockScope::Full).unwrap();
+    assert_eq!(read(&v), Some((INVITE.to_owned(), meta.expires_at)));
+    v.forget_stashed_link(&meta.id, &[StashedLinkKind::Invitation])
+        .unwrap();
+    assert_eq!(read(&v), None);
+    // Another kind: refused, kept.
+    let pay = v.stash_link(StashedLinkKind::Payment, PAY).unwrap();
+    assert!(matches!(
+        v.read_stashed_invitation(&pay.id),
+        Err(VaultError::InvalidArgument(e)) if e == OTHER_KIND
+    ));
+    assert_eq!(
+        take(&v, &pay.id).map(|(k, _)| k),
+        Some(StashedLinkKind::Payment)
+    );
+    assert!(matches!(
+        v.read_stashed_invitation("not-an-id"),
+        Err(VaultError::InvalidArgument(_))
+    ));
+    // Expired: gone, and deleted on the read.
+    let meta = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    f.advance(30 * DAY);
+    assert_eq!(v.read_stashed_invitation(&meta.id).unwrap().map(drop), None);
+    assert_eq!(f.entry_files(), 0);
+}

@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 #[path = "../src/test_stub.rs"]
 mod test_stub;
-use test_stub::{STUB_CALL, stub_request};
+use test_stub::{STUB_DETAIL, stub_request};
 
 /// The session's line limit (content bytes, without the line ending).
 const MAX_LINE: usize = 64 * 1024;
@@ -84,7 +84,7 @@ fn session_framing_at_the_line_limit() {
             }
             if n == 2 {
                 assert_eq!(got[1]["id"], 2, "{case}");
-                assert_eq!(got[1]["error"]["params"]["call"], STUB_CALL, "{case}");
+                assert_eq!(got[1]["error"]["params"]["detail"], STUB_DETAIL, "{case}");
             }
             assert_eq!(
                 got[n],
@@ -179,7 +179,7 @@ fn a_session_survives_a_panic_unless_poisoned() {
         (json!(1), json!("internal"))
     );
     assert_eq!(got[1]["id"], 2);
-    assert_eq!(got[1]["error"]["params"]["call"], STUB_CALL);
+    assert_eq!(got[1]["error"]["params"]["detail"], STUB_DETAIL);
     assert_eq!(got[2], json!({"ok": true, "result": {"requests": 2}}));
     assert!(!text(&out).contains(PANIC_SECRET), "{}", text(&out));
 

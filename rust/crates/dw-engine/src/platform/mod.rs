@@ -34,6 +34,7 @@ mod flows;
 mod identity;
 mod identity_reads;
 mod identity_writes;
+mod invitation_check;
 mod invitations;
 pub(crate) mod journal;
 #[cfg(test)]

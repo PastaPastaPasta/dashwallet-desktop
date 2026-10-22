@@ -271,6 +271,7 @@ impl DashPay {
                 wallet_id,
                 (identity, to, scan),
                 grant,
+                &[super::flows::FlowKind::ContactRequest],
             )
             .await
         })

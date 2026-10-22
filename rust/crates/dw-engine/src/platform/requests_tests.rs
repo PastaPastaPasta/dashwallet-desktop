@@ -524,7 +524,16 @@ impl Fixture {
         let (wallet_id, grant) = (self.wallet, grant.to_owned());
         self.call(move |net, s, w| async move {
             let ask = (b58(ME), b58(to), None);
-            send(&*net, &s, &w, wallet_id, ask, grant).await
+            send(
+                &*net,
+                &s,
+                &w,
+                wallet_id,
+                ask,
+                grant,
+                &[FlowKind::ContactRequest],
+            )
+            .await
         })
     }
 
@@ -1319,7 +1328,16 @@ fn a_write_waits_for_the_identity_write_lock() {
     let (net, dp, wallet_id) = (Arc::clone(&f.net), f.s.dashpay(f.wallet), f.wallet);
     let sending = f.s.rt.spawn(async move {
         dp.on_wallet(move |s, _, w| async move {
-            send(&*net, &s, &w, wallet_id, (b58(ME), b58(BOB), None), grant).await
+            send(
+                &*net,
+                &s,
+                &w,
+                wallet_id,
+                (b58(ME), b58(BOB), None),
+                grant,
+                &[FlowKind::ContactRequest],
+            )
+            .await
         })
         .await
     });

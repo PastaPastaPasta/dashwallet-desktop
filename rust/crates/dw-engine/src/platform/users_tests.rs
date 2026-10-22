@@ -1305,7 +1305,16 @@ fn a_send_spends_its_scan_or_releases_it() {
         let ask = (b58(ME), b58(to), Some(scan));
         (f.engine)
             .block_on(f.dp().on_wallet(move |s, _, w| async move {
-                send(&*net, &s, &w, wallet_id, ask, grant).await
+                send(
+                    &*net,
+                    &s,
+                    &w,
+                    wallet_id,
+                    ask,
+                    grant,
+                    &[super::flows::FlowKind::ContactRequest],
+                )
+                .await
             }))
             .map_err(|e| e.code())
     };

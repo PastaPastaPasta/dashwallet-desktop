@@ -112,7 +112,7 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.profile",
     "DashPay.profile_limits",
     "DashPay.update_profile",
-    // DP5-01: the link stash.
+    // DP5-01: the link stash; DP5-02: `invitation_status`.
     "NetworkSession.stash_link",
     "NetworkSession.stashed_links",
     "NetworkSession.take_stashed_link",
@@ -120,6 +120,7 @@ const IMPLEMENTED: &[&str] = &[
     "NetworkSession.stash_invitation",
     "NetworkSession.pending_invitations",
     "NetworkSession.forget_invitation",
+    "NetworkSession.invitation_status",
     // DP4-02: the avatar pipeline and the pictures toggle.
     "DashPay.prepare_avatar",
     "DashPay.avatar_upload_available",
@@ -170,8 +171,8 @@ const FACADE: &[&str] = &[
 /// their tests (DP4-01), the names checks (DP1-08), and the avatar
 /// pipeline's guard, decoder, cache and tests (DP4-02), the mobile
 /// wallets' dHash (DP4-03 D27), the Identities page's reads with their
-/// tests (DP6-01), and the withdrawal with its network seam and tests
-/// (DP6-02).
+/// tests (DP6-01), the withdrawal with its network seam and tests (DP6-02),
+/// and the invitation checks with their tests (DP5-02).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -193,6 +194,8 @@ const NOT_FACADE: &[&str] = &[
     "identity_reads.rs",
     "identity_tests.rs",
     "identity_writes.rs",
+    "invitation_check.rs",
+    "invitation_check_tests.rs",
     "journal.rs",
     "journal_tests.rs",
     "keys_policy.rs",
@@ -1247,6 +1250,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
     engine.block_on(async {
         // DP5-01: the link stash; its behaviour is tested in dw-vault's
         // `vault::links` and dw-app's IPC tests. Here: refusals, no vault.
+        // DP5-02's `invitation_status` is a refusal too.
         assert_eq!(
             session.stash_link(secret()).await.unwrap_err().code(),
             "invalid_argument"
@@ -1269,7 +1273,10 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             session.forget_invitation(s()).await.unwrap_err().code(),
             "invalid_argument"
         );
-        c.stub(session.invitation_status(s()).await);
+        assert_eq!(
+            session.invitation_status(s()).await.unwrap_err().code(),
+            "invalid_argument"
+        );
         // The lease surface (E0-04.P2a) is implemented; its behaviour is
         // tested in `platform::lease`.
         assert_eq!(

@@ -242,6 +242,37 @@ impl NetworkSession {
         Ok(self.lookup(wallet, label).await?.map(|(_, hit)| hit))
     }
 
+    /// The inviter an invitation link's `du` names (DP5-02 §2): the identity
+    /// DPNS holds the name for, the label as DPNS spells it, and the
+    /// profile's display name and avatar. `None` when DPNS has no such name
+    /// (or none could hold it); a failed profile read shows the name alone,
+    /// a failed DPNS read is the call's error. Never the link's own
+    /// display name or avatar: they are unproved.
+    pub(super) async fn inviter_of(
+        &self,
+        username: &str,
+    ) -> Result<Option<super::payments::Counterparty>, PlatformError> {
+        let label = dpns_label(username.trim());
+        if !is_valid_username(label) {
+            return Ok(None);
+        }
+        let net = self.user_net()?;
+        let Some((spelling, id)) = net.domain(convert_to_homograph_safe_chars(label)).await? else {
+            return Ok(None);
+        };
+        let profile = (net.profiles(vec![id]).await)
+            .inspect_err(|e| tracing::debug!(error = %e, "could not fetch the inviter's profile"))
+            .unwrap_or_default()
+            .into_iter()
+            .find_map(|(owner, shown)| (owner == id).then_some(shown));
+        Ok(Some(super::payments::Counterparty {
+            identity: id.to_string(Encoding::Base58),
+            username: Some(spelling),
+            display_name: profile.as_ref().and_then(|p| p.display_name.clone()),
+            avatar_url: profile.and_then(|p| p.avatar_url),
+        }))
+    }
+
     /// The user who owns `label` now (no `.dash`: each caller drops it once,
     /// as its form says), with the hit shown for them. A label DPNS could
     /// not hold asks nothing.
