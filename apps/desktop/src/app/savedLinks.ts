@@ -57,3 +57,12 @@ export function savedLinkRows(links: StashedLinkInfo[], nowSecs: number): SavedL
 export function offerReady(s: { pending: boolean; hasWallet: boolean; locked: boolean; covered: boolean }): boolean {
   return s.pending && s.hasWallet && !s.locked && !s.covered;
 }
+
+/** What an offer opens, `links` oldest first as `stashed_links` lists them: after onboarding the
+ * newest invitation's claim screen (DP5-03 D2), else the "Links you opened" dialog; nothing
+ * without links. */
+export function offerTarget(links: StashedLinkInfo[], afterOnboarding: boolean): { claim: string } | "sheet" | null {
+  if (links.length === 0) return null;
+  const invitation = afterOnboarding ? links.findLast((l) => l.kind === "invitation") : undefined;
+  return invitation ? { claim: invitation.id } : "sheet";
+}

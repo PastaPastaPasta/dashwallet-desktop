@@ -315,6 +315,37 @@ for (const theme of THEMES) {
   }
 }
 
+// DP5-03: the claim screen (the inviter's card; already claimed) and the claim's step 2 with the request's recipient,
+// each opened from the launch's "Links you opened".
+const CLAIM: Record<string, { scenario: string; reach: (page: Page) => Promise<unknown> }> = {
+  invited: { scenario: "invitation-valid", reach: (page) => page.getByTestId("claim-inviter").waitFor() },
+  claimed: { scenario: "invitation-claimed", reach: (page) => page.locator("[data-testid=claim][data-state=claimed]").waitFor() },
+  confirm: {
+    scenario: "invitation-valid",
+    reach: async (page) => {
+      await page.getByTestId("claim-accept").click();
+      await page.getByTestId("registration-name-field").fill("carol-77");
+      await expect(page.getByTestId("registration-next")).toBeEnabled();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("claim-recipient-text").waitFor();
+    },
+  },
+};
+
+for (const theme of THEMES) {
+  for (const [name, { scenario, reach }] of Object.entries(CLAIM)) {
+    test(`visual dashpay-claim-${name} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(scenario, theme));
+      const sheet = page.getByTestId("saved-links");
+      await sheet.getByTestId("saved-link").filter({ hasText: "DashPay invitation" }).getByTestId("saved-link-open").click();
+      await expect(sheet).toHaveCount(0);
+      await reach(page);
+      await page.mouse.move(0, 0);
+      await shoot(page, `dashpay-claim-${name}`, theme);
+    });
+  }
+}
+
 // DP2-08: Add Contact with a search hit's card (Send), and My QR.
 for (const theme of THEMES) {
   test(`visual add-contact ${theme}`, async ({ page }) => {

@@ -9,7 +9,7 @@ import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { QUOTE_LABEL } from "./status";
-import { coreRequest, RegistrationWizard, resetWizards, wizardFor } from "./wizard";
+import { coreRequest, invitationRequest, RegistrationWizard, resetWizards, wizardFor } from "./wizard";
 
 const quote = (label: string): RegistrationQuote => ({
   contested: label.length < 6,
@@ -36,6 +36,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   failure: null,
   nameFailure: null,
   profileFailure: null,
+  invitation: null,
   createdAt: 0,
   updatedAt: 0,
   ...r,
@@ -243,5 +244,63 @@ describe("IOS-068 the row's actions", () => {
     expect(wizardFor(api, "b2".repeat(32))).not.toBe(a);
     resetWizards();
     expect(wizardFor(api, WALLET_A).step).toBeNull();
+  });
+});
+
+describe("DP5-03 the claim (invitation mode)", () => {
+  const LINK = "1".padStart(32, "0");
+  const BOB = { identity: "8GopLQQPjKr2gXjNEt9G8k2PzRZrdbBqQBNTCXV2DYiN", username: "bob", displayName: null, avatarUrl: null };
+  const claimRow = (r: Partial<RegistrationStatus> = {}) =>
+    row({ draft: "claim-1", phase: "keysPrepared", txid: null, fundsCommitted: false, invitation: { linkId: LINK, inviter: BOB.identity, requestFailure: null }, ...r });
+
+  it("D7: Claim starts the invitation's request, asking the inviter unless unchecked", async () => {
+    const { wiz, api } = setup();
+    wiz.begin({ kind: "invitation", linkId: LINK, contestedAllowed: false, inviter: BOB });
+    wiz.setLabel("carol-77 ");
+    wiz.next();
+    expect(wiz.request()).toEqual(invitationRequest("carol-77", LINK, true));
+    wiz.setRequestInviter(false);
+    expect(wiz.request()).toEqual(invitationRequest("carol-77", LINK, false));
+    await wiz.confirm({ maxDuffs: 0, maxCredits: "3500000000" });
+    expect(api.startRegistration).toHaveBeenCalledWith(WALLET_A, invitationRequest("carol-77", LINK, false), "grant-1");
+    expect(wiz.draft).toBe("reg-9");
+    // A new claim checks the request again; without an inviter there is no one to ask.
+    wiz.begin({ kind: "invitation", linkId: LINK, contestedAllowed: false, inviter: null });
+    wiz.setLabel("carol-77");
+    expect(wiz.requestInviter).toBe(true);
+    expect(wiz.request().funding).toEqual({ kind: "invitation", linkId: LINK, requestInviter: false });
+  });
+
+  it("D9: a claim without its identity resumes under the invitation's quote", async () => {
+    const { wiz, api, vault } = setup();
+    await wiz.resume(claimRow());
+    expect(api.registrationQuote).toHaveBeenCalledWith(WALLET_A, invitationRequest("alice-77", LINK, true));
+    expect(api.grantRequest).not.toHaveBeenCalled();
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 3_002_261 } });
+    expect(api.resumeRegistration).toHaveBeenCalledWith(WALLET_A, "claim-1", "grant-1");
+  });
+
+  it("D9: after its identity, no duffs and the name's and the request's credits", async () => {
+    const { wiz, api, vault } = setup();
+    api.grantRequest.mockResolvedValueOnce({ maxDuffs: 0, maxCredits: "2000000000" }).mockResolvedValueOnce({ maxDuffs: 0, maxCredits: "300000000" });
+    await wiz.resume(claimRow({ phase: "nameRequested", identity: "NewIdentity" }));
+    expect(api.registrationQuote).not.toHaveBeenCalled();
+    expect(api.grantRequest.mock.calls).toEqual([
+      [WALLET_A, "NewIdentity", { kind: "registerName", label: "alice-77" }],
+      [WALLET_A, "NewIdentity", { kind: "sendRequest" }],
+    ]);
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "2300000000" } });
+    // Without an inviter, only the name.
+    const other = setup();
+    await other.wiz.resume(claimRow({ phase: "nameRequested", identity: "NewIdentity", invitation: { linkId: LINK, inviter: null, requestFailure: null } }));
+    expect(other.api.grantRequest).toHaveBeenCalledTimes(1);
+    expect(other.vault.calls.authorize[0]).toMatchObject({ purpose: { maxCredits: "2000000000" } });
+  });
+
+  it("Choose another username on a failed claim discards it and goes back to the invitation", async () => {
+    const { wiz, calls } = setup();
+    await wiz.another(claimRow({ phase: "failed", failure: { phase: "keysPrepared", code: "platform.unavailable", retryable: true, needed: null, available: null } }));
+    expect(calls).toEqual(["discard claim-1"]);
+    expect(wiz).toMatchObject({ step: null, draft: null });
   });
 });

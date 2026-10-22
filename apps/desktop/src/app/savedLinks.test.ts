@@ -1,7 +1,8 @@
 // DP5-01 D11: the "Links you opened" model.
 
 import { describe, expect, it } from "vitest";
-import { offerReady, openedAgo, savedLinkRows } from "./savedLinks";
+import type { StashedLinkKindName } from "../api/generated/StashedLinkKindName";
+import { offerReady, offerTarget, openedAgo, savedLinkRows } from "./savedLinks";
 
 describe("saved links", () => {
   it("DP5-01 says when a link was opened", () => {
@@ -40,5 +41,15 @@ describe("saved links", () => {
     expect(offerReady({ ...ok, hasWallet: false })).toBe(false);
     expect(offerReady({ ...ok, locked: true })).toBe(false);
     expect(offerReady({ ...ok, covered: true })).toBe(false);
+  });
+
+  it("DP5-03 D2: after onboarding the newest invitation opens the claim screen; otherwise the dialog", () => {
+    const link = (n: number, kind: StashedLinkKindName) => ({ id: String(n).padStart(32, "0"), kind, stashedAt: n, expiresAt: n + 1 });
+    const links = [link(1, "invitation"), link(2, "invitation"), link(3, "payment")];
+    expect(offerTarget(links, true)).toEqual({ claim: link(2, "invitation").id });
+    expect(offerTarget(links, false)).toBe("sheet");
+    expect(offerTarget([link(3, "payment")], true)).toBe("sheet");
+    expect(offerTarget([], true)).toBeNull();
+    expect(offerTarget([], false)).toBeNull();
   });
 });

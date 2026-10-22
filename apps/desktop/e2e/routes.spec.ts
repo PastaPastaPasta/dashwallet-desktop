@@ -114,7 +114,8 @@ test("dashpay and dashwallet links open their routes; refused ones say why", asy
 
   await deliver(page, [{ kind: "invitation", linkId: "" }]);
   await expect(page.getByTestId("page-joinDashPay")).toBeVisible();
-  await expect(page.getByTestId("invitation-received")).toBeVisible();
+  // DP5-03 C3: this wallet has an identity already.
+  await expect(page.getByTestId("claim")).toHaveAttribute("data-state", "hasIdentity");
 
   await deliver(page, [{ kind: "rejected", reason: { kind: "payment", reason: { kind: "invalidAddress", problem: { kind: "invalidBase58Prefix" } } } }]);
   await expect(page.getByText("not valid on this network")).toBeVisible();

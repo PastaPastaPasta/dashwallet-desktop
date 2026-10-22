@@ -129,9 +129,15 @@ export const COPY = {
   continue: "Continue",
 } as const;
 
-/** D4: the step a phase is in. `failed` counts as the phase it stopped in. */
-export function stepOf(phase: RegistrationPhaseName, failure: RegistrationFailure | null): CardStep {
+/** D4: the step a phase is in. `failed` counts as the phase it stopped in. An invitation's claim
+ * (`claim`) pays nothing: its first steps are the check and the claim (DP5-03 D10). */
+export function stepOf(phase: RegistrationPhaseName, failure: RegistrationFailure | null, claim = false): CardStep {
   const at = phase === "failed" && failure ? failure.phase : phase;
+  if (claim) {
+    if (at === "draft") return { n: 1, text: "Checking the invitation" };
+    if (at === "keysPrepared") return { n: 2, text: "Creating identity" };
+    return { n: 3, text: "Registering username" };
+  }
   switch (at) {
     case "draft":
     case "keysPrepared":
@@ -242,7 +248,7 @@ function startupCard(startup: StartupStatus, lock: LockStateName | undefined): C
 /** S10–S14: the registration the status names, by its row. */
 function registeringCard(r: RegistrationStatus | undefined, i: StatusInputs): CardModel {
   if (!r) return card("registering", "pending", COPY.registering.title, [COPY.registering.message], { busy: true });
-  const step = stepOf(r.phase, r.failure);
+  const step = stepOf(r.phase, r.failure, r.invitation !== null);
   const title = COPY.creating(r.label);
   if (r.waiting === "fundingUnknown" || r.waiting === "needsFinish") {
     // Unknown: the lock may or may not have gone out; needsFinish: it did.

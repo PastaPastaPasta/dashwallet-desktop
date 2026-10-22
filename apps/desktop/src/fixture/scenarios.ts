@@ -7,6 +7,7 @@ import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { ContestStatus } from "../api/generated/ContestStatus";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
+import type { InvitationStatus } from "../api/generated/InvitationStatus";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
 import type { QuorumSource } from "../api/generated/QuorumSource";
 import type { DispatchStateName } from "../api/generated/DispatchStateName";
@@ -87,6 +88,8 @@ export interface World {
   links: LinkRoute[];
   /** The engine's link stash (DP5-01): links kept for after onboarding, and invitations. */
   stash: FixtureStashedLink[];
+  /** DP5-03: `invitation_status` of a stashed invitation by its id; absent: valid, from Bob. */
+  invitations?: Record<string, InvitationStatus>;
   /** The last `shell_sync`: what the native menus would show. */
   shellSync: ShellSync | null;
   /** "Require authentication for every payment" (E0-13 D11; on by default). */
@@ -533,6 +536,14 @@ function syncing(): SyncStatus {
 const SAVED_PAYEE = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
 const SAVED_CONTACT = "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF";
 
+/** `w` with one invitation in its stash, opened a day ago; `status` its `invitation_status`. */
+function withInvitation(w: World, status?: InvitationStatus): World {
+  const now = Math.floor(Date.now() / 1000);
+  const { id } = stashRoute(w.stash, { kind: "invitation", linkId: "" }, now - 86_400);
+  if (status) w.invitations = { [id]: status };
+  return w;
+}
+
 const SCENARIOS = {
   /** The reference wallet: balance, a month of history, caught up, unlocked. */
   funded: (t) => base(t),
@@ -562,6 +573,36 @@ const SCENARIOS = {
     stashRoute(w.stash, { kind: "invitation", linkId: "" }, now - 3 * 86_400);
     stashRoute(w.stash, { kind: "addContact", identity: SAVED_CONTACT, username: "alice" }, now - 2 * 3600);
     stashRoute(w.stash, { kind: "pay", uri: { address: SAVED_PAYEE, amount: 25_000_000, label: "Coffee", message: null }, username: null }, now - 5 * 60);
+    return w;
+  },
+  // DP5-03: an invitation in the stash (its status `World.invitations`, else valid from Bob).
+  /** The funded wallet without an identity, an invitation opened: "Links you opened" offers it. */
+  "invitation-valid": (t) => withInvitation(base(t)),
+  /** The same invitation, claimed by someone else. */
+  "invitation-claimed": (t) => withInvitation(base(t), { kind: "claimed" }),
+  /** The same invitation, not a valid one. */
+  "invitation-invalid": (t) => withInvitation(base(t), { kind: "invalid", reason: "malformed" }),
+  /** A vault (passphrase `demo`) with no wallet yet, an invitation opened before onboarding
+   * (the welcome entry, D2). */
+  "no-wallet-invitation": (t) => {
+    const w = withInvitation(base(t));
+    w.wallets = [];
+    w.phrases = {};
+    w.lock = unlocked([]);
+    return w;
+  },
+  /** A claim of the stashed invitation stopped after a relaunch, before its claim call. */
+  "invitation-claiming": (t) => {
+    const w = withInvitation(base(t));
+    const linkId = w.stash[0].info.id;
+    const row = registering().registrations[0];
+    w.dashpay = {
+      ...w.dashpay,
+      status: { kind: "registering", draft: "claim-1" },
+      registrations: [
+        { ...row, draft: "claim-1", label: "carol-77", phase: "keysPrepared", txid: null, waiting: null, holdsKey: false, running: false, fundsCommitted: false, invitation: { linkId, inviter: IDENTITY.bob, requestFailure: null } },
+      ],
+    };
     return w;
   },
   /** The funded wallet in a vault without a passphrase: Settings ▸ Security offers Encrypt (QT-111). */

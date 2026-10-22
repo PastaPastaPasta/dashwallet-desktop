@@ -9,6 +9,7 @@ import { hasCode } from "../api/backend";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { FinishReport } from "../api/generated/FinishReport";
 import type { GrantRequest } from "../api/generated/GrantRequest";
+import type { InvitationInviter } from "../api/generated/InvitationInviter";
 import type { NameOutcome } from "../api/generated/NameOutcome";
 import type { RegistrationRequest } from "../api/generated/RegistrationRequest";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
@@ -36,8 +37,12 @@ export type WizardApi = Pick<
 >;
 
 /** `core`: a new identity funded from the wallet; `credits`: a name for an identity the wallet
- * has, paid from its credits (D6); `instant` refuses a contested label (DP1-10 D13). */
-export type WizardMode = { kind: "core" } | { kind: "credits"; identity: string; instant?: boolean };
+ * has, paid from its credits (D6); `instant` refuses a contested label (DP1-10 D13);
+ * `invitation`: the claim of a stashed invitation (DP5-03 D1), which pays for both. */
+export type WizardMode =
+  | { kind: "core" }
+  | { kind: "credits"; identity: string; instant?: boolean }
+  | { kind: "invitation"; linkId: string; contestedAllowed: boolean; inviter: InvitationInviter | null };
 
 export type WizardStep = "name" | "confirm";
 
@@ -50,6 +55,26 @@ export const coreRequest = (label: string): RegistrationRequest => ({
   funding: { kind: "coreBalance" },
   initialProfile: null,
 });
+
+/** DP5-03: the claim of the stashed invitation `linkId` for `label`; `requestInviter: false` asks
+ * no one (D7). */
+export const invitationRequest = (label: string, linkId: string, requestInviter: boolean): RegistrationRequest => ({
+  label,
+  temporaryLabel: null,
+  funding: { kind: "invitation", linkId, requestInviter },
+  initialProfile: null,
+});
+
+/** DP5-03 D9: a claim row's resume grant. While it has no identity, the invitation's own quote
+ * (its link is still stashed); after, nothing in duffs and the credits of the steps left: the
+ * name, and the request when the row asks one (`grant_request` sizes both). */
+export async function claimResumeGrant(api: Pick<Backend, "registrationQuote" | "grantRequest">, walletId: string, row: RegistrationStatus): Promise<GrantRequest> {
+  const inv = row.invitation!;
+  if (!row.identity) return (await api.registrationQuote(walletId, invitationRequest(row.label, inv.linkId, inv.inviter !== null))).grant;
+  const name = await api.grantRequest(walletId, row.identity, { kind: "registerName", label: row.label });
+  const request = inv.inviter ? await api.grantRequest(walletId, row.identity, { kind: "sendRequest" }) : null;
+  return { maxDuffs: 0, maxCredits: String(BigInt(name.maxCredits) + BigInt(request?.maxCredits ?? "0")) };
+}
 
 /** D10: Finish transfers' grant: one duff, as a top-up lock's apply needs a funding budget (none
  * is spent), and the credits DP1-02's quote bounds. */
@@ -65,6 +90,8 @@ export class RegistrationWizard extends Model {
   step: WizardStep | null = null;
   mode: WizardMode = { kind: "core" };
   label = "";
+  /** The claim's "Send a contact request" check (DP5-03 D7). */
+  requestInviter = true;
   /** The draft this session started or resumed: its result screen shows until Done. */
   draft: string | null = null;
   /** A name registered from credits this session (D6): its result shows until Done. */
@@ -93,6 +120,7 @@ export class RegistrationWizard extends Model {
     this.mode = mode;
     this.step = "name";
     this.label = "";
+    this.requestInviter = true;
     this.draft = null;
     this.named = null;
     this.error = null;
@@ -103,6 +131,17 @@ export class RegistrationWizard extends Model {
   setLabel(label: string) {
     this.label = label;
     this.changed();
+  }
+
+  setRequestInviter(on: boolean) {
+    this.requestInviter = on;
+    this.changed();
+  }
+
+  /** What Confirm starts: the claim in invitation mode, else a Core-funded registration. */
+  request(): RegistrationRequest {
+    const m = this.mode;
+    return m.kind === "invitation" ? invitationRequest(this.label, m.linkId, this.requestInviter && m.inviter !== null) : coreRequest(this.label);
   }
 
   /** Step 1 → 2, for the label the screen has checked (`canChoose`, on the trimmed label). */
@@ -144,7 +183,7 @@ export class RegistrationWizard extends Model {
   /** Confirm & pay (D8: one start per Confirm). The quote's grant, then `start_registration`. A
    * refusal naming another registration shows that one; one past a wedged funding asks first. */
   async confirm(grant: GrantRequest, past: string[] = []): Promise<void> {
-    const request = coreRequest(this.label);
+    const request = this.request();
     await this.#call("start", async () => {
       const draft = await this.#withGrant(grant, (g) =>
         past.length === 0
@@ -169,8 +208,10 @@ export class RegistrationWizard extends Model {
    * then `resume_registration`. */
   async resume(row: RegistrationStatus): Promise<void> {
     await this.#call("resume", async () => {
-      const quote = await this.api.registrationQuote(this.walletId, { ...coreRequest(row.label), temporaryLabel: row.temporaryLabel });
-      const done = await this.#withGrant(quote.grant, (g) => this.api.resumeRegistration(this.walletId, row.draft, g.id).then(() => true));
+      const grant = row.invitation
+        ? await claimResumeGrant(this.api, this.walletId, row)
+        : (await this.api.registrationQuote(this.walletId, { ...coreRequest(row.label), temporaryLabel: row.temporaryLabel })).grant;
+      const done = await this.#withGrant(grant, (g) => this.api.resumeRegistration(this.walletId, row.draft, g.id).then(() => true));
       if (done) this.draft = row.draft;
     });
   }
@@ -186,6 +227,8 @@ export class RegistrationWizard extends Model {
     if (row?.phase === "done" && !row.identity) return;
     await this.#call("discard", async () => {
       if (row && row.phase !== "done" && !row.fundsCommitted) await this.api.discardRegistration(this.walletId, row.draft);
+      // A claim discarded goes back to its invitation's screen, which reads the link again (D1).
+      if (row?.invitation && row.phase !== "done") return this.close();
       const identity = row?.phase === "done" ? row.identity : null;
       this.begin(identity ? { kind: "credits", identity } : { kind: "core" });
     });

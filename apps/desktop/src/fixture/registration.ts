@@ -6,12 +6,18 @@
 // the session (`DashPayWorld.runs`) under its lease: a relaunch (`restarted`) drops it with every
 // grant and lease, and a lock or passphrase change revokes the lease and parks it; the row then
 // waits for the user again (`unlock` or `authorize`) until `resume_registration`.
+// An invitation's claim (DP5-02, DP5-03 D17) is a row of its own kind: no asset lock and no duffs,
+// its identity the claim's answer (the link wiped then), and the request to the inviter at the
+// end, refused when `DashPayWorld.requestRefusal` says so. `World.invitations` sets a stashed
+// invitation's status; one not set there is valid, from Bob.
 // Not modelled: profiles (F2), temporary names (D4), the funding's coin selection and its debit
 // from the balance, InstantSend timeouts, and proofs (a resumed `fundingSent` row waits for its
 // InstantSend lock again).
 
 import type { AppError, AppEvent } from "../api/generated/commands";
 import type { FlowKindName } from "../api/generated/FlowKindName";
+import type { InvitationInviter } from "../api/generated/InvitationInviter";
+import type { InvitationStatus } from "../api/generated/InvitationStatus";
 import type { Lease } from "../api/generated/Lease";
 import type { NameAvailability } from "../api/generated/NameAvailability";
 import type { RegistrationFailure } from "../api/generated/RegistrationFailure";
@@ -35,6 +41,46 @@ const CONTEST_SECS = 14 * 24 * 3600;
 
 /** The identity a fixture registration creates. */
 export const NEW_IDENTITY = IDENTITY.alice;
+
+/** The fixture invitation's inviter, as `invitation_status` proves one: DPNS name and profile. */
+export const INVITER: InvitationInviter = { identity: IDENTITY.bob, username: "bob", displayName: "Bob Builder", avatarUrl: null };
+/** What the fixture invitation funds (0.05 Dash: an uncontested claim, not a contested one). */
+export const INVITATION_DUFFS = 5_000_001;
+/** The credits a claim's identity and its request to the inviter cost (flows.rs's constants). */
+const IDENTITY_CREDITS = 1_200_000_000n;
+const REQUEST_CREDITS = 300_000_000n;
+
+/** A valid invitation from Bob, with `over` changed. */
+export const validInvitation = (over: Partial<Extract<InvitationStatus, { kind: "valid" }>> = {}): InvitationStatus => ({
+  kind: "valid",
+  inviter: INVITER,
+  fundingDuffs: INVITATION_DUFFS,
+  contestedAllowed: false,
+  expiresAt: null,
+  ...over,
+});
+
+/** invitations.rs `invitation_status`: a link no longer stashed reads `expired`. */
+export function invitationOf(world: World, linkId: string): InvitationStatus {
+  if (!world.stash.some((s) => s.info.id === linkId && s.info.kind === "invitation")) return { kind: "expired" };
+  return world.invitations?.[linkId] ?? validInvitation();
+}
+
+/** registration.rs `invitation_plan`: a claim's refusals, then its credits and the inviter it
+ * asks (`requestInviter: false`, none: DP5-03 D7). */
+export function claimPlan(world: World, dp: DashPayWorld, request: RegistrationRequest) {
+  if (request.funding.kind !== "invitation") throw invalid("not a claim");
+  if (dp.identities.length > 0) throw fail("invitation.already_has_identity", "the wallet has an identity");
+  const status = invitationOf(world, request.funding.linkId);
+  if (status.kind === "claimed") throw fail("invitation.claimed", "the invitation was claimed");
+  if (status.kind === "expired") throw fail("invitation.expired", "the invitation is not stashed");
+  if (status.kind === "invalid") throw fail("invitation.invalid", "the invitation is not valid");
+  const check = validLabel(request.label);
+  if (check.contested && !status.contestedAllowed) throw fail("name.unavailable_for_invite", "the invitation cannot pay for a contested name");
+  const inviter = request.funding.requestInviter ? (status.inviter?.identity ?? null) : null;
+  const credits = NAME_CREDITS + IDENTITY_CREDITS + (inviter ? REQUEST_CREDITS : 0n);
+  return { status, inviter, credits, linkId: request.funding.linkId };
+}
 
 /** Names the fixture network already knows, by their homograph-safe form: taken, contested
  * and locked (DP1-03's `name_availability` answers). The wallet's directory counts as taken. */
@@ -194,7 +240,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
     const { world } = ctx;
     const w = d.wallet(world, walletId);
     const dp = d.dashpay(world, walletId);
-    if (request.funding.kind === "invitation") throw fail("platform.not_implemented", "invitations", { kind: "call", call: "DashPay.start_registration" });
+    if (request.funding.kind === "invitation") return startClaim(ctx, walletId, request, grantId);
     if (request.funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
     validLabel(request.label);
     const blocker = dp.registrations.find((r) => blocks(r) && !(past.includes(r.draft) && reported(world, walletId, dp, r).waiting === "fundingUnknown"));
@@ -234,6 +280,50 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
         failure: null,
         nameFailure: null,
         profileFailure: null,
+        invitation: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+    dp.runs = [...dp.runs, draft];
+    settleStatus(dp);
+    changed(ctx, walletId, draft);
+    return draft;
+  }
+
+  /** registration.rs `start` of a claim: its plan, a grant with no duffs (D8 of DP5-02), and a
+   * row at `draft` that commits nothing. */
+  function startClaim(ctx: Ctx, walletId: string, request: RegistrationRequest, grantId: string): string {
+    const { world } = ctx;
+    const dp = d.dashpay(world, walletId);
+    const blocker = dp.registrations.find(blocks);
+    if (blocker) throw fail("registration.in_progress", "a registration is in progress", { kind: "draft", draft: blocker.draft });
+    const plan = claimPlan(world, dp, request);
+    const g = d.grant(world, grantId, walletId, ["platformOp"]);
+    if (g?.grant.purpose.kind !== "platformOp" || g.grant.purpose.maxDuffs !== 0) throw fail("platform.grant_invalid", "grant invalid");
+    if (BigInt(g.grant.purpose.maxCredits) < plan.credits)
+      throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: String(plan.credits), remaining: g.grant.purpose.maxCredits });
+    d.newLease(ctx, walletId, "registration", [g]);
+    const draft = `claim-${dp.registrations.length + 1}`;
+    const now = secs(FIXTURE_NOW);
+    dp.registrations = [
+      ...dp.registrations,
+      {
+        draft,
+        phase: "draft",
+        label: request.label,
+        temporaryLabel: null,
+        identity: null,
+        txid: null,
+        waiting: null,
+        holdsKey: g.ownKey,
+        running: true,
+        fundsCommitted: false,
+        contestEndsAt: null,
+        failure: null,
+        nameFailure: null,
+        profileFailure: null,
+        invitation: { linkId: plan.linkId, inviter: plan.inviter, requestFailure: null },
         createdAt: now,
         updatedAt: now,
       },
@@ -285,6 +375,8 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       const row = dp.registrations.find((r) => r.draft === draft);
       if (!row) throw invalid("unknown draft");
       if (row.fundsCommitted) throw invalid("the registration's funds are committed");
+      // DP5-03 D11: a claim whose identity exists finishes its name first.
+      if (row.invitation && row.identity && row.phase !== "done") throw invalid("the claim's identity exists; its name is not registered yet");
       dp.registrations = dp.registrations.filter((r) => r !== row);
       dp.runs = dp.runs.filter((x) => x !== draft);
       settleStatus(dp);
@@ -344,7 +436,13 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
   if (!row || !active(world, walletId, dp, draft)) return false;
   const now = secs(FIXTURE_NOW);
   const network = world.launch.network.dirName;
-  switch (row.phase) {
+  // A claim checks its invitation (draft), then claims it (keysPrepared): no lock, no proof.
+  const claim = row.invitation !== null;
+  const step = claim && row.phase === "keysPrepared" ? "proofWaiting" : row.phase;
+  switch (claim && row.phase === "draft" ? "claimDraft" : step) {
+    case "claimDraft":
+      row.phase = "keysPrepared";
+      break;
     case "draft":
     case "keysPrepared":
     case "fundingSent":
@@ -352,6 +450,8 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
       break;
     case "proofWaiting":
       Object.assign(row, { phase: "identityRegistered", identity: NEW_IDENTITY, waiting: null });
+      // DP5-02 D13: the link is wiped once the claim's identity is recorded.
+      if (row.invitation) world.stash = world.stash.filter((s) => s.info.id !== row.invitation!.linkId);
       dp.identities = [
         {
           identity: NEW_IDENTITY,
@@ -386,6 +486,8 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
     case "nameRegistered":
     case "contested":
     case "profileCreated":
+      // DP5-02 D15: the request to the inviter, last; refused for good, the row is done anyway.
+      if (row.invitation?.inviter) row.invitation = { ...row.invitation, requestFailure: dp.requestRefusal ?? null };
       end(ctx, walletId, dp, row, d);
       dp.status = row.contestEndsAt !== null
         ? { kind: "contestPending", identity: row.identity!, label: row.label, endsAt: row.contestEndsAt }

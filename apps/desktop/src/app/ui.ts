@@ -70,9 +70,9 @@ export interface UiState {
    * the clipboard. The tab takes it once. */
   psbtPrefill: { psbt: string; copied: boolean } | null;
   settingsTab: SettingsTab;
-  /** An invitation link was opened: it waits in the link stash (DP5-01); Join DashPay says so
-   * until DP5-03 joins with it. */
-  invitation: boolean;
+  /** The invitation the claim screen shows (DP5-03 D3): its stash id, and whether onboarding's
+   * replayed link (`welcome`) or a link opened in a wallet (`join`) opened it; `null`: none. */
+  invitation: { linkId: string; entry: "welcome" | "join" } | null;
   /** The wallet the window shows; `null` = the first. */
   walletId: string | null;
   /** Txid whose detail sheet is open. */
@@ -133,7 +133,7 @@ let state: UiState = {
   toolsTab: "information",
   psbtPrefill: null,
   settingsTab: "general",
-  invitation: false,
+  invitation: null,
   walletId: null,
   detail: null,
   dialog: null,

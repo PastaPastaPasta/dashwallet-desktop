@@ -167,7 +167,7 @@ describe("stashed links", () => {
     expect(traceName({ kind: "invitation", linkId: "f".repeat(32) })).toBe("invitation");
   });
 
-  it("DP5-01 an invitation during onboarding stays there; later it opens Join DashPay", () => {
+  it("DP5-01 an invitation during onboarding stays there; later it opens the claim screen (DP5-03 D3)", () => {
     vi.stubGlobal("window", { setTimeout: () => 0 });
     vi.stubGlobal("requestAnimationFrame", () => 0);
     vi.stubGlobal("cancelAnimationFrame", () => undefined);
@@ -177,7 +177,7 @@ describe("stashed links", () => {
     expect(ui.get().route).toBe("home");
     ui.set({ onboarding: false });
     applyLink({ kind: "invitation", linkId: "1".padStart(32, "0") });
-    expect(ui.get()).toMatchObject({ route: "joinDashPay", invitation: true });
+    expect(ui.get()).toMatchObject({ route: "joinDashPay", invitation: { linkId: "1".padStart(32, "0"), entry: "join" } });
   });
 
   it("DP5-01 an invitation that could not be kept says so", () => {

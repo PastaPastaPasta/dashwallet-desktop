@@ -42,6 +42,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   failure: null,
   nameFailure: null,
   profileFailure: null,
+  invitation: null,
   createdAt: 0,
   updatedAt: 0,
   ...r,
@@ -241,6 +242,14 @@ describe("D4 steps and D5 failure copy", () => {
     expect(stepOf("identityRegistered", null).n).toBe(3);
     expect(stepOf("failed", failure("x", { phase: "proofWaiting" })).n).toBe(2);
     expect(stepOf("failed", null).n).toBe(3);
+  });
+
+  it("DP5-03 D10: a claim checks, then creates the identity; nothing is paid", () => {
+    expect(stepOf("draft", null, true)).toEqual({ n: 1, text: "Checking the invitation" });
+    expect(stepOf("keysPrepared", null, true)).toEqual({ n: 2, text: "Creating identity" });
+    expect(stepOf("identityRegistered", null, true)).toEqual({ n: 3, text: "Registering username" });
+    expect(stepOf("failed", failure("x", { phase: "keysPrepared" }), true).n).toBe(2);
+    expect(stepOf("draft", null).text).toBe("Processing payment");
   });
 
   it("says why it stopped, with the amounts where the code carries them", () => {

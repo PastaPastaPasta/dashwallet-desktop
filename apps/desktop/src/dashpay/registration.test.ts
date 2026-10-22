@@ -53,6 +53,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   failure: null,
   nameFailure: null,
   profileFailure: null,
+  invitation: null,
   createdAt: 0,
   updatedAt: 0,
   ...r,
