@@ -295,7 +295,7 @@ describe("an invitation's claim (DP5-03 D17)", () => {
     f = installFixture({ scenario: "dashpay-registered" });
     const linkId = await cmd.stashInvitation("dashpay://invite?du=bob&assetlocktx=00&pk=x&islock=00");
     await expect(cmd.registrationQuote(W, invitationRequest(LABEL2, linkId, true))).rejects.toMatchObject({ code: "invitation.already_has_identity" });
-    await expect(cmd.stashInvitation("dash:yMsgnH1xKGa85n4bq2imrZbG2KgrmGttAV")).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(cmd.stashInvitation("dash:yMsgnH1xKGa85n4bq2imrZbG2KgrmGttAV")).rejects.toMatchObject({ code: "invitation.invalid" });
   });
 
   it("a claim stopped by a relaunch keeps its row and its link, and waits for Continue", async () => {

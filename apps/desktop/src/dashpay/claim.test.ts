@@ -5,7 +5,7 @@ import type { InvitationInviter } from "../api/generated/InvitationInviter";
 import type { InvitationStatus } from "../api/generated/InvitationStatus";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { appError } from "../onboarding/testWorld";
-import { CLAIM_COPY, claimErrorText, claimModel, claimRow, inviterCard, recipientLines, type ClaimInputs } from "./claim";
+import { CLAIM_COPY, CLAIM_KEPT, claimErrorText, claimModel, claimRow, handleOf, inviterCard, recipientLines, type ClaimInputs } from "./claim";
 import { REG_COPY, requestNote, screenModel, type ScreenInputs } from "./registration";
 
 const LINK = "1".padStart(32, "0");
@@ -140,7 +140,10 @@ describe("C11 (Opus-h r1 n3, D6): the request's recipient before Claim", () => {
     expect(r?.identity).toBe(BOB);
     expect(r?.text).toMatch(/^A contact request will go to @bob\./);
     expect(r?.text).toMatch(/extended public key/);
-    expect(recipientLines(inviter({ username: null }))?.text).toContain(`@${BOB}`);
+    // Opus r1 nit: an identity id is not a handle.
+    expect(recipientLines(inviter({ username: null }))?.text).toMatch(new RegExp(`^A contact request will go to ${BOB}\\.`));
+    expect(handleOf(inviter())).toBe("@bob");
+    expect(handleOf(inviter({ username: null }))).toBe(BOB);
     expect(recipientLines(null)).toBeNull();
   });
 });
@@ -154,5 +157,7 @@ describe("C12: the claim's refusals", () => {
     expect(claimErrorText(appError("name.unavailable_for_invite"), amount)).toBe(CLAIM_COPY.name.contestedRefused);
     expect(claimErrorText(appError("registration.funding_insufficient"), amount)).toBe("This invitation does not cover this username.");
     expect(claimErrorText(appError("name.taken"), amount)).toBe("Username taken. Choose another one.");
+    // D11 (Opus r1 L1): a discard refused because the claim may have landed.
+    expect(claimErrorText(CLAIM_KEPT, amount)).toBe(CLAIM_COPY.kept);
   });
 });

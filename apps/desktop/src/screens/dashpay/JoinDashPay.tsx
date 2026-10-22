@@ -141,7 +141,7 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
     const hasIdentity = status?.kind === "ready" || status?.kind === "contestPending";
     return (
       <Page route="joinDashPay">
-        <ClaimScreen linkId={invitation.linkId} entry={invitation.entry} wiz={wiz} hasIdentity={hasIdentity} network={network.dirName} />
+        <ClaimScreen linkId={invitation.linkId} entry={invitation.entry} wiz={wiz} hasIdentity={hasIdentity} network={network.dirName} rows={rows} />
       </Page>
     );
   }

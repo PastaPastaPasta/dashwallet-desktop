@@ -3803,14 +3803,14 @@ button.bell-row-open:focus-visible {
   min-width: 0;
 }
 
-.claim-inviter-name {
+.claim-inviter-primary {
   font-size: var(--dw-type-subhead-medium-size);
   font-weight: var(--dw-type-subhead-medium-weight);
   line-height: var(--dw-type-subhead-medium-line);
   overflow-wrap: anywhere;
 }
 
-.claim-inviter-username,
+.claim-inviter-secondary,
 .claim-label {
   margin: 0;
   color: var(--dw-role-text-secondary);

@@ -844,7 +844,8 @@ export const HANDLERS: Handlers = {
   },
   stash_invitation: ({ link }, { world }) => {
     const route = routeLink(link);
-    if (route.kind !== "invitation") throw fail("invalid_argument", "not an invitation link");
+    // invitations.rs: other text is `InvitationError::Invalid`.
+    if (route.kind !== "invitation") throw fail("invitation.invalid", "not an invitation link");
     return stashRoute(world.stash, route).id;
   },
   dismiss_stashed_link: ({ linkId }, { world }) => {

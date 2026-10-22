@@ -68,6 +68,8 @@ test("Join entry: valid → name → recipient → Claim → progress → Done, 
   await openSaved(page);
   await expect(claim(page)).toHaveAttribute("data-state", "invited");
   // F7 (D4): what DPNS proves, never "verified".
+  // The proved @username leads; the profile's display name is only beside it (Opus r1 nit).
+  await expect(page.getByTestId("claim-inviter-primary")).toHaveText("@bob");
   await expect(page.getByTestId("claim-inviter")).toContainText("Bob Builder");
   await expect(page.getByTestId("claim-inviter-check")).toHaveText(
     "Dash Wallet checked that @bob is a DashPay username. It cannot check who sent you this link.",

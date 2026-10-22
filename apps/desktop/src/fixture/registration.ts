@@ -21,6 +21,7 @@ import type { InvitationStatus } from "../api/generated/InvitationStatus";
 import type { Lease } from "../api/generated/Lease";
 import type { NameAvailability } from "../api/generated/NameAvailability";
 import type { RegistrationFailure } from "../api/generated/RegistrationFailure";
+import type { RegistrationPhaseName } from "../api/generated/RegistrationPhaseName";
 import type { RegistrationRequest } from "../api/generated/RegistrationRequest";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RegistrationWaitName } from "../api/generated/RegistrationWaitName";
@@ -49,6 +50,8 @@ export const INVITATION_DUFFS = 5_000_001;
 /** The credits a claim's identity and its request to the inviter cost (flows.rs's constants). */
 const IDENTITY_CREDITS = 1_200_000_000n;
 const REQUEST_CREDITS = 300_000_000n;
+/** registration_rows.rs `Phase`'s order (`failed` is not a step). */
+const PHASE_ORDER: RegistrationPhaseName[] = ["draft", "keysPrepared", "fundingSent", "proofWaiting", "identityRegistered", "nameRequested", "nameRegistered", "contested", "profileCreated", "done"];
 
 /** A valid invitation from Bob, with `over` changed. */
 export const validInvitation = (over: Partial<Extract<InvitationStatus, { kind: "valid" }>> = {}): InvitationStatus => ({
@@ -368,6 +371,18 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       settleStatus(dp);
       changed(ctx, walletId, draft);
       return null;
+    },
+    // registration.rs `resume_grant` (DP5-03 D20): a claim row's grant from the row alone, no
+    // duffs and the credits of the steps it has left.
+    registration_resume_grant: ({ walletId, draft }, { world }) => {
+      const row = d.dashpay(world, walletId).registrations.find((r) => r.draft === draft);
+      if (!row) throw invalid("unknown draft");
+      if (!row.invitation) throw invalid("not an invitation's claim");
+      const at = PHASE_ORDER.indexOf(row.phase === "failed" ? row.failure!.phase : row.phase);
+      let credits = row.identity ? 0n : IDENTITY_CREDITS;
+      if (at < PHASE_ORDER.indexOf("nameRegistered")) credits += NAME_CREDITS;
+      if (row.invitation.inviter && at < PHASE_ORDER.indexOf("done")) credits += REQUEST_CREDITS;
+      return { maxDuffs: 0, maxCredits: String(credits) };
     },
     // registration.rs `discard`: only a row whose funds are not committed.
     discard_registration: ({ walletId, draft }, ctx) => {

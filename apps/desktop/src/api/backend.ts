@@ -361,6 +361,7 @@ export interface Backend {
   registrations(walletId: string): Promise<RegistrationStatus[]>;
   /** The costs of registering `request` (DP1-02); local for a non-contested name. */
   registrationQuote(walletId: string, request: RegistrationRequest): Promise<RegistrationQuote>;
+  registrationResumeGrant(walletId: string, draft: string): Promise<GrantRequest>;
   resolveStuckFunding(walletId: string, step: string, grant: string): Promise<BroadcastOutcome>;
   // The registration wizard (DP1-09).
   /** The label's rule checklist; offline, needs no wallet. */

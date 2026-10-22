@@ -3,11 +3,13 @@
 // D10, D12.
 
 import { describe, expect, it, vi } from "vitest";
+import { hasCode } from "../api/backend";
 import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { RegistrationRequest } from "../api/generated/RegistrationRequest";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
+import { CLAIM_COPY, CLAIM_KEPT, claimErrorText } from "./claim";
 import { QUOTE_LABEL } from "./status";
 import { coreRequest, invitationRequest, RegistrationWizard, resetWizards, wizardFor } from "./wizard";
 
@@ -59,6 +61,7 @@ function setup(lock = { encrypted: false }) {
     finishAssetLocks: vi.fn(async (_: string, grant: string) => (calls.push(`finish ${grant}`), { resumed: 1, completed: 0, stillPending: 0 })),
     registrations: vi.fn(async () => rows),
     grantRequest: vi.fn(async () => ({ maxDuffs: 0, maxCredits: "2000000000" })),
+    registrationResumeGrant: vi.fn(async (_: string, draft: string) => (calls.push(`resume grant ${draft}`), { maxDuffs: 0, maxCredits: "3500000000" })),
     registerName: vi.fn(async (_: string, identity: string, label: string, grant: string) => {
       calls.push(`name ${identity} ${label} ${grant}`);
       return { kind: "registered" as const };
@@ -271,30 +274,14 @@ describe("DP5-03 the claim (invitation mode)", () => {
     expect(wiz.request().funding).toEqual({ kind: "invitation", linkId: LINK, requestInviter: false });
   });
 
-  it("D9: a claim without its identity resumes under the invitation's quote", async () => {
+  it("D9, D20: a claim row resumes under the row's own grant, never its invitation's quote", async () => {
     const { wiz, api, vault } = setup();
     await wiz.resume(claimRow());
-    expect(api.registrationQuote).toHaveBeenCalledWith(WALLET_A, invitationRequest("alice-77", LINK, true));
-    expect(api.grantRequest).not.toHaveBeenCalled();
-    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 3_002_261 } });
-    expect(api.resumeRegistration).toHaveBeenCalledWith(WALLET_A, "claim-1", "grant-1");
-  });
-
-  it("D9: after its identity, no duffs and the name's and the request's credits", async () => {
-    const { wiz, api, vault } = setup();
-    api.grantRequest.mockResolvedValueOnce({ maxDuffs: 0, maxCredits: "2000000000" }).mockResolvedValueOnce({ maxDuffs: 0, maxCredits: "300000000" });
-    await wiz.resume(claimRow({ phase: "nameRequested", identity: "NewIdentity" }));
+    expect(api.registrationResumeGrant).toHaveBeenCalledWith(WALLET_A, "claim-1");
     expect(api.registrationQuote).not.toHaveBeenCalled();
-    expect(api.grantRequest.mock.calls).toEqual([
-      [WALLET_A, "NewIdentity", { kind: "registerName", label: "alice-77" }],
-      [WALLET_A, "NewIdentity", { kind: "sendRequest" }],
-    ]);
-    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "2300000000" } });
-    // Without an inviter, only the name.
-    const other = setup();
-    await other.wiz.resume(claimRow({ phase: "nameRequested", identity: "NewIdentity", invitation: { linkId: LINK, inviter: null, requestFailure: null } }));
-    expect(other.api.grantRequest).toHaveBeenCalledTimes(1);
-    expect(other.vault.calls.authorize[0]).toMatchObject({ purpose: { maxCredits: "2000000000" } });
+    expect(api.grantRequest).not.toHaveBeenCalled();
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "3500000000" } });
+    expect(api.resumeRegistration).toHaveBeenCalledWith(WALLET_A, "claim-1", "grant-1");
   });
 
   it("Choose another username on a failed claim discards it and goes back to the invitation", async () => {
@@ -302,5 +289,21 @@ describe("DP5-03 the claim (invitation mode)", () => {
     await wiz.another(claimRow({ phase: "failed", failure: { phase: "keysPrepared", code: "platform.unavailable", retryable: true, needed: null, available: null } }));
     expect(calls).toEqual(["discard claim-1"]);
     expect(wiz).toMatchObject({ step: null, draft: null });
+  });
+
+  it("D11: Choose another username on a claim that may have landed keeps it, and says so", async () => {
+    const { wiz, api } = setup();
+    const failed = claimRow({ phase: "failed", failure: { phase: "keysPrepared", code: "platform.unavailable", retryable: true, needed: null, available: null } });
+    api.discardRegistration.mockRejectedValueOnce(appError("invalid_argument"));
+    await wiz.another(failed);
+    expect(wiz.error).toBe(CLAIM_KEPT);
+    expect(claimErrorText(wiz.error, String)).toBe(CLAIM_COPY.kept);
+    // Another refusal of a claim's discard, and any of a Core row's, reads as it is.
+    api.discardRegistration.mockRejectedValueOnce(appError("platform.unavailable"));
+    await wiz.another(failed);
+    expect(hasCode(wiz.error, "platform.unavailable")).toBe(true);
+    api.discardRegistration.mockRejectedValueOnce(appError("invalid_argument"));
+    await wiz.another(row({ phase: "failed", fundsCommitted: false, failure: { phase: "draft", code: "platform.unavailable", retryable: true, needed: null, available: null } }));
+    expect(hasCode(wiz.error, "invalid_argument")).toBe(true);
   });
 });

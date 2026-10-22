@@ -7,7 +7,7 @@ import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { RegistrationFailure } from "../api/generated/RegistrationFailure";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { StartupStatus } from "../api/generated/StartupStatus";
-import { COPY, FAQ, failureText, homeCard, JOIN_COPY, joinModel, namesState, QUOTE_LABEL, roundedCost, stepOf, VOTING_INFO, type StatusInputs } from "./status";
+import { CLAIM_REFUSAL, COPY, FAQ, failureText, homeCard, JOIN_COPY, joinModel, namesState, QUOTE_LABEL, roundedCost, stepOf, VOTING_INFO, type StatusInputs } from "./status";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
 
@@ -260,6 +260,11 @@ describe("D4 steps and D5 failure copy", () => {
     expect(failureText(failure("platform.insufficient_credits", { needed: "5", available: "1" }), amount)).toBe("The identity's credits do not cover the username.");
     expect(failureText(failure("platform.grant_exceeded"), amount)).toBe("The cost went above what you approved.");
     expect(failureText(failure("name.taken"), amount)).toBe("It stopped with name.taken.");
+    // DP5-03 (Opus r1 L1): a claim's refusals, on the Join page's failed row too.
+    expect(failureText(failure("invitation.already_has_identity"), amount)).toBe(CLAIM_REFUSAL.hasIdentity);
+    expect(failureText(failure("invitation.claimed"), amount)).toBe(`${CLAIM_REFUSAL.claimed.title}. ${CLAIM_REFUSAL.claimed.text}`);
+    expect(failureText(failure("invitation.expired"), amount)).toBe(`${CLAIM_REFUSAL.expired.title}. ${CLAIM_REFUSAL.expired.text}`);
+    expect(failureText(failure("invitation.invalid"), amount)).toBe(CLAIM_REFUSAL.invalid);
   });
 });
 

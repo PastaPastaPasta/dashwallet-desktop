@@ -15,11 +15,13 @@ import type { RegistrationRequest } from "../api/generated/RegistrationRequest";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { Model } from "../onboarding/model";
 import { GrantModel } from "../tools/grant";
+import { CLAIM_KEPT } from "./claim";
 import { QUOTE_REQUEST } from "./status";
 
 export type WizardApi = Pick<
   Backend,
   | "registrationQuote"
+  | "registrationResumeGrant"
   | "startRegistration"
   | "startRegistrationPastUnknownFunding"
   | "resumeRegistration"
@@ -64,17 +66,6 @@ export const invitationRequest = (label: string, linkId: string, requestInviter:
   funding: { kind: "invitation", linkId, requestInviter },
   initialProfile: null,
 });
-
-/** DP5-03 D9: a claim row's resume grant. While it has no identity, the invitation's own quote
- * (its link is still stashed); after, nothing in duffs and the credits of the steps left: the
- * name, and the request when the row asks one (`grant_request` sizes both). */
-export async function claimResumeGrant(api: Pick<Backend, "registrationQuote" | "grantRequest">, walletId: string, row: RegistrationStatus): Promise<GrantRequest> {
-  const inv = row.invitation!;
-  if (!row.identity) return (await api.registrationQuote(walletId, invitationRequest(row.label, inv.linkId, inv.inviter !== null))).grant;
-  const name = await api.grantRequest(walletId, row.identity, { kind: "registerName", label: row.label });
-  const request = inv.inviter ? await api.grantRequest(walletId, row.identity, { kind: "sendRequest" }) : null;
-  return { maxDuffs: 0, maxCredits: String(BigInt(name.maxCredits) + BigInt(request?.maxCredits ?? "0")) };
-}
 
 /** D10: Finish transfers' grant: one duff, as a top-up lock's apply needs a funding budget (none
  * is spent), and the credits DP1-02's quote bounds. */
@@ -208,8 +199,9 @@ export class RegistrationWizard extends Model {
    * then `resume_registration`. */
   async resume(row: RegistrationStatus): Promise<void> {
     await this.#call("resume", async () => {
+      // A claim row's grant is the row's (D20): its invitation's quote refuses a claim that landed.
       const grant = row.invitation
-        ? await claimResumeGrant(this.api, this.walletId, row)
+        ? await this.api.registrationResumeGrant(this.walletId, row.draft)
         : (await this.api.registrationQuote(this.walletId, { ...coreRequest(row.label), temporaryLabel: row.temporaryLabel })).grant;
       const done = await this.#withGrant(grant, (g) => this.api.resumeRegistration(this.walletId, row.draft, g.id).then(() => true));
       if (done) this.draft = row.draft;
@@ -226,7 +218,11 @@ export class RegistrationWizard extends Model {
     // A done row's next name is its identity's; without one it would be a second lock.
     if (row?.phase === "done" && !row.identity) return;
     await this.#call("discard", async () => {
-      if (row && row.phase !== "done" && !row.fundsCommitted) await this.api.discardRegistration(this.walletId, row.draft);
+      if (row && row.phase !== "done" && !row.fundsCommitted)
+        await this.api.discardRegistration(this.walletId, row.draft).catch((e: unknown) => {
+          // D11: a claim that may have reached the network is continued, not discarded.
+          throw row.invitation && hasCode(e, "invalid_argument") ? CLAIM_KEPT : e;
+        });
       // A claim discarded goes back to its invitation's screen, which reads the link again (D1).
       if (row?.invitation && row.phase !== "done") return this.close();
       const identity = row?.phase === "done" ? row.identity : null;

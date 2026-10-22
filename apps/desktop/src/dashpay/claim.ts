@@ -8,6 +8,7 @@ import type { InvitationInviter } from "../api/generated/InvitationInviter";
 import type { InvitationStatus } from "../api/generated/InvitationStatus";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { startErrorText } from "./registration";
+import { CLAIM_REFUSAL } from "./status";
 
 /** Where the claim screen was opened from (D2, D3): onboarding's replayed link, or a link opened
  * in a wallet. */
@@ -17,12 +18,11 @@ export const CLAIM_COPY = {
   title: { welcome: "You have been invited to DashPay", join: "DashPay invitation" },
   checking: "Checking the invitation…",
   checkFailed: "Could not check the invitation. Your wallet works as usual.",
-  hasIdentity:
-    "This wallet already has a DashPay identity. An invitation creates a first identity; it can be used with another wallet.",
-  claimed: { title: "This invitation has already been used", text: "Each invitation creates one identity. Ask for a new one." },
-  expired: { title: "This invitation is no longer saved", text: "Open the invitation link again." },
+  hasIdentity: CLAIM_REFUSAL.hasIdentity,
+  claimed: CLAIM_REFUSAL.claimed,
+  expired: CLAIM_REFUSAL.expired,
   invalid: {
-    malformed: "This invitation link is not valid",
+    malformed: CLAIM_REFUSAL.invalid,
     wrongNetwork: (network: string) => `This invitation is for another Dash network than ${network}`,
     assetLockNotFound: "The network does not know this invitation's funding yet. Try again later.",
   },
@@ -35,10 +35,11 @@ export const CLAIM_COPY = {
   paid: "Paid by the invitation: nothing is paid from this wallet.",
   confirm: {
     // D6 (Opus-h r1 n3).
-    recipient: (username: string) =>
-      `A contact request will go to @${username}. It carries your new identity's extended public key for payments between you, so @${username} can see the payments you make to each other.`,
+    // `who`: "@username", or the identity id of an inviter without one.
+    recipient: (who: string) =>
+      `A contact request will go to ${who}. It carries your new identity's extended public key for payments between you, so ${who} can see the payments you make to each other.`,
     recipientId: "Their identity",
-    request: (username: string) => `Send a contact request to @${username}`,
+    request: (who: string) => `Send a contact request to ${who}`,
     claim: "Claim invitation",
   },
   name: {
@@ -53,6 +54,7 @@ export const CLAIM_COPY = {
     cancel: "Cancel",
     ok: "Open invitation",
   },
+  kept: "This claim may already be on the network, so it is not cancelled. Continue to finish it.",
   accept: "Accept invitation",
   notNow: "Not now",
   dismiss: "Dismiss invitation",
@@ -155,11 +157,21 @@ export function claimModel(i: ClaimInputs): ClaimModel {
 /** D6: who the request goes to, before Claim; `null` without an inviter. */
 export function recipientLines(inviter: InvitationInviter | null): { text: string; identity: string } | null {
   if (!inviter) return null;
-  return { text: CLAIM_COPY.confirm.recipient(inviter.username ?? inviter.identity), identity: inviter.identity };
+  return { text: CLAIM_COPY.confirm.recipient(handleOf(inviter)), identity: inviter.identity };
 }
+
+/** How the copy names the inviter: "@username", else the identity id (no "@": it is no name). */
+export function handleOf(inviter: InvitationInviter): string {
+  return inviter.username ? `@${inviter.username}` : inviter.identity;
+}
+
+/** D11: the discard of a claim row that may have reached the network was refused ("Choose
+ * another username" on its retry screen); the row is continued instead. */
+export const CLAIM_KEPT = Symbol("claimKept");
 
 /** C12: why a claim's start or resume was refused. */
 export function claimErrorText(e: unknown, amount: (duffs: number) => string): string {
+  if (e === CLAIM_KEPT) return CLAIM_COPY.kept;
   if (hasCode(e, "invitation.claimed")) return `${CLAIM_COPY.claimed.title}. ${CLAIM_COPY.claimed.text}`;
   if (hasCode(e, "invitation.expired")) return `${CLAIM_COPY.expired.title}. ${CLAIM_COPY.expired.text}`;
   if (hasCode(e, "invitation.invalid")) return CLAIM_COPY.invalid.malformed;

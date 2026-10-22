@@ -176,6 +176,7 @@ export class IpcBackend implements Backend {
   dropUnconfirmed = cmd.dropUnconfirmed;
   registrations = cmd.registrations;
   registrationQuote = cmd.registrationQuote;
+  registrationResumeGrant = cmd.registrationResumeGrant;
   resolveStuckFunding = cmd.resolveStuckFunding;
   checkUsername = cmd.checkUsername;
   nameAvailability = cmd.nameAvailability;

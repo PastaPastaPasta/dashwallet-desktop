@@ -6,13 +6,13 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
-import { errorMessage } from "../../api/backend";
+import { errorMessage, hasCode } from "../../api/backend";
 import { useBackend } from "../../api/queries";
 import { navigate, ui } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CopyValue } from "../../components/detail";
 import { Sheet } from "../../components/sheet";
-import { CLAIM_COPY, claimModel, recipientLines, type ClaimActionKind, type ClaimEntry, type InviterCard } from "../../dashpay/claim";
+import { CLAIM_COPY, claimModel, handleOf, recipientLines, type ClaimActionKind, type ClaimEntry, type InviterCard } from "../../dashpay/claim";
 import { dashpayKeys, useClaimQuote, useInvitationStatus, useUsernameCheck } from "../../dashpay/queries";
 import { REG_COPY } from "../../dashpay/registration";
 import type { StatusInputs } from "../../dashpay/status";
@@ -29,16 +29,17 @@ function leaveClaim(entry: ClaimEntry) {
   else ui.set({ invitation: null });
 }
 
+/** D4: the DPNS-checked "@username" leads; the display name, the inviter's own words, follows. */
 function Inviter({ card }: { card: InviterCard }) {
-  const shown = card.name ?? (card.username ? `@${card.username}` : null);
+  const shown = card.username ? `@${card.username}` : card.name;
   return (
     <div className="claim-inviter" data-testid="claim-inviter">
       <p className="claim-label">{CLAIM_COPY.invited.from}</p>
       <div className="claim-inviter-row">
         <Avatar letters={(shown ?? "?").replace(/^@/, "").slice(0, 1).toUpperCase()} identity={card.identity} />
         <div className="claim-inviter-names">
-          {shown && <span className="claim-inviter-name">{shown}</span>}
-          {card.name && card.username && <span className="claim-inviter-username">@{card.username}</span>}
+          {shown && <span className="claim-inviter-primary" data-testid="claim-inviter-primary">{shown}</span>}
+          {card.name && card.username && <span className="claim-inviter-secondary">{card.name}</span>}
         </div>
       </div>
       <p className="registration-line" data-testid="claim-inviter-check">
@@ -55,20 +56,25 @@ export function ClaimScreen({
   wiz,
   hasIdentity,
   network,
+  rows,
 }: {
   linkId: string;
   entry: ClaimEntry;
   wiz: RegistrationWizard;
   hasIdentity: boolean;
   network: string;
+  /** The wallet's registrations, read before the status (D5, F7). */
+  rows: { isSuccess: boolean; isError: boolean; error: unknown; refetch: () => unknown };
 }) {
   const id = useId();
   const b = useBackend();
   const client = useQueryClient();
-  const status = useInvitationStatus(linkId, !hasIdentity);
+  // D5 (F7): no status before the rows: our own claim in flight never reads "already used".
+  const status = useInvitationStatus(linkId, !hasIdentity && rows.isSuccess);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const model = claimModel({ entry, hasIdentity, status: status.data, statusError: status.isError ? status.error : null, network });
+  const statusError = rows.isError ? rows.error : status.isError ? status.error : null;
+  const model = claimModel({ entry, hasIdentity, status: rows.isSuccess ? status.data : undefined, statusError, network });
   const onAction = async (kind: ClaimActionKind) => {
     switch (kind) {
       case "accept":
@@ -78,7 +84,7 @@ export function ClaimScreen({
       case "notNow":
         return leaveClaim(entry);
       case "retry":
-        return void status.refetch();
+        return void (rows.isError ? rows.refetch() : status.refetch());
       case "dismiss":
         // D16: the stash forgets it (DP5-01's Remove).
         setBusy(true);
@@ -138,7 +144,7 @@ export function ClaimConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationW
   const quote = useClaimQuote(walletId, wiz.label, mode?.linkId ?? "", asking);
   const contested = useUsernameCheck(wiz.label).data?.contested ?? false;
   const recipient = recipientLines(inviter);
-  const handle = inviter?.username ?? inviter?.identity ?? "";
+  const handle = inviter ? handleOf(inviter) : "";
   const disabled = !quote.data || wiz.running !== null || (contested && !accepted);
   return (
     <section className="registration claim card-l1" data-testid="registration-confirm" data-claim="" aria-labelledby={`${id}-title`}>
@@ -206,8 +212,8 @@ export function InvitationPasteSheet({ onClose }: { onClose: () => void }) {
       void client.invalidateQueries({ queryKey: dashpayKeys.invitation(linkId) });
       onClose();
       ui.set({ invitation: { linkId, entry: "join" } });
-    } catch {
-      setProblem(CLAIM_COPY.paste.refused);
+    } catch (e) {
+      setProblem(hasCode(e, "invitation.invalid") ? CLAIM_COPY.paste.refused : errorMessage(e));
     } finally {
       setBusy(false);
     }
