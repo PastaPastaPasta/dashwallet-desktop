@@ -53,6 +53,10 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: the engine holds an open claim's link against the stash's expiry and eviction (DP5-03 D12); never a host's",
     ),
     (
+        "Vault::retain_stashed_link_holds",
+        "internal: the engine's bring-up keeps only the open claims' link holds (DP5-03 D12); never a host's",
+    ),
+    (
         "Vault::forget_stashed_link",
         "internal: reached through `NetworkSession::forget_invitation` (`forget_invitation`) and `NetworkSession::forget_stashed_link` (`dismiss_stashed_link`)",
     ),
