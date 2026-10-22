@@ -79,6 +79,7 @@ page (`page-joinDashPay`), width `formMaxWidth`, a `card-l1` section `claim` wit
 | D21 | UI review fixes (Opus r1): the Join page's failed claim row says each invitation code in the claim's words (`failureText`, L1); the claim screen reads the registration rows before the status and shows the rows' error first (L2), and a failed refetch of rows already read keeps the screen (Opus r2 6); a paste refusal other than `invitation.invalid` says its own error (L6), and the fixture's `stash_invitation` refuses other text with `invitation.invalid` as the engine does (it said `invalid_argument`); the request's recipient without a username is the identity id without `@`, and the inviter card leads with the proved `@username`, the profile's display name beside it (nits). | The status is judged against the row (F7), so it must not run on rows that failed to load. |
 | D22 | Contract-Version stays 37 for this task: review r1's `registration_resume_grant` was blessed at 37 by setting §3's recorded mark back to the base's 36 first. | Version 37 has not left this branch; one version per change, as items 56 and 63. |
 | D23 | Gate load flakes (load 35–180): the gate's Playwright step failed 7 WebKit tests in specs this task does not touch, each on a 30 s timeout: `dashpay-info.spec.ts` D3 Sync now, `onboarding.spec.ts` axe ×3, `governance.spec.ts` create light and dark, `names.spec.ts` "Vote goes off at the end time itself". Rerun alone, those four specs on WebKit passed but for the last three; those passed alone with one worker (load 178). Every other gate step passed. The gate's first run also failed two `dw-app` tests on this task's own gaps (the `registration_resume_grant` capability grant, a coverage row for `Vault::retain_stashed_link_holds`), fixed in 8d0c2ec1. | Brief rule: rerun alone before blaming the code; none of the failing specs reads a claim row or the claim screen. |
+| D24 | Opus-h r1 m1: F11 closed for a fresh start too. (a) Engine: `start_registration` refuses a claim, of any link, `invitation.already_has_identity` while the wallet keeps a claim row failed for good with that code (`claim_found_identity`), read in the start's ledger job before a row is written or the grant is used; the quote reads no rows and still answers. (b) UI: such a row is the wallet's identity on the claim screen (C3: Dismiss, Not now; `claimHasIdentity`), and Choose another username keeps it and goes back to the invitation's screen, which reads C3. (c) Engine: `PwLib::claim_invitation` reads `IdentityAssetLockStateTransitionReplayError` for the claim's own outpoint as `DuplicateKeys` (`is_claim_replay`). At the pin `35e96ca1`, rs-drive-abci `verify_is_not_spent/v0/mod.rs:47-79` raises it only for a lock partially consumed whose used tags hold the transition's signable bytes, after the fully consumed check; only an IdentityCreate Platform refused and charged writes a tag (`identity_create/advanced_structure/v0/mod.rs:50-140`: identifier, key structure, proof of possession; `state/v0/mod.rs:85-121`, `state/v1/mod.rs:111`: keys in state). So a replay is the identical claim refused before, which did not land (a landed claim consumes the whole lock and meets `consumed` first), and of those refusals only keys in state can meet a claim whose identifier, keys and signatures the library builds. | The row gate over kicking `discover_identities` on `DuplicateKeys`: a discovery needs an `IdentityScan` grant the claim's run does not hold, so it stays DP5-02 F11's open half (F5). The row is the guard: D11 still lets it be discarded (the refusal disproves a landing), and claims start again after that; the window no longer discards it (b), and no other host path discards a row. |
 
 ## Engine and contract (m4 item 64, Contract-Version 37)
 
@@ -113,6 +114,8 @@ page (`page-joinDashPay`), width `formMaxWidth`, a `card-l1` section `claim` wit
 - Opus r1 (code-review-validator): REQUIRES CHANGES (H1, M1–M3, L1–L7, nits). H1, M1–M3, L1, L2, L4, L6 and the nits
   are fixed (D11, D12, D20, D21); L3, L5, L7 are F4–F6.
 - Opus r2: ACCEPT WITH NITS. 1, 4–10 fixed (D11, D12, D20, D21); 2 and 3 are F8 and F9.
+- Opus-h r1 (`/work/scratch/dw-dp5-03-review/DP5-03-r1-opus.md`): ACCEPT WITH NITS. m1 fixed (D24); n1 in F5; n2 in
+  F4; n3 a comment on `removeErrorText` (a narrower code would be a §4 change); n4 in DP5-02 F8.
 
 ## Follow-ups
 
@@ -120,10 +123,13 @@ page (`page-joinDashPay`), width `formMaxWidth`, a `card-l1` section `claim` wit
   replayed link only.
 - F2: DP5-02 F8, F9, F10 stay open there.
 - F3: (done as D20.)
-- F4 (Opus r1 L3): the claim screen shows the inviter of the current status; a row started under another inviter's
-  link (a re-stash) is not compared with it.
+- F4 (Opus r1 L3, Opus-h r1 n2): the claim screen shows the inviter of the current status; a row started under
+  another inviter's link (a re-stash) is not compared with it. Nor is the recipient step 2 shows (n3) bound to the one
+  the start asks: `invitation_plan` resolves the link's `du` again. The start should carry the confirmed inviter
+  identity and refuse a mismatch (`invitation.invalid` or `invalid_argument`), recording the confirmed one.
 - F5 (Opus r1 L5): the classifier keeps the `BasicError` arm (protocols before v7), unreachable on current Platform;
-  a discovery on a duplicate-key refusal (to adopt another device's identity at once) is left to DP5-02 F8.
+  a discovery on a duplicate-key refusal (to adopt another device's identity at once) is left to DP5-02 F11's
+  discovery half. Until it runs, D24's kept row refuses the next claim.
 - F6 (Opus r1 L7): Links you opened still lists a held invitation; hiding or labelling it needs a `StashedLinkInfo`
   field (a DP5-01 contract change).
 - F7: the second discard judgement (inside the delete's job) is reached only by a race and has no test of its own.
@@ -133,3 +139,5 @@ page (`page-joinDashPay`), width `formMaxWidth`, a `card-l1` section `claim` wit
 - F9 (Opus r2 3): a settle reads the open rows, then lets go; a start of another wallet's claim of the same link in
   between keeps no hold until its claim step. Fix: one session lock for the hold's read-and-release and the start's
   hold, or re-hold every open row's link at the bring-up.
+- F10 (D24): a Core registration is not refused by a kept `already_has_identity` claim row. If its index is the one the
+  claim used, Platform refuses its keys too, from the wallet's own lock; the discovery (DP5-02 F11) would cover both.
