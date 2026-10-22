@@ -29,11 +29,13 @@ codes! {
         NoPeers = "governance.no_peers",
         /// The call needs the masternode list and SPV has none yet.
         ListUnavailable = "governance.list_unavailable",
-        /// No DPNS poll for the label (MG-07; no call binds it before MG-11).
+        /// No DPNS poll for the label: `data` gives the label (MG-07).
         ContestNotFound = "governance.contest_not_found",
-        /// The DPNS poll resolved or its voting ended (MG-07).
+        /// The DPNS poll resolved or its voting ended: `data` gives the
+        /// label (MG-07 D8).
         ContestClosed = "governance.contest_closed",
-        /// A name vote towards an identity the poll does not list (MG-07).
+        /// A name vote towards an identity the poll's first page does not
+        /// list: `data` gives the identity (MG-07 D9).
         NotAContender = "governance.not_a_contender",
         /// A contract stub: `data` names the call.
         NotImplemented = "governance.not_implemented",
@@ -76,11 +78,18 @@ impl From<GovernanceError> for AppError {
             ),
             G::NoPeers => (GovernanceCode::NoPeers, None),
             G::ListUnavailable => (GovernanceCode::ListUnavailable, None),
-            // The label and identity are in `message`; MG-11 gives them
-            // `data` when it binds the calls (MG-07 D13).
-            G::ContestNotFound { .. } => (GovernanceCode::ContestNotFound, None),
-            G::ContestClosed { .. } => (GovernanceCode::ContestClosed, None),
-            G::NotAContender { .. } => (GovernanceCode::NotAContender, None),
+            G::ContestNotFound { label } => (
+                GovernanceCode::ContestNotFound,
+                Some(ErrorData::ContestLabel { label }),
+            ),
+            G::ContestClosed { label } => (
+                GovernanceCode::ContestClosed,
+                Some(ErrorData::ContestLabel { label }),
+            ),
+            G::NotAContender { identity } => (
+                GovernanceCode::NotAContender,
+                Some(ErrorData::Contender { identity }),
+            ),
             G::NotImplemented { call } => (
                 GovernanceCode::NotImplemented,
                 Some(ErrorData::Call { call }),
@@ -189,6 +198,27 @@ mod tests {
                 call: "Governance.vote".into()
             }),
             serde_json::json!({ "kind": "call", "call": "Governance.vote" })
+        );
+        assert_eq!(
+            data(GovernanceError::ContestNotFound {
+                label: "a11ce".into()
+            }),
+            serde_json::json!({ "kind": "contestLabel", "label": "a11ce" })
+        );
+        assert_eq!(
+            data(GovernanceError::ContestClosed {
+                label: "dash-pay".into()
+            }),
+            serde_json::json!({ "kind": "contestLabel", "label": "dash-pay" })
+        );
+        assert_eq!(
+            data(GovernanceError::NotAContender {
+                identity: "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P".into()
+            }),
+            serde_json::json!({
+                "kind": "contender",
+                "identity": "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P"
+            })
         );
         assert_eq!(data(GovernanceError::NoPeers), serde_json::Value::Null);
     }

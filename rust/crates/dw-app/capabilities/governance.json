@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "governance",
-  "description": "Governance: sync, the clock and budget, proposals, votes, the wallet's voting masternodes and its own proposals (MG-02, BL-232, MG-05, MG-06). Granted to the main window only.",
+  "description": "Governance: sync, the clock and budget, proposals, votes, the wallet's voting masternodes, its own proposals and contested-name votes (MG-02, BL-232, MG-05, MG-06, MG-11). Granted to the main window only.",
   "windows": [
     "main"
   ],
@@ -22,6 +22,8 @@
     "allow-governance-preview-proposal",
     "allow-governance-create-proposal",
     "allow-governance-my-proposals",
-    "allow-governance-submit-proposal"
+    "allow-governance-submit-proposal",
+    "allow-governance-contested-names",
+    "allow-governance-vote-name"
   ]
 }

@@ -707,3 +707,28 @@ for (const theme of THEMES) {
     await shoot(page, "governance-create-review", theme);
   });
 }
+
+// MG-11: Masternodes ▸ Username voting: the list with its pane, the vote sheet with a voter at its
+// limit, and the result with an unconfirmed vote.
+for (const theme of THEMES) {
+  test(`visual names ${theme}`, async ({ page }) => {
+    await page.clock.setFixedTime(FIXTURE_NOW);
+    await page.goto(fixtureUrl("names-vote-mixed", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.getByTestId("sidebar-masternodes").click();
+    await page.getByTestId("masternodes-tabs-names").click();
+    await page.getByTestId("name-pane-lead").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "names-list", theme);
+    await page.getByTestId("name-vote").click();
+    await page.getByTestId("name-choice-abstain").click();
+    await page.getByTestId("name-vote-privacy").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "names-vote", theme);
+    await page.getByTestId("name-vote-passphrase").fill("demo");
+    await page.getByTestId("name-vote-send").click();
+    await page.getByTestId("name-vote-result").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "names-vote-result", theme);
+  });
+}

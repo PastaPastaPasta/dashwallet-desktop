@@ -1,7 +1,10 @@
 //! Governance vectors (BL-232): one engine record of each kind the
 //! `governance_*` commands return, through dw-app's conversion, and every
 //! `GovernanceError` through `AppError`, written to
-//! `apps/desktop/src/fixture/vectors/governance.json`. The renderer's
+//! `apps/desktop/src/fixture/vectors/governance.json`. The contested-name
+//! results are MG-07's fixtures (`dw-engine/tests/fixtures/mg07`, held equal
+//! to the facade's records there), read back as engine records, so the
+//! renderer's fixture builds on them (MG-11). The renderer's
 //! contract test (`apps/desktop/src/api/governance.test.ts`) holds them
 //! against the records of mg-engine §3. This test fails when the committed file
 //! differs from what dw-app produces now; regenerate it with
@@ -11,11 +14,11 @@ use std::path::{Path, PathBuf};
 
 use dw_engine::EngineError;
 use dw_engine::governance::{
-    CurrentVoteRow, GovernanceClock, GovernanceError, GovernanceInfo, GovernanceSyncPhase,
-    GovernanceSyncState, MasternodeType, MyProposal, MyProposalState, ProposalCounts,
-    ProposalDetail, ProposalField, ProposalPreview, ProposalRow, ProposalStatus, SignalTallies,
-    SubmitRefusal, SubmitWait, SuperblockDate, VoteCast, VoteOutcome, VoteSignal, VoteTally,
-    VotingMasternode, WeightRange,
+    ContestedNames, CurrentVoteRow, GovernanceClock, GovernanceError, GovernanceInfo,
+    GovernanceSyncPhase, GovernanceSyncState, MasternodeType, MyProposal, MyProposalState,
+    NameVoteCast, ProposalCounts, ProposalDetail, ProposalField, ProposalPreview, ProposalRow,
+    ProposalStatus, SignalTallies, SubmitRefusal, SubmitWait, SuperblockDate, VoteCast,
+    VoteOutcome, VoteSignal, VoteTally, VotingMasternode, WeightRange,
 };
 use serde_json::{Value, json};
 
@@ -27,6 +30,14 @@ const REGENERATE: &str = "DW_UPDATE_VECTORS=1 cargo test -p dw-app governance_ve
 fn vectors_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../apps/desktop/src/fixture/vectors/governance.json")
+}
+
+/// One of MG-07's fixtures, as the engine record it holds.
+fn mg07<T: serde::de::DeserializeOwned>(name: &str) -> T {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../dw-engine/tests/fixtures/mg07")
+        .join(name);
+    serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
 }
 
 fn to_json<T: serde::Serialize>(v: T) -> Value {
@@ -321,6 +332,15 @@ fn build() -> Value {
             "governance_voting_masternodes": to_json(
                 masternodes.into_iter().map(dto::VotingMasternode::from).collect::<Vec<_>>()
             ),
+            "governance_contested_names": to_json(dto::ContestedNames::from(
+                mg07::<ContestedNames>("contested_names.json")
+            )),
+            "governance_vote_name": to_json(
+                mg07::<Vec<NameVoteCast>>("name_vote_casts.json")
+                    .into_iter()
+                    .map(dto::NameVoteCast::from)
+                    .collect::<Vec<_>>()
+            ),
         },
         "errors": errors,
     })
@@ -352,4 +372,26 @@ fn every_command_has_a_vector() {
     let mut keys: Vec<&str> = results.keys().map(String::as_str).collect();
     keys.sort_unstable();
     assert_eq!(keys, names);
+}
+
+/// Every reason MG-07's fixture holds (all of §3's) crosses as itself, none
+/// read as `refused` but `refused`; an unknown one reads as `unknown`.
+#[test]
+fn every_name_vote_reason_crosses_as_itself() {
+    let reasons: std::collections::BTreeSet<String> =
+        mg07::<Vec<NameVoteCast>>("name_vote_casts.json")
+            .into_iter()
+            .filter_map(|c| c.rejected)
+            .collect();
+    assert_eq!(reasons.len(), 17, "{reasons:?}");
+    for reason in &reasons {
+        let crossed = dto::NameRejectionName::from_engine(reason);
+        assert_eq!(to_json(crossed), Value::String(reason.clone()));
+    }
+    assert_eq!(
+        dto::NameRejectionName::from_engine("new_reason"),
+        dto::NameRejectionName::Unknown
+    );
+    // `unknown` is this build's word, never one of the engine's.
+    assert!(!reasons.contains("unknown"));
 }

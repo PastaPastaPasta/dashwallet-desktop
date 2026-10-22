@@ -100,8 +100,12 @@ function VoteForm({
     });
   const threshold = info.data?.passingThreshold;
 
+  // `busy` is state, so it changes only at the next render: two clicks in one task would both pass
+  // it. The ref changes at once (MG-11 review m3).
+  const sending = useRef(false);
   const vote = async () => {
-    if (busy || outcome === null || picked.length === 0 || !credential.ready) return;
+    if (sending.current || busy || outcome === null || picked.length === 0 || !credential.ready) return;
+    sending.current = true;
     setBusy(true);
     try {
       const grant = await credential.authorize({ kind: "governance" });
@@ -118,6 +122,7 @@ function VoteForm({
     } catch (e) {
       credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
     } finally {
+      sending.current = false;
       setBusy(false);
     }
   };
