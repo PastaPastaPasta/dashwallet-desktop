@@ -77,7 +77,10 @@ impl RegistrationLib for Hooked {
         &self,
         link_id: &str,
     ) -> Result<
-        crate::platform::invitations::InvitationStatus,
+        (
+            crate::platform::invitations::InvitationStatus,
+            Option<String>,
+        ),
         crate::platform::errors::InvitationError,
     > {
         self.fake.invitation(link_id).await

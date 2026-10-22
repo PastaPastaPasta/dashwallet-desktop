@@ -28,6 +28,8 @@ struct Net {
     /// The fetch fails with a transport error.
     down: bool,
     identities: HashSet<Identifier>,
+    /// The identity lookup fails.
+    identity_down: bool,
     inviters: HashMap<String, Counterparty>,
     /// DPNS fails.
     dpns_down: bool,
@@ -56,8 +58,8 @@ impl InvitationNet for Net {
     }
 
     fn identity_exists(&self, id: Identifier) -> BoxFuture<Result<bool, PlatformError>> {
-        let exists = self.identities.contains(&id);
-        Box::pin(async move { Ok(exists) })
+        let exists = (!self.identity_down).then(|| self.identities.contains(&id));
+        Box::pin(async move { exists.ok_or(PlatformError::Unavailable) })
     }
 
     fn inviter(&self, username: String) -> BoxFuture<Result<Option<Counterparty>, PlatformError>> {
@@ -273,6 +275,10 @@ fn an_identity_at_the_claims_id_is_claimed() {
     .into();
     let checked = run(&net, &link(&tx, Network::Regtest, None, None));
     assert!(matches!(checked, Ok(Checked::Valid { .. })), "{checked:?}");
+    // Review m3: a failed lookup fails the call, never reads as unclaimed.
+    net.identity_down = true;
+    let checked = run(&net, &link(&tx, Network::Regtest, None, None));
+    assert_eq!(checked, Err(PlatformError::Unavailable));
 }
 
 #[test]

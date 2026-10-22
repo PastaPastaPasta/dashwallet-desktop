@@ -22,6 +22,7 @@ use super::dashpay::BearerSecret;
 use super::errors::{InvitationError, PlatformError};
 use super::invitation_check::{Checked, Fetched, InvitationNet, check};
 use super::payments::Counterparty;
+use super::registration_flow::identity_for;
 use super::trust::BoxFuture;
 use crate::NetworkSession;
 
@@ -249,8 +250,17 @@ impl NetworkSession {
         self: &Arc<Self>,
         link_id: String,
     ) -> Result<InvitationStatus, InvitationError> {
+        Ok(self.invitation_claim(link_id).await?.0)
+    }
+
+    /// [`Self::invitation_status`], with the id of the identity a `Valid`
+    /// link's claim creates (DP5-02 D26).
+    pub(crate) async fn invitation_claim(
+        self: &Arc<Self>,
+        link_id: String,
+    ) -> Result<(InvitationStatus, Option<Identifier>), InvitationError> {
         let Some((text, expires_at)) = self.read_invitation(link_id).await? else {
-            return Ok(InvitationStatus::Expired);
+            return Ok((InvitationStatus::Expired, None));
         };
         let session = Arc::clone(self);
         let checked = (self.rt)
@@ -265,15 +275,18 @@ impl NetworkSession {
             Checked::Valid {
                 inviter,
                 funding_duffs,
-                ..
-            } => InvitationStatus::Valid {
-                inviter,
-                funding_duffs,
-                contested_allowed: Checked::contested_allowed(funding_duffs),
-                expires_at: Some(expires_at),
-            },
-            Checked::Claimed => InvitationStatus::Claimed,
-            Checked::Invalid(reason) => InvitationStatus::Invalid { reason },
+                outpoint,
+            } => (
+                InvitationStatus::Valid {
+                    inviter,
+                    funding_duffs,
+                    contested_allowed: Checked::contested_allowed(funding_duffs),
+                    expires_at: Some(expires_at),
+                },
+                Some(identity_for(outpoint)),
+            ),
+            Checked::Claimed => (InvitationStatus::Claimed, None),
+            Checked::Invalid(reason) => (InvitationStatus::Invalid { reason }, None),
         })
     }
 

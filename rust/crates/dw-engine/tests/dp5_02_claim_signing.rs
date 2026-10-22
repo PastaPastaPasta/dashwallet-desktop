@@ -210,11 +210,13 @@ async fn transition<S: Signer<IdentityPublicKey>>(
 #[tokio::test]
 async fn the_claims_transition_is_platforms_own() {
     let (_dir, vault) = vault_signer();
-    let keys = keys_policy::derive_keys(&vault, INDEX, &keys_policy::registration_specs())
+    let engine = VaultIdentitySigner::new(vault, [INDEX]).unwrap();
+    // The claim's own derivation (`PwLib::claim_invitation`).
+    let keys = engine
+        .derive_public_keys(INDEX, &keys_policy::registration_specs())
         .await
         .unwrap();
     assert_eq!(keys.len(), 6, "DP1-01's registration keys");
-    let engine = VaultIdentitySigner::new(vault, [INDEX]).unwrap();
     let plain = plain_keys(&keys);
     for proof in proofs() {
         let id = proof.create_identifier().unwrap();

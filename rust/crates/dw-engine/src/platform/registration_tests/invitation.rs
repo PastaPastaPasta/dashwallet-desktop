@@ -5,6 +5,9 @@
 
 use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
+use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+use dpp::identity::v0::IdentityV0;
+use dpp::identity::{Identity, IdentityPublicKey, KeyID, KeyType, Purpose, SecurityLevel};
 
 use super::*;
 use crate::platform::BearerSecret;
@@ -33,6 +36,9 @@ pub(super) enum ClaimScript {
     Unavailable,
     /// Platform created the identity; the answer was lost.
     LandsThenUnavailable,
+    /// Refused as consumed: our identity is on Platform, the library did
+    /// not adopt it.
+    ConsumedOurs,
 }
 
 /// The voucher's outpoint, the claim's identity derives from.
@@ -42,6 +48,34 @@ pub(super) fn outpoint() -> OutPoint {
 
 fn claimed_id() -> String {
     flow::b58(&flow::identity_for(outpoint()))
+}
+
+fn key(id: u32, byte: u8) -> IdentityPublicKey {
+    IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        id,
+        purpose: Purpose::AUTHENTICATION,
+        security_level: SecurityLevel::MASTER,
+        contract_bounds: None,
+        key_type: KeyType::ECDSA_SECP256K1,
+        read_only: false,
+        data: vec![byte; 33].into(),
+        disabled_at: None,
+    })
+}
+
+/// The keys a scripted claim submits.
+pub(super) fn our_keys() -> BTreeMap<KeyID, IdentityPublicKey> {
+    BTreeMap::from([(0, key(0, 2)), (1, key(1, 3))])
+}
+
+/// The identity at the voucher's id on Platform, with `keys`.
+pub(super) fn landed(keys: &BTreeMap<KeyID, IdentityPublicKey>) -> Option<Identity> {
+    Some(Identity::V0(IdentityV0 {
+        id: flow::identity_for(outpoint()),
+        public_keys: keys.clone(),
+        balance: 0,
+        revision: 0,
+    }))
 }
 
 /// The fake's default: valid, [`FUNDING`], from [`INVITER`].
@@ -81,6 +115,7 @@ fn invitation_row(link_id: &str, inviter: Option<&str>) -> NewRegistration {
         funding: Funding::Invitation {
             link_id: link_id.into(),
             inviter: inviter.map(Into::into),
+            identity: claimed_id(),
         }
         .encode(),
         ..core_row(PLAIN)
@@ -170,6 +205,7 @@ fn a_claim_registers_publishes_and_asks_the_inviter_with_no_duffs() {
         Decoded::Known(Funding::Invitation {
             link_id: link_id.clone(),
             inviter: Some(INVITER.into()),
+            identity: claimed_id(),
         })
     );
     let id = claimed_id();
@@ -654,57 +690,27 @@ fn the_claim_spends_the_vouchers_outpoint_once_it_can_be_proved() {
 }
 
 /// Review M1: a consumed lock is "claimed" only when the engine's own
-/// lookup finds no identity there, or someone else's; ours, or a failed
-/// lookup, retries the claim (the library adopts ours).
+/// lookup finds no identity there, or someone else's; a failed lookup
+/// retries the claim, and ours is adopted (D26).
 #[test]
 fn a_consumed_lock_is_claimed_only_when_the_identity_is_not_ours() {
-    use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
-    use dpp::identity::v0::IdentityV0;
-    use dpp::identity::{Identity, IdentityPublicKey, KeyType, Purpose, SecurityLevel};
     use flow::{ClaimError, consumed_verdict};
-    let key = |id, byte| {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id,
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::MASTER,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: vec![byte; 33].into(),
-            disabled_at: None,
-        })
-    };
-    let ours = BTreeMap::from([(0, key(0, 2)), (1, key(1, 3))]);
-    let identity = |keys: &BTreeMap<_, _>| {
-        Some(Identity::V0(IdentityV0 {
-            id: flow::identity_for(outpoint()),
-            public_keys: keys.clone(),
-            balance: 0,
-            revision: 0,
-        }))
-    };
-    let retried = ClaimError::Failed(PlatformError::Unavailable);
-    assert_eq!(consumed_verdict(Ok(identity(&ours)), &ours), retried);
+    let ours = our_keys();
+    let adopted = Ok(claimed_id());
+    let retried = Err(ClaimError::Failed(PlatformError::Unavailable));
+    let claimed = Err(ClaimError::Claimed);
+    assert_eq!(consumed_verdict(Ok(landed(&ours)), &ours), adopted);
     assert_eq!(
         consumed_verdict(Err(PlatformError::Unavailable), &ours),
         retried
     );
-    assert_eq!(consumed_verdict(Ok(None), &ours), ClaimError::Claimed);
+    assert_eq!(consumed_verdict(Ok(None), &ours), claimed);
     let theirs = BTreeMap::from([(0, key(0, 2)), (1, key(1, 4))]);
-    assert_eq!(
-        consumed_verdict(Ok(identity(&theirs)), &ours),
-        ClaimError::Claimed
-    );
+    assert_eq!(consumed_verdict(Ok(landed(&theirs)), &ours), claimed);
     let fewer = BTreeMap::from([(0, key(0, 2))]);
-    assert_eq!(
-        consumed_verdict(Ok(identity(&fewer)), &ours),
-        ClaimError::Claimed
-    );
+    assert_eq!(consumed_verdict(Ok(landed(&fewer)), &ours), claimed);
     let more = BTreeMap::from([(0, key(0, 2)), (1, key(1, 3)), (2, key(2, 5))]);
-    assert_eq!(
-        consumed_verdict(Ok(identity(&more)), &ours),
-        ClaimError::Claimed
-    );
+    assert_eq!(consumed_verdict(Ok(landed(&more)), &ours), claimed);
     // The lookups: again while nothing is found, three at most; a failed
     // lookup once.
     let f = fixture(false);
@@ -722,16 +728,129 @@ fn a_consumed_lock_is_claimed_only_when_the_identity_is_not_ours() {
         (verdict, calls.load(Ordering::SeqCst))
     };
     assert_eq!(
-        lookups(vec![Ok(None), Ok(None), Ok(identity(&ours))]),
-        (retried.clone(), 3)
+        lookups(vec![Ok(None), Ok(None), Ok(landed(&ours))]),
+        (adopted, 3)
     );
     assert_eq!(
         lookups(vec![Ok(None), Ok(None), Ok(None)]),
-        (ClaimError::Claimed, 3)
+        (claimed.clone(), 3)
     );
     assert_eq!(lookups(vec![Err(PlatformError::Unavailable)]), (retried, 1));
+    assert_eq!(lookups(vec![Ok(landed(&theirs))]), (claimed, 1));
+}
+
+/// Review m1 (D26): a claim refused as consumed whose identity the
+/// engine's own lookup finds with our keys is the claim's result at once,
+/// never a second claim of the same bytes.
+#[test]
+fn a_consumed_claim_of_our_identity_is_adopted_without_a_resend() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().claim_script.push_back(ClaimScript::ConsumedOurs);
+    let link_id = stash(&f);
+    let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
+    let lease = claim_lease(&f);
+    // A step that waits ends this run: the first run reaches the identity.
+    f.drive(&lib, draft, Some(lease.clone()), false);
+    let row = f.row(draft);
+    assert!(phase(&row) >= Phase::IdentityRegistered, "{row:?}");
+    assert_eq!(row.identity, Some(claimed_id()));
+    f.drive(&lib, draft, Some(lease), true);
+    done(&f, draft);
+    let w = lib.w();
+    assert_eq!((w.funds, w.claims, w.identity_creates), (0, 1, 1));
+    drop(w);
+    assert!(!stashed(&f, &link_id));
+}
+
+/// Review m4 (D26): another identity the seed made at the row's index (on
+/// another device, during the claim) is not adopted: its credits are not
+/// spent, the link is not wiped, and the claim is the row's own.
+#[test]
+fn another_identity_at_the_index_is_not_the_claims() {
+    const OTHER: &str = "Other1dentityAtTheIndex";
+    // Before the claim: the claim runs, and is its own identity.
+    let f = fixture(false);
+    let lib = f.fake();
+    let link_id = stash(&f);
+    let mut row = invitation_row(&link_id, Some(INVITER));
+    row.phase = Phase::KeysPrepared.as_str().into();
+    row.identity_index = Some(0);
+    let draft = f.insert(row);
+    lib.w().identities.push((0, OTHER.into()));
+    f.drive(&lib, draft, Some(claim_lease(&f)), true);
+    done(&f, draft);
+    let w = lib.w();
+    assert_eq!(w.claims, 1);
+    assert!(w.names.iter().all(|(id, _)| *id == claimed_id()));
+    assert_eq!(w.requests, [(claimed_id(), INVITER.to_owned())]);
+    drop(w);
+    // After a failed claim: the error stands, the link stays.
+    let f = fixture(false);
+    let lib = f.fake();
+    let link_id = stash(&f);
+    let mut row = invitation_row(&link_id, Some(INVITER));
+    row.phase = Phase::KeysPrepared.as_str().into();
+    row.identity_index = Some(0);
+    let draft = f.insert(row);
+    lib.w().identities.push((0, OTHER.into()));
+    lib.w().claim_script.push_back(ClaimScript::Claimed);
+    f.drive(&lib, draft, Some(claim_lease(&f)), true);
+    let row = f.row(draft);
     assert_eq!(
-        lookups(vec![Ok(identity(&theirs))]),
-        (ClaimError::Claimed, 1)
+        (phase(&row), row.identity, row.error.as_deref()),
+        (Phase::KeysPrepared, None, Some("invitation.claimed"))
     );
+    let w = lib.w();
+    assert!(w.names.is_empty() && w.requests.is_empty());
+    drop(w);
+    assert!(stashed(&f, &link_id));
+}
+
+/// Review m2: D8 holds for a resumed claim too: a grant with duffs, or a
+/// lease with a funding signer, is refused, and the row is left as it was.
+#[test]
+fn a_resumed_claim_refuses_a_grant_with_duffs() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().claim_script.push_back(ClaimScript::Unavailable);
+    let draft = f.insert(invitation_row(&stash(&f), Some(INVITER)));
+    f.drive(&lib, draft, Some(claim_lease(&f)), false);
+    let before = f.row(draft);
+    assert_eq!(phase(&before), Phase::KeysPrepared);
+    let resume = |grant: String| {
+        f.engine
+            .block_on(registration::resume(
+                &f.session,
+                f.wallet,
+                Arc::clone(&lib),
+                &draft.to_string(),
+                Some(grant),
+            ))
+            .map_err(|e| e.code())
+    };
+    assert_eq!(
+        resume(f.grant(1, 10 * COIN * 1000, Credential::None)),
+        Err("platform.grant_invalid")
+    );
+    let funded = f
+        .engine
+        .block_on(f.session.begin_lease(
+            f.wallet,
+            FlowKind::Registration,
+            &[f.grant(1, 10 * COIN * 1000, Credential::None)],
+        ))
+        .unwrap();
+    assert_eq!(
+        resume(crate::platform::lease::lease_string(&funded.id())),
+        Err("platform.grant_invalid")
+    );
+    assert_eq!(f.row(draft), before, "refused before anything is written");
+    assert_eq!(lib.w().claims, 1);
+    // A grant without duffs resumes it.
+    let grant = f.grant(0, 10 * COIN * 1000, Credential::None);
+    assert_eq!(resume(grant), Ok(()));
+    f.settle(draft);
+    done(&f, draft);
+    assert_eq!(lib.w().funds, 0);
 }

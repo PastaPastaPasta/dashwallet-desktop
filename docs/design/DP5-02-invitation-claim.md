@@ -70,9 +70,10 @@ row keeps DP1-02's phases, writes and claims; only `Draft → KeysPrepared → I
 5. The quote: `lock_duffs = funding_duffs`, fee 0, total 0, `available_duffs` 0, and a grant of **`max_duffs` 0** with
    `max_credits` the plan's credits. A `PlatformOp` grant without duffs gives the lease no funding signer at all
    (`lease/session.rs:134`), so nothing in the flow can sign a Core input. A grant with duffs, or a lease issued with
-   a funding signer, is refused, `platform.grant_invalid` (D8).
-6. The row's `funding`: `{"v":1,"kind":"invitation","link_id":…,"inviter":"<base58>"}` (`inviter` absent without
-   one). Never the link.
+   a funding signer, is refused, `platform.grant_invalid` (D8). A resume checks the grant it is given the same way.
+6. The row's `funding`: `{"v":1,"kind":"invitation","link_id":…,"identity":"<base58>","inviter":"<base58>"}`
+   (`inviter` absent without one). `identity` is the id the claim creates, from the voucher's outpoint the status
+   check found (D26). Never the link.
 
 **Draft → KeysPrepared:** the claim hold, then DP1-02's `assign_index` (the ledger's next free index). The hold is the
 funding hold without "SPV caught up": no Core funds move, and the index only needs DP1-05's discovery answered
@@ -81,7 +82,8 @@ funding hold without "SPV caught up": no Core funds move, and the index only nee
 **KeysPrepared (Invitation) → IdentityRegistered:** the claim step, under the `registration/<draft>/identity` step
 permit, as DP1-02's identity step:
 0. The claim hold again (D25): after a restart the bring-up's discovery comes before the checks below.
-1. An identity at the row's index: adopted (a restored row, or a claim whose record was lost).
+1. The row's `identity` at its index: adopted (a restored row, or a claim whose record was lost). Another identity
+   the seed made at that index is not (D26).
 2. The link from the stash, not deleted: gone → `invitation.expired`, not retryable; sealed while locked → parked for
    Unlock; unparsable → `invitation.invalid`.
 3. `inv.rs:532` `claim_invitation(parsed, index, keys, signer)`: keys 0–5 of the index by DP1-01's policy
@@ -96,8 +98,8 @@ permit, as DP1-02's identity step:
    - a ChainLock link whose funding block is not chain-locked yet → waits for the ChainLock before the call (D21);
    - the outpoint already consumed (`error.rs:1255` `is_asset_lock_already_consumed`) after the library's own
      adoption (`inv.rs:877`: the identity at the prospective id carrying exactly our keys is ours): the engine looks
-     the id up itself, up to three times while nothing is found (D24). Our keys there, or a failed lookup → waits and
-     claims again, for the library to adopt it; nothing, or other keys → `invitation.claimed`, not retryable;
+     the id up itself, up to three times while nothing is found (D24). Our keys there → adopted, `IdentityRegistered`
+     (D26); a failed lookup → waits and claims again; nothing, or other keys → `invitation.claimed`, not retryable;
    - a network mismatch → `invitation.invalid`; the network, a timeout → waits; anything else → DP1-02's `failed`.
 
 | Crash at | On restart |
@@ -105,7 +107,7 @@ permit, as DP1-02's identity step:
 | `Draft`, before the index | The hold and `assign_index` again. |
 | `KeysPrepared`, before the call | The call again. |
 | In the call, before Platform took it | The call again; the transaction is the same, Tenderdash's duplicate cache is the SDK's to resolve. |
-| After Platform created the identity, before `IdentityRegistered` | Step 1 adopts it once the library has recorded it; otherwise the call again meets "already consumed" and the library adopts the identity carrying our keys (`inv.rs:917`). Never a second identity: one outpoint makes one. |
+| After Platform created the identity, before `IdentityRegistered` | Step 1 adopts it once the library has recorded it; otherwise the call again meets "already consumed" and the library, or the engine's own lookup (D26), adopts the identity carrying our keys (`inv.rs:917`). Never a second identity: one outpoint makes one. |
 | `IdentityRegistered` and later | DP1-02's name and profile steps, unchanged; then §4. |
 
 - **Another device** claiming the same link first: our call meets "consumed", the identity there carries other keys,
@@ -193,10 +195,10 @@ m4 delta, Contract-Version 35 → 36, item 63:
 | D5 | `contested_allowed` is `funding_duffs ≥ CONTESTED_LOCK_DUFFS`. | DP1-02's floor for a contested registration; the voucher's value is the tier signal (`inv.rs:458-462`). |
 | D6 | The preview trusts DPNS and the profile only, never the link's display name or avatar; a DPNS read failure fails the call. | The link is unproved; a silent `inviter: None` would also drop the request. |
 | D7 | Start refuses a wallet that has any identity (`invitation.already_has_identity`). | The mobile wallets' rule; one invitation makes a first identity. |
-| D8 | The grant has `max_duffs` 0; the quote's totals are 0; a start with a duff-carrying grant, or a lease issued with a funding signer, is refused (`platform.grant_invalid`, review m5, r2 minor 1). | A lease without duffs has no funding signer: the zero-duff guarantee is structural, not only tested. |
+| D8 | The grant has `max_duffs` 0; the quote's totals are 0; a start or a resume with a duff-carrying grant, or a lease issued with a funding signer, is refused (`platform.grant_invalid`, review m5, r2 minor 1, Opus-h r1 m2). A parked lease holds no signer and regains them only from the new grants a rebind takes, which the resume checks. | A lease without duffs has no funding signer: the zero-duff guarantee is structural, not only tested. |
 | D9 | The claim hold drops "SPV caught up". | Nothing on Core is spent or chosen; the index needs DP1-05's answer and DP3-04's gate only. On the devnet SPV never catches up (no dip0024 quorum). |
 | D10 | Keys are DP1-01's six at the row's index, signed by the permit's counting identity signer; the outer signature is the library's raw-key path with the voucher key. | Same identity shape as a Core-funded registration; the vault holds no voucher key. |
-| D11 | An identity at the row's index is adopted before the stash is read. | A restored row on another machine has no link; the seed's identity at that index is the wallet's. |
+| D11 | The row's own identity (D26) at its index is adopted before the stash is read. | A restored row on another machine has no link; the claim's identity at that index is the wallet's. |
 | D12 | A link gone before the identity is `invitation.expired`, not retryable; a sealed link while locked parks. | Nothing else can make the identity; a lock is the user's to lift. |
 | D13 | The link is wiped once `IdentityRegistered` is written, retried at later steps on failure. | §2.9 "the claim finished"; before that a crash needs it. |
 | D14 | The inviter is resolved at start and stored in `funding` (non-secret). | The link is wiped before the request step; a restart must still know whom to ask. |
@@ -209,8 +211,9 @@ m4 delta, Contract-Version 35 → 36, item 63:
 | D21 | A ChainLock link (no islock) whose funding transaction is not chain-locked yet waits for the ChainLock before the library is called. | The library refuses that link as invalid data, which would fail the row; the engine's own fetch already knows the lock's state. |
 | D22 | Load flakes, rerun alone and passed: dwcli `dashpay_r3` `a_one_shot_command_abandons_a_stalled_engine` and `the_passphrase_is_wiped_before_a_blocked_write` (`init-vault`'s 10 s shutdown deadline missed at load 228); dw-engine `platform::lease::tests::a_failed_step_write_hands_off_no_copy_until_it_is_repaired` (gate run 1, passed alone on try 1); final gate: dw-engine `platform::lease::call_tests::a_call_steps_marker_is_durable_before_its_permit_returns` (BL-181; passed alone on try 1, the shared rerun script's `^lease::` pattern misses the `platform::` prefix), WebKit `contact-pane.spec.ts:43`, `dashpay.spec.ts:139`, `names.spec.ts:210`, `registration.spec.ts:320` ×2 (19 tests alone: all pass), Swift `SPVCoordinatorTests.doneOnlyAfterThePeakDelay` (alone with its target: 100 tests pass). | Untouched by DP5-02; wall-clock bounds under agentbox load (BL-100). |
 | D23 | MG-01's operator-signing scan (`dw-protx/tests/no_operator_signing.rs`) allows one exact line of the signing test: the `&dpp::native_bls::NativeBlsModule` argument. | Every dpp IdentityCreate builder takes a BLS module; the claim's transition has no BLS key and an ECDSA outer signature, so the module signs nothing. An exact-text entry, not the whole file, so nothing else in the test can name a BLS type. For review. |
-| D24 | A "consumed" refusal is read with the engine's own lookup of the identity at the lock's id (`consumed_lookup`, `consumed_verdict`), up to three lookups 2 s apart while none is found: our keys there or a failed lookup retry the claim; nothing or other keys is `invitation.claimed`. | Review M1: the library reports a failed adoption lookup as the same refusal, which would fail our own landed claim for good. Accepted residual (r2 minor 3): three proved absences from a node a block behind still end `invitation.claimed`; DP1-05's discovery finds the identity later (F4's stored id would let a sweep revive the row). |
+| D24 | A "consumed" refusal is read with the engine's own lookup of the identity at the lock's id (`consumed_lookup`, `consumed_verdict`), up to three lookups 2 s apart while none is found: a failed lookup retries the claim; our keys there are adopted (D26); nothing or other keys is `invitation.claimed`. | Review M1: the library reports a failed adoption lookup as the same refusal, which would fail our own landed claim for good. Accepted residual (r2 minor 3): three proved absences from a node a block behind still end `invitation.claimed`; DP1-05's discovery finds the identity later (D26's stored id would let a sweep revive the row, follow-up F8). |
 | D25 | The claim step waits for the claim hold before D11's check. | Review m2: after a restart at `KeysPrepared` the bring-up's discovery must answer before a gone link (dismissed, or past the TTL) fails a claim that landed unrecorded. |
+| D26 | DEC-333 (independent Opus-h r1): (a) the start stores the id the claim creates (`identity_for` of the voucher's outpoint, from the status check) in the row's `funding`; it is required there (DP1-02 refused invitation starts, so no row lacks it). D11, before and after the call, adopts only that id at the row's index. (b) When D24's lookup finds our keys at that id, the step adopts it as the claim's result, as DP1-02's `create_identity` adopts `find_identity(outpoint)`; the library records it at its next re-sync, as its own claim does when its bookkeeping fails (`inv.rs:620`). | (a) m4/F4: the same seed registering at the same index on another device during the claim would otherwise be adopted, its credits spent and the unused link wiped. (b) m1: a resent claim is the same bytes (same keys, proof and voucher key, deterministic ECDSA); a node that refused it answers from Tenderdash's cache, which the SDK reads as delivered and then times out, so the retry loops. It also stops a link expiring between attempts from failing a claim that landed. |
 
 ## Follow-ups
 
@@ -218,14 +221,21 @@ m4 delta, Contract-Version 35 → 36, item 63:
 - F2: An opt-out of the request to the inviter (D16), and a note on the `Done` row when the request was refused for
   good (D15).
 - F3: Use #4997's wallet-bound `invitation_claim_status` instead of the mirror (D2) if Platform adds an unbound form.
-- F4 (review m1): D11 adopts any identity at the row's index. The same seed registering at the same index on another
-  device at the same time would make the claim adopt that identity. Store the prospective id in the row's `funding`
-  and adopt only it, as `create_identity` compares against `identity_for(outpoint)`.
-- F5 (review m3, m4): a discard of a claim row after its identity step released signatures, and the stash's 30-day
-  TTL on a row parked that long, can leave an unnamed identity. Refuse that discard, and keep the stash entries of
-  open claim rows.
+- F4: done (D26, DEC-333).
+- F5 (review m3, m4; Opus-h r1 m5): a discard of a claim row after its identity step released signatures, and the
+  stash's 30-day TTL on a row parked that long, can leave an unnamed identity. Refuse that discard, and keep the stash
+  entries of open claim rows. Moved to DP5-03's brief (DEC-333), with Opus-h r1 n3: DP5-03 shows the request's
+  recipient before the claim, since a link's `du` can name any DPNS user (F7).
 - F6 (review m6): CI builds neither `--features invitation-create-test` nor the ignored release check; the DP5-02
   gate does. Add both to CI.
 - F7 (review n6, n8, for DP5-03): DPNS proves only that the link's name maps to an identity, not that this user made
   the invitation, so the UI must not show the inviter as verified. `invitation_status` reads `Claimed` for this
   wallet's own claim in flight, so the UI reads the row as well.
+- F8: a sweep that revives a row D24's residual ended `invitation.claimed` once the row's stored identity (D26)
+  appears with our keys.
+- F9 (Opus-h r1 n2): library `InvalidIdentityData` refusals after the engine's own funding check passed (a lagging
+  node's refetch miss, a ChainLock link the library's node does not see as locked yet) map to `internal` and fail the
+  row, retryable; classify them as a network wait.
+- F10 (Opus-h r1 n4): `PwLib::claim_invitation`'s error mapping (`consumed` → the engine's lookup,
+  `InvitationNetworkMismatch` → `Invalid`, `AssetLockNotChainLocked` → `NotChainLocked`) has no unit test; a seam
+  injecting the claim result and the lookup would let one test pin it.

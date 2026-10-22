@@ -345,11 +345,12 @@ pub(crate) trait RegistrationLib: Send + Sync {
     /// without SPV's sync, since no Core funds move: DP3-04's trust gate
     /// and the bring-up's answer about the seed's identity indexes.
     fn claim_hold(&self) -> Option<RegistrationWait>;
-    /// `NetworkSession::invitation_status` of the stashed link `link_id`.
+    /// `NetworkSession::invitation_status` of the stashed link `link_id`,
+    /// with the identity a `Valid` link's claim creates (D26).
     fn invitation(
         &self,
         link_id: &str,
-    ) -> impl Future<Output = Result<InvitationStatus, InvitationError>> + Send;
+    ) -> impl Future<Output = Result<(InvitationStatus, Option<String>), InvitationError>> + Send;
     /// platform-wallet's `claim_invitation` of the link `link` (its text,
     /// read from the stash) for keys 0–5 of `identity_index`, their
     /// witnesses signed by `permit`'s counting identity signer; the
@@ -412,19 +413,18 @@ const CONSUMED_LOOKUPS: u32 = 3;
 /// A claim refused because its lock is consumed, read from the engine's
 /// own lookup of the identity at the lock's id (the library reports a
 /// failed lookup as that refusal too, which must not fail our own landed
-/// claim for good). An identity carrying exactly `keys` is ours: the claim
-/// is retried and the library adopts it. A failed lookup is retried. None,
-/// or someone else's, is claimed.
+/// claim for good). An identity carrying exactly `keys` is ours, adopted
+/// as the claim's result (D26: a resent claim is the same bytes, which a
+/// node's cache of the refused transition would never answer). A failed
+/// lookup is retried. None, or someone else's, is claimed.
 pub(crate) fn consumed_verdict(
     found: Result<Option<Identity>, PlatformError>,
     keys: &BTreeMap<KeyID, IdentityPublicKey>,
-) -> ClaimError {
+) -> Result<String, ClaimError> {
     match found {
-        Ok(Some(identity)) if carries_keys(&identity, keys) => {
-            ClaimError::Failed(PlatformError::Unavailable)
-        }
-        Ok(_) => ClaimError::Claimed,
-        Err(e) => ClaimError::Failed(e),
+        Ok(Some(identity)) if carries_keys(&identity, keys) => Ok(b58(&identity.id())),
+        Ok(_) => Err(ClaimError::Claimed),
+        Err(e) => Err(ClaimError::Failed(e)),
     }
 }
 
@@ -435,7 +435,7 @@ pub(crate) fn consumed_verdict(
 pub(crate) async fn consumed_lookup<F, Fut>(
     mut fetch: F,
     keys: &BTreeMap<KeyID, IdentityPublicKey>,
-) -> ClaimError
+) -> Result<String, ClaimError>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<Option<Identity>, PlatformError>>,
@@ -1680,7 +1680,9 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             Phase::Draft => self.prepare_keys(row, &funding).await,
             Phase::KeysPrepared => match funding {
                 Funding::CoreBalance { lock_duffs } => self.fund(row, lock_duffs).await,
-                Funding::Invitation { link_id, .. } => self.claim_invitation(row, &link_id).await,
+                Funding::Invitation {
+                    link_id, identity, ..
+                } => self.claim_invitation(row, &link_id, &identity).await,
                 _ => Ok(Step::Fail(internal(), false)),
             },
             Phase::FundingSent | Phase::ProofWaiting => self.create_identity(row, phase).await,
@@ -2294,11 +2296,13 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
     /// KeysPrepared → IdentityRegistered for an invitation (DP5-02 §3): the
     /// library's claim with the link from the stash, under the identity
     /// step's permit as [`Self::create_identity`]. No Core funds: the step
-    /// never funds, and the lease has no funding signer (D8).
+    /// never funds, and the lease has no funding signer (D8). `own`: the
+    /// identity the claim creates (D26), the only one adopted.
     async fn claim_invitation(
         &self,
         row: &RegistrationRow,
         link_id: &str,
+        own: &str,
     ) -> Result<Step, PlatformError> {
         let Some(index) = row.identity_index else {
             return Ok(Step::Fail(internal(), false));
@@ -2314,10 +2318,11 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         if let Some(wait) = self.lib.claim_hold() {
             return Ok(hold_step(wait));
         }
-        // D11: the seed's identity at the row's index is this flow's (a
-        // restored row, or a claim whose record was lost).
-        if let Some(id) = self.identity_at(index).await {
-            return self.advance(row, registered(id)).await;
+        // D11: the claim's identity at the row's index is this flow's (a
+        // restored row, or a claim whose record was lost); another one the
+        // seed made there is not (D26).
+        if self.identity_at(index).await.as_deref() == Some(own) {
+            return self.advance(row, registered(own.to_owned())).await;
         }
         let link = match self.session.read_invitation(link_id.to_owned()).await {
             Ok(Some((link, _))) => link,
@@ -2354,8 +2359,8 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             Ok(id) => return self.advance(row, registered(id)).await,
             Err(e) => e,
         };
-        if let Some(id) = self.identity_at(index).await {
-            return self.advance(row, registered(id)).await;
+        if self.identity_at(index).await.as_deref() == Some(own) {
+            return self.advance(row, registered(own.to_owned())).await;
         }
         Ok(match e {
             ClaimError::Claimed => Step::Fail(InvitationError::Claimed.code(), false),
@@ -2877,7 +2882,7 @@ impl PwLib {
         &self,
         outpoint: OutPoint,
         keys: &BTreeMap<KeyID, IdentityPublicKey>,
-    ) -> ClaimError {
+    ) -> Result<String, ClaimError> {
         use dash_sdk::platform::Fetch;
         let id = identity_for(outpoint);
         let fetch = || async {
@@ -3093,8 +3098,12 @@ impl RegistrationLib for PwLib {
         }
     }
 
-    async fn invitation(&self, link_id: &str) -> Result<InvitationStatus, InvitationError> {
-        self.session.invitation_status(link_id.to_owned()).await
+    async fn invitation(
+        &self,
+        link_id: &str,
+    ) -> Result<(InvitationStatus, Option<String>), InvitationError> {
+        let (status, identity) = self.session.invitation_claim(link_id.to_owned()).await?;
+        Ok((status, identity.as_ref().map(b58)))
     }
 
     async fn claim_invitation(
@@ -3129,7 +3138,7 @@ impl RegistrationLib for PwLib {
             Err(E::InvitationNetworkMismatch { .. }) => Err(ClaimError::Invalid),
             Err(E::AssetLockNotChainLocked(_)) => Err(ClaimError::NotChainLocked),
             Err(E::Sdk(e)) if is_asset_lock_already_consumed(&e, &outpoint) => {
-                Err(self.consumed_claim(outpoint, &keys).await)
+                self.consumed_claim(outpoint, &keys).await
             }
             Err(e) => Err(ClaimError::Failed(e.into())),
         }

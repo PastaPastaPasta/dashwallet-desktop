@@ -460,7 +460,8 @@ async fn invitation_plan<L: RegistrationLib>(
     if !lib.identities().await.is_empty() {
         return Err(InvitationError::AlreadyHasIdentity.into());
     }
-    let (inviter, funding_duffs, contested_allowed) = match lib.invitation(link_id).await? {
+    let (status, identity) = lib.invitation(link_id).await?;
+    let (inviter, funding_duffs, contested_allowed) = match status {
         InvitationStatus::Valid {
             inviter,
             funding_duffs,
@@ -474,6 +475,13 @@ async fn invitation_plan<L: RegistrationLib>(
         InvitationStatus::Claimed => return Err(InvitationError::Claimed.into()),
         InvitationStatus::Expired => return Err(InvitationError::Expired.into()),
         InvitationStatus::Invalid { .. } => return Err(InvitationError::Invalid.into()),
+    };
+    // D26: the claim's own identity, the only one the row adopts.
+    let Some(identity) = identity else {
+        return Err(PlatformError::Internal {
+            detail: "a valid invitation without its identity id".into(),
+        }
+        .into());
     };
     if base.contested && !contested_allowed {
         return Err(NameError::UnavailableForInvite.into());
@@ -493,6 +501,7 @@ async fn invitation_plan<L: RegistrationLib>(
         funding: Funding::Invitation {
             link_id: link_id.to_owned(),
             inviter,
+            identity,
         },
         lock_duffs: funding_duffs,
         credits,
@@ -1003,6 +1012,12 @@ pub(crate) async fn resume<L: RegistrationLib + 'static>(
     }
     if row.phase == Phase::Done.as_str() && row.error.is_none() {
         return Ok(());
+    }
+    // D8 on every grant a claim is given, not only the start's.
+    if let (Ok((_, Funding::Invitation { .. })), Some(grant)) = (flow::interpret(&row), &grant)
+        && grant_funds(session, wallet, grant).await?
+    {
+        return Err(PlatformError::GrantInvalid.into());
     }
     let key = (wallet, row.id);
     let flows = &session.platform.registrations;

@@ -1011,12 +1011,15 @@ impl RegistrationLib for Fake {
     async fn invitation(
         &self,
         _: &str,
-    ) -> Result<super::invitations::InvitationStatus, super::errors::InvitationError> {
-        Ok(self
-            .w()
-            .invitation
-            .clone()
-            .unwrap_or_else(invitation::valid))
+    ) -> Result<
+        (super::invitations::InvitationStatus, Option<String>),
+        super::errors::InvitationError,
+    > {
+        use super::invitations::InvitationStatus;
+        let status = (self.w().invitation.clone()).unwrap_or_else(invitation::valid);
+        let identity = matches!(status, InvitationStatus::Valid { .. })
+            .then(|| flow::b58(&flow::identity_for(invitation::outpoint())));
+        Ok((status, identity))
     }
 
     async fn claim_invitation(
@@ -1057,6 +1060,16 @@ impl RegistrationLib for Fake {
                 permit.note_released();
                 self.create_identity(invitation::outpoint(), index);
                 return Err(ClaimError::Failed(PlatformError::Unavailable));
+            }
+            Some(ClaimScript::ConsumedOurs) => {
+                // Platform holds our identity; the library's own lookup
+                // failed, so it refused the claim as consumed and recorded
+                // nothing. The engine's lookup reads the verdict.
+                permit.note_released();
+                self.w().identity_creates += 1;
+                let keys = invitation::our_keys();
+                let landed = invitation::landed(&keys);
+                return flow::consumed_lookup(|| async { Ok(landed.clone()) }, &keys).await;
             }
             None => {}
         }
