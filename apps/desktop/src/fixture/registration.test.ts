@@ -303,5 +303,31 @@ describe("an invitation's claim (DP5-03 D17)", () => {
     const row = (await cmd.registrations(W))[0];
     expect(row).toMatchObject({ draft: "claim-1", phase: "keysPrepared", running: false, waiting: "authorize", invitation: { linkId: linkOf(f) } });
     expect(await cmd.invitationStatus(linkOf(f))).toMatchObject({ kind: "valid" });
+    // D12: an open claim's link is held; Remove is refused.
+    await expect(cmd.dismissStashedLink(linkOf(f))).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(f.world.stash).toHaveLength(1);
+  });
+
+  it("D20: a claim row's resume grant is its own: no duffs, the credits of the steps left", async () => {
+    const f = installFixture({ scenario: "invitation-valid" });
+    const linkId = linkOf(f);
+    const asked = await cmd.registrationQuote(W, invitationRequest(LABEL2, linkId, true));
+    const draft = await cmd.startRegistration(W, invitationRequest(LABEL2, linkId, true), await claimGrant(asked.grant.maxCredits));
+    // The start's quote and the row's grant agree.
+    expect(await cmd.registrationResumeGrant(W, draft)).toEqual(asked.grant);
+    f.advanceRegistration(draft);
+    f.advanceRegistration(draft);
+    // The identity registered (the link wiped: the invitation reads expired): the name and the request.
+    const named = await cmd.registrationResumeGrant(W, draft);
+    expect(named.maxDuffs).toBe(0);
+    expect(BigInt(named.maxCredits)).toBeLessThan(BigInt(asked.grant.maxCredits));
+    while (f.advanceRegistration(draft));
+    expect(await cmd.registrationResumeGrant(W, draft)).toEqual({ maxDuffs: 0, maxCredits: "0" });
+    // A Core row has none.
+    clearMocks();
+    install();
+    const core = await cmd.registrationQuote(W, coreRequest(LABEL));
+    const coreDraft = await cmd.startRegistration(W, coreRequest(LABEL), await grant(core.grant.maxDuffs, core.grant.maxCredits));
+    await expect(cmd.registrationResumeGrant(W, coreDraft)).rejects.toMatchObject({ code: "invalid_argument" });
   });
 });

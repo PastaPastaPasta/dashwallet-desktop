@@ -7,7 +7,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { errorMessage } from "../api/backend";
 import { useBackend } from "../api/queries";
-import { savedLinkRows, SavedLinksText } from "../app/savedLinks";
+import { removeErrorText, savedLinkRows, SavedLinksText } from "../app/savedLinks";
 import { applyLink } from "../app/shellBridge";
 import { DashButton } from "../components/basics";
 import { Sheet } from "../components/sheet";
@@ -24,13 +24,13 @@ export function SavedLinksSheet({ onClose }: { onClose: () => void }) {
   const [problem, setProblem] = useState<string | null>(null);
   const rows = savedLinkRows(links.data ?? [], Date.now() / 1000);
 
-  const act = async (id: string, what: () => Promise<void>) => {
+  const act = async (id: string, what: () => Promise<void>, text: (e: unknown) => string = errorMessage) => {
     setBusy(id);
     setProblem(null);
     try {
       await what();
     } catch (e) {
-      setProblem(errorMessage(e));
+      setProblem(text(e));
     } finally {
       setBusy(null);
       void client.invalidateQueries({ queryKey: SAVED_LINKS_KEY });
@@ -47,7 +47,7 @@ export function SavedLinksSheet({ onClose }: { onClose: () => void }) {
     act(id, async () => {
       await backend.dismissStashedLink(id);
       if (rows.length <= 1) onClose();
-    });
+    }, removeErrorText);
 
   return (
     <Sheet title={SavedLinksText.title} width="small" testId="saved-links" onClose={onClose}>

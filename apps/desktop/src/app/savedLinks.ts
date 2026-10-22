@@ -3,6 +3,7 @@
 // and at launch the window offers them once ("Links you opened"). Pure: the sheet is
 // screens/SavedLinks.tsx, the offer App.tsx.
 
+import { errorMessage, hasCode } from "../api/backend";
 import type { StashedLinkInfo } from "../api/generated/StashedLinkInfo";
 import type { StashedLinkKindName } from "../api/generated/StashedLinkKindName";
 
@@ -18,7 +19,15 @@ export const SavedLinksText = {
   invitationSaved: "Invitation saved. It is waiting for you once your wallet is set up.",
   gone: "This link is no longer saved.",
   loadFailed: "Could not read the saved links.",
+  /** DP5-03 D12: the stash keeps an invitation an open claim holds. */
+  held: "This invitation is being claimed. Finish that claim first.",
 } as const;
+
+/** Why a link was not removed: the one id the window sends is a stashed link's, so the engine's
+ * `invalid_argument` is a claim's hold (DP5-03 D12). */
+export function removeErrorText(e: unknown): string {
+  return hasCode(e, "invalid_argument") ? SavedLinksText.held : errorMessage(e);
+}
 
 export const KIND_TITLE: Record<StashedLinkKindName, string> = {
   payment: "Payment request",

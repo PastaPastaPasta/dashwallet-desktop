@@ -2,7 +2,8 @@
 
 import { describe, expect, it } from "vitest";
 import type { StashedLinkKindName } from "../api/generated/StashedLinkKindName";
-import { offerReady, offerTarget, openedAgo, savedLinkRows } from "./savedLinks";
+import { appError } from "../onboarding/testWorld";
+import { offerReady, offerTarget, openedAgo, removeErrorText, savedLinkRows, SavedLinksText } from "./savedLinks";
 
 describe("saved links", () => {
   it("DP5-01 says when a link was opened", () => {
@@ -51,5 +52,10 @@ describe("saved links", () => {
     expect(offerTarget([link(3, "payment")], true)).toBe("sheet");
     expect(offerTarget([], true)).toBeNull();
     expect(offerTarget([], false)).toBeNull();
+  });
+
+  it("DP5-03 D12: a Remove refused for a claim's hold says so; other refusals as they are", () => {
+    expect(removeErrorText(appError("invalid_argument", null, "the invitation is in use by a claim in progress"))).toBe(SavedLinksText.held);
+    expect(removeErrorText(appError("platform.unavailable", null, "unavailable"))).toBe("unavailable");
   });
 });

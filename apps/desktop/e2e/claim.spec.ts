@@ -171,6 +171,10 @@ test("F7 (D5): our own claim in flight reads in progress, not already used", asy
 
 test("C1: a claim stopped by a relaunch resumes from Home with no duffs, to Done", async ({ page }) => {
   const errors = await open(page, "invitation-claiming");
+  // D12: the open claim holds its link; Remove says so and keeps it.
+  await page.getByTestId("saved-link-remove").click();
+  await expect(page.getByTestId("saved-links-problem")).toHaveText("This invitation is being claimed. Finish that claim first.");
+  await expect(page.getByTestId("saved-link")).toHaveCount(1);
   await page.getByTestId("saved-links-later").click();
   await page.evaluate(() => window.__dwFixture!.relaunch());
   await expect(page.getByTestId("lock-screen")).toBeVisible();

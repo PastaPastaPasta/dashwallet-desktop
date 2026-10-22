@@ -220,8 +220,10 @@ export class RegistrationWizard extends Model {
     await this.#call("discard", async () => {
       if (row && row.phase !== "done" && !row.fundsCommitted)
         await this.api.discardRegistration(this.walletId, row.draft).catch((e: unknown) => {
-          // D11: a claim that may have reached the network is continued, not discarded.
-          throw row.invitation && hasCode(e, "invalid_argument") ? CLAIM_KEPT : e;
+          if (!row.invitation || !hasCode(e, "invalid_argument")) throw e;
+          // D11: a claim that may have reached the network is kept. One that can run is continued;
+          // one stopped for good stays as it stopped, and its invitation's screen is shown below.
+          if (!stopped) throw CLAIM_KEPT;
         });
       // A claim discarded goes back to its invitation's screen, which reads the link again (D1).
       if (row?.invitation && row.phase !== "done") return this.close();

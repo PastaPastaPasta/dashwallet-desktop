@@ -306,4 +306,14 @@ describe("DP5-03 the claim (invitation mode)", () => {
     await wiz.another(row({ phase: "failed", fundsCommitted: false, failure: { phase: "draft", code: "platform.unavailable", retryable: true, needed: null, available: null } }));
     expect(hasCode(wiz.error, "invalid_argument")).toBe(true);
   });
+
+  it("D11 (Opus r2 1): a stopped claim the engine keeps goes back to its invitation, as a discarded one", async () => {
+    const { wiz, api } = setup();
+    wiz.adopt("claim-1");
+    const stopped = claimRow({ phase: "failed", failure: { phase: "keysPrepared", code: "invitation.expired", retryable: false, needed: null, available: null } });
+    api.discardRegistration.mockRejectedValueOnce(appError("invalid_argument"));
+    await wiz.another(stopped);
+    expect(api.discardRegistration).toHaveBeenCalledWith(WALLET_A, "claim-1");
+    expect(wiz).toMatchObject({ step: null, draft: null, error: null });
+  });
 });

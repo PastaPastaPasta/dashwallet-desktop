@@ -8,6 +8,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { errorMessage, hasCode } from "../../api/backend";
 import { useBackend } from "../../api/queries";
+import { removeErrorText } from "../../app/savedLinks";
 import { navigate, ui } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CopyValue } from "../../components/detail";
@@ -64,17 +65,19 @@ export function ClaimScreen({
   hasIdentity: boolean;
   network: string;
   /** The wallet's registrations, read before the status (D5, F7). */
-  rows: { isSuccess: boolean; isError: boolean; error: unknown; refetch: () => unknown };
+  rows: { data: unknown; isError: boolean; error: unknown; refetch: () => unknown };
 }) {
   const id = useId();
   const b = useBackend();
   const client = useQueryClient();
-  // D5 (F7): no status before the rows: our own claim in flight never reads "already used".
-  const status = useInvitationStatus(linkId, !hasIdentity && rows.isSuccess);
+  // D5 (F7): no status before the rows are read once: our own claim in flight never reads
+  // "already used". A failed refetch keeps the rows read.
+  const read = rows.data !== undefined;
+  const status = useInvitationStatus(linkId, !hasIdentity && read);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const statusError = rows.isError ? rows.error : status.isError ? status.error : null;
-  const model = claimModel({ entry, hasIdentity, status: rows.isSuccess ? status.data : undefined, statusError, network });
+  const statusError = !read && rows.isError ? rows.error : status.isError ? status.error : null;
+  const model = claimModel({ entry, hasIdentity, status: read ? status.data : undefined, statusError, network });
   const onAction = async (kind: ClaimActionKind) => {
     switch (kind) {
       case "accept":
@@ -84,7 +87,7 @@ export function ClaimScreen({
       case "notNow":
         return leaveClaim(entry);
       case "retry":
-        return void (rows.isError ? rows.refetch() : status.refetch());
+        return void (read ? status.refetch() : rows.refetch());
       case "dismiss":
         // D16: the stash forgets it (DP5-01's Remove).
         setBusy(true);
@@ -94,7 +97,7 @@ export function ClaimScreen({
           void client.invalidateQueries({ queryKey: SAVED_LINKS_KEY });
           leaveClaim(entry);
         } catch (e) {
-          setProblem(errorMessage(e));
+          setProblem(removeErrorText(e));
         } finally {
           setBusy(false);
         }
