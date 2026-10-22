@@ -440,8 +440,13 @@ async fn open_contests(net: &impl NameVoteNet) -> Result<Vec<ContestedName>, Gov
     let ends = net.end_page(now, ENDS_PAGE).await?;
     let mut open: Vec<(String, u64)> = ends.into_iter().filter(|(_, end)| *end > now).collect();
     open.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-    let polls: Vec<Result<Poll, PlatformError>> = futures_util::stream::iter(&open)
-        .map(|(label, _)| net.page(label, POLL_PAGE))
+    // Owned labels, collected before the stream: a closure over
+    // `&(String, u64)` held across the await makes the call's future fail
+    // the `Send` check of a host command (higher-ranked lifetimes; MG-11,
+    // `the_name_calls_are_send`).
+    let labels: Vec<String> = open.iter().map(|(label, _)| label.clone()).collect();
+    let polls: Vec<Result<Poll, PlatformError>> = futures_util::stream::iter(labels)
+        .map(|label| async move { net.page(&label, POLL_PAGE).await })
         .buffered(POLLS_AT_ONCE)
         .collect()
         .await;

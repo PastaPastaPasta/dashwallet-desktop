@@ -1041,3 +1041,21 @@ fn refusals_map_from_platforms_consensus_errors() {
         None
     );
 }
+
+/// The two calls' futures are `Send`, as a host command needs: dw-app
+/// binds them as Tauri commands (MG-11). A closure over a borrowed
+/// `(label, ends_at)` once made `contested_names`'s fail that check
+/// ("implementation of `FnOnce` is not general enough"); this fails to
+/// compile instead of dw-app.
+#[allow(dead_code)]
+fn the_name_calls_are_send(g: &Governance, wallet: crate::WalletId) {
+    fn send<T: Send>(_: T) {}
+    send(g.contested_names(wallet));
+    send(g.vote_name(
+        wallet,
+        String::new(),
+        NameChoice::Lock,
+        Vec::new(),
+        String::new(),
+    ));
+}

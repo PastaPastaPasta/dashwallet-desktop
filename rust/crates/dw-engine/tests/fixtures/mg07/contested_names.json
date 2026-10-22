@@ -13,7 +13,7 @@
           "votes": 4
         }
       ],
-      "lock_votes": 1,
+      "lock_votes": 5,
       "abstain_votes": 0,
       "contenders_complete": true
     },
@@ -27,7 +27,7 @@
         }
       ],
       "lock_votes": 0,
-      "abstain_votes": 0,
+      "abstain_votes": 4,
       "contenders_complete": true
     }
   ],
