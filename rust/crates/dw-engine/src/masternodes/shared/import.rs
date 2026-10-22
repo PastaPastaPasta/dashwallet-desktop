@@ -15,18 +15,7 @@ use dw_protx::shared::session::{Session, Stage};
 use super::super::MasternodesError;
 use super::super::shared_records::SharedRole;
 use super::build::combine;
-use super::store::{Loaded, envelope_refusal, merge_refusal, message_refusal};
-
-/// What an import does to the wallet's sessions.
-#[derive(Debug)]
-pub(crate) enum Applied {
-    /// A new participant session, `invited`: no coin touched.
-    Insert(Session),
-    /// The held session becomes this copy.
-    Update(Session),
-    /// Nothing changes (a re-pasted message, a reply that adds nothing).
-    Same,
-}
+use super::store::{Loaded, bad_signature, envelope_refusal, merge_refusal, message_refusal};
 
 fn frozen_or_later(stage: Stage) -> bool {
     stage >= Stage::Frozen
@@ -41,15 +30,15 @@ fn combined_or_later(stage: Stage) -> bool {
 }
 
 /// `theirs` against no session of the wallet: an Invitation makes a new
-/// participant session; anything frozen has no recorded side to check
-/// against (§4).
-fn first(theirs: &Session) -> Result<Applied, MasternodesError> {
+/// participant session, `invited` (no coin touched); anything frozen has no
+/// recorded side to check against (§4).
+pub(crate) fn first(theirs: &Session) -> Result<Session, MasternodesError> {
     if frozen_or_later(theirs.stage) {
         return Err(message_refusal("not_participant"));
     }
     let mut invited = theirs.clone();
     invited.sigs.clear();
-    Ok(Applied::Insert(invited))
+    Ok(invited)
 }
 
 /// Locked terms taken by a participant (`joined`, or M-1 case 2): our own
@@ -183,10 +172,7 @@ fn coordinator(l: &Loaded, theirs: &Session) -> Result<Option<Session>, Masterno
                     *share
                 }
             };
-            return Err(MasternodesError::SharedMessage {
-                reason: "bad_signature".into(),
-                share: u16::try_from(share).ok(),
-            });
+            return Err(bad_signature(u16::try_from(share).ok()));
         }
         if merged.signed_count() == merged.shares.len() {
             combine(&mut merged)?;
@@ -215,20 +201,16 @@ fn fallback(ours: &Session, theirs: &Session) -> MasternodesError {
     }
 }
 
-/// Applies `theirs` to the wallet's session of its id (`ours`).
-pub(crate) fn apply(ours: Option<&Loaded>, theirs: &Session) -> Result<Applied, MasternodesError> {
-    let Some(l) = ours else {
-        return first(theirs);
-    };
+/// Applies `theirs` to the wallet's session of its id (`l`). `Some`: the
+/// held session becomes this copy; `None`: nothing changes (a re-pasted
+/// message, a reply that adds nothing).
+pub(crate) fn apply(l: &Loaded, theirs: &Session) -> Result<Option<Session>, MasternodesError> {
     if l.session.message_code() == theirs.message_code() {
-        return Ok(Applied::Same);
+        return Ok(None);
     }
     let next = match l.role {
         SharedRole::Participant => participant(l, theirs)?,
         SharedRole::Coordinator => coordinator(l, theirs)?,
     };
-    Ok(match next {
-        Some(s) if s.message_code() != l.session.message_code() => Applied::Update(s),
-        _ => Applied::Same,
-    })
+    Ok(next.filter(|s| s.message_code() != l.session.message_code()))
 }

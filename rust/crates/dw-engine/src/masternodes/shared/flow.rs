@@ -20,9 +20,9 @@ use platform_wallet::wallet::platform_wallet::PlatformWallet;
 use super::super::MasternodesError;
 use super::super::follow::load_notes;
 use super::super::protx::build::{Context, refused, tx_size};
-use super::super::protx::keys::InUse;
+use super::super::protx::keys::{InUse, p2pkh_id};
 use super::super::shared_records::{RewardChoice, SharedRole, SharedSession, SharedStage};
-use super::build::{Selected, select};
+use super::build::{Selected, placeholder, select};
 use super::store::{
     Approved, ChainView, Loaded, Recorded, RecordedChange, consent_refusal, derive_stage,
     encode_outpoints, envelope_refusal, funding_refusal, json, reserved_of, session_hash,
@@ -45,6 +45,26 @@ pub(crate) struct OwnRow {
     pub refund_address: String,
     /// `""`: rewards go to the refund address.
     pub reward_address: String,
+}
+
+impl OwnRow {
+    /// Writes the three addresses into the session's row of this party.
+    pub(crate) fn fill(&self, row: &mut Share) {
+        row.owner_address.clone_from(&self.owner_address);
+        row.refund_address.clone_from(&self.refund_address);
+        row.reward_address.clone_from(&self.reward_address);
+    }
+}
+
+impl From<&Recorded> for OwnRow {
+    fn from(rec: &Recorded) -> Self {
+        Self {
+            owner_index: rec.owner_index,
+            owner_address: rec.owner_address.clone(),
+            refund_address: rec.refund_address.clone(),
+            reward_address: rec.reward_address.clone(),
+        }
+    }
 }
 
 /// A vault signer's refusal as §10 names it, never with the vault's text.
@@ -94,15 +114,24 @@ impl NetworkSession {
         Ok(self.appdb_op(move |db| db.shared_sessions(&w)).await?)
     }
 
+    /// The stored row of a session of the wallet, if it has one.
+    pub(crate) async fn shared_row(
+        &self,
+        wallet: WalletId,
+        id: &str,
+    ) -> Result<Option<SharedSessionRow>, MasternodesError> {
+        let (w, i) = (wallet.to_string(), id.to_string());
+        Ok(self.appdb_op(move |db| db.shared_session(&w, &i)).await?)
+    }
+
     /// A stored session, parsed (`shared_session_not_found` otherwise).
     pub(crate) async fn shared_loaded(
         &self,
         wallet: WalletId,
         id: &str,
     ) -> Result<Loaded, MasternodesError> {
-        let (w, i) = (wallet.to_string(), id.to_string());
         let row = self
-            .appdb_op(move |db| db.shared_session(&w, &i))
+            .shared_row(wallet, id)
             .await?
             .ok_or(MasternodesError::SharedSessionNotFound)?;
         Loaded::of(row, self.network.core_network())
@@ -176,11 +205,12 @@ impl NetworkSession {
     }
 
     /// This wallet's row of a session (D10): the lowest free keychain owner
-    /// key, a fresh receive address as refund, the reward.
+    /// key (which then counts as in use), a fresh receive address as
+    /// refund, the reward.
     pub(crate) async fn own_row(
         &self,
         wallet: WalletId,
-        used: &InUse,
+        used: &mut InUse,
         reward: &RewardChoice,
     ) -> Result<OwnRow, MasternodesError> {
         let owner = self.pick_owner(wallet, None, used).await?;
@@ -190,20 +220,23 @@ impl NetworkSession {
             RewardChoice::NewAddress => self.issued(wallet, REWARD_LABEL).await?.to_string(),
             RewardChoice::Address { address } => address.trim().to_string(),
         };
-        Ok(OwnRow {
+        let row = OwnRow {
             owner_index: owner.index.ok_or_else(|| {
                 EngineError::Internal("a keychain owner key without index".into())
             })?,
             owner_address: owner.address,
             refund_address: refund,
             reward_address,
-        })
+        };
+        used.owner
+            .extend(p2pkh_id(&row.owner_address, self.network.core_network()));
+        Ok(row)
     }
 
     /// The coins a contribution may take: the automatic-selection
     /// candidates the owner signer signs for, plus `also` (this session's
     /// own reserved coins, for `set_shared_fee`) while unspent.
-    pub(crate) async fn shared_candidates(
+    async fn shared_candidates(
         &self,
         fence: &CoinFence,
         w: &PlatformWallet,
@@ -226,7 +259,7 @@ impl NetworkSession {
 
     /// Selects `target` and names the change (a fresh internal address, or
     /// `reuse`), as this wallet records it (§4, m-1).
-    pub(crate) async fn shared_selection(
+    async fn shared_selection(
         &self,
         w: &PlatformWallet,
         candidates: Vec<(Utxo, DerivationPath)>,
@@ -250,6 +283,24 @@ impl NetworkSession {
             None => None,
         };
         Ok((selected, change))
+    }
+
+    /// The reservation of a contribution (D9): the coin fence, then
+    /// `target` selected from the candidates (and `also`, see
+    /// [`Self::shared_candidates`]). The caller holds the fence until the
+    /// reservation is written.
+    pub(crate) async fn shared_reserve(
+        &self,
+        wallet: WalletId,
+        also: &[OutPoint],
+        target: u64,
+        reuse: Option<&str>,
+    ) -> Result<(CoinFence, Selected, Option<RecordedChange>), MasternodesError> {
+        let fence = self.coin_fence(wallet).await?;
+        let w = self.wallet(&wallet).await?;
+        let candidates = self.shared_candidates(&fence, &w, also).await?;
+        let (selected, change) = self.shared_selection(&w, candidates, target, reuse).await?;
+        Ok((fence, selected, change))
     }
 
     /// This wallet's coins of `outpoints` with their scripts and key paths,
@@ -338,10 +389,7 @@ impl NetworkSession {
     ) -> Result<(), MasternodesError> {
         let now = now_secs();
         let my_shares = match recorded {
-            Some(r) => json(&BTreeMap::from([(
-                r.share_index.to_string(),
-                r.owner_index,
-            )]))?,
+            Some(r) => my_shares_json(r)?,
             None => "{}".into(),
         };
         let row = SharedSessionRow {
@@ -401,13 +449,9 @@ impl NetworkSession {
         if !replaced {
             return Err(MasternodesError::SharedSessionNotFound);
         }
-        let my_shares = json(&BTreeMap::from([(
-            recorded.share_index.to_string(),
-            recorded.owner_index,
-        )]))?;
         let update = SharedSessionUpdate {
             envelope: session.to_text(),
-            my_shares,
+            my_shares: my_shares_json(recorded)?,
             contribution: Some(contribution),
             approved_terms: l.row.approved_terms.clone(),
             signed_tx: None,
@@ -477,6 +521,26 @@ impl NetworkSession {
             .collect())
     }
 
+    /// The wallet's session whose registration is confirmed with ProTx hash
+    /// `txid`, and the height it confirmed at.
+    pub(crate) async fn shared_confirmed(
+        &self,
+        wallet: WalletId,
+        txid: Txid,
+    ) -> Result<(Loaded, u32), MasternodesError> {
+        let chain = self.shared_chain(wallet).await?;
+        let rows = self.shared_rows(wallet).await?;
+        loaded_all(rows, self.network.core_network())
+            .into_iter()
+            .find_map(|l| match derive_stage(&l, &chain) {
+                SharedStage::Confirmed { height } if session_hash(&l, &chain) == Some(txid) => {
+                    Some((l, height))
+                }
+                _ => None,
+            })
+            .ok_or(MasternodesError::SharedRegistrationUnknown)
+    }
+
     /// The follower's pass over the wallet's sessions (§11): a session
     /// read `confirmed`, `conflicted` or `dead` releases its locks; one out
     /// and open never does (D17).
@@ -517,6 +581,25 @@ impl NetworkSession {
         }
         Ok(())
     }
+}
+
+/// The `my_shares` column: the share this wallet took and its owner key.
+fn my_shares_json(rec: &Recorded) -> Result<String, MasternodesError> {
+    json(&BTreeMap::from([(
+        rec.share_index.to_string(),
+        rec.owner_index,
+    )]))
+}
+
+/// Core's rules on `session`'s terms, stand-ins in its empty rows (§5):
+/// what `start_shared` and `join_shared` run before any key is spent.
+pub(crate) fn check_placeholder(
+    session: &Session,
+    ctx: &Context,
+    network: dashcore::Network,
+) -> Result<(), MasternodesError> {
+    let (tx, p) = placeholder(session)?;
+    shared_rules::check_registration(&tx, &p, &ctx.listed, true, network, false).map_err(refused)
 }
 
 /// The fee floor at lock (§3.1 step 3, D26): the relay minimum of the

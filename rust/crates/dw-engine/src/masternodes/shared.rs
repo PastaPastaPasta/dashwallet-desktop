@@ -26,25 +26,31 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use dashcore::hashes::Hash;
-use dashcore::{OutPoint, Txid};
+use dashcore::{Address, OutPoint, ScriptBuf, TxIn, TxOut, Txid};
 use dw_protx::shared::envelope::{SharedMessage as Message, decode_message, encode_base64};
+use dw_protx::shared::rawtx::SPECIAL_VERSION;
 use dw_protx::shared::rules::{self as shared_rules, ShareReward, SharedMn};
-use dw_protx::shared::session::funding::{script_for, verify_consent_signature};
+use dw_protx::shared::session::funding::{
+    Frozen, decode_frozen, script_for, verify_consent_signature,
+};
 use dw_protx::shared::session::merge::add_signature;
 use dw_protx::shared::session::{Session, Share, Stage, Terms};
 use dw_protx::shared::{ProUpShareTx, SpecialTx, TRANSACTION_PROVIDER_UPDATE_SHARE, payload_bytes};
 
 use self::build::{ServiceProblem, coordinator_services, participant_services_ok};
-use self::flow::{check_fee_floor, check_reward, put_own_side, recorded_of, signer_refusal};
-use self::import::Applied;
+use self::flow::{
+    OwnRow, check_fee_floor, check_placeholder, check_reward, put_own_side, recorded_of,
+    signer_refusal,
+};
 use self::store::{
-    Approved, Loaded, envelope_refusal, message_name, message_refusal, stage_refusal, terms_view,
-    view,
+    Approved, Loaded, bad_signature, envelope_refusal, message_name, message_refusal,
+    stage_refusal, terms_view, view,
 };
 use super::protx::CHANGE_LEN;
 use super::protx::build::{
-    SEQUENCE, invalid, plan_funding, preview_script, refused, shared_voting,
+    Context, Funding, SEQUENCE, invalid, plan_funding, preview_script, refused, shared_voting,
 };
+use super::protx::ops::InFlight;
 use super::protx_records::{OperatorChoice, VotingChoice};
 use super::shared_records::{
     Activation, JoinSharedRequest, RewardChoice, SharedCapability, SharedImport, SharedMessage,
@@ -52,6 +58,7 @@ use super::shared_records::{
     UpdateSharePreview, UpdateShareRequest,
 };
 use super::{Masternodes, MasternodesError, display_hex, parse_pro_tx_hash};
+use crate::platform::lease::Lease;
 use crate::platform::{BudgetPurpose, FlowKind, PlatformError};
 use crate::send::lease_failure;
 use crate::{EngineError, NetworkSession, WalletId};
@@ -80,7 +87,8 @@ async fn require_v24(s: &NetworkSession) -> Result<(), MasternodesError> {
 }
 
 /// The message to copy now for `l`'s session (§2.3's names by stage).
-fn message_of(l: &Loaded, session: &Session) -> Result<SharedMessage, MasternodesError> {
+fn message_of(l: &Loaded) -> Result<SharedMessage, MasternodesError> {
+    let session = &l.session;
     if l.role == SharedRole::Participant && l.recorded.is_none() && session.stage == Stage::Draft {
         return Err(stage_refusal(SharedStage::Invited));
     }
@@ -102,35 +110,15 @@ async fn outcome(
     let l = s.shared_loaded(wallet, id).await?;
     let chain = s.shared_chain(wallet).await?;
     Ok(SharedOutcome {
-        message: message_of(&l, &l.session)?,
+        message: message_of(&l)?,
         session: view(&l, &chain),
     })
 }
 
-/// The derived stage, refused unless `ok`.
-async fn stage_where(
-    s: &NetworkSession,
-    wallet: WalletId,
-    l: &Loaded,
-    ok: impl Fn(SharedStage) -> bool,
-) -> Result<SharedStage, MasternodesError> {
-    let chain = s.shared_chain(wallet).await?;
-    let stage = store::derive_stage(l, &chain);
-    if ok(stage) {
-        Ok(stage)
-    } else {
-        Err(stage_refusal(stage))
-    }
-}
-
-fn role_is(l: &Loaded, role: SharedRole) -> Result<(), MasternodesError> {
-    if l.role == role {
-        Ok(())
-    } else {
-        Err(MasternodesError::SharedStage {
-            stage: store::role_name(l.role).into(),
-        })
-    }
+/// D3, then the list a call's rules run on.
+async fn v24_context(s: &NetworkSession, wallet: WalletId) -> Result<Context, MasternodesError> {
+    require_v24(s).await?;
+    s.protx_context(wallet).await
 }
 
 /// The request's terms in the envelope's form, with the keys picked.
@@ -144,6 +132,38 @@ fn terms_of(request: &StartSharedRequest, operator: [u8; 48], voting: &str) -> T
         early_period_blocks: t.early_period_blocks,
         early_penalty: i64::try_from(t.early_penalty).unwrap_or(i64::MAX),
     }
+}
+
+/// The ProUpShareTx spending `funding`, its change to a stand-in script:
+/// `p` takes the inputs hash, the transaction its payload.
+fn update_share_tx(p: &mut ProUpShareTx, funding: &Funding) -> SpecialTx {
+    let mut tx = SpecialTx {
+        version: SPECIAL_VERSION,
+        tx_type: TRANSACTION_PROVIDER_UPDATE_SHARE,
+        input: funding
+            .inputs
+            .iter()
+            .map(|u| TxIn {
+                previous_output: u.outpoint,
+                script_sig: ScriptBuf::new(),
+                sequence: SEQUENCE,
+                witness: Default::default(),
+            })
+            .collect(),
+        output: funding
+            .change
+            .map(|value| TxOut {
+                value,
+                script_pubkey: preview_script(),
+            })
+            .into_iter()
+            .collect(),
+        lock_time: 0,
+        payload: Vec::new(),
+    };
+    p.inputs_hash = tx.inputs_hash();
+    tx.payload = payload_bytes(p);
+    tx
 }
 
 impl Masternodes {
@@ -244,9 +264,7 @@ impl Masternodes {
         if service == Err(ServiceProblem::Invalid) {
             return Err(invalid("the service is one or more IPv4 a.b.c.d:port"));
         }
-        if request.fee == 0 || request.fee > crate::send::MAX_TX_FEE {
-            return Err(invalid("the fee is out of range"));
-        }
+        build::check_fee(request.fee)?;
         if request.terms.early_penalty > i64::MAX as u64 {
             return Err(invalid("the penalty is out of range"));
         }
@@ -280,10 +298,7 @@ impl Masternodes {
             session.check_labels().map_err(envelope_refusal)?;
 
             // Keys (D10): the owner first, so voting never takes it.
-            let own = s.own_row(wallet, &ctx.used, &request.reward).await?;
-            if let Some(id) = super::protx::keys::p2pkh_id(&own.owner_address, network) {
-                ctx.used.owner.insert(id);
-            }
+            let own = s.own_row(wallet, &mut ctx.used, &request.reward).await?;
             let voting = s
                 .pick_voting(wallet, &request.terms.voting, &ctx.used)
                 .await?;
@@ -295,24 +310,14 @@ impl Masternodes {
             session.terms = terms_of(&request, operator.public_key, &voting.address);
             session.operator_secret_holder = request.node_run_by.clone().unwrap_or_default();
             session.coordinator_label = session.shares[0].label.clone();
-            {
-                let row = &mut session.shares[0];
-                row.owner_address.clone_from(&own.owner_address);
-                row.refund_address.clone_from(&own.refund_address);
-                row.reward_address.clone_from(&own.reward_address);
-            }
+            own.fill(&mut session.shares[0]);
 
             // Core's rules on the terms, stand-ins in the empty rows (§5).
-            let (tx, p) = build::placeholder(&session)?;
-            shared_rules::check_registration(&tx, &p, &ctx.listed, true, network, false)
-                .map_err(refused)?;
+            check_placeholder(&session, &ctx, network)?;
 
             // The reservation: share + fee, under the fence (D9).
-            let fence = s.coin_fence(wallet).await?;
-            let w = s.wallet(&wallet).await?;
-            let candidates = s.shared_candidates(&fence, &w, &[]).await?;
             let target = request.shares[0].amount.saturating_add(request.fee);
-            let (selected, change) = s.shared_selection(&w, candidates, target, None).await?;
+            let (fence, selected, change) = s.shared_reserve(wallet, &[], target, None).await?;
             let rec = recorded_of(
                 0,
                 &own,
@@ -348,15 +353,17 @@ impl Masternodes {
         fee: u64,
     ) -> Result<SharedOutcome, MasternodesError> {
         check_session_id(&session)?;
-        if fee == 0 || fee > crate::send::MAX_TX_FEE {
-            return Err(invalid("the fee is out of range"));
-        }
+        build::check_fee(fee)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
-            let _flight = s.claim_shared_session(wallet, &session)?;
-            let l = s.shared_loaded(wallet, &session).await?;
-            role_is(&l, SharedRole::Coordinator)?;
-            stage_where(&s, wallet, &l, |st| st == SharedStage::Draft).await?;
+            let (_flight, l) = s
+                .claim_loaded(
+                    wallet,
+                    &session,
+                    SharedRole::Coordinator,
+                    SharedStage::Draft,
+                )
+                .await?;
             let rec = l
                 .recorded
                 .clone()
@@ -366,23 +373,14 @@ impl Masternodes {
                     stage: "replied".into(),
                 });
             }
-            let fence = s.coin_fence(wallet).await?;
-            let w = s.wallet(&wallet).await?;
-            let candidates = s.shared_candidates(&fence, &w, &rec.outpoints()).await?;
             let target = rec.amount.saturating_add(fee);
             let reuse = rec.change.as_ref().map(|c| c.address.clone());
-            let (selected, change) = s
-                .shared_selection(&w, candidates, target, reuse.as_deref())
+            let (fence, selected, change) = s
+                .shared_reserve(wallet, &rec.outpoints(), target, reuse.as_deref())
                 .await?;
-            let own = flow::OwnRow {
-                owner_index: rec.owner_index,
-                owner_address: rec.owner_address.clone(),
-                refund_address: rec.refund_address.clone(),
-                reward_address: rec.reward_address.clone(),
-            };
             let new = recorded_of(
                 rec.share_index,
-                &own,
+                &OwnRow::from(&rec),
                 &rec.row(),
                 &selected,
                 change,
@@ -426,27 +424,26 @@ impl Masternodes {
                 Err(e) => return Err(envelope_refusal(e)),
             };
             let id = theirs.session_id.clone();
-            let w = wallet.to_string();
             let _flight = s.claim_shared_session(wallet, &id)?;
-            let row = {
-                let (w, id) = (w.clone(), id.clone());
-                s.appdb_op(move |db| db.shared_session(&w, &id)).await?
-            };
-            let ours = row.map(|r| Loaded::of(r, network)).transpose()?;
-            let changed = match import::apply(ours.as_ref(), &theirs)? {
-                Applied::Insert(new) => {
+            let ours = s
+                .shared_row(wallet, &id)
+                .await?
+                .map(|r| Loaded::of(r, network))
+                .transpose()?;
+            let changed = match &ours {
+                None => {
+                    let new = import::first(&theirs)?;
                     s.insert_shared(wallet, &new, SharedRole::Participant, None, &[], None)
                         .await?;
                     true
                 }
-                Applied::Update(new) => {
-                    let l = ours.as_ref().ok_or_else(|| {
-                        EngineError::Internal("an update without its session".into())
-                    })?;
-                    s.save_shared(wallet, l, &new, l.approved.as_ref()).await?;
-                    true
-                }
-                Applied::Same => false,
+                Some(l) => match import::apply(l, &theirs)? {
+                    Some(new) => {
+                        s.save_shared(wallet, l, &new, l.approved.as_ref()).await?;
+                        true
+                    }
+                    None => false,
+                },
             };
             let session = s.shared_view(wallet, &id).await?;
             Ok(SharedImport::Session {
@@ -477,12 +474,15 @@ impl Masternodes {
             let network = s.network.core_network();
             check_reward(&request.reward, network)?;
             s.require_wallet(&wallet)?;
-            require_v24(&s).await?;
-            let mut ctx = s.protx_context(wallet).await?;
-            let _flight = s.claim_shared_session(wallet, &session)?;
-            let l = s.shared_loaded(wallet, &session).await?;
-            role_is(&l, SharedRole::Participant)?;
-            stage_where(&s, wallet, &l, |st| st == SharedStage::Invited).await?;
+            let mut ctx = v24_context(&s, wallet).await?;
+            let (_flight, l) = s
+                .claim_loaded(
+                    wallet,
+                    &session,
+                    SharedRole::Participant,
+                    SharedStage::Invited,
+                )
+                .await?;
             if !participant_services_ok(&l.session.terms.core_p2p_addrs) {
                 return Err(unsupported(Some("service")));
             }
@@ -501,26 +501,13 @@ impl Masternodes {
             }
             let mut next = l.session.clone();
             // Core's rules on the terms with this row as it would be.
-            let own = s.own_row(wallet, &ctx.used, &request.reward).await?;
-            if let Some(id) = super::protx::keys::p2pkh_id(&own.owner_address, network) {
-                ctx.used.owner.insert(id);
-            }
-            {
-                let row = &mut next.shares[index];
-                row.owner_address.clone_from(&own.owner_address);
-                row.refund_address.clone_from(&own.refund_address);
-                row.reward_address.clone_from(&own.reward_address);
-            }
-            let (tx, p) = build::placeholder(&next)?;
-            shared_rules::check_registration(&tx, &p, &ctx.listed, true, network, false)
-                .map_err(refused)?;
+            let own = s.own_row(wallet, &mut ctx.used, &request.reward).await?;
+            own.fill(&mut next.shares[index]);
+            check_placeholder(&next, &ctx, network)?;
 
-            let fence = s.coin_fence(wallet).await?;
-            let w = s.wallet(&wallet).await?;
-            let candidates = s.shared_candidates(&fence, &w, &[]).await?;
             let row = next.shares[index].clone();
             let target = u64::try_from(row.amount).unwrap_or(0);
-            let (selected, change) = s.shared_selection(&w, candidates, target, None).await?;
+            let (fence, selected, change) = s.shared_reserve(wallet, &[], target, None).await?;
             let rec = recorded_of(index, &own, &row, &selected, change, None);
             put_own_side(&mut next, &rec)?;
             next.revision += 1;
@@ -543,7 +530,7 @@ impl Masternodes {
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             let l = s.shared_loaded(wallet, &session).await?;
-            message_of(&l, &l.session)
+            message_of(&l)
         })
         .await
     }
@@ -561,12 +548,15 @@ impl Masternodes {
         check_session_id(&session)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
-            require_v24(&s).await?;
-            let ctx = s.protx_context(wallet).await?;
-            let _flight = s.claim_shared_session(wallet, &session)?;
-            let l = s.shared_loaded(wallet, &session).await?;
-            role_is(&l, SharedRole::Coordinator)?;
-            stage_where(&s, wallet, &l, |st| st == SharedStage::Draft).await?;
+            let ctx = v24_context(&s, wallet).await?;
+            let (_flight, l) = s
+                .claim_loaded(
+                    wallet,
+                    &session,
+                    SharedRole::Coordinator,
+                    SharedStage::Draft,
+                )
+                .await?;
             let complete = l.session.shares.iter().all(|r| {
                 !r.owner_address.is_empty()
                     && !r.refund_address.is_empty()
@@ -588,14 +578,8 @@ impl Masternodes {
             let frozen = s.consent_checks(&locked, &ctx, &unspent, false)?;
             check_fee_floor(&frozen, &rec)?;
             s.reserved_inputs(wallet, &l, &rec.outpoints()).await?;
-            let mut next = locked.session.clone();
-            s.sign_consent(wallet, &grant, &mut next, &frozen, &rec)
+            s.consent_and_save(wallet, &grant, &l, locked.session, &frozen, &rec)
                 .await?;
-            let approved = Approved {
-                terms: terms_view(&next),
-                consent_hash: next.consent_hash.clone(),
-            };
-            s.save_shared(wallet, &l, &next, Some(&approved)).await?;
             outcome(&s, wallet, &session).await
         })
         .await
@@ -611,10 +595,14 @@ impl Masternodes {
         check_session_id(&session)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
-            let _flight = s.claim_shared_session(wallet, &session)?;
-            let l = s.shared_loaded(wallet, &session).await?;
-            role_is(&l, SharedRole::Coordinator)?;
-            stage_where(&s, wallet, &l, |st| st == SharedStage::Signing).await?;
+            let (_flight, l) = s
+                .claim_loaded(
+                    wallet,
+                    &session,
+                    SharedRole::Coordinator,
+                    SharedStage::Signing,
+                )
+                .await?;
             let mut next = l.session.clone();
             build::unfreeze(&mut next);
             s.save_shared(wallet, &l, &next, None).await?;
@@ -636,12 +624,15 @@ impl Masternodes {
         check_session_id(&session)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
-            require_v24(&s).await?;
-            let ctx = s.protx_context(wallet).await?;
-            let _flight = s.claim_shared_session(wallet, &session)?;
-            let l = s.shared_loaded(wallet, &session).await?;
-            role_is(&l, SharedRole::Participant)?;
-            stage_where(&s, wallet, &l, |st| st == SharedStage::Signing).await?;
+            let ctx = v24_context(&s, wallet).await?;
+            let (_flight, l) = s
+                .claim_loaded(
+                    wallet,
+                    &session,
+                    SharedRole::Participant,
+                    SharedStage::Signing,
+                )
+                .await?;
             if l.own_approval() {
                 return outcome(&s, wallet, &session).await;
             }
@@ -652,14 +643,8 @@ impl Masternodes {
             let frozen = s.consent_checks(&l, &ctx, &unspent, false)?;
             let rec = l.recorded.clone().ok_or_else(unrecorded)?;
             s.reserved_inputs(wallet, &l, &rec.outpoints()).await?;
-            let mut next = l.session.clone();
-            s.sign_consent(wallet, &grant, &mut next, &frozen, &rec)
+            s.consent_and_save(wallet, &grant, &l, l.session.clone(), &frozen, &rec)
                 .await?;
-            let approved = Approved {
-                terms: terms_view(&next),
-                consent_hash: next.consent_hash.clone(),
-            };
-            s.save_shared(wallet, &l, &next, Some(&approved)).await?;
             outcome(&s, wallet, &session).await
         })
         .await
@@ -683,12 +668,15 @@ impl Masternodes {
             if !can_send {
                 return Err(unsupported(None));
             }
-            require_v24(&s).await?;
-            let ctx = s.protx_context(wallet).await?;
-            let _flight = s.claim_shared_session(wallet, &session)?;
-            let l = s.shared_loaded(wallet, &session).await?;
-            role_is(&l, SharedRole::Participant)?;
-            stage_where(&s, wallet, &l, |st| st == SharedStage::Combined).await?;
+            let ctx = v24_context(&s, wallet).await?;
+            let (_flight, l) = s
+                .claim_loaded(
+                    wallet,
+                    &session,
+                    SharedRole::Participant,
+                    SharedStage::Combined,
+                )
+                .await?;
             let (_, unspent) = s.op_view(wallet).await?;
             let frozen = s.consent_checks(&l, &ctx, &unspent, true)?;
             let rec = l.recorded.clone().ok_or_else(unrecorded)?;
@@ -745,22 +733,9 @@ impl Masternodes {
             let network = s.network.core_network();
             check_reward(&request.reward, network)?;
             s.require_wallet(&wallet)?;
-            require_v24(&s).await?;
-            let ctx = s.protx_context(wallet).await?;
+            let ctx = v24_context(&s, wallet).await?;
             let txid = Txid::from_byte_array(hash);
-            let chain = s.shared_chain(wallet).await?;
-            let rows = s.shared_rows(wallet).await?;
-            let (l, height) = flow::loaded_all(rows, network)
-                .into_iter()
-                .find_map(|l| match store::derive_stage(&l, &chain) {
-                    SharedStage::Confirmed { height }
-                        if store::session_hash(&l, &chain) == Some(txid) =>
-                    {
-                        Some((l, height))
-                    }
-                    _ => None,
-                })
-                .ok_or(MasternodesError::SharedRegistrationUnknown)?;
+            let (l, height) = s.shared_confirmed(wallet, txid).await?;
             // One block deep, and in the synced list (m-16).
             let listed = ctx.entries.iter().find(|e| e.pro_tx_hash == hash);
             if ctx.list_height.is_none_or(|h| h <= height) || listed.is_none() {
@@ -770,8 +745,7 @@ impl Masternodes {
             if l.recorded.as_ref().map(|r| r.share_index) != Some(index) {
                 return Err(MasternodesError::ShareNotMine);
             }
-            let frozen = dw_protx::shared::session::funding::decode_frozen(&l.session)
-                .map_err(envelope_refusal)?;
+            let frozen = decode_frozen(&l.session).map_err(envelope_refusal)?;
             let share = frozen
                 .payload
                 .shares
@@ -801,32 +775,7 @@ impl Masternodes {
             let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
             let funding = plan_funding(&utxos, &[], payload_bytes(&p).len(), CHANGE_LEN)
                 .map_err(EngineError::from)?;
-            let mut tx = SpecialTx {
-                version: dw_protx::shared::rawtx::SPECIAL_VERSION,
-                tx_type: TRANSACTION_PROVIDER_UPDATE_SHARE,
-                input: funding
-                    .inputs
-                    .iter()
-                    .map(|u| dashcore::TxIn {
-                        previous_output: u.outpoint,
-                        script_sig: dashcore::ScriptBuf::new(),
-                        sequence: SEQUENCE,
-                        witness: Default::default(),
-                    })
-                    .collect(),
-                output: funding
-                    .change
-                    .map(|value| dashcore::TxOut {
-                        value,
-                        script_pubkey: preview_script(),
-                    })
-                    .into_iter()
-                    .collect(),
-                lock_time: 0,
-                payload: Vec::new(),
-            };
-            p.inputs_hash = tx.inputs_hash();
-            tx.payload = payload_bytes(&p);
+            let tx = update_share_tx(&mut p, &funding);
             let mn = SharedMn {
                 pro_tx_hash: txid,
                 collateral: OutPoint::new(txid, frozen.payload.collateral.vout),
@@ -839,7 +788,7 @@ impl Masternodes {
             shared_rules::check_update_share(&tx, &p, Some(&mn), true, false).map_err(refused)?;
             let reward_address = match &request.reward {
                 RewardChoice::NewAddress => None,
-                _ => dashcore::Address::from_script(&reward_script, network)
+                _ => Address::from_script(&reward_script, network)
                     .ok()
                     .map(|a| a.to_string()),
             };
@@ -857,6 +806,63 @@ impl Masternodes {
 }
 
 impl NetworkSession {
+    /// What a call that signs or changes a stored session begins with, in
+    /// §7's order: the session marked in flight, read back, the caller's
+    /// role, and the stage it must be at.
+    async fn claim_loaded(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        id: &str,
+        role: SharedRole,
+        stage: SharedStage,
+    ) -> Result<(InFlight, Loaded), MasternodesError> {
+        let flight = self.claim_shared_session(wallet, id)?;
+        let l = self.shared_loaded(wallet, id).await?;
+        if l.role != role {
+            return Err(MasternodesError::SharedStage {
+                stage: store::role_name(l.role).into(),
+            });
+        }
+        let chain = self.shared_chain(wallet).await?;
+        let current = store::derive_stage(&l, &chain);
+        if current != stage {
+            return Err(stage_refusal(current));
+        }
+        Ok((flight, l))
+    }
+
+    /// A `SharedMasternode` lease on `grant`.
+    async fn shared_lease(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        grant: &str,
+    ) -> Result<Lease, MasternodesError> {
+        Ok(self
+            .begin_lease(wallet, FlowKind::SharedMasternode, &[grant.to_string()])
+            .await
+            .map_err(PlatformError::from)?)
+    }
+
+    /// [`Self::sign_consent`] on `next` (a copy of the registration `l`
+    /// holds), saved over `l` with the terms it now approves.
+    async fn consent_and_save(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        grant: &str,
+        l: &Loaded,
+        mut next: Session,
+        frozen: &Frozen,
+        rec: &store::Recorded,
+    ) -> Result<(), MasternodesError> {
+        self.sign_consent(wallet, grant, &mut next, frozen, rec)
+            .await?;
+        let approved = Approved {
+            terms: terms_view(&next),
+            consent_hash: next.consent_hash.clone(),
+        };
+        self.save_shared(wallet, l, &next, Some(&approved)).await
+    }
+
     /// This wallet's consent signature on `session`'s frozen registration
     /// (§4) under its own `SharedMasternode` lease, charged 0 (§6.3): the
     /// vault's shared signer by the share's keychain owner key, checked
@@ -866,13 +872,10 @@ impl NetworkSession {
         wallet: WalletId,
         grant: &str,
         session: &mut Session,
-        frozen: &dw_protx::shared::session::funding::Frozen,
+        frozen: &Frozen,
         rec: &store::Recorded,
     ) -> Result<(), MasternodesError> {
-        let lease = self
-            .begin_lease(wallet, FlowKind::SharedMasternode, &[grant.to_string()])
-            .await
-            .map_err(PlatformError::from)?;
+        let lease = self.shared_lease(wallet, grant).await?;
         let result = (|| {
             let (_, signer) = lease
                 .charge_tx_signer(BudgetPurpose::Masternode, 0)
@@ -885,12 +888,8 @@ impl NetworkSession {
             if !verify_consent_signature(frozen, share, &b64) {
                 return Err(MasternodesError::ShareNotMine);
             }
-            add_signature(session, frozen, share, &b64).map_err(|_| {
-                MasternodesError::SharedMessage {
-                    reason: "bad_signature".into(),
-                    share: Some(share as u16),
-                }
-            })?;
+            add_signature(session, frozen, share, &b64)
+                .map_err(|_| bad_signature(Some(share as u16)))?;
             Ok(())
         })();
         lease.end();
@@ -910,10 +909,7 @@ impl NetworkSession {
         own: &[build::OwnInput],
         debit: u64,
     ) -> Result<(), MasternodesError> {
-        let lease = self
-            .begin_lease(wallet, FlowKind::SharedMasternode, &[grant.to_string()])
-            .await
-            .map_err(PlatformError::from)?;
+        let lease = self.shared_lease(wallet, grant).await?;
         let result = async {
             let (charge, signer) = lease
                 .charge_tx_signer(BudgetPurpose::Masternode, debit)
@@ -940,18 +936,16 @@ impl NetworkSession {
                 })
                 .await;
             // Nothing saved, so nothing returned: the charge goes back.
-            match out {
-                Ok(true) => {}
-                Ok(false) => {
-                    lease.refund(BudgetPurpose::Masternode, charge);
-                    return Err(MasternodesError::SharedStage {
-                        stage: "funding_signed".into(),
-                    });
-                }
-                Err(e) => {
-                    lease.refund(BudgetPurpose::Masternode, charge);
-                    return Err(e.into());
-                }
+            let saved = match out {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(MasternodesError::SharedStage {
+                    stage: "funding_signed".into(),
+                }),
+                Err(e) => Err(e.into()),
+            };
+            if let Err(e) = saved {
+                lease.refund(BudgetPurpose::Masternode, charge);
+                return Err(e);
             }
             #[cfg(test)]
             super::protx::ops::crash_at(self, super::protx::ops::CrashPoint::SharedOut)?;

@@ -97,9 +97,7 @@ pub fn check_consent(
         return Err(FundingMismatch::TimeLock);
     }
     let row = session.shares.get(own.share_index);
-    if !row
-        .is_some_and(|r| r.label == own.row.label && r.amount == own.row.amount && r.same(&own.row))
-    {
+    if !row.is_some_and(|r| r.label == own.row.label && r.same(&own.row)) {
         return Err(FundingMismatch::RowChanged);
     }
     let theirs = session

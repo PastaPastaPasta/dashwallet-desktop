@@ -387,6 +387,14 @@ pub(crate) fn check_slots(count: usize) -> Result<(), MasternodesError> {
     Ok(())
 }
 
+/// Checks the coordinator's registration fee (D9) before anything is picked.
+pub(crate) fn check_fee(fee: u64) -> Result<(), MasternodesError> {
+    if fee == 0 || fee > crate::send::MAX_TX_FEE {
+        return Err(invalid("the fee is out of range"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(non_snake_case)]
 mod tests {

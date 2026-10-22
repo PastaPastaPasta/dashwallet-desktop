@@ -14,7 +14,9 @@ use dw_protx::shared::json::Json;
 use dw_protx::shared::session::consent::{FundingMismatch, OwnSide};
 use dw_protx::shared::session::funding::{decode_frozen, verify_consent_signature};
 use dw_protx::shared::session::merge::Refusal;
-use dw_protx::shared::session::{Change, Contribution, Input, Session, Share, Stage};
+use dw_protx::shared::session::{
+    Change, Contribution, Input, Session, Share, Stage, is_session_id,
+};
 use serde::{Deserialize, Serialize};
 
 use super::super::MasternodesError;
@@ -186,6 +188,13 @@ pub(crate) fn message_refusal(reason: &str) -> MasternodesError {
     }
 }
 
+pub(crate) fn bad_signature(share: Option<u16>) -> MasternodesError {
+    MasternodesError::SharedMessage {
+        reason: "bad_signature".into(),
+        share,
+    }
+}
+
 pub(crate) fn funding_refusal(reason: &str) -> MasternodesError {
     MasternodesError::SharedFundingMismatch {
         reason: reason.into(),
@@ -201,10 +210,7 @@ pub(crate) fn envelope_refusal(e: EnvelopeError) -> MasternodesError {
         EnvelopeError::Parse(_) => message_refusal("parse"),
         EnvelopeError::Network => message_refusal("network"),
         EnvelopeError::Labels => message_refusal("labels"),
-        EnvelopeError::BadSignature { share } => MasternodesError::SharedMessage {
-            reason: "bad_signature".into(),
-            share: Some(share),
-        },
+        EnvelopeError::BadSignature { share } => bad_signature(Some(share)),
     }
 }
 
@@ -219,10 +225,7 @@ pub(crate) fn merge_refusal(e: Refusal) -> MasternodesError {
         Refusal::RowChanged => funding_refusal("row_changed"),
         Refusal::ContributionChanged => funding_refusal("contribution_changed"),
         Refusal::ForeignInput => funding_refusal("foreign_input"),
-        Refusal::BadSignature { share } => MasternodesError::SharedMessage {
-            reason: "bad_signature".into(),
-            share: Some(share),
-        },
+        Refusal::BadSignature { share } => bad_signature(Some(share)),
     }
 }
 
@@ -239,7 +242,7 @@ pub(crate) fn consent_refusal(e: FundingMismatch) -> MasternodesError {
 
 /// A session id: 64 lower-case hex (D28). The refusal repeats nothing.
 pub(crate) fn check_session_id(id: &str) -> Result<(), MasternodesError> {
-    if id.len() == 64 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+    if is_session_id(id) {
         Ok(())
     } else {
         Err(

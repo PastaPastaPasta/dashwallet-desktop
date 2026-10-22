@@ -70,6 +70,11 @@ fn contribution<'a>(session: &'a Session, label: &str) -> Option<&'a Contributio
     session.contributions.iter().find(|c| c.label == label)
 }
 
+/// `session` holds `held`'s contribution (by label), unchanged.
+fn has_same(session: &Session, held: &Contribution) -> bool {
+    contribution(session, &held.label).is_some_and(|c| c.same(held))
+}
+
 /// `absorbDraftReply`, by the coordinator whose own contribution is
 /// labelled `own_label`. `Ok(None)` is a reply that adds nothing (no bump,
 /// `:1265-1270`); otherwise the merged session, `revision` = ours + 1.
@@ -88,7 +93,7 @@ pub fn absorb_draft_reply(
     }
     same_table(ours, theirs)?;
     let current = contribution(ours, own_label);
-    if current.is_some_and(|c| !contribution(theirs, own_label).is_some_and(|t| t.same(c))) {
+    if current.is_some_and(|c| !has_same(theirs, c)) {
         return Err(Refusal::Older);
     }
 
@@ -181,7 +186,7 @@ pub fn adopt_locked_terms(ours: &Session, theirs: &Session) -> Result<Session, R
         }
     }
     for mine in &ours.contributions {
-        if !contribution(theirs, &mine.label).is_some_and(|c| c.same(mine)) {
+        if !has_same(theirs, mine) {
             return Err(Refusal::ContributionChanged);
         }
     }
@@ -200,7 +205,7 @@ pub fn own_unchanged(ours: &Session, theirs: &Session, share: usize) -> Result<(
         return Err(Refusal::RowChanged);
     }
     let own = contribution(ours, &mine.label);
-    if own.is_some_and(|c| !contribution(theirs, &mine.label).is_some_and(|t| t.same(c))) {
+    if own.is_some_and(|c| !has_same(theirs, c)) {
         return Err(Refusal::ContributionChanged);
     }
     Ok(())

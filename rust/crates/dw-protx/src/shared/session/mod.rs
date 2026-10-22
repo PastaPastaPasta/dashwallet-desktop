@@ -9,6 +9,8 @@
 //! does on import ([`funding`]); comparing the copy with a held session is
 //! the merge's (§3.0).
 
+use std::collections::BTreeSet;
+
 use dashcore::Network;
 
 use super::envelope::{EnvelopeError, append_fingerprint, fingerprint, network_id};
@@ -30,6 +32,11 @@ pub const MAX_MONEY: i64 = 21_000_000 * 100_000_000;
 
 fn money_range(amount: i64) -> bool {
     (0..=MAX_MONEY).contains(&amount)
+}
+
+/// A session id: 64 lower-case hex (D28).
+pub fn is_session_id(id: &str) -> bool {
+    id.len() == 64 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// `MnShareSession::Stage`, in order.
@@ -244,14 +251,14 @@ impl Session {
     /// MG-04b D28: share labels non-empty and unique after trimming, every
     /// contribution naming a share, at most one contribution per share.
     pub fn check_labels(&self) -> Result<(), EnvelopeError> {
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen = BTreeSet::new();
         for share in &self.shares {
             let label = share.label.trim();
             if label.is_empty() || !seen.insert(label) {
                 return Err(EnvelopeError::Labels);
             }
         }
-        let mut funded = std::collections::BTreeSet::new();
+        let mut funded = BTreeSet::new();
         for c in &self.contributions {
             match self.share_index_of(&c.label) {
                 Some(i) if funded.insert(i) => {}
@@ -358,21 +365,18 @@ impl Session {
             return Err(EnvelopeError::NotShared);
         }
         // `!isNum() || getInt<int>() != 1`; a non-integer throws.
-        if !json.find("version").is_some_and(Json::is_num) {
-            return Err(Parse("version"));
-        }
-        if json.find("version").and_then(Json::get_i32) != Some(SESSION_VERSION) {
+        let version = json
+            .find("version")
+            .filter(|v| v.is_num())
+            .and_then(Json::get_i32);
+        if version != Some(SESSION_VERSION) {
             return Err(Parse("version"));
         }
         if json.find("network").and_then(Json::as_text) != Some(network_id(network)) {
             return Err(EnvelopeError::Network);
         }
         let session_id = text(json.find("sessionId")).ok_or(Parse("sessionId"))?;
-        if !(session_id.len() == 64
-            && session_id
-                .bytes()
-                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
-        {
+        if !is_session_id(&session_id) {
             return Err(Parse("sessionId"));
         }
         let revision = int(json.find("revision"), Json::get_i32, "revision")?
@@ -392,25 +396,7 @@ impl Session {
                 return Err(Parse("shares"));
             }
             for entry in shares {
-                let well_formed = entry.is_object()
-                    && entry.find("amount").is_some_and(Json::is_num)
-                    && entry.find("ownerAddress").is_some_and(Json::is_str)
-                    && entry.find("refundAddress").is_some_and(Json::is_str);
-                if !well_formed {
-                    return Err(Parse("shares"));
-                }
-                let amount = entry
-                    .find("amount")
-                    .and_then(Json::get_i64)
-                    .filter(|a| money_range(*a))
-                    .ok_or(Parse("shares"))?;
-                parsed.shares.push(Share {
-                    label: opt_text(entry, "label")?.unwrap_or_default(),
-                    amount,
-                    owner_address: opt_text(entry, "ownerAddress")?.unwrap_or_default(),
-                    refund_address: opt_text(entry, "refundAddress")?.unwrap_or_default(),
-                    reward_address: opt_text(entry, "rewardAddress")?.unwrap_or_default(),
-                });
+                parsed.shares.push(read_share(entry)?);
             }
         }
 
@@ -517,6 +503,30 @@ fn int<T>(
         Some(v) if v.is_num() => get(v).map(Some).ok_or(EnvelopeError::Parse(field)),
         _ => Ok(None),
     }
+}
+
+/// One `shares[]` entry.
+fn read_share(entry: &Json) -> Result<Share, EnvelopeError> {
+    let malformed = EnvelopeError::Parse("shares");
+    let well_formed = entry.is_object()
+        && entry.find("amount").is_some_and(Json::is_num)
+        && entry.find("ownerAddress").is_some_and(Json::is_str)
+        && entry.find("refundAddress").is_some_and(Json::is_str);
+    if !well_formed {
+        return Err(malformed);
+    }
+    let amount = entry
+        .find("amount")
+        .and_then(Json::get_i64)
+        .filter(|a| money_range(*a))
+        .ok_or(malformed)?;
+    Ok(Share {
+        label: opt_text(entry, "label")?.unwrap_or_default(),
+        amount,
+        owner_address: opt_text(entry, "ownerAddress")?.unwrap_or_default(),
+        refund_address: opt_text(entry, "refundAddress")?.unwrap_or_default(),
+        reward_address: opt_text(entry, "rewardAddress")?.unwrap_or_default(),
+    })
 }
 
 /// One `contributions[]` entry (`mnsharesession.cpp:542-606`).

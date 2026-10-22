@@ -67,20 +67,17 @@ pub fn without_fingerprint(json: &Json) -> Json {
     let Json::Obj(entries) = json else {
         return json.clone();
     };
-    let mut ret = Json::obj();
+    let mut kept: Vec<(Vec<u8>, Json)> = Vec::new();
     for (key, value) in entries {
         if key == FINGERPRINT_KEY.as_bytes() {
             continue;
         }
-        let Json::Obj(out) = &mut ret else {
-            unreachable!("built as an object");
-        };
-        match out.iter_mut().find(|(k, _)| k == key) {
+        match kept.iter_mut().find(|(k, _)| k == key) {
             Some((_, v)) => *v = value.clone(),
-            None => out.push((key.clone(), value.clone())),
+            None => kept.push((key.clone(), value.clone())),
         }
     }
-    ret
+    Json::Obj(kept)
 }
 
 /// `EnvelopeFingerprint`: single SHA-256 of `write(2)` of
