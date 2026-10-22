@@ -51,9 +51,12 @@ pub struct InitialProfile {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RegistrationFunding {
     CoreBalance,
-    /// A `stash_invitation` id.
+    /// A `stash_invitation` id. `request_inviter`: send the inviter a
+    /// contact request once the identity exists (DP5-03 D7); `false`
+    /// asks no one.
     Invitation {
         link_id: String,
+        request_inviter: bool,
     },
     /// The id goes to the row's `identity` column.
     ExistingIdentity {
@@ -137,8 +140,24 @@ pub struct RegistrationStatus {
     pub name_failure: Option<String>,
     /// The same for the initial profile, which `update_profile` publishes.
     pub profile_failure: Option<String>,
+    /// Set for a row funded by an invitation (DP5-03 D8).
+    pub invitation: Option<RegistrationInvitation>,
     pub created_at: u64,
     pub updated_at: u64,
+}
+
+/// What an invitation-funded row says of its claim (DP5-03 D8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistrationInvitation {
+    /// The stash id the claim was started with; the link itself is gone
+    /// once the identity is recorded.
+    pub link_id: String,
+    /// The identity the claim sends a contact request to; `None` when the
+    /// link names no inviter or the request was declined at the start.
+    pub inviter: Option<String>,
+    /// On a `Done` row, the code the request to the inviter was refused
+    /// with for good (DP5-02 D15).
+    pub request_failure: Option<String>,
 }
 
 /// The §3.4 state machine.
@@ -439,9 +458,10 @@ async fn plan<L: RegistrationLib>(
                 ..base
             })
         }
-        RegistrationFunding::Invitation { link_id } => {
-            invitation_plan(lib, link_id, credits, base).await
-        }
+        RegistrationFunding::Invitation {
+            link_id,
+            request_inviter,
+        } => invitation_plan(lib, link_id, *request_inviter, credits, base).await,
         RegistrationFunding::FaucetAssetLock { .. } => unreachable!("refused above"),
     }
 }
@@ -450,10 +470,12 @@ async fn plan<L: RegistrationLib>(
 /// everything, so nothing comes from the wallet's coins and the grant asks
 /// for no duffs (D8). Refused when the wallet has an identity (D7), the
 /// invitation is not `Valid`, it cannot buy a contested name, or its value
-/// does not cover what the plan writes.
+/// does not cover what the plan writes. Without `request_inviter` the row
+/// keeps no inviter, so no request is planned or sent (DP5-03 D7).
 async fn invitation_plan<L: RegistrationLib>(
     lib: &L,
     link_id: &str,
+    request_inviter: bool,
     credits: u64,
     base: Plan,
 ) -> Result<Plan, RegistrationError> {
@@ -468,7 +490,7 @@ async fn invitation_plan<L: RegistrationLib>(
             contested_allowed,
             ..
         } => (
-            inviter.map(|i| i.identity),
+            inviter.filter(|_| request_inviter).map(|i| i.identity),
             funding_duffs,
             contested_allowed,
         ),
@@ -502,6 +524,7 @@ async fn invitation_plan<L: RegistrationLib>(
             link_id: link_id.to_owned(),
             inviter,
             identity,
+            request_error: None,
         },
         lock_duffs: funding_duffs,
         credits,
@@ -717,6 +740,11 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
             "registration started past unknown fundings (DEC-197)"
         );
     }
+    // An open claim keeps its link past the stash's TTL and eviction
+    // (DP5-03 D12).
+    if let Funding::Invitation { link_id, .. } = &plan.funding {
+        session.hold_invitation(link_id.clone(), true).await;
+    }
     flow::signal(session, wallet, draft);
     flow::start_run(session, wallet, lib, draft, Some(lease)).await?;
     Ok(draft.to_string())
@@ -866,6 +894,19 @@ pub(crate) async fn statuses<L: RegistrationLib>(
             failure,
             name_failure: row.name_error.clone(),
             profile_failure: row.profile_error.clone(),
+            invitation: match Funding::decode(&row.funding) {
+                Decoded::Known(Funding::Invitation {
+                    link_id,
+                    inviter,
+                    request_error,
+                    ..
+                }) => Some(RegistrationInvitation {
+                    link_id,
+                    inviter,
+                    request_failure: request_error,
+                }),
+                _ => None,
+            },
             created_at: row.created_at,
             updated_at: row.updated_at,
         });
@@ -892,6 +933,7 @@ pub(crate) async fn statuses<L: RegistrationLib>(
             failure: None,
             name_failure: None,
             profile_failure: None,
+            invitation: None,
             created_at: 0,
             updated_at: 0,
         });
@@ -1083,7 +1125,13 @@ pub(crate) async fn discard<L: RegistrationLib + 'static>(
     let Some(current) = ledger.rows().iter().find(|r| r.id == row.id) else {
         return Err(invalid("unknown draft"));
     };
-    if let Some(why) = ledger.discard_refused(current) {
+    let claim_step = move |leases: &super::lease::LeaseTable, id: i64| {
+        leases.call_step(wallet, &flow::identity_step(id)).status
+    };
+    if let Some(why) = ledger
+        .discard_refused(current)
+        .or_else(|| flow::claim_discard_refused(current, claim_step(&session.leases, row.id)))
+    {
         return Err(invalid(why));
     }
     // Then with the flow taken from its run (DEC-171): no call of it starts
@@ -1101,7 +1149,10 @@ pub(crate) async fn discard<L: RegistrationLib + 'static>(
             return Ok(Err("unknown draft"));
         };
         // The claim taken holds no call: the run it took has none running.
-        if let Some(why) = ledger.discard_refused(&row) {
+        if let Some(why) = ledger
+            .discard_refused(&row)
+            .or_else(|| flow::claim_discard_refused(&row, claim_step(&leases, id)))
+        {
             return Ok(Err(why));
         }
         let outpoint = row.asset_lock_outpoint.as_deref();
@@ -1125,6 +1176,9 @@ pub(crate) async fn discard<L: RegistrationLib + 'static>(
             flow::start_run(session, wallet, lib, row.id, preempted.lease).await?;
         }
         return Err(e);
+    }
+    if let Ok((_, Funding::Invitation { link_id, .. })) = flow::interpret(&row) {
+        session.hold_invitation(link_id, false).await;
     }
     flow::signal(session, wallet, row.id);
     tracing::info!(draft = row.id, "registration discarded");

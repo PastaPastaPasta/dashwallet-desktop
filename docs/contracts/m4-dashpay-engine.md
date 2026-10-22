@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 36
+Contract-Version: 37
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -216,7 +216,7 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 | `start_registration_past_unknown_funding(req, grant, past)` | async | `start_registration` past earlier registrations whose funding is unknown (DEC-197, "In progress" below). `past` names each blocker the user confirmed, as `registration.in_progress` names it. Call it only after the user confirmed the wedge copy. A named blocker passes only if every funding step it waits on is wedged; anything else still returns `registration.in_progress`. SPV must be synced (`registration.not_synced`), and each passed step's funding must have been released at least an hour ago (`registration.funding_unknown_recent { draft, wait_secs }`). A malformed name is `invalid_argument`; a well-formed one that blocks nothing is ignored. | `RegistrationError` |
 | `registrations()` | async | Every `dp_registration` row of the wallet, with what each waits for (§5), and, read-only, every outstanding funding step whose row is gone (draft `registration/<n>/funding`; §2.2 "The registration ledger"). | `RegistrationError` |
 | `resume_registration(draft, grant)` | async | Advances a parked flow; it acts on any state (§4.1). `grant` is required exactly when the row's `waiting` is `Unlock` or `Authorize`, and ignored otherwise. | `RegistrationError` |
-| `discard_registration(draft)` | async | Refused (`invalid_argument`) while the row is committed by the registration ledger (§2.2): it holds a lock not yet consumed, a funding step of its own may still deliver a lock, or its funding call runs; and for a row this build cannot read. A `Done` row, or one whose identity exists with nothing of its funding outstanding, may be discarded although its `funds_committed` reads `true`; so may a `Cancelled` one (`registration.funded_elsewhere`, `registration.funding_cancelled`). | `RegistrationError` |
+| `discard_registration(draft)` | async | Refused (`invalid_argument`) while the row is committed by the registration ledger (§2.2): it holds a lock not yet consumed, a funding step of its own may still deliver a lock, or its funding call runs; and for a row this build cannot read. A `Done` row, or one whose identity exists with nothing of its funding outstanding, may be discarded although its `funds_committed` reads `true`; so may a `Cancelled` one (`registration.funded_elsewhere`, `registration.funding_cancelled`). An invitation's claim row (item 64) is refused too, unless `Done` without a failure: once its identity is recorded (its name is not registered yet), and once its identity step has released a signature (the step reads `Marked` or `Sent`), unless the row failed for good. | `RegistrationError` |
 | `finish_asset_locks(grant)` | async | Tools ▸ Repair "Finish transfers": resumes tracked asset locks that no flow finished. Not gated by the journal: it resumes committed locks and builds none. It also applies the wallet's proved top-up locks (DP1-06, §2.8 `resume_top_up`), which needs a grant with `max_duffs` ≥ 1 (none spent); without one they count as `still_pending`. `FinishReport` sums registrations and top-ups. Platform's unproved "already consumed" for a pending top-up lock counts it `resumed` and `still_pending` (it stays pending); for a settled one (historical or resolved, §7 item 44) it counts in none of the fields. | `RegistrationError` |
 | `prepare_faucet_lock(grant)` | async | Developer builds only. Derives a fresh registration asset-lock key (`m/9'/c'/5'/1'/…`) and returns its id and compressed public key for the faucet's `POST /api/asset-lock-proof` (§5). Outside developer builds: `platform.feature_off{feature: "faucet"}`. | `RegistrationError` |
 
@@ -527,7 +527,8 @@ sealed to a key derived from the vault's DEK (sealable while locked, readable on
 a vault exists (`NoVault`) a link is a 0600 file in the clear; it is sealed, the ids unchanged, when the vault is
 created, unlocked or recovered (DASHPAY §2.9, last row). At most 16 links of up to 4096 bytes (a full stash drops its
 oldest payment or contact link first); payment links live 7 days, the others 30; the same link again is the same
-entry. No call quotes a link in an error.
+entry. The invitation of an open claim row is held (item 64): neither its time to live nor the eviction removes it,
+and a stash full of held entries refuses a new link (`invalid_argument`). No call quotes a link in an error.
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
@@ -543,7 +544,8 @@ entry. No call quotes a link in an error.
 **Done (DP5-01, Contract-Version 30, item 56):** `stash_link`, `stashed_links`, `take_stashed_link`,
 `forget_stashed_link`, `stash_invitation`, `pending_invitations` and `forget_invitation`. **Done (DP5-02,
 Contract-Version 36, item 63):** `invitation_status`, and the claim as `start_registration`'s `Invitation` funding
-(§2.2); decisions in `docs/design/DP5-02-invitation-claim.md`.
+(§2.2); decisions in `docs/design/DP5-02-invitation-claim.md`. **DP5-03 (Contract-Version 37, item 64):** the
+request's opt-out, the row's `invitation`, and the stash's holds; decisions in `docs/design/DP5-03-claim-screen.md`.
 
 ### 2.10 Facade
 
@@ -569,7 +571,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 6fb3c52e0cad1be18183b88c60b024f52a16d72c4f373a15fec889b967cc52ba version: 36 -->
+<!-- surface-sha256: 90219913d6afbb9096aad934e3ae298d5d06367a843fc1f418d7e8d8dd689e7c version: 37 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1528,7 +1530,7 @@ pub struct InitialProfile {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RegistrationFunding {
     CoreBalance,
-    Invitation { link_id: String },
+    Invitation { link_id: String, request_inviter: bool },
     ExistingIdentity { identity: String },
     FaucetAssetLock { key: String, proof: String },
 }
@@ -1563,8 +1565,15 @@ pub struct RegistrationStatus {
     pub failure: Option<RegistrationFailure>,
     pub name_failure: Option<String>,
     pub profile_failure: Option<String>,
+    pub invitation: Option<RegistrationInvitation>,
     pub created_at: u64,
     pub updated_at: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistrationInvitation {
+    pub link_id: String,
+    pub inviter: Option<String>,
+    pub request_failure: Option<String>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1953,7 +1962,8 @@ The shapes are in §3. What they mean, where the name does not say:
   - `name_failure` and `profile_failure`: the code a name or initial-profile step ended with after the identity was
     registered (§2.2 "Settled after the identity"), on a `Done` row. The UI offers `register_name` for the identity,
     or the profile edit.
-- **`RegistrationFunding`.** `CoreBalance`, `Invitation{link_id}` (a `stash_invitation` id; DP5-02, below),
+- **`RegistrationFunding`.** `CoreBalance`, `Invitation{link_id, request_inviter}` (a `stash_invitation` id; DP5-02,
+  below; `request_inviter` false sends the inviter no contact request, item 64),
   `ExistingIdentity{identity}` (the id goes to the row's `identity` column), and `FaucetAssetLock{key, proof}` for
   developer builds:
   - The faucet's `POST /api/asset-lock-proof` takes only a compressed public key and returns the `assetLockProof`
@@ -3115,3 +3125,24 @@ renames or reshapes them takes the next version bump:
       contact request to them, under the registration's lease (its `PlatformOp` grant counts the request's
       credits), before `Done`. Our request already on Platform, or a contact already, counts as sent; a refusal
       known to repeat is logged and the row ends `Done`; the network waits.
+
+**From DP5-03** (version 37):
+
+64. **The claim screen's engine follow-ups (DP5-03 D7, D8, D11–D13, version 37).** Decisions in
+    `docs/design/DP5-03-claim-screen.md`. No §4 code changes.
+    - **The opt-out (D7).** `RegistrationFunding::Invitation` gains `request_inviter`. `false` stores no inviter in
+      the row's funding: the quote counts no request credits and no request step runs.
+    - **The row's invitation (D8).** `RegistrationStatus` gains `invitation: Option<RegistrationInvitation>`, set on
+      a claim's row: `link_id`, the `inviter` the request goes to (none with the opt-out or without an inviter), and
+      `request_failure`, the code of a request refused for good (its row still ends `Done`). The UI reads the row
+      of a link before its `invitation_status`, so its own claim reads in progress, not `Claimed`.
+    - **Discard (D11).** `discard_registration` refuses a claim row (§2.2's row) once its identity is recorded and
+      until `Done`, and once its identity step released a signature, unless the row failed for good: the claim may
+      have consumed the link, and a discarded row would leave that identity unowned.
+    - **The stash's holds (D12).** A claim row's start holds its link in the stash (§2.9) until the row ends: the
+      identity is recorded (the link is deleted, as before), the row fails for good, or it is discarded. A held
+      entry is not removed by its time to live or the 16-link eviction; a stash full of held entries refuses a new
+      link. A hold without its entry is swept at load.
+    - **Duplicate keys (D13).** Platform's refusal of the claim's keys as already used by an identity
+      (`DuplicatedIdentityPublicKeyIdStateError`, or its basic form from protocol versions before 7) fails the row
+      `invitation.already_has_identity`, not retryable.

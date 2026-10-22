@@ -1065,6 +1065,14 @@ impl RegistrationLib for Fake {
                 permit.note_released();
                 return Ok(invitation::OTHER.into());
             }
+            Some(ClaimScript::ReleasedThenUnavailable) => {
+                permit.note_released();
+                return Err(ClaimError::Failed(PlatformError::Unavailable));
+            }
+            Some(ClaimScript::DuplicateKeys) => {
+                permit.note_released();
+                return Err(ClaimError::DuplicateKeys);
+            }
             Some(ClaimScript::OtherAppearsThenUnavailable) => {
                 self.w().identities.push((index, invitation::OTHER.into()));
                 return Err(ClaimError::Failed(PlatformError::Unavailable));

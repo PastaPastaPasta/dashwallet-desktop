@@ -311,6 +311,22 @@ impl NetworkSession {
         }
     }
 
+    /// Holds the stashed invitation `link_id` for an open claim, or lets it
+    /// go (DP5-03 D12): a held link outlives its time to live and the
+    /// stash's eviction. A failure is logged; the claim step holds it again.
+    pub(crate) async fn hold_invitation(self: &Arc<Self>, link_id: String, held: bool) {
+        let written = self
+            .stash_call(move |v| v.hold_stashed_link(&link_id, held))
+            .await;
+        if let Err(e) = written {
+            tracing::warn!(
+                code = e.code(),
+                held,
+                "the claim's invitation hold was not written"
+            );
+        }
+    }
+
     /// The checks' network: the session's SDK, or a test's.
     pub(crate) fn invitation_net(
         self: &Arc<Self>,

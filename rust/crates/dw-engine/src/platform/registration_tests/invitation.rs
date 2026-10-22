@@ -43,6 +43,10 @@ pub(super) enum ClaimScript {
     OtherId,
     /// Another device's identity at the index appears; the claim fails.
     OtherAppearsThenUnavailable,
+    /// Signed, then the network failed: the claim may have landed.
+    ReleasedThenUnavailable,
+    /// Platform refused the claim's keys as another identity's (F11).
+    DuplicateKeys,
 }
 
 /// Another identity of the same seed (another device's).
@@ -123,6 +127,7 @@ fn invitation_row(link_id: &str, inviter: Option<&str>) -> NewRegistration {
             link_id: link_id.into(),
             inviter: inviter.map(Into::into),
             identity: claimed_id(),
+            request_error: None,
         }
         .encode(),
         ..core_row(PLAIN)
@@ -133,6 +138,7 @@ fn invite(link_id: &str) -> RegistrationRequest {
     RegistrationRequest {
         funding: RegistrationFunding::Invitation {
             link_id: link_id.into(),
+            request_inviter: true,
         },
         ..request(PLAIN)
     }
@@ -213,6 +219,7 @@ fn a_claim_registers_publishes_and_asks_the_inviter_with_no_duffs() {
             link_id: link_id.clone(),
             inviter: Some(INVITER.into()),
             identity: claimed_id(),
+            request_error: None,
         })
     );
     let id = claimed_id();
@@ -954,4 +961,328 @@ fn a_resumed_claim_refuses_a_grant_with_duffs() {
     f.settle(draft);
     done(&f, draft);
     assert_eq!(lib.w().funds, 0);
+}
+
+/// The stash entry's hold (DP5-03 D12), as the vault keeps it on disk.
+fn held(f: &Fixture, link_id: &str) -> bool {
+    f.session
+        .vault()
+        .dir()
+        .join("links")
+        .join(format!("{link_id}.hold"))
+        .exists()
+}
+
+fn discard_code(f: &Fixture, lib: &Arc<Fake>, draft: i64) -> Result<(), &'static str> {
+    f.discard(lib, draft).map_err(|e| e.code())
+}
+
+/// DP5-02 F5 (DP5-03 D11, D12): `start` holds the claim's link; a claim
+/// that released its signatures and failed retryably cannot be discarded
+/// (it may have landed), and resumes to one identity.
+#[test]
+fn a_claim_that_may_have_landed_is_not_discarded() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let link_id = stash(&f);
+    lib.hang_at(Call::Claim, When::Before);
+    let quote = f
+        .engine
+        .block_on(registration::quote(&*lib, &invite(&link_id)))
+        .unwrap();
+    let grant = f.grant(0, quote.grant.max_credits, Credential::None);
+    let draft: i64 = f
+        .engine
+        .block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            invite(&link_id),
+            grant,
+        ))
+        .unwrap()
+        .parse()
+        .unwrap();
+    eventually("the claim is reached", || lib.hung.load(Ordering::SeqCst));
+    f.kill(draft);
+    lib.w().hang = None;
+    assert!(held(&f, &link_id), "held from the start");
+    lib.w()
+        .claim_script
+        .push_back(invitation::ClaimScript::ReleasedThenUnavailable);
+    let lease = claim_lease(&f);
+    f.drive(&lib, draft, Some(lease.clone()), false);
+    let row = f.row(draft);
+    assert_eq!(
+        (phase(&row), row.error.as_deref()),
+        (Phase::KeysPrepared, None)
+    );
+    assert_eq!(discard_code(&f, &lib, draft), Err("invalid_argument"));
+    assert!(stashed(&f, &link_id) && held(&f, &link_id));
+    f.drive(&lib, draft, Some(lease), true);
+    done(&f, draft);
+    assert_eq!(lib.w().identity_creates, 1);
+    // Done: the link is wiped with its hold.
+    assert!(!stashed(&f, &link_id) && !held(&f, &link_id));
+}
+
+/// DP5-03 D11: a claim row is discarded while nothing of its claim can be
+/// on the network (killed before any signature, or refused for good), and
+/// the discard lets the link go; once its identity exists it is not.
+#[test]
+fn a_claim_row_is_discarded_only_while_nothing_landed() {
+    // Killed before the library signed: NotSent.
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.hang_at(Call::Claim, When::Before);
+    let link_id = stash(&f);
+    let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
+    f.spawn(&lib, draft, Some(claim_lease(&f)));
+    eventually("the claim is reached", || lib.hung.load(Ordering::SeqCst));
+    assert!(held(&f, &link_id), "held by the claim step");
+    f.kill(draft);
+    lib.w().hang = None;
+    assert_eq!(discard_code(&f, &lib, draft), Ok(()));
+    assert!(stashed(&f, &link_id), "the link stays for another try");
+    assert!(!held(&f, &link_id), "let go by the discard");
+
+    // Refused for good after signing: nothing more can land.
+    let lib = f.fake();
+    let link_id = stash(&f);
+    lib.w()
+        .claim_script
+        .push_back(invitation::ClaimScript::DuplicateKeys);
+    let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
+    f.drive(&lib, draft, Some(claim_lease(&f)), true);
+    assert!(!held(&f, &link_id), "let go once failed for good");
+    assert_eq!(discard_code(&f, &lib, draft), Ok(()));
+
+    // The identity registered, the name not yet: refused.
+    let lib = f.fake();
+    lib.hang_at(Call::RegisterName, When::Before);
+    let link_id = stash(&f);
+    let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
+    f.spawn(&lib, draft, Some(claim_lease(&f)));
+    eventually("the name is reached", || lib.hung.load(Ordering::SeqCst));
+    f.kill(draft);
+    lib.w().hang = None;
+    assert!(f.row(draft).identity.is_some());
+    assert_eq!(discard_code(&f, &lib, draft), Err("invalid_argument"));
+    f.drive(&lib, draft, Some(claim_lease(&f)), true);
+    done(&f, draft);
+    assert_eq!(discard_code(&f, &lib, draft), Ok(()));
+
+    // A restored row with its identity: no signature of this process is
+    // out, and still refused.
+    let lib = f.fake();
+    let link_id = stash(&f);
+    let draft = f.insert(NewRegistration {
+        identity_index: Some(0),
+        identity: Some(claimed_id()),
+        phase: Phase::IdentityRegistered.as_str().into(),
+        ..invitation_row(&link_id, Some(INVITER))
+    });
+    assert_eq!(discard_code(&f, &lib, draft), Err("invalid_argument"));
+}
+
+/// DP5-03 D12: `start` holds the link before the claim step (here while
+/// the bring-up runs), and a claim failed for good before its claim step
+/// lets it go.
+#[test]
+fn a_started_claim_holds_its_link_until_it_fails_for_good() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let link_id = stash(&f);
+    lib.w().claim_wait = Some(RegistrationWait::Startup);
+    let quote = f
+        .engine
+        .block_on(registration::quote(&*lib, &invite(&link_id)))
+        .unwrap();
+    let grant = f.grant(0, quote.grant.max_credits, Credential::None);
+    let draft: i64 = f
+        .engine
+        .block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            invite(&link_id),
+            grant,
+        ))
+        .unwrap()
+        .parse()
+        .unwrap();
+    eventually("the claim waits for the bring-up", || {
+        f.status(&lib, draft).waiting == Some(RegistrationWait::Startup)
+    });
+    assert_eq!(phase(&f.row(draft)), Phase::Draft);
+    assert!(held(&f, &link_id), "held from the start");
+    f.kill(draft);
+    // The bring-up finds an identity of the seed (DP5-02 D7).
+    lib.w().claim_wait = None;
+    lib.w().identities.push((0, OTHER.into()));
+    f.drive(&lib, draft, Some(claim_lease(&f)), true);
+    let row = f.row(draft);
+    assert_eq!(
+        (phase(&row), row.error.as_deref(), row.retryable),
+        (Phase::Draft, Some("invitation.already_has_identity"), false)
+    );
+    assert!(stashed(&f, &link_id) && !held(&f, &link_id));
+}
+
+/// DP5-02 F11 (DP5-03 D13): Platform's duplicate-key refusal fails the
+/// claim for good as `invitation.already_has_identity`; a resume does not
+/// claim (and pay) again.
+#[test]
+fn a_duplicate_key_refusal_fails_for_good() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let link_id = stash(&f);
+    lib.w()
+        .claim_script
+        .push_back(invitation::ClaimScript::DuplicateKeys);
+    let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
+    f.drive(&lib, draft, Some(claim_lease(&f)), true);
+    let row = f.row(draft);
+    assert_eq!(
+        (phase(&row), row.error.as_deref(), row.retryable),
+        (
+            Phase::KeysPrepared,
+            Some("invitation.already_has_identity"),
+            false
+        )
+    );
+    assert_eq!(row.identity, None);
+    assert!(stashed(&f, &link_id), "the user dismisses it");
+    let resumed = f.engine.block_on(registration::resume(
+        &f.session,
+        f.wallet,
+        Arc::clone(&lib),
+        &draft.to_string(),
+        None,
+    ));
+    assert!(resumed.is_err(), "{resumed:?}");
+    assert_eq!(lib.w().claims, 1);
+}
+
+/// The classifier, on every shape the SDK reports a refusal in.
+#[test]
+fn duplicate_keys_are_recognised_in_every_shape() {
+    use dash_sdk::error::StateTransitionBroadcastError;
+    use dpp::consensus::ConsensusError;
+    use dpp::consensus::basic::BasicError;
+    use dpp::consensus::basic::identity::DuplicatedIdentityPublicKeyIdBasicError;
+    use dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
+    use dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
+    use dpp::consensus::state::state_error::StateError;
+    let state: ConsensusError = StateError::DuplicatedIdentityPublicKeyIdStateError(
+        DuplicatedIdentityPublicKeyIdStateError::new(vec![0]),
+    )
+    .into();
+    let basic: ConsensusError = BasicError::DuplicatedIdentityPublicKeyIdBasicError(
+        DuplicatedIdentityPublicKeyIdBasicError::new(vec![1]),
+    )
+    .into();
+    // Another refusal of a key, not the state check's.
+    let other: ConsensusError = StateError::DuplicatedIdentityPublicKeyStateError(
+        DuplicatedIdentityPublicKeyStateError::new(vec![0]),
+    )
+    .into();
+    let broadcast = |cause: Option<ConsensusError>| {
+        dash_sdk::Error::StateTransitionBroadcastError(StateTransitionBroadcastError {
+            code: 1,
+            message: "refused".into(),
+            cause,
+        })
+    };
+    let check_tx = |e: ConsensusError| {
+        dash_sdk::Error::Protocol(dpp::ProtocolError::ConsensusError(Box::new(e)))
+    };
+    for e in [
+        broadcast(Some(state.clone())),
+        broadcast(Some(basic.clone())),
+        check_tx(state.clone()),
+        check_tx(basic),
+        dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(broadcast(Some(state)))),
+    ] {
+        assert!(flow::is_duplicate_keys(&e), "{e:?}");
+    }
+    for e in [
+        broadcast(None),
+        broadcast(Some(other.clone())),
+        check_tx(other),
+        dash_sdk::Error::Generic("duplicated identity public key id".into()),
+    ] {
+        assert!(!flow::is_duplicate_keys(&e), "{e:?}");
+    }
+}
+
+/// DP5-03 D7: the opt-out stores no inviter, plans no request credits and
+/// sends nothing; a request refused for good is kept on the done row (D8).
+#[test]
+fn the_opt_out_and_the_refused_request_are_on_the_row() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let link_id = stash(&f);
+    let mut req = invite(&link_id);
+    let asked = f.engine.block_on(registration::quote(&*lib, &req)).unwrap();
+    if let RegistrationFunding::Invitation {
+        request_inviter, ..
+    } = &mut req.funding
+    {
+        *request_inviter = false;
+    }
+    let quote = f.engine.block_on(registration::quote(&*lib, &req)).unwrap();
+    assert_eq!(
+        asked.grant.max_credits - quote.grant.max_credits,
+        CONTACT_REQUEST_CREDITS
+    );
+    let grant = f.grant(0, quote.grant.max_credits, Credential::None);
+    let draft: i64 = f
+        .engine
+        .block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            req,
+            grant,
+        ))
+        .unwrap()
+        .parse()
+        .unwrap();
+    f.settle(draft);
+    done(&f, draft);
+    assert!(lib.w().requests.is_empty());
+    let status = f.status(&lib, draft);
+    assert_eq!(
+        status.invitation,
+        Some(registration::RegistrationInvitation {
+            link_id,
+            inviter: None,
+            request_failure: None,
+        })
+    );
+
+    let lib = f.fake();
+    let refusal = ContactError::Ineligible {
+        reason: Eligibility::ContactCannotReceive,
+    };
+    let code = refusal.code();
+    lib.w().request_error = Some(refusal);
+    let link_id = stash(&f);
+    let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
+    f.drive(&lib, draft, Some(claim_lease(&f)), true);
+    done(&f, draft);
+    let status = f.status(&lib, draft);
+    assert_eq!(
+        status.invitation,
+        Some(registration::RegistrationInvitation {
+            link_id,
+            inviter: Some(INVITER.into()),
+            request_failure: Some(code.into()),
+        })
+    );
+    assert_eq!(
+        f.status(&lib, f.insert(core_row("other1"))).invitation,
+        None
+    );
 }

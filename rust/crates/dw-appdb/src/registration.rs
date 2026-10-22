@@ -103,6 +103,9 @@ pub struct RegistrationChange {
     pub name_error: Option<String>,
     /// Records why the initial profile was not published.
     pub profile_error: Option<String>,
+    /// Replaces the funding record (an invitation's request outcome,
+    /// DP5-03 D8).
+    pub funding: Option<String>,
 }
 
 /// How [`AppDb::adopt_registration_lock`] ended.
@@ -325,6 +328,7 @@ impl AppDb {
                  initial_profile = CASE WHEN ?11 THEN NULL ELSE initial_profile END,
                  name_error = COALESCE(?16, name_error),
                  profile_error = COALESCE(?17, profile_error),
+                 funding = COALESCE(?18, funding),
                  updated_at = ?12
              WHERE wallet_id = ?1 AND id = ?2 AND phase = ?3 AND (error IS NOT NULL) = ?13
                  AND owner = ?15",
@@ -346,6 +350,7 @@ impl AppDb {
                 owner as i64,
                 change.name_error,
                 change.profile_error,
+                change.funding,
             ],
         );
         match written {
