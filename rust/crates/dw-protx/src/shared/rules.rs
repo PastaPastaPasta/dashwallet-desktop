@@ -1749,8 +1749,9 @@ mod tests {
         assert_eq!(check(&t, &q, &[]), Err("bad-protx-netinfo-port"));
         let (t, q) = registration(|_, p| p.net_info = net(&["8.8.8.8:19999", "8.8.8.8:19998"]));
         assert_eq!(check(&t, &q, &[]), Err("bad-protx-dup-netinfo-entry"));
-        // Five Core P2P entries (the decoder reads at most four), and a
-        // domain outside Platform HTTPS.
+        // Five Core P2P entries, which the payload's bytes carry to the
+        // rules as Core's reader does (D67), and a domain outside Platform
+        // HTTPS.
         let (t, q) = registration(|_, p| {
             p.net_info = net(&[
                 "8.8.8.1:19999",
@@ -1761,6 +1762,8 @@ mod tests {
             p.net_info.entries[0].1.extend(entries("8.8.8.5:19999"));
         });
         assert_eq!(check_registration_trivial(&q), Ok(()));
+        assert_eq!(check(&t, &q, &[]), Err("bad-protx-netinfo-maxlimit"));
+        let q = ProRegTxV3::from_payload(&q.to_payload().unwrap()).unwrap();
         assert_eq!(check(&t, &q, &[]), Err("bad-protx-netinfo-maxlimit"));
         let (t, q) = registration(|_, p| {
             p.net_info.entries[0].1.push(NetInfoEntry::Domain {

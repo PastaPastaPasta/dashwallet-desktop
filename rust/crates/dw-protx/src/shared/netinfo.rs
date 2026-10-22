@@ -8,15 +8,17 @@
 //! ```
 //!
 //! An unknown version (0 or above 1) is the version byte alone, as Core
-//! writes and reads it. The decoder is stricter than Core's in what it
-//! refuses rather than reads: an invalid entry (`0xff`, an unknown network,
-//! a wrong address length, an IPv4-, TorV2- or internal-in-IPv6 address, a
-//! domain that isn't UTF-8), more than [`MAX_ENTRIES`] entries in a purpose
-//! or more than 3 purposes, and purposes out of order or repeated, which
-//! Core reads into a different object than the bytes (`Clear()`,
-//! `std::map` insertion) and no valid payload holds. Each of these is
-//! `bad-protx-payload` here where Core may give a later reason
-//! (`-netinfo-bad`, `-netinfo-maxlimit`).
+//! writes and reads it. Counts are read as Core's `std::map` and vector
+//! readers take them (up to `MAX_SIZE`, nothing reserved ahead of the
+//! bytes), so an unknown purpose or more than [`MAX_ENTRIES`] entries in
+//! a purpose decodes and [`ExtNetInfo::validate`] gives Core's reason
+//! (`-netinfo-bad`, `-netinfo-maxlimit`; MG-04b D67). The decoder is
+//! stricter than Core's only where Core reads into a different object than
+//! the bytes, which no valid payload holds: an invalid entry (`0xff`, an
+//! unknown network, a wrong address length, an IPv4-, TorV2- or
+//! internal-in-IPv6 address, a domain that isn't UTF-8; `Clear()`) and
+//! purposes out of order or repeated (`std::map` insertion). Those are
+//! `bad-protx-payload` here where Core may give `-netinfo-bad`.
 //! Which entries a payload may carry is a rule, not the codec's:
 //! [`ExtNetInfo::validate`] is Core's `ExtNetInfo::Validate` with its
 //! [`NetInfoStatus`] (MG-04b D5), [`NetInfoStatus::reject`] the reason
@@ -34,6 +36,9 @@ use crate::rules::Reject;
 pub const EXT_NET_INFO_VERSION: u8 = 1;
 /// `MAX_ENTRIES_EXTNETINFO` (rc.3 `evo/netinfo.h:20`).
 pub const MAX_ENTRIES: usize = 4;
+/// `MAX_SIZE` (rc.3 `serialize.h:42`): the largest count Core's readers
+/// take.
+const MAX_SIZE: usize = 0x0200_0000;
 /// `DOMAIN_MAX_LEN` (rc.3 `evo/netinfo.h:25`).
 pub const DOMAIN_MAX_LEN: usize = 253;
 
@@ -697,14 +702,15 @@ impl Decodable for ExtNetInfo {
         if !info.known_version() {
             return Ok(info);
         }
-        // Three purposes exist; more can't be valid.
-        let purposes = read_len(r, 3)?;
+        // Core's map and vector readers: any count the bytes hold; three
+        // purposes and four entries apiece are `validate`'s limits (D67).
+        let purposes = read_len(r, MAX_SIZE)?;
         for _ in 0..purposes {
             let purpose = u8::consensus_decode(r)?;
             if info.entries.last().is_some_and(|(p, _)| *p >= purpose) {
                 return Err(encode::Error::ParseFailed("net info purposes out of order"));
             }
-            let count = read_len(r, MAX_ENTRIES)?;
+            let count = read_len(r, MAX_SIZE)?;
             let entries = (0..count)
                 .map(|_| NetInfoEntry::consensus_decode(r))
                 .collect::<Result<Vec<_>, _>>()?;
@@ -903,6 +909,49 @@ mod tests {
         assert_eq!(https.validate(Network::Mainnet), NetInfoStatus::Duplicate);
     }
 
+    /// Core's own vectors (rc.3 `src/test/evo_deterministicmns_tests.cpp:833-848,
+    /// 874-918`, `DeserializeCoreP2PExtNetInfo`): hand-rolled Core P2P net
+    /// infos that `AddEntry` would refuse decode, and `Validate` gives the
+    /// reason `CheckProRegTx` reports (D67).
+    #[test]
+    fn test_QT_126_core_deserialized_net_infos_reach_cores_reasons() {
+        let service = |last: u8| vec![ENTRY_SERVICE, 1, 4, 1, 1, 1, last, 0x27, 0x0e];
+        let core_p2p = |entries: &[Vec<u8>]| {
+            let mut bytes = vec![1, 1, PURPOSE_CORE_P2P, entries.len() as u8];
+            entries.iter().for_each(|e| bytes.extend(e));
+            bytes
+        };
+        let mut domain = vec![ENTRY_DOMAIN, 11];
+        domain.extend(b"example.com");
+        domain.extend(443u16.to_be_bytes());
+        for (bytes, reason) in [
+            (
+                core_p2p(&[service(1), service(1)]),
+                "bad-protx-dup-netinfo-entry",
+            ),
+            (
+                core_p2p(&(1..=5).map(service).collect::<Vec<_>>()),
+                "bad-protx-netinfo-maxlimit",
+            ),
+            (core_p2p(&[domain]), "bad-protx-netinfo-entry"),
+        ] {
+            let info: ExtNetInfo = deserialize(&bytes).unwrap();
+            assert_eq!(serialize(&info), bytes, "the bytes round-trip");
+            assert_eq!(info.validate(Network::Regtest).reject(), Some(reason));
+        }
+        // An unknown fourth purpose decodes too; `Validate` finds it malformed.
+        let mut four = vec![1, 4];
+        for purpose in 0..4 {
+            four.extend([purpose, 1]);
+            four.extend(service(purpose + 1));
+        }
+        let info: ExtNetInfo = deserialize(&four).unwrap();
+        assert_eq!(
+            info.validate(Network::Regtest).reject(),
+            Some("bad-protx-netinfo-bad")
+        );
+    }
+
     #[test]
     fn test_QT_126_v3_net_info_holds_at_most_four_per_purpose() {
         let four = info(&[
@@ -919,8 +968,8 @@ mod tests {
             NetInfoStatus::MaxLimit.reject(),
             Some("bad-protx-netinfo-maxlimit")
         );
-        // The codec can't write a fifth entry the decoder would read.
-        assert!(deserialize::<ExtNetInfo>(&serialize(&five)).is_err());
+        // Core's reader takes a fifth entry, so the reason is `validate`'s.
+        assert_eq!(deserialize::<ExtNetInfo>(&serialize(&five)).unwrap(), five);
     }
 
     #[test]
