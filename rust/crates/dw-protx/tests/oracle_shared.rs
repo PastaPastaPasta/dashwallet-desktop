@@ -23,7 +23,8 @@ use dashcore::hashes::Hash;
 use dashcore::{Address, Network, OutPoint, ScriptBuf, Txid};
 use dw_protx::params::MASTERNODE_COLLATERAL;
 use dw_protx::payloads::sign_hash_compact;
-use dw_protx::rules::ListedMasternode;
+use dw_protx::rules::{ListedMasternode, signed_by};
+use dw_protx::shared::envelope::encode_base64;
 use dw_protx::shared::netinfo::ExtNetInfo;
 use dw_protx::shared::rawtx::SpecialTx;
 use dw_protx::shared::registration::{NULL_JOIN_SIGNATURE, ProRegTxV3, SHARED_COLLATERAL_SCRIPT};
@@ -31,6 +32,7 @@ use dw_protx::shared::rules::{
     SharedMn, check_dissolution, check_registration, check_update_share,
     check_update_shared_registrar, verify_hash_canonical,
 };
+use dw_protx::shared::session::funding::{Frozen, verify_consent_signature};
 use dw_protx::shared::{
     CollateralShare, ProDisTx, ProUpShareTx, ProUpSharedRegTx, TRANSACTION_PROVIDER_DISSOLVE,
     TRANSACTION_PROVIDER_UPDATE_SHARE, TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR, payload_bytes,
@@ -651,4 +653,166 @@ fn test_QT_126_funding_signatures_verify_against_the_special_tx_sighash() {
         );
     }
     assert!(checked >= 5, "{checked}");
+}
+
+/// `(r, n − s)` with the other recovery parity: the same key recovers
+/// (Core's legacy `VerifyHash` takes it), but S is high.
+fn high_s(sig: &[u8; 65]) -> [u8; 65] {
+    const N: [u8; 32] = [
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36,
+        0x41, 0x41,
+    ];
+    let mut high = *sig;
+    let mut borrow = 0i16;
+    for i in (0..32).rev() {
+        let d = i16::from(N[i]) - i16::from(sig[33 + i]) - borrow;
+        high[33 + i] = d.rem_euclid(256) as u8;
+        borrow = i16::from(d < 0);
+    }
+    high[0] = 27 + ((sig[0] - 27) ^ 1);
+    high
+}
+
+/// The forms `CHashSigner::VerifyHashCanonical` (rc.3
+/// `messagesigner.cpp:58-88`) refuses: high S, a header aliased past 34
+/// (`RecoverCompact` masks it, so the same key recovers) and one below 27.
+fn non_canonical(sig: &[u8; 65], hash: [u8; 32], key_id: [u8; 20]) -> Vec<[u8; 65]> {
+    let high = high_s(sig);
+    assert!(signed_by(&high, hash, key_id), "high S recovers the key");
+    let mut alias = *sig;
+    alias[0] += 8;
+    let mut below = *sig;
+    below[0] = 26;
+    vec![high, alias, below]
+}
+
+/// Every v24 shared-masternode signature path checks canonically: dashd's
+/// own signatures pass, and their high-S and out-of-range-header forms
+/// are refused with Core's reason (join `specialtxman.cpp:1305-1317`,
+/// ProUpShareTx, ProUpSharedRegTx, ProDisTx), and as a session's consent.
+#[test]
+fn test_QT_126_shared_signatures_are_checked_canonically() {
+    let mut refused = 0;
+    for c in registrations() {
+        let name = str_of(&c, "name");
+        let funded = tx_of(str_of(&c, "tx_hex"));
+        let p = payload_of(&funded);
+        let consent = p.consent_hash(&funded);
+        let check = |q: &ProRegTxV3| {
+            let mut t = funded.clone();
+            t.payload = q.to_payload().unwrap();
+            check_registration(&t, q, &[], true, Network::Regtest, true)
+        };
+        assert_eq!(check(&p), Ok(()), "{name}");
+        let frozen = Frozen {
+            tx: funded.clone(),
+            payload: p.clone(),
+            consent_hash: consent,
+        };
+        for (i, sig) in p.join_sigs.iter().enumerate() {
+            let owner = p.shares[i].owner_key_id;
+            assert!(verify_consent_signature(
+                &frozen,
+                i as i32,
+                &encode_base64(sig)
+            ));
+            for bad in non_canonical(sig, consent, owner) {
+                let mut q = p.clone();
+                q.join_sigs[i] = bad;
+                assert_eq!(check(&q), Err("bad-protx-shares-sig"), "{name} {i}");
+                assert!(!verify_consent_signature(
+                    &frozen,
+                    i as i32,
+                    &encode_base64(&bad)
+                ));
+                refused += 1;
+            }
+        }
+    }
+
+    let m = maintenance();
+    let mut kinds = std::collections::BTreeSet::new();
+    for c in &m.cases {
+        if verdict(&c["accept"]).is_err() {
+            continue;
+        }
+        let name = str_of(c, "name");
+        let own = listed(&c["protx_info"]);
+        let list = [own, m.other.clone()];
+        let tx = tx_of(str_of(c, "tx_hex"));
+        let shares = shares_listed(&c["protx_info"]);
+        assert_eq!(rules_verdict(c, &tx, &list), Ok(()), "{name}");
+        let with = |payload: Vec<u8>| {
+            let mut t = tx.clone();
+            t.payload = payload;
+            rules_verdict(c, &t, &list)
+        };
+        match tx.tx_type {
+            TRANSACTION_PROVIDER_UPDATE_SHARE => {
+                let p: ProUpShareTx = dashcore::consensus::deserialize(&tx.payload).unwrap();
+                let sig: [u8; 65] = p.sig[..].try_into().unwrap();
+                let owner = shares[usize::from(p.share_index)].owner_key_id;
+                for bad in non_canonical(&sig, p.sign_hash(), owner) {
+                    let mut q = p.clone();
+                    q.sig = bad.to_vec();
+                    assert_eq!(
+                        with(payload_bytes(&q)),
+                        Err("bad-proupshare-sig".into()),
+                        "{name}"
+                    );
+                    refused += 1;
+                }
+            }
+            TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR => {
+                let p: ProUpSharedRegTx = dashcore::consensus::deserialize(&tx.payload).unwrap();
+                for (i, sig) in p.sigs.iter().enumerate() {
+                    for bad in non_canonical(sig, p.sign_hash(), shares[i].owner_key_id) {
+                        let mut q = p.clone();
+                        q.sigs[i] = bad;
+                        assert_eq!(
+                            with(payload_bytes(&q)),
+                            Err("bad-proupsharedreg-sig".into()),
+                            "{name} {i}"
+                        );
+                        refused += 1;
+                    }
+                }
+            }
+            TRANSACTION_PROVIDER_DISSOLVE => {
+                let p: ProDisTx = dashcore::consensus::deserialize(&tx.payload).unwrap();
+                let n = p.sigs.len() as u8;
+                let hash = p.sign_hash(tx.version, tx.lock_time, &tx.prevouts(), &tx.output, n);
+                for (i, sig) in p.sigs.iter().enumerate() {
+                    let signer = if n == 1 {
+                        usize::from(p.actor_index)
+                    } else {
+                        i
+                    };
+                    for bad in non_canonical(sig, hash, shares[signer].owner_key_id) {
+                        let mut q = p.clone();
+                        q.sigs[i] = bad;
+                        assert_eq!(
+                            with(payload_bytes(&q)),
+                            Err("bad-prodis-sig".into()),
+                            "{name} {i}"
+                        );
+                        refused += 1;
+                    }
+                }
+            }
+            t => panic!("type {t}"),
+        }
+        kinds.insert(tx.tx_type);
+    }
+    assert_eq!(
+        kinds.into_iter().collect::<Vec<_>>(),
+        [
+            TRANSACTION_PROVIDER_DISSOLVE,
+            TRANSACTION_PROVIDER_UPDATE_SHARE,
+            TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR
+        ],
+        "every maintenance path has a valid dashd case"
+    );
+    assert!(refused > 0);
 }

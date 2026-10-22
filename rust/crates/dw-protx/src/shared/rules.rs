@@ -32,6 +32,8 @@
 
 use dashcore::bls_sig_utils::BlsScheme;
 use dashcore::hashes::{Hash, hash160};
+use dashcore::secp256k1::Message;
+use dashcore::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use dashcore::{Network, OutPoint, ScriptBuf, Txid};
 
 use super::netinfo::{
@@ -51,7 +53,6 @@ use crate::params::{
 };
 use crate::rules::{
     ListedMasternode, Reject, holds_operator_key, is_valid_operator_key, normalized, p2pkh_key_id,
-    signed_by,
 };
 
 /// A registered shared masternode, as the wallet knows it.
@@ -97,18 +98,36 @@ impl ShareReward {
     }
 }
 
-/// `CHashSigner::VerifyHashCanonical`: 65 bytes, header 27–34, low S, and
-/// the recovered key's hash160 is `key_id`.
+/// `CHashSigner::VerifyHashCanonical` (rc.3 `messagesigner.cpp:58-88`), the
+/// check of every share, join and consent signature (`specialtxman.cpp`):
+/// 65 bytes, header 27–34, low S, then `CPubKey::RecoverCompact`
+/// (`pubkey.cpp:199-217`) whose key's hash160 is `key_id`. Self-contained:
+/// [`crate::rules::signed_by`] is Core's legacy `VerifyHash` for the
+/// ProRegTx/ProUpRegTx owner checks and takes the aliases this refuses.
 pub fn verify_hash_canonical(hash: [u8; 32], key_id: [u8; 20], sig: &[u8]) -> bool {
     const HALF_ORDER: [u8; 32] = [
         0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
         0xff, 0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d, 0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b,
         0x20, 0xa0,
     ];
-    sig.len() == 65
-        && (27..=34).contains(&sig[0])
-        && sig[33..] <= HALF_ORDER[..]
-        && signed_by(sig, hash, key_id)
+    if sig.len() != 65 || !(27..=34).contains(&sig[0]) || sig[33..] > HALF_ORDER[..] {
+        return false;
+    }
+    let header = sig[0] - 27;
+    let Ok(recid) = RecoveryId::try_from(i32::from(header & 3)) else {
+        return false;
+    };
+    let Ok(rsig) = RecoverableSignature::from_compact(&sig[1..], recid) else {
+        return false;
+    };
+    let Ok(public) = rsig.recover_ecdsa(Message::from_digest(hash)) else {
+        return false;
+    };
+    let public = dashcore::PublicKey {
+        compressed: header & 4 != 0,
+        inner: public,
+    };
+    public.pubkey_hash().to_byte_array() == key_id
 }
 
 /// `ProRataFloor` (`evo/providertx_util.cpp:88-95`): `floor(total × weight /
@@ -836,7 +855,7 @@ mod tests {
     use super::super::registration::NULL_JOIN_SIGNATURE;
     use super::*;
     use crate::payloads::sign_hash_compact;
-    use crate::rules::p2pkh_key_id;
+    use crate::rules::{p2pkh_key_id, signed_by};
     use dashcore::secp256k1::SecretKey;
     use dashcore::{TxIn, TxOut, Witness};
 
