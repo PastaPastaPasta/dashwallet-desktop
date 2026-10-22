@@ -84,6 +84,8 @@ const ENTRY_EXT: &str = "dwl";
 const ENTRY_TMP_EXT: &str = "tmp";
 /// The marker of a held entry (DP5-03 D12): an empty file `<id>.hold`.
 const HOLD_EXT: &str = "hold";
+/// Why a held entry is not forgotten.
+const HELD: &str = "the invitation is in use by a claim in progress";
 /// An entry file larger than this is not one of ours: it is deleted
 /// unread and unscrubbed (D27).
 const MAX_ENTRY_FILE_BYTES: u64 = 16 * 1024;
@@ -765,7 +767,8 @@ impl Vault {
                     continue;
                 }
             };
-            if holds_text(&texts, e.kind, &text) {
+            // A held duplicate stays: an open claim names its id (DP5-03 D12).
+            if holds_text(&texts, e.kind, &text) && !self.held(&e.id) {
                 self.delete_entry(&e)?;
                 dropped += 1;
                 continue;
@@ -880,7 +883,7 @@ impl Vault {
                 continue;
             };
             let kind = e.kind;
-            if holds_text(&texts, kind, &text) {
+            if holds_text(&texts, kind, &text) && !self.held(&e.id) {
                 if let Err(err) = self.delete_entry(&e) {
                     tracing::warn!(error = %err, "link stash: a duplicate could not be deleted");
                     kept.push(e);
@@ -1238,6 +1241,34 @@ impl Vault {
     /// (taken, forgotten) or let go. Works in every lock state and opens
     /// nothing. `Ok(false)` when there is no entry `id` to hold; letting go
     /// of one without a hold is `Ok(true)`.
+    /// Lets go of every hold but those of `keep` (DP5-03 D12): the
+    /// engine's reconcile of the holds with its open claims. Returns how
+    /// many went.
+    pub fn retain_stashed_link_holds(&self, keep: &[String]) -> Result<usize, VaultError> {
+        let _state = self.links_state();
+        let dir = self.links_dir();
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e.into()),
+        };
+        let mut dropped = 0;
+        for entry in entries {
+            let name = entry?.file_name();
+            let Some((stem, ext)) = name.to_str().and_then(|n| n.rsplit_once('.')) else {
+                continue;
+            };
+            if ext == HOLD_EXT && is_link_id(stem) && !keep.iter().any(|k| k == stem) {
+                remove_any(&self.hold_path(stem))?;
+                dropped += 1;
+            }
+        }
+        if dropped > 0 {
+            sync_dir(&dir)?;
+        }
+        Ok(dropped)
+    }
+
     pub fn hold_stashed_link(&self, id: &str, held: bool) -> Result<bool, VaultError> {
         if !is_link_id(id) {
             return Err(VaultError::InvalidArgument("not a stashed link id".into()));
@@ -1282,6 +1313,10 @@ impl Vault {
             return Ok(None);
         };
         if kinds.contains(&entry.kind) {
+            // An open claim's link stays until the claim lets it go (DP5-03 D12).
+            if self.held(id) {
+                return Err(VaultError::InvalidArgument(HELD.into()));
+            }
             let deleted = self.delete_entry(&entry);
             if entry.plain.is_some() {
                 self.note_unsealed();

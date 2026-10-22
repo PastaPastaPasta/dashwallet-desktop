@@ -996,8 +996,9 @@ fn a_full_stash_never_evicts_a_held_entry() {
     assert!(!after.contains(&now[3]) && after.contains(&pay.id));
 }
 
-/// DP5-03 D12: deleting an entry deletes its hold, and a hold left without
-/// its entry (a crash between the two) is swept at the next load.
+/// DP5-03 D12: a held entry is not forgotten until it is let go; deleting
+/// an entry deletes its hold, and a hold left without its entry (a crash
+/// between the two) is swept at the next load.
 #[test]
 fn a_hold_goes_with_its_entry() {
     let f = Fixture::new();
@@ -1006,11 +1007,75 @@ fn a_hold_goes_with_its_entry() {
     let hold = f.links_dir().join(format!("{}.hold", invite.id));
     v.hold_stashed_link(&invite.id, true).unwrap();
     assert!(hold.exists());
-    v.forget_stashed_link(&invite.id, ALL_LINK_KINDS).unwrap();
-    assert!(!hold.exists(), "forgotten with its entry");
+    assert!(matches!(
+        v.forget_stashed_link(&invite.id, ALL_LINK_KINDS),
+        Err(VaultError::InvalidArgument(e)) if e == HELD
+    ));
+    assert_eq!(ids(&v), vec![invite.id.clone()], "kept while held");
+    assert!(hold.exists());
+    // Taken, it goes with its hold.
+    assert!(take(&v, &invite.id).is_some());
+    assert!(!hold.exists(), "deleted with its entry");
     // A stray hold beside an unrelated entry is swept; the entry is not held.
     let other = v.stash_link(StashedLinkKind::Payment, PAY).unwrap();
     std::fs::write(&hold, b"").unwrap();
     assert_eq!(ids(&v), vec![other.id]);
     assert!(!hold.exists(), "swept");
+}
+
+/// DP5-03 D12 (Opus r1 M2): a held entry is never the duplicate the
+/// unlock collapses (D9), though it is the newer one.
+#[test]
+fn a_held_duplicate_is_kept() {
+    let f = Fixture::new();
+    let v = f.open();
+    v.create(Some(b"pass")).unwrap();
+    v.lock();
+    let b = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    drop(v);
+    let v = f.open();
+    f.advance(5);
+    let c = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    assert_ne!(c.id, b.id);
+    v.hold_stashed_link(&c.id, true).unwrap();
+    v.unlock(b"pass", UnlockScope::Full).unwrap();
+    let mut both = vec![b.id.clone(), c.id.clone()];
+    both.sort();
+    let mut left = ids(&v);
+    left.sort();
+    assert_eq!(left, both, "the held duplicate stays");
+    // Let go, the next unlock collapses it.
+    v.hold_stashed_link(&c.id, false).unwrap();
+    v.lock();
+    v.unlock(b"pass", UnlockScope::Full).unwrap();
+    assert_eq!(ids(&v), vec![b.id]);
+}
+
+/// DP5-03 D12 (Opus r1 M3): the bring-up keeps only the holds an open claim
+/// names; the others are let go, their entries kept.
+#[test]
+fn retaining_holds_lets_go_of_the_others() {
+    let f = Fixture::new();
+    let v = f.open();
+    let a = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    let b = v
+        .stash_link(StashedLinkKind::Invitation, &format!("{INVITE}&n=1"))
+        .unwrap();
+    v.hold_stashed_link(&a.id, true).unwrap();
+    v.hold_stashed_link(&b.id, true).unwrap();
+    let hold = |id: &str| f.links_dir().join(format!("{id}.hold")).exists();
+    assert_eq!(
+        v.retain_stashed_link_holds(std::slice::from_ref(&a.id))
+            .unwrap(),
+        1
+    );
+    assert!(hold(&a.id) && !hold(&b.id));
+    assert_eq!(
+        v.retain_stashed_link_holds(std::slice::from_ref(&a.id))
+            .unwrap(),
+        0
+    );
+    assert_eq!(ids(&v).len(), 2, "no entry deleted");
+    assert_eq!(v.retain_stashed_link_holds(&[]).unwrap(), 1);
+    assert!(!hold(&a.id));
 }
