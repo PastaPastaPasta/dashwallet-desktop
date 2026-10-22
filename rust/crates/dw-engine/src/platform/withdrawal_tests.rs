@@ -1276,7 +1276,10 @@ fn the_unconfirmed_nonce_is_reused_only_where_drive_takes_it() {
     let id = Identifier::from([7; 32]);
     let at = |unconfirmed: u64, floor: u64| {
         let nonces = WithdrawalNonces::default();
-        let signed = Signed { document: Identifier::from([8; 32]), credits: DASH };
+        let signed = Signed {
+            document: Identifier::from([8; 32]),
+            credits: DASH,
+        };
         nonces.signed(id, unconfirmed, signed);
         if floor > 0 {
             nonces.update(id, |n| n.floor = floor);
@@ -1286,7 +1289,15 @@ fn the_unconfirmed_nonce_is_reused_only_where_drive_takes_it() {
     assert_eq!(at(5, 0).next(id, 4).unwrap(), 5);
     assert_eq!(at(5, 6).next(id, 4).unwrap(), 6, "below the floor");
     assert_eq!(at(23, 0).next(id, 0).unwrap(), 23);
-    assert_eq!(at(24, 0).next(id, 0), Err(PlatformError::Unavailable), "none stored takes up to 23");
-    assert_eq!(at(40, 0).next(id, 4), Err(PlatformError::Unavailable), "a state from before it");
+    assert_eq!(
+        at(24, 0).next(id, 0),
+        Err(PlatformError::Unavailable),
+        "none stored takes up to 23"
+    );
+    assert_eq!(
+        at(40, 0).next(id, 4),
+        Err(PlatformError::Unavailable),
+        "a state from before it"
+    );
     assert_eq!(at(5, 0).next(id, 5).unwrap(), 6, "used at the tip");
 }
