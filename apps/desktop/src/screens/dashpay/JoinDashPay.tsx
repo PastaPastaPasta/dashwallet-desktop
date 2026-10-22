@@ -11,7 +11,7 @@ import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useBackend } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
-import { CLAIM_COPY, claimRow } from "../../dashpay/claim";
+import { CLAIM_COPY, claimHasIdentity, claimRow } from "../../dashpay/claim";
 import { useRegistrations, useStatusInputs, useUsernameQuote } from "../../dashpay/queries";
 import { namedModel, pendingModel, screenModel, type ScreenActionKind } from "../../dashpay/registration";
 import { JOIN_COPY, joinModel, type CardActionKind } from "../../dashpay/status";
@@ -137,8 +137,9 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
   }
 
   if (invitation) {
-    // C3: an identity of the wallet (a registration under way shows its row above).
-    const hasIdentity = status?.kind === "ready" || status?.kind === "contestPending";
+    // C3: an identity of the wallet (a registration under way shows its row above), or one a claim
+    // was refused for, not found yet (D24).
+    const hasIdentity = claimHasIdentity(status?.kind === "ready" || status?.kind === "contestPending", rows.data);
     return (
       <Page route="joinDashPay">
         <ClaimScreen linkId={invitation.linkId} entry={invitation.entry} wiz={wiz} hasIdentity={hasIdentity} network={network.dirName} rows={rows} />

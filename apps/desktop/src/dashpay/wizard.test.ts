@@ -307,6 +307,15 @@ describe("DP5-03 the claim (invitation mode)", () => {
     expect(hasCode(wiz.error, "invalid_argument")).toBe(true);
   });
 
+  it("D24: Choose another username on a claim refused for the seed's other identity keeps it and goes back to the invitation", async () => {
+    const { wiz, api } = setup();
+    wiz.adopt("claim-1");
+    await wiz.another(claimRow({ phase: "failed", failure: { phase: "keysPrepared", code: "invitation.already_has_identity", retryable: false, needed: null, available: null } }));
+    expect(api.discardRegistration).not.toHaveBeenCalled();
+    expect(api.registrationQuote).not.toHaveBeenCalled();
+    expect(wiz).toMatchObject({ step: null, draft: null, error: null });
+  });
+
   it("D11 (Opus r2 1): a stopped claim the engine keeps goes back to its invitation, as a discarded one", async () => {
     const { wiz, api } = setup();
     wiz.adopt("claim-1");

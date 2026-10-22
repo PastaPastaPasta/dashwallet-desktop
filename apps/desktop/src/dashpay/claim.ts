@@ -108,6 +108,18 @@ export function claimRow(rows: RegistrationStatus[] | undefined, linkId: string)
   return rows?.findLast((r) => r.invitation?.linkId === linkId && !(r.phase === "failed" && r.failure?.retryable === false));
 }
 
+/** D24: a claim stopped because another identity of the wallet's seed holds its keys, which the
+ * wallet has not found yet. The wallet has an identity then (C3): the engine refuses the next claim
+ * of any link while the row is kept, so the row is not discarded for a new one. */
+export function claimFoundIdentity(r: RegistrationStatus): boolean {
+  return r.failure?.retryable === false && r.failure.code === "invitation.already_has_identity";
+}
+
+/** C3: the wallet's identity is `known`, or a claim was refused for one not found yet (D24). */
+export function claimHasIdentity(known: boolean, rows: RegistrationStatus[] | undefined): boolean {
+  return known || (rows?.some(claimFoundIdentity) ?? false);
+}
+
 /** D4: what the card says of the inviter; never "verified". */
 export function inviterCard(inviter: InvitationInviter | null): InviterCard | null {
   if (!inviter) return null;

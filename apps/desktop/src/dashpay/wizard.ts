@@ -15,7 +15,7 @@ import type { RegistrationRequest } from "../api/generated/RegistrationRequest";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { Model } from "../onboarding/model";
 import { GrantModel } from "../tools/grant";
-import { CLAIM_KEPT } from "./claim";
+import { CLAIM_KEPT, claimFoundIdentity } from "./claim";
 import { QUOTE_REQUEST } from "./status";
 
 export type WizardApi = Pick<
@@ -218,7 +218,8 @@ export class RegistrationWizard extends Model {
     // A done row's next name is its identity's; without one it would be a second lock.
     if (row?.phase === "done" && !row.identity) return;
     await this.#call("discard", async () => {
-      if (row && row.phase !== "done" && !row.fundsCommitted) {
+      // D24: a claim refused for the seed's other identity is kept; it refuses the next claim.
+      if (row && row.phase !== "done" && !row.fundsCommitted && !claimFoundIdentity(row)) {
         await this.api.discardRegistration(this.walletId, row.draft).catch((e: unknown) => {
           if (!row.invitation || !hasCode(e, "invalid_argument")) throw e;
           // D11: a claim that may have reached the network is kept. One that can run is continued;

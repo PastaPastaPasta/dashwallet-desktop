@@ -5,7 +5,7 @@ import type { InvitationInviter } from "../api/generated/InvitationInviter";
 import type { InvitationStatus } from "../api/generated/InvitationStatus";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { appError } from "../onboarding/testWorld";
-import { CLAIM_COPY, CLAIM_KEPT, claimErrorText, claimModel, claimRow, handleOf, inviterCard, recipientLines, type ClaimInputs } from "./claim";
+import { CLAIM_COPY, CLAIM_KEPT, claimErrorText, claimFoundIdentity, claimHasIdentity, claimModel, claimRow, handleOf, inviterCard, recipientLines, type ClaimInputs } from "./claim";
 import { REG_COPY, requestNote, screenModel, type ScreenInputs } from "./registration";
 
 const LINK = "1".padStart(32, "0");
@@ -56,6 +56,25 @@ describe("C1, C2 (D5, F7): the claim's own row comes before the status", () => {
     const retry = row({ phase: "failed", failure: { phase: "keysPrepared", code: "platform.unavailable", retryable: true, needed: null, available: null } });
     expect(claimRow([retry], LINK)?.draft).toBe("claim-1");
     expect(claimRow(undefined, LINK)).toBeUndefined();
+  });
+
+  it("C3 (D24): a claim refused for the seed's other identity is the wallet's identity, of any link", () => {
+    const failure = (code: string, retryable: boolean) => ({ phase: "keysPrepared" as const, code, retryable, needed: null, available: null });
+    const refused = row({ phase: "failed", failure: failure("invitation.already_has_identity", false) });
+    const other = row({ invitation: { linkId: "2".padStart(32, "0"), inviter: null, requestFailure: null }, phase: "failed", failure: failure("invitation.already_has_identity", false) });
+    expect([refused, other].map(claimFoundIdentity)).toEqual([true, true]);
+    expect(claimRow([refused], LINK)).toBeUndefined();
+    expect(claimModel(inputs({ hasIdentity: claimHasIdentity(false, [other]) }))).toMatchObject({ state: "hasIdentity", lines: [CLAIM_COPY.hasIdentity] });
+    expect(claimModel(inputs({ hasIdentity: claimHasIdentity(false, [refused]) })).actions.map((a) => a.kind)).toEqual(["dismiss", "notNow"]);
+    // A claim that may run again, or ended another way, says nothing of an identity.
+    for (const r of [
+      row(),
+      row({ phase: "failed", failure: failure("invitation.already_has_identity", true) }),
+      row({ phase: "failed", failure: failure("invitation.expired", false) }),
+    ])
+      expect(claimHasIdentity(false, [r])).toBe(false);
+    expect(claimHasIdentity(false, undefined)).toBe(false);
+    expect(claimHasIdentity(true, [])).toBe(true);
   });
 
   it("C1: the progress screen steps say what a claim does (D10)", () => {
