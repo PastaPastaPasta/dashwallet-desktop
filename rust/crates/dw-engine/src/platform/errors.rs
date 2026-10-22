@@ -489,6 +489,18 @@ pub enum CreditsError {
     /// fund it twice.
     #[error("the top-up {txid} is not applied yet")]
     TopUpPending { txid: String },
+    /// A withdrawal of credits outside what Platform takes at the network's
+    /// protocol version, `min` to `max` credits (DP6-02).
+    #[error("a withdrawal takes {min} to {max} credits")]
+    WithdrawalOutOfRange { min: u64, max: u64 },
+    /// The identity's last withdrawal, whose outcome was unknown, executed
+    /// after all (its document `artifact` read back), so this one does not:
+    /// at most one of them goes through (DP6-02 D24). Read before signing,
+    /// nothing was sent and the grant is unredeemed; read after (the two
+    /// shared a nonce), this one was sent at a nonce now used, its grant
+    /// spent.
+    #[error("the earlier withdrawal {artifact} went through; this one does not")]
+    WithdrawalLanded { artifact: String },
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -500,6 +512,8 @@ impl CreditsError {
             Self::BelowMinimum { .. } => "credits.below_minimum",
             Self::CoinsLocked => "credits.coins_locked",
             Self::TopUpPending { .. } => "credits.top_up_pending",
+            Self::WithdrawalOutOfRange { .. } => "credits.withdrawal_out_of_range",
+            Self::WithdrawalLanded { .. } => "credits.withdrawal_landed",
             Self::Platform(e) => e.code(),
         }
     }

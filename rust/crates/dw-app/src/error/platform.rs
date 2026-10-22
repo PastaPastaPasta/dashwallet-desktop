@@ -113,6 +113,8 @@ codes! {
         BelowMinimum = "credits.below_minimum",
         CoinsLocked = "credits.coins_locked",
         TopUpPending = "credits.top_up_pending",
+        WithdrawalOutOfRange = "credits.withdrawal_out_of_range",
+        WithdrawalLanded = "credits.withdrawal_landed",
     }
 }
 
@@ -366,6 +368,14 @@ impl From<CreditsError> for AppError {
             ),
             C::CoinsLocked => (CreditsCode::CoinsLocked, None),
             C::TopUpPending { txid } => (CreditsCode::TopUpPending, Some(ErrorData::Txid { txid })),
+            C::WithdrawalOutOfRange { min, max } => (
+                CreditsCode::WithdrawalOutOfRange,
+                Some(ErrorData::CreditRange { min, max }),
+            ),
+            C::WithdrawalLanded { artifact } => (
+                CreditsCode::WithdrawalLanded,
+                Some(ErrorData::Artifact { artifact }),
+            ),
             C::Platform(e) => return e.into(),
         };
         AppError {
@@ -528,6 +538,8 @@ mod tests {
             CreditsError::BelowMinimum { min: 5 },
             CreditsError::CoinsLocked,
             CreditsError::TopUpPending { txid: s() },
+            CreditsError::WithdrawalOutOfRange { min: 1, max: 2 },
+            CreditsError::WithdrawalLanded { artifact: s() },
             CreditsError::Platform(PlatformError::Unavailable),
         ];
         for e in credits {

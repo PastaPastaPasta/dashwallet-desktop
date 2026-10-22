@@ -1,10 +1,11 @@
 // My Profile (DASHPAY §4 `MyProfileViewModel`, F5, F7, F8; DP1-10 P1–P6): the header, usernames,
-// identity id, the credits block with its warnings and its pending or stuck top-ups, the own
-// contest's card while one runs, and the contest outcome rows. Without a main identity it is
-// DP1-08's card for the state (D2). The view models are dashpay/profile.ts and dashpay/topup.ts;
+// identity id, the credits block with its warnings, its pending or stuck top-ups and its recent
+// withdrawals (DP6-02), the own contest's card while one runs, and the contest outcome rows.
+// Without a main identity it is DP1-08's card for the state (D2). The view models are
+// dashpay/profile.ts, dashpay/topup.ts and dashpay/withdraw.ts;
 // the Settings card (D20) is here too. Edit Profile (DP4-03) is a sheet over the page.
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import type { Backend } from "../../api/backend";
 import type { IdentitySummary } from "../../api/generated/IdentitySummary";
 import type { PendingTopUp } from "../../api/generated/PendingTopUp";
@@ -19,6 +20,7 @@ import { useAvatarUploadAvailable, useContactPictures, useContest, useCostTable,
 import { useStatusInputs } from "../../dashpay/queries";
 import type { CardActionKind, StatusInputs } from "../../dashpay/status";
 import { outcomeText, topUpErrorText, topUpFor, type TopUpFlow } from "../../dashpay/topup";
+import { withdrawFor } from "../../dashpay/withdraw";
 import { wizardFor } from "../../dashpay/wizard";
 import { useDisplay } from "../../format/display";
 import { useModel } from "../../onboarding/model";
@@ -30,6 +32,7 @@ import { EditProfileSheet } from "./EditProfileSheet";
 import { VotingInfoSheet } from "./AboutDashPay";
 import { DashPayCard, defaultCardAction } from "./DashPayCard";
 import { TopUpSheet } from "./TopUpSheet";
+import { RecentWithdrawals, WithdrawButton, WithdrawSheet } from "./WithdrawSheet";
 
 /** Opens DP1-09's credits path for `identity` on the Join page; `instant` refuses a contested
  * label (D13). */
@@ -92,7 +95,22 @@ function Details({ main, contest }: { main: IdentitySummary; contest: string | n
   );
 }
 
-function Credits({ model, flow, rows, inputs, onTopUp }: { model: CreditsModel; flow: TopUpFlow; rows: Map<string, PendingTopUp>; inputs: StatusInputs; onTopUp: () => void }) {
+/** `withdraw`: DP6-02's button beside Top up and its rows under the top-ups (D9, D11). */
+function Credits({
+  model,
+  flow,
+  rows,
+  inputs,
+  onTopUp,
+  withdraw,
+}: {
+  model: CreditsModel;
+  flow: TopUpFlow;
+  rows: Map<string, PendingTopUp>;
+  inputs: StatusInputs;
+  onTopUp: () => void;
+  withdraw: { button: ReactNode; rows: ReactNode };
+}) {
   const id = useId();
   const C = PROFILE_COPY.credits;
   const result = flow.rowResult;
@@ -170,6 +188,7 @@ function Credits({ model, flow, rows, inputs, onTopUp }: { model: CreditsModel; 
           </div>
         </div>
       )}
+      {withdraw.rows}
       <div className="profile-credits-actions">
         <DashButton
           variant={model.topUp.primary ? "filledBlue" : "tintedBlue"}
@@ -180,6 +199,7 @@ function Credits({ model, flow, rows, inputs, onTopUp }: { model: CreditsModel; 
         >
           {C.topUp}
         </DashButton>
+        {withdraw.button}
         {model.topUp.reason && (
           <span className="field-hint" id={`${id}-reason`} data-testid="profile-top-up-reason">
             {model.topUp.reason}
@@ -263,6 +283,7 @@ function Outcomes({ walletId, identity, date }: { walletId: string; identity: st
 function Ready({ walletId, network, main, contest, inputs }: { walletId: string; network: NetworkInfo; main: IdentitySummary; contest: ContestRef | null; inputs: StatusInputs }) {
   const b = useBackend();
   const flow = useModel(topUpFor(b, walletId));
+  const withdraw = useModel(withdrawFor(b, walletId));
   const costs = useCostTable(walletId);
   const pending = usePendingTopUps(walletId);
   const stuck = useStuckTopUps(walletId);
@@ -286,9 +307,20 @@ function Ready({ walletId, network, main, contest, inputs }: { walletId: string;
       <Header main={main} contest={contest?.label ?? null} walletId={walletId} onEdit={() => editor.begin(main.identity, main.profile)} />
       <Details main={main} contest={contest?.label ?? null} />
       {contest && <RequestCard walletId={walletId} main={main} contest={contest} inputs={inputs} />}
-      <Credits model={model} flow={flow} rows={rows} inputs={inputs} onTopUp={() => flow.begin(main.identity)} />
+      <Credits
+        model={model}
+        flow={flow}
+        rows={rows}
+        inputs={inputs}
+        onTopUp={() => flow.begin(main.identity)}
+        withdraw={{
+          button: <WithdrawButton flow={withdraw} identity={main.identity} balance={main.balance} />,
+          rows: <RecentWithdrawals flow={withdraw} walletId={walletId} identity={main.identity} costs={costs.data} amount={inputs.amount} date={inputs.date} />,
+        }}
+      />
       <Outcomes walletId={walletId} identity={main.identity} date={inputs.date} />
       <TopUpSheet flow={flow} walletId={walletId} network={network} costs={costs.data} />
+      <WithdrawSheet flow={withdraw} walletId={walletId} network={network} costs={costs.data} />
       <EditProfileSheet model={editor} letters={headerModel(main, contest?.label ?? null).initials} username={main.mainName} />
     </>
   );

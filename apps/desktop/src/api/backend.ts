@@ -128,6 +128,10 @@ import type { PendingTopUp } from "./generated/PendingTopUp";
 import type { StuckTopUpFunding } from "./generated/StuckTopUpFunding";
 import type { TopUpOutcome } from "./generated/TopUpOutcome";
 import type { TopUpQuote } from "./generated/TopUpQuote";
+import type { WithdrawAmount } from "./generated/WithdrawAmount";
+import type { Withdrawal } from "./generated/Withdrawal";
+import type { WithdrawOutcome } from "./generated/WithdrawOutcome";
+import type { WithdrawQuote } from "./generated/WithdrawQuote";
 import type { DashPayEventPage } from "./generated/DashPayEventPage";
 import type { GrantAction } from "./generated/GrantAction";
 import type { GrantRequest } from "./generated/GrantRequest";
@@ -408,6 +412,12 @@ export interface Backend {
   creditsStuckTopUpFundings(walletId: string): Promise<StuckTopUpFunding[]>;
   creditsResumeTopUp(walletId: string, txid: string, grant: string): Promise<TopUpOutcome>;
   creditsResolveTopUp(walletId: string, txid: string): Promise<null>;
+  /** DP6-02: what a withdrawal takes and pays out; `all` keeps the network's fee in reserve. */
+  creditsWithdrawQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<WithdrawQuote>;
+  /** Withdraws to a Dash address under the quote's `platformOp` grant. */
+  creditsWithdraw(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawOutcome>;
+  /** The identity's withdrawals on Platform, newest first. */
+  creditsWithdrawals(walletId: string, identity: string): Promise<Withdrawal[]>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;
   saveAddressBookEntry(walletId: string, address: string, label: string, purpose: AddressPurposeName, replace: boolean): Promise<AddressBookEntry>;
   deleteAddressBookEntry(walletId: string, address: string): Promise<null>;

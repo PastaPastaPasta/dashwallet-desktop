@@ -216,7 +216,7 @@ fn cover(available: u64, quote: u64) -> Result<(), PlatformError> {
 /// refuses (nothing signed). `ready` is the
 /// write's last check (a scan's expiry), right before a grant is redeemed:
 /// the key check can wait on the vault.
-async fn write_lease(
+pub(super) async fn write_lease(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
     grant: &str,
@@ -343,6 +343,30 @@ fn bounds_cover(bounds: Option<&ContractBounds>, document: &str) -> bool {
     }
 }
 
+/// The CRITICAL ECDSA TRANSFER keys that can sign a withdrawal now
+/// (DP6-02): enabled and not expired, in key-id order. Platform also takes
+/// an OWNER key, but not with an output script of the user's choice, so a
+/// withdrawal never signs with one.
+fn transfer_keys(identity: &Identity) -> impl Iterator<Item = &IdentityPublicKey> {
+    let now = now_ms();
+    (identity.public_keys().values()).filter(move |k| {
+        k.purpose() == Purpose::TRANSFER
+            && k.security_level() == SecurityLevel::CRITICAL
+            && k.key_type() == KeyType::ECDSA_SECP256K1
+            && !k.is_disabled()
+            && !k.is_expired_at(now)
+    })
+}
+
+/// The keys `flow`'s transition may sign with, in the order they are
+/// preferred: [`transfer_keys`] for a withdrawal, else [`auth_keys`].
+fn signing_keys(identity: &Identity, flow: FlowKind) -> Vec<&IdentityPublicKey> {
+    match flow {
+        FlowKind::Withdraw => transfer_keys(identity).collect(),
+        _ => auth_keys(identity, flow).collect(),
+    }
+}
+
 /// The first of [`auth_keys`] that is `usable`.
 fn first_auth_key(
     identity: &Identity,
@@ -388,7 +412,7 @@ fn candidate_keys(
     (index, identity): (u32, &Identity),
 ) -> Vec<HeldKey> {
     let network = session.vault.network();
-    (auth_keys(identity, flow))
+    (signing_keys(identity, flow).into_iter())
         .filter_map(|k| Some((key_path(network, index, k.id()).ok()?, k.data().to_vec())))
         .collect()
 }
@@ -402,7 +426,9 @@ fn candidate_keys(
 ///   `contactInfo` AES keys, in the crypto signer);
 /// - a key upgrade: the master key, which signs the IdentityUpdate, and the
 ///   `added` keys, each of which signs its own proof of possession (dpp
-///   `IdentityUpdateTransition::try_from_identity_with_signer`).
+///   `IdentityUpdateTransition::try_from_identity_with_signer`);
+/// - a withdrawal (DP6-02): the first of [`transfer_keys`] that is
+///   `usable`, else `identity.keys_missing{transfer}`.
 ///
 /// Any other flow writes nothing here: `platform.grant_invalid`. No such
 /// key: `identity.keys_missing`, which a write checks before it redeems a
@@ -434,6 +460,13 @@ fn flow_keys(
                 .chain(added.iter().copied())
                 .collect())
         }
+        FlowKind::Withdraw => {
+            let key = transfer_keys(identity).find(|k| usable(k)).map(|k| k.id());
+            let missing = IdentityError::KeysMissing {
+                purpose: KeyPurpose::Transfer,
+            };
+            Ok(vec![key.ok_or_else(|| PlatformError::from(missing))?])
+        }
         _ => Err(PlatformError::GrantInvalid.into()),
     }
 }
@@ -445,7 +478,11 @@ fn flow_keys(
 /// ends the permit with no signature, a definite `Cancelled`, and the quote
 /// goes back; once a signature is out, the quote is kept whatever the call
 /// returns (fail closed), so one lease id pays for one write's quote.
-fn write_permit(lease: &Lease, label: &str, quote: u64) -> Result<CallPermit, PlatformError> {
+pub(super) fn write_permit(
+    lease: &Lease,
+    label: &str,
+    quote: u64,
+) -> Result<CallPermit, PlatformError> {
     let quote = CallQuote {
         purpose: BudgetPurpose::Credits,
         amount: quote,
@@ -456,7 +493,7 @@ fn write_permit(lease: &Lease, label: &str, quote: u64) -> Result<CallPermit, Pl
 /// The permit's identity signer for the identity at `index` (counting into
 /// the permit), narrowed to [`flow_keys`] of the lease's flow, chosen among
 /// the keys the vault holds.
-fn flow_signer(
+pub(super) fn flow_signer(
     permit: &CallPermit,
     index: u32,
     identity: &Identity,
