@@ -641,6 +641,13 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
             });
         }
     }
+    // D8: a claim's grant carries no duffs, so its lease has no funding
+    // signer.
+    if matches!(plan.funding, Funding::Invitation { .. })
+        && funding_cap(session, wallet, &grant).await? > 0
+    {
+        return Err(PlatformError::GrantInvalid.into());
+    }
     let lease = authority(session, wallet, &grant).await?;
     let row = NewRegistration {
         identity_index: None,

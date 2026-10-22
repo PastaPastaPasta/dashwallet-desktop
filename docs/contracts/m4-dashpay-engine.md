@@ -3021,7 +3021,7 @@ renames or reshapes them takes the next version bump:
 
 **From DP5-02** (version 35):
 
-62. **The invitation claim (DP5-02 D1–D23, version 35).** `invitation_status` is implemented (§2.9), and
+62. **The invitation claim (DP5-02 D1–D25, version 35).** `invitation_status` is implemented (§2.9), and
     `start_registration` runs `Invitation{link_id}` funding. No signature, type or §4 code changes; §3's listing
     gains `impl InvitationNet for SdkInvitations`, the crate-private network seam of the invitation checks. Decisions
     in `docs/design/DP5-02-invitation-claim.md`.
@@ -3030,14 +3030,15 @@ renames or reshapes them takes the next version bump:
       label without `contested_allowed` (`name.unavailable_for_invite`), and credits the invitation's funding
       does not cover (`registration.funding_insufficient{needed, available}`, in duffs). The quote's duffs are 0
       but `lock_duffs` (§2.2's `RegistrationQuote`); a grant with `max_duffs` 0 gives the lease no funding signer,
-      so the flow signs no Core input. The row's `funding` stores the link id and the inviter's identity, never
+      so the flow signs no Core input, and a grant with duffs is refused (`platform.grant_invalid`). The row's `funding` stores the link id and the inviter's identity, never
       the link.
     - **The claim.** `Draft → KeysPrepared` waits for the identity discovery and the trust gate, not for SPV: a
       wallet with no coins and no sync claims. `KeysPrepared → IdentityRegistered` is the library's
-      `claim_invitation`, under the identity step's permit: an identity at the row's index is adopted (a restored
-      row, or a claim whose answer was lost); a link gone from the stash fails `invitation.expired`, not
-      retryable; a sealed link while locked waits for Unlock; a lock consumed and not by this seed's keys fails
-      `invitation.claimed`, not retryable (another device, or the inviter's reclaim); a stale islock before the
+      `claim_invitation`, under the identity step's permit, after the same wait: an identity at the row's index is
+      adopted (a restored row, or a claim whose answer was lost); a link gone from the stash fails
+      `invitation.expired`, not retryable; a sealed link while locked waits for Unlock; a lock consumed and not by this seed's keys fails
+      `invitation.claimed`, not retryable (another device, or the inviter's reclaim), once the engine's own lookup
+      finds no identity there or one with other keys (a failed lookup waits); a stale islock before the
       ChainLock waits for it. Then DP1-02's name and profile steps, unchanged.
     - **The link** stays stashed until the identity is recorded, then is deleted; `invitation_status` reads
       `Expired` after that.

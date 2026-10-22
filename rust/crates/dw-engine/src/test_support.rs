@@ -87,21 +87,22 @@ pub async fn create_invitation(
         })
         .await?;
     let (proof, path, _) = created?;
-    let master = ExtendedPrivKey::new_master(network, &secret.seed[..]).map_err(|e| {
+    let mut master = ExtendedPrivKey::new_master(network, &secret.seed[..]).map_err(|e| {
         PlatformError::Internal {
             detail: e.to_string(),
         }
     })?;
-    let voucher: SecretKey = (master.derive_priv(&path))
-        .map_err(|e| PlatformError::Internal {
-            detail: e.to_string(),
-        })?
-        .private_key;
+    let voucher: Result<SecretKey, _> = master.derive_priv(&path).map(|k| k.private_key);
+    master.private_key.non_secure_erase();
+    let mut voucher = voucher.map_err(|e| PlatformError::Internal {
+        detail: e.to_string(),
+    })?;
     let inviter = inviter.map(|username| InviterInfo {
         username: Some(username),
         display_name: None,
         avatar_url: None,
     });
-    let uri = encode_invitation_uri(&voucher, network, &proof, inviter.as_ref())?;
-    Ok(zeroize::Zeroizing::new(uri))
+    let uri = encode_invitation_uri(&voucher, network, &proof, inviter.as_ref());
+    voucher.non_secure_erase();
+    Ok(zeroize::Zeroizing::new(uri?))
 }

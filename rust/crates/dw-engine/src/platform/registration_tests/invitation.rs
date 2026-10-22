@@ -268,6 +268,19 @@ fn the_start_refuses_what_cannot_be_claimed() {
     lib.w().invitation = Some(worth(flow::CONTESTED_LOCK_DUFFS));
     let quote = f.engine.block_on(registration::quote(&*lib, &contested));
     assert!(quote.is_ok(), "{quote:?}");
+    // D8: a grant with duffs.
+    let grant = f.grant(1, 10 * COIN * 1000, Credential::None);
+    let started = f.engine.block_on(registration::start(
+        &f.session,
+        f.wallet,
+        Arc::clone(&lib),
+        invite(&link_id),
+        grant,
+    ));
+    assert_eq!(
+        started.map(drop).map_err(|e| e.code()),
+        Err("platform.grant_invalid")
+    );
     // Too little for what the plan writes.
     lib.w().invitation = Some(worth(300_000));
     let err = f
@@ -389,13 +402,55 @@ fn a_kill_at_any_claim_step_resumes_to_one_claim() {
         f.drive(&lib, draft, Some(claim_lease(&f)), true);
         done(&f, draft);
         let w = lib.w();
-        assert_eq!((w.funds, w.identity_creates), (0, 1), "{call:?} {when:?}");
+        assert_eq!(
+            (w.funds, w.claims, w.identity_creates),
+            (0, 1, 1),
+            "{call:?} {when:?}"
+        );
         assert_eq!(w.names.len(), 1, "{call:?} {when:?}");
         assert_eq!(w.profiles.len(), 1, "{call:?} {when:?}");
         assert_eq!(w.requests.len(), 1, "{call:?} {when:?}");
         drop(w);
         assert!(!stashed(&f, &link_id), "{call:?} {when:?}");
     }
+}
+
+/// Review m2: after a restart at `KeysPrepared` the claim step waits for
+/// the bring-up's discovery before its checks, so a claim that landed
+/// unrecorded is adopted even when its link is gone since.
+#[test]
+fn a_restart_at_the_claim_waits_for_discovery_before_the_link() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.hang_at(Call::Claim, When::Before);
+    let link_id = stash(&f);
+    let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
+    f.spawn(&lib, draft, Some(claim_lease(&f)));
+    eventually("the claim is reached", || lib.hung.load(Ordering::SeqCst));
+    f.kill(draft);
+    lib.w().hang = None;
+    let index = f.row(draft).identity_index.expect("keys prepared");
+    f.engine
+        .block_on(f.session.forget_invitation(link_id))
+        .unwrap();
+    lib.w().claim_wait = Some(RegistrationWait::Startup);
+    let lease = claim_lease(&f);
+    f.drive(&lib, draft, Some(lease.clone()), false);
+    let row = f.row(draft);
+    assert_eq!(
+        (phase(&row), row.error.as_deref()),
+        (Phase::KeysPrepared, None)
+    );
+    assert_eq!(
+        f.status(&lib, draft).waiting,
+        Some(RegistrationWait::Startup)
+    );
+    // Discovery finds the identity the lost answer left.
+    lib.w().claim_wait = None;
+    lib.w().identities.push((index, claimed_id()));
+    f.drive(&lib, draft, Some(lease), true);
+    done(&f, draft);
+    assert_eq!(lib.w().claims, 0);
 }
 
 /// A claim Platform executed whose answer was lost: its identity is
@@ -575,5 +630,59 @@ fn the_claim_spends_the_vouchers_outpoint_once_it_can_be_proved() {
     assert_eq!(
         claim_outpoint(true, Err(PlatformError::Unavailable)),
         Err(ClaimError::Failed(PlatformError::Unavailable))
+    );
+}
+
+/// Review M1: a consumed lock is "claimed" only when the engine's own
+/// lookup finds no identity there, or someone else's; ours, or a failed
+/// lookup, retries the claim (the library adopts ours).
+#[test]
+fn a_consumed_lock_is_claimed_only_when_the_identity_is_not_ours() {
+    use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dpp::identity::v0::IdentityV0;
+    use dpp::identity::{Identity, IdentityPublicKey, KeyType, Purpose, SecurityLevel};
+    use flow::{ClaimError, consumed_verdict};
+    let key = |id, byte| {
+        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::MASTER,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: vec![byte; 33].into(),
+            disabled_at: None,
+        })
+    };
+    let ours = BTreeMap::from([(0, key(0, 2)), (1, key(1, 3))]);
+    let identity = |keys: &BTreeMap<_, _>| {
+        Some(Identity::V0(IdentityV0 {
+            id: flow::identity_for(outpoint()),
+            public_keys: keys.clone(),
+            balance: 0,
+            revision: 0,
+        }))
+    };
+    let retried = ClaimError::Failed(PlatformError::Unavailable);
+    assert_eq!(consumed_verdict(Ok(identity(&ours)), &ours), retried);
+    assert_eq!(
+        consumed_verdict(Err(PlatformError::Unavailable), &ours),
+        retried
+    );
+    assert_eq!(consumed_verdict(Ok(None), &ours), ClaimError::Claimed);
+    let theirs = BTreeMap::from([(0, key(0, 2)), (1, key(1, 4))]);
+    assert_eq!(
+        consumed_verdict(Ok(identity(&theirs)), &ours),
+        ClaimError::Claimed
+    );
+    let fewer = BTreeMap::from([(0, key(0, 2))]);
+    assert_eq!(
+        consumed_verdict(Ok(identity(&fewer)), &ours),
+        ClaimError::Claimed
+    );
+    let more = BTreeMap::from([(0, key(0, 2)), (1, key(1, 3)), (2, key(2, 5))]);
+    assert_eq!(
+        consumed_verdict(Ok(identity(&more)), &ours),
+        ClaimError::Claimed
     );
 }

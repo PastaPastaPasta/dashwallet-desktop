@@ -35,7 +35,7 @@
 //! positive evidence says `NotSent`. The identity step runs under its own
 //! resumable step permit (its call in `create_identity`).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -43,7 +43,9 @@ use std::time::Duration;
 
 use dashcore::OutPoint;
 use dpp::identity::accessors::IdentityGettersV0;
+use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
+use dpp::identity::{Identity, IdentityPublicKey, KeyID};
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dw_appdb::{
@@ -400,6 +402,42 @@ pub(crate) fn claim_outpoint(
         Ok(Err(_)) => Err(ClaimError::Invalid),
         Err(e) => Err(ClaimError::Failed(e)),
     }
+}
+
+/// Lookups of the identity at a consumed lock's id while none is found,
+/// before the claim counts as made elsewhere: a node behind the one that
+/// refused may not have it yet.
+const CONSUMED_LOOKUPS: u32 = 3;
+
+/// A claim refused because its lock is consumed, read from the engine's
+/// own lookup of the identity at the lock's id (the library reports a
+/// failed lookup as that refusal too, which must not fail our own landed
+/// claim for good). An identity carrying exactly `keys` is ours: the claim
+/// is retried and the library adopts it. A failed lookup is retried. None,
+/// or someone else's, is claimed.
+pub(crate) fn consumed_verdict(
+    found: Result<Option<Identity>, PlatformError>,
+    keys: &BTreeMap<KeyID, IdentityPublicKey>,
+) -> ClaimError {
+    match found {
+        Ok(Some(identity)) if carries_keys(&identity, keys) => {
+            ClaimError::Failed(PlatformError::Unavailable)
+        }
+        Ok(_) => ClaimError::Claimed,
+        Err(e) => ClaimError::Failed(e),
+    }
+}
+
+/// `identity` holds exactly `keys`: the same ids, types and data, as the
+/// library's adoption compares.
+fn carries_keys(identity: &Identity, keys: &BTreeMap<KeyID, IdentityPublicKey>) -> bool {
+    let actual = identity.public_keys();
+    actual.len() == keys.len()
+        && keys.iter().all(|(id, key)| {
+            actual.get(id).is_some_and(|found| {
+                found.data() == key.data() && found.key_type() == key.key_type()
+            })
+        })
 }
 
 /// One flow's state in this process (the session's Platform runtime),
@@ -2245,6 +2283,12 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             identity: Some(id),
             ..Default::default()
         };
+        // The bring-up's discovery first, as at `Draft`: after a restart
+        // D11 must see an identity a lost answer left on Platform before a
+        // gone link fails the row.
+        if let Some(wait) = self.lib.claim_hold() {
+            return Ok(hold_step(wait));
+        }
         // D11: the seed's identity at the row's index is this flow's (a
         // restored row, or a claim whose record was lost).
         if let Some(id) = self.identity_at(index).await {
@@ -2803,6 +2847,30 @@ pub(crate) struct PwLib {
 }
 
 impl PwLib {
+    /// The identity at a consumed lock's id, looked up again while none is
+    /// found (up to [`CONSUMED_LOOKUPS`]), read by [`consumed_verdict`].
+    async fn consumed_claim(
+        &self,
+        outpoint: OutPoint,
+        keys: &BTreeMap<KeyID, IdentityPublicKey>,
+    ) -> ClaimError {
+        use dash_sdk::platform::Fetch;
+        let id = identity_for(outpoint);
+        let mut found = Ok(None);
+        for attempt in 0..CONSUMED_LOOKUPS {
+            if attempt > 0 {
+                tokio::time::sleep(NETWORK_RETRY_MIN).await;
+            }
+            found = Identity::fetch(&self.sdk, id)
+                .await
+                .map_err(PlatformError::from);
+            if !matches!(found, Ok(None)) {
+                break;
+            }
+        }
+        consumed_verdict(found, keys)
+    }
+
     /// The library of wallet `wallet_id`, with the manager holding it.
     pub(crate) async fn open(
         session: &Arc<NetworkSession>,
@@ -3037,14 +3105,14 @@ impl RegistrationLib for PwLib {
         let claimed = self
             .wallet
             .identity()
-            .claim_invitation(parsed, identity_index, keys, &identity_signer, None)
+            .claim_invitation(parsed, identity_index, keys.clone(), &identity_signer, None)
             .await;
         match claimed {
             Ok(identity) => Ok(b58(&identity.id())),
             Err(E::InvitationNetworkMismatch { .. }) => Err(ClaimError::Invalid),
             Err(E::AssetLockNotChainLocked(_)) => Err(ClaimError::NotChainLocked),
             Err(E::Sdk(e)) if is_asset_lock_already_consumed(&e, &outpoint) => {
-                Err(ClaimError::Claimed)
+                Err(self.consumed_claim(outpoint, &keys).await)
             }
             Err(e) => Err(ClaimError::Failed(e.into())),
         }

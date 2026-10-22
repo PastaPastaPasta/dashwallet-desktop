@@ -2038,12 +2038,18 @@ fn create_invitation(
     use std::os::unix::fs::OpenOptionsExt;
     let dp = ctx.dashpay()?;
     let caps = GrantRequest {
-        max_duffs: duffs + 100_000,
+        max_duffs: duffs.saturating_add(100_000),
         max_credits: 0,
     };
     let grant = ctx.platform_op(&dp, caps)?;
     let phrase = Zeroizing::new(std::fs::read(phrase_file)?);
     let phrase = phrase.trim_ascii();
+    // Before the lock is funded: a taken path must not lose a funded link.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
     let link = ctx.block_on(dw_engine::test_support::create_invitation(
         ctx.session,
         dp.wallet_id(),
@@ -2051,12 +2057,15 @@ fn create_invitation(
         duffs,
         username,
         phrase,
-    ))?;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
+    ));
+    let link = match link {
+        Ok(link) => link,
+        Err(e) => {
+            drop(file);
+            let _ = std::fs::remove_file(path);
+            return Err(e.into());
+        }
+    };
     file.write_all(link.as_bytes())?;
     out(json!({"out": path, "duffs": duffs}))
 }

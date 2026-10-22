@@ -11,6 +11,8 @@
 //! and proof: with the engine's vault signer and DP1-01's keys, as the claim
 //! passes them, and with keys derived independently from the seed and a
 //! plain key signer, as Platform's `simple-signer` signs. The bytes are equal.
+//! This holds the engine's signer and keys to Platform's; the library's own
+//! call path (its settings, the SDK's version) ran on the devnet (T2).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
