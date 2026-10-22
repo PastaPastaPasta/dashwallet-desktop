@@ -16,7 +16,7 @@ use dashcore::hashes::{Hash, hash160, ripemd160, sha256, sha256d};
 use dashcore::secp256k1;
 
 use super::map::{Input, Map, Output, PsbtSighashType};
-use crate::psbt::{Error, PartiallySignedTransaction};
+use crate::psbt::{Error, PartiallySignedTransaction, SigKey};
 use dashcore::blockdata::script::ScriptBuf;
 use dashcore::blockdata::transaction::Transaction;
 use dashcore::blockdata::transaction::txout::TxOut;
@@ -141,6 +141,18 @@ impl Serialize for PublicKey {
 impl Deserialize for PublicKey {
     fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
         PublicKey::from_slice(bytes).map_err(Error::InvalidPublicKey)
+    }
+}
+
+impl Serialize for SigKey {
+    fn serialize(&self) -> Vec<u8> {
+        self.0.serialize()
+    }
+}
+
+impl Deserialize for SigKey {
+    fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
+        PublicKey::deserialize(bytes).map(SigKey)
     }
 }
 

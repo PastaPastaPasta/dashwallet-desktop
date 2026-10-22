@@ -1,7 +1,9 @@
 //! v24 shared masternodes: the codecs of the three new provider payloads and
 //! of the share table, written from Dash Core v24.0.0-rc.2
-//! `src/evo/providertx.h` because rust-dashcore at the pin has the four
-//! classic payloads only:
+//! `src/evo/providertx.h` because rust-dashcore at the pin then had the four
+//! classic payloads only (since BL-187 the pin decodes these three too, as
+//! `ProviderDissolvePayload`, `ProviderUpdateSharePayload` and
+//! `ProviderUpdateSharedRegistrarPayload`; MG-04b reconciles the two):
 //!
 //! - [`ProDisTx`] (type 10, `providertx.h:436-482`): dissolve a shared
 //!   masternode, unilateral (one signature) or unanimous (one per share);

@@ -33,7 +33,7 @@ use key_wallet::Signer;
 use key_wallet::bip32::{DerivationPath, Fingerprint};
 
 pub mod psbt;
-pub use psbt::{PartiallySignedTransaction, PsbtSighashType};
+pub use psbt::{PartiallySignedTransaction, PsbtSighashType, SigKey, XpubKey};
 
 /// Largest PSBT accepted (dash-qt refuses files of 100 MiB or more).
 pub const MAX_PSBT_BYTES: usize = 100 * 1024 * 1024;
@@ -195,7 +195,12 @@ fn input_complete(psbt: &PartiallySignedTransaction, index: usize) -> bool {
         return true;
     }
     spent_output(psbt, index)
-        .and_then(|out| p2pkh_key(&out.script_pubkey, psbt.inputs[index].partial_sigs.keys()))
+        .and_then(|out| {
+            p2pkh_key(
+                &out.script_pubkey,
+                psbt.inputs[index].partial_sigs.keys().map(|k| &k.0),
+            )
+        })
         .is_some()
 }
 
@@ -370,7 +375,7 @@ pub async fn sign<S: Signer>(
         })?;
         psbt.inputs[index]
             .partial_sigs
-            .insert(pk, ecdsa::Signature { sig, hash_ty });
+            .insert(SigKey(pk), ecdsa::Signature { sig, hash_ty });
         signed += 1;
     }
     Ok(signed)
@@ -388,10 +393,10 @@ pub fn finalize(psbt: &mut PartiallySignedTransaction) -> bool {
             continue;
         };
         let input = &mut psbt.inputs[i];
-        let Some(pk) = p2pkh_key(&script, input.partial_sigs.keys()).copied() else {
+        let Some(pk) = p2pkh_key(&script, input.partial_sigs.keys().map(|k| &k.0)).copied() else {
             continue;
         };
-        let sig = input.partial_sigs[&pk];
+        let sig = input.partial_sigs[&SigKey(pk)];
         let Ok(sig_push) = PushBytesBuf::try_from(sig.to_vec()) else {
             continue;
         };

@@ -219,10 +219,10 @@ pub struct MasternodeRow {
     pub mine: bool,
     pub tracked: bool,
     /// A version-3 ProRegTx/ProUpRegTx, or a list entry seen at version 3
-    /// (remembered, D29), the pinned library can't decode: its payouts may
-    /// be shared (Core v24 `payouts` and
-    /// `shares`), so the keys and payout aren't reported and its payouts
-    /// are left out of every total (MG-03 D25; shares are MG-03b).
+    /// (remembered, D29), whose payouts and shares (Core v24) aren't read
+    /// yet: its payouts may be shared, so the keys and payout aren't
+    /// reported and its payouts are left out of every total (MG-03 D25;
+    /// shares are MG-03b).
     pub shared_unsupported: bool,
     pub roles: MasternodeRoles,
     pub collateral: CollateralState,

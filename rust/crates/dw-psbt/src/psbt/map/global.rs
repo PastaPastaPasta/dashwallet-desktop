@@ -6,7 +6,7 @@
 use core::convert::TryFrom;
 
 use crate::psbt::map::Map;
-use crate::psbt::{Error, PartiallySignedTransaction, raw};
+use crate::psbt::{Error, PartiallySignedTransaction, XpubKey, raw};
 use dashcore::blockdata::transaction::Transaction;
 use dashcore::consensus::encode::MAX_VEC_SIZE;
 use dashcore::consensus::{Decodable, Encodable, encode};
@@ -60,7 +60,7 @@ impl Map for PartiallySignedTransaction {
             rv.push(raw::Pair {
                 key: raw::Key {
                     type_value: PSBT_GLOBAL_XPUB,
-                    key: xpub.encode().to_vec(),
+                    key: xpub.0.encode().to_vec(),
                 },
                 value: {
                     let mut ret = Vec::with_capacity(4 + derivation.len() * 4);
@@ -108,8 +108,7 @@ impl PartiallySignedTransaction {
         let mut tx: Option<Transaction> = None;
         let mut version: Option<u32> = None;
         let mut unknowns: BTreeMap<raw::Key, Vec<u8>> = Default::default();
-        let mut xpub_map: BTreeMap<ExtendedPubKey, (Fingerprint, DerivationPath)> =
-            Default::default();
+        let mut xpub_map: BTreeMap<XpubKey, (Fingerprint, DerivationPath)> = Default::default();
         let mut proprietary: BTreeMap<raw::ProprietaryKey, Vec<u8>> = Default::default();
 
         loop {
@@ -178,7 +177,10 @@ impl PartiallySignedTransaction {
                                 let derivation = DerivationPath::from(path);
                                 // Keys, according to BIP-174, must be unique
                                 if xpub_map
-                                    .insert(xpub, (Fingerprint::from(fingerprint), derivation))
+                                    .insert(
+                                        XpubKey(xpub),
+                                        (Fingerprint::from(fingerprint), derivation),
+                                    )
                                     .is_some()
                                 {
                                     return Err(Error::XPubKey("Repeated global xpub key"));
