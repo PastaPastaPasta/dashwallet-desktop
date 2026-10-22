@@ -914,3 +914,103 @@ fn an_invitation_is_read_in_place_until_forgotten() {
     assert_eq!(v.read_stashed_invitation(&meta.id).unwrap().map(drop), None);
     assert_eq!(f.entry_files(), 0);
 }
+
+fn ids(v: &Vault) -> Vec<String> {
+    v.stashed_links()
+        .unwrap()
+        .into_iter()
+        .map(|m| m.id)
+        .collect()
+}
+
+/// DP5-03 D12: a held entry outlives its 30 days, across a restart, until
+/// it is let go; letting go of it (or of nothing) is idempotent.
+#[test]
+fn a_held_entry_does_not_expire_until_let_go() {
+    let f = Fixture::new();
+    let v = f.open();
+    let invite = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    let other = v
+        .stash_link(StashedLinkKind::Invitation, &format!("{INVITE}&n=1"))
+        .unwrap();
+    assert!(v.hold_stashed_link(&invite.id, true).unwrap());
+    assert!(v.hold_stashed_link(&invite.id, true).unwrap(), "held twice");
+    f.advance(30 * DAY);
+    assert_eq!(ids(&v), vec![invite.id.clone()], "the unheld one expired");
+    assert!(v.read_stashed_invitation(&invite.id).unwrap().is_some());
+    drop(v);
+    let v = f.open();
+    assert_eq!(
+        ids(&v),
+        vec![invite.id.clone()],
+        "the hold outlives a restart"
+    );
+    assert!(!v.hold_stashed_link(&other.id, true).unwrap(), "no entry");
+    assert!(!f.links_dir().join(format!("{}.hold", other.id)).exists());
+    assert!(v.hold_stashed_link(&invite.id, false).unwrap());
+    assert!(
+        v.hold_stashed_link(&invite.id, false).unwrap(),
+        "let go twice"
+    );
+    assert_eq!(ids(&v), Vec::<String>::new(), "expired once let go");
+    assert_eq!(f.entry_files(), 0);
+    assert!(matches!(
+        v.hold_stashed_link("../x", true),
+        Err(VaultError::InvalidArgument(_))
+    ));
+}
+
+/// DP5-03 D12 (Opus-h r2 n8): eviction never takes a held entry, even the
+/// oldest invitation; a stash full of held entries refuses the new link
+/// and keeps every entry.
+#[test]
+fn a_full_stash_never_evicts_a_held_entry() {
+    let f = Fixture::new();
+    let v = f.open();
+    let held = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    v.hold_stashed_link(&held.id, true).unwrap();
+    for i in 1..MAX_STASHED_LINKS {
+        f.advance(1);
+        v.stash_link(StashedLinkKind::Invitation, &format!("{INVITE}&n={i}"))
+            .unwrap();
+    }
+    f.advance(1);
+    v.stash_link(StashedLinkKind::Invitation, &format!("{INVITE}&n=last"))
+        .unwrap();
+    let now = ids(&v);
+    assert_eq!(now.len(), MAX_STASHED_LINKS);
+    assert!(now.contains(&held.id), "the held invitation stays");
+    for id in &now {
+        v.hold_stashed_link(id, true).unwrap();
+    }
+    f.advance(1);
+    assert!(matches!(
+        v.stash_link(StashedLinkKind::Payment, PAY),
+        Err(VaultError::InvalidArgument(_))
+    ));
+    assert_eq!(ids(&v), now, "nothing evicted");
+    // One let go makes room again, taking that one.
+    v.hold_stashed_link(&now[3], false).unwrap();
+    let pay = v.stash_link(StashedLinkKind::Payment, PAY).unwrap();
+    let after = ids(&v);
+    assert!(!after.contains(&now[3]) && after.contains(&pay.id));
+}
+
+/// DP5-03 D12: deleting an entry deletes its hold, and a hold left without
+/// its entry (a crash between the two) is swept at the next load.
+#[test]
+fn a_hold_goes_with_its_entry() {
+    let f = Fixture::new();
+    let v = f.open();
+    let invite = v.stash_link(StashedLinkKind::Invitation, INVITE).unwrap();
+    let hold = f.links_dir().join(format!("{}.hold", invite.id));
+    v.hold_stashed_link(&invite.id, true).unwrap();
+    assert!(hold.exists());
+    v.forget_stashed_link(&invite.id, ALL_LINK_KINDS).unwrap();
+    assert!(!hold.exists(), "forgotten with its entry");
+    // A stray hold beside an unrelated entry is swept; the entry is not held.
+    let other = v.stash_link(StashedLinkKind::Payment, PAY).unwrap();
+    std::fs::write(&hold, b"").unwrap();
+    assert_eq!(ids(&v), vec![other.id]);
+    assert!(!hold.exists(), "swept");
+}

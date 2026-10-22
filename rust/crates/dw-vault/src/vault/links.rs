@@ -30,7 +30,11 @@
 //! - **Bounded** (D7, D8): at most [`MAX_STASHED_LINKS`] entries of at most
 //!   [`MAX_STASHED_LINK_BYTES`] each, with a time to live per kind. A full
 //!   stash makes room: expired entries first, then the oldest
-//!   non-invitation, then the oldest invitation.
+//!   non-invitation, then the oldest invitation, never a held one.
+//! - **Held** (DP5-03 D12): an entry with a `<id>.hold` marker beside it (an
+//!   open invitation claim, [`Vault::hold_stashed_link`]) does not expire
+//!   and is never evicted; deleting the entry deletes its marker. The
+//!   entry's sealed fields are not touched, so holding needs no key.
 //! - **Deduplicated** (D9) by kind and text: in plaintext when the key is
 //!   at hand, otherwise against the links this process stashed (a tag under
 //!   a per-process random key, kept in memory only); the next sync with the
@@ -78,6 +82,8 @@ const PUB_FILE: &str = "stash.pub";
 const PUB_TMP: &str = "stash.pub.tmp";
 const ENTRY_EXT: &str = "dwl";
 const ENTRY_TMP_EXT: &str = "tmp";
+/// The marker of a held entry (DP5-03 D12): an empty file `<id>.hold`.
+const HOLD_EXT: &str = "hold";
 /// An entry file larger than this is not one of ours: it is deleted
 /// unread and unscrubbed (D27).
 const MAX_ENTRY_FILE_BYTES: u64 = 16 * 1024;
@@ -523,6 +529,21 @@ impl Vault {
         self.links_dir().join(format!("{id}.{ENTRY_EXT}"))
     }
 
+    fn hold_path(&self, id: &str) -> PathBuf {
+        self.links_dir().join(format!("{id}.{HOLD_EXT}"))
+    }
+
+    /// The entry `id` is held (D12): neither its time to live nor the
+    /// stash's eviction removes it.
+    fn held(&self, id: &str) -> bool {
+        std::fs::symlink_metadata(self.hold_path(id)).is_ok_and(|m| m.is_file())
+    }
+
+    /// `e` is past its time to live and not held.
+    fn expired(&self, e: &EntryFile, now: u64) -> bool {
+        e.expires_at <= now && !self.held(&e.id)
+    }
+
     fn links_state(&self) -> std::sync::MutexGuard<'_, LinkState> {
         self.shared
             .links
@@ -624,6 +645,7 @@ impl Vault {
             Err(e) => return Err(e.into()),
         };
         let mut entries = Vec::new();
+        let mut holds = Vec::new();
         let mut dropped = 0usize;
         for item in read {
             let item = item?;
@@ -640,6 +662,10 @@ impl Vault {
                 }
                 continue;
             }
+            if ext == HOLD_EXT && is_link_id(stem) {
+                holds.push(stem.to_owned());
+                continue;
+            }
             // Only regular files are entries: a directory or a link that
             // takes an entry's name is left alone, never followed.
             if name == PUB_FILE || ext != ENTRY_EXT || !is_link_id(stem) {
@@ -649,13 +675,21 @@ impl Vault {
                 continue;
             }
             match read_entry(&path, stem) {
-                Some(e) if e.expires_at > now => entries.push(e),
+                Some(e) if !self.expired(&e, now) => entries.push(e),
                 _ => {
                     scrub(&path);
                     std::fs::remove_file(&path)?;
                     dropped += 1;
                 }
             }
+        }
+        // A hold whose entry is gone holds nothing.
+        for id in holds
+            .iter()
+            .filter(|id| !entries.iter().any(|e| &e.id == *id))
+        {
+            remove_any(&self.hold_path(id))?;
+            dropped += 1;
         }
         if dropped > 0 {
             sync_dir(&dir)?;
@@ -675,6 +709,7 @@ impl Vault {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => return Err(err.into()),
         }
+        remove_any(&self.hold_path(&e.id))?;
         sync_dir(&self.links_dir())
     }
 
@@ -1018,12 +1053,15 @@ impl Vault {
                 None => return Err(VaultError::Locked),
             },
         };
-        // Room for one more (D7).
+        // Room for one more (D7), never at a held entry's cost (DP5-03 D12).
         while entries.len() >= MAX_STASHED_LINKS {
-            let victim = entries
-                .iter()
-                .position(|e| e.kind != StashedLinkKind::Invitation)
-                .unwrap_or(0);
+            let free = |e: &EntryFile| !self.held(&e.id);
+            let Some(victim) = (entries.iter())
+                .position(|e| e.kind != StashedLinkKind::Invitation && free(e))
+                .or_else(|| entries.iter().position(free))
+            else {
+                return Err(VaultError::InvalidArgument("the link stash is full".into()));
+            };
             let e = entries.remove(victim);
             self.delete_entry(&e)?;
             state.forget(&e.id);
@@ -1162,7 +1200,7 @@ impl Vault {
         let Some(entry) = read_entry(&self.entry_path(id), id) else {
             return Ok(None);
         };
-        if entry.expires_at <= now {
+        if self.expired(&entry, now) {
             self.delete_entry(&entry)?;
             state.forget(id);
             return Ok(None);
@@ -1188,6 +1226,44 @@ impl Vault {
             }
         };
         Ok(Some((entry, text)))
+    }
+
+    /// Holds the entry `id` (`held`) or lets it go (DP5-03 D12): a held
+    /// entry does not expire and is never evicted, until it is deleted
+    /// (taken, forgotten) or let go. Works in every lock state and opens
+    /// nothing. `Ok(false)` when there is no entry `id` to hold; letting go
+    /// of one without a hold is `Ok(true)`.
+    pub fn hold_stashed_link(&self, id: &str, held: bool) -> Result<bool, VaultError> {
+        if !is_link_id(id) {
+            return Err(VaultError::InvalidArgument("not a stashed link id".into()));
+        }
+        let _state = self.links_state();
+        let path = self.hold_path(id);
+        if !held {
+            if std::fs::symlink_metadata(&path).is_ok() {
+                remove_any(&path)?;
+                sync_dir(&self.links_dir())?;
+            }
+            return Ok(true);
+        }
+        if read_entry(&self.entry_path(id), id).is_none() {
+            return Ok(false);
+        }
+        if self.held(id) {
+            return Ok(true);
+        }
+        // Whatever else takes the name (a directory, a link) is cleared.
+        remove_any(&path)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        opts.open(&path)?.sync_all()?;
+        sync_dir(&self.links_dir())?;
+        Ok(true)
     }
 
     /// Deletes the entry `id` without opening it, when its kind is one of
