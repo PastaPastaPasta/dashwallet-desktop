@@ -139,7 +139,7 @@ export const amountCanChange = (e: unknown) =>
 /** T8: the refusal routes to Tools ▸ Repair (D16). */
 export const routesToRepair = (e: unknown) => hasCode(e, "platform.broadcast_unknown");
 
-const platformOp = (g: GrantRequest) => ({ kind: "platformOp" as const, maxDuffs: g.maxDuffs, maxCredits: g.maxCredits });
+export const platformOp = (g: GrantRequest) => ({ kind: "platformOp" as const, maxDuffs: g.maxDuffs, maxCredits: g.maxCredits });
 
 /** What a pending row's call came to: its result or refusal, shown under the row. */
 export type RowResult = { txid: string; outcome: TopUpOutcome | null; error: unknown };

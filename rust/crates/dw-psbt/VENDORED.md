@@ -63,6 +63,11 @@ deleted (platform #5307 pins a rust-dashcore without it).
   returns an `Option`, and `Display` is a plain match with upstream's text
   (`SIGHASH_ALL`, `SIGHASH_NONE|SIGHASH_ANYONECANPAY`, …, `0x…` otherwise).
 - `raw.rs`: one `return Err(..)?` lost its `return` (clippy 1.98).
+- `Input::partial_sigs` is keyed by `SigKey` and the global `xpub` map by
+  `XpubKey` (`psbt/mod.rs`), not `PublicKey` and `ExtendedPubKey`:
+  rust-dashcore #1144 dropped those types' `Ord` (BL-187). Each wrapper orders
+  as the removed derive did, so the maps serialize in the same order and the
+  bytes are unchanged.
 - Source formatted with the workspace's `rustfmt`.
 
 ## Checks against the old module

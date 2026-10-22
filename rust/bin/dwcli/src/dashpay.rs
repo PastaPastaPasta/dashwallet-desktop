@@ -246,6 +246,17 @@ pub enum IdentityCmd {
     },
     /// Discover the identities of this wallet's seed.
     Discover,
+    /// Fetch an identity's keys and revision from Platform, then its
+    /// balance; every identity of the wallet with `--all`.
+    Refresh {
+        #[command(flatten)]
+        who: Who,
+        #[arg(long, conflicts_with = "identity")]
+        all: bool,
+    },
+    /// Look an identity up on Platform by id or DPNS name; adds nothing to
+    /// the wallet (`null`: none).
+    Find { query: String },
     /// Register an identity with a username: quote, authorize, start.
     /// Funded from the Core balance unless a funding option is given.
     Register {
@@ -320,6 +331,11 @@ pub enum IdentityCmd {
         /// Print the quote only.
         #[arg(long)]
         quote_only: bool,
+    },
+    /// The identity's recent withdrawals on Platform, newest first.
+    Withdrawals {
+        #[command(flatten)]
+        who: Who,
     },
     /// Credit costs and thresholds.
     Costs,
@@ -771,6 +787,8 @@ fn credits_params(e: &CreditsError) -> Value {
         CreditsError::BelowMinimum { min } => json!({"min": min}),
         CreditsError::CoinsLocked => json!({}),
         CreditsError::TopUpPending { txid } => json!({"txid": txid}),
+        CreditsError::WithdrawalOutOfRange { min, max } => json!({"min": min, "max": max}),
+        CreditsError::WithdrawalLanded { artifact } => json!({"artifact": artifact}),
         CreditsError::Platform(p) => platform_params(p),
     }
 }
@@ -1511,6 +1529,11 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
             let grant = ctx.identity_scan(&dp)?;
             out(ctx.block_on(dp.discover_identities(grant))?)
         }
+        IdentityCmd::Refresh { all: true, .. } => out(ctx.block_on(dp.refresh_identities())?),
+        IdentityCmd::Refresh { who, .. } => {
+            out(ctx.block_on(dp.refresh_identity(who.or_main(&dp)?))?)
+        }
+        IdentityCmd::Find { query } => out(ctx.block_on(dp.find_identity(query))?),
         IdentityCmd::Register {
             reg,
             invitation_id,
@@ -1604,6 +1627,10 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
             let grant = ctx.platform_op(&dp, quote.grant)?;
             let outcome = ctx.block_on(dp.withdraw(identity, to, amount, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
+        }
+        IdentityCmd::Withdrawals { who } => {
+            let identity = who.or_main(&dp)?;
+            out(ctx.block_on(dp.withdrawals(identity))?)
         }
         IdentityCmd::Costs => out(dp.cost_table()?),
     }
@@ -2095,7 +2122,7 @@ mod tests {
     ];
 
     /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04, DP2-01,
-    /// DP2-03, DP1-02, DP2-02, DP1-06, DP3-01, DP4-01), with the
+    /// DP2-03, DP1-02, DP2-02, DP1-06, DP3-01, DP4-01, DP6-01), with the
     /// line each prints on the tests' wallet, which has no identity and no
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
@@ -2112,6 +2139,11 @@ mod tests {
         ("identity show", NO_IDENTITY),
         ("identity set-main I", NO_IDENTITY),
         ("identity discover", NO_PLATFORM),
+        ("identity show --identity I", NOT_IDENTIFIER),
+        ("identity refresh --identity I", NOT_IDENTIFIER),
+        ("identity refresh", NO_IDENTITY),
+        ("identity refresh --all", r#"{"ok":true,"result":[]}"#),
+        ("identity find alice", NO_PLATFORM),
         ("pay-contact C --amount 1", NO_IDENTITY),
         (
             "pay-contact --identity I C --amount 1000 --note hi",
@@ -2124,10 +2156,7 @@ mod tests {
         ("name check alice", ALICE),
         ("name availability alice", NO_PLATFORM),
         ("name register --identity I bob", NO_PLATFORM),
-        (
-            "name contest --identity I alice",
-            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: identity is not a base58 identifier","params":{"detail":"identity is not a base58 identifier"}}}"#,
-        ),
+        ("name contest --identity I alice", NOT_IDENTIFIER),
         ("dashpay sync-status", SYNC_STATUS),
         ("dashpay leases", r#"{"ok":true,"result":[]}"#),
         ("identity register --label alice", NO_PLATFORM),
@@ -2217,6 +2246,15 @@ mod tests {
             NOT_IDENTIFIER,
         ),
         ("identity top-up-pending", r#"{"ok":true,"result":[]}"#),
+        (
+            "identity withdraw --identity I --credits 5 --to yA",
+            NOT_IDENTIFIER,
+        ),
+        (
+            "identity withdraw --identity I --all --quote-only",
+            NOT_IDENTIFIER,
+        ),
+        ("identity withdrawals --identity I", NOT_IDENTIFIER),
         ("identity top-up-stuck", r#"{"ok":true,"result":[]}"#),
         (
             "identity top-up-resume abababababababababababababababababababababababababababababababab",
@@ -2239,7 +2277,7 @@ mod tests {
 
     const INVITATION_INVALID: &str = r#"{"ok":false,"error":{"code":"invitation.invalid","message":"invitation invalid","params":{}}}"#;
 
-    /// `I` is not an identity id, as the credits calls word it.
+    /// `I` is not an identity id, as the credits and identity calls word it.
     const NOT_IDENTIFIER: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: identity is not a base58 identifier","params":{"detail":"identity is not a base58 identifier"}}}"#;
 
     /// The cost table at the SDK's seed protocol version (13), priced at
@@ -2294,6 +2332,10 @@ mod tests {
         ("identity set-main I", "DashPay.set_main_identity"),
         ("identity balance --identity I", "DashPay.refresh_balance"),
         ("identity discover", "DashPay.discover_identities"),
+        ("identity refresh --identity I", "DashPay.refresh_identity"),
+        ("identity refresh", "DashPay.identities"),
+        ("identity refresh --all", "DashPay.refresh_identities"),
+        ("identity find alice", "DashPay.find_identity"),
         (
             "identity register --label alice",
             "DashPay.registration_quote",
@@ -2334,6 +2376,7 @@ mod tests {
             "DashPay.withdraw_quote",
         ),
         ("identity costs", "DashPay.cost_table"),
+        ("identity withdrawals --identity I", "DashPay.withdrawals"),
         ("identity top-up-pending", "DashPay.pending_top_ups"),
         ("identity top-up-stuck", "DashPay.stuck_top_up_fundings"),
         (
@@ -2548,6 +2591,8 @@ mod tests {
             "identity withdraw --credits 5 --all --to yA",
             "identity withdraw --credits 5",
             "identity set-main",
+            "identity refresh --identity I --all",
+            "identity find",
             "name check",
             "contact request",
             "contact request C --scanned",

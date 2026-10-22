@@ -332,6 +332,26 @@ impl WalletHistory {
         }
     }
 
+    /// A fork replaced the blocks above the wallet's truncation height:
+    /// `removed` are gone, and `unconfirmed` (InstantSend-locked, so the
+    /// network mines them again) are out of a block, locked. Returns the
+    /// transactions that changed.
+    pub fn truncate(&mut self, removed: &[Txid], unconfirmed: &[Txid]) -> Vec<Txid> {
+        let mut changed: Vec<Txid> = removed
+            .iter()
+            .filter(|t| self.txs.remove(*t).is_some())
+            .copied()
+            .collect();
+        for txid in unconfirmed {
+            if let Some(e) = self.txs.get_mut(txid) {
+                e.context = TransactionContext::Mempool;
+                e.instant_locked = true;
+                changed.push(*txid);
+            }
+        }
+        changed
+    }
+
     /// Upgrades a transaction in a block to ChainLocked.
     pub fn set_chain_locked(&mut self, txid: &Txid) -> bool {
         match self.txs.get_mut(txid) {
@@ -1491,6 +1511,35 @@ mod tests {
             TransactionContext::Mempool
         );
         assert_eq!(merge_context(&TransactionContext::Mempool, &b), b);
+    }
+
+    #[test]
+    fn truncation_drops_removed_and_unconfirms_locked() {
+        let mut h = WalletHistory::default();
+        let mut add = |n: u8, context: TransactionContext| {
+            let e = entry(
+                tx(vec![foreign_input(n)], vec![out(1_000, &hash_addr(1))]),
+                context,
+            );
+            let id = e.tx.txid();
+            h.txs.insert(id, e);
+            id
+        };
+        let kept = add(1, in_block(5, 1));
+        let removed = add(2, in_block(7, 2));
+        let locked = add(3, in_block(8, 3));
+        let unknown = Txid::from_byte_array([9; 32]);
+
+        let changed = h.truncate(&[removed, unknown], &[locked, unknown]);
+
+        assert_eq!(changed, [removed, locked]);
+        assert!(!h.txs.contains_key(&removed));
+        assert_eq!(h.txs[&kept].context, in_block(5, 1));
+        assert_eq!(h.txs[&locked].context, TransactionContext::Mempool);
+        assert!(h.txs[&locked].instant_locked);
+        // Mined again on the new chain.
+        let again = merge_context(&h.txs[&locked].context, &in_block(9, 4));
+        assert_eq!(again, in_block(9, 4));
     }
 
     fn rec(txid: u8, idx: u32, ts: Option<u64>, amount: i64, tx_type: TxType) -> TxRecord {

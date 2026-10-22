@@ -38,6 +38,7 @@ use dashcore::hash_types::InputsHash;
 use dashcore::hashes::Hash;
 use dashcore::platform_node_id::PlatformNodeId;
 use dashcore::secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
+use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
 use dashcore::{Network, OutPoint, PubkeyHash, ScriptBuf, Transaction, Txid};
 use zeroize::Zeroizing;
 
@@ -115,7 +116,7 @@ pub fn registration_placeholder(terms: &RegistrationTerms) -> ProviderRegistrati
         },
         masternode_mode: 0,
         collateral_outpoint,
-        service_address: terms.service,
+        service_address: MasternodeNetInfo::Legacy(terms.service),
         owner_key_hash: PubkeyHash::from_byte_array(terms.owner_key_hash),
         operator_public_key: BLSPublicKey::from(terms.operator_public_key),
         voting_key_hash: PubkeyHash::from_byte_array(terms.voting_key_hash),
@@ -126,6 +127,8 @@ pub fn registration_placeholder(terms: &RegistrationTerms) -> ProviderRegistrati
         platform_node_id: node_id,
         platform_p2p_port: p2p,
         platform_http_port: http,
+        payouts: None,
+        shared_collateral: None,
     }
 }
 
@@ -239,6 +242,7 @@ pub fn update_registrar_placeholder(
         script_payout: payout_script,
         inputs_hash: InputsHash::all_zeros(),
         payload_sig: Vec::new(),
+        payouts: None,
     }
 }
 

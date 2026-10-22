@@ -39,6 +39,11 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.identities",
     "DashPay.set_main_identity",
     "DashPay.discover_identities",
+    // DP6-01: the Identities page.
+    "DashPay.identity_detail",
+    "DashPay.refresh_identity",
+    "DashPay.refresh_identities",
+    "DashPay.find_identity",
     "check_username",
     "DashPay.name_availability",
     "DashPay.register_name",
@@ -122,6 +127,10 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.avatar",
     "NetworkSession.load_contact_pictures",
     "NetworkSession.set_load_contact_pictures",
+    // DP6-02: withdrawals.
+    "DashPay.withdraw_quote",
+    "DashPay.withdraw",
+    "DashPay.withdrawals",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -159,8 +168,10 @@ const FACADE: &[&str] = &[
 /// payment attribution with its tests (DP3-02), and the DashPay status's
 /// rules with their tests (BL-153), the profile reads and writes with
 /// their tests (DP4-01), the names checks (DP1-08), and the avatar
-/// pipeline's guard, decoder, cache and tests (DP4-02), and the mobile
-/// wallets' dHash (DP4-03 D27).
+/// pipeline's guard, decoder, cache and tests (DP4-02), the mobile
+/// wallets' dHash (DP4-03 D27), the Identities page's reads with their
+/// tests (DP6-01), and the withdrawal with its network seam and tests
+/// (DP6-02).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -179,6 +190,8 @@ const NOT_FACADE: &[&str] = &[
     "contest_watch.rs",
     "contest_watch_tests.rs",
     "credit_costs.rs",
+    "identity_reads.rs",
+    "identity_tests.rs",
     "identity_writes.rs",
     "journal.rs",
     "journal_tests.rs",
@@ -220,6 +233,8 @@ const NOT_FACADE: &[&str] = &[
     "trust_tests.rs",
     "users.rs",
     "users_tests.rs",
+    "withdrawal.rs",
+    "withdrawal_tests.rs",
 ];
 
 const BEGIN: &str = "<!-- BEGIN GENERATED: dashpay-surface -->";
@@ -1010,6 +1025,10 @@ fn error_codes_match_the_contract() {
             CreditsError::TopUpPending {
                 txid: String::new(),
             },
+            CreditsError::WithdrawalOutOfRange { min: 0, max: 0 },
+            CreditsError::WithdrawalLanded {
+                artifact: String::new(),
+            },
         ],
         CreditsError::code,
     );
@@ -1304,7 +1323,15 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         assert_eq!(dp.status().unwrap_err().code(), "wallet_not_found");
         assert_eq!(dp.sync_status().unwrap_err().code(), "wallet_not_found");
         c.stub(dp.sync_now().await);
-        c.stub(dp.identity_detail(s()).await);
+        // DP6-01's calls are implemented: an unknown wallet is refused.
+        for refused in [
+            dp.identity_detail(s()).await.map(drop),
+            dp.refresh_identity(s()).await.map(drop),
+            dp.refresh_identities().await.map(drop),
+            dp.find_identity(s()).await.map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
         assert_eq!(
             dp.refresh_balance(s()).await.unwrap_err().code(),
             "wallet_not_found"
@@ -1408,11 +1435,15 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.resume_top_up(s(), s()).await.map(drop),
             dp.resolve_top_up(s()).await.map(drop),
             dp.stuck_top_up_fundings().await.map(drop),
+            // DP6-02's.
+            dp.withdraw_quote(s(), WithdrawAmount::All).await.map(drop),
+            dp.withdraw(s(), s(), WithdrawAmount::All, s())
+                .await
+                .map(drop),
+            dp.withdrawals(s()).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }
-        c.stub(dp.withdraw_quote(s(), WithdrawAmount::All).await);
-        c.stub(dp.withdraw(s(), s(), WithdrawAmount::All, s()).await);
     });
 
     let mut want: BTreeSet<String> = facade_calls().into_keys().collect();

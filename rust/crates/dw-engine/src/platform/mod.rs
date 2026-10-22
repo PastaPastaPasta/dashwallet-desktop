@@ -32,6 +32,7 @@ mod dashpay;
 mod errors;
 mod flows;
 mod identity;
+mod identity_reads;
 mod identity_writes;
 mod invitations;
 pub(crate) mod journal;
@@ -86,6 +87,7 @@ mod trust_tests;
 mod users;
 #[cfg(test)]
 mod users_tests;
+pub(crate) mod withdrawal;
 
 pub use bringup::CREATED_HERE_BUDGET;
 pub use contacts::{
@@ -95,7 +97,7 @@ pub use contacts::{
 };
 pub use credits::{
     CostTable, CreditLevel, PendingTopUp, StuckTopUpFunding, TopUpOutcome, TopUpQuote, TopUpState,
-    WithdrawAmount, WithdrawOutcome, WithdrawQuote,
+    WithdrawAmount, WithdrawOutcome, WithdrawQuote, Withdrawal, WithdrawalStatus,
 };
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{
@@ -107,8 +109,8 @@ pub use flows::{
     GrantAction, GrantRequest, LeaseStateView, LeaseView, ParkReason, RevokeCause,
 };
 pub use identity::{
-    IdentityDetail, IdentityKeyInfo, IdentitySummary, KeyPurpose, KeyType, NamesCheck,
-    SecurityLevel,
+    FoundBy, FoundIdentity, IdentityDetail, IdentityKeyInfo, IdentityRefresh, IdentitySummary,
+    KeyPurpose, KeyType, NamesCheck, SecurityLevel,
 };
 pub use invitations::{
     InvitationInvalidReason, InvitationStatus, StashedLink, StashedLinkKind, TakenLink,

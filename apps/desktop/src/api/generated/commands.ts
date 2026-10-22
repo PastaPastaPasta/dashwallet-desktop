@@ -38,6 +38,7 @@ import type { ContactRecipient } from "./ContactRecipient";
 import type { ContactRequestOutcome } from "./ContactRequestOutcome";
 import type { ContactSummaryInfo } from "./ContactSummaryInfo";
 import type { ContestStatus } from "./ContestStatus";
+import type { ContestedNames } from "./ContestedNames";
 import type { CoreExportFormatName } from "./CoreExportFormatName";
 import type { CoreExportReport } from "./CoreExportReport";
 import type { CoreImportReport } from "./CoreImportReport";
@@ -63,6 +64,7 @@ import type { FeePolicy } from "./FeePolicy";
 import type { FilePurpose } from "./FilePurpose";
 import type { FinishReport } from "./FinishReport";
 import type { FlowKindName } from "./FlowKindName";
+import type { FoundIdentity } from "./FoundIdentity";
 import type { GovernanceClock } from "./GovernanceClock";
 import type { GovernanceInfo } from "./GovernanceInfo";
 import type { GovernanceSyncState } from "./GovernanceSyncState";
@@ -74,6 +76,7 @@ import type { HistoryRequest } from "./HistoryRequest";
 import type { HistoryRows } from "./HistoryRows";
 import type { HistorySortName } from "./HistorySortName";
 import type { IdentityDetail } from "./IdentityDetail";
+import type { IdentityRefresh } from "./IdentityRefresh";
 import type { IdentitySummary } from "./IdentitySummary";
 import type { ImportOptions } from "./ImportOptions";
 import type { InvitationStatus } from "./InvitationStatus";
@@ -92,7 +95,9 @@ import type { MnemonicCheck } from "./MnemonicCheck";
 import type { MnemonicLanguageName } from "./MnemonicLanguageName";
 import type { MyProposal } from "./MyProposal";
 import type { NameAvailability } from "./NameAvailability";
+import type { NameChoice } from "./NameChoice";
 import type { NameOutcome } from "./NameOutcome";
+import type { NameVoteCast } from "./NameVoteCast";
 import type { NetworkData } from "./NetworkData";
 import type { NetworkInfo } from "./NetworkInfo";
 import type { NodeSummary } from "./NodeSummary";
@@ -166,6 +171,7 @@ import type { WatchOnlyOptions } from "./WatchOnlyOptions";
 import type { WithdrawAmount } from "./WithdrawAmount";
 import type { WithdrawOutcome } from "./WithdrawOutcome";
 import type { WithdrawQuote } from "./WithdrawQuote";
+import type { Withdrawal } from "./Withdrawal";
 
 export type { AppError, AppEvent, ErrorCode, ShellEvent };
 
@@ -1413,6 +1419,29 @@ export function identityDetail(walletId: string, identity: string): Promise<Iden
 }
 
 /**
+ * Re-reads the identity's keys and revision from Platform, then its
+ * balance; the detail after.
+ */
+export function identityRefresh(walletId: string, identity: string): Promise<IdentityDetail> {
+  return invoke<IdentityDetail>("identity_refresh", { walletId, identity });
+}
+
+/**
+ * `identityRefresh` for each of the wallet's identities, one at a time.
+ */
+export function identityRefreshAll(walletId: string): Promise<Array<IdentityRefresh>> {
+  return invoke<Array<IdentityRefresh>>("identity_refresh_all", { walletId });
+}
+
+/**
+ * Any identity by its id or a username, read-only; `null` when Platform
+ * has none.
+ */
+export function identityFind(walletId: string, query: string): Promise<FoundIdentity | null> {
+  return invoke<FoundIdentity | null>("identity_find", { walletId, query });
+}
+
+/**
  * Re-reads the identity's credit balance from Platform, as a decimal
  * string; `null` when unknown.
  */
@@ -1610,6 +1639,14 @@ export function creditsWithdrawQuote(walletId: string, identity: string, amount:
  */
 export function creditsWithdraw(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawOutcome> {
   return invoke<WithdrawOutcome>("credits_withdraw", { walletId, identity, to, amount, grant });
+}
+
+/**
+ * The identity's recent withdrawals on Platform, the most recently
+ * updated first (at most 20).
+ */
+export function creditsWithdrawals(walletId: string, identity: string): Promise<Array<Withdrawal>> {
+  return invoke<Array<Withdrawal>>("credits_withdrawals", { walletId, identity });
 }
 
 /**
@@ -2233,6 +2270,29 @@ export function governanceVote(walletId: string, proposal: string, outcome: Vote
 }
 
 /**
+ * The open DPNS contests with their tallies, the wallet's masternodes
+ * that can vote on names, each with its present choice and the votes
+ * this app saw it use per contest, and `votesAllowed` (MG-07 §1). Needs
+ * the SPV masternode list (`governance.list_unavailable`) and Platform
+ * (`platform.unavailable`), not governance sync.
+ */
+export function governanceContestedNames(walletId: string): Promise<ContestedNames> {
+  return invoke<ContestedNames>("governance_contested_names", { walletId });
+}
+
+/**
+ * Casts `choice` on the poll of `label` with each masternode
+ * (proTxHash) under one `Governance` grant of the wallet: one result
+ * per masternode, in order (MG-07 §1). Argument and contest errors
+ * (`governance.contest_not_found`, `contest_closed`,
+ * `not_a_contender`) fail the call before the grant is used; lease
+ * errors are `platform.*`.
+ */
+export function governanceVoteName(walletId: string, label: string, choice: NameChoice, masternodes: Array<string>, grant: string): Promise<Array<NameVoteCast>> {
+  return invoke<Array<NameVoteCast>>("governance_vote_name", { walletId, label, choice, masternodes, grant });
+}
+
+/**
  * The review step of the Create Proposal wizard: the proposal's hash,
  * data, epochs and fees as if created now. Reserves, signs and saves
  * nothing. `governance.invalid_proposal` lists every failing field
@@ -2478,6 +2538,9 @@ export type CommandArgs = {
   discover_identities: { walletId: string; grant: string };
   identities: { walletId: string };
   identity_detail: { walletId: string; identity: string };
+  identity_refresh: { walletId: string; identity: string };
+  identity_refresh_all: { walletId: string };
+  identity_find: { walletId: string; query: string };
   identity_refresh_balance: { walletId: string; identity: string };
   set_main_identity: { walletId: string; identity: string };
   registration_quote: { walletId: string; request: RegistrationRequest };
@@ -2505,6 +2568,7 @@ export type CommandArgs = {
   credits_resolve_top_up: { walletId: string; txid: string };
   credits_withdraw_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
+  credits_withdrawals: { walletId: string; identity: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
   dispatch_status: { walletId: string; artifact: string };
   resolve_stuck_funding: { walletId: string; step: string; grant: string };
@@ -2581,6 +2645,8 @@ export type CommandArgs = {
   governance_current_votes: { hash: string; outpoint: string | null };
   governance_voting_masternodes: { walletId: string; proposal: string };
   governance_vote: { walletId: string; proposal: string; outcome: VoteOutcomeName; masternodes: Array<string>; grant: string };
+  governance_contested_names: { walletId: string };
+  governance_vote_name: { walletId: string; label: string; choice: NameChoice; masternodes: Array<string>; grant: string };
   governance_preview_proposal: { walletId: string; draft: ProposalDraft };
   governance_create_proposal: { walletId: string; draft: ProposalDraft; grant: string };
   governance_my_proposals: { walletId: string };
@@ -2746,6 +2812,9 @@ export type CommandResults = {
   discover_identities: number;
   identities: Array<IdentitySummary>;
   identity_detail: IdentityDetail;
+  identity_refresh: IdentityDetail;
+  identity_refresh_all: Array<IdentityRefresh>;
+  identity_find: FoundIdentity | null;
   identity_refresh_balance: string | null;
   set_main_identity: null;
   registration_quote: RegistrationQuote;
@@ -2773,6 +2842,7 @@ export type CommandResults = {
   credits_resolve_top_up: null;
   credits_withdraw_quote: WithdrawQuote;
   credits_withdraw: WithdrawOutcome;
+  credits_withdrawals: Array<Withdrawal>;
   grant_request: GrantRequest;
   dispatch_status: DispatchStateName | null;
   resolve_stuck_funding: BroadcastOutcome;
@@ -2849,6 +2919,8 @@ export type CommandResults = {
   governance_current_votes: Array<CurrentVoteRow>;
   governance_voting_masternodes: Array<VotingMasternode>;
   governance_vote: Array<VoteCast>;
+  governance_contested_names: ContestedNames;
+  governance_vote_name: Array<NameVoteCast>;
   governance_preview_proposal: ProposalPreview;
   governance_create_proposal: MyProposal;
   governance_my_proposals: Array<MyProposal>;
@@ -3016,6 +3088,9 @@ export const COMMANDS: Record<CommandName, string> = {
   discover_identities: "identity",
   identities: "identity",
   identity_detail: "identity",
+  identity_refresh: "identity",
+  identity_refresh_all: "identity",
+  identity_find: "identity",
   identity_refresh_balance: "identity",
   set_main_identity: "identity",
   registration_quote: "identity",
@@ -3043,6 +3118,7 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_resolve_top_up: "identity",
   credits_withdraw_quote: "identity",
   credits_withdraw: "identity",
+  credits_withdrawals: "identity",
   grant_request: "identity",
   dispatch_status: "identity",
   resolve_stuck_funding: "identity",
@@ -3119,6 +3195,8 @@ export const COMMANDS: Record<CommandName, string> = {
   governance_current_votes: "governance",
   governance_voting_masternodes: "governance",
   governance_vote: "governance",
+  governance_contested_names: "governance",
+  governance_vote_name: "governance",
   governance_preview_proposal: "governance",
   governance_create_proposal: "governance",
   governance_my_proposals: "governance",
@@ -3349,6 +3427,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.below_minimum",
   "credits.coins_locked",
   "credits.top_up_pending",
+  "credits.withdrawal_out_of_range",
+  "credits.withdrawal_landed",
   "governance.sync_disabled",
   "governance.not_synced",
   "governance.proposal_not_found",

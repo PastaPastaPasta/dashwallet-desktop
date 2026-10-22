@@ -184,6 +184,13 @@ export class IpcBackend implements Backend {
   finishAssetLocks = cmd.finishAssetLocks;
   registerName = cmd.registerName;
   identityRefreshBalance = cmd.identityRefreshBalance;
+  identityDetail = cmd.identityDetail;
+  identityRefresh = cmd.identityRefresh;
+  identityRefreshAll = cmd.identityRefreshAll;
+  identityFind = cmd.identityFind;
+  setMainIdentity = cmd.setMainIdentity;
+  setMainName = cmd.setMainName;
+  discoverIdentities = cmd.discoverIdentities;
   contestStatus = cmd.contestStatus;
   dashpayAvatar = cmd.dashpayAvatar;
   dashpayProfileLimits = cmd.dashpayProfileLimits;
@@ -199,6 +206,9 @@ export class IpcBackend implements Backend {
   creditsStuckTopUpFundings = cmd.creditsStuckTopUpFundings;
   creditsResumeTopUp = cmd.creditsResumeTopUp;
   creditsResolveTopUp = cmd.creditsResolveTopUp;
+  creditsWithdrawQuote = cmd.creditsWithdrawQuote;
+  creditsWithdraw = cmd.creditsWithdraw;
+  creditsWithdrawals = cmd.creditsWithdrawals;
   // The search is the renderer's (U-05 D13): dash-qt's wildcards over label and address.
   addressBook = (walletId: string, purpose: AddressPurposeName | null) => cmd.addressBook(walletId, purpose, null);
   saveAddressBookEntry = cmd.saveAddressBookEntry;
@@ -225,6 +235,8 @@ export class IpcBackend implements Backend {
   governanceProposal = cmd.governanceProposal;
   governanceVotingMasternodes = cmd.governanceVotingMasternodes;
   governanceVote = cmd.governanceVote;
+  governanceContestedNames = cmd.governanceContestedNames;
+  governanceVoteName = cmd.governanceVoteName;
   governancePreviewProposal = cmd.governancePreviewProposal;
   governanceCreateProposal = cmd.governanceCreateProposal;
   governanceMyProposals = cmd.governanceMyProposals;

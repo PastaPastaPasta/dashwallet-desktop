@@ -1,7 +1,11 @@
 //! v24 shared masternodes: the codecs of the shared registration and the
 //! three new provider payloads, written from Dash Core v24.0.0-rc.3
-//! `src/evo/providertx.h` because rust-dashcore at the pin has the four
-//! classic payloads at version ≤ 2 only (MG-04b §0):
+//! `src/evo/providertx.h`. The dashcore pin decodes them too since BL-187
+//! (`ProviderRegistrationPayload` v3, `ProviderDissolvePayload`,
+//! `ProviderUpdateSharePayload`, `ProviderUpdateSharedRegistrarPayload`);
+//! these stay the wallet's own so the oracle compares bytes the wallet
+//! writes, and `tests/dashcore_shared.rs` holds the two byte-equal
+//! (MG-04b §0, D2, D62):
 //!
 //! - [`ProDisTx`] (type 10, `providertx.h:436-482`): dissolve a shared
 //!   masternode, unilateral (one signature) or unanimous (one per share);

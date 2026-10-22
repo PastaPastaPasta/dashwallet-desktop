@@ -24,6 +24,7 @@ const SAMPLES: Samples = {
   },
   duffs: { code: "send.amount_exceeds_balance", data: { kind: "duffs", needed: 5_000_000_000, available: 3_019_698_287 } },
   credits: { code: "platform.insufficient_credits", data: { kind: "credits", needed: "120000000", available: "4000000" } },
+  creditRange: { code: "credits.withdrawal_out_of_range", data: { kind: "creditRange", min: "1190000", max: "50000000000000" } },
   identityCredits: {
     code: "insufficient_credits",
     data: { kind: "identityCredits", identity: "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF", needed: "120000000", available: "4000000" },
@@ -61,6 +62,8 @@ const SAMPLES: Samples = {
   governancePhase: { code: "governance.not_synced", data: { kind: "governancePhase", phase: "syncingVotes" } },
   proposalHash: { code: "governance.proposal_not_found", data: { kind: "proposalHash", hash: "5c".repeat(32) } },
   proposalFields: { code: "governance.invalid_proposal", data: { kind: "proposalFields", fields: ["name", "payment_address"] } },
+  contestLabel: { code: "governance.contest_closed", data: { kind: "contestLabel", label: "a11ce" } },
+  contender: { code: "governance.not_a_contender", data: { kind: "contender", identity: "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P" } },
   call: { code: "platform.not_implemented", data: { kind: "call", call: "create_invitation" } },
   reason: { code: "send.broadcast_rejected", data: { kind: "reason", reason: "bad-txns-inputs-missingorspent" } },
   txAction: { code: "tx_action_refused", data: { kind: "txAction", refusal: "instantLocked" } },

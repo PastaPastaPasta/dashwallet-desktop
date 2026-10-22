@@ -13,10 +13,11 @@ export function DetailRow({ label, children, testId }: { label: string; children
   );
 }
 
-export function CopyValue({ value, label, mono = false }: { value: string; label: string; mono?: boolean }) {
+/** `value` with a copy button; `display` is shown in its place when given (a shortened id). */
+export function CopyValue({ value, label, mono = false, display }: { value: string; label: string; mono?: boolean; display?: string }) {
   return (
     <span className="copy-value">
-      <span className={mono ? "mono" : undefined}>{value}</span>
+      <span className={mono ? "mono" : undefined}>{display ?? value}</span>
       <button type="button" className="copy-button" aria-label={`Copy ${label}`} title={`Copy ${label}`} onClick={() => void copyWithToast(value)}>
         <Icon id="copy" size={20} />
       </button>

@@ -100,7 +100,7 @@ pub(super) struct KeyReferences {
 
 impl KeyReferences {
     /// From the list entry and a loaded wallet's record; a record built
-    /// from a version-3 payload is misread, so not used (D25), and a
+    /// from a version-3 payload isn't read yet (D25, MG-03b), and a
     /// `shared` masternode's payout isn't one script (D29).
     pub(super) fn new(
         entry: Option<&MasternodeListSummary>,

@@ -1465,7 +1465,7 @@ fn entry_of(tx: &Transaction) -> platform_wallet::masternode::MasternodeListSumm
     let p = payload(tx);
     platform_wallet::masternode::MasternodeListSummary {
         pro_tx_hash: tx.txid().to_byte_array(),
-        service_address: Some(p.service_address),
+        service_address: p.service_address.primary_service_address(),
         platform_http_port: None,
         operator_public_key: *p.operator_public_key.as_ref(),
         voting_key_id: p.voting_key_hash.to_byte_array(),
@@ -1638,7 +1638,9 @@ fn mg04_update_registrar_signs_with_an_attached_owner_key() {
         &mut other.special_transaction_payload
     {
         p.owner_key_hash = dashcore::PubkeyHash::from_byte_array(key_id_of(OWNER_KEY));
-        p.service_address = "1.2.3.9:19899".parse().unwrap();
+        p.service_address = dashcore::sml::masternode_list_entry::MasternodeNetInfo::Legacy(
+            "1.2.3.9:19899".parse().unwrap(),
+        );
     }
     f.confirm(other.clone(), 8);
     let keys = f

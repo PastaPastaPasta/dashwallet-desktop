@@ -42,7 +42,9 @@ fn contested_names() -> ContestedNames {
                         votes: Some(4),
                     },
                 ],
-                lock_votes: Some(1),
+                // The evonode b2 (weight 4) votes Lock here: Platform's
+                // tally holds it (MG-11 review m2).
+                lock_votes: Some(5),
                 abstain_votes: Some(0),
                 contenders_complete: true,
             },
@@ -54,7 +56,8 @@ fn contested_names() -> ContestedNames {
                     votes: Some(0),
                 }],
                 lock_votes: Some(0),
-                abstain_votes: Some(0),
+                // b2's Abstain, weight 4.
+                abstain_votes: Some(4),
                 contenders_complete: true,
             },
         ],

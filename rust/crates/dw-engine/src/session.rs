@@ -237,6 +237,8 @@ pub struct NetworkSession {
     >,
     /// Governance sync and its store (MG-02, `governance/`).
     pub(crate) governance: crate::governance::sync::GovernanceRuntime,
+    /// The withdrawals' nonces past Platform's proved ones (DP6-02 D24).
+    pub(crate) withdrawal_nonces: crate::platform::withdrawal::WithdrawalNonces,
 }
 
 impl NetworkSession {
@@ -510,6 +512,7 @@ impl NetworkSession {
             spends: Default::default(),
             coin_fences: Default::default(),
             username_gate: Default::default(),
+            withdrawal_nonces: Default::default(),
             opened_at: crate::events::unix_now(),
             unclean_previous,
             startup_list: Mutex::new(startup_list),

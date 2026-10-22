@@ -86,6 +86,9 @@ import type { ProposalQuery } from "./generated/ProposalQuery";
 import type { ProposalRow } from "./generated/ProposalRow";
 import type { SuperblockDate } from "./generated/SuperblockDate";
 import type { VoteCast } from "./generated/VoteCast";
+import type { ContestedNames } from "./generated/ContestedNames";
+import type { NameChoice } from "./generated/NameChoice";
+import type { NameVoteCast } from "./generated/NameVoteCast";
 import type { VoteOutcomeName } from "./generated/VoteOutcomeName";
 import type { VotingMasternode } from "./generated/VotingMasternode";
 import type { RescanStart } from "./generated/RescanStart";
@@ -125,11 +128,18 @@ import type { PendingTopUp } from "./generated/PendingTopUp";
 import type { StuckTopUpFunding } from "./generated/StuckTopUpFunding";
 import type { TopUpOutcome } from "./generated/TopUpOutcome";
 import type { TopUpQuote } from "./generated/TopUpQuote";
+import type { WithdrawAmount } from "./generated/WithdrawAmount";
+import type { Withdrawal } from "./generated/Withdrawal";
+import type { WithdrawOutcome } from "./generated/WithdrawOutcome";
+import type { WithdrawQuote } from "./generated/WithdrawQuote";
 import type { DashPayEventPage } from "./generated/DashPayEventPage";
 import type { GrantAction } from "./generated/GrantAction";
 import type { GrantRequest } from "./generated/GrantRequest";
 import type { PrivateContactDetails } from "./generated/PrivateContactDetails";
 import type { PublishStateName } from "./generated/PublishStateName";
+import type { FoundIdentity } from "./generated/FoundIdentity";
+import type { IdentityDetail } from "./generated/IdentityDetail";
+import type { IdentityRefresh } from "./generated/IdentityRefresh";
 
 export interface Backend {
   readonly kind: "tauri" | "fixture";
@@ -368,6 +378,17 @@ export interface Backend {
   // My Profile and the top-up (DP1-10).
   /** Asks Platform for the identity's balance; the answer arrives as `Platform{Identities}`. */
   identityRefreshBalance(walletId: string, identity: string): Promise<string | null>;
+  // Settings ▸ Advanced ▸ Identities (DP6-01).
+  identityDetail(walletId: string, identity: string): Promise<IdentityDetail>;
+  /** Keys and revision from Platform, then the balance; the detail after. */
+  identityRefresh(walletId: string, identity: string): Promise<IdentityDetail>;
+  identityRefreshAll(walletId: string): Promise<IdentityRefresh[]>;
+  /** Any identity by id or username, read-only; `null` when Platform has none. */
+  identityFind(walletId: string, query: string): Promise<FoundIdentity | null>;
+  setMainIdentity(walletId: string, identity: string): Promise<null>;
+  setMainName(walletId: string, identity: string, label: string | null): Promise<null>;
+  /** Same-seed discovery under an `identityScan` grant; how many identities it found. */
+  discoverIdentities(walletId: string, grant: string): Promise<number>;
   contestStatus(walletId: string, identity: string, label: string): Promise<ContestStatus>;
   /** Any identity's avatar thumbnail, verified against its profile (DP4-02); `null` without one or while
    * "Load contact pictures" is off; `avatar.hash_mismatch` and the fetch errors show initials. */
@@ -391,6 +412,12 @@ export interface Backend {
   creditsStuckTopUpFundings(walletId: string): Promise<StuckTopUpFunding[]>;
   creditsResumeTopUp(walletId: string, txid: string, grant: string): Promise<TopUpOutcome>;
   creditsResolveTopUp(walletId: string, txid: string): Promise<null>;
+  /** DP6-02: what a withdrawal takes and pays out; `all` keeps the network's fee in reserve. */
+  creditsWithdrawQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<WithdrawQuote>;
+  /** Withdraws to a Dash address under the quote's `platformOp` grant. */
+  creditsWithdraw(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawOutcome>;
+  /** The identity's withdrawals on Platform, newest first. */
+  creditsWithdrawals(walletId: string, identity: string): Promise<Withdrawal[]>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;
   saveAddressBookEntry(walletId: string, address: string, label: string, purpose: AddressPurposeName, replace: boolean): Promise<AddressBookEntry>;
   deleteAddressBookEntry(walletId: string, address: string): Promise<null>;
@@ -429,6 +456,12 @@ export interface Backend {
   governanceMyProposals(walletId: string): Promise<MyProposal[]>;
   /** [Submit] (MG-06 D24). */
   governanceSubmitProposal(walletId: string, hash: string): Promise<MyProposal>;
+  // Contested DPNS names (MG-11 over MG-07): need the SPV masternode list and Platform, not
+  // governance sync.
+  /** The open contests, the wallet's masternodes that can vote on names, and the vote limit. */
+  governanceContestedNames(walletId: string): Promise<ContestedNames>;
+  /** One name vote per masternode under one `governance` grant; one result each, in order. */
+  governanceVoteName(walletId: string, label: string, choice: NameChoice, masternodes: string[], grant: string): Promise<NameVoteCast[]>;
   /** Subscribes to engine events; returns the unsubscribe function. */
   onEvent(listener: (event: AppEvent) => void): Promise<() => void>;
   /** Subscribes to the shell's events (menus, tray, deep links). */

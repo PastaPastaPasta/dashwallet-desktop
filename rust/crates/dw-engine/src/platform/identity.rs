@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::credits::CreditLevel;
-use super::dashpay::{DashPay, stub};
+use super::dashpay::DashPay;
 use super::errors::PlatformError;
 use super::profile::Profile;
 use super::registration_flow::parse_identity;
@@ -81,6 +81,44 @@ pub struct IdentityKeyInfo {
     pub contract_bound_document_type: Option<String>,
 }
 
+/// One identity's outcome in `refresh_identities` (DP6-01).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityRefresh {
+    pub identity: String,
+    /// The error code of a failed refresh.
+    pub failure_code: Option<String>,
+}
+
+/// Any identity Platform knows, as `find_identity` read it (DP6-01). Never
+/// added to the wallet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoundIdentity {
+    pub identity: String,
+    pub found_by: FoundBy,
+    /// The labels, as spelled, of the DPNS names whose `records.identity`
+    /// is this identity, at most 10; empty when that read failed.
+    pub names: Vec<String>,
+    /// Credits.
+    pub balance: Option<u64>,
+    pub revision: Option<u64>,
+    pub public_keys: Vec<IdentityKeyInfo>,
+    /// One of this wallet's identities.
+    pub own: bool,
+    /// Verified only through the trusted fallback (§2.2 rule 2).
+    pub unverified: bool,
+}
+
+/// How `find_identity` reached the identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FoundBy {
+    Id,
+    /// The DPNS name, as spelled, whose `records.identity` it is.
+    Name {
+        label: String,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyPurpose {
@@ -123,7 +161,8 @@ impl DashPay {
 
     /// Chooses the main identity: one of the wallet's, else
     /// `identity.not_found`. Stored in `dp_main_identity`, so a `.dwbackup`
-    /// carries it.
+    /// carries it. Signalled `Platform{Identities}` and `Platform{Startup}`
+    /// (DP6-01 D15).
     pub async fn set_main_identity(&self, identity: String) -> Result<(), PlatformError> {
         let (session, id) = (Arc::clone(&self.session), self.wallet_id());
         self.session
@@ -131,9 +170,51 @@ impl DashPay {
             .await?
     }
 
-    #[expect(unused_variables, reason = "stub until DP6-01")]
+    /// One of the wallet's identities with its revision and public keys,
+    /// from the library's memory (DP6-01): its summary as `identities()`
+    /// has it, else `identity.not_found`.
     pub async fn identity_detail(&self, identity: String) -> Result<IdentityDetail, PlatformError> {
-        stub("DashPay.identity_detail")
+        let (session, id) = (Arc::clone(&self.session), self.wallet_id());
+        self.session
+            .on_runtime(async move { Ok(session.identity_detail_of(id, identity).await) })
+            .await?
+    }
+
+    /// Folds Platform's keys and revision of one of the wallet's identities
+    /// into the library's, then refreshes its balance as `refresh_balance`
+    /// does (DP6-01, `identity_reads.rs`); the detail after. Not one of the
+    /// wallet's, or not on Platform: `identity.not_found`.
+    pub async fn refresh_identity(
+        &self,
+        identity: String,
+    ) -> Result<IdentityDetail, PlatformError> {
+        let (session, id) = (Arc::clone(&self.session), self.wallet_id());
+        self.session
+            .on_runtime(async move { Ok(session.refresh_identity_of(id, identity).await) })
+            .await?
+    }
+
+    /// `refresh_identity` for each of the wallet's identities in index
+    /// order, one at a time; each outcome with a failed one's code.
+    pub async fn refresh_identities(&self) -> Result<Vec<IdentityRefresh>, PlatformError> {
+        let (session, id) = (Arc::clone(&self.session), self.wallet_id());
+        self.session
+            .on_runtime(async move { Ok(session.refresh_identities_of(id).await) })
+            .await?
+    }
+
+    /// Any identity by its Base58 id or a DPNS name (`alice` or
+    /// `alice.dash`, any case), read-only (DP6-01): `None` if Platform has
+    /// no such identity or name; neither form: `invalid_argument`.
+    /// Nothing is added to the wallet.
+    pub async fn find_identity(
+        &self,
+        query: String,
+    ) -> Result<Option<FoundIdentity>, PlatformError> {
+        let (session, id) = (Arc::clone(&self.session), self.wallet_id());
+        self.session
+            .on_runtime(async move { Ok(session.find_identity_of(id, query).await) })
+            .await?
     }
 
     /// Platform's balance of one of the wallet's identities (DP1-06):

@@ -12,6 +12,7 @@ import type { PlatformChangeName } from "./generated/PlatformChangeName";
 import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
 import { onTopUpSettled } from "../dashpay/topup";
+import { onWithdrawSettled } from "../dashpay/withdraw";
 import { keys } from "./queries";
 
 /** DP1-09 D28: a status read while a sync pass held the wallet's state is `startupIncomplete` (the
@@ -176,9 +177,12 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
   // DP1-10 D22: a top-up or a pending row's call that ended may have moved the locks, the stuck
   // fundings and the balance, and a funding left unknown sends no signal: read them again.
   const stopTopUps = onTopUpSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
+  // DP6-02: a withdrawal that ended moved the balance and the recent withdrawals.
+  const stopWithdrawals = onWithdrawSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
   return () => {
     stopReconcile();
     stopTopUps();
+    stopWithdrawals();
     unsubscribe();
   };
 }

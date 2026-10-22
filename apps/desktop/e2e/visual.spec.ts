@@ -4,6 +4,8 @@ import { STATES as COINJOIN, pressStart } from "./coinjoin";
 import { CARDS, CHIP_TEXT, CHIPS } from "./dashpay";
 import { fileDialogAnswers, WIDE_PNG } from "./editProfile";
 import { authorize, fixtureUrl, fontsReady, SCREENS, show, THEMES, type Theme } from "./helpers";
+import { openIdentities } from "./identities";
+import { IDENTITY } from "../src/fixture/dashpay";
 import { showSettingsView, type SettingsView } from "./settings";
 import { showWalletView, type WalletView } from "./wallet";
 
@@ -168,6 +170,33 @@ for (const theme of THEMES) {
     test(`visual settings-${view} ${theme}`, async ({ page }) => {
       await showSettingsView(page, view, theme);
       await expect(page).toHaveScreenshot(`${theme}-settings-${view}.png`, { animations: "disabled", caret: "hide" });
+    });
+  }
+}
+
+// DP6-01: Settings ▸ Advanced ▸ Identities: the list (L4), an identity's keys and a found identity.
+const IDENTITIES: Record<string, (page: Page) => Promise<void>> = {
+  list: async () => {},
+  detail: async (page) => {
+    await page.locator(`[data-testid=identity-row][data-identity="${IDENTITY.alice}"]`).getByTestId("identity-keys").click();
+    await page.getByTestId("identity-detail-keys").waitFor();
+  },
+  found: async (page) => {
+    await page.getByTestId("identities-look-up").click();
+    await page.getByTestId("identity-find-field").fill("bob");
+    await page.getByTestId("identity-find-submit").click();
+    await page.getByTestId("identity-found-keys").waitFor();
+  },
+};
+
+for (const theme of THEMES) {
+  for (const [view, go] of Object.entries(IDENTITIES)) {
+    test(`visual identities-${view} ${theme}`, async ({ page }) => {
+      await openIdentities(page, "dashpay-identities", theme);
+      await page.getByTestId("identity-row").first().waitFor();
+      await go(page);
+      await page.mouse.move(0, 0);
+      await shoot(page, `identities-${view}`, theme);
     });
   }
 }
@@ -495,6 +524,24 @@ for (const theme of THEMES) {
     await page.mouse.move(0, 0);
     await shoot(page, "profile-top-up-done", theme);
   });
+
+  // DP6-02: the withdraw sheet's form, quote and outcome.
+  test(`visual profile-withdraw ${theme}`, async ({ page }) => {
+    await openProfile(page, "dashpay-registered", theme);
+    await page.getByTestId("profile-withdraw").click();
+    await expect(page.getByTestId("withdraw-next")).toBeEnabled();
+    await page.mouse.move(0, 0);
+    await shoot(page, "profile-withdraw-form", theme);
+    await page.getByTestId("withdraw-next").click();
+    await page.getByTestId("withdraw-quote").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "profile-withdraw-confirm", theme);
+    await page.getByTestId("withdraw-go").click();
+    await authorize(page);
+    await page.getByTestId("withdraw-done").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "profile-withdraw-done", theme);
+  });
 }
 
 // DP4-03: Edit Profile's steps over My Profile, and each list with avatars (D21).
@@ -676,5 +723,30 @@ for (const theme of THEMES) {
     await page.getByTestId("create-review").waitFor();
     await page.mouse.move(0, 0);
     await shoot(page, "governance-create-review", theme);
+  });
+}
+
+// MG-11: Masternodes ▸ Username voting: the list with its pane, the vote sheet with a voter at its
+// limit, and the result with an unconfirmed vote.
+for (const theme of THEMES) {
+  test(`visual names ${theme}`, async ({ page }) => {
+    await page.clock.setFixedTime(FIXTURE_NOW);
+    await page.goto(fixtureUrl("names-vote-mixed", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.getByTestId("sidebar-masternodes").click();
+    await page.getByTestId("masternodes-tabs-names").click();
+    await page.getByTestId("name-pane-lead").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "names-list", theme);
+    await page.getByTestId("name-vote").click();
+    await page.getByTestId("name-choice-abstain").click();
+    await page.getByTestId("name-vote-privacy").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "names-vote", theme);
+    await page.getByTestId("name-vote-passphrase").fill("demo");
+    await page.getByTestId("name-vote-send").click();
+    await page.getByTestId("name-vote-result").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "names-vote-result", theme);
   });
 }
