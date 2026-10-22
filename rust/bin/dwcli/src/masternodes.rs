@@ -7,7 +7,10 @@
 //! engine shut down (D32). No message repeats an argument or an option's
 //! value. A key to attach is read from stdin, never argv. The ProTx owner
 //! commands (MG-04 D20) take a `MasternodeOp` grant capped at the fee the
-//! facade previews; no command takes or signs with an operator secret.
+//! facade previews; no command takes or signs with an operator secret. The
+//! `mn shared` commands (MG-04b slice 1a) read a pasted message from stdin,
+//! take a grant capped at 0 to give consent, and reach nothing that hands
+//! bytes to the network.
 
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -17,9 +20,10 @@ use std::time::{Duration, Instant};
 use clap::{Args, Subcommand};
 use dw_engine::governance::{GovernanceError, NameChoice};
 use dw_engine::masternodes::{
-    AttachedKeyRole, CollateralChoice, EvonodeTerms, KeepOr, MasternodeType, Masternodes,
-    MasternodesError, OperatorChoice, PayoutChoice, PlatformNodeChoice, RegistrationRequest,
-    UpdateRegistrarRequest, VotingChoice,
+    AttachedKeyRole, CollateralChoice, EvonodeTerms, JoinSharedRequest, KeepOr, MasternodeType,
+    Masternodes, MasternodesError, OperatorChoice, PayoutChoice, PlatformNodeChoice,
+    RegistrationRequest, RewardChoice, ShareSlot, ShareTerms, StartSharedRequest,
+    UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
 };
 use dw_engine::{Engine, EngineError, NetworkSession, WalletId};
 use dw_vault::GrantPurpose;
@@ -206,6 +210,153 @@ enum MnCommand {
         #[arg(long)]
         wallet: Option<String>,
     },
+    /// Shared masternodes (v24, MG-04b slice 1a): the session protocol up to
+    /// this wallet's consent signature. Nothing here hands bytes to the
+    /// network.
+    Shared(Box<SharedArgs>),
+}
+
+#[derive(Args)]
+struct SharedArgs {
+    /// The wallet to act for (default: the oldest wallet).
+    #[arg(long, global = true)]
+    wallet: Option<String>,
+    #[command(subcommand)]
+    command: SharedCommand,
+}
+
+#[derive(Subcommand)]
+enum SharedCommand {
+    /// What this session can do with shared masternodes (`can_send` is
+    /// false until the pin decodes version-3 ProTxs).
+    Capability,
+    /// The wallet's sessions, newest first.
+    Sessions,
+    /// One session in full.
+    Show { session: String },
+    /// Start a session as its coordinator: saves a draft and prints it with
+    /// the Invitation to hand to the other parties.
+    Start(Box<StartSharedArgs>),
+    /// Change the coordinator's registration fee (a draft no other party
+    /// replied to), in duffs.
+    Fee { session: String, fee: u64 },
+    /// Read a pasted or saved message from stdin (never argv) and apply it:
+    /// an Invitation opens a session to `join`, a later copy advances it.
+    Import {
+        /// The maintenance session a bare signatures array is for.
+        #[arg(long)]
+        target: Option<String>,
+    },
+    /// Take a share of an imported Invitation; prints the session and the
+    /// Details to send back to the coordinator.
+    Join {
+        session: String,
+        /// The share to take (default: the one open row).
+        #[arg(long)]
+        share_index: Option<u16>,
+        /// Where this share's rewards go: `refund` (its refund address),
+        /// `new` (a new receive address of the wallet) or an address.
+        #[arg(long, default_value = "refund", value_parser = parse_reward)]
+        reward: RewardChoice,
+    },
+    /// The message to hand to the other parties now. `--out` also writes
+    /// its text to that file.
+    Message {
+        session: String,
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+    /// Coordinator: freeze the terms and sign this wallet's consent (a
+    /// `MasternodeOp` grant capped at 0); prints the Locked Terms.
+    Lock { session: String },
+    /// Coordinator: back to a draft before the funding is combined.
+    Unlock { session: String },
+    /// Participant: check the locked registration and sign this wallet's
+    /// consent (a `MasternodeOp` grant capped at 0); prints the Approval.
+    Approve { session: String },
+    /// Delete a session nothing of which may be out, and unlock its coins.
+    Discard { session: String },
+    /// Preview the ProUpShareTx that would change a share's reward address
+    /// of a confirmed registration; issues, locks and signs nothing.
+    PreviewUpdateShare {
+        pro_tx_hash: String,
+        /// The share (row index) of this wallet.
+        #[arg(long)]
+        share_index: u16,
+        /// `refund` (the share's refund address), `new` (a new receive
+        /// address of the wallet) or an address: always named.
+        #[arg(long, value_parser = parse_reward)]
+        reward: RewardChoice,
+    },
+}
+
+#[derive(Args)]
+struct StartSharedArgs {
+    /// `LABEL:AMOUNT_DUFFS`; repeat it for 2 to 8 shares, the first being
+    /// this wallet's.
+    #[arg(long = "share", required = true, value_parser = parse_share)]
+    shares: Vec<ShareSlot>,
+    /// `a.b.c.d:port`; repeat it for several.
+    #[arg(long = "service", required = true)]
+    services: Vec<String>,
+    /// The operator's BLS public key (96 hex); default: the keychain's
+    /// next unused.
+    #[arg(long, conflicts_with = "operator_index")]
+    operator_key: Option<String>,
+    #[arg(long)]
+    operator_index: Option<u32>,
+    /// Basis points (0..=10000).
+    #[arg(long, default_value_t = 0)]
+    operator_reward: u16,
+    /// Another wallet's voting address; default: the keychain's next unused.
+    #[arg(long, conflicts_with = "voting_index")]
+    voting_address: Option<String>,
+    #[arg(long)]
+    voting_index: Option<u32>,
+    /// Blocks after registration in which an owner leaving early pays the
+    /// penalty.
+    #[arg(long)]
+    early_period_blocks: u32,
+    /// The early-exit penalty, in duffs.
+    #[arg(long)]
+    early_penalty: u64,
+    /// Free text naming who runs the node.
+    #[arg(long)]
+    node_run_by: Option<String>,
+    /// This wallet's rewards: `refund` (its refund address), `new` (a new
+    /// receive address of the wallet) or an address.
+    #[arg(long, default_value = "refund", value_parser = parse_reward)]
+    reward: RewardChoice,
+    /// The registration's network fee, in duffs, paid by this wallet.
+    #[arg(long)]
+    fee: u64,
+}
+
+impl StartSharedArgs {
+    fn request(self) -> StartSharedRequest {
+        StartSharedRequest {
+            shares: self.shares,
+            terms: ShareTerms {
+                service: self.services.join(","),
+                operator: match (self.operator_key, self.operator_index) {
+                    (Some(public_key), _) => OperatorChoice::Given { public_key },
+                    (None, Some(index)) => OperatorChoice::Keychain { index },
+                    (None, None) => OperatorChoice::NextUnused,
+                },
+                operator_reward: self.operator_reward,
+                voting: match (self.voting_address, self.voting_index) {
+                    (Some(address), _) => VotingChoice::Address { address },
+                    (None, Some(index)) => VotingChoice::Keychain { index },
+                    (None, None) => VotingChoice::NextUnused,
+                },
+                early_period_blocks: self.early_period_blocks,
+                early_penalty: self.early_penalty,
+            },
+            fee: self.fee,
+            reward: self.reward,
+            node_run_by: self.node_run_by,
+        }
+    }
 }
 
 #[derive(Args)]
@@ -385,6 +536,32 @@ fn parse_choice(s: &str) -> Result<NameChoice, String> {
             }),
             _ => Err("one of abstain, lock, identity:<base58 id>".into()),
         },
+    }
+}
+
+/// `LABEL:AMOUNT_DUFFS`: the amount follows the last colon, so a label may
+/// hold one. The text names no value (clap's error isn't printed anyway).
+fn parse_share(s: &str) -> Result<ShareSlot, String> {
+    const FORM: &str = "LABEL:AMOUNT_DUFFS, a label and a whole number of duffs";
+    let (label, amount) = s.rsplit_once(':').ok_or(FORM)?;
+    if label.trim().is_empty() {
+        return Err(FORM.into());
+    }
+    Ok(ShareSlot {
+        label: label.into(),
+        amount: amount.parse().map_err(|_| FORM)?,
+    })
+}
+
+/// `refund`, `new`, or an address (the facade checks it).
+fn parse_reward(s: &str) -> Result<RewardChoice, String> {
+    match s {
+        "" => Err("one of refund, new, or an address".into()),
+        "refund" => Ok(RewardChoice::Refund),
+        "new" => Ok(RewardChoice::NewAddress),
+        address => Ok(RewardChoice::Address {
+            address: address.into(),
+        }),
     }
 }
 
@@ -715,6 +892,100 @@ fn command(
             let gov = session.governance();
             value(engine.block_on(gov.vote_name(w, label, choice, masternodes, grant.id))?)
         }
+        MnCommand::Shared(a) => shared_command(engine, session, passphrase, &mn, *a),
+    }
+}
+
+/// The message text on stdin, whole. It is never in argv and no failure
+/// quotes it; invalid UTF-8 is the facade's `shared_message{parse}` (MG-04b
+/// D34), whose reader takes a string.
+fn read_message() -> Result<String, Failure> {
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut bytes)
+        .map_err(|_| Failure {
+            code: "invalid_argument".into(),
+            message: "reading the message from stdin failed".into(),
+        })?;
+    String::from_utf8(bytes).map_err(|_| {
+        MasternodesError::SharedMessage {
+            reason: "parse".into(),
+            share: None,
+        }
+        .into()
+    })
+}
+
+/// `mn shared …`: one facade call each. `lock` and `approve` charge nothing,
+/// so their `MasternodeOp` grant is capped at 0 (consent only).
+fn shared_command(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    passphrase: Option<&Zeroizing<Vec<u8>>>,
+    mn: &Masternodes,
+    args: SharedArgs,
+) -> Result<Value, Failure> {
+    let w = wallet(session, args.wallet)?;
+    match args.command {
+        SharedCommand::Capability => value(engine.block_on(mn.shared_capability(w))?),
+        SharedCommand::Sessions => value(engine.block_on(mn.shared_sessions(w))?),
+        SharedCommand::Show { session: id } => value(engine.block_on(mn.shared_session(w, id))?),
+        SharedCommand::Start(a) => value(engine.block_on(mn.start_shared(w, a.request()))?),
+        SharedCommand::Fee { session: id, fee } => {
+            value(engine.block_on(mn.set_shared_fee(w, id, fee))?)
+        }
+        SharedCommand::Import { target } => {
+            let text = read_message()?;
+            value(engine.block_on(mn.import_shared_message(w, text, target))?)
+        }
+        SharedCommand::Join {
+            session: id,
+            share_index,
+            reward,
+        } => {
+            let request = JoinSharedRequest {
+                share_index,
+                reward,
+            };
+            value(engine.block_on(mn.join_shared(w, id, request))?)
+        }
+        SharedCommand::Message { session: id, out } => {
+            let message = engine.block_on(mn.shared_message(w, id))?;
+            if let Some(path) = out {
+                std::fs::write(path, &message.text).map_err(|_| Failure {
+                    code: "invalid_argument".into(),
+                    message: "writing --out failed".into(),
+                })?;
+            }
+            value(message)
+        }
+        SharedCommand::Lock { session: id } => {
+            let grant = masternode_grant(session, passphrase, w, 0)?;
+            value(engine.block_on(mn.lock_shared_terms(w, id, grant))?)
+        }
+        SharedCommand::Unlock { session: id } => {
+            value(engine.block_on(mn.unlock_shared_terms(w, id))?)
+        }
+        SharedCommand::Approve { session: id } => {
+            let grant = masternode_grant(session, passphrase, w, 0)?;
+            value(engine.block_on(mn.approve_shared(w, id, grant))?)
+        }
+        SharedCommand::Discard { session: id } => {
+            engine.block_on(mn.discard_shared_session(w, id))?;
+            value(json!({ "discarded": true }))
+        }
+        SharedCommand::PreviewUpdateShare {
+            pro_tx_hash,
+            share_index,
+            reward,
+        } => {
+            let request = UpdateShareRequest {
+                pro_tx_hash,
+                share_index,
+                reward,
+            };
+            value(engine.block_on(mn.preview_update_share(w, request))?)
+        }
     }
 }
 
@@ -765,8 +1036,265 @@ pub fn report(result: Result<Value, Failure>, torn_down: bool) -> Result<(), Str
 }
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    /// The `mn shared` arguments of a command line, or clap's refusal.
+    fn shared(args: &[&str]) -> Result<SharedArgs, clap::error::ErrorKind> {
+        let cli = crate::Cli::try_parse_from(
+            ["dwcli", "--datadir", "d", "mn", "shared"]
+                .into_iter()
+                .chain(args.iter().copied()),
+        )
+        .map_err(|e| e.kind())?;
+        match cli.command {
+            crate::Command::Mn(MnArgs {
+                command: MnCommand::Shared(a),
+                ..
+            }) => Ok(*a),
+            _ => panic!("not an `mn shared` command"),
+        }
+    }
+
+    const SESSION: &str = "ab";
+    const HASH: &str = "cd";
+
+    #[test]
+    fn test_QT_126_every_shared_subcommand_parses_with_its_required_arguments() {
+        let start = [
+            "start",
+            "--share",
+            "me:10000000000000",
+            "--share",
+            "you:10000000000000",
+            "--service",
+            "1.2.3.4:19999",
+            "--early-period-blocks",
+            "10",
+            "--early-penalty",
+            "5",
+            "--fee",
+            "1000",
+        ];
+        for args in [
+            &["capability"][..],
+            &["sessions"],
+            &["show", SESSION],
+            &start,
+            &["fee", SESSION, "1000"],
+            &["import"],
+            &["import", "--target", SESSION],
+            &["join", SESSION],
+            &["join", SESSION, "--share-index", "1", "--reward", "new"],
+            &["message", SESSION],
+            &["message", SESSION, "--out", "f.json"],
+            &["lock", SESSION],
+            &["unlock", SESSION],
+            &["approve", SESSION],
+            &["discard", SESSION],
+            &[
+                "preview-update-share",
+                HASH,
+                "--share-index",
+                "0",
+                "--reward",
+                "refund",
+            ],
+            &["sessions", "--wallet", "w"],
+        ] {
+            assert!(shared(args).is_ok(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn test_QT_126_shared_subcommands_refuse_missing_or_malformed_arguments() {
+        use clap::error::ErrorKind::*;
+        let refused = |args: &[&str]| shared(args).err();
+        assert_eq!(refused(&[]), Some(DisplayHelpOnMissingArgumentOrSubcommand));
+        for args in [
+            &["show"][..],
+            &["fee", SESSION],
+            &["fee", SESSION, "-1"],
+            &["fee", SESSION, "x"],
+            &["join"],
+            &["join", SESSION, "--share-index", "70000"],
+            &["join", SESSION, "--reward", ""],
+            &["message"],
+            &["lock"],
+            &["unlock"],
+            &["approve"],
+            &["discard"],
+            &["start"],
+            // The update names its reward, and both numbers.
+            &["preview-update-share", HASH, "--share-index", "0"],
+            &["preview-update-share", HASH, "--reward", "refund"],
+            &[
+                "preview-update-share",
+                "--share-index",
+                "0",
+                "--reward",
+                "new",
+            ],
+        ] {
+            assert!(refused(args).is_some(), "{args:?}");
+        }
+        // Slice 1b's commands aren't here (and `sign` doesn't parse).
+        for name in ["sign", "send", "abandon", "update-share"] {
+            assert_eq!(refused(&[name, SESSION]), Some(InvalidSubcommand), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_QT_126_share_flags_parse_label_and_duffs() {
+        let share = |s| parse_share(s);
+        let slot = |label: &str, amount| ShareSlot {
+            label: label.into(),
+            amount,
+        };
+        assert_eq!(share("alice:10000"), Ok(slot("alice", 10_000)));
+        assert_eq!(share("a:b:7"), Ok(slot("a:b", 7)));
+        assert_eq!(share("my share:0"), Ok(slot("my share", 0)));
+        assert_eq!(share("x:18446744073709551615"), Ok(slot("x", u64::MAX)));
+        for bad in [
+            "",
+            "alice",
+            ":5",
+            " :5",
+            "alice:",
+            "alice:-1",
+            "alice:1.5",
+            "alice:x",
+        ] {
+            assert!(share(bad).is_err(), "{bad:?}");
+        }
+        // The error names no value.
+        let text = share("hunter2:secret").unwrap_err();
+        assert!(
+            !text.contains("hunter2") && !text.contains("secret"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn test_QT_126_reward_flags_name_refund_new_or_an_address() {
+        assert_eq!(parse_reward("refund"), Ok(RewardChoice::Refund));
+        assert_eq!(parse_reward("new"), Ok(RewardChoice::NewAddress));
+        assert_eq!(
+            parse_reward("yXaddr"),
+            Ok(RewardChoice::Address {
+                address: "yXaddr".into()
+            })
+        );
+        assert!(parse_reward("").is_err());
+    }
+
+    #[test]
+    fn test_QT_126_start_flags_build_the_whole_request() {
+        let a = shared(&[
+            "start",
+            "--share",
+            "me:100",
+            "--share",
+            "you:200",
+            "--service",
+            "1.2.3.4:19999",
+            "--service",
+            "5.6.7.8:19999",
+            "--operator-index",
+            "3",
+            "--operator-reward",
+            "250",
+            "--voting-address",
+            "yVote",
+            "--early-period-blocks",
+            "720",
+            "--early-penalty",
+            "9",
+            "--node-run-by",
+            "Bob",
+            "--reward",
+            "yReward",
+            "--fee",
+            "1500",
+        ])
+        .ok()
+        .unwrap();
+        let SharedCommand::Start(start) = a.command else {
+            panic!("not start")
+        };
+        let slot = |label: &str, amount| ShareSlot {
+            label: label.into(),
+            amount,
+        };
+        assert_eq!(
+            start.request(),
+            StartSharedRequest {
+                shares: vec![slot("me", 100), slot("you", 200)],
+                terms: ShareTerms {
+                    service: "1.2.3.4:19999,5.6.7.8:19999".into(),
+                    operator: OperatorChoice::Keychain { index: 3 },
+                    operator_reward: 250,
+                    voting: VotingChoice::Address {
+                        address: "yVote".into()
+                    },
+                    early_period_blocks: 720,
+                    early_penalty: 9,
+                },
+                fee: 1500,
+                reward: RewardChoice::Address {
+                    address: "yReward".into()
+                },
+                node_run_by: Some("Bob".into()),
+            }
+        );
+        // The defaults: the keychain's next unused keys, rewards to the
+        // refund address, no operator reward.
+        let a = shared(&[
+            "start",
+            "--share",
+            "me:100",
+            "--service",
+            "1.2.3.4:19999",
+            "--early-period-blocks",
+            "1",
+            "--early-penalty",
+            "0",
+            "--fee",
+            "1",
+        ])
+        .ok()
+        .unwrap();
+        let SharedCommand::Start(start) = a.command else {
+            panic!("not start")
+        };
+        let r = start.request();
+        assert_eq!(r.terms.operator, OperatorChoice::NextUnused);
+        assert_eq!(r.terms.voting, VotingChoice::NextUnused);
+        assert_eq!(r.terms.operator_reward, 0);
+        assert_eq!(r.reward, RewardChoice::Refund);
+        assert_eq!(r.node_run_by, None);
+        // A key is given or picked by index, not both.
+        let both = shared(&[
+            "start",
+            "--share",
+            "me:1",
+            "--service",
+            "1.2.3.4:1",
+            "--early-period-blocks",
+            "1",
+            "--early-penalty",
+            "0",
+            "--fee",
+            "1",
+            "--operator-key",
+            "k",
+            "--operator-index",
+            "1",
+        ]);
+        assert!(both.is_err());
+    }
 
     #[test]
     fn governance_failures_quote_the_label_and_identity_only() {

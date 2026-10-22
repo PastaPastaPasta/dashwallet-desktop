@@ -615,6 +615,25 @@ current pin that is every row marked †.
 | `send_maintenance(wallet, session, grant)` † | async | `MasternodeOp` | 2 | Inserts every signature in share order and hands off (a key change re-signs its fee inputs); refuses `stale`. |
 | `operations`, `resend_operation`, `discard_operation` | | | 1b | MG-04's, now also over `update_share` (1b) and `dissolve` (2) rows. |
 
+**dwcli (slice 1a).** `dwcli mn shared <cmd>` is one facade call each and prints MG-03 §9's JSON line; `--wallet W`
+(default: the oldest wallet) goes with every command. The message text is read from stdin, never argv. `lock` and
+`approve` take a `MasternodeOp` grant capped at 0. There is no `sign`, `send`, `abandon` or `update-share` before 1b.
+
+| Command | Facade call |
+|---|---|
+| `mn shared capability` | `shared_capability` |
+| `mn shared sessions` | `shared_sessions` |
+| `mn shared show <session>` | `shared_session` |
+| `mn shared start --share LABEL:DUFFS … --service A … --early-period-blocks N --early-penalty DUFFS --fee DUFFS [--operator-key K \| --operator-index N] [--operator-reward BP] [--voting-address A \| --voting-index N] [--node-run-by T] [--reward refund\|new\|ADDR]` | `start_shared` |
+| `mn shared fee <session> <fee>` | `set_shared_fee` |
+| `mn shared import [--target <session>]` (text on stdin) | `import_shared_message` |
+| `mn shared join <session> [--share-index N] [--reward refund\|new\|ADDR]` | `join_shared` |
+| `mn shared message <session> [--out FILE]` | `shared_message` |
+| `mn shared lock <session>` / `unlock <session>` | `lock_shared_terms` / `unlock_shared_terms` |
+| `mn shared approve <session>` | `approve_shared` |
+| `mn shared discard <session>` | `discard_shared_session` |
+| `mn shared preview-update-share <hash> --share-index N --reward refund\|new\|ADDR` | `preview_update_share` |
+
 Refusals, in order, as MG-04 §2.3: arguments (`invalid_argument`; a session id is 64 lower-case hex, creation and
 maintenance alike, D28, m-17), `wallet_not_found`, `masternodes.unsupported{feature: "shared_masternodes"}` (v24 not
 `active` for creation; `can_send` false for a † call), the list (`list_unavailable`, `shared_too_early`,
