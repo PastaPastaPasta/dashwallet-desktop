@@ -12,12 +12,11 @@
 
 use std::sync::Arc;
 
+use dpp::prelude::Identifier;
 use dw_uri::deeplink::{DeepLink, classify_link, normalize_invitation};
 use dw_vault::{ALL_LINK_KINDS, StashedLinkKind as VaultKind, StashedLinkMeta};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
-
-use dpp::prelude::Identifier;
 
 use super::dashpay::BearerSecret;
 use super::errors::{InvitationError, PlatformError};

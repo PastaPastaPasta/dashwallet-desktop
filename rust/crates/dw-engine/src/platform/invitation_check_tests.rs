@@ -110,7 +110,7 @@ fn funding_tx(key: &SecretKey) -> Transaction {
 }
 
 /// The library's own link for `tx`: a ChainLock link, or an InstantSend
-/// one whose islock locks `locked`.
+/// one whose islock locks `islock_of`.
 fn link(tx: &Transaction, network: Network, islock_of: Option<Txid>, du: Option<&str>) -> String {
     let proof = match islock_of {
         Some(txid) => AssetLockProof::Instant(InstantAssetLockProof::new(

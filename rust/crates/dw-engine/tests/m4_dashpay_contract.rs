@@ -1237,8 +1237,9 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
     };
     let mut c = Calls::default();
     engine.block_on(async {
-        // DP5-01: the link stash; DP5-02: `invitation_status`. its behaviour is tested in dw-vault's
+        // DP5-01: the link stash; its behaviour is tested in dw-vault's
         // `vault::links` and dw-app's IPC tests. Here: refusals, no vault.
+        // DP5-02's `invitation_status` is a refusal too.
         assert_eq!(
             session.stash_link(secret()).await.unwrap_err().code(),
             "invalid_argument"

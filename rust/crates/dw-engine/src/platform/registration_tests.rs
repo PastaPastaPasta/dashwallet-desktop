@@ -1028,10 +1028,9 @@ impl RegistrationLib for Fake {
         use flow::ClaimError;
         use invitation::ClaimScript;
         assert_eq!(link, invitation::LINK, "the stash's link");
-        let failed = |e: PlatformError| ClaimError::Failed(e);
         permit
             .identity_signer(&[index])
-            .map_err(|e| failed(e.into()))?;
+            .map_err(|e| ClaimError::Failed(e.into()))?;
         let funder = permit.lease().uncounted_funding_signer().is_ok();
         self.w().claim_funders.push(funder);
         self.maybe_hang(Call::Claim, When::Before).await;
@@ -1051,11 +1050,13 @@ impl RegistrationLib for Fake {
             Some(ClaimScript::Claimed) => return Err(ClaimError::Claimed),
             Some(ClaimScript::Invalid) => return Err(ClaimError::Invalid),
             Some(ClaimScript::NotChainLocked) => return Err(ClaimError::NotChainLocked),
-            Some(ClaimScript::Unavailable) => return Err(failed(PlatformError::Unavailable)),
+            Some(ClaimScript::Unavailable) => {
+                return Err(ClaimError::Failed(PlatformError::Unavailable));
+            }
             Some(ClaimScript::LandsThenUnavailable) => {
                 permit.note_released();
                 self.create_identity(invitation::outpoint(), index);
-                return Err(failed(PlatformError::Unavailable));
+                return Err(ClaimError::Failed(PlatformError::Unavailable));
             }
             None => {}
         }

@@ -904,8 +904,7 @@ fn idle_wait<L: RegistrationLib>(
     }
     let unfunded = phase.is_some_and(Phase::unfunded) && row.identity.is_none();
     // A claim waits for no sync (DP5-02 D9).
-    let claim = matches!(flow::interpret(row), Ok((_, Funding::Invitation { .. })));
-    let hold = if claim {
+    let hold = if matches!(flow::interpret(row), Ok((_, Funding::Invitation { .. }))) {
         lib.claim_hold()
     } else {
         lib.funding_hold()

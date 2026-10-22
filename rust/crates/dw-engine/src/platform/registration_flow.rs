@@ -1663,13 +1663,9 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         }
     }
 
-    /// The funding hold as a step: the sync and the bring-up are waited for
-    /// in the run, an authority parks it.
+    /// The funding hold as a step ([`hold_step`]).
     fn funding_hold(&self) -> Option<Step> {
-        Some(match self.lib.funding_hold()? {
-            wait @ (RegistrationWait::Sync | RegistrationWait::Startup) => Step::Wait(wait),
-            other => Step::Park(other),
-        })
+        self.lib.funding_hold().map(hold_step)
     }
 
     async fn identity_at(&self, index: u32) -> Option<String> {
@@ -1716,14 +1712,11 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 .await;
         }
         let hold = match funding {
-            Funding::Invitation { .. } => self.lib.claim_hold().map(|wait| match wait {
-                RegistrationWait::Sync | RegistrationWait::Startup => Step::Wait(wait),
-                other => Step::Park(other),
-            }),
-            _ => self.funding_hold(),
+            Funding::Invitation { .. } => self.lib.claim_hold(),
+            _ => self.lib.funding_hold(),
         };
-        if let Some(step) = hold {
-            return Ok(step);
+        if let Some(wait) = hold {
+            return Ok(hold_step(wait));
         }
         // DP5-02 D7, again once the bring-up has found the seed's identities.
         if matches!(funding, Funding::Invitation { .. }) && !self.lib.identities().await.is_empty()
@@ -2644,6 +2637,15 @@ pub(crate) fn refused_for_good(e: &PlatformError) -> bool {
     )
 }
 
+/// A hold as a step: the sync and the bring-up are waited for in the run,
+/// an authority parks it.
+fn hold_step(wait: RegistrationWait) -> Step {
+    match wait {
+        RegistrationWait::Sync | RegistrationWait::Startup => Step::Wait(wait),
+        other => Step::Park(other),
+    }
+}
+
 /// The phase after the profile step: `ProfileCreated` for an invitation
 /// whose inviter is still to be asked (DP5-02 §4), else `Done`.
 fn after_profile(row: &RegistrationRow) -> Phase {
@@ -3018,21 +3020,20 @@ impl RegistrationLib for PwLib {
     ) -> Result<String, ClaimError> {
         use platform_wallet::PlatformWalletError as E;
         use platform_wallet::error::is_asset_lock_already_consumed;
-        let failed = |e: PlatformError| ClaimError::Failed(e);
         let Some(parsed) = super::invitation_check::parse(link) else {
             return Err(ClaimError::Invalid);
         };
         // The outpoint the claim spends, to read a "consumed" refusal as
         // this lock's (the library refetches the same transaction).
-        let net = self.session.invitation_net().map_err(failed)?;
+        let net = self.session.invitation_net().map_err(ClaimError::Failed)?;
         let funding = super::invitation_check::funding(&*net, &parsed).await;
         let outpoint = claim_outpoint(parsed.islock_hex.is_some(), funding)?;
-        let identity_signer =
-            (permit.identity_signer(&[identity_index])).map_err(|e| failed(e.into()))?;
+        let identity_signer = (permit.identity_signer(&[identity_index]))
+            .map_err(|e| ClaimError::Failed(e.into()))?;
         let keys = identity_signer
             .derive_public_keys(identity_index, &super::keys_policy::registration_specs())
             .await
-            .map_err(|e| failed(e.into()))?;
+            .map_err(|e| ClaimError::Failed(e.into()))?;
         let claimed = self
             .wallet
             .identity()
@@ -3045,7 +3046,7 @@ impl RegistrationLib for PwLib {
             Err(E::Sdk(e)) if is_asset_lock_already_consumed(&e, &outpoint) => {
                 Err(ClaimError::Claimed)
             }
-            Err(e) => Err(failed(e.into())),
+            Err(e) => Err(ClaimError::Failed(e.into())),
         }
     }
 

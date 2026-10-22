@@ -67,11 +67,8 @@ pub async fn create_invitation(
     })?;
     let lease = session
         .begin_lease(wallet, crate::platform::FlowKind::Registration, &[grant])
-        .await
-        .map_err(PlatformError::from)?;
-    let signer = lease
-        .uncounted_funding_signer()
-        .map_err(PlatformError::from)?;
+        .await?;
+    let signer = lease.uncounted_funding_signer()?;
     let (_, lib) = crate::platform::registration_flow::PwLib::open(session, wallet).await?;
     let network = lib.sdk.network;
     let created = session
@@ -89,7 +86,7 @@ pub async fn create_invitation(
                 .await)
         })
         .await?;
-    let (proof, path, _) = created.map_err(PlatformError::from)?;
+    let (proof, path, _) = created?;
     let master = ExtendedPrivKey::new_master(network, &secret.seed[..]).map_err(|e| {
         PlatformError::Internal {
             detail: e.to_string(),
@@ -105,7 +102,6 @@ pub async fn create_invitation(
         display_name: None,
         avatar_url: None,
     });
-    let uri = encode_invitation_uri(&voucher, network, &proof, inviter.as_ref())
-        .map_err(PlatformError::from)?;
+    let uri = encode_invitation_uri(&voucher, network, &proof, inviter.as_ref())?;
     Ok(zeroize::Zeroizing::new(uri))
 }
