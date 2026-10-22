@@ -1733,6 +1733,16 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         self.lib.funding_hold().map(hold_step)
     }
 
+    /// The claim's identity `own` among the seed's at `index` (`Some(true)`),
+    /// only others there (`Some(false)`), or none (D26).
+    async fn holds_claim(&self, index: u32, own: &str) -> Option<bool> {
+        let at: Vec<_> = (self.lib.identities().await.into_iter())
+            .filter(|(i, _)| *i == index)
+            .map(|(_, id)| id)
+            .collect();
+        (!at.is_empty()).then(|| at.iter().any(|id| id == own))
+    }
+
     async fn identity_at(&self, index: u32) -> Option<String> {
         self.lib
             .identities()
@@ -2319,10 +2329,23 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             return Ok(hold_step(wait));
         }
         // D11: the claim's identity at the row's index is this flow's (a
-        // restored row, or a claim whose record was lost); another one the
-        // seed made there is not (D26).
-        if self.identity_at(index).await.as_deref() == Some(own) {
-            return self.advance(row, registered(own.to_owned())).await;
+        // restored row, or a claim whose record was lost). Another one the
+        // seed made there is not (D26), and holds the claim's keys, which
+        // Platform refuses twice: the row fails before the call, link kept.
+        match self.holds_claim(index, own).await {
+            Some(true) => return self.advance(row, registered(own.to_owned())).await,
+            Some(false) => {
+                tracing::warn!(
+                    draft = self.draft(),
+                    index,
+                    "another identity of the seed holds the claim's index"
+                );
+                return Ok(Step::Fail(
+                    InvitationError::AlreadyHasIdentity.code(),
+                    false,
+                ));
+            }
+            None => {}
         }
         let link = match self.session.read_invitation(link_id.to_owned()).await {
             Ok(Some((link, _))) => link,
@@ -2356,10 +2379,20 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             .unwrap_or_else(|e| (Err(ClaimError::Failed(e)), false));
         drop((in_call, link));
         let e = match claimed {
-            Ok(id) => return self.advance(row, registered(id)).await,
+            Ok(id) if id == own => return self.advance(row, registered(id)).await,
+            // D26: never an identity but the stored one.
+            Ok(id) => {
+                tracing::error!(
+                    draft = self.draft(),
+                    answered = %id,
+                    own,
+                    "the claim answered another identity than its own"
+                );
+                return Ok(Step::Fail(internal(), false));
+            }
             Err(e) => e,
         };
-        if self.identity_at(index).await.as_deref() == Some(own) {
+        if self.holds_claim(index, own).await == Some(true) {
             return self.advance(row, registered(own.to_owned())).await;
         }
         Ok(match e {

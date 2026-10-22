@@ -1061,6 +1061,14 @@ impl RegistrationLib for Fake {
                 self.create_identity(invitation::outpoint(), index);
                 return Err(ClaimError::Failed(PlatformError::Unavailable));
             }
+            Some(ClaimScript::OtherId) => {
+                permit.note_released();
+                return Ok(invitation::OTHER.into());
+            }
+            Some(ClaimScript::OtherAppearsThenUnavailable) => {
+                self.w().identities.push((index, invitation::OTHER.into()));
+                return Err(ClaimError::Failed(PlatformError::Unavailable));
+            }
             Some(ClaimScript::ConsumedOurs) => {
                 // Platform holds our identity; the library's own lookup
                 // failed, so it refused the claim as consumed and recorded

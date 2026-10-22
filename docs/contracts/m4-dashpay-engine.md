@@ -416,8 +416,8 @@ bodies decided where the rows leave room:
   row holds a lock of, plus the `Parked`, `Contested` and `Free` locks (an `Unknown` step and a lock it contests
   count as two). While the funding hold lasts (the indexes the seed uses are not known yet) it writes nothing and
   reports the same count. It
-  then runs each row funded by evidence (an outpoint, or a funded phase) once under the grant, without waiting for a
-  proof; a `Built` lock is resumed briefly so the library broadcasts it again. A row without its proof parks alone:
+  then runs each row funded by evidence (an outpoint, or a funded phase), except an invitation's (item 63), once under
+  the grant, without waiting for a proof; a `Built` lock is resumed briefly so the library broadcasts it again. A row without its proof parks alone:
   the grant's lease keeps its key for the other rows. `resumed` counts the rows it ran. A row whose run fails (a
   `storage` error) is logged and counted in `resumed` and `still_pending`; the other rows run on.
 - **`prepare_faucet_lock`**, and `FaucetAssetLock` funding: no build is a developer build yet, so
@@ -3095,13 +3095,15 @@ renames or reshapes them takes the next version bump:
       does not cover (`registration.funding_insufficient{needed, available}`, in duffs). The quote's duffs are 0
       but `lock_duffs` (§2.2's `RegistrationQuote`); a grant with `max_duffs` 0 gives the lease no funding signer,
       so the flow signs no Core input; a grant with duffs, or a lease issued with a funding signer, is refused
-      (`platform.grant_invalid`), at the start and at every resume. The row's `funding` stores the link id, the
-      inviter's identity and the identity the claim creates, never the link.
+      (`platform.grant_invalid`), at the start and at every resume; "Finish transfers" never runs an invitation row.
+      The row's `funding` stores the link id, the inviter's identity and the identity the claim creates, never the
+      link.
     - **The claim.** `Draft → KeysPrepared` waits for the identity discovery and the trust gate, not for SPV: a
       wallet with no coins and no sync claims. `KeysPrepared → IdentityRegistered` is the library's
       `claim_invitation`, under the identity step's permit, after the same wait: the claim's own identity at the
-      row's index is adopted (a restored row, or a claim whose answer was lost), never another the seed made there; a
-      link gone from the stash fails
+      row's index is adopted (a restored row, or a claim whose answer was lost), never another the seed made there
+      (that one fails the row `invitation.already_has_identity`, not retryable, before the call, link kept), nor an
+      answer naming another identity (`internal`, not retryable); a link gone from the stash fails
       `invitation.expired`, not retryable; a sealed link while locked waits for Unlock; a lock consumed and not by
       this seed's keys fails `invitation.claimed`, not retryable (another device, or the inviter's reclaim), once
       the engine's own lookup finds no identity there or one with other keys (a failed lookup waits; our keys there

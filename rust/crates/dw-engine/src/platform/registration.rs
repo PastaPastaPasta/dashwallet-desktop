@@ -1175,9 +1175,14 @@ async fn finish_under<L: RegistrationLib>(
     let ledger = ledger(session, wallet, lib).await?;
     for row in ledger.rows() {
         // DEC-171 (4): funded by its evidence, whatever its phase says.
-        let Ok((phase, _)) = flow::interpret(row) else {
+        let Ok((phase, funding)) = flow::interpret(row) else {
             continue;
         };
+        // DP5-02 D8: a claim holds no lock to finish, and runs only under a
+        // grant its resume checked for duffs.
+        if matches!(funding, Funding::Invitation { .. }) {
+            continue;
+        }
         let funded = row.asset_lock_outpoint.is_some() || !phase.unfunded();
         if !funded || phase == Phase::Done {
             continue;

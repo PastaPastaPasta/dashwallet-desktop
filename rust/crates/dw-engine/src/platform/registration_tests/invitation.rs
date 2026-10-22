@@ -39,7 +39,14 @@ pub(super) enum ClaimScript {
     /// Refused as consumed: our identity is on Platform, the library did
     /// not adopt it.
     ConsumedOurs,
+    /// The library answers with an identity that is not the claim's.
+    OtherId,
+    /// Another device's identity at the index appears; the claim fails.
+    OtherAppearsThenUnavailable,
 }
+
+/// Another identity of the same seed (another device's).
+pub(super) const OTHER: &str = "Other1dentityAtTheIndex";
 
 /// The voucher's outpoint, the claim's identity derives from.
 pub(super) fn outpoint() -> OutPoint {
@@ -565,6 +572,9 @@ fn a_link_gone_before_the_claim() {
 
     let f = fixture(false);
     let lib = f.fake();
+    // D26: ours among the seed's identities at the index, listed after
+    // another one.
+    lib.w().identities.push((0, OTHER.into()));
     lib.w().identities.push((0, claimed_id()));
     let mut row = invitation_row(&"0".repeat(32), Some(INVITER));
     row.phase = Phase::KeysPrepared.as_str().into();
@@ -763,48 +773,139 @@ fn a_consumed_claim_of_our_identity_is_adopted_without_a_resend() {
     assert!(!stashed(&f, &link_id));
 }
 
-/// Review m4 (D26): another identity the seed made at the row's index (on
-/// another device, during the claim) is not adopted: its credits are not
-/// spent, the link is not wiped, and the claim is the row's own.
+/// Review m4 and r2 n7 (D26): another identity the seed made at the row's
+/// index (on another device, during the claim) is not adopted: its credits
+/// are not spent and the link is kept. It holds the claim's keys, which
+/// Platform would refuse, so the row fails before any claim is sent.
 #[test]
 fn another_identity_at_the_index_is_not_the_claims() {
-    const OTHER: &str = "Other1dentityAtTheIndex";
-    // Before the claim: the claim runs, and is its own identity.
+    let unclaimed = |f: &Fixture, lib: &Fake, draft: i64, link_id: &str| {
+        let row = f.row(draft);
+        assert_eq!(
+            (
+                phase(&row),
+                row.identity,
+                row.error.as_deref(),
+                row.retryable
+            ),
+            (
+                Phase::KeysPrepared,
+                None,
+                Some("invitation.already_has_identity"),
+                false
+            )
+        );
+        let w = lib.w();
+        assert!(w.names.is_empty() && w.requests.is_empty());
+        drop(w);
+        assert!(stashed(f, link_id));
+    };
+    let keys_prepared = |f: &Fixture, link_id: &str| {
+        let mut row = invitation_row(link_id, Some(INVITER));
+        row.phase = Phase::KeysPrepared.as_str().into();
+        row.identity_index = Some(0);
+        f.insert(row)
+    };
+    // Found before the claim: no claim is sent.
     let f = fixture(false);
     let lib = f.fake();
     let link_id = stash(&f);
-    let mut row = invitation_row(&link_id, Some(INVITER));
-    row.phase = Phase::KeysPrepared.as_str().into();
-    row.identity_index = Some(0);
-    let draft = f.insert(row);
+    let draft = keys_prepared(&f, &link_id);
     lib.w().identities.push((0, OTHER.into()));
     f.drive(&lib, draft, Some(claim_lease(&f)), true);
-    done(&f, draft);
-    let w = lib.w();
-    assert_eq!(w.claims, 1);
-    assert!(w.names.iter().all(|(id, _)| *id == claimed_id()));
-    assert_eq!(w.requests, [(claimed_id(), INVITER.to_owned())]);
-    drop(w);
-    // After a failed claim: the error stands, the link stays.
+    unclaimed(&f, &lib, draft, &link_id);
+    assert_eq!(lib.w().claims, 0);
+    // Found after a failed claim: not adopted; the next run fails the row.
     let f = fixture(false);
     let lib = f.fake();
     let link_id = stash(&f);
-    let mut row = invitation_row(&link_id, Some(INVITER));
-    row.phase = Phase::KeysPrepared.as_str().into();
-    row.identity_index = Some(0);
-    let draft = f.insert(row);
-    lib.w().identities.push((0, OTHER.into()));
-    lib.w().claim_script.push_back(ClaimScript::Claimed);
+    let draft = keys_prepared(&f, &link_id);
+    lib.w()
+        .claim_script
+        .push_back(ClaimScript::OtherAppearsThenUnavailable);
+    let lease = claim_lease(&f);
+    f.drive(&lib, draft, Some(lease.clone()), false);
+    let row = f.row(draft);
+    assert_eq!(
+        (phase(&row), row.identity, row.error),
+        (Phase::KeysPrepared, None, None)
+    );
+    f.drive(&lib, draft, Some(lease), true);
+    unclaimed(&f, &lib, draft, &link_id);
+    assert_eq!(lib.w().claims, 1);
+}
+
+/// Review r2 n5 (D26): an identity the library answers with that is not
+/// the stored one is never adopted; the row fails, the link kept.
+#[test]
+fn a_claim_answering_another_identity_fails_without_adopting_it() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let link_id = stash(&f);
+    lib.w().claim_script.push_back(ClaimScript::OtherId);
+    let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
     f.drive(&lib, draft, Some(claim_lease(&f)), true);
     let row = f.row(draft);
     assert_eq!(
-        (phase(&row), row.identity, row.error.as_deref()),
-        (Phase::KeysPrepared, None, Some("invitation.claimed"))
+        (
+            phase(&row),
+            row.identity,
+            row.error.as_deref(),
+            row.retryable
+        ),
+        (Phase::KeysPrepared, None, Some("internal"), false)
     );
     let w = lib.w();
+    assert_eq!(w.claims, 1);
     assert!(w.names.is_empty() && w.requests.is_empty());
     drop(w);
     assert!(stashed(&f, &link_id));
+}
+
+/// Review r2 m6 (D8): "Finish transfers" never runs a claim, whatever
+/// grant it is given: a claim holds no lock, and runs only under a grant
+/// its resume checked for duffs.
+#[test]
+fn finish_transfers_leaves_claims_to_their_resume() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let link_id = stash(&f);
+    let mut row = invitation_row(&link_id, Some(INVITER));
+    row.phase = Phase::IdentityRegistered.as_str().into();
+    row.identity_index = Some(0);
+    row.identity = Some(claimed_id());
+    let draft = f.insert(row);
+    lib.w().identities.push((0, claimed_id()));
+    let before = f.row(draft);
+    let report = f
+        .engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            f.grant(COIN, 10 * COIN * 1000, Credential::None),
+        ))
+        .unwrap();
+    assert_eq!(
+        (report.resumed, report.completed, report.still_pending),
+        (0, 0, 0)
+    );
+    assert_eq!(f.row(draft), before);
+    assert!(lib.w().names.is_empty());
+    // Its resume finishes it.
+    let grant = f.grant(0, 10 * COIN * 1000, Credential::None);
+    f.engine
+        .block_on(registration::resume(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            &draft.to_string(),
+            Some(grant),
+        ))
+        .unwrap();
+    f.settle(draft);
+    done(&f, draft);
+    assert_eq!(lib.w().funds, 0);
 }
 
 /// Review m2: D8 holds for a resumed claim too: a grant with duffs, or a
