@@ -333,6 +333,8 @@ impl Masternodes {
             );
             put_own_side(&mut session, &rec)?;
             let reserved = rec.outpoints();
+            #[cfg(test)]
+            crate::coins::pause_at(&s.coin_fences.pause_shared_write).await;
             s.insert_shared(
                 wallet,
                 &session,
@@ -521,6 +523,8 @@ impl Masternodes {
             put_own_side(&mut next, &rec)?;
             next.revision += 1;
             next.check_labels().map_err(envelope_refusal)?;
+            #[cfg(test)]
+            crate::coins::pause_at(&s.coin_fences.pause_shared_write).await;
             s.replace_contribution(wallet, &l, &next, &rec).await?;
             drop(fence);
             outcome(&s, wallet, &session).await

@@ -169,19 +169,35 @@ impl Fx {
         self.engine.block_on(f)
     }
 
-    /// Runs `calls` with wallet `w`'s coin fence held for their first two
-    /// seconds, so concurrent calls all reach the fence (or, without it,
-    /// race past it) before any of them goes on (D63).
-    fn fenced<T>(&self, w: usize, calls: impl Future<Output = T>) -> T {
-        let (session, wallet) = (Arc::clone(&self.session), self.wallets[w]);
-        self.run(async move {
-            let fence = session.coin_fence(wallet).await.unwrap();
-            let release = async move {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                drop(fence);
-            };
-            tokio::join!(calls, release).0
-        })
+    /// Runs `first` up to its session row's write (held there, D63), then
+    /// `second` for two seconds, then lets both finish: `second` waits for
+    /// the fence `first` holds from its keys to its write, or, without it,
+    /// reads the keys and coins in use before `first`'s row is written.
+    fn write_paused<A, B>(
+        &self,
+        first: impl Future<Output = A> + Send + 'static,
+        second: impl Future<Output = B> + Send + 'static,
+    ) -> (A, B)
+    where
+        A: Send + 'static,
+        B: Send + 'static,
+    {
+        use std::sync::atomic::Ordering::SeqCst;
+        let pause = Arc::new(crate::coins::TestPause::default());
+        *self.session.coin_fences.pause_shared_write.lock().unwrap() = Some(Arc::clone(&pause));
+        let first = self.session.rt.spawn(first);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while !pause.reached.load(SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the first call reaches its write"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let second = self.session.rt.spawn(second);
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        pause.release.notify_one();
+        (self.run(first).unwrap(), self.run(second).unwrap())
     }
 
     fn grant(&self, w: usize, max_duffs: u64) -> String {
@@ -1679,19 +1695,24 @@ fn test_QT_126_the_follow_pass_waits_for_a_session_in_flight() {
 
 /// D63 (review MAJ-1, M5): two creation calls on one wallet at once take
 /// different keys and coins. The coin fence is held from the keys' pick to
-/// the row's write, so the second call sees the first one's keys in use.
+/// the row's write, so the second call, started while the first is held
+/// just before its write, sees the first one's keys in use.
 #[test]
 fn test_QT_126_concurrent_starts_take_different_keys() {
     let f = fx(1, true);
     f.credit(0, 1, 501 * COIN);
     f.credit(0, 2, 501 * COIN);
     let (m1, m2, w) = (f.mn(), f.mn(), f.wallets[0]);
-    let (a, b) = f.fenced(0, async move {
-        tokio::join!(
-            m1.start_shared(w, request(&[("A", 500), ("B", 500)], FEE)),
-            m2.start_shared(w, request(&[("A", 500), ("B", 500)], FEE)),
-        )
-    });
+    let (a, b) = f.write_paused(
+        async move {
+            m1.start_shared(w, request(&[("A", 500), ("B", 500)], FEE))
+                .await
+        },
+        async move {
+            m2.start_shared(w, request(&[("A", 500), ("B", 500)], FEE))
+                .await
+        },
+    );
     let (a, b) = (a.unwrap().session, b.unwrap().session);
     assert_ne!(a.rows[0].owner_address, b.rows[0].owner_address);
     assert_ne!(a.terms.voting_address, b.terms.voting_address);
@@ -1719,12 +1740,11 @@ fn test_QT_126_concurrent_joins_take_different_keys() {
         share_index: Some(1),
         reward: RewardChoice::Refund,
     };
-    let (a, b) = f.fenced(1, async move {
-        tokio::join!(
-            m1.join_shared(w, ids[0].clone(), join()),
-            m2.join_shared(w, ids[1].clone(), join()),
-        )
-    });
+    let (id0, id1) = (ids[0].clone(), ids[1].clone());
+    let (a, b) = f.write_paused(
+        async move { m1.join_shared(w, id0, join()).await },
+        async move { m2.join_shared(w, id1, join()).await },
+    );
     let (a, b) = (a.unwrap().session, b.unwrap().session);
     assert_ne!(a.rows[1].owner_address, b.rows[1].owner_address);
     assert_ne!(f.row(1, &a.id).reserved, f.row(1, &b.id).reserved);
