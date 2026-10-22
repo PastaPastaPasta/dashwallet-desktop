@@ -139,7 +139,7 @@ fn participant(l: &Loaded, theirs: &Session) -> Result<Option<Session>, Masterno
         && rev == Ordering::Equal
     {
         let (merged, _) = merge_approvals(ours, theirs).map_err(merge_refusal)?;
-        return adopt_combined(&merged, theirs)
+        return adopt_combined(&merged, theirs, &l.own_inputs())
             .map(Some)
             .map_err(merge_refusal);
     }

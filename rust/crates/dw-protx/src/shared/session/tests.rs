@@ -530,6 +530,25 @@ fn test_QT_126_frozen_registration_must_be_what_the_envelope_shows() {
     assert!(reparse(&session).is_ok());
 }
 
+/// Mutant 2 (MG-04b §12): a party's payout swapped is another registration.
+/// Each share's refund and reward are compared in place, so a frozen
+/// registration paying a party's refund to its reward address (and back),
+/// or one party's refund to another's, is never the envelope's.
+#[test]
+fn test_QT_126_a_swapped_payout_is_not_the_envelopes() {
+    let mut session = at(Stage::Frozen);
+    let share = &mut session.shares[0];
+    assert!(!share.reward_address.is_empty() && share.reward_address != share.refund_address);
+    std::mem::swap(&mut share.refund_address, &mut share.reward_address);
+    assert_eq!(reparse(&session), Err(EnvelopeError::Parse("protx")));
+
+    let mut session = at(Stage::Frozen);
+    let refund = session.shares[1].refund_address.clone();
+    session.shares[1].refund_address =
+        std::mem::replace(&mut session.shares[2].refund_address, refund);
+    assert_eq!(reparse(&session), Err(EnvelopeError::Parse("protx")));
+}
+
 #[test]
 fn test_QT_126_combined_and_signed_stages_check_signatures_and_inputs() {
     // Combined: every share signed, each verifying.
@@ -560,6 +579,9 @@ fn test_QT_126_combined_and_signed_stages_check_signatures_and_inputs() {
 }
 
 mod merges {
+    use dashcore::ScriptBuf;
+
+    use super::super::funding::decode_frozen;
     use super::super::merge::*;
     use super::*;
     use crate::shared::{ProRegTxV3, SpecialTx};
@@ -877,11 +899,11 @@ mod merges {
     fn test_QT_126_combined_copy_is_taken_only_with_our_approvals_embedded() {
         let combined = at(Stage::Combined);
         assert_eq!(
-            adopt_combined(&at(Stage::Signing), &combined),
+            adopt_combined(&at(Stage::Signing), &combined, &[]),
             Ok(combined.clone())
         );
         assert_eq!(
-            adopt_combined(&with_sigs(Stage::Signing, &[0, 1]), &combined),
+            adopt_combined(&with_sigs(Stage::Signing, &[0, 1]), &combined, &[]),
             Err(Refusal::Conflict)
         );
         let mut tampered = combined.clone();
@@ -891,15 +913,29 @@ mod merges {
             tx.payload = p.to_payload().unwrap();
         });
         assert_eq!(
-            adopt_combined(&at(Stage::Signing), &tampered),
+            adopt_combined(&at(Stage::Signing), &tampered, &[]),
             Err(Refusal::BadSignature { share: 1 })
         );
         let mut other = combined.clone();
         other.protx = edit_tx(&combined.protx, |tx| tx.input[0].sequence = 0);
         assert_eq!(
-            adopt_combined(&at(Stage::Signing), &other),
+            adopt_combined(&at(Stage::Signing), &other, &[]),
             Err(Refusal::Conflict)
         );
+
+        // m-7: a scriptSig on one of our inputs is never taken; on a
+        // foreign input (a dash-qt coordinator signs its own at combine) it
+        // is.
+        let mut presigned = combined.clone();
+        presigned.protx = edit_tx(&combined.protx, |tx| {
+            tx.input[0].script_sig = ScriptBuf::from_bytes(vec![0x51]);
+        });
+        let ours = decode_frozen(&combined).unwrap().tx.input[0].previous_output;
+        assert_eq!(
+            adopt_combined(&at(Stage::Signing), &presigned, &[ours]),
+            Err(Refusal::ForeignInput)
+        );
+        assert!(adopt_combined(&at(Stage::Signing), &presigned, &[]).is_ok());
     }
 
     /// The combined transaction with dashd's signatures on `inputs`.

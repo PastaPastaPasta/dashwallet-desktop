@@ -1226,3 +1226,211 @@ fn test_QT_126_locked_terms_never_carry_our_approval() {
     );
     assert!(parse(&f.message(1, &id)).signature_for(1).is_none());
 }
+
+/// A two-party session, B's reply absorbed: A has 500 + fee, B 501 (so B's
+/// contribution carries change). Returns the session id.
+fn two_joined(f: &Fx) -> String {
+    f.credit(0, 1, 501 * COIN);
+    f.credit(1, 2, 501 * COIN);
+    let inv = start(f, 0, request(&[("A", 500), ("B", 500)], FEE)).unwrap();
+    let id = inv.session.id.clone();
+    f.imported(1, &inv.message.text);
+    let b = f.join(1, &id);
+    f.imported(0, &b.message.text);
+    id
+}
+
+fn assert_funding(e: MasternodesError, want: &str) {
+    match e {
+        MasternodesError::SharedFundingMismatch { reason, .. } => assert_eq!(reason, want),
+        other => panic!("expected shared_funding_mismatch{{{want}}}, got {other:?}"),
+    }
+}
+
+fn assert_stage(e: MasternodesError, want: &str) {
+    match e {
+        MasternodesError::SharedStage { stage } => assert_eq!(stage, want),
+        other => panic!("expected shared_stage{{{want}}}, got {other:?}"),
+    }
+}
+
+/// H-1, D15 (mutant 8): a newer draft never replaces a session past
+/// `signing`. A coordinator that locked refuses it `older`, one at
+/// `combined` `conflict`; a participant at `combined`, and after its
+/// `out_at`, `conflict`.
+#[test]
+fn test_QT_126_a_newer_draft_never_replaces_a_session_past_signing() {
+    let g = fx(2, true);
+    let gid = two_joined(&g);
+    let locked = g.lock(0, &gid).unwrap();
+    let mut draft = parse(&locked.message.text);
+    super::build::unfreeze(&mut draft);
+    assert_message(g.import(0, &draft.to_text()).unwrap_err(), "older");
+
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    let request = f.message(0, &id);
+    // The same session as an unlock would leave it, one revision higher.
+    let mut draft = parse(&request);
+    super::build::unfreeze(&mut draft);
+    let draft = draft.to_text();
+    assert_message(f.import(0, &draft).unwrap_err(), "conflict");
+    f.imported(1, &request);
+    assert_message(f.import(1, &draft).unwrap_err(), "conflict");
+    f.sign(1, &id, 301 * COIN).unwrap();
+    assert_message(f.import(1, &draft).unwrap_err(), "conflict");
+    assert_eq!(f.session_of(1, &id).stage, SharedStage::FundingSigned);
+    assert_eq!(f.session_of(0, &id).stage, SharedStage::Combined);
+}
+
+/// M-1 (mutants 24 and 26): a participant that approved takes a newer copy
+/// only with its own row and contribution unchanged. A re-locked copy,
+/// validly frozen, with its refund moved is `row_changed`; a newer draft
+/// with its change moved (its coins re-chosen for it) is
+/// `contribution_changed`. Nothing of its session moves.
+#[test]
+fn test_QT_126_newer_copies_changing_our_side_are_refused() {
+    let f = fx(2, true);
+    let id = two_joined(&f);
+    let locked = f.lock(0, &id).unwrap();
+    f.imported(1, &locked.message.text);
+    f.approve(1, &id).unwrap();
+    let held = f.message(1, &id);
+    let elsewhere = "ydwX3cfcvo1xezp1QeZ9Bvj8sgqVeAvWe5";
+
+    // As unlock and lock make it, with B's refund moved: a new digest.
+    let mut relocked = parse(&locked.message.text);
+    super::build::unfreeze(&mut relocked);
+    relocked.shares[1].refund_address = elsewhere.into();
+    super::build::freeze(&mut relocked).unwrap();
+    assert_funding(f.import(1, &relocked.to_text()).unwrap_err(), "row_changed");
+
+    let mut draft = parse(&locked.message.text);
+    super::build::unfreeze(&mut draft);
+    draft.contributions[1]
+        .change
+        .as_mut()
+        .expect("B's change")
+        .address = elsewhere.into();
+    dw_protx::shared::session::funding::rebuild_funding_tx(&mut draft).unwrap();
+    assert_funding(
+        f.import(1, &draft.to_text()).unwrap_err(),
+        "contribution_changed",
+    );
+    assert_eq!(f.message(1, &id), held);
+}
+
+/// M-1 case 2 (mutant 25): after an unlock and re-lock, `approve_shared`
+/// signs again: the earlier approval recorded as the diff base doesn't
+/// count as one, and the Approval carries a signature over the frozen
+/// registration it returns.
+#[test]
+fn test_QT_126_a_relocked_copy_is_signed_by_a_fresh_approval() {
+    use dw_protx::shared::session::funding::verify_consent_signature;
+
+    // Three parties, so B's approval alone doesn't let A combine.
+    let f = fx(3, true);
+    f.credit(0, 1, 401 * COIN);
+    f.credit(1, 2, 300 * COIN + 50_000);
+    f.credit(2, 3, 350 * COIN);
+    let inv = start(&f, 0, request(&[("A", 400), ("B", 300), ("C", 300)], FEE)).unwrap();
+    let id = inv.session.id.clone();
+    for w in [1, 2] {
+        f.imported(w, &inv.message.text);
+        let details = f.join(w, &id);
+        f.imported(0, &details.message.text);
+    }
+    let locked = f.lock(0, &id).unwrap();
+    f.imported(1, &locked.message.text);
+    let first = f.approve(1, &id).unwrap();
+    f.imported(0, &first.message.text);
+    let unlocked = f
+        .run(f.mn().unlock_shared_terms(f.wallets[0], id.clone()))
+        .unwrap();
+    f.imported(1, &unlocked.message.text);
+    let relocked = f.lock(0, &id).unwrap();
+    let (s, _) = f.imported(1, &relocked.message.text);
+    assert_eq!(
+        (s.stage, s.next),
+        (SharedStage::Signing, SharedNext::Approve)
+    );
+    assert!(
+        s.approved_terms.is_some(),
+        "the old approval stays the diff base"
+    );
+    assert!(parse(&f.message(1, &id)).signature_for(1).is_none());
+
+    let again = parse(&f.approve(1, &id).unwrap().message.text);
+    let frozen = decode_frozen(&again).unwrap();
+    let sig = again.signature_for(1).expect("B's fresh approval");
+    assert!(verify_consent_signature(&frozen, 1, &sig.signature));
+}
+
+/// D33 (mutant 32): `set_shared_fee` only on a `draft`. A draft whose
+/// reserved coin was spent is `dead`: the fee isn't changed and no other
+/// coin is selected for it.
+#[test]
+fn test_QT_126_set_shared_fee_refuses_a_dead_draft() {
+    let f = fx(1, true);
+    f.credit(0, 1, 501 * COIN);
+    f.credit(0, 2, 501 * COIN);
+    let inv = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE)).unwrap();
+    let id = inv.session.id.clone();
+    let reserved = f.locked(0);
+    assert_eq!(reserved.len(), 1);
+    f.spend(0, *reserved.iter().next().unwrap());
+    let e = f
+        .run(f.mn().set_shared_fee(f.wallets[0], id.clone(), 2 * FEE))
+        .unwrap_err();
+    assert_stage(e, "dead");
+    assert_eq!(f.locked(0), reserved);
+    assert_eq!(f.session_of(0, &id).fee, Some(FEE));
+}
+
+/// D17 (mutant 6): a reservation whose lock was released (coin control
+/// unlocks it, so another send may select the coin) is `dead` for signing:
+/// `approve_shared` refuses and adds no signature.
+#[test]
+fn test_QT_126_a_released_reservation_signs_nothing() {
+    let f = fx(2, true);
+    let id = two_joined(&f);
+    let locked = f.lock(0, &id).unwrap();
+    f.imported(1, &locked.message.text);
+    let coin = *f.locked(1).iter().next().unwrap();
+    assert!(
+        f.db()
+            .unlock(
+                &f.wallets[1].to_string(),
+                &coin.txid.to_string(),
+                coin.vout,
+                1
+            )
+            .unwrap()
+    );
+    assert_stage(f.approve(1, &id).unwrap_err(), "dead");
+    assert!(parse(&f.message(1, &id)).signature_for(1).is_none());
+}
+
+/// `signedOnlyOwnInputs` (mutant 14): a combined copy that already carries
+/// a scriptSig on one of this wallet's inputs is never signed over. If the
+/// import takes it, `sign_shared_funding` refuses `not_own_inputs` before
+/// anything is saved or charged; nothing is out.
+#[test]
+fn test_QT_126_funding_never_signs_over_a_scriptsig_on_our_input() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    let mut forged = parse(&f.message(0, &id));
+    let mut tx = decode_frozen(&forged).unwrap().tx;
+    let b_coins = f.locked(1);
+    for input in &mut tx.input {
+        if b_coins.contains(&input.previous_output) {
+            input.script_sig = dashcore::ScriptBuf::from_bytes(vec![0x51]);
+        }
+    }
+    forged.protx = hex::encode(tx.to_bytes());
+    // m-7 at the combine: the copy is refused, and the session stays where
+    // it was, so the coordinator's real combined copy can still be taken.
+    assert_funding(f.import(1, &forged.to_text()).unwrap_err(), "foreign_input");
+    assert_ne!(f.session_of(1, &id).stage, SharedStage::Combined);
+    assert!(f.row(1, &id).out_at.is_none());
+}

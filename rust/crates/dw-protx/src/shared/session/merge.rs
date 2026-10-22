@@ -298,8 +298,14 @@ pub fn check_join_signatures(session: &Session, frozen: &Frozen) -> Result<(), R
 
 /// `setCombinedTx` (`:1496-1516`) plus D12: our approving copy, every share
 /// signed, takes their combined transaction if its consent digest is ours
-/// and its join signatures are our approvals.
-pub fn adopt_combined(ours: &Session, theirs: &Session) -> Result<Session, Refusal> {
+/// and its join signatures are our approvals. A copy carrying a scriptSig
+/// on one of `own_inputs` is refused (m-7): only this wallet signs those,
+/// and a later merge never replaces a scriptSig it holds.
+pub fn adopt_combined(
+    ours: &Session,
+    theirs: &Session,
+    own_inputs: &[OutPoint],
+) -> Result<Session, Refusal> {
     same_id(ours, theirs)?;
     if !matches!(ours.stage, Stage::Frozen | Stage::Signing)
         || theirs.stage < Stage::Combined
@@ -311,6 +317,14 @@ pub fn adopt_combined(ours: &Session, theirs: &Session) -> Result<Session, Refus
     merged.protx.clone_from(&theirs.protx);
     let frozen = decode_frozen(&merged).map_err(|_| Refusal::Conflict)?;
     check_join_signatures(&merged, &frozen)?;
+    if frozen
+        .tx
+        .input
+        .iter()
+        .any(|i| own_inputs.contains(&i.previous_output) && !i.script_sig.is_empty())
+    {
+        return Err(Refusal::ForeignInput);
+    }
     merged.stage = Stage::Combined;
     Ok(merged)
 }
