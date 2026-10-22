@@ -630,6 +630,10 @@ impl Masternodes {
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
         check_session_id(&session)?;
+        // The record's `consent_hash`: 64 hex, compared ignoring case.
+        if consent_hash.len() != 64 || !consent_hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid("the consent hash is 64 hex digits"));
+        }
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             let ctx = v24_context(&s, wallet).await?;
@@ -641,7 +645,7 @@ impl Masternodes {
                     SharedStage::Signing,
                 )
                 .await?;
-            if consent_hash != l.session.consent_hash {
+            if !consent_hash.eq_ignore_ascii_case(&l.session.consent_hash) {
                 return Err(message_refusal("conflict"));
             }
             let rec = l.recorded.clone().ok_or_else(unrecorded)?;

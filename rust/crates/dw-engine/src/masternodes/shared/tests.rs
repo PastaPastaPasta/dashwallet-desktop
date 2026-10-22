@@ -801,7 +801,7 @@ fn test_QT_126_calls_refuse_in_order() {
         .unwrap_err(),
         f.run(mn.lock_shared_terms(w, good.clone(), 1, "g".into()))
             .unwrap_err(),
-        f.run(mn.approve_shared(w, good.clone(), String::new(), "g".into()))
+        f.run(mn.approve_shared(w, good.clone(), "0".repeat(64), "g".into()))
             .unwrap_err(),
         f.run(f.pin().sign_shared_funding(w, good.clone(), "g".into()))
             .unwrap_err(),
@@ -1533,6 +1533,9 @@ fn test_QT_126_consent_binds_to_the_reviewed_copy() {
     let (b, c) = (f.join(1, &id), f.join(2, &id));
     f.imported(0, &b.message.text);
     let reviewed = f.session_of(0, &id).revision;
+    // D56 comes before the incomplete table (r2 nit 1).
+    assert_message(f.lock_at(0, &id, reviewed - 1).unwrap_err(), "conflict");
+    assert_stage(f.lock_at(0, &id, reviewed).unwrap_err(), "incomplete");
     f.imported(0, &c.message.text);
     assert_eq!(f.session_of(0, &id).revision, reviewed + 1);
     assert_message(f.lock_at(0, &id, reviewed).unwrap_err(), "conflict");
@@ -1563,9 +1566,53 @@ fn test_QT_126_consent_binds_to_the_reviewed_copy() {
         parse(&f.message(1, &id)).signature_for(1).is_none(),
         "nothing signed"
     );
-    let approval = parse(&f.approve(1, &id).unwrap().message.text);
+    // The hash is the record's, read ignoring case; not 64 hex is an
+    // argument error before any session check (r2 nit 2).
+    let current = s.consent_hash.clone().unwrap();
+    assert_eq!(
+        code(f.approve_with(1, &id, "zz").unwrap_err()),
+        "invalid_argument"
+    );
+    let approval = parse(
+        &f.approve_with(1, &id, &current.to_uppercase())
+            .unwrap()
+            .message
+            .text,
+    );
     assert!(approval.signature_for(1).is_some());
     assert_eq!(Some(approval.consent_hash), s.consent_hash);
+    // Already approved: a stale hash is still `conflict`, not the Approval.
+    assert_message(f.approve_with(1, &id, &seen).unwrap_err(), "conflict");
+}
+
+/// Review r2 m1: a row a call changed after the pass listed it isn't judged
+/// by the older chain snapshot. A re-reservation onto a coin newer than the
+/// snapshot would read as spent, and its live draft would lose its locks.
+#[test]
+fn test_QT_126_the_follow_pass_never_judges_a_row_newer_than_its_chain() {
+    let f = fx(1, true);
+    f.credit(0, 1, 500 * COIN + FEE);
+    let inv = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE)).unwrap();
+    let id = inv.session.id.clone();
+    let wallet = f.wallets[0];
+    let rows = f.run(f.session.shared_rows(wallet)).unwrap();
+    let chain = f.run(f.session.shared_chain(wallet)).unwrap();
+    // After the snapshot: a new coin, and the fee change takes it.
+    let newer = f.credit(0, 2, COIN);
+    f.run(f.mn().set_shared_fee(wallet, id.clone(), 2 * FEE))
+        .unwrap();
+    let reserved = f.locked(0);
+    assert!(reserved.contains(&newer));
+    let listed = rows.iter().find(|r| r.id == id).unwrap();
+    let released = f
+        .run(f.session.follow_shared_row(wallet, listed, &chain))
+        .unwrap();
+    assert!(!released);
+    assert_eq!(f.locked(0), reserved);
+    // The next pass, with a fresh snapshot, keeps the live draft too.
+    f.run(f.session.protx_follow_pass()).unwrap();
+    assert_eq!(f.locked(0), reserved);
+    assert_eq!(f.session_of(0, &id).stage, SharedStage::Draft);
 }
 
 /// fixes-1a M4: the follower's pass leaves a session a call holds in

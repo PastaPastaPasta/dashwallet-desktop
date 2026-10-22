@@ -535,9 +535,9 @@ impl NetworkSession {
 
     /// The follower's pass over the wallet's sessions (§11): a session
     /// read `confirmed`, `conflicted` or `dead` releases its locks; one out
-    /// and open never does (D17). A session a call holds in flight waits
-    /// for the next pass; the others are read again under the mark, and the
-    /// release writes only while their reservation is still the one read.
+    /// and open never does (D17). Each row is judged by
+    /// [`Self::follow_shared_row`] against one chain snapshot read after
+    /// the rows.
     pub(crate) async fn shared_follow_pass(
         &self,
         wallet: WalletId,
@@ -547,42 +547,56 @@ impl NetworkSession {
             return Ok(());
         }
         let chain = self.shared_chain(wallet).await?;
-        let network = self.network.core_network();
         let mut released = false;
-        for listed in rows {
-            if reserved_of(&listed).is_empty() {
-                continue;
-            }
-            let Some(_flight) = self.try_claim_shared_session(wallet, &listed.id) else {
-                continue;
-            };
-            let Some(row) = self.shared_row(wallet, &listed.id).await? else {
-                continue;
-            };
-            if reserved_of(&row).is_empty() {
-                continue;
-            }
-            let Ok(l) = Loaded::of(row, network) else {
-                continue;
-            };
-            let settled = matches!(
-                derive_stage(&l, &chain),
-                SharedStage::Confirmed { .. } | SharedStage::Conflicted | SharedStage::Dead { .. }
-            );
-            if settled {
-                let (w, id, expected) = (wallet.to_string(), l.row.id.clone(), l.row.reserved);
-                released |= self
-                    .appdb_op(move |db| {
-                        db.release_shared_session_locks_durable(&w, &id, &expected, now_secs())
-                    })
-                    .await?;
-            }
+        for listed in &rows {
+            released |= self.follow_shared_row(wallet, listed, &chain).await?;
         }
         if released {
             self.masternodes.local_change();
             self.hub.pump.mark_balances(wallet);
         }
         Ok(())
+    }
+
+    /// One row of the pass, `chain` read after `listed` (D60). A session a
+    /// call holds in flight waits for the next pass. The rest are read again
+    /// under the mark, and one that changed since `listed` waits too: a call
+    /// may have re-reserved it onto coins newer than `chain`, which would
+    /// read as spent. The release writes only while the reservation is still
+    /// the one judged. Whether it released.
+    pub(crate) async fn follow_shared_row(
+        &self,
+        wallet: WalletId,
+        listed: &SharedSessionRow,
+        chain: &ChainView,
+    ) -> Result<bool, MasternodesError> {
+        if reserved_of(listed).is_empty() {
+            return Ok(false);
+        }
+        let Some(_flight) = self.try_claim_shared_session(wallet, &listed.id) else {
+            return Ok(false);
+        };
+        let Some(row) = self.shared_row(wallet, &listed.id).await? else {
+            return Ok(false);
+        };
+        if &row != listed {
+            return Ok(false);
+        }
+        let Ok(l) = Loaded::of(row, self.network.core_network()) else {
+            return Ok(false);
+        };
+        if !matches!(
+            derive_stage(&l, chain),
+            SharedStage::Confirmed { .. } | SharedStage::Conflicted | SharedStage::Dead { .. }
+        ) {
+            return Ok(false);
+        }
+        let (w, id, expected) = (wallet.to_string(), l.row.id.clone(), l.row.reserved);
+        Ok(self
+            .appdb_op(move |db| {
+                db.release_shared_session_locks_durable(&w, &id, &expected, now_secs())
+            })
+            .await?)
     }
 }
 
