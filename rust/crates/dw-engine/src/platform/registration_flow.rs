@@ -428,6 +428,31 @@ pub(crate) fn consumed_verdict(
     }
 }
 
+/// The identity at a consumed lock's id by `fetch`, looked up again
+/// [`NETWORK_RETRY_MIN`] apart while none is found (up to
+/// [`CONSUMED_LOOKUPS`]), read by [`consumed_verdict`]. A failed lookup is
+/// not repeated here: the row waits and claims again.
+pub(crate) async fn consumed_lookup<F, Fut>(
+    mut fetch: F,
+    keys: &BTreeMap<KeyID, IdentityPublicKey>,
+) -> ClaimError
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<Option<Identity>, PlatformError>>,
+{
+    let mut found = Ok(None);
+    for attempt in 0..CONSUMED_LOOKUPS {
+        if attempt > 0 {
+            tokio::time::sleep(NETWORK_RETRY_MIN).await;
+        }
+        found = fetch().await;
+        if !matches!(found, Ok(None)) {
+            break;
+        }
+    }
+    consumed_verdict(found, keys)
+}
+
 /// `identity` holds exactly `keys`: the same ids, types and data, as the
 /// library's adoption compares.
 fn carries_keys(identity: &Identity, keys: &BTreeMap<KeyID, IdentityPublicKey>) -> bool {
@@ -2847,8 +2872,7 @@ pub(crate) struct PwLib {
 }
 
 impl PwLib {
-    /// The identity at a consumed lock's id, looked up again while none is
-    /// found (up to [`CONSUMED_LOOKUPS`]), read by [`consumed_verdict`].
+    /// [`consumed_lookup`] on Platform, at the lock's identity id.
     async fn consumed_claim(
         &self,
         outpoint: OutPoint,
@@ -2856,19 +2880,12 @@ impl PwLib {
     ) -> ClaimError {
         use dash_sdk::platform::Fetch;
         let id = identity_for(outpoint);
-        let mut found = Ok(None);
-        for attempt in 0..CONSUMED_LOOKUPS {
-            if attempt > 0 {
-                tokio::time::sleep(NETWORK_RETRY_MIN).await;
-            }
-            found = Identity::fetch(&self.sdk, id)
+        let fetch = || async {
+            Identity::fetch(&self.sdk, id)
                 .await
-                .map_err(PlatformError::from);
-            if !matches!(found, Ok(None)) {
-                break;
-            }
-        }
-        consumed_verdict(found, keys)
+                .map_err(PlatformError::from)
+        };
+        consumed_lookup(fetch, keys).await
     }
 
     /// The library of wallet `wallet_id`, with the manager holding it.

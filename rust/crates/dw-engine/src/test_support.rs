@@ -92,11 +92,13 @@ pub async fn create_invitation(
             detail: e.to_string(),
         }
     })?;
-    let voucher: Result<SecretKey, _> = master.derive_priv(&path).map(|k| k.private_key);
+    let child = master.derive_priv(&path);
     master.private_key.non_secure_erase();
-    let mut voucher = voucher.map_err(|e| PlatformError::Internal {
+    let mut child = child.map_err(|e| PlatformError::Internal {
         detail: e.to_string(),
     })?;
+    let mut voucher: SecretKey = child.private_key;
+    child.private_key.non_secure_erase();
     let inviter = inviter.map(|username| InviterInfo {
         username: Some(username),
         display_name: None,

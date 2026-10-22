@@ -2060,6 +2060,8 @@ fn create_invitation(
     ));
     let link = match link {
         Ok(link) => link,
+        // A failure after the lock was funded loses its link too; the
+        // inviter's seed can still reclaim the voucher (test-only tool).
         Err(e) => {
             drop(file);
             let _ = std::fs::remove_file(path);

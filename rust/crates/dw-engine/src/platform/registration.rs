@@ -17,7 +17,7 @@ use super::flows::{
     BudgetPurpose, CONTACT_REQUEST_CREDITS, FlowKind, GrantRequest, LeaseStateView,
 };
 use super::invitations::InvitationStatus;
-use super::lease::Lease;
+use super::lease::{Lease, LeaseError};
 use super::names::valid_label;
 use super::registration_flow::{self as flow, PwLib, RegistrationLib};
 use super::registration_ledger::{Ledger, Standing};
@@ -564,6 +564,24 @@ pub(super) async fn funding_cap(
     }
 }
 
+/// Whether `grant` can sign a Core input (DP5-02 D8): a lease issued with
+/// a funding signer, whatever its budget has left, or a vault grant with
+/// duffs.
+async fn grant_funds(
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    grant: &str,
+) -> Result<bool, PlatformError> {
+    if let Some(lease) = session.lease_for(&wallet, grant) {
+        return match lease?.call_funding_signer() {
+            Ok(_) => Ok(true),
+            Err(LeaseError::NeedsGrant(BudgetPurpose::Funding)) => Ok(false),
+            Err(e) => Err(e.into()),
+        };
+    }
+    Ok(funding_cap(session, wallet, grant).await? > 0)
+}
+
 /// A facade call's `grant`: a lease of this wallet, or a vault grant
 /// redeemed into a new registration lease.
 async fn authority(
@@ -644,7 +662,7 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
     // D8: a claim's grant carries no duffs, so its lease has no funding
     // signer.
     if matches!(plan.funding, Funding::Invitation { .. })
-        && funding_cap(session, wallet, &grant).await? > 0
+        && grant_funds(session, wallet, &grant).await?
     {
         return Err(PlatformError::GrantInvalid.into());
     }

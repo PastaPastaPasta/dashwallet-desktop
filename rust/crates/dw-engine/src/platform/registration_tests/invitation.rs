@@ -281,6 +281,26 @@ fn the_start_refuses_what_cannot_be_claimed() {
         started.map(drop).map_err(|e| e.code()),
         Err("platform.grant_invalid")
     );
+    // ...and a lease issued with a funding signer.
+    let funded = f.grant(1, 10 * COIN * 1000, Credential::None);
+    let lease = f
+        .engine
+        .block_on(
+            f.session
+                .begin_lease(f.wallet, FlowKind::Registration, &[funded]),
+        )
+        .unwrap();
+    let started = f.engine.block_on(registration::start(
+        &f.session,
+        f.wallet,
+        Arc::clone(&lib),
+        invite(&link_id),
+        crate::platform::lease::lease_string(&lease.id()),
+    ));
+    assert_eq!(
+        started.map(drop).map_err(|e| e.code()),
+        Err("platform.grant_invalid")
+    );
     // Too little for what the plan writes.
     lib.w().invitation = Some(worth(300_000));
     let err = f
@@ -684,5 +704,34 @@ fn a_consumed_lock_is_claimed_only_when_the_identity_is_not_ours() {
     assert_eq!(
         consumed_verdict(Ok(identity(&more)), &ours),
         ClaimError::Claimed
+    );
+    // The lookups: again while nothing is found, three at most; a failed
+    // lookup once.
+    let f = fixture(false);
+    let lookups = |script: Vec<Result<Option<Identity>, PlatformError>>| {
+        let script = Mutex::new(VecDeque::from(script));
+        let calls = AtomicU32::new(0);
+        let verdict = f.engine.block_on(flow::consumed_lookup(
+            || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let next = script.lock().unwrap().pop_front().expect("scripted");
+                async move { next }
+            },
+            &ours,
+        ));
+        (verdict, calls.load(Ordering::SeqCst))
+    };
+    assert_eq!(
+        lookups(vec![Ok(None), Ok(None), Ok(identity(&ours))]),
+        (retried.clone(), 3)
+    );
+    assert_eq!(
+        lookups(vec![Ok(None), Ok(None), Ok(None)]),
+        (ClaimError::Claimed, 3)
+    );
+    assert_eq!(lookups(vec![Err(PlatformError::Unavailable)]), (retried, 1));
+    assert_eq!(
+        lookups(vec![Ok(identity(&theirs))]),
+        (ClaimError::Claimed, 1)
     );
 }

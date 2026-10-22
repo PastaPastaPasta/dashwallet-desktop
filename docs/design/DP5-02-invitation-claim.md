@@ -69,8 +69,8 @@ row keeps DP1-02's phases, writes and claims; only `Draft → KeysPrepared → I
    over `funding_duffs × 1000`: `registration.funding_insufficient{needed, available}`, in duffs.
 5. The quote: `lock_duffs = funding_duffs`, fee 0, total 0, `available_duffs` 0, and a grant of **`max_duffs` 0** with
    `max_credits` the plan's credits. A `PlatformOp` grant without duffs gives the lease no funding signer at all
-   (`lease/session.rs:134`), so nothing in the flow can sign a Core input. A grant with duffs is refused,
-   `platform.grant_invalid` (D8).
+   (`lease/session.rs:134`), so nothing in the flow can sign a Core input. A grant with duffs, or a lease issued with
+   a funding signer, is refused, `platform.grant_invalid` (D8).
 6. The row's `funding`: `{"v":1,"kind":"invitation","link_id":…,"inviter":"<base58>"}` (`inviter` absent without
    one). Never the link.
 
@@ -193,7 +193,7 @@ m4 delta, Contract-Version 34 → 35, item 62:
 | D5 | `contested_allowed` is `funding_duffs ≥ CONTESTED_LOCK_DUFFS`. | DP1-02's floor for a contested registration; the voucher's value is the tier signal (`inv.rs:458-462`). |
 | D6 | The preview trusts DPNS and the profile only, never the link's display name or avatar; a DPNS read failure fails the call. | The link is unproved; a silent `inviter: None` would also drop the request. |
 | D7 | Start refuses a wallet that has any identity (`invitation.already_has_identity`). | The mobile wallets' rule; one invitation makes a first identity. |
-| D8 | The grant has `max_duffs` 0; the quote's totals are 0; a start with a duff-carrying grant is refused (`platform.grant_invalid`, review m5). | A lease without duffs has no funding signer: the zero-duff guarantee is structural, not only tested. |
+| D8 | The grant has `max_duffs` 0; the quote's totals are 0; a start with a duff-carrying grant, or a lease issued with a funding signer, is refused (`platform.grant_invalid`, review m5, r2 minor 1). | A lease without duffs has no funding signer: the zero-duff guarantee is structural, not only tested. |
 | D9 | The claim hold drops "SPV caught up". | Nothing on Core is spent or chosen; the index needs DP1-05's answer and DP3-04's gate only. On the devnet SPV never catches up (no dip0024 quorum). |
 | D10 | Keys are DP1-01's six at the row's index, signed by the permit's counting identity signer; the outer signature is the library's raw-key path with the voucher key. | Same identity shape as a Core-funded registration; the vault holds no voucher key. |
 | D11 | An identity at the row's index is adopted before the stash is read. | A restored row on another machine has no link; the seed's identity at that index is the wallet's. |
@@ -209,7 +209,7 @@ m4 delta, Contract-Version 34 → 35, item 62:
 | D21 | A ChainLock link (no islock) whose funding transaction is not chain-locked yet waits for the ChainLock before the library is called. | The library refuses that link as invalid data, which would fail the row; the engine's own fetch already knows the lock's state. |
 | D22 | Load flakes, rerun alone and passed: dwcli `dashpay_r3` `a_one_shot_command_abandons_a_stalled_engine` and `the_passphrase_is_wiped_before_a_blocked_write` (`init-vault`'s 10 s shutdown deadline missed at load 228); dw-engine `platform::lease::tests::a_failed_step_write_hands_off_no_copy_until_it_is_repaired` (gate run 1, passed alone on try 1). | Untouched by DP5-02; wall-clock bounds under agentbox load (BL-100). |
 | D23 | MG-01's operator-signing scan (`dw-protx/tests/no_operator_signing.rs`) allows one exact line of the signing test: the `&dpp::native_bls::NativeBlsModule` argument. | Every dpp IdentityCreate builder takes a BLS module; the claim's transition has no BLS key and an ECDSA outer signature, so the module signs nothing. An exact-text entry, not the whole file, so nothing else in the test can name a BLS type. For review. |
-| D24 | A "consumed" refusal is read with the engine's own lookup of the identity at the lock's id (`consumed_verdict`), up to three lookups while none is found: our keys there or a failed lookup retry the claim; nothing or other keys is `invitation.claimed`. | Review M1: the library reports a failed adoption lookup as the same refusal, which would fail our own landed claim for good. |
+| D24 | A "consumed" refusal is read with the engine's own lookup of the identity at the lock's id (`consumed_lookup`, `consumed_verdict`), up to three lookups 2 s apart while none is found: our keys there or a failed lookup retry the claim; nothing or other keys is `invitation.claimed`. | Review M1: the library reports a failed adoption lookup as the same refusal, which would fail our own landed claim for good. Accepted residual (r2 minor 3): three proved absences from a node a block behind still end `invitation.claimed`; DP1-05's discovery finds the identity later (F4's stored id would let a sweep revive the row). |
 | D25 | The claim step waits for the claim hold before D11's check. | Review m2: after a restart at `KeysPrepared` the bring-up's discovery must answer before a gone link (dismissed, or past the TTL) fails a claim that landed unrecorded. |
 
 ## Follow-ups
