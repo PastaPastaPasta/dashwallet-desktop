@@ -25,7 +25,8 @@ pub(crate) struct OwnedMasternode {
     /// ProRegTx `operatorReward`, basis points.
     pub operator_reward: Option<u16>,
     /// A version-3 ProRegTx or ProUpRegTx is among its transactions
-    /// (MG-03 D25): the record's keys, payout and service are misread.
+    /// (MG-03 D25): its payouts and shares aren't read yet (MG-03b), so the
+    /// record's keys, payout and service aren't reported.
     pub shared_unsupported: bool,
 }
 

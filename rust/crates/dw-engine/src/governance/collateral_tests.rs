@@ -223,6 +223,56 @@ fn verify_checks_the_txid_the_payload_and_the_collateral() {
     assert_eq!(verify_bytes(&txid(&evo), &bytes[1..]), None);
 }
 
+/// A Core v24 ProRegTx (version 3: an `ExtNetInfo` service, `payouts` and
+/// `shares` for `scriptPayout`) resolves as a version-2 one: the
+/// collateral comes before the fields version 3 changed (BL-187 D22).
+#[test]
+fn verify_reads_a_version_3_registration() {
+    use dashcore::blockdata::transaction::special_transaction::provider_registration::{
+        MasternodePayoutShare, SharedCollateral,
+    };
+    use dashcore::sml::masternode_list_entry::net_info::{
+        Bip155Network, ExtNetInfo, NetInfoEntry, NetInfoPurpose,
+    };
+
+    let null = OutPoint::new(Txid::all_zeros(), 1);
+    let mut reg = registration(null, false, coins(&[5, MASTERNODE_COLLATERAL]), 0);
+    let Some(TransactionPayload::ProviderRegistrationPayloadType(p)) =
+        &mut reg.special_transaction_payload
+    else {
+        unreachable!()
+    };
+    p.version = 3;
+    p.service_address = MasternodeNetInfo::Extended(ExtNetInfo {
+        version: 1,
+        purposes: vec![(
+            NetInfoPurpose::CoreP2P,
+            vec![NetInfoEntry::Service {
+                network: Bip155Network::Ipv4,
+                addr: vec![127, 0, 0, 1],
+                port: 19899,
+            }],
+        )],
+    });
+    p.payouts = Some(vec![MasternodePayoutShare {
+        script_payout: std::mem::take(&mut p.script_payout),
+        reward: 10_000,
+    }]);
+    p.shared_collateral = Some(SharedCollateral {
+        shares: Vec::new(),
+        join_sigs: Vec::new(),
+        early_period_blocks: 0,
+        early_penalty: 0,
+    });
+    let expected = Some(Collateral {
+        outpoint: OutPoint::new(reg.txid(), 1),
+        weight: 1,
+    });
+    assert_eq!(verify(&txid(&reg), &reg), expected);
+    let bytes = dashcore::consensus::serialize(&reg);
+    assert_eq!(verify_bytes(&txid(&reg), &bytes), expected);
+}
+
 /// The store's outpoint takes the list's voting key and the ProRegTx's
 /// type, which a revoked masternode's list entry lacks (D34).
 #[test]

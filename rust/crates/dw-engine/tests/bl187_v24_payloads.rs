@@ -202,6 +202,7 @@ fn check_special(tx: &Transaction, special: &Value) {
         TransactionPayload::ProviderRegistrationPayloadType(p) => {
             assert_eq!(special["type"], 1);
             assert_eq!(p.version, version);
+            assert_eq!(p.masternode_type as u64, core["type"].as_u64().unwrap());
             assert_eq!(addresses(&p.service_address), core_addresses(core));
             assert_eq!(
                 p.collateral_outpoint.txid.to_string(),

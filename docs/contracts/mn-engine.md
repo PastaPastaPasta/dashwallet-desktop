@@ -644,8 +644,7 @@ doesn't count); a provider transaction that gives it none (it paid the fee of so
 
 `shared_unsupported` (D25): a version-3 ProRegTx or ProUpRegTx among the wallet's provider transactions, or a version-3
 (extended network info) list entry, now or remembered from an earlier sighting (D29). Core v24 replaced `scriptPayout` with `payouts` and `shares` in that version; the
-pinned library reads it with the version-2 layout, so only the type, mode and collateral (and a ProUpRegTx's ProTx
-hash) read right. Such a row reports no `owner`, `voting`, `payout` or `operator` role from that record, no payout
+pinned library decodes it (since BL-187), but the engine doesn't read those fields until MG-03b. Such a row reports no `owner`, `voting`, `payout` or `operator` role from that record, no payout
 address or registration keys, no payouts (`payouts()` refuses, `payouts_30d` 0), and the overview's
 `payouts_incomplete` is set: its total leaves those out. It stays `mine` when a version-3 provider transaction of it is
 in the wallet's history, or when the wallet's own version-2 record names a role (its payout counting, though hidden);
@@ -654,8 +653,8 @@ ProUpSharedRegTx are MG-03b.
 
 Shared payouts (D30): once any version-3 entry was in the synced list, now or remembered
 (`masternodes.any_shared_seen`, any masternode's), or a version-3 provider transaction is known, a share may pay any
-script the wallet watches, a version-2 row's payout script included, and the pinned library can't read share scripts
-(BL-187). So every coinbase output to the wallet is then `unattributed`: no row's `payouts_30d` and not the
+script the wallet watches, a version-2 row's payout script included, and the engine doesn't read share scripts yet
+(MG-03b). So every coinbase output to the wallet is then `unattributed`: no row's `payouts_30d` and not the
 overview's count it, the row it pays has `payouts_incomplete`, and the overview's `unattributed_30d` counts it with
 any other coinbase income no row counts. `payouts()` still lists it. A row's `payouts_incomplete` is also set when it
 is `shared_unsupported`. The overview's `payouts_incomplete` is any row's, or unattributed income in the window once
