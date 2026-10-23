@@ -227,6 +227,8 @@ impl NetworkSession {
         let mut admitted: HashMap<WalletId, u64> = wallets.iter().map(|id| (*id, listed)).collect();
         // Its names checks start only while it runs (D32).
         let epoch = self.platform.recovery.names_runs.arm();
+        // Holds of claims that ended while the process was gone (DP5-03 D12).
+        self.settle_invitation_holds().await;
         if !self
             .for_wallets(&manager, wallets.clone(), Job::BringUp, since, &mut cancel)
             .await

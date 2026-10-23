@@ -12,7 +12,7 @@ import { useDisplay } from "../format/display";
 import { isSyncing, syncPercent } from "../format/sync";
 import { AVAILABILITY_DEBOUNCE_MS, isRunning } from "./registration";
 import { QUOTE_REQUEST, type StatusInputs } from "./status";
-import { coreRequest } from "./wizard";
+import { coreRequest, invitationRequest } from "./wizard";
 
 export const dashpayKeys = {
   registrationsAll: ["dashpay", "registrations"] as const,
@@ -27,6 +27,10 @@ export const dashpayKeys = {
   /** Tools ▸ Information's DashPay card (DP6-03); sync events re-read every wallet's (D6). */
   syncInfoAll: ["dashpay", "syncInfo"] as const,
   syncInfo: (walletId: string) => ["dashpay", "syncInfo", walletId] as const,
+  /** DP5-03: a stashed invitation's status (`invitation_status`), and a claim's quote. */
+  invitation: (linkId: string) => ["dashpay", "invitation", linkId] as const,
+  claimQuote: (walletId: string, label: string, linkId: string, requestInviter: boolean) =>
+    ["dashpay", "quote", walletId, label, "invitation", linkId, requestInviter] as const,
 };
 
 /** DP1-09 D15: a running registration's `waiting` changes without a Platform signal, so its
@@ -87,6 +91,22 @@ export function useLabelQuote(walletId: string, label: string, enabled: boolean)
     queryKey: dashpayKeys.labelQuote(walletId, label),
     queryFn: () => b.registrationQuote(walletId, coreRequest(label)),
     enabled,
+    retry: false,
+  });
+}
+
+/** DP5-03 C4–C9: what the network says of the stashed invitation `linkId`. */
+export function useInvitationStatus(linkId: string, enabled: boolean) {
+  const b = useBackend();
+  return useQuery({ queryKey: dashpayKeys.invitation(linkId), queryFn: () => b.invitationStatus(linkId), enabled, retry: false });
+}
+
+/** DP5-03 C11: the claim's quote for `label`: its grant is the start's (D9). */
+export function useClaimQuote(walletId: string, label: string, linkId: string, requestInviter: boolean) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: dashpayKeys.claimQuote(walletId, label, linkId, requestInviter),
+    queryFn: () => b.registrationQuote(walletId, invitationRequest(label, linkId, requestInviter)),
     retry: false,
   });
 }

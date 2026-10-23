@@ -29,6 +29,7 @@ const reg = (draft: string, waiting: RegistrationStatus["waiting"]): Registratio
   failure: null,
   nameFailure: null,
   profileFailure: null,
+  invitation: null,
   createdAt: 0,
   updatedAt: 0,
 });

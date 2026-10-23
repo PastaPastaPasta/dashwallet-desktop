@@ -2,14 +2,16 @@
 // `JoinDashPayScreen`), the readiness under it by status (J1–J7), the voting info and the FAQ.
 // Create username opens the registration wizard (DP1-09, Registration.tsx); while a registration
 // goes on, one stopped with its funds committed, or this session's has a result to show, the page
-// is its screen instead (D1, D12, D22).
+// is its screen instead (D1, D12, D22). An invitation opened (`ui.invitation`, DP5-03) shows the
+// claim screen (Claim.tsx) in place of the intro; its claim is the wizard's invitation mode.
 // Routes.tsx re-exports the other pages; this one is imported directly, as it uses Routes' `Page`.
 
 import { useEffect, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useBackend } from "../../api/queries";
-import { navigate, useUi } from "../../app/ui";
+import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
+import { CLAIM_COPY, claimHasIdentity, claimRow } from "../../dashpay/claim";
 import { useRegistrations, useStatusInputs, useUsernameQuote } from "../../dashpay/queries";
 import { namedModel, pendingModel, screenModel, type ScreenActionKind } from "../../dashpay/registration";
 import { JOIN_COPY, joinModel, type CardActionKind } from "../../dashpay/status";
@@ -17,6 +19,7 @@ import { wizardFor } from "../../dashpay/wizard";
 import { useModel } from "../../onboarding/model";
 import { Page } from "../Routes";
 import { DashPayFaqSheet, VotingInfoSheet } from "./AboutDashPay";
+import { ClaimConfirmStep, ClaimScreen, InvitationPasteSheet } from "./Claim";
 import { DashPayCard, defaultCardAction } from "./DashPayCard";
 import { RegistrationScreen, WizardSteps } from "./Registration";
 
@@ -46,13 +49,16 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
   const joining = status?.kind === "noIdentity" && status.reason !== "watchOnly";
   const quote = useUsernameQuote(walletId, joining);
   const model = joinModel(inputs, quote?.totalDuffs ?? null, quote?.availableDuffs ?? null);
-  const [sheet, setSheet] = useState<"voting" | "faq" | null>(null);
+  const [sheet, setSheet] = useState<"voting" | "faq" | "invitation" | null>(null);
   // The row shown: this session's (until Done), else the one the status says goes on (D12), else
   // one that stopped for good with its funds committed, which the status no longer names but
   // which still blocks a start (D22).
   const rows = useRegistrations(walletId);
   const stopped = rows.data?.findLast((r) => r.phase === "failed" && r.fundsCommitted && r.failure?.retryable === false);
-  const draft = wiz.draft ?? (status?.kind === "registering" ? status.draft : status?.kind === "noIdentity" ? (stopped?.draft ?? null) : null);
+  // DP5-03 D5: the invitation's own claim first, whatever its status says.
+  const claim = invitation ? claimRow(rows.data, invitation.linkId) : undefined;
+  const draft =
+    wiz.draft ?? claim?.draft ?? (status?.kind === "registering" ? status.draft : status?.kind === "noIdentity" ? (stopped?.draft ?? null) : null);
   const row = draft === null ? undefined : rows.data?.find((r) => r.draft === draft);
   const shown = row?.draft;
   useEffect(() => {
@@ -91,6 +97,8 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
       case "another":
         return void wiz.another(row ?? null);
       case "done":
+        // A claim seen through leaves the claim screen too.
+        if (row?.invitation) ui.set({ invitation: null });
         return wiz.close();
     }
   };
@@ -98,7 +106,11 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
   if (wiz.step !== null)
     return (
       <Page route="joinDashPay">
-        <WizardSteps wiz={wiz} walletId={walletId} inputs={inputs} />
+        {wiz.step === "confirm" && wiz.mode.kind === "invitation" ? (
+          <ClaimConfirmStep wiz={wiz} walletId={walletId} inputs={inputs} />
+        ) : (
+          <WizardSteps wiz={wiz} walletId={walletId} inputs={inputs} />
+        )}
       </Page>
     );
   if (wiz.named)
@@ -119,19 +131,24 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
     const screen = screenModel(row, { contestPending: contest !== null, contestEndsAt: contest?.endsAt ?? null, date: inputs.date, amount: inputs.amount, discreet: inputs.discreet });
     return (
       <Page route="joinDashPay">
-        <RegistrationScreen wiz={wiz} model={screen} phase={row.phase} waiting={row.waiting} onAction={onScreenAction} inputs={inputs} />
+        <RegistrationScreen wiz={wiz} model={screen} phase={row.phase} waiting={row.waiting} claim={row.invitation !== null} onAction={onScreenAction} inputs={inputs} />
+      </Page>
+    );
+  }
+
+  if (invitation) {
+    // C3: an identity of the wallet (a registration under way shows its row above), or one a claim
+    // was refused for, not found yet (D24).
+    const hasIdentity = claimHasIdentity(status?.kind === "ready" || status?.kind === "contestPending", rows.data);
+    return (
+      <Page route="joinDashPay">
+        <ClaimScreen linkId={invitation.linkId} entry={invitation.entry} wiz={wiz} hasIdentity={hasIdentity} network={network.dirName} rows={rows} />
       </Page>
     );
   }
 
   return (
     <Page route="joinDashPay">
-      {invitation && (
-        <p className="placeholder-note" role="status" data-testid="invitation-received">
-          You opened a DashPay invitation. Dash Wallet keeps it for you under Links you opened; joining with an invitation is
-          not available yet.
-        </p>
-      )}
       <Intro />
       <div className="join-readiness" data-testid="join-readiness" data-kind={model.kind}>
         {model.kind === "join" && (
@@ -153,6 +170,9 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
                   {JOIN_COPY.waiting}
                 </span>
               )}
+              <DashButton variant="plainBlue" data-testid="join-invitation" onClick={() => setSheet("invitation")}>
+                {CLAIM_COPY.paste.open}
+              </DashButton>
             </div>
           </>
         )}
@@ -178,6 +198,7 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
       </div>
       {sheet === "voting" && <VotingInfoSheet onClose={() => setSheet(null)} />}
       {sheet === "faq" && <DashPayFaqSheet onClose={() => setSheet(null)} />}
+      {sheet === "invitation" && <InvitationPasteSheet onClose={() => setSheet(null)} />}
     </Page>
   );
 }

@@ -5,6 +5,7 @@
 
 import { useId, useState } from "react";
 import type { RegistrationQuote } from "../../api/generated/RegistrationQuote";
+import { CLAIM_COPY, claimErrorText } from "../../dashpay/claim";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
 import { useLabelQuote, useNameChecks, useNameCredits, useUsernameCheck } from "../../dashpay/queries";
@@ -25,7 +26,7 @@ import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 import { VotingInfoSheet } from "./AboutDashPay";
 
-function StepHeader({ n, step, title, id }: { n: 1 | 2; step: string; title: string; id: string }) {
+export function StepHeader({ n, step, title, id }: { n: 1 | 2; step: string; title: string; id: string }) {
   return (
     <header className="registration-header">
       <p className="registration-step" data-testid="registration-step">
@@ -38,11 +39,12 @@ function StepHeader({ n, step, title, id }: { n: 1 | 2; step: string; title: str
   );
 }
 
-function ErrorLine({ wiz, inputs }: { wiz: RegistrationWizard; inputs: StatusInputs }) {
+/** The last call's refusal; a claim's (`claim`, DP5-03 C12) in its own words. */
+export function ErrorLine({ wiz, inputs, claim = false }: { wiz: RegistrationWizard; inputs: StatusInputs; claim?: boolean }) {
   if (wiz.error === null) return null;
   return (
     <p className="registration-error" role="alert" data-testid="registration-error">
-      {startErrorText(wiz.error, inputs.amount, inputs.discreet)}
+      {claim || wiz.mode.kind === "invitation" ? claimErrorText(wiz.error, inputs.amount) : startErrorText(wiz.error, inputs.amount, inputs.discreet)}
     </p>
   );
 }
@@ -55,9 +57,11 @@ function NameStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string
   const label = wiz.label.trim();
   const { check, availability, pending } = useNameChecks(walletId, label);
   const line = availabilityLine(check, availability, pending);
-  // An instant username (DP1-10 D13) is never one the network votes on.
+  // An instant username (DP1-10 D13) is never one the network votes on, nor is a name an
+  // invitation cannot pay a vote for (DP5-03 D15).
   const instant = wiz.mode.kind === "credits" && wiz.mode.instant === true;
-  const refused = instant && check?.contested === true;
+  const limited = wiz.mode.kind === "invitation" && !wiz.mode.contestedAllowed;
+  const refused = (instant || limited) && check?.contested === true;
   const ok = canChoose(check, availability, pending) && !refused;
   const passed = (rule: keyof typeof RULE_TEXT) => check?.rules.find((r) => r.rule === rule)?.passed;
   return (
@@ -97,7 +101,7 @@ function NameStep({ wiz, walletId }: { wiz: RegistrationWizard; walletId: string
         </p>
         {refused && (
           <p className="registration-line registration-problem" role="alert" data-testid="registration-instant-only">
-            {REG_COPY.name.instantOnly}
+            {limited ? CLAIM_COPY.name.contestedRefused : REG_COPY.name.instantOnly}
           </p>
         )}
         {check?.contested && !refused && (
@@ -246,6 +250,7 @@ export function RegistrationScreen({
   model,
   phase,
   waiting,
+  claim = false,
   onAction,
   inputs,
 }: {
@@ -253,6 +258,8 @@ export function RegistrationScreen({
   model: ScreenModel;
   phase?: string;
   waiting?: string | null;
+  /** The row is an invitation's claim (DP5-03): its refusals in the claim's words. */
+  claim?: boolean;
   onAction: (kind: ScreenActionKind) => void;
   inputs: StatusInputs;
 }) {
@@ -296,7 +303,7 @@ export function RegistrationScreen({
           {REG_COPY.finished(wiz.finished)}
         </p>
       )}
-      <ErrorLine wiz={wiz} inputs={inputs} />
+      <ErrorLine wiz={wiz} inputs={inputs} claim={claim} />
       <div className="registration-actions">
         {model.actions.map((a, i) => (
           <DashButton

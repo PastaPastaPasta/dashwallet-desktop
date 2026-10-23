@@ -129,9 +129,15 @@ export const COPY = {
   continue: "Continue",
 } as const;
 
-/** D4: the step a phase is in. `failed` counts as the phase it stopped in. */
-export function stepOf(phase: RegistrationPhaseName, failure: RegistrationFailure | null): CardStep {
+/** D4: the step a phase is in. `failed` counts as the phase it stopped in. An invitation's claim
+ * (`claim`) pays nothing: its first steps are the check and the claim (DP5-03 D10). */
+export function stepOf(phase: RegistrationPhaseName, failure: RegistrationFailure | null, claim = false): CardStep {
   const at = phase === "failed" && failure ? failure.phase : phase;
+  if (claim) {
+    if (at === "draft") return { n: 1, text: "Checking the invitation" };
+    if (at === "keysPrepared") return { n: 2, text: "Creating identity" };
+    return { n: 3, text: "Registering username" };
+  }
   switch (at) {
     case "draft":
     case "keysPrepared":
@@ -170,6 +176,15 @@ export function awaitsContinue(r: RegistrationStatus): boolean {
 }
 
 
+/** DP5-03: an invitation claim's refusals, on its row (`failureText`) and on the claim screen
+ * (claim.ts's `CLAIM_COPY`). */
+export const CLAIM_REFUSAL = {
+  hasIdentity: "This wallet already has a DashPay identity. An invitation creates a first identity; it can be used with another wallet.",
+  claimed: { title: "This invitation has already been used", text: "Each invitation creates one identity. Ask for a new one." },
+  expired: { title: "This invitation is no longer saved", text: "Open the invitation link again." },
+  invalid: "This invitation link is not valid",
+} as const;
+
 /** D5: why a registration stopped, by its failure's code. */
 export function failureText(failure: RegistrationFailure, amount: (duffs: number) => string, discreet = false): string {
   switch (failure.code) {
@@ -193,6 +208,14 @@ export function failureText(failure: RegistrationFailure, amount: (duffs: number
     case "platform.unavailable":
     case "platform.timeout":
       return "The Dash network did not answer.";
+    case "invitation.already_has_identity":
+      return CLAIM_REFUSAL.hasIdentity;
+    case "invitation.claimed":
+      return `${CLAIM_REFUSAL.claimed.title}. ${CLAIM_REFUSAL.claimed.text}`;
+    case "invitation.expired":
+      return `${CLAIM_REFUSAL.expired.title}. ${CLAIM_REFUSAL.expired.text}`;
+    case "invitation.invalid":
+      return CLAIM_REFUSAL.invalid;
     default:
       return `It stopped with ${failure.code}.`;
   }
@@ -242,7 +265,7 @@ function startupCard(startup: StartupStatus, lock: LockStateName | undefined): C
 /** S10–S14: the registration the status names, by its row. */
 function registeringCard(r: RegistrationStatus | undefined, i: StatusInputs): CardModel {
   if (!r) return card("registering", "pending", COPY.registering.title, [COPY.registering.message], { busy: true });
-  const step = stepOf(r.phase, r.failure);
+  const step = stepOf(r.phase, r.failure, r.invitation !== null);
   const title = COPY.creating(r.label);
   if (r.waiting === "fundingUnknown" || r.waiting === "needsFinish") {
     // Unknown: the lock may or may not have gone out; needsFinish: it did.

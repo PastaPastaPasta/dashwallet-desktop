@@ -8,7 +8,8 @@ import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./h
 // DP5-01 on the fixture backend: a link opened before any wallet exists is kept (the toast says
 // so), survives onboarding and is offered in "Links you opened": a payment opens Pay once, an
 // invitation opens Join DashPay and stays until removed. The offer comes again after an unlock,
-// once per trigger. dw-app's intake and the vault's stash are tested in Rust (ipc_tests,
+// once per trigger; after onboarding an invitation opens its claim screen first (DP5-03 D2).
+// dw-app's intake and the vault's stash are tested in Rust (ipc_tests,
 // vault/links_tests.rs); here the fixture stands in for them.
 
 const ADDRESS = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
@@ -48,7 +49,15 @@ test("DP5-01 a link opened before any wallet survives onboarding and opens once"
   await page.getByTestId("restore-continue").click();
   await page.getByTestId("restore-finish").click();
   await page.getByTestId("onboarding-open").click();
+  // DP5-03 D2: the invitation goes first, on its claim screen; the sheet waits for the next offer.
+  await expect(page.getByTestId("claim")).toHaveAttribute("data-entry", "welcome");
   const sheet = page.getByTestId("saved-links");
+  await expect(sheet).toHaveCount(0);
+  await page.getByTestId("claim-notNow").click();
+  await expect(page.getByTestId("page-home")).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+  await page.getByTestId("lock-field").fill("demo");
+  await page.keyboard.press("Enter");
   await expect(sheet).toBeVisible();
   await expect(sheet.getByTestId("saved-link")).toHaveCount(2);
   await expect(sheet.getByTestId("saved-link")).toContainText(["Payment request", "DashPay invitation"]);
@@ -63,13 +72,14 @@ test("DP5-01 a link opened before any wallet survives onboarding and opens once"
   expect(errors).toEqual([]);
 });
 
-test("DP5-01 an invitation opens Join DashPay, stays saved, and is offered again after an unlock", async ({ page }) => {
+test("DP5-01 an invitation opens its claim screen (DP5-03), stays saved, and is offered again after an unlock", async ({ page }) => {
   await open(page, "saved-links");
   const sheet = page.getByTestId("saved-links");
   await expect(sheet.getByTestId("saved-link")).toHaveCount(3);
   await sheet.getByTestId("saved-link").filter({ hasText: "DashPay invitation" }).getByTestId("saved-link-open").click();
   await expect(page.getByTestId("page-joinDashPay")).toBeVisible();
-  await expect(page.getByTestId("invitation-received")).toContainText("Dash Wallet keeps it for you");
+  await expect(page.getByTestId("claim")).toHaveAttribute("data-state", "invited");
+  await expect(page.getByTestId("claim")).toHaveAttribute("data-entry", "join");
   expect(await world(page, (w) => w.stash.length)).toBe(3);
 
   // Once per trigger: not again until the next unlock.

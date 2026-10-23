@@ -21,6 +21,7 @@ import type { ScreenScanMode } from "./generated/ScreenScanMode";
 import type { IdentitySummary } from "./generated/IdentitySummary";
 import type { LinkRoute } from "./generated/LinkRoute";
 import type { StashedLinkInfo } from "./generated/StashedLinkInfo";
+import type { InvitationStatus } from "./generated/InvitationStatus";
 import type { ShellEvent } from "./generated/ShellEvent";
 import type { ShellSync } from "./generated/ShellSync";
 import type { DispatchStateName } from "./generated/DispatchStateName";
@@ -332,6 +333,9 @@ export interface Backend {
   stashedLinks(): Promise<StashedLinkInfo[]>;
   openStashedLink(linkId: string): Promise<LinkRoute | null>;
   dismissStashedLink(linkId: string): Promise<null>;
+  /** DP5-02: an invitation's status by its stash id; Join's paste stashes one (DP5-03 D14). */
+  invitationStatus(linkId: string): Promise<InvitationStatus>;
+  stashInvitation(link: string): Promise<string>;
   /** What the native menus and the tray mirror. */
   shellSync(sync: ShellSync): Promise<null>;
   // Tools (U-05); `nodeInfo` above.
@@ -357,6 +361,7 @@ export interface Backend {
   registrations(walletId: string): Promise<RegistrationStatus[]>;
   /** The costs of registering `request` (DP1-02); local for a non-contested name. */
   registrationQuote(walletId: string, request: RegistrationRequest): Promise<RegistrationQuote>;
+  registrationResumeGrant(walletId: string, draft: string): Promise<GrantRequest>;
   resolveStuckFunding(walletId: string, step: string, grant: string): Promise<BroadcastOutcome>;
   // The registration wizard (DP1-09).
   /** The label's rule checklist; offline, needs no wallet. */

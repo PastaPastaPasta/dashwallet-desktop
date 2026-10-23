@@ -3,6 +3,7 @@
 // and at launch the window offers them once ("Links you opened"). Pure: the sheet is
 // screens/SavedLinks.tsx, the offer App.tsx.
 
+import { errorMessage, hasCode } from "../api/backend";
 import type { StashedLinkInfo } from "../api/generated/StashedLinkInfo";
 import type { StashedLinkKindName } from "../api/generated/StashedLinkKindName";
 
@@ -18,7 +19,15 @@ export const SavedLinksText = {
   invitationSaved: "Invitation saved. It is waiting for you once your wallet is set up.",
   gone: "This link is no longer saved.",
   loadFailed: "Could not read the saved links.",
+  /** DP5-03 D12: the stash keeps an invitation an open claim holds. */
+  held: "This invitation is being claimed. Finish that claim first.",
 } as const;
+
+/** Why a link was not removed. `invalid_argument` is also a malformed id's, but the window sends only
+ * ids the stash listed, so only a claim's hold reaches this today (DP5-03 D12, Opus-h r1 n3). */
+export function removeErrorText(e: unknown): string {
+  return hasCode(e, "invalid_argument") ? SavedLinksText.held : errorMessage(e);
+}
 
 export const KIND_TITLE: Record<StashedLinkKindName, string> = {
   payment: "Payment request",
@@ -56,4 +65,13 @@ export function savedLinkRows(links: StashedLinkInfo[], nowSecs: number): SavedL
  * pending, and the window shows a wallet with nothing in front of it. */
 export function offerReady(s: { pending: boolean; hasWallet: boolean; locked: boolean; covered: boolean }): boolean {
   return s.pending && s.hasWallet && !s.locked && !s.covered;
+}
+
+/** What an offer opens, `links` oldest first as `stashed_links` lists them: after onboarding the
+ * newest invitation's claim screen (DP5-03 D2), else the "Links you opened" dialog; nothing
+ * without links. */
+export function offerTarget(links: StashedLinkInfo[], afterOnboarding: boolean): { claim: string } | "sheet" | null {
+  if (links.length === 0) return null;
+  const invitation = afterOnboarding ? links.findLast((l) => l.kind === "invitation") : undefined;
+  return invitation ? { claim: invitation.id } : "sheet";
 }

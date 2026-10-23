@@ -71,7 +71,14 @@ export const REG_COPY = {
     "Your funds are safe. The payment is locked for this registration, and Dash Wallet finishes it once the network confirms it. If it does not finish, Tools ▸ Repair can finish the transfer.",
   failed: { title: "Registration failed", another: "Choose another username" },
   stopped: { title: "Registration stopped" },
-  done: { title: (label: string) => `Hello @${label},`, message: "Your account is ready", action: "Done" },
+  done: {
+    title: (label: string) => `Hello @${label},`,
+    message: "Your account is ready",
+    action: "Done",
+    // An invitation's request to its inviter (DP5-03 C2, F2).
+    requestSent: "A contact request was sent to your inviter.",
+    requestRefused: "The contact request to your inviter could not be sent. You can add them from Contacts.",
+  },
   nameFailed: {
     title: "Your identity is ready",
     message: (label: string, why: string) => `@${label} could not be registered. ${why}`,
@@ -243,7 +250,7 @@ export function nameFailureText(code: string): string {
 /** The screen for `row` (the design's R1–R11). */
 export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenModel {
   const { label } = row;
-  const step = stepOf(row.phase, row.failure);
+  const step = stepOf(row.phase, row.failure, row.invitation !== null);
   const progressTitle = REG_COPY.progress.title;
   const base = (kind: ScreenKind, title: string, lines: string[], actions: ScreenAction[], rest: Partial<ScreenModel> = {}): ScreenModel => ({
     kind,
@@ -261,7 +268,11 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
         step: null,
       });
     // A contested label ends `done` too; its contest is the status's (D4).
-    return i.contestPending ? votingScreen(label, i.contestEndsAt, i.date) : doneScreen(label);
+    if (i.contestPending) return votingScreen(label, i.contestEndsAt, i.date);
+    const done = doneScreen(label);
+    // A claim's request to its inviter (DP5-03 C2).
+    const note = requestNote(row);
+    return note ? { ...done, lines: [...done.lines, note] } : done;
   }
   if (row.phase === "contested") return votingScreen(label, row.contestEndsAt ?? i.contestEndsAt, i.date);
 
@@ -327,6 +338,14 @@ function votingScreen(label: string, endsAt: number | null, date: (secs: number)
     busy: false,
     actions: [act("done", REG_COPY.voting.action), act("votingInfo", REG_COPY.voting.info)],
   };
+}
+
+/** DP5-03 C2 (F2, D8): a claim's Done note on the request to its inviter; `null` when none was
+ * asked (no inviter, or the user opted out). */
+export function requestNote(row: RegistrationStatus): string | null {
+  const inv = row.invitation;
+  if (!inv?.inviter || row.phase !== "done") return null;
+  return inv.requestFailure ? REG_COPY.done.requestRefused : REG_COPY.done.requestSent;
 }
 
 /** R9: Hello @label. */

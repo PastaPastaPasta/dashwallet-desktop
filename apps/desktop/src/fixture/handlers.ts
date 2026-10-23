@@ -41,8 +41,8 @@ import { activityPage, contactList, eventOf, fixtureLoops, relationOf, type Dash
 import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
-import { advance, costs, failRun, fundable, NAME_CREDITS, registrationHandlers } from "./registration";
-import { intake, routeLink } from "./links";
+import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, registrationHandlers } from "./registration";
+import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
 import { toolsHandlers } from "./tools";
@@ -837,7 +837,22 @@ export const HANDLERS: Handlers = {
     world.stash.splice(i, 1);
     return route;
   },
+  // DP5-02 `invitation_status` and `stash_invitation` (Join's paste, DP5-03 D14).
+  invitation_status: ({ linkId }, { world }) => {
+    stashIndex(world, linkId);
+    return invitationOf(world, linkId);
+  },
+  stash_invitation: ({ link }, { world }) => {
+    const route = routeLink(link);
+    // invitations.rs: other text is `InvitationError::Invalid`.
+    if (route.kind !== "invitation") throw fail("invitation.invalid", "not an invitation link");
+    return stashRoute(world.stash, route).id;
+  },
   dismiss_stashed_link: ({ linkId }, { world }) => {
+    // DP5-03 D12: the vault keeps an invitation an open claim row of any wallet holds.
+    const claims = [world.dashpay, ...Object.values(world.dashpayOf ?? {})].flatMap((dp) => dp.registrations);
+    const held = claims.some((r) => r.invitation?.linkId === linkId && r.phase !== "done" && !(r.phase === "failed" && r.failure?.retryable === false));
+    if (held) throw fail("invalid_argument", "the invitation is in use by a claim in progress");
     const i = stashIndex(world, linkId);
     if (i >= 0) world.stash.splice(i, 1);
     return null;
@@ -890,7 +905,20 @@ export const HANDLERS: Handlers = {
     const { label, funding } = request;
     if (!/^[A-Za-z0-9-]{3,23}$/.test(label) || label.startsWith("-") || label.endsWith("-"))
       throw fail("name.invalid", `invalid username: ${label}`);
-    if (funding.kind === "invitation") throw fail("platform.not_implemented", "DashPay.registration_quote", { kind: "call", call: "DashPay.registration_quote" });
+    // A claim (DP5-02 §3): the invitation pays it all, so nothing in duffs.
+    if (funding.kind === "invitation") {
+      const plan = claimPlan(world, dashpay(world, walletId), request);
+      const held = plan.status.kind === "valid" ? plan.status.fundingDuffs : 0;
+      return {
+        contested: checkUsername(label).contested,
+        lockDuffs: held,
+        feeDuffs: 0,
+        totalDuffs: 0,
+        remainingCredits: String(BigInt(held * 1000) - plan.credits),
+        availableDuffs: 0,
+        grant: { maxDuffs: 0, maxCredits: String(plan.credits) },
+      };
+    }
     if (funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
     const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label);
     return {

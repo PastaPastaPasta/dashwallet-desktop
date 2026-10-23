@@ -72,6 +72,7 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.start_registration_past_unknown_funding",
     "DashPay.registrations",
     "DashPay.resume_registration",
+    "DashPay.registration_resume_grant",
     "DashPay.discard_registration",
     "DashPay.finish_asset_locks",
     "DashPay.prepare_faucet_lock",

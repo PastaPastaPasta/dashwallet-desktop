@@ -1,11 +1,11 @@
 // The fixture's username registration (DP1-09) over the real IPC path: the start's refusals, a
 // run step by step, a relaunch that keeps the row and drops the run, and a resume that sends no
-// second asset lock; names from credits; the name checks.
+// second asset lock; names from credits; the name checks; an invitation's claim (DP5-03 D17).
 
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as cmd from "../api/generated/commands";
-import { coreRequest } from "../dashpay/wizard";
+import { coreRequest, invitationRequest } from "../dashpay/wizard";
 import { IDENTITY } from "./dashpay";
 import { installFixture, type FixtureHandle } from "./index";
 import { checkUsername } from "./registration";
@@ -231,5 +231,103 @@ describe("names", () => {
     expect(await cmd.registerName(W, IDENTITY.alice, LABEL, await grant(0))).toEqual({ kind: "registered" });
     expect(await cmd.dashpayStatus(W)).toEqual({ kind: "ready", main: IDENTITY.alice });
     await expect(cmd.registerName(W, IDENTITY.alice, "bob", await grant(0))).rejects.toMatchObject({ code: "name.taken" });
+  });
+});
+
+describe("an invitation's claim (DP5-03 D17)", () => {
+  const LABEL2 = "carol-77";
+  const linkOf = (f: FixtureHandle) => f.world.stash[0].info.id;
+  const claimGrant = async (credits: string) => grant(0, credits);
+
+  it("quotes nothing in duffs, plans the request only when asked, and runs to Done with the link wiped", async () => {
+    const f = installFixture({ scenario: "invitation-valid" });
+    const linkId = linkOf(f);
+    expect(await cmd.invitationStatus(linkId)).toMatchObject({ kind: "valid", inviter: { identity: IDENTITY.bob, username: "bob" } });
+    const asked = await cmd.registrationQuote(W, invitationRequest(LABEL2, linkId, true));
+    const alone = await cmd.registrationQuote(W, invitationRequest(LABEL2, linkId, false));
+    expect(asked).toMatchObject({ totalDuffs: 0, availableDuffs: 0, grant: { maxDuffs: 0 } });
+    expect(BigInt(asked.grant.maxCredits)).toBeGreaterThan(BigInt(alone.grant.maxCredits));
+    await expect(cmd.startRegistration(W, invitationRequest(LABEL2, linkId, true), await grant(1, asked.grant.maxCredits))).rejects.toMatchObject({
+      code: "platform.grant_invalid",
+    });
+    const draft = await cmd.startRegistration(W, invitationRequest(LABEL2, linkId, true), await claimGrant(asked.grant.maxCredits));
+    expect(await rowOf(draft)).toMatchObject({ phase: "draft", fundsCommitted: false, invitation: { linkId, inviter: IDENTITY.bob, requestFailure: null } });
+    expect(f.world.dashpay.assetLocks).toBe(0);
+    expect(f.advanceRegistration(draft)).toBe(true);
+    expect((await rowOf(draft)).phase).toBe("keysPrepared");
+    expect(f.advanceRegistration(draft)).toBe(true);
+    expect(await rowOf(draft)).toMatchObject({ phase: "identityRegistered", identity: IDENTITY.alice });
+    expect(await cmd.invitationStatus(linkId)).toEqual({ kind: "expired" });
+    // An identity and no name yet: not discarded.
+    await expect(cmd.discardRegistration(W, draft)).rejects.toMatchObject({ code: "invalid_argument" });
+    while (f.advanceRegistration(draft));
+    expect(await rowOf(draft)).toMatchObject({ phase: "done", invitation: { requestFailure: null } });
+  });
+
+  it("the opt-out asks no one; a refused request is kept on the done row", async () => {
+    let f = installFixture({ scenario: "invitation-valid" });
+    let linkId = linkOf(f);
+    const alone = await cmd.registrationQuote(W, invitationRequest(LABEL2, linkId, false));
+    let draft = await cmd.startRegistration(W, invitationRequest(LABEL2, linkId, false), await claimGrant(alone.grant.maxCredits));
+    while (f.advanceRegistration(draft));
+    expect((await rowOf(draft)).invitation).toEqual({ linkId, inviter: null, requestFailure: null });
+
+    clearMocks();
+    f = installFixture({ scenario: "invitation-valid" });
+    f.world.dashpay.requestRefusal = "contact.ineligible";
+    linkId = linkOf(f);
+    const asked = await cmd.registrationQuote(W, invitationRequest(LABEL2, linkId, true));
+    draft = await cmd.startRegistration(W, invitationRequest(LABEL2, linkId, true), await claimGrant(asked.grant.maxCredits));
+    while (f.advanceRegistration(draft));
+    expect(await rowOf(draft)).toMatchObject({ phase: "done", invitation: { inviter: IDENTITY.bob, requestFailure: "contact.ineligible" } });
+  });
+
+  it("refuses what cannot be claimed: used, invalid, a contested name it cannot pay, a wallet with an identity", async () => {
+    let f = installFixture({ scenario: "invitation-claimed" });
+    await expect(cmd.registrationQuote(W, invitationRequest(LABEL2, linkOf(f), true))).rejects.toMatchObject({ code: "invitation.claimed" });
+    clearMocks();
+    f = installFixture({ scenario: "invitation-invalid" });
+    await expect(cmd.registrationQuote(W, invitationRequest(LABEL2, linkOf(f), true))).rejects.toMatchObject({ code: "invitation.invalid" });
+    clearMocks();
+    f = installFixture({ scenario: "invitation-valid" });
+    await expect(cmd.registrationQuote(W, invitationRequest("carol", linkOf(f), true))).rejects.toMatchObject({ code: "name.unavailable_for_invite" });
+    clearMocks();
+    f = installFixture({ scenario: "dashpay-registered" });
+    const linkId = await cmd.stashInvitation("dashpay://invite?du=bob&assetlocktx=00&pk=x&islock=00");
+    await expect(cmd.registrationQuote(W, invitationRequest(LABEL2, linkId, true))).rejects.toMatchObject({ code: "invitation.already_has_identity" });
+    await expect(cmd.stashInvitation("dash:yMsgnH1xKGa85n4bq2imrZbG2KgrmGttAV")).rejects.toMatchObject({ code: "invitation.invalid" });
+  });
+
+  it("a claim stopped by a relaunch keeps its row and its link, and waits for Continue", async () => {
+    const f = installFixture({ scenario: "invitation-claiming" });
+    const row = (await cmd.registrations(W))[0];
+    expect(row).toMatchObject({ draft: "claim-1", phase: "keysPrepared", running: false, waiting: "authorize", invitation: { linkId: linkOf(f) } });
+    expect(await cmd.invitationStatus(linkOf(f))).toMatchObject({ kind: "valid" });
+    // D12: an open claim's link is held; Remove is refused.
+    await expect(cmd.dismissStashedLink(linkOf(f))).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(f.world.stash).toHaveLength(1);
+  });
+
+  it("D20: a claim row's resume grant is its own: no duffs, the credits of the steps left", async () => {
+    const f = installFixture({ scenario: "invitation-valid" });
+    const linkId = linkOf(f);
+    const asked = await cmd.registrationQuote(W, invitationRequest(LABEL2, linkId, true));
+    const draft = await cmd.startRegistration(W, invitationRequest(LABEL2, linkId, true), await claimGrant(asked.grant.maxCredits));
+    // The start's quote and the row's grant agree.
+    expect(await cmd.registrationResumeGrant(W, draft)).toEqual(asked.grant);
+    f.advanceRegistration(draft);
+    f.advanceRegistration(draft);
+    // The identity registered (the link wiped: the invitation reads expired): the name and the request.
+    const named = await cmd.registrationResumeGrant(W, draft);
+    expect(named.maxDuffs).toBe(0);
+    expect(BigInt(named.maxCredits)).toBeLessThan(BigInt(asked.grant.maxCredits));
+    while (f.advanceRegistration(draft));
+    expect(await cmd.registrationResumeGrant(W, draft)).toEqual({ maxDuffs: 0, maxCredits: "0" });
+    // A Core row has none.
+    clearMocks();
+    install();
+    const core = await cmd.registrationQuote(W, coreRequest(LABEL));
+    const coreDraft = await cmd.startRegistration(W, coreRequest(LABEL), await grant(core.grant.maxDuffs, core.grant.maxCredits));
+    await expect(cmd.registrationResumeGrant(W, coreDraft)).rejects.toMatchObject({ code: "invalid_argument" });
   });
 });

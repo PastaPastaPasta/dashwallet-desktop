@@ -1557,7 +1557,10 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
             faucet_proof_file,
         } => {
             let funding = match (invitation_id, existing_identity, faucet_key) {
-                (Some(link_id), _, _) => RegistrationFunding::Invitation { link_id },
+                (Some(link_id), _, _) => RegistrationFunding::Invitation {
+                    link_id,
+                    request_inviter: true,
+                },
                 (_, Some(identity), _) => RegistrationFunding::ExistingIdentity { identity },
                 (_, _, Some(key)) => {
                     let path = faucet_proof_file.expect("clap requires it with --faucet-key");
@@ -2092,6 +2095,7 @@ fn invite_cmd(ctx: &Ctx, cmd: InviteCmd, stdin: &mut dyn Read) -> Result<Value, 
             let link_id = ctx.block_on(session.stash_invitation(link))?;
             let funding = RegistrationFunding::Invitation {
                 link_id: link_id.clone(),
+                request_inviter: true,
             };
             // The link stays stashed whatever happens next, so its id is in
             // the error too.
