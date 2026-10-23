@@ -1,9 +1,11 @@
-//! v24 shared masternodes: the codecs of the three new provider payloads and
-//! of the share table, written from Dash Core v24.0.0-rc.2
-//! `src/evo/providertx.h` because rust-dashcore at the pin then had the four
-//! classic payloads only (since BL-187 the pin decodes these three too, as
-//! `ProviderDissolvePayload`, `ProviderUpdateSharePayload` and
-//! `ProviderUpdateSharedRegistrarPayload`; MG-04b reconciles the two):
+//! v24 shared masternodes: the codecs of the shared registration and the
+//! three new provider payloads, written from Dash Core v24.0.0-rc.3
+//! `src/evo/providertx.h`. The dashcore pin decodes them too since BL-187
+//! (`ProviderRegistrationPayload` v3, `ProviderDissolvePayload`,
+//! `ProviderUpdateSharePayload`, `ProviderUpdateSharedRegistrarPayload`);
+//! these stay the wallet's own so the oracle compares bytes the wallet
+//! writes, and `tests/dashcore_shared.rs` holds the two byte-equal
+//! (MG-04b §0, D2, D62):
 //!
 //! - [`ProDisTx`] (type 10, `providertx.h:436-482`): dissolve a shared
 //!   masternode, unilateral (one signature) or unanimous (one per share);
@@ -12,22 +14,42 @@
 //! - [`ProUpShareTx`] (type 11, `providertx.h:484-515`): change one share's
 //!   reward script, signed by that share's owner key over the payload hash
 //!   (`CHashSigner::VerifyHashCanonical(::SerializeHash(ptx), …)`,
-//!   `specialtxman.cpp:1597-1602`).
+//!   `specialtxman.cpp:1607-1614`).
 //! - [`ProUpSharedRegTx`] (type 12, `providertx.h:517-557`): rotate the
 //!   operator/voting keys, one owner signature per share over the payload
-//!   hash (`specialtxman.cpp:1653-1660`).
+//!   hash (`specialtxman.cpp:1663-1671`).
+//! - [`ProRegTxV3`] ([`registration`]): the version-3 ProRegTx with its
+//!   share table and [`ExtNetInfo`] ([`netinfo`]), and the consent digest
+//!   every share owner signs (`MakeSharedRegConsentHash`).
+//! - [`SpecialTx`] ([`rawtx`]): a transaction of any special type, which the
+//!   pin's `Transaction` can't decode for types 10–12 or a version-3 payload.
 //! - [`CollateralShare`] / [`PayoutShare`]: the share table and payout list
 //!   entries (`providertx.h:31-90`).
+//! - [`json`] and [`envelope`]: UniValue's JSON model and the message code
+//!   of dash-qt's envelopes (MG-04b §2.2, D7).
+//! - [`rules`]: Core's trivial and contextual checks of types 10–12, in
+//!   Core's order with Core's reasons, run before anything is signed
+//!   (MG-04b §5.1), and [`rules::ShareReward`], which resets a reward to the
+//!   refund script, never to an empty one (MG-04b D31).
 //!
 //! These payloads are consensus-valid only once the v24 fork is active
-//! (`GetValidatedPayload`, `specialtxman.cpp:1099-1124`). The shared
-//! *registration* (ProRegTx version 3 with the share table) also needs the
-//! v24 extended network-info encoding, which this module does not write yet
-//! (MG-01 salvage plan §7).
+//! (`GetValidatedPayload`, `specialtxman.cpp:1097-1122`).
 
 use dashcore::consensus::encode::{self, Decodable, Encodable, VarInt};
 use dashcore::hashes::{Hash, HashEngine, sha256d};
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxOut, Txid};
+
+pub mod envelope;
+pub mod json;
+pub mod netinfo;
+pub mod rawtx;
+pub mod registration;
+pub mod rules;
+pub mod session;
+
+pub use netinfo::ExtNetInfo;
+pub use rawtx::SpecialTx;
+pub use registration::ProRegTxV3;
 
 /// Special transaction types (`primitives/transaction.h:39-41`).
 pub const TRANSACTION_PROVIDER_DISSOLVE: u16 = 10;

@@ -27,7 +27,7 @@ models, 2026-10-06).
 
 | Checklist | done | partial | not started | parked | total |
 |---|---|---|---|---|---|
-| dash-qt (QT) | 51 | 63 | 22 | 18 | 154 |
+| dash-qt (QT) | 51 | 65 | 22 | 16 | 154 |
 | iOS (IOS) | 12 | 63 | 45 | 3 | 123 |
 
 What backs these statuses on `main`:
@@ -190,8 +190,8 @@ touches, and keep the summary counts in step.
 | QT-123 | [MN] [S] Register Masternode/EvoNode wizard: type, collateral (fund new / existing UTXO / external with message signi… | parked | — | Milestone MG, release 1.1 (DEC-01, DASHPAY §5a); the code is on the branches `m3/r2-governance`, `m3/r3-protx`, not on `main` |  |
 | QT-124 | [MN] [W] Operator secret save gate: show the secret and `masternodeblsprivkey=` line, require typing the last 4 chara… | parked | — | Operator side, out (DASHPAY §5a): the wallet generates no operator secret outside the keychain reveal flow (IOS-083); the code is on the branches `m3/r2-governance`, `m3/r3-protx`, not on `main` |  |
 | QT-125 | [MN] [S] Update Service (revives PoSe-banned nodes), Update Registrar (owner key), Revoke (with reason), each requiri… | parked | — | Update Registrar is milestone MG (DEC-01, DASHPAY §5a); Update Service and Revoke are operator-signed and out, left to the node and its CLI; the code is on the branches `m3/r2-governance`, `m3/r3-protx`, not on `main` |  |
-| QT-126 | [MN] [S] Shared masternode creation (2–8 shares, ≥100 DASH each, early period and penalty) with the clipboard/file JS… | parked | — | Milestone MG, release 1.1 (DEC-01, DASHPAY §5a); the code is on the branches `m3/r2-governance`, `m3/r3-protx`, not on `main` |  |
-| QT-127 | [MN] [S] Shared masternode maintenance: change reward address, rotate keys (multi-party), dissolve now / together, st… | parked | — | Milestone MG, release 1.1 (DEC-01, DASHPAY §5a); the code is on the branches `m3/r2-governance`, `m3/r3-protx`, not on `main` |  |
+| QT-126 | [MN] [S] Shared masternode creation (2–8 shares, ≥100 DASH each, early period and penalty) with the clipboard/file JS… | partial | MG | Engine only (MG-04b slice 1a): the coordinator and participant session flows up to the participants' signed contributions, messages as text, dash-qt's session envelope and import table; `sign_shared_funding` refuses while `can_send` is false (slice 1b lifts it). No coordinator send (1b), no UI | rust/crates/dw-engine/src/masternodes/shared/tests.rs `test_QT_126_three_wallets_reach_the_signed_registration` |
+| QT-127 | [MN] [S] Shared masternode maintenance: change reward address, rotate keys (multi-party), dissolve now / together, st… | partial | MG | Engine only (MG-04b slice 1a): `preview_update_share` builds a ProUpShareTx for a share of a confirmed registration and runs Core's rules on it; MG-04's registrar calls refuse a shared masternode (D30). Sending (1b), dissolution, key changes and standbys (part 2) and the UI are not done | rust/crates/dw-engine/src/masternodes/shared/tests.rs `test_QT_127_update_share_preview_and_d30` |
 | QT-128 | [Gov] [F] Governance tab (opt-in setting; disabled when the node has governance disabled): Active / My Proposals; tit… | parked | — | Milestone MG, release 1.1 (DEC-01, DASHPAY §5a); the code is on the branches `m3/r2-governance`, `m3/r3-protx`, not on `main` |  |
 | QT-129 | [Gov] [F] Proposal columns: status, Title, Amount, Start, End, Votes (Y/N/A plus margin), My Votes (weighted), Hash;… | parked | — | Milestone MG, release 1.1 (DEC-01, DASHPAY §5a); the code is on the branches `m3/r2-governance`, `m3/r3-protx`, not on `main` |  |
 | QT-130 | [Gov] [U] Proposal context menu: Copy Raw JSON, Open URL (http/https only, with external-link warning), Vote Yes/No/A… | parked | — | Milestone MG, release 1.1 (DEC-01, DASHPAY §5a); the code is on the branches `m3/r2-governance`, `m3/r3-protx`, not on `main` |  |

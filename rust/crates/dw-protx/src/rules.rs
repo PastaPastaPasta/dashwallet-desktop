@@ -78,12 +78,14 @@ fn is_valid_payout_script(script: &ScriptBuf) -> bool {
     script.is_p2pkh() || script.is_p2sh()
 }
 
-/// `CBLSLazyPublicKey::Get().IsValid()` under `scheme`: a G1 point.
-fn is_valid_operator_key(key: &[u8; 48], scheme: BlsScheme) -> bool {
+/// `CBLSLazyPublicKey::Get().IsValid()` under `scheme`: a G1 point that
+/// serializes back to the same bytes (`CheckMalleable`, rc.3
+/// `bls/bls.h:211-219,492-511`).
+pub(crate) fn is_valid_operator_key(key: &[u8; 48], scheme: BlsScheme) -> bool {
     BlsPkBytes::from_bytes(*key)
         .as_scheme(scheme)
         .canonicalize()
-        .is_ok()
+        .is_ok_and(|pk| pk.as_bytes() == key)
 }
 
 /// The scheme a payload of `version` serializes its operator key in.
@@ -110,7 +112,11 @@ fn other_scheme(key: &[u8; 48], scheme: BlsScheme) -> Option<[u8; 48]> {
 }
 
 /// Whether `entry` holds `key` (in `scheme`) under either serialization.
-fn holds_operator_key(entry: &ListedMasternode, key: &[u8; 48], scheme: BlsScheme) -> bool {
+pub(crate) fn holds_operator_key(
+    entry: &ListedMasternode,
+    key: &[u8; 48],
+    scheme: BlsScheme,
+) -> bool {
     entry.operator_public_key == *key
         || other_scheme(key, scheme).is_some_and(|k| entry.operator_public_key == k)
 }
@@ -362,7 +368,7 @@ fn legacy_service(service: &MasternodeNetInfo) -> Result<SocketAddr, Reject> {
 }
 
 /// An address with an IPv4-mapped IPv6 address shown as IPv4.
-fn normalized(addr: SocketAddr) -> SocketAddr {
+pub(crate) fn normalized(addr: SocketAddr) -> SocketAddr {
     match addr.ip() {
         IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
             Some(v4) => SocketAddr::new(IpAddr::V4(v4), addr.port()),
@@ -631,6 +637,30 @@ mod tests {
             check_registration_list(&p, collateral, &list),
             Err("bad-protx-dup-platformnodeid")
         );
+    }
+
+    /// `CheckMalleable` (MG-04b D66): an operator key that decodes to a G1
+    /// point but serializes back to other bytes is invalid. The legacy
+    /// reader ignores the unused flag bits of the first byte; no such
+    /// encoding of the generator was found in the basic serialization.
+    #[test]
+    fn an_operator_key_must_serialize_back_to_its_bytes() {
+        let basic = crate::bls::parse_public_hex(
+            "97f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb",
+        )
+        .unwrap();
+        let legacy = crate::bls::legacy_of(&basic).unwrap();
+        assert!(is_valid_operator_key(&basic, BlsScheme::Modern));
+        assert!(is_valid_operator_key(&legacy, BlsScheme::Legacy));
+        for flag in [0x20, 0x40] {
+            let mut malleated = legacy;
+            malleated[0] ^= flag;
+            let decoded = BlsPkBytes::from_bytes(malleated)
+                .as_scheme(BlsScheme::Legacy)
+                .canonicalize();
+            assert_eq!(decoded.unwrap().as_bytes(), &legacy, "the same point");
+            assert!(!is_valid_operator_key(&malleated, BlsScheme::Legacy));
+        }
     }
 
     #[test]

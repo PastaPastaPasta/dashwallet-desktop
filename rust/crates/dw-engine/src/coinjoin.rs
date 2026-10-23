@@ -668,7 +668,7 @@ fn path_of(info: &ManagedWalletInfo, address: &Address) -> Option<DerivationPath
 }
 
 /// `scriptSig` of a P2PKH input: `<DER signature ‖ sighash type> <pubkey>`.
-fn p2pkh_script_sig(
+pub(crate) fn p2pkh_script_sig(
     sig: &dashcore::secp256k1::ecdsa::Signature,
     sighash_type: u32,
     pubkey: &dashcore::secp256k1::PublicKey,

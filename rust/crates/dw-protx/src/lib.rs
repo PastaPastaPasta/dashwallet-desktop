@@ -22,11 +22,10 @@
 //! - [`rules`]: Core's checks of those payloads, with its reject reasons
 //!   (`IsTriviallyValid`, `CheckProRegTx`, `CheckProUpRegTx`), which the
 //!   engine runs before it signs.
-//! - [`shared`]: v24 shared masternodes — codecs of ProDisTx (type 10),
-//!   ProUpShareTx (11), ProUpSharedRegTx (12) and the share table; absent
-//!   from rust-dashcore at the pin. The shared session protocol (envelope,
-//!   coordinator/participant state machines, the version-3 ProRegTx with
-//!   extended network info) is not written yet.
+//! - [`shared`]: v24 shared masternodes (MG-04b) — codecs of the version-3
+//!   ProRegTx with its share table and extended network info, the consent
+//!   digest, ProDisTx (type 10), ProUpShareTx (11), ProUpSharedRegTx (12),
+//!   and raw special transactions; absent from rust-dashcore at the pin.
 
 pub mod bls;
 pub mod params;

@@ -13,6 +13,8 @@ dw-console = { workspace = true }
 dw-engine = { workspace = true }
 dw-units = { workspace = true }
 dw-message = { workspace = true }
+# `mn shared` reads stdin up to the envelope limit (MG-04b fixes-1a Nit 4).
+dw-protx = { workspace = true }
 dw-psbt = { workspace = true }
 # Log lines pass through its link redaction (DP5-01 D14).
 dw-uri = { workspace = true }

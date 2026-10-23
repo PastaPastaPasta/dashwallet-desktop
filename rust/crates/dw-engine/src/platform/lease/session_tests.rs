@@ -3426,6 +3426,8 @@ fn mg05_a_voting_lease_cannot_sign_a_transaction() {
         (FlowKind::Voting, f.platform_op(1, 1)),
         (FlowKind::MasternodeRegistration, gov()),
         (FlowKind::KeyChange, gov()),
+        (FlowKind::SharedMasternode, gov()),
+        (FlowKind::SharedMasternode, f.platform_op(1, 1)),
         (
             FlowKind::KeyChange,
             f.grant(GrantPurpose::Spend { max_duffs: 1 }, Credential::None),
@@ -3443,6 +3445,10 @@ fn mg05_a_voting_lease_cannot_sign_a_transaction() {
         );
     }
     let l = f.lease(FlowKind::MasternodeRegistration, &[op()]).unwrap();
+    assert!(l.vote_signer().is_err());
+    assert_eq!(l.tx_purpose(), Some(BudgetPurpose::Masternode));
+    // A shared masternode's signatures take the same grant (MG-04b §6.3).
+    let l = f.lease(FlowKind::SharedMasternode, &[op()]).unwrap();
     assert!(l.vote_signer().is_err());
     assert_eq!(l.tx_purpose(), Some(BudgetPurpose::Masternode));
 }

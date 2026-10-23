@@ -57,6 +57,7 @@ pub mod os_store;
 mod owner;
 pub mod paths;
 mod platform;
+mod shared;
 mod signer;
 mod types;
 mod vault;

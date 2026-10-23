@@ -150,6 +150,7 @@ fn seam_for(session: &NetworkSession, lib: &Arc<FakeLibrary>) -> Arc<Seam> {
         crash: Mutex::new(None),
         list: Mutex::new(Some(Vec::new())),
         list_height: Mutex::new(100),
+        shared_mined: Mutex::default(),
     });
     session.masternodes.set_protx_seam(Some(seam.clone()));
     seam
@@ -854,6 +855,7 @@ fn mg04_a_crash_between_save_and_record_loses_nothing_and_sends_once() {
                 assert_eq!(refused.code(), "masternodes.operation_state");
                 assert_eq!(f.rows().len(), 1, "never deleted");
             }
+            CrashPoint::SharedOut => unreachable!("not a registration point"),
         }
         // The saved inputs stay locked across the restart: a new
         // registration can't spend them in a second transaction.

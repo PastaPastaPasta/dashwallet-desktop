@@ -338,6 +338,10 @@ pub(crate) struct CoinFences {
     /// takes the coin fences.
     #[cfg(test)]
     pub(crate) pause_broadcast: std::sync::Mutex<Option<Arc<TestPause>>>,
+    /// Tests: holds the next shared session's row write (`start_shared`,
+    /// `join_shared`) after its reservation, its fence held (MG-04b D63).
+    #[cfg(test)]
+    pub(crate) pause_shared_write: std::sync::Mutex<Option<Arc<TestPause>>>,
 }
 
 /// A one-shot pause point for tests.

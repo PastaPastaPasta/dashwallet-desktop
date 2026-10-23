@@ -212,6 +212,13 @@ impl NetworkSession {
         let entry = (ctx.entries.iter())
             .find(|e| e.pro_tx_hash == hash)
             .ok_or(MasternodesError::NotFound)?;
+        // MG-04b D30: consensus refuses any ProUpRegTx on a shared
+        // masternode (rc.3 `specialtxman.cpp:1444-1448`); at the pin, one
+        // is shared when a registration session of this wallet holds it.
+        let shared = self.shared_pro_tx_hashes(wallet).await?;
+        if shared.contains(&dashcore::Txid::from_byte_array(hash)) {
+            return Err(super::build::refused("bad-protx-shared-mn"));
+        }
         let facts = owner_facts(self, wallet, hash).await?;
         // Core refuses a shared masternode (`:876-879`); the wallet can't
         // read a version-3 one's payouts (MG-03 D25).

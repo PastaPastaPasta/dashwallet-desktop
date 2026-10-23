@@ -1,9 +1,9 @@
 # MG masternodes engine contract (`dw-engine` facade)
 
-Contract-Version: 5
+Contract-Version: 8
 
 Status: **draft**, 2026-10-17 (ROADMAP MG-03; version 2 after the Sol r1 review: D23–D28; version 3 after Sol r2: D30–D32; version 4 adds MG-04's ProTx owner flows, §2.3, citing
-[`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on; version 5, after MG-04's r2 review, adds `operation` to `masternodes.protx_refused`). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
+[`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on; version 5, after MG-04's r2 review, adds `operation` to `masternodes.protx_refused`; version 6 adds MG-04b slice 1a's shared-masternode sessions, §2.4, citing [`MG-04b-shared-masternodes.md`](../design/MG-04b-shared-masternodes.md)'s D-rows as "MG-04b D1" and so on; version 7, after the slice's validator review, binds `lock_shared_terms` to a revision and `approve_shared` to a consent hash, and adds `SharedSession.consent_hash`, MG-04b D56; version 8 adds `sign_shared_funding`'s consent-hash refusal, MG-04b D65). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
 the changes in §1 below.
@@ -39,6 +39,9 @@ After `close_network` every call returns `network_not_open`.
 | `masternodes/protx.rs` | MG-04 | §2.3 |
 | `masternodes/protx_records.rs` | MG-04 | the records of §2.3 |
 | `masternodes/protx/` | MG-04 | keys, the transaction builder and the operations' rows and hand-off (not facade) |
+| `masternodes/shared.rs` | MG-04b | §2.4 |
+| `masternodes/shared_records.rs` | MG-04b | the records of §2.4 |
+| `masternodes/shared/` | MG-04b | the session store and views, the funding builder, the flows and §3.0's import table (not facade) |
 
 ## 1. Conventions (changes to m1-engine.md §1)
 
@@ -51,7 +54,7 @@ After `close_network` every call returns `network_not_open`.
 | The list | Only a synced list counts (the headers and masternode phases done; design §2). Before that, list-only facts are absent and status is `unknown`, except a held unconfirmed ProRegTx (`unconfirmed`). |
 | Records | `serde` `Serialize` and `Deserialize`, plus `Debug`, `Clone` and `PartialEq`. Unit enums are snake-case strings; enums with data are tagged with `kind`. |
 | Errors | `MasternodesError` (§4); `code()` is a stable string, `engine()` returns a wrapped `EngineError`. |
-| Keys | Attached keys are secp256k1 secrets for `owner`, `voting` or `payout`, kept by the vault (MG-01 D7). No call takes, holds, returns or signs with an operator or platform-node secret (MG-01's guard, `dw-protx/tests/no_operator_signing.rs`): the operator key is a BLS **public** key, given or the keychain's (MG-04 D14). Only §2.3's calls sign, with the vault's `MasternodeOwner` signer under a lease from a `MasternodeOp` grant (MG-05): the inputs, an `ExistingUtxo` collateral's message, and a ProUpRegTx's owner signature, which the vault computes over the payload it is handed and signs with a keychain or attached owner key (MG-04 D11, D12). |
+| Keys | Attached keys are secp256k1 secrets for `owner`, `voting` or `payout`, kept by the vault (MG-01 D7). No call takes, holds, returns or signs with an operator or platform-node secret (MG-01's guard, `dw-protx/tests/no_operator_signing.rs`): the operator key is a BLS **public** key, given or the keychain's (MG-04 D14). Only §2.3's calls sign, with the vault's `MasternodeOwner` signer under a lease from a `MasternodeOp` grant (MG-05): the inputs, an `ExistingUtxo` collateral's message, and a ProUpRegTx's owner signature, which the vault computes over the payload it is handed and signs with a keychain or attached owner key (MG-04 D11, D12). §2.4's calls sign with keychain owner keys 0–19 only, through the vault's shared owner signer (MG-04b D11), under a `SharedMasternode` lease from a `MasternodeOp` grant: a share's consent signature and a participant's funding inputs; the attached owner key stays ProUpRegTx-only, and nothing signs as operator. |
 
 ## 2. Calls
 
@@ -103,7 +106,10 @@ owner key (`masternodes.no_owner_key`, MG-04 D12), then any update while an oper
 masternode may not be in the list yet (`masternodes.update_pending{operation}`, MG-04 D43, D49), then a keychain key to pick
 (`masternodes.keys_exhausted`), a new voting address that is the owner key's (`invalid_argument`, MG-04 D52), a new
 operator key a pending operation of the wallet names (`protx-dup` with its `operation`, MG-04 D51), then Core's rules
-(`masternodes.protx_refused`: `bad-protx-dup-key`, `bad-protx-payee-reuse`, `bad-protx-collateral-reuse`, …). A grant is the lease's: `MasternodeOp` for the wallet, its cap covering the fee
+(`masternodes.protx_refused`: `bad-protx-dup-key`, `bad-protx-payee-reuse`, `bad-protx-collateral-reuse`, …). A
+shared masternode (one a registration session of this wallet holds) is refused right after the list's
+`masternodes.not_found`, before its owner facts: `masternodes.protx_refused{reason: "bad-protx-shared-mn"}`, as
+consensus refuses any ProUpRegTx on one (rc.3 `specialtxman.cpp:1444-1448`; MG-04b D30). A grant is the lease's: `MasternodeOp` for the wallet, its cap covering the fee
 (`send.grant_exceeded`, nothing signed); its refusals come through `Platform`/`Engine` unchanged (MG-05 D12). Each
 signing call saves its row durably, with its inputs locked (MG-04 D25), before the hand-off; then hands the bytes to
 `TxDraft`'s fenced path, and returns the operation whatever the hand-off's outcome: `sent` (it may be out), or
@@ -125,13 +131,58 @@ signing call saves its row durably, with its inputs locked (MG-04 D25), before t
 | `release_collateral(wallet: WalletId, pro_tx_hash: String)` | async | Unlocks the collateral coin of one of the wallet's masternodes and remembers the release, so the follower leaves it unlocked (MG-04 D9). Sends nothing. `invalid_argument`, `masternodes.not_found` (not the wallet's), `masternodes.collateral_unavailable` (no resolved collateral). **Implemented.** | `MasternodesError` |
 | `lock_collateral(wallet: WalletId, pro_tx_hash: String)` | async | Locks it again and forgets the release. Refuses as `release_collateral`. **Implemented.** | `MasternodesError` |
 
+### 2.4 Shared masternodes (MG-04b, slice 1a)
+
+v24's multi-party registration as dash-qt's session envelope runs it (MG-04b §2–§4): this wallet takes part as
+coordinator or participant up to the participants' signed contributions; the coordinator's own inputs and the
+hand-off are slice 1b. Messages pass as text (`SharedMessage.text`, Core's file name with it). A session id is 64
+lower-case hex. **Nothing here hands bytes to the network**, and the one call that produces bytes the network could
+accept (`sign_shared_funding`) refuses `masternodes.unsupported{feature: "shared_masternodes"}` while `can_send` is
+false, which it is on every build that ships until slice 1b (MG-04b D1, DEC-338); only `dw-engine`'s debug `test-support` module can
+construct a facade with it set (MG-04b r2-m4), and `tests/mg04b_release_check.rs` proves that absent from a release
+build.
+
+Refusals, in order (MG-04b §7): arguments (`invalid_argument`), `wallet_not_found` (naming no id),
+`masternodes.unsupported{feature: "shared_masternodes"}` (v24 not `active` for `start_shared`, `join_shared`,
+`lock_shared_terms`, `approve_shared` and `preview_update_share`; `can_send` false for `sign_shared_funding`; `field:
+"service"` for a coordinator service that isn't IPv4, MG-04b D5; `approve_shared` can only judge the service from the
+session's terms, so it refuses it after the session checks below, and never for a session it already approved), the list (`masternodes.list_unavailable`,
+`masternodes.shared_too_early`, `masternodes.shared_registration_unknown`), the session
+(`masternodes.shared_session_not_found`, `masternodes.in_flight`, `masternodes.shared_stage{stage}`; then, for lock and
+approve, `masternodes.shared_message{reason: "conflict"}` when the session isn't the copy the caller reviewed,
+MG-04b D56; then, for lock, approve and sign, `shared_stage{stage: "dead"}` when a reserved input is no longer this
+session's locked, unspent coin, MG-04b D17, D50), the message
+(`masternodes.shared_message{reason, share}`), Core's rules (`masternodes.protx_refused{reason}`, Core's reasons
+verbatim), the consent checks (`masternodes.shared_funding_mismatch{reason, needed}`; at lock the fee floor's
+`fee_low` before the coordinator's own-side checks, MG-04b §3.1 step 3), then the lease (`Platform`)
+and the funding's `send.*`. No refusal repeats pasted text (MG-00 D36). Every call that changes a session sends §6's
+event. A session's coins are locked from the save that records its contribution until the session is discarded or
+settles (`confirmed`, `conflicted`, `dead`); its keys count as in use for §2.3's registrations too.
+
+| Call | Kind | Semantics | Errors |
+|---|---|---|---|
+| `shared_capability(wallet: WalletId)` | async | `SharedCapability`: `v24` `active` once a version-3 list entry was seen (`masternodes.any_shared_seen`, MG-03 D30), else `unknown`; `evonode_shares` always `inactive` (MG-04b D4); `can_send` (§2.4's lead). **Implemented.** | `MasternodesError` |
+| `shared_sessions(wallet: WalletId)` | async | Every `SharedSession` of the wallet, newest first, its stage derived now (§5). **Implemented.** | `MasternodesError` |
+| `shared_session(wallet: WalletId, session: String)` | async | One `SharedSession`. **Implemented.** | `MasternodesError` |
+| `start_shared(wallet: WalletId, request: StartSharedRequest)` | async | Coordinator: checks the request (2 to 8 shares, distinct trimmed labels, an IPv4 service, Core's share rules), picks the keychain owner, voting and operator keys (§2.3's rule), selects and locks confirmed coins for its share and the fee, issues its refund address, saves the draft and returns it with its Invitation. **Implemented.** | `MasternodesError` |
+| `set_shared_fee(wallet: WalletId, session: String, fee: u64)` | async | Coordinator, `draft`, while no other party's contribution is in (else `shared_stage{stage: "replied"}`, MG-04b D33): re-selects its coins for share + the new fee (the old locks released in the same write), `revision` + 1. **Implemented.** | `MasternodesError` |
+| `import_shared_message(wallet: WalletId, text: String, target: Option<String>)` | async | Applies a pasted or opened message by MG-04b §3.0's table: a new participant session from an Invitation (`invited`, no coin touched), or the next copy of a held one; a re-pasted copy changes nothing (`changed: false`). Signs nothing. In 1a a sigs envelope, a standby or a targeted bare array is `unsupported`; a bare array without a target is `shared_message{reason: "parse"}`. **Implemented.** | `MasternodesError` |
+| `join_shared(wallet: WalletId, session: String, request: JoinSharedRequest)` | async | Participant, `invited`: fills the named share (or the single open one), picks its owner key, issues its refund address, locks coins for the share, records its contribution, returns the Details. **Implemented.** | `MasternodesError` |
+| `shared_message(wallet: WalletId, session: String)` | async | `SharedMessage`: the message to copy now, its code and Core's file name (`shared-mn-session-<CODE>.json`). **Implemented.** | `MasternodesError` |
+| `lock_shared_terms(wallet: WalletId, session: String, revision: u32, grant: String)` | async | Coordinator, `draft`, at `revision`: the `SharedSession.revision` the coordinator reviewed, from the session record (`shared_session`, or `mn shared show`); another revision now (a reply absorbed since) is `shared_message{reason: "conflict"}` (MG-04b D56). Then every row and contribution in (else `shared_stage{stage: "incomplete"}`): freezes the registration, runs MG-04b §3.1 step 3's checks and the fee floor (`shared_funding_mismatch{reason: "fee_low", needed}`), checks its reservation, signs its shares' consent (charged 0), returns Locked Terms. **Implemented.** | `MasternodesError` |
+| `unlock_shared_terms(wallet: WalletId, session: String)` | async | Coordinator: back to `draft` before `combined`, the approvals dropped, `revision` + 1. **Implemented.** | `MasternodesError` |
+| `approve_shared(wallet: WalletId, session: String, consent_hash: String, grant: String)` | async | Participant, `signing`, of `consent_hash`: the `SharedSession.consent_hash` the participant reviewed, from the session record (64 hex, compared ignoring case; another shape is `invalid_argument`). It binds what is signed: a re-lock that changes only envelope-side text keeps the hash; another one now (a re-locked copy imported since, MG-04b M-1 case 2) is `shared_message{reason: "conflict"}` and signs nothing (MG-04b D56). Then MG-04b §4's checks on the frozen registration against its recorded side, then its shares' consent signatures (charged 0), returns the Approval; approving again returns the same. **Implemented.** | `MasternodesError` |
+| `sign_shared_funding(wallet: WalletId, session: String, grant: String)` | async | Participant, `combined`: refuses `unsupported` while `can_send` is false. Otherwise §4's checks and every approval verified, and a copy whose consent hash isn't the one this wallet approved refused `masternodes.shared_message{reason: "conflict"}` (MG-04b D65), then its inputs signed (charged its debit, refunded if signing fails), `out_at` written durably with the signed copy before anything returns, and the Signed Contribution returned. **Implemented** (refusing until slice 1b). | `MasternodesError` |
+| `discard_shared_session(wallet: WalletId, session: String)` | async | Deletes a session nothing of which may be out and unlocks its coins; one with `out_at` set is `shared_stage` (MG-04b D17). Both read the stored row, so a session whose envelope no longer parses can be discarded (MG-04b D57). **Implemented.** | `MasternodesError` |
+| `preview_update_share(wallet: WalletId, request: UpdateShareRequest)` | async | `UpdateSharePreview`: the ProUpShareTx this wallet would build for one of its shares of a confirmed registration of its sessions, Core's §5.1 rules run on it, its fee. `share_not_mine`, `shared_too_early` (tip ≤ the registration's height, or the masternode not in the synced list, MG-04b m-16), `shared_registration_unknown`. Issues, locks and signs nothing. **Implemented.** | `MasternodesError` |
+
 ## 3. Surface (generated)
 
 Generated by `mn_masternodes_contract.rs` from the facade's source files; `DW_BLESS=1` rewrites it after
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: masternodes-surface -->
-<!-- surface-sha256: ffe566fdbc56779748fd75c858f2f760fc828ca62c0b22fda4f9975a9fdeaa44 version: 5 -->
+<!-- surface-sha256: 602ecdfc8ac2789bb86e5b1c418b88e99142a87e1be1d6f37ea2b45574a53834 version: 8 -->
 
 ```rust
 // src/masternodes/errors.rs
@@ -157,6 +208,13 @@ pub enum MasternodesError {
     NoOwnerKey,
     UpdatePending { operation: String },
     UpdateSuperseded { operation: String },
+    SharedSessionNotFound,
+    SharedStage { stage: String },
+    SharedMessage { reason: String, share: Option<u16> },
+    SharedFundingMismatch { reason: String, needed: Option<u64> },
+    ShareNotMine,
+    SharedTooEarly,
+    SharedRegistrationUnknown,
     Platform(PlatformError),
     Engine(EngineError),
 }
@@ -170,6 +228,7 @@ impl From<tokio::task::JoinError> for MasternodesError;
 pub use errors::MasternodesError;
 pub use protx_records::{ CollateralChoice, CollateralKind, EvonodeTerms, KeepOr, KeyPick, OperatorChoice, OwnerKeySource, PayoutChoice, PlatformFacts, PlatformNodeChoice, ProTxKeys, ProTxOperation, ProTxOperationKind, ProTxOperationState, ProTxTerms, RegistrationPreview, RegistrationRequest, SignRequest, UpdateRegistrarPreview, UpdateRegistrarRequest, VotingChoice, };
 pub use records::{ AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, KeyCheck, ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState, MasternodeOverview, MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus, MasternodeType, RegistrationFacts, UntrackOutcome, };
+pub use shared_records::{ Activation, DeadReason, JoinSharedRequest, KeyBase, RewardChoice, ShareRow, ShareSlot, ShareTerms, ShareTermsView, SharedCapability, SharedImport, SharedKind, SharedMessage, SharedNext, SharedOutcome, SharedRole, SharedSession, SharedStage, SharedWarning, StartSharedRequest, UpdateSharePreview, UpdateShareRequest, };
 pub use tracking::MAX_MASTERNODE_LABEL;
 #[derive(Clone)]
 pub struct Masternodes {
@@ -539,6 +598,211 @@ pub struct EvonodeCredits {
     pub duffs: u64,
     pub fetched_at: u64,
 }
+// src/masternodes/shared.rs
+impl Masternodes {
+    pub async fn shared_capability(&self, wallet: WalletId) -> Result<SharedCapability, MasternodesError>;
+    pub async fn shared_sessions(&self, wallet: WalletId) -> Result<Vec<SharedSession>, MasternodesError>;
+    pub async fn shared_session(&self, wallet: WalletId, session: String) -> Result<SharedSession, MasternodesError>;
+    pub async fn start_shared(&self, wallet: WalletId, request: StartSharedRequest) -> Result<SharedOutcome, MasternodesError>;
+    pub async fn set_shared_fee(&self, wallet: WalletId, session: String, fee: u64) -> Result<SharedOutcome, MasternodesError>;
+    pub async fn import_shared_message(&self, wallet: WalletId, text: String, target: Option<String>) -> Result<SharedImport, MasternodesError>;
+    pub async fn join_shared(&self, wallet: WalletId, session: String, request: JoinSharedRequest) -> Result<SharedOutcome, MasternodesError>;
+    pub async fn shared_message(&self, wallet: WalletId, session: String) -> Result<SharedMessage, MasternodesError>;
+    pub async fn lock_shared_terms(&self, wallet: WalletId, session: String, revision: u32, grant: String) -> Result<SharedOutcome, MasternodesError>;
+    pub async fn unlock_shared_terms(&self, wallet: WalletId, session: String) -> Result<SharedOutcome, MasternodesError>;
+    pub async fn approve_shared(&self, wallet: WalletId, session: String, consent_hash: String, grant: String) -> Result<SharedOutcome, MasternodesError>;
+    pub async fn sign_shared_funding(&self, wallet: WalletId, session: String, grant: String) -> Result<SharedOutcome, MasternodesError>;
+    pub async fn discard_shared_session(&self, wallet: WalletId, session: String) -> Result<(), MasternodesError>;
+    pub async fn preview_update_share(&self, wallet: WalletId, request: UpdateShareRequest) -> Result<UpdateSharePreview, MasternodesError>;
+}
+// src/masternodes/shared_records.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Activation {
+    Active,
+    Inactive,
+    Unknown,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedCapability {
+    pub v24: Activation,
+    pub evonode_shares: Activation,
+    pub can_send: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareTerms {
+    pub service: String,
+    pub operator: OperatorChoice,
+    pub operator_reward: u16,
+    pub voting: VotingChoice,
+    pub early_period_blocks: u32,
+    pub early_penalty: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareSlot {
+    pub label: String,
+    pub amount: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartSharedRequest {
+    pub shares: Vec<ShareSlot>,
+    pub terms: ShareTerms,
+    pub fee: u64,
+    pub reward: RewardChoice,
+    pub node_run_by: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RewardChoice {
+    Refund,
+    NewAddress,
+    Address { address: String },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JoinSharedRequest {
+    pub share_index: Option<u16>,
+    pub reward: RewardChoice,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedRole {
+    Coordinator,
+    Participant,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedKind {
+    Registration,
+    DissolveTogether,
+    KeyChange,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SharedStage {
+    Invited,
+    Draft,
+    Signing,
+    Combined,
+    FundingSigned,
+    Sent,
+    Confirmed { height: u32 },
+    Conflicted,
+    Stale,
+    Dead { reason: DeadReason },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeadReason {
+    InputsSpent,
+    Delisted,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedNext {
+    Join,
+    Copy,
+    Wait,
+    Lock,
+    Approve,
+    Sign,
+    Send,
+    Nothing,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareRow {
+    pub index: u16,
+    pub label: String,
+    pub amount: u64,
+    pub owner_address: Option<String>,
+    pub refund_address: Option<String>,
+    pub reward_address: Option<String>,
+    pub mine: bool,
+    pub contributed: bool,
+    pub approved: bool,
+    pub funding_signed: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareTermsView {
+    pub service: String,
+    pub operator_public_key: String,
+    pub voting_address: String,
+    pub operator_reward: i32,
+    pub early_period_blocks: u32,
+    pub early_penalty: i64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyBase {
+    pub operator_public_key: String,
+    pub voting_address: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedSession {
+    pub id: String,
+    pub code: String,
+    pub message_code: String,
+    pub kind: SharedKind,
+    pub role: SharedRole,
+    pub stage: SharedStage,
+    pub revision: u32,
+    pub consent_hash: Option<String>,
+    pub rows: Vec<ShareRow>,
+    pub terms: ShareTermsView,
+    pub node_run_by: String,
+    pub fee: Option<u64>,
+    pub pro_tx_hash: Option<String>,
+    pub txid: Option<String>,
+    pub reserved: Vec<String>,
+    pub next: SharedNext,
+    pub warnings: Vec<SharedWarning>,
+    pub approved_terms: Option<ShareTermsView>,
+    pub base_keys: Option<KeyBase>,
+    pub actor_fee: Option<u64>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub last_error: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedMessage {
+    pub text: String,
+    pub code: String,
+    pub name: String,
+    pub file_name: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedOutcome {
+    pub session: SharedSession,
+    pub message: SharedMessage,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SharedImport {
+    Session { session: SharedSession, changed: bool, received_code: String, warnings: Vec<SharedWarning> },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SharedWarning {
+    ZeroPenalty,
+    EditedMessage,
+    UnvaluedInputs { shares: Vec<u16>, count: u32 },
+    EmptyService,
+    ActorOutputDust,
+    PenaltyPaidAfterPeriod,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateShareRequest {
+    pub pro_tx_hash: String,
+    pub share_index: u16,
+    pub reward: RewardChoice,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateSharePreview {
+    pub pro_tx_hash: String,
+    pub share_index: u16,
+    pub reward_address: Option<String>,
+    pub reward_is_refund: bool,
+    pub fee: u64,
+    pub total_debit: u64,
+}
 // src/masternodes/tracking.rs
 pub const MAX_MASTERNODE_LABEL: usize;
 impl Masternodes {
@@ -556,7 +820,7 @@ impl Masternodes {
 
 | Error enum | Codes |
 |---|---|
-| `MasternodesError` | `masternodes.list_unavailable`, `masternodes.not_found`, `masternodes.already_tracked`, `masternodes.not_tracked`, `masternodes.key_mismatch`, `masternodes.not_evonode`, `masternodes.no_identity`, `masternodes.platform_unavailable`, `masternodes.unsupported`, `masternodes.not_implemented`, `masternodes.protx_refused`, `masternodes.collateral_unavailable`, `masternodes.signature_mismatch`, `masternodes.operation_not_found`, `masternodes.operation_state`, `masternodes.in_flight`, `masternodes.keys_exhausted`, `masternodes.no_owner_key`, `masternodes.update_pending`, `masternodes.update_superseded` |
+| `MasternodesError` | `masternodes.list_unavailable`, `masternodes.not_found`, `masternodes.already_tracked`, `masternodes.not_tracked`, `masternodes.key_mismatch`, `masternodes.not_evonode`, `masternodes.no_identity`, `masternodes.platform_unavailable`, `masternodes.unsupported`, `masternodes.not_implemented`, `masternodes.protx_refused`, `masternodes.collateral_unavailable`, `masternodes.signature_mismatch`, `masternodes.operation_not_found`, `masternodes.operation_state`, `masternodes.in_flight`, `masternodes.keys_exhausted`, `masternodes.no_owner_key`, `masternodes.update_pending`, `masternodes.update_superseded`, `masternodes.shared_session_not_found`, `masternodes.shared_stage`, `masternodes.shared_message`, `masternodes.shared_funding_mismatch`, `masternodes.share_not_mine`, `masternodes.shared_too_early`, `masternodes.shared_registration_unknown` |
 
 - `masternodes.list_unavailable`: the call needs the synced SPV list and there is none yet (or it is still syncing).
 No code carries a hash, a key or a wallet id the caller passed, and no message repeats one: a pasted private key has
@@ -584,7 +848,7 @@ a hash's shape (D23).
 - `masternodes.signature_mismatch`: the external signature isn't the collateral address's over the saved message.
 - `masternodes.operation_not_found`: no such operation of the wallet.
 - `masternodes.operation_state{state}`: the call doesn't apply to the operation's state (§5's snake-case name).
-- `masternodes.in_flight`: another call on the operation is running.
+- `masternodes.in_flight`: another call on the operation is running; for a shared session, also while the follower's pass reads it (MG-04b D60); retry.
 - `masternodes.keys_exhausted{role}`: every keychain key index 0–19 of `role` is in use (MG-04 D13).
 - `masternodes.no_owner_key`: a ProUpRegTx needs the masternode's owner key, and no keychain owner key 0–19 nor an
   attached `owner` key matched to its ProRegTx has it, or no loaded wallet holds the ProRegTx that names it (MG-04
@@ -600,12 +864,31 @@ a hash's shape (D23).
   the same masternode (maybe another loaded wallet's) that is or may go out, would undo. Discard this row while it is
   not sent; a sent one ends as `update_pending` says (MG-04 D43, D49). `update_pending`'s `operation` may also be
   another loaded wallet's.
+- `masternodes.shared_session_not_found`: no shared-masternode session of the wallet has this id.
+- `masternodes.shared_stage{stage}`: the call doesn't apply at the session's stage (§5's snake-case name, the derived
+  `dead` among them), or to its role (`coordinator`, `participant`: the role the call needs); `replied` for a fee
+  change after another party's reply (MG-04b D33), `incomplete` for a lock before every row and contribution is in.
+- `masternodes.shared_message{reason, share}`: a pasted or opened message is refused: `not_shared`, `too_large`,
+  `parse`, `network`, `other_session`, `terms_changed`, `older`, `conflict` (also a lock or approval of a copy other
+  than the session's current one, MG-04b D56), `bad_signature` (with `share`), `not_participant`, `labels`. A change
+  to this wallet's own row is `shared_funding_mismatch{reason: "row_changed"}`. Never the text (MG-00 D36).
+- `masternodes.shared_funding_mismatch{reason, needed}`: a consent or funding check of MG-04b §4 fails:
+  `foreign_input`, `overdraw`, `row_changed`, `contribution_changed`, `time_lock`, `template`, `join_signature`,
+  `not_own_inputs`, `fee_low` (with `needed`, the minimum fee in duffs).
+- `masternodes.share_not_mine`: the share's owner key isn't one this wallet holds.
+- `masternodes.shared_too_early`: a maintenance call while the list's tip is at or below the registration's height.
+- `masternodes.shared_registration_unknown`: the registration isn't a confirmed one of this wallet's sessions
+  (MG-04b D29).
+- `masternodes.unsupported{feature: "shared_masternodes"}` also covers v24 not `active` and `sign_shared_funding`
+  while `can_send` is false; `masternodes.protx_refused` also carries Core's shared reasons and
+  `bad-protx-shared-mn` (§2.3, MG-04b D30).
 - `Platform(PlatformError)`: a lease's refusal (MG-05 D12), its code unchanged.
 - `Engine(EngineError)`: `network_not_open`, `wallet_not_found`, `invalid_argument`, `vault` (a locked vault among
   them), `storage`,
   `internal` and the rest of m1 §4, unchanged; `TxDraft`'s `send.*` failures among them (`send.grant_exceeded`,
   `send.outpoint_unavailable`, `send.amount_exceeds_balance`, …). These are not new §4 codes for the m1–m4 tables, so the Swift
-  `engineCodes` are unchanged.
+  `engineCodes` are unchanged; MG-04b's `masternodes.*` codes are this file's, not m1's, and the Swift `engineCodes`
+  stay unchanged with them.
 
 ## 5. Status
 
@@ -672,6 +955,28 @@ ProTx operations (§2.3, MG-04 §5): `ProTxOperationState`, derived on every rea
 | `not_sent` | Signed, its attempts definitely not sent (`last_error`: a `send.*` code). |
 | `signed` | Signed and saved, no hand-off started (a crash between the save and the hand-off). |
 
+Shared-masternode sessions (§2.4, MG-04b §3): `SharedStage`, derived on every read, first match wins:
+
+| Stage | When |
+|---|---|
+| `confirmed{height}` | The registration is in a block of the wallet's history: by the complete envelope's txid, or as the transaction spending the frozen template's inputs to its outputs (a participant holds only its own signed copy). |
+| `conflicted` | Bytes may be out (`out_at` set) and another transaction in a block spends one of this wallet's inputs. |
+| `sent` / `funding_signed` | `out_at` set: the coordinator's hand-off (1b), or a participant's Signed Contribution returned. |
+| `dead{reason: inputs_spent}` | Nothing out, and one of this wallet's reserved inputs is no longer unspent (MG-04b D17): never re-selected; discard it. |
+| `invited` | A participant's imported Invitation, not joined. |
+| `draft` | Rows and contributions being gathered. |
+| `signing` | The terms are locked; approvals being gathered. |
+| `combined` | Every share approved; the funding inputs being signed. |
+| `funding_signed` | Some funding inputs signed. |
+
+`SharedSession.revision` is the envelope's revision and `consent_hash` the frozen registration's `consentHash` as
+the envelope shows it (`None` in a draft): `lock_shared_terms` and `approve_shared` take them back from the record
+the caller reviewed (MG-04b D56).
+
+`SharedSession.next` says what this wallet does next (`join`, `copy`, `wait`, `lock`, `approve`, `sign`, `send`,
+`nothing`), and `warnings` lists `zero_penalty`, `empty_service` and `unvalued_inputs` (another party's inputs this
+wallet can't value). `stale` and `dead{reason: delisted}` are maintenance's (part 2).
+
 ## 6. Events
 
 `EngineEvent::Masternodes { network }`, at most once a second with the trailing edge kept. The follower polls every
@@ -679,8 +984,8 @@ ProTx operations (§2.3, MG-04 §5): `ProTxOperationState`, derived on every rea
 and the tracked ones), writes first sightings of bans and of listing to app.sqlite, and sends the event when one of
 their list entries changed. A §2.2 call sends it too, and so does a change of the wallet set (`WalletCreated`,
 `WalletRemoved`, `WalletLoadChanged`: a create, import, restore, load, unload or removal), at the same list height
-(D28). §2.3's calls send it after they change an operation or a lock. The host re-reads what it shows. Each pass
-the follower also releases settled operations' input locks and locks the collateral of each masternode of the
+(D28). §2.3's calls send it after they change an operation or a lock, and §2.4's after they change a session or its locks. The host re-reads what it shows. Each pass
+the follower also releases settled operations' and shared sessions' input locks and locks the collateral of each masternode of the
 wallet's it holds unspent, unless released (MG-04 D9, D25). dw-app forwards it as
 `AppEvent::Masternodes`; dw-ffi does not forward it until E0-13 binds the facade.
 
@@ -697,6 +1002,8 @@ wallet's it holds unspent, unless released (MG-04 D9, D25). dw-app forwards it a
 | ProTx operations | app.sqlite `masternode_ops` (migration `V2026102101`, MG-04 §3): the request, terms, unsigned or signed bytes, the fee inputs, the attempt (`sent_at` durable before each hand-off, `last_error`); not in `.dwbackup` (MG-04 D24) |
 | ProTx input and collateral locks | app.sqlite's persistent coin locks (`lock_manual`), from the row's save until settled or discarded (MG-04 D8, D9, D25) |
 | A released collateral | app.sqlite `settings_kv`, wallet scope, `masternodes.collateral_released:<txid>-<n>` (MG-04 D9) |
+| Shared-masternode sessions | app.sqlite `shared_mn_sessions` (migration `V2026102201`, MG-04b §9.1): the latest envelope (public data only), this wallet's shares and recorded contribution, its reserved outpoints, the last approved terms, the signed copy and `out_at` (durable before a Signed Contribution is returned); one row per wallet and id; not in `.dwbackup` (MG-04b D19) |
+| Shared-session locks | app.sqlite's persistent coin locks, from the save that records the contribution until discarded or settled (MG-04b D17) |
 
 The version-3 markers are written durably (`synchronous=FULL`, D35), as is the clearing of an attached key's id
 before the vault write (D34).

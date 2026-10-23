@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 37
+Contract-Version: 38
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -573,7 +573,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: d19061b8259a15f2cc05ea6b6cfe2ad2873f8b11873f395666ef5c49c6698707 version: 37 -->
+<!-- surface-sha256: 1ca5b204ba646f47f0e8cae614dddfc50ae2b0f0ede89d7198e0af2a55da83c5 version: 38 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1009,6 +1009,7 @@ pub enum FlowKind {
     Voting,
     MasternodeRegistration,
     KeyChange,
+    SharedMasternode,
     Proposal,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1995,7 +1996,7 @@ The shapes are in §3. What they mean, where the name does not say:
   engine charges no more than it quoted; a quote that went stale (a fee change) is `platform.grant_exceeded`, and the
   host quotes again.
 - **`FlowKind`** names what a lease is for; `AcceptAndPay` carries both the `PlatformOp` grant and the payment's
-  `Spend` grant. `Voting`, `MasternodeRegistration` and `KeyChange` are the masternode flows (item 59); `Proposal` pays a governance proposal's fee (item 60). **`DispatchState`** and **`DispatchResolved`** are the journal's view of a handed-off artifact (§2.11,
+  `Spend` grant. `Voting`, `MasternodeRegistration` and `KeyChange` are the masternode flows (item 59), with `SharedMasternode` (item 65); `Proposal` pays a governance proposal's fee (item 60). **`DispatchState`** and **`DispatchResolved`** are the journal's view of a handed-off artifact (§2.11,
   §6). **`LeaseView`**, `LeaseStateView` (`Active`, `AwaitingProof`, `Parked{reason}`, `NeedsGrant`,
   `Revoked{cause}`, `Ended`) and `BudgetView{purpose, ceiling, spent}` are E0-04 §4.6's view, owned here
   (E0-04 §16.1); `AwaitingProof`'s deadline is `key_expires_in_secs`. **`RevokeCause`**: `Lock`, `Close`,
@@ -3161,3 +3162,14 @@ renames or reshapes them takes the next version bump:
       not recorded, as DP5-02's identity check refuses once it is. Until the wallet holds an identity,
       `discard_registration` refuses that row (`invalid_argument`): discarded, it would free its index for the next
       claim, which Platform refuses and charges again.
+
+**From MG-04b** (version 38):
+
+65. **The shared masternode's lease (MG-04b §6.3, D18, version 38).** `FlowKind` gains `SharedMasternode`
+    ("Shared masternode"): one `MasternodeOp{max_duffs}` grant of the wallet, as `MasternodeRegistration` takes; any
+    other grant kind is `platform.grant_invalid`. A consent signature (`Masternodes.lock_shared_terms`,
+    `approve_shared`) is charged 0: it moves no coin. A funding signature (`sign_shared_funding`) charges the
+    wallet's net debit of the shared registration, its reserved inputs less its change, to `Masternode` before it
+    signs, outside `TxDraft::prepare` (the registration isn't a `TxDraft`), with `send.grant_exceeded` when the cap
+    is short; at the pin that call always refuses (`masternodes.unsupported`, MG-04b D1). Decisions in
+    `docs/design/MG-04b-shared-masternodes.md`.

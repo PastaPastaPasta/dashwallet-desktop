@@ -118,7 +118,8 @@ pub enum GrantPurpose {
     /// (MG-05 §1): yields a [`crate::VoteSigner`], which signs funding votes
     /// and nothing else. Moves no funds, so it has no cap.
     Governance,
-    /// Masternode Core transactions (ProRegTx, ProUpRegTx; MG-05 §1, §2):
+    /// Masternode Core transactions (ProRegTx, ProUpRegTx, the shared
+    /// masternode's; MG-05 §1, §2, MG-04b §6.3):
     /// `max_duffs` caps what each one takes out of the wallet, the outputs
     /// to scripts it does not own plus the fee. Yields a
     /// [`crate::SignerScope::MasternodeOwner`] signer

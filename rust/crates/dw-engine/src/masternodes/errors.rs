@@ -100,6 +100,39 @@ pub enum MasternodesError {
     /// loaded wallet's), saved no earlier, would undo (MG-04 D43).
     #[error("operation {operation} came after this update: resending it would undo that one")]
     UpdateSuperseded { operation: String },
+    /// No shared-masternode session of the wallet has this id (MG-04b §10).
+    #[error("unknown shared masternode session")]
+    SharedSessionNotFound,
+    /// The call doesn't apply at the session's stage or to its role
+    /// (MG-04b §10): `stage` names it, the derived `dead` among them, or
+    /// `replied` for a fee change after another party's reply (D33).
+    #[error("the shared session is {stage}")]
+    SharedStage { stage: String },
+    /// A pasted or opened message is refused (MG-04b §10): `reason` names
+    /// why, never the text (MG-00 D36); `share` is the share whose approval
+    /// doesn't verify, for `bad_signature`.
+    #[error(
+        "shared masternode message refused: {reason}{}",
+        share.map(|s| format!(" (share {s})")).unwrap_or_default()
+    )]
+    SharedMessage { reason: String, share: Option<u16> },
+    /// A consent or funding check of MG-04b §4 fails: `reason` names it;
+    /// `needed` is the minimum fee, in duffs, for `fee_low`.
+    #[error(
+        "the shared registration fails this wallet's check: {reason}{}",
+        needed.map(|n| format!(" (needs {n} duffs)")).unwrap_or_default()
+    )]
+    SharedFundingMismatch { reason: String, needed: Option<u64> },
+    /// A share whose owner key this wallet doesn't hold.
+    #[error("this wallet holds no owner key of that share")]
+    ShareNotMine,
+    /// A maintenance call before the registration's block is in the list
+    /// (`tip ≤ registered_height`, MG-04b §3.3).
+    #[error("too early for the shared masternode")]
+    SharedTooEarly,
+    /// The registration ProRegTx isn't in the wallet's history (MG-04b D29).
+    #[error("the shared masternode's registration is unknown to this wallet")]
+    SharedRegistrationUnknown,
     /// A lease refused (MG-05 D12).
     #[error(transparent)]
     Platform(#[from] PlatformError),
@@ -130,6 +163,13 @@ impl MasternodesError {
             Self::NoOwnerKey => "masternodes.no_owner_key",
             Self::UpdatePending { .. } => "masternodes.update_pending",
             Self::UpdateSuperseded { .. } => "masternodes.update_superseded",
+            Self::SharedSessionNotFound => "masternodes.shared_session_not_found",
+            Self::SharedStage { .. } => "masternodes.shared_stage",
+            Self::SharedMessage { .. } => "masternodes.shared_message",
+            Self::SharedFundingMismatch { .. } => "masternodes.shared_funding_mismatch",
+            Self::ShareNotMine => "masternodes.share_not_mine",
+            Self::SharedTooEarly => "masternodes.shared_too_early",
+            Self::SharedRegistrationUnknown => "masternodes.shared_registration_unknown",
             Self::Platform(e) => e.code(),
             Self::Engine(e) => e.code(),
         }

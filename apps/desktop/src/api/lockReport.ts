@@ -46,6 +46,8 @@ export const FLOW_NAME: Record<FlowKindName, string> = {
   voting: "Voting",
   masternodeRegistration: "Masternode registration",
   keyChange: "Key change",
+  // MG-04b: a shared masternode's consent and funding signatures.
+  sharedMasternode: "Shared masternode",
   // MG-06: the proposal fee.
   proposal: "Proposal fee",
 };
