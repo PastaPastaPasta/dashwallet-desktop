@@ -242,7 +242,9 @@ m4 delta, Contract-Version 35 → 36, item 63:
   the invitation, so the UI must not show the inviter as verified. `invitation_status` reads `Claimed` for this
   wallet's own claim in flight, so the UI reads the row as well.
 - F8: a sweep that revives a row D24's residual ended `invitation.claimed` once the row's stored identity (D26)
-  appears with our keys.
+  appears with our keys. The same sweep must also free a released claim row that failed `invitation.expired` or
+  `invitation.invalid` (DP5-03 D11 keeps it undiscardable; DP5-03 F8 makes `expired` reachable without the user) once
+  the row's own identity is proved absent and the lock is consumed elsewhere (DP5-03 Opus-h r1 n4).
 - F9 (Opus-h r1 n2): library `InvalidIdentityData` refusals after the engine's own funding check passed (a lagging
   node's refetch miss, a ChainLock link the library's node does not see as locked yet) map to `internal` and fail the
   row, retryable; classify them as a network wait.
@@ -253,3 +255,6 @@ m4 delta, Contract-Version 35 → 36, item 63:
   seed registering at the index after that discovery still meets Platform's duplicate-key refusal, which charges the
   voucher (D26) and maps to a retryable failure, so each resume pays again until a discovery runs. Map that consensus
   refusal from the claim to `invitation.already_has_identity`, not retryable, or run a discovery before the retry.
+  DP5-03 took the mapping (D13) and refuses the next claim's start while such a row is kept (D24); the discovery
+  half, to adopt the other device's identity at once, stays open here (it needs an `IdentityScan` grant the claim's
+  run does not hold).

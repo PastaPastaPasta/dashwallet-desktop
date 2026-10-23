@@ -1050,7 +1050,11 @@ impl RegistrationLib for Fake {
         }
         let script = self.w().claim_script.pop_front();
         match script {
-            Some(ClaimScript::Claimed) => return Err(ClaimError::Claimed),
+            // Platform's refusal answers a broadcast: the signatures went.
+            Some(ClaimScript::Claimed) => {
+                permit.note_released();
+                return Err(ClaimError::Claimed);
+            }
             Some(ClaimScript::Invalid) => return Err(ClaimError::Invalid),
             Some(ClaimScript::NotChainLocked) => return Err(ClaimError::NotChainLocked),
             Some(ClaimScript::Unavailable) => {
@@ -1064,6 +1068,14 @@ impl RegistrationLib for Fake {
             Some(ClaimScript::OtherId) => {
                 permit.note_released();
                 return Ok(invitation::OTHER.into());
+            }
+            Some(ClaimScript::ReleasedThenUnavailable) => {
+                permit.note_released();
+                return Err(ClaimError::Failed(PlatformError::Unavailable));
+            }
+            Some(ClaimScript::DuplicateKeys) => {
+                permit.note_released();
+                return Err(ClaimError::DuplicateKeys);
             }
             Some(ClaimScript::OtherAppearsThenUnavailable) => {
                 self.w().identities.push((index, invitation::OTHER.into()));

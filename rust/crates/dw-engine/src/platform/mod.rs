@@ -132,8 +132,8 @@ pub use profile::{
 };
 pub use registration::{
     FaucetLockKey, FinishReport, InitialProfile, RegistrationFailure, RegistrationFunding,
-    RegistrationPhase, RegistrationQuote, RegistrationRequest, RegistrationStatus,
-    RegistrationWait,
+    RegistrationInvitation, RegistrationPhase, RegistrationQuote, RegistrationRequest,
+    RegistrationStatus, RegistrationWait,
 };
 pub use signers::{CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultScanKey};
 pub use startup::{

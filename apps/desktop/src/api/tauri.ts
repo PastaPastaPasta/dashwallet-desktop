@@ -157,6 +157,8 @@ export class IpcBackend implements Backend {
   stashedLinks = () => cmd.stashedLinks();
   openStashedLink = cmd.openStashedLink;
   dismissStashedLink = cmd.dismissStashedLink;
+  invitationStatus = cmd.invitationStatus;
+  stashInvitation = cmd.stashInvitation;
   shellSync = cmd.shellSync;
   warnings = () => cmd.warnings();
   consoleCommands = () => cmd.consoleCommands();
@@ -174,6 +176,7 @@ export class IpcBackend implements Backend {
   dropUnconfirmed = cmd.dropUnconfirmed;
   registrations = cmd.registrations;
   registrationQuote = cmd.registrationQuote;
+  registrationResumeGrant = cmd.registrationResumeGrant;
   resolveStuckFunding = cmd.resolveStuckFunding;
   checkUsername = cmd.checkUsername;
   nameAvailability = cmd.nameAvailability;

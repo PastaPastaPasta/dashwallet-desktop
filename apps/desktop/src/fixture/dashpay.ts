@@ -60,6 +60,8 @@ export interface DashPayWorld {
   assetLocks: number;
   /** The drafts whose run this session holds (DP1-09); a relaunch drops them. */
   runs: string[];
+  /** DP5-03: the code the request to a claim's inviter is refused with for good; absent: sent. */
+  requestRefusal?: string;
   /** DP1-10: top-up locks, stuck fundings, the own contest's read; none until a handler or a
    * scenario sets it (topup.ts `creditsOf`). */
   credits?: CreditsWorld;
@@ -446,6 +448,7 @@ export function registering(): DashPayWorld {
         failure: null,
         nameFailure: null,
         profileFailure: null,
+        invitation: null,
         createdAt: at(0, 1),
         updatedAt: at(0, 0),
       },

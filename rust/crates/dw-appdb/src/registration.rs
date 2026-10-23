@@ -103,6 +103,9 @@ pub struct RegistrationChange {
     pub name_error: Option<String>,
     /// Records why the initial profile was not published.
     pub profile_error: Option<String>,
+    /// Replaces the funding record (an invitation's request outcome,
+    /// DP5-03 D8).
+    pub funding: Option<String>,
 }
 
 /// How [`AppDb::adopt_registration_lock`] ended.
@@ -263,6 +266,17 @@ impl AppDb {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Every flow of every wallet (DP5-03: the stash's holds are per
+    /// network, not per wallet).
+    pub fn all_registration_rows(&self) -> Result<Vec<RegistrationRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM dp_registration ORDER BY id"
+        ))?;
+        let rows = stmt.query_map([], read_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn registration_row(&self, wallet_id: &str, id: i64) -> Result<Option<RegistrationRow>> {
         Ok(self
             .conn()
@@ -325,6 +339,7 @@ impl AppDb {
                  initial_profile = CASE WHEN ?11 THEN NULL ELSE initial_profile END,
                  name_error = COALESCE(?16, name_error),
                  profile_error = COALESCE(?17, profile_error),
+                 funding = COALESCE(?18, funding),
                  updated_at = ?12
              WHERE wallet_id = ?1 AND id = ?2 AND phase = ?3 AND (error IS NOT NULL) = ?13
                  AND owner = ?15",
@@ -346,6 +361,7 @@ impl AppDb {
                 owner as i64,
                 change.name_error,
                 change.profile_error,
+                change.funding,
             ],
         );
         match written {

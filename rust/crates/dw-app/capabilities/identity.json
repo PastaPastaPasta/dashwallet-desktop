@@ -23,6 +23,7 @@
     "allow-start-registration-past-unknown-funding",
     "allow-registrations",
     "allow-resume-registration",
+    "allow-registration-resume-grant",
     "allow-discard-registration",
     "allow-finish-asset-locks",
     "allow-prepare-faucet-lock",

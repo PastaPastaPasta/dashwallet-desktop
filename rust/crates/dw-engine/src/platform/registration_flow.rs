@@ -62,7 +62,7 @@ use super::identity_writes::identity_locks;
 use super::invitation_check::Voucher;
 use super::invitations::{InvitationInvalidReason, InvitationStatus};
 use super::lease::mode_b::TrackedRow;
-use super::lease::{CallPermit, CallStep, DraftKey, FundingKey, Lease, LeaseTable};
+use super::lease::{CallPermit, CallStep, CallStepStatus, DraftKey, FundingKey, Lease, LeaseTable};
 use super::names::NameOutcome;
 use super::registration::RegistrationWait;
 use super::registration_ledger::{
@@ -383,7 +383,69 @@ pub(crate) enum ClaimError {
     Invalid,
     /// A stale islock, and the funding block is not chain-locked yet.
     NotChainLocked,
+    /// Platform refused the claim's keys as already in state (DP5-03 D13):
+    /// another identity of this seed holds the claim's index. Platform
+    /// charged the voucher for the refusal, so it is never sent again.
+    DuplicateKeys,
     Failed(PlatformError),
+}
+
+/// The consensus error a refusal carries, as the broadcast, the wait stream
+/// or CheckTx reports it, under any retry envelope.
+fn consensus_of(e: &dash_sdk::Error) -> Option<&dpp::consensus::ConsensusError> {
+    match e {
+        dash_sdk::Error::StateTransitionBroadcastError(e) => e.cause.as_ref(),
+        dash_sdk::Error::Protocol(dpp::ProtocolError::ConsensusError(e)) => Some(&**e),
+        dash_sdk::Error::NoAvailableAddressesToRetry(last) => consensus_of(last),
+        _ => None,
+    }
+}
+
+/// Platform's refusal of an IdentityCreate whose keys are already in state
+/// (DP5-03 D13): `DuplicatedIdentityPublicKeyIdStateError` since protocol
+/// v7, `DuplicatedIdentityPublicKeyIdBasicError` before it (rs-drive-abci
+/// `validate_unique_identity_public_key_hashes_in_state`).
+pub(crate) fn is_duplicate_keys(e: &dash_sdk::Error) -> bool {
+    use dpp::consensus::ConsensusError as C;
+    use dpp::consensus::basic::BasicError;
+    use dpp::consensus::state::state_error::StateError;
+    matches!(
+        consensus_of(e),
+        Some(
+            C::StateError(StateError::DuplicatedIdentityPublicKeyIdStateError(_))
+                | C::BasicError(BasicError::DuplicatedIdentityPublicKeyIdBasicError(_))
+        )
+    )
+}
+
+/// Platform's refusal of a claim it refused before (DP5-03 D24):
+/// `IdentityAssetLockStateTransitionReplayError` for `outpoint`. At the pin
+/// (rs-drive-abci `verify_asset_lock_is_not_spent_and_has_enough_balance_v0`)
+/// it comes only for a lock partially consumed whose used tags hold this
+/// transition's signable bytes, after the fully consumed check. Only an
+/// IdentityCreate Platform refused and charged writes a tag: its identifier,
+/// its keys' structure or proof of possession (`advanced_structure` v0), its
+/// keys already in state (`state` v0, v1), or, in `state` v1, a key's
+/// contract bounds or one already expired. So the identical claim was
+/// refused and did not land, and is refused again. Of those refusals only
+/// the keys in state can meet a claim whose identifier, keys and signatures
+/// the library builds: its keys carry no expiry, and their DashPay contract
+/// bounds hold on a network with the DashPay contract (another network's
+/// refusal is mislabelled, not stranded: it never passes).
+pub(crate) fn is_claim_replay(e: &dash_sdk::Error, outpoint: &OutPoint) -> bool {
+    use dpp::consensus::ConsensusError as C;
+    use dpp::consensus::basic::BasicError;
+    matches!(
+        consensus_of(e),
+        Some(C::BasicError(BasicError::IdentityAssetLockStateTransitionReplayError(r)))
+            if r.transaction_id() == outpoint.txid && r.output_index() == outpoint.vout as usize
+    )
+}
+
+/// Platform's refusal of the claim's keys (DP5-03 D13), or a replay of
+/// that refusal for the claim's own lock (D24): [`ClaimError::DuplicateKeys`].
+pub(crate) fn claim_refused_for_keys(e: &dash_sdk::Error, outpoint: &OutPoint) -> bool {
+    is_duplicate_keys(e) || is_claim_replay(e, outpoint)
 }
 
 /// The outpoint a claim spends, from its link's funding, or why the claim
@@ -1055,6 +1117,58 @@ pub(crate) fn is_core_balance(row: &RegistrationRow) -> bool {
     matches!(interpret(row), Ok((_, Funding::CoreBalance { .. })))
 }
 
+/// Why an invitation row must not be discarded (DP5-03 D11, DP5-02 F5):
+/// its identity exists and its name step has not ended, or its identity
+/// step may have released signatures (`step`, the call step's marker:
+/// standing or `Sent`) and no refusal proved the claim did not land.
+/// Either way a discard could leave an identity on Platform that no step
+/// finishes.
+pub(crate) fn claim_discard_refused(
+    row: &RegistrationRow,
+    step: CallStepStatus,
+) -> Option<&'static str> {
+    let Ok((phase, Funding::Invitation { .. })) = interpret(row) else {
+        return None;
+    };
+    if phase == Phase::Done && row.error.is_none() {
+        return None;
+    }
+    if row.identity.is_some() {
+        return Some("the claim's identity exists; its name is not registered yet");
+    }
+    let released = matches!(step, CallStepStatus::Marked { .. } | CallStepStatus::Sent);
+    // Only a refusal that proves the claim did not land frees it: Platform
+    // refused its keys, or another claim consumed the lock. A link gone
+    // from the stash proves nothing.
+    let disproved = !row.retryable
+        && row.error.as_deref().is_some_and(|code| {
+            code == InvitationError::AlreadyHasIdentity.code()
+                || code == InvitationError::Claimed.code()
+        });
+    (released && !disproved).then_some("the claim may have reached the network")
+}
+
+/// A claim row stopped on `invitation.already_has_identity` (DP5-03 D24):
+/// the seed has an identity the discovery has not recorded yet. While one is
+/// on file a claim's start is refused, as DP5-02 D7 refuses it once that
+/// identity is recorded (the next claim, at the next index, would make the
+/// seed a second identity), and the row is not discarded until then.
+pub(crate) fn claim_found_identity(row: &RegistrationRow) -> bool {
+    !row.retryable && row.error.as_deref() == Some(InvitationError::AlreadyHasIdentity.code())
+}
+
+/// The link of an open claim row: an invitation's, neither `Done` nor
+/// failed for good (DP5-03 D12: its stash entry is held). A row this build
+/// cannot run (DEC-171 (3)) may be a newer build's open claim: it is open.
+pub(crate) fn open_claim_link(row: &RegistrationRow) -> Option<String> {
+    let Decoded::Known(Funding::Invitation { link_id, .. }) = Funding::decode(&row.funding) else {
+        return None;
+    };
+    let done = Phase::parse(&row.phase) == Some(Phase::Done) && row.error.is_none();
+    let ended = done || (row.error.is_some() && !row.retryable);
+    (!ended).then_some(link_id)
+}
+
 /// A row this build cannot read (DEC-171 (3)).
 pub(crate) fn is_unsupported(row: &RegistrationRow) -> bool {
     interpret(row) == Err(unsupported())
@@ -1483,6 +1597,10 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 return Ok(());
             };
             if row.error.is_some() {
+                // Whichever write failed it (DP5-03 D12).
+                if !row.retryable {
+                    self.settle_link(&row).await;
+                }
                 return Ok(());
             }
             match self.step(&row).await? {
@@ -1534,8 +1652,19 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             failure: Some(Some((code.into(), retryable))),
             ..Default::default()
         };
-        self.write(row, change).await?;
+        let written = self.write(row, change).await?;
+        if !retryable && written == Written::Applied {
+            self.settle_link(row).await;
+        }
         Ok(())
+    }
+
+    /// A claim failed for good lets its link go, unless another open claim
+    /// names it (DP5-03 D12).
+    async fn settle_link(&self, row: &RegistrationRow) {
+        if let Ok((_, Funding::Invitation { link_id, .. })) = interpret(row) {
+            self.session.settle_invitation_hold(link_id).await;
+        }
     }
 
     async fn ledger(&self) -> Result<Ledger, PlatformError> {
@@ -2303,12 +2432,25 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         }
     }
 
+    /// [`Self::claim_step`] with the stash entry held while the claim is
+    /// open (DP5-03 D12), a row started before holds included; [`Self::fail`]
+    /// lets it go.
+    async fn claim_invitation(
+        &self,
+        row: &RegistrationRow,
+        link_id: &str,
+        own: &str,
+    ) -> Result<Step, PlatformError> {
+        self.session.hold_invitation(link_id.to_owned(), true).await;
+        self.claim_step(row, link_id, own).await
+    }
+
     /// KeysPrepared → IdentityRegistered for an invitation (DP5-02 §3): the
     /// library's claim with the link from the stash, under the identity
     /// step's permit as [`Self::create_identity`]. No Core funds: the step
     /// never funds, and the lease has no funding signer (D8). `own`: the
     /// identity the claim creates (D26), the only one adopted.
-    async fn claim_invitation(
+    async fn claim_step(
         &self,
         row: &RegistrationRow,
         link_id: &str,
@@ -2399,6 +2541,17 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             ClaimError::Claimed => Step::Fail(InvitationError::Claimed.code(), false),
             ClaimError::Invalid => Step::Fail(InvitationError::Invalid.code(), false),
             ClaimError::NotChainLocked => Step::Wait(RegistrationWait::ChainLock),
+            // D26's verdict, found by Platform after the discovery missed
+            // the other identity (DP5-02 F11): the voucher is charged per
+            // refusal, so the row stops, its link kept.
+            ClaimError::DuplicateKeys => {
+                tracing::warn!(
+                    draft = self.draft(),
+                    index,
+                    "Platform refused the claim's keys: another identity of the seed holds them"
+                );
+                Step::Fail(InvitationError::AlreadyHasIdentity.code(), false)
+            }
             ClaimError::Failed(e) => {
                 if locked || self.authority_wait() == RegistrationWait::Unlock {
                     Step::Park(self.authority_wait())
@@ -2412,6 +2565,10 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
     /// Wipes the claimed link from the stash (D13); a failure is logged and
     /// the next step tries again.
     async fn forget_link(&self, link_id: &str) {
+        // Spent: the claim lets go of it first (DP5-03 D12).
+        self.session
+            .hold_invitation(link_id.to_owned(), false)
+            .await;
         if let Err(e) = self.session.forget_invitation(link_id.to_owned()).await {
             tracing::warn!(
                 draft = self.draft(),
@@ -2465,7 +2622,31 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             code = refused,
             "the request to the inviter was refused"
         );
-        self.to_phase(row, Phase::Done).await
+        // Kept for the host's note on the done row (DP5-03 D8).
+        let funding = match Funding::decode(&row.funding) {
+            Decoded::Known(Funding::Invitation {
+                link_id,
+                inviter,
+                identity,
+                ..
+            }) => Funding::Invitation {
+                link_id,
+                inviter,
+                identity,
+                request_error: Some(refused.to_owned()),
+            }
+            .encode(),
+            _ => return Ok(Step::Fail(internal(), false)),
+        };
+        self.advance(
+            row,
+            RegistrationChange {
+                phase: Some(Phase::Done.as_str().into()),
+                funding: Some(funding),
+                ..Default::default()
+            },
+        )
+        .await
     }
 
     /// A funding call of this process signed the tracked lock at `outpoint`
@@ -3172,6 +3353,9 @@ impl RegistrationLib for PwLib {
             Err(E::AssetLockNotChainLocked(_)) => Err(ClaimError::NotChainLocked),
             Err(E::Sdk(e)) if is_asset_lock_already_consumed(&e, &outpoint) => {
                 self.consumed_claim(outpoint, &keys).await
+            }
+            Err(E::Sdk(e)) if claim_refused_for_keys(&e, &outpoint) => {
+                Err(ClaimError::DuplicateKeys)
             }
             Err(e) => Err(ClaimError::Failed(e.into())),
         }

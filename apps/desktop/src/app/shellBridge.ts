@@ -137,7 +137,7 @@ export function applyLink(route: LinkRoute) {
         showToast(SavedLinksText.invitationSaved);
         return;
       }
-      navigate("joinDashPay", { invitation: true });
+      navigate("joinDashPay", { invitation: { linkId: route.linkId, entry: "join" } });
       break;
     default:
       showToast(linkProblem(route)!);

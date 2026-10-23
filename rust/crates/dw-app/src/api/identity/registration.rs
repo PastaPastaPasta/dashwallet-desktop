@@ -69,8 +69,12 @@ impl From<InitialProfile> for engine::InitialProfile {
 )]
 pub enum RegistrationFunding {
     CoreBalance,
-    /// A `stashInvitation` id.
-    Invitation { link_id: String },
+    /// A `stashInvitation` id. `request_inviter: false` skips the contact
+    /// request to the inviter (DP5-03 D7).
+    Invitation {
+        link_id: String,
+        request_inviter: bool,
+    },
     ExistingIdentity { identity: String },
     /// Developer builds only. `key` is a `prepareFaucetLock` key id and
     /// `proof` the hex `assetLockProof` the faucet returned for its public key.
@@ -81,9 +85,13 @@ impl From<RegistrationFunding> for engine::RegistrationFunding {
     fn from(f: RegistrationFunding) -> Self {
         match f {
             RegistrationFunding::CoreBalance => engine::RegistrationFunding::CoreBalance,
-            RegistrationFunding::Invitation { link_id } => {
-                engine::RegistrationFunding::Invitation { link_id }
-            }
+            RegistrationFunding::Invitation {
+                link_id,
+                request_inviter,
+            } => engine::RegistrationFunding::Invitation {
+                link_id,
+                request_inviter,
+            },
             RegistrationFunding::ExistingIdentity { identity } => {
                 engine::RegistrationFunding::ExistingIdentity { identity }
             }
@@ -273,8 +281,39 @@ pub struct RegistrationStatus {
     pub name_failure: Option<String>,
     /// The same for the initial profile, which `updateProfile` publishes.
     pub profile_failure: Option<String>,
+    /// Set on an invitation claim's row.
+    pub invitation: Option<RegistrationInvitation>,
     pub created_at: u64,
     pub updated_at: u64,
+}
+
+/// What a claim row records about its invitation (DP5-03 D8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistrationInvitation {
+    /// The stash id; it no longer opens once the identity is registered.
+    pub link_id: String,
+    /// The identity the contact request goes to; `None` when the link named
+    /// no inviter or the user opted out.
+    pub inviter: Option<String>,
+    /// The code the request to the inviter was refused with for good; the
+    /// row still ends `done`.
+    pub request_failure: Option<String>,
+}
+
+impl From<engine::RegistrationInvitation> for RegistrationInvitation {
+    fn from(i: engine::RegistrationInvitation) -> Self {
+        let engine::RegistrationInvitation {
+            link_id,
+            inviter,
+            request_failure,
+        } = i;
+        RegistrationInvitation {
+            link_id,
+            inviter,
+            request_failure,
+        }
+    }
 }
 
 impl From<engine::RegistrationStatus> for RegistrationStatus {
@@ -294,6 +333,7 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             failure,
             name_failure,
             profile_failure,
+            invitation,
             created_at,
             updated_at,
         } = s;
@@ -312,6 +352,7 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             failure: failure.map(Into::into),
             name_failure,
             profile_failure,
+            invitation: invitation.map(Into::into),
             created_at,
             updated_at,
         }
@@ -350,7 +391,7 @@ mod tests {
     fn requests_parse_with_a_tagged_funding() {
         let r: RegistrationRequest = serde_json::from_str(
             r#"{"label":"alice","temporaryLabel":null,
-                "funding":{"kind":"invitation","linkId":"abc"},
+                "funding":{"kind":"invitation","linkId":"abc","requestInviter":false},
                 "initialProfile":{"displayName":"Alice","publicMessage":null,"avatarCandidate":null}}"#,
         )
         .unwrap();
@@ -358,7 +399,8 @@ mod tests {
         assert_eq!(
             e.funding,
             engine::RegistrationFunding::Invitation {
-                link_id: "abc".into()
+                link_id: "abc".into(),
+                request_inviter: false,
             }
         );
         assert_eq!(

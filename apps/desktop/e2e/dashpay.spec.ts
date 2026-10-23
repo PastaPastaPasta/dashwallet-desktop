@@ -253,11 +253,11 @@ test("IOS-065 J4–J6: a registration in flight shows its screen on the Join pag
   await expect(page.getByTestId("join-joined")).toHaveText("You have joined DashPay as @alice.");
 });
 
-test("an invitation link says joining with one is not available yet", async ({ page }) => {
+test("DP5-03 an invitation link opens its claim screen in place of the Join intro", async ({ page }) => {
   await open(page, "dashpay-no-identity");
   await page.evaluate(() => window.__dwFixture!.deliverLinks([{ kind: "invitation", linkId: "" }]));
-  await expect(page.getByTestId("invitation-received")).toBeVisible();
-  await expect(page.getByTestId("join-intro")).toBeVisible();
+  await expect(page.getByTestId("claim")).toHaveAttribute("data-state", "invited");
+  await expect(page.getByTestId("join-intro")).toHaveCount(0);
 });
 
 for (const theme of THEMES) {

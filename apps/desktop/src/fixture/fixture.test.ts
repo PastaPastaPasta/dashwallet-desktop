@@ -197,7 +197,10 @@ describe("fixture backend", () => {
     expect(await quote("dashpaydesktopquote2")).toMatchObject({ contested: false, lockDuffs: 3_000_000, totalDuffs: 3_002_260 });
     expect(await quote("alice")).toMatchObject({ contested: true, lockDuffs: 25_000_000 });
     await expect(quote("-alice")).rejects.toMatchObject({ code: "name.invalid" });
-    await expect(quote("alice", { kind: "invitation", linkId: "1" })).rejects.toMatchObject({ code: "platform.not_implemented" });
+    // DP5-03: a claim's quote reads the stash; a link not in it has expired.
+    await expect(quote("dashpaydesktopquote2", { kind: "invitation", linkId: "1".padStart(32, "0"), requestInviter: true })).rejects.toMatchObject({
+      code: "invitation.expired",
+    });
   });
 
   it("rejects a command it does not implement with a typed AppError", async () => {

@@ -107,11 +107,14 @@ pub(crate) enum Funding {
     /// resolved to at the start (DP5-02 D14), sent a contact request once
     /// the identity exists; the link is wiped before that step. `identity`:
     /// the id the claim creates, from the voucher's outpoint at the start
-    /// (D26), the only identity the row adopts.
+    /// (D26), the only identity the row adopts. `request_error`: the code
+    /// the request to the inviter was refused with for good, written when
+    /// that step settles the row `Done` (DP5-03 D8).
     Invitation {
         link_id: String,
         inviter: Option<String>,
         identity: String,
+        request_error: Option<String>,
     },
     /// Developer builds: `key` is a `prepare_faucet_lock` key id (the
     /// engine re-derives the private key) and `proof` the faucet's public
@@ -140,12 +143,16 @@ impl Funding {
                 link_id,
                 inviter,
                 identity,
+                request_error,
             } => {
                 let mut value = json!({
                     "v": v, "kind": "invitation", "link_id": link_id, "identity": identity,
                 });
                 if let Some(inviter) = inviter {
                     value["inviter"] = json!(inviter);
+                }
+                if let Some(code) = request_error {
+                    value["request_error"] = json!(code);
                 }
                 value
             }
@@ -165,6 +172,11 @@ impl Funding {
                 return None;
             }
             let field = |name: &str| value.get(name).and_then(Value::as_str).map(str::to_owned);
+            // Absent is `None`; present, it must be a string.
+            let optional = |name: &str| match value.get(name) {
+                None => Some(None),
+                Some(v) => v.as_str().map(|s| Some(s.to_owned())),
+            };
             Some(match value.get("kind")?.as_str()? {
                 "core_balance" => Funding::CoreBalance {
                     lock_duffs: value.get("lock_duffs")?.as_u64()?,
@@ -172,11 +184,9 @@ impl Funding {
                 "existing_identity" => Funding::ExistingIdentity,
                 "invitation" => Funding::Invitation {
                     link_id: field("link_id")?,
-                    inviter: match value.get("inviter") {
-                        None => None,
-                        Some(inviter) => Some(inviter.as_str()?.to_owned()),
-                    },
+                    inviter: optional("inviter")?,
                     identity: field("identity")?,
+                    request_error: optional("request_error")?,
                 },
                 "faucet_asset_lock" => Funding::FaucetAssetLock {
                     key: field("key")?,
@@ -259,11 +269,19 @@ mod tests {
                 link_id: "abc".into(),
                 inviter: None,
                 identity: "Carol1dentity".into(),
+                request_error: None,
             },
             Funding::Invitation {
                 link_id: "abc".into(),
                 inviter: Some("Bob1nviter".into()),
                 identity: "Carol1dentity".into(),
+                request_error: None,
+            },
+            Funding::Invitation {
+                link_id: "abc".into(),
+                inviter: Some("Bob1nviter".into()),
+                identity: "Carol1dentity".into(),
+                request_error: Some("contact.no_dashpay_keys".into()),
             },
             Funding::FaucetAssetLock {
                 key: "k1".into(),
@@ -294,6 +312,7 @@ mod tests {
             r#"{"v":1,"kind":"invitation"}"#,
             r#"{"v":1,"kind":"invitation","link_id":"abc","identity":"C","inviter":7}"#,
             r#"{"v":1,"kind":"invitation","link_id":"abc","identity":7}"#,
+            r#"{"v":1,"kind":"invitation","link_id":"abc","identity":"C","request_error":1}"#,
             // No build wrote an invitation row without its identity (D26):
             // DP1-02 refused invitations at the start.
             r#"{"v":1,"kind":"invitation","link_id":"abc"}"#,
