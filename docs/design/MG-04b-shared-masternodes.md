@@ -959,7 +959,11 @@ Review r2's nine (r2-m6, DEC-312):
 
 The mutant list lives in the scratch script with, for each, the test that kills it. Each READY report lists the
 mutants whose code is in that slice with their killing test (1a: the creation and envelope paths, and 20's release
-check); part 2's lists all 33.
+check; 1b: 18 and 31 on the coordinator's send and the abandon, with the fence, hold and release paths of D68–D73;
+20 is retired with `can_send`'s gate, D71); part 2's lists all 33. Of 1b's 30 scratch mutants, four are defense in
+depth no reachable state exercises, so no test kills them: the held-coin filters behind the lock in `set_shared_fee`'s
+re-selection and in `protx_context`'s collateral set (a held coin stays locked, D69), and the fences in
+`sign_shared_funding` and `approve_shared` (every writer of a reservation or its lock is fenced, D68, D69).
 
 ## 13. Slices
 
@@ -1115,6 +1119,9 @@ MG-05's FlowKind gains `SharedMasternode` (1a) and `Dissolution` (2) (MG-05 D8).
 - Carry every net-info entry in platform-wallet's `MasternodeListSummary` (BL-187's pin decodes them, D62) and in
   `ListedMasternode`, so §5's `bad-protx-dup-netinfo-entry` sees them all (D39). Ruled for before slice 1b sends; it
   needs a platform-wallet change and a pin move (D75), so it's open for the manager.
+- T1 `regtest/functional/dwd_shared.py` for slice 1b (creation, both mixed sessions, the reward change): not in 1b.
+  The run needs dashd rc.3 with v24 by `-vbparams`, and first a version-3 masternode dashd registers, since the
+  wallet reads v24 `active` only from a version-3 list entry (D3); the engine tests cover the flows in process.
 - Part 2: the vault's ProUpShareTx and ProUpSharedRegTx signers take the registration and check the key's share, as
   `sign_dissolution` does; they have no 1a caller (review r1 of 1a, Opus-h NIT-3).
 - Done in 1b (D70): a depth before the follower reads an out session `conflicted` and releases its locks, since a reorg can undo the
