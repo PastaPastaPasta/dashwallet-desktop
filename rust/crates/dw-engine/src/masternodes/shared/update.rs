@@ -226,8 +226,13 @@ impl NetworkSession {
                 .sign_update_share(plan.owner_index, &payload_bytes(&plan.payload))
                 .map_err(signer_refusal)?;
             // The keychain key must be the share's (the vault signs what
-            // it's given, D11): else Core refuses the bytes.
-            if !dw_protx::rules::signed_by(&sig, plan.payload.sign_hash(), plan.owner_key_id) {
+            // it's given, D11), checked as Core checks every share
+            // signature: else Core refuses the bytes.
+            if !shared_rules::verify_hash_canonical(
+                plan.payload.sign_hash(),
+                plan.owner_key_id,
+                &sig,
+            ) {
                 return Err(MasternodesError::ShareNotMine);
             }
             plan.payload.sig = sig.to_vec();

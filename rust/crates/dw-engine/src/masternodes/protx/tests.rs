@@ -1151,6 +1151,32 @@ fn mg04_a_confirmed_registration_settles_and_its_collateral_lock_follows_the_use
     assert!(f.locked().is_empty());
     f.follow();
     assert_eq!(f.locked(), HashSet::from([collateral]));
+    // A coin a row holds stays locked through a release (MG-04b D69).
+    let session = dw_appdb::SharedSessionRow {
+        id: "ab".repeat(32),
+        kind: "registration".into(),
+        role: "coordinator".into(),
+        envelope: "{}".into(),
+        my_shares: "{}".into(),
+        contribution: None,
+        reserved: format!("[\"{collateral}\"]"),
+        approved_terms: None,
+        base_keys: None,
+        signed_tx: None,
+        txid: None,
+        out_at: None,
+        abandon_txid: None,
+        created_at: 1,
+        updated_at: 1,
+        last_error: None,
+    };
+    (f.db())
+        .insert_shared_session_durable(&f.wallet.to_string(), &session, 1)
+        .unwrap();
+    f.engine
+        .block_on(f.mn().release_collateral(f.wallet, hash.clone()))
+        .unwrap();
+    assert_eq!(f.locked(), HashSet::from([collateral]));
 
     let unknown = f
         .engine

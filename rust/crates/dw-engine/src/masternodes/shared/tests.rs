@@ -49,6 +49,8 @@ struct Net {
     /// The next hand-off is refused, never sent (a first attempt then
     /// releases its inputs).
     reject: std::sync::atomic::AtomicBool,
+    /// The next hand-off's outcome is unknown (its pending spend stays).
+    unconfirm: std::sync::atomic::AtomicBool,
 }
 
 impl Net {
@@ -58,6 +60,11 @@ impl Net {
 
     fn reject_next(&self) {
         self.reject.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn unconfirm_next(&self) {
+        self.unconfirm
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -74,6 +81,13 @@ impl TestBroadcaster for Net {
         if self.reject.swap(false, std::sync::atomic::Ordering::SeqCst) {
             let refused = PlatformWalletError::TransactionBroadcast("bad-txns-test".into());
             return Box::pin(async move { Err(refused) });
+        }
+        if self
+            .unconfirm
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            let unknown = PlatformWalletError::TransactionBroadcastUnconfirmed("test".into());
+            return Box::pin(async move { Err(unknown) });
         }
         self.sent.lock().unwrap().push(tx.clone());
         let txid = tx.txid();
@@ -1968,6 +1982,20 @@ fn test_QT_126_a_refused_hand_off_is_resent_at_its_debit() {
     assert_eq!(f.row(0, &id).last_error, None);
 }
 
+/// QT-091, D72: a registration whose hand-off outcome is unknown keeps its
+/// pending spend, so the coordinator abandons that transaction first.
+#[test]
+fn test_QT_126_an_unknown_hand_off_keeps_its_coins_from_an_abandon() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.net.unconfirm_next();
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    assert!(f.row(0, &id).last_error.is_some());
+    assert_stage(f.abandon(0, &id).unwrap_err(), "sent");
+    assert!(f.row(0, &id).abandon_txid.is_none());
+}
+
 /// D72 (validator r1 of 1b, m1): the coordinator abandons a registration
 /// the network refused, and the user's exit stands: no resend after it.
 #[test]
@@ -2231,6 +2259,47 @@ fn test_QT_126_a_reservation_is_exclusive_across_sessions() {
 /// key, the fee inputs by the wallet's, charged the fee, saved with its
 /// input locks before the hand-off. A second one waits while the first may
 /// still be mined; a resend hands off the same bytes.
+/// D73 (validator r1 of 1b, m3): a recorded owner key index that isn't the
+/// share's key signs nothing the network would take: `share_not_mine`,
+/// nothing saved or sent.
+#[test]
+fn test_QT_127_update_share_refuses_a_key_that_isnt_the_shares() {
+    let f = fx(3, true);
+    let (id, txid) = confirmed(&f, 50);
+    f.follow();
+    let entry = platform_wallet::masternode::MasternodeListSummary {
+        pro_tx_hash: txid.to_byte_array(),
+        service_address: Some("1.2.3.4:19999".parse().unwrap()),
+        platform_http_port: None,
+        operator_public_key: [1; 48],
+        voting_key_id: [1; 20],
+        platform_node_id: None,
+        is_valid: true,
+        is_evonode: false,
+        has_extended_net_info: true,
+    };
+    *f.seam.list.lock().unwrap() = Some(vec![entry]);
+    f.credit(0, 9, COIN);
+    f.rewrite(0, &id, |u| {
+        let mut c: serde_json::Value =
+            serde_json::from_str(u.contribution.as_deref().unwrap()).unwrap();
+        c["owner_index"] = (c["owner_index"].as_u64().unwrap() + 1).into();
+        u.contribution = Some(c.to_string());
+    });
+    let req = UpdateShareRequest {
+        pro_tx_hash: txid.to_string(),
+        share_index: 0,
+        reward: RewardChoice::Refund,
+    };
+    let grant = f.grant(0, COIN);
+    let e = f
+        .run(f.mn().update_share(f.wallets[0], req, grant))
+        .unwrap_err();
+    assert!(matches!(e, MasternodesError::ShareNotMine), "{e:?}");
+    assert!(f.net.sent().is_empty());
+    assert!(f.run(f.mn().operations(f.wallets[0])).unwrap().is_empty());
+}
+
 #[test]
 fn test_QT_127_update_share_sends_an_operation() {
     let f = fx(3, true);
