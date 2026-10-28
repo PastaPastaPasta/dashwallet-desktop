@@ -2016,6 +2016,34 @@ fn test_QT_126_an_abandoned_registration_is_never_resent() {
     assert_eq!(f.net.sent().len(), 1);
 }
 
+/// D17, §12 mutant 18 (the coordinator): a crash after the `out_at` write,
+/// before the hand-off, leaves the signed registration stored and out,
+/// never deletable, nothing sent; the next call hands it off once.
+#[test]
+fn test_QT_126_a_coordinator_crash_before_the_hand_off_keeps_it_out() {
+    let mut f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    *f.seam.crash.lock().unwrap() = Some(CrashPoint::SharedOut);
+    assert!(f.send(0, &id, 400 * COIN + FEE).is_err());
+    *f.seam.crash.lock().unwrap() = None;
+    let row = f.row(0, &id);
+    assert!(row.out_at.is_some() && row.signed_tx.is_some());
+    assert!(f.net.sent().is_empty());
+    f.restart();
+    let e = f
+        .run(f.mn().discard_shared_session(f.wallets[0], id.clone()))
+        .unwrap_err();
+    assert_eq!(code(e), "masternodes.shared_stage");
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    let sent = f.net.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        dashcore::consensus::serialize(&sent[0]),
+        f.row(0, &id).signed_tx.unwrap()
+    );
+}
+
 /// D24: only the coordinator sends; a participant's call names its role.
 #[test]
 fn test_QT_126_a_participant_never_sends() {
