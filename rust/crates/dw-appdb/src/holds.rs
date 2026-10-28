@@ -23,17 +23,17 @@ pub enum Holder<'a> {
     Session(&'a str),
 }
 
-impl Holder<'_> {
-    fn operation(self) -> Option<String> {
+impl<'a> Holder<'a> {
+    fn operation(self) -> Option<&'a str> {
         match self {
-            Holder::Operation(id) => Some(id.to_owned()),
+            Holder::Operation(id) => Some(id),
             _ => None,
         }
     }
 
-    fn session(self) -> Option<String> {
+    fn session(self) -> Option<&'a str> {
         match self {
-            Holder::Session(id) => Some(id.to_owned()),
+            Holder::Session(id) => Some(id),
             _ => None,
         }
     }

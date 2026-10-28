@@ -245,7 +245,7 @@ impl Masternodes {
                 #[cfg(test)]
                 ops::crash_at(&s, ops::CrashPoint::Saved)?;
                 let summary = s
-                    .summary_of(&w, &tx, &utxos, &funding, change.as_ref())
+                    .summary_of(&w, &tx, &utxos, funding.fee, change.as_ref())
                     .await;
                 s.deliver(
                     wallet,
@@ -386,12 +386,7 @@ impl Masternodes {
                     return Err(MasternodesError::OperationNotFound);
                 }
                 let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
-                let funding = Funding {
-                    inputs: utxos.clone(),
-                    fee: row.fee,
-                    change: None,
-                };
-                let summary = s.summary_of(&w, &tx, &utxos, &funding, None).await;
+                let summary = s.summary_of(&w, &tx, &utxos, row.fee, None).await;
                 s.deliver(
                     wallet,
                     Delivery {
@@ -608,7 +603,7 @@ impl Masternodes {
                 #[cfg(test)]
                 ops::crash_at(&s, ops::CrashPoint::Saved)?;
                 let summary = s
-                    .summary_of(&w, &tx, &utxos, &funding, change.as_ref())
+                    .summary_of(&w, &tx, &utxos, funding.fee, change.as_ref())
                     .await;
                 s.deliver(
                     wallet,
@@ -701,27 +696,11 @@ impl Masternodes {
                 let fence = s.coin_fence(wallet).await?;
                 let w = s.wallet(&wallet).await?;
                 let maybe_out = row.sent_at.is_some();
-                let others =
-                    (s.spends).held_by_others(&wallet, crate::send::SpendOwner::Tx(tx.txid()));
-                if let Some(i) = tx
-                    .input
-                    .iter()
-                    .find(|i| others.contains(&i.previous_output))
-                {
-                    return Err(EngineError::from(SendFailure::OutpointUnavailable(
-                        i.previous_output,
-                    ))
-                    .into());
-                }
+                s.check_resend_inputs(wallet, &tx)?;
                 let coins = s.input_coins(&fence, &w, &tx, false).await?;
                 let (charge, _) = charge_fee(&lease, row.fee)?;
                 let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
-                let funding = Funding {
-                    inputs: utxos.clone(),
-                    fee: row.fee,
-                    change: None,
-                };
-                let summary = s.summary_of(&w, &tx, &utxos, &funding, None).await;
+                let summary = s.summary_of(&w, &tx, &utxos, row.fee, None).await;
                 s.deliver(
                     wallet,
                     Delivery {
@@ -785,7 +764,7 @@ impl Masternodes {
     }
 }
 
-fn json<T: serde::Serialize>(value: &T) -> Result<String, MasternodesError> {
+pub(super) fn json<T: serde::Serialize>(value: &T) -> Result<String, MasternodesError> {
     serde_json::to_string(value)
         .map_err(|e| EngineError::Internal(format!("encoding a ProTx record: {e}")).into())
 }
@@ -928,12 +907,32 @@ impl NetworkSession {
         Ok(out)
     }
 
+    /// A resend's check (MG-04 D7): no other pending spend holds an input
+    /// of `tx`.
+    pub(super) fn check_resend_inputs(
+        &self,
+        wallet: WalletId,
+        tx: &dashcore::Transaction,
+    ) -> Result<(), MasternodesError> {
+        let others = (self.spends).held_by_others(&wallet, crate::send::SpendOwner::Tx(tx.txid()));
+        match tx
+            .input
+            .iter()
+            .find(|i| others.contains(&i.previous_output))
+        {
+            Some(i) => {
+                Err(EngineError::from(SendFailure::OutpointUnavailable(i.previous_output)).into())
+            }
+            None => Ok(()),
+        }
+    }
+
     pub(super) async fn summary_of(
         &self,
         w: &PlatformWallet,
         tx: &dashcore::Transaction,
         inputs: &[key_wallet::Utxo],
-        funding: &Funding,
+        fee: u64,
         change: Option<&dashcore::Address>,
     ) -> crate::send::PreparedSummary {
         let network = self.network.core_network();
@@ -942,7 +941,7 @@ impl NetworkSession {
         summarize(
             tx,
             inputs,
-            funding.fee,
+            fee,
             change.as_ref(),
             |script| {
                 dashcore::Address::from_script(script, network)

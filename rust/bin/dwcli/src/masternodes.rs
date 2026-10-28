@@ -977,6 +977,11 @@ fn shared_command(
     args: SharedArgs,
 ) -> Result<Value, Failure> {
     let w = wallet(session, args.wallet)?;
+    // A grant capped at the session's `debit` (MG-04b D9).
+    let debit_grant = |id: &str| -> Result<String, Failure> {
+        let debit = engine.block_on(mn.shared_session(w, id.to_string()))?.debit;
+        masternode_grant(session, passphrase, w, debit.unwrap_or(0))
+    };
     match args.command {
         SharedCommand::Capability => value(engine.block_on(mn.shared_capability(w))?),
         SharedCommand::Sessions => value(engine.block_on(mn.shared_sessions(w))?),
@@ -1028,13 +1033,11 @@ fn shared_command(
             value(engine.block_on(mn.approve_shared(w, id, consent_hash, grant))?)
         }
         SharedCommand::Sign { session: id } => {
-            let debit = engine.block_on(mn.shared_session(w, id.clone()))?.debit;
-            let grant = masternode_grant(session, passphrase, w, debit.unwrap_or(0))?;
+            let grant = debit_grant(&id)?;
             value(engine.block_on(mn.sign_shared_funding(w, id, grant))?)
         }
         SharedCommand::Send { session: id } => {
-            let debit = engine.block_on(mn.shared_session(w, id.clone()))?.debit;
-            let grant = masternode_grant(session, passphrase, w, debit.unwrap_or(0))?;
+            let grant = debit_grant(&id)?;
             value(engine.block_on(mn.send_shared_registration(w, id, grant))?)
         }
         SharedCommand::Abandon {

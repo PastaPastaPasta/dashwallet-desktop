@@ -9,14 +9,13 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use dashcore::hashes::Hash as _;
-use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
+use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut};
 use dw_protx::shared::session::Stage;
 use dw_protx::shared::{ProRegTxV3, SpecialTx};
 use key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 
 use super::super::MasternodesError;
-use super::super::protx::build::{Context, Funding, SEQUENCE, to_sign, tx_size};
+use super::super::protx::build::{Context, SEQUENCE, to_sign, tx_size};
 use super::super::protx::charge_fee;
 use super::super::protx::ops::error_code;
 use super::super::shared_records::SharedStage;
@@ -26,9 +25,7 @@ use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
 use crate::coins::{CoinFence, now_secs, own_address_info, read_coins};
 use crate::send::plan::dust_threshold;
 use crate::send::plan::fee_for;
-use crate::send::{
-    MIN_FEE_PER_KB, PreparedSummary, SendFailure, SpendCharge, SpendOwner, l1_address,
-};
+use crate::send::{MIN_FEE_PER_KB, PreparedSummary, SendFailure, SpendCharge, l1_address};
 use crate::{EngineError, NetworkSession, WalletId};
 
 /// A refusal past `out_at` names the stage it reads (D17).
@@ -86,12 +83,7 @@ impl NetworkSession {
         let w = self.wallet(&fence.wallet_id()).await?;
         let coins = self.input_coins(fence, &w, tx, false).await?;
         let inputs: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
-        let funding = Funding {
-            inputs: inputs.clone(),
-            fee,
-            change: None,
-        };
-        Ok(self.summary_of(&w, tx, &inputs, &funding, change).await)
+        Ok(self.summary_of(&w, tx, &inputs, fee, change).await)
     }
 
     /// The coordinator's send (§3.1 step 5, D24): once every other party's
@@ -184,18 +176,7 @@ impl NetworkSession {
             .as_deref()
             .and_then(|b| dashcore::consensus::deserialize(b).ok())
             .ok_or_else(|| EngineError::Internal("the saved registration".into()))?;
-        let others = self
-            .spends
-            .held_by_others(&wallet, SpendOwner::Tx(tx.txid()));
-        if let Some(i) = tx
-            .input
-            .iter()
-            .find(|i| others.contains(&i.previous_output))
-        {
-            return Err(
-                EngineError::from(SendFailure::OutpointUnavailable(i.previous_output)).into(),
-            );
-        }
+        self.check_resend_inputs(wallet, &tx)?;
         let fee = rec.fee.unwrap_or(0);
         let lease = self.shared_lease(wallet, grant).await?;
         let result = async {
@@ -229,7 +210,7 @@ impl NetworkSession {
     ) -> Result<(), MasternodesError> {
         let reserved = reserved_of(row);
         // Every pending spend's coins (an earlier abandon's among them).
-        let pending = (self.spends).held_by_others(&wallet, SpendOwner::Tx(Txid::all_zeros()));
+        let pending = self.spends.snapshot(&wallet);
         let w = self.wallet(&wallet).await?;
         let coin = {
             let state = w.state().await;
@@ -298,13 +279,8 @@ impl NetworkSession {
             if !saved {
                 return Err(MasternodesError::SharedSessionNotFound);
             }
-            let funding = Funding {
-                inputs: vec![utxo.clone()],
-                fee,
-                change: None,
-            };
             let summary = self
-                .summary_of(&w, &tx, &[utxo.clone()], &funding, Some(&address))
+                .summary_of(&w, &tx, &[utxo.clone()], fee, Some(&address))
                 .await;
             self.deliver_shared(wallet, &row.id, tx, summary, charge, fence, false)
                 .await

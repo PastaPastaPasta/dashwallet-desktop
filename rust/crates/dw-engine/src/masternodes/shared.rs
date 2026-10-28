@@ -723,10 +723,7 @@ impl Masternodes {
                 .shared_row(wallet, &session)
                 .await?
                 .ok_or(MasternodesError::SharedSessionNotFound)?;
-            let stage = match Loaded::of(row.clone(), s.network.core_network()) {
-                Ok(l) => store::derive_stage(&l, &s.shared_chain(wallet).await?),
-                Err(_) => store::out_stage(store::role_of(&row.role)),
-            };
+            let stage = s.stored_stage(wallet, &row).await?;
             if row.out_at.is_none()
                 || matches!(
                     stage,
@@ -760,12 +757,7 @@ impl Masternodes {
                 .await?
                 .ok_or(MasternodesError::SharedSessionNotFound)?;
             if row.out_at.is_some() {
-                let role = store::role_of(&row.role);
-                let stage = match Loaded::of(row, s.network.core_network()) {
-                    Ok(l) => store::derive_stage(&l, &s.shared_chain(wallet).await?),
-                    Err(_) => store::out_stage(role),
-                };
-                return Err(stage_refusal(stage));
+                return Err(stage_refusal(s.stored_stage(wallet, &row).await?));
             }
             let (w, id) = (wallet.to_string(), session.clone());
             let deleted = s

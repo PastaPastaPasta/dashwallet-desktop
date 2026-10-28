@@ -20,7 +20,7 @@ use super::super::protx::build::{
     Context, Funding, SEQUENCE, plan_funding, preview_script, refused,
 };
 use super::super::protx::ops::{self, Delivery, encode_inputs, kind_name};
-use super::super::protx::{CHANGE_LEN, change_address, charge_fee};
+use super::super::protx::{CHANGE_LEN, change_address, charge_fee, json};
 use super::super::protx_records::{
     ProTxOperation, ProTxOperationKind, ProTxOperationState, ProTxTerms,
 };
@@ -28,7 +28,7 @@ use super::super::records::MasternodeType;
 use super::super::shared_records::{RewardChoice, UpdateShareRequest};
 use super::build::sign_own_inputs;
 use super::flow::{REWARD_LABEL, signer_refusal};
-use super::store::{Recorded, envelope_refusal};
+use super::store::envelope_refusal;
 use crate::coins::{CoinFence, now_secs};
 use crate::{EngineError, NetworkSession, WalletId};
 
@@ -39,8 +39,8 @@ pub(super) struct ShareUpdate {
     pub funding: Funding,
     pub coins: Vec<(Utxo, DerivationPath)>,
     pub change: Option<Address>,
-    /// The share's own row as the session recorded it.
-    pub recorded: Recorded,
+    /// The keychain owner key index of the share (D10).
+    pub owner_index: u32,
     pub reward_script: ScriptBuf,
     pub refund_script: ScriptBuf,
     /// The share's owner key id, which its signature must recover to.
@@ -185,7 +185,7 @@ impl NetworkSession {
             funding,
             coins,
             change,
-            recorded,
+            owner_index: recorded.owner_index,
             reward_script,
             refund_script: share.refund_script.clone(),
             owner_key_id: share.owner_key_id,
@@ -223,7 +223,7 @@ impl NetworkSession {
             let fee = plan.funding.fee;
             let (charge, signer) = charge_fee(&lease, fee)?;
             let sig = signer
-                .sign_update_share(plan.recorded.owner_index, &payload_bytes(&plan.payload))
+                .sign_update_share(plan.owner_index, &payload_bytes(&plan.payload))
                 .map_err(signer_refusal)?;
             // The keychain key must be the share's (the vault signs what
             // it's given, D11): else Core refuses the bytes.
@@ -246,10 +246,8 @@ impl NetworkSession {
             let row = MasternodeOpRow {
                 id: id.clone(),
                 kind: kind_name(ProTxOperationKind::UpdateShare).into(),
-                terms: serde_json::to_string(&plan.mn_terms)
-                    .map_err(|e| EngineError::Internal(format!("encoding terms: {e}")))?,
-                request: serde_json::to_string(&request)
-                    .map_err(|e| EngineError::Internal(format!("encoding a request: {e}")))?,
+                terms: json(&plan.mn_terms)?,
+                request: json(&request)?,
                 unsigned_tx: None,
                 sign_address: None,
                 sign_message: None,
@@ -272,7 +270,7 @@ impl NetworkSession {
                     &w,
                     &tx,
                     &plan.funding.inputs,
-                    &plan.funding,
+                    plan.funding.fee,
                     plan.change.as_ref(),
                 )
                 .await;

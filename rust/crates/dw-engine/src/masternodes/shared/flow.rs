@@ -27,8 +27,8 @@ use super::super::shared_records::{RewardChoice, SharedRole, SharedSession, Shar
 use super::build::{Selected, placeholder, select};
 use super::store::{
     Approved, ChainView, Loaded, Recorded, RecordedChange, consent_refusal, derive_stage,
-    encode_outpoints, envelope_refusal, funding_refusal, json, releasable, reserved_of,
-    session_hash, stage_refusal, view,
+    encode_outpoints, envelope_refusal, funding_refusal, json, out_stage, releasable, reserved_of,
+    role_of, session_hash, stage_refusal, view,
 };
 use crate::coins::{CoinFence, now_secs, own_address_info, read_coins};
 use crate::send::plan::fee_for;
@@ -124,6 +124,19 @@ impl NetworkSession {
     ) -> Result<Option<SharedSessionRow>, MasternodesError> {
         let (w, i) = (wallet.to_string(), id.to_string());
         Ok(self.appdb_op(move |db| db.shared_session(&w, &i)).await?)
+    }
+
+    /// A stored row's stage; one whose envelope no longer parses reads as
+    /// its role's out stage (D57).
+    pub(crate) async fn stored_stage(
+        &self,
+        wallet: WalletId,
+        row: &SharedSessionRow,
+    ) -> Result<SharedStage, MasternodesError> {
+        Ok(match Loaded::of(row.clone(), self.network.core_network()) {
+            Ok(l) => derive_stage(&l, &self.shared_chain(wallet).await?),
+            Err(_) => out_stage(role_of(&row.role)),
+        })
     }
 
     /// A stored session, parsed (`shared_session_not_found` otherwise).
