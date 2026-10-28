@@ -6,7 +6,7 @@
 
 use rusqlite::{OptionalExtension, Row, params};
 
-use crate::{AppDb, Result};
+use crate::{AppDb, Holder, Result};
 
 /// One `masternode_ops` row. `kind`, `terms` and `request` are the
 /// engine's encodings; this crate does not interpret them.
@@ -288,9 +288,10 @@ impl AppDb {
         )? == 1)
     }
 
-    /// Unlocks the collateral `txid:vout` operation `id` locked and
-    /// forgets that it did, in one transaction: its transaction is
-    /// conflicted, so it never confirms (MG-04 D54).
+    /// Unlocks the collateral `txid:vout` operation `id` locked, unless
+    /// another row holds it (BL-346), and forgets that it did, in one
+    /// transaction: its transaction is conflicted, so it never confirms
+    /// (MG-04 D54).
     pub fn release_masternode_op_collateral(
         &self,
         wallet_id: &str,
@@ -301,7 +302,7 @@ impl AppDb {
     ) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        Self::unlock_on(&tx, wallet_id, txid, vout, now)?;
+        Self::release_lock_on(&tx, wallet_id, Holder::Operation(id), txid, vout, now)?;
         tx.execute(
             "UPDATE masternode_ops SET locked_collateral = 0 WHERE wallet_id = ?1 AND id = ?2",
             params![wallet_id, id],

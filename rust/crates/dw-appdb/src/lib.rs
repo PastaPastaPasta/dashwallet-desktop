@@ -26,6 +26,7 @@ mod dashpay_journal;
 pub mod dispatch;
 #[cfg(all(debug_assertions, any(test, feature = "durability-sim")))]
 pub mod durability_sim;
+mod holds;
 mod proposals;
 mod protx_ops;
 mod provenance;
@@ -34,6 +35,7 @@ mod rows;
 mod shared_sessions;
 pub use avatar::AvatarRow;
 pub use dashpay_journal::{ContestWatch, JournalEntry, JournalPage, JournalRow};
+pub use holds::Holder;
 pub use proposals::ProposalRow;
 pub use protx_ops::{AttemptEnd, MasternodeOpRow};
 pub use registration::{

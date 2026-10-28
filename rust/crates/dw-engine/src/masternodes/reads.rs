@@ -19,10 +19,10 @@ use platform_wallet::wallet::provider_key_at_index::ProviderKeyKind;
 use super::aggregate::{OwnedMasternode, collateral_kind};
 use super::follow::{ListView, Notes, all_owned, load_notes, read_list, wallet_masternodes};
 use super::records::{
-    AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, KeyCheck,
-    ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState, MasternodeOverview,
-    MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus, MasternodeType,
-    RegistrationFacts,
+    AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, HeldShares,
+    KeyCheck, ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState,
+    MasternodeOverview, MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus,
+    MasternodeType, RegistrationFacts,
 };
 use super::tracking::{KeyReferences, reconcile_key_ids};
 use super::{Masternodes, MasternodesError, display_hex, outpoint_string, parse_pro_tx_hash};
@@ -62,6 +62,8 @@ struct WalletView {
     /// Coinbase outputs to the wallet that count, newest first.
     generated: Vec<TxRecord>,
     notes: Notes,
+    /// The shared masternodes this wallet's confirmed sessions registered.
+    held: HashMap<[u8; 32], HeldShares>,
     now: u64,
 }
 
@@ -148,6 +150,7 @@ impl WalletView {
             .filter(counts_as_payout)
             .collect();
         sort_newest_first(&mut generated);
+        let held = session.held_shares(wallet).await?;
         Ok(Self {
             network,
             list,
@@ -164,6 +167,7 @@ impl WalletView {
             locked,
             generated,
             notes,
+            held,
             now: unix_now(),
         })
     }
@@ -183,10 +187,12 @@ impl WalletView {
         self.owned(hash).filter(|o| !o.shared_unsupported)
     }
 
-    /// A version-3 ProRegTx/ProUpRegTx in the wallet, or a list entry seen
-    /// at version 3, now or before (D29): its payouts may be shared (D25).
+    /// A version-3 ProRegTx/ProUpRegTx in the wallet, a list entry seen at
+    /// version 3, now or before (D29), or a registration of the wallet's
+    /// sessions: its payouts may be shared (D25).
     fn shared_unsupported(&self, hash: &[u8; 32]) -> bool {
-        self.owned(hash).is_some_and(|o| o.shared_unsupported)
+        self.held.contains_key(hash)
+            || self.owned(hash).is_some_and(|o| o.shared_unsupported)
             || self
                 .list
                 .entry(hash)
@@ -202,6 +208,7 @@ impl WalletView {
     /// the wallet is then `unattributed`.
     fn shares_possible(&self) -> bool {
         self.notes.any_shared_seen
+            || !self.held.is_empty()
             || !self.notes.shared_seen.is_empty()
             || self.list.entries.iter().any(|e| e.has_extended_net_info)
             || self
@@ -347,7 +354,8 @@ impl WalletView {
             .and_then(|o| o.record.payout_script.clone())
             .map(ScriptBuf::from)
             .is_some_and(|s| self.own_scripts.contains(&s));
-        let mine = owned.is_some_and(|o| o.shared_unsupported)
+        let mine = self.held.contains_key(hash)
+            || owned.is_some_and(|o| o.shared_unsupported)
             || owned.is_some() && (collateral || owner || voting || paid || operator);
         let roles = MasternodeRoles {
             collateral,
@@ -400,6 +408,7 @@ impl WalletView {
             mine,
             tracked: tracked.is_some(),
             shared_unsupported: self.shared_unsupported(hash),
+            shares: self.held.get(hash).copied(),
             roles,
             collateral: collateral_state(owned),
             payout_address: self.payout_address(hash),
@@ -415,9 +424,9 @@ impl WalletView {
 
     fn overview(&self) -> MasternodeOverview {
         let mut hashes: Vec<[u8; 32]> = self.owned.iter().map(|o| o.record.pro_tx_hash).collect();
-        for t in &self.tracked {
-            if !hashes.contains(&t.pro_tx_hash) {
-                hashes.push(t.pro_tx_hash);
+        for h in (self.tracked.iter().map(|t| &t.pro_tx_hash)).chain(self.held.keys()) {
+            if !hashes.contains(h) {
+                hashes.push(*h);
             }
         }
         // A provider transaction that gives the wallet no role (it paid the
@@ -1000,6 +1009,7 @@ mod tests {
             locked: HashSet::new(),
             generated,
             notes: Notes::default(),
+            held: HashMap::new(),
             now: NOW,
         }
     }

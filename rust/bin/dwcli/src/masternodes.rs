@@ -228,8 +228,7 @@ struct SharedArgs {
 
 #[derive(Subcommand)]
 enum SharedCommand {
-    /// What this session can do with shared masternodes (`can_send` is
-    /// false until the pin decodes version-3 ProTxs).
+    /// What this session can do with shared masternodes.
     Capability,
     /// The wallet's sessions, newest first.
     Sessions,
@@ -288,6 +287,24 @@ enum SharedCommand {
         #[arg(long)]
         consent_hash: String,
     },
+    /// Participant: sign this wallet's inputs on the combined funding (a
+    /// `MasternodeOp` grant capped at its share); prints the Signed
+    /// Contribution.
+    Sign { session: String },
+    /// Coordinator: sign this wallet's inputs last and send the
+    /// registration, or send it again once out (a grant capped at its share
+    /// and the fee); prints the Final Record.
+    Send { session: String },
+    /// Spend one of an out session's reserved coins back to the wallet, so
+    /// the registration can no longer be mined (a grant capped at
+    /// `--max-fee`).
+    Abandon {
+        session: String,
+        /// Duffs; the default covers the minimum relay fee of the
+        /// one-input transaction.
+        #[arg(long, default_value_t = 1_000)]
+        max_fee: u64,
+    },
     /// Delete a session nothing of which may be out, and unlock its coins.
     Discard { session: String },
     /// Preview the ProUpShareTx that would change a share's reward address
@@ -299,6 +316,15 @@ enum SharedCommand {
         share_index: u16,
         /// `refund` (the share's refund address), `new` (a new receive
         /// address of the wallet) or an address: always named.
+        #[arg(long, value_parser = parse_reward)]
+        reward: RewardChoice,
+    },
+    /// Sign and send the ProUpShareTx `preview-update-share` shows (a grant
+    /// capped at its fee); prints the operation.
+    UpdateShare {
+        pro_tx_hash: String,
+        #[arg(long)]
+        share_index: u16,
         #[arg(long, value_parser = parse_reward)]
         reward: RewardChoice,
     },
@@ -941,7 +967,8 @@ fn read_message_from(input: impl Read) -> Result<String, Failure> {
 }
 
 /// `mn shared …`: one facade call each. `lock` and `approve` charge nothing,
-/// so their `MasternodeOp` grant is capped at 0 (consent only).
+/// so their `MasternodeOp` grant is capped at 0 (consent only); `sign` and
+/// `send` cap theirs at the session's `debit` (MG-04b D9), read first.
 fn shared_command(
     engine: &Engine,
     session: &Arc<NetworkSession>,
@@ -1000,6 +1027,23 @@ fn shared_command(
             let grant = masternode_grant(session, passphrase, w, 0)?;
             value(engine.block_on(mn.approve_shared(w, id, consent_hash, grant))?)
         }
+        SharedCommand::Sign { session: id } => {
+            let debit = engine.block_on(mn.shared_session(w, id.clone()))?.debit;
+            let grant = masternode_grant(session, passphrase, w, debit.unwrap_or(0))?;
+            value(engine.block_on(mn.sign_shared_funding(w, id, grant))?)
+        }
+        SharedCommand::Send { session: id } => {
+            let debit = engine.block_on(mn.shared_session(w, id.clone()))?.debit;
+            let grant = masternode_grant(session, passphrase, w, debit.unwrap_or(0))?;
+            value(engine.block_on(mn.send_shared_registration(w, id, grant))?)
+        }
+        SharedCommand::Abandon {
+            session: id,
+            max_fee,
+        } => {
+            let grant = masternode_grant(session, passphrase, w, max_fee)?;
+            value(engine.block_on(mn.abandon_shared_session(w, id, grant))?)
+        }
         SharedCommand::Discard { session: id } => {
             engine.block_on(mn.discard_shared_session(w, id))?;
             value(json!({ "discarded": true }))
@@ -1015,6 +1059,20 @@ fn shared_command(
                 reward,
             };
             value(engine.block_on(mn.preview_update_share(w, request))?)
+        }
+        SharedCommand::UpdateShare {
+            pro_tx_hash,
+            share_index,
+            reward,
+        } => {
+            let request = UpdateShareRequest {
+                pro_tx_hash,
+                share_index,
+                reward,
+            };
+            let preview = engine.block_on(mn.preview_update_share(w, request.clone()))?;
+            let grant = masternode_grant(session, passphrase, w, preview.total_debit)?;
+            value(engine.block_on(mn.update_share(w, request, grant))?)
         }
     }
 }
@@ -1175,9 +1233,15 @@ mod tests {
         ] {
             assert!(refused(args).is_some(), "{args:?}");
         }
-        // Slice 1b's commands aren't here (and `sign` doesn't parse).
-        for name in ["sign", "send", "abandon", "update-share"] {
-            assert_eq!(refused(&[name, SESSION]), Some(InvalidSubcommand), "{name}");
+        // Slice 1b's commands name their session or masternode.
+        for args in [
+            &["sign"][..],
+            &["send"],
+            &["abandon"],
+            &["abandon", SESSION, "--max-fee", "x"],
+            &["update-share", HASH, "--share-index", "0"],
+        ] {
+            assert!(refused(args).is_some(), "{args:?}");
         }
     }
 

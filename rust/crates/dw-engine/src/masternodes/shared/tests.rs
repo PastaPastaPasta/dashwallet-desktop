@@ -1,11 +1,12 @@
-//! Shared masternodes, slice 1a, on a regtest session (MG-04b §12, T0
-//! dw-engine): three wallets of one process take a registration from the
-//! Invitation to the participants' signed contributions with every message
-//! passed as text, the capability override standing in for BL-187; a
-//! dash-qt participant signs with a raw owner key; restarts and a crash
-//! between the `out_at` write and the return; refusals in §7's order; the
-//! charges, the in-flight mark, §3.0's cells and D30. Nothing is ever
-//! handed to the network (the broadcaster fails the test if it is).
+//! Shared masternodes on a regtest session (MG-04b §12, T0 dw-engine):
+//! three wallets of one process take a registration from the Invitation
+//! through the participants' signed contributions to the coordinator's
+//! hand-off with every message passed as text; a dash-qt participant signs
+//! with a raw owner key; restarts and a crash between the `out_at` write
+//! and the return; refusals in §7's order; the charges, the in-flight mark,
+//! §3.0's cells and D30; the abandon, the reward change, the follower's
+//! release and the coin holds of slice 1b. The network is a recorder that
+//! accepts what it is handed.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -26,7 +27,7 @@ use zeroize::Zeroizing;
 
 use super::super::protx::ops::{CrashPoint, Seam};
 use crate::masternodes::{
-    Masternodes, MasternodesError, OperatorChoice, RewardChoice, ShareSlot, ShareTerms,
+    HeldShares, Masternodes, MasternodesError, OperatorChoice, RewardChoice, ShareSlot, ShareTerms,
     SharedImport, SharedNext, SharedOutcome, SharedRole, SharedSession, SharedStage,
     StartSharedRequest, UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
 };
@@ -41,20 +42,31 @@ const PHRASES: [&str; 3] = [
     "legal winner thank year wave sausage worth useful legal winner thank yellow",
 ];
 
-/// Nothing in slice 1a may reach the network.
-struct NoNetwork;
+/// The network: every transaction handed to it, accepted.
+#[derive(Default)]
+struct Net {
+    sent: Mutex<Vec<Transaction>>,
+}
 
-impl TestBroadcaster for NoNetwork {
+impl Net {
+    fn sent(&self) -> Vec<Transaction> {
+        self.sent.lock().unwrap().clone()
+    }
+}
+
+impl TestBroadcaster for Net {
     fn before_entry(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
         Box::pin(async {})
     }
 
     fn broadcast(
         &self,
-        _: &Transaction,
+        tx: &Transaction,
         _: bool,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Txid, PlatformWalletError>> + Send>> {
-        panic!("slice 1a handed a transaction to the network");
+        self.sent.lock().unwrap().push(tx.clone());
+        let txid = tx.txid();
+        Box::pin(async move { Ok(txid) })
     }
 }
 
@@ -70,6 +82,7 @@ struct Fx {
     session: Arc<NetworkSession>,
     wallets: Vec<WalletId>,
     seam: Arc<Seam>,
+    net: Arc<Net>,
     /// Coins credited, per wallet, to credit again after a restart.
     coins: Mutex<Vec<(usize, u8, u64)>>,
 }
@@ -88,9 +101,9 @@ fn open(engine: &Engine) -> Arc<NetworkSession> {
         .unwrap()
 }
 
-fn seam_for(session: &NetworkSession) -> Arc<Seam> {
+fn seam_for(session: &NetworkSession, net: &Arc<Net>) -> Arc<Seam> {
     let seam = Arc::new(Seam {
-        broadcaster: Arc::new(NoNetwork),
+        broadcaster: net.clone(),
         crash: Mutex::new(None),
         list: Mutex::new(Some(Vec::new())),
         list_height: Mutex::new(100),
@@ -133,13 +146,15 @@ fn fx(n: usize, v24: bool) -> Fx {
                 .unwrap()
         })
         .collect();
-    let seam = seam_for(&session);
+    let net = Arc::new(Net::default());
+    let seam = seam_for(&session, &net);
     let f = Fx {
         _dir: dir,
         engine,
         session,
         wallets,
         seam,
+        net,
         coins: Mutex::default(),
     };
     if v24 {
@@ -151,13 +166,7 @@ fn fx(n: usize, v24: bool) -> Fx {
 }
 
 impl Fx {
-    /// The facade with the capability override (BL-187's stand-in).
     fn mn(&self) -> Masternodes {
-        Masternodes::with_shared_send(&self.session, true)
-    }
-
-    /// The facade as shipped: `can_send` false.
-    fn pin(&self) -> Masternodes {
         self.session.masternodes()
     }
 
@@ -169,10 +178,7 @@ impl Fx {
         self.engine.block_on(f)
     }
 
-    /// Runs `first` up to its session row's write (held there, D63), then
-    /// `second` for two seconds, then lets both finish: `second` waits for
-    /// the fence `first` holds from its keys to its write, or, without it,
-    /// reads the keys and coins in use before `first`'s row is written.
+    /// [`crate::coins::write_paused`] on this session.
     fn write_paused<A, B>(
         &self,
         first: impl Future<Output = A> + Send + 'static,
@@ -182,22 +188,7 @@ impl Fx {
         A: Send + 'static,
         B: Send + 'static,
     {
-        use std::sync::atomic::Ordering::SeqCst;
-        let pause = Arc::new(crate::coins::TestPause::default());
-        *self.session.coin_fences.pause_shared_write.lock().unwrap() = Some(Arc::clone(&pause));
-        let first = self.session.rt.spawn(first);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        while !pause.reached.load(SeqCst) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the first call reaches its write"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        let second = self.session.rt.spawn(second);
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        pause.release.notify_one();
-        (self.run(first).unwrap(), self.run(second).unwrap())
+        crate::coins::write_paused(&self.engine, &self.session, first, second)
     }
 
     fn grant(&self, w: usize, max_duffs: u64) -> String {
@@ -281,7 +272,7 @@ impl Fx {
                 .unwrap()
         );
         self.session = open(&self.engine);
-        self.seam = seam_for(&self.session);
+        self.seam = seam_for(&self.session, &self.net);
         let coins = self.coins.lock().unwrap().clone();
         for (w, seed, value) in coins {
             self.credit_again(w, seed, value);
@@ -412,6 +403,53 @@ impl Fx {
             self.mn()
                 .sign_shared_funding(self.wallets[w], id.to_string(), grant),
         )
+    }
+}
+
+impl Fx {
+    fn send(&self, w: usize, id: &str, max: u64) -> Result<SharedOutcome, MasternodesError> {
+        let grant = self.grant(w, max);
+        self.run(
+            self.mn()
+                .send_shared_registration(self.wallets[w], id.to_string(), grant),
+        )
+    }
+
+    fn abandon(&self, w: usize, id: &str) -> Result<SharedSession, MasternodesError> {
+        let grant = self.grant(w, COIN);
+        self.run(
+            self.mn()
+                .abandon_shared_session(self.wallets[w], id.to_string(), grant),
+        )
+    }
+
+    /// `tx` in a block at `height` of every wallet's history.
+    fn mine(&self, tx: Transaction, height: u32) {
+        let txid = tx.txid();
+        self.seam
+            .shared_mined
+            .lock()
+            .unwrap()
+            .push((txid, tx, height));
+    }
+
+    fn tip(&self, height: u32) {
+        self.session.hub.tracker().set_tip_height(height);
+    }
+
+    fn follow(&self) {
+        self.run(self.session.protx_follow_pass()).unwrap();
+    }
+
+    /// Both participants of [`three_approved`]'s session sign, and the
+    /// coordinator takes their contributions in.
+    fn both_signed(&self, id: &str) {
+        let request = self.message(0, id);
+        for w in [1, 2] {
+            self.imported(w, &request);
+            let signed = self.sign(w, id, 301 * COIN).unwrap();
+            self.imported(0, &signed.message.text);
+        }
     }
 }
 
@@ -636,6 +674,7 @@ fn test_QT_126_three_wallets_reach_the_signed_registration() {
     }
 
     // Nothing went out; the participants' sessions can't be discarded.
+    assert!(f.net.sent().is_empty());
     for w in [1, 2] {
         let e = f
             .run(f.mn().discard_shared_session(f.wallets[w], id.clone()))
@@ -644,25 +683,13 @@ fn test_QT_126_three_wallets_reach_the_signed_registration() {
     }
 }
 
+/// D1, lifted in slice 1b: the pin represents and decodes every shared
+/// transaction, so the capability says the wallet can send them.
 #[test]
-fn test_QT_126_sign_shared_funding_refuses_at_the_pin() {
-    let f = fx(3, true);
-    let id = three_approved(&f);
-    let request = f.message(0, &id);
-    f.imported(1, &request);
-    let grant = f.grant(1, 400 * COIN);
-    let e = f
-        .run(f.pin().sign_shared_funding(f.wallets[1], id.clone(), grant))
-        .unwrap_err();
-    match e {
-        MasternodesError::Unsupported { feature, field } => {
-            assert_eq!((feature.as_str(), field), ("shared_masternodes", None));
-        }
-        other => panic!("{other:?}"),
-    }
-    assert!(f.row(1, &id).out_at.is_none());
-    let cap = f.run(f.pin().shared_capability(f.wallets[1])).unwrap();
-    assert!(!cap.can_send);
+fn test_QT_126_the_capability_can_send() {
+    let f = fx(1, true);
+    let cap = f.run(f.mn().shared_capability(f.wallets[0])).unwrap();
+    assert!(cap.can_send);
     assert_eq!(cap.v24, crate::masternodes::Activation::Active);
     assert_eq!(cap.evonode_shares, crate::masternodes::Activation::Inactive);
 }
@@ -841,7 +868,7 @@ fn test_QT_126_calls_refuse_in_order() {
     let e = f.run(mn.shared_session(unknown, good.clone())).unwrap_err();
     assert_eq!(e.code(), "wallet_not_found");
     assert!(!e.to_string().contains(&unknown.to_string()));
-    // Then v24 for creation; `can_send` for the signing call.
+    // Then v24, for creation and signing alike.
     for e in [
         f.run(mn.start_shared(w, request(&[("A", 500), ("B", 500)], FEE)))
             .unwrap_err(),
@@ -858,7 +885,7 @@ fn test_QT_126_calls_refuse_in_order() {
             .unwrap_err(),
         f.run(mn.approve_shared(w, good.clone(), "0".repeat(64), "g".into()))
             .unwrap_err(),
-        f.run(f.pin().sign_shared_funding(w, good.clone(), "g".into()))
+        f.run(mn.sign_shared_funding(w, good.clone(), "g".into()))
             .unwrap_err(),
     ] {
         assert_eq!(code(e), "masternodes.unsupported");
@@ -1832,4 +1859,335 @@ fn test_QT_126_approve_refuses_a_moved_own_row() {
     });
     assert_funding(f.approve(1, &id).unwrap_err(), "row_changed");
     assert!(parse(&f.message(1, &id)).signature_for(1).is_none());
+}
+
+/// Slice 1b (§3.1 step 5, D24, D18, D17): once both participants'
+/// contributions are in, the coordinator signs its own inputs last, charged
+/// its debit (share + fee), saves the complete registration with `out_at`
+/// before the hand-off and hands it off; a resend hands off the same bytes.
+#[test]
+fn test_QT_126_the_coordinator_signs_last_and_sends() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    assert_stage(f.send(0, &id, 401 * COIN).unwrap_err(), "unsigned");
+    f.both_signed(&id);
+    let short = f.send(0, &id, 400 * COIN + FEE - 1).unwrap_err();
+    assert_eq!(send_code(&short), "send.grant_exceeded");
+    assert!(f.row(0, &id).out_at.is_none() && f.net.sent().is_empty());
+
+    let done = f.send(0, &id, 400 * COIN + FEE).unwrap();
+    assert_eq!(done.message.name, "Final Record");
+    // D9: the coordinator's debit is its share and the whole fee.
+    assert_eq!(done.session.debit, Some(400 * COIN + FEE));
+    assert_eq!(
+        (done.session.stage, done.session.next),
+        (SharedStage::Sent, SharedNext::Wait)
+    );
+    let sent = f.net.sent();
+    assert_eq!(sent.len(), 1);
+    let tx = &sent[0];
+    assert!(tx.input.iter().all(|i| !i.script_sig.is_empty()));
+    let txid = tx.txid().to_string();
+    let row = f.row(0, &id);
+    assert!(row.out_at.is_some());
+    assert_eq!(row.txid.as_deref(), Some(txid.as_str()));
+    assert_eq!(row.last_error, None);
+    assert_eq!(done.session.pro_tx_hash.as_deref(), Some(txid.as_str()));
+    // The bytes the network got are the Final Record's.
+    let fin = decode_frozen(&parse(&done.message.text)).unwrap().tx;
+    assert_eq!(fin.to_bytes(), dashcore::consensus::serialize(tx));
+    // Out: the coins stay locked and the session can't be discarded.
+    assert!(!f.locked(0).is_empty());
+    let e = f
+        .run(f.mn().discard_shared_session(f.wallets[0], id.clone()))
+        .unwrap_err();
+    assert_stage(e, "sent");
+
+    // A resend: the same bytes, charged the fee.
+    assert_eq!(
+        send_code(&f.send(0, &id, FEE - 1).unwrap_err()),
+        "send.grant_exceeded"
+    );
+    f.send(0, &id, FEE).unwrap();
+    let sent = f.net.sent();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].txid(), tx.txid());
+
+    // Mined: confirmed, the locks released by the follower.
+    f.mine(tx.clone(), 80);
+    assert_eq!(
+        f.session_of(0, &id).stage,
+        SharedStage::Confirmed { height: 80 }
+    );
+    f.follow();
+    assert!(f.locked(0).is_empty());
+    // The overview reads it as shared (§13): each wallet holds one share
+    // of three, its payouts still out of the totals (MG-03 D25).
+    for w in [0, 1] {
+        let overview = f.run(f.mn().list(f.wallets[w])).unwrap();
+        let row = (overview.masternodes.iter())
+            .find(|r| r.pro_tx_hash == txid)
+            .unwrap();
+        assert_eq!(row.shares, Some(HeldShares { held: 1, of: 3 }));
+        assert!(row.mine && row.payouts_incomplete);
+    }
+}
+
+/// D24: only the coordinator sends; a participant's call names its role.
+#[test]
+fn test_QT_126_a_participant_never_sends() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    assert_stage(f.send(1, &id, 400 * COIN).unwrap_err(), "participant");
+    assert!(f.net.sent().is_empty());
+}
+
+/// §9.3, D26, NIT-4: a participant whose Signed Contribution is out
+/// abandons: one of its reserved coins spent whole to itself,
+/// `abandon_txid` saved first, the row and its locks kept. Once that spend
+/// is in a block the session reads `conflicted`; the follower releases its
+/// locks only once the spend is buried.
+#[test]
+fn test_QT_126_abandon_spends_a_reserved_coin_and_releases_once_buried() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.imported(1, &f.message(0, &id));
+    assert_stage(f.abandon(1, &id).unwrap_err(), "combined");
+    f.sign(1, &id, 301 * COIN).unwrap();
+    let reserved = f.locked(1);
+    let s = f.abandon(1, &id).unwrap();
+    assert_eq!(s.stage, SharedStage::FundingSigned);
+    let sent = f.net.sent();
+    assert_eq!(sent.len(), 1);
+    let spend = sent[0].clone();
+    assert_eq!(
+        f.row(1, &id).abandon_txid.as_deref(),
+        Some(spend.txid().to_string().as_str())
+    );
+    assert_eq!(spend.input.len(), 1);
+    assert!(reserved.contains(&spend.input[0].previous_output));
+    assert_eq!(spend.output.len(), 1);
+    assert!(spend.special_transaction_payload.is_none());
+    assert_eq!(f.locked(1), reserved, "kept until a block settles it");
+
+    f.mine(spend, 60);
+    assert_eq!(f.session_of(1, &id).stage, SharedStage::Conflicted);
+    assert_stage(f.abandon(1, &id).unwrap_err(), "conflicted");
+    f.tip(64);
+    f.follow();
+    assert_eq!(f.locked(1), reserved, "five deep: kept (NIT-4)");
+    f.tip(65);
+    f.follow();
+    assert!(f.locked(1).is_empty());
+    assert_eq!(f.row(1, &id).reserved, "[]");
+}
+
+/// NIT-4: a ChainLocked conflict is buried at any depth.
+#[test]
+fn test_QT_126_a_chainlocked_conflict_releases_at_once() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.imported(1, &f.message(0, &id));
+    f.sign(1, &id, 301 * COIN).unwrap();
+    f.abandon(1, &id).unwrap();
+    let spend = f.net.sent().pop().unwrap();
+    f.mine(spend, 60);
+    f.tip(60);
+    f.follow();
+    assert!(!f.locked(1).is_empty());
+    f.session.hub.tracker().set_chainlock_height(60);
+    f.follow();
+    assert!(f.locked(1).is_empty());
+}
+
+/// BL-346 (c): an out session whose envelope no longer parses is judged by
+/// its stored columns: a buried spend of a reserved coin releases them.
+#[test]
+fn test_QT_126_an_unreadable_out_session_is_released_by_its_stored_columns() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.imported(1, &f.message(0, &id));
+    f.sign(1, &id, 301 * COIN).unwrap();
+    let reserved = f.locked(1);
+    f.rewrite(1, &id, |u| u.envelope = "{".into());
+    let coin = *reserved.iter().next().unwrap();
+    let spend = Transaction {
+        version: 3,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: coin,
+            ..Default::default()
+        }],
+        output: Vec::new(),
+        special_transaction_payload: None,
+    };
+    f.mine(spend, 70);
+    f.tip(70);
+    f.follow();
+    assert_eq!(f.locked(1), reserved, "one deep: kept");
+    f.tip(75);
+    f.follow();
+    assert!(f.locked(1).is_empty());
+}
+
+/// BL-346 (a): coin control's unlock never frees a coin a session
+/// reserves, and refuses the whole request (nothing unlocked).
+#[test]
+fn test_QT_126_unlock_outpoints_never_frees_a_reserved_coin() {
+    let f = fx(1, true);
+    f.credit(0, 1, 501 * COIN);
+    let free = f.credit(0, 2, COIN);
+    start(&f, 0, request(&[("A", 500), ("B", 500)], FEE)).unwrap();
+    let reserved = *f.locked(0).iter().next().unwrap();
+    let w = f.wallets[0];
+    f.run(f.session.lock_outpoints(w, vec![free])).unwrap();
+    let e = f
+        .run(f.session.unlock_outpoints(w, vec![free, reserved]))
+        .unwrap_err();
+    assert_eq!(e.code(), "invalid_argument");
+    assert_eq!(f.locked(0), HashSet::from([free, reserved]));
+    f.run(f.session.unlock_outpoints(w, vec![free])).unwrap();
+    assert_eq!(f.locked(0), HashSet::from([reserved]));
+}
+
+/// BL-346 (a, b): a coin two sessions claim (a row this version didn't
+/// write) is signed by neither, and one's discard leaves it locked for the
+/// other.
+#[test]
+fn test_QT_126_a_reservation_is_exclusive_across_sessions() {
+    let f = fx(2, true);
+    let a = two_joined(&f);
+    f.credit(0, 3, 501 * COIN);
+    let b = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE))
+        .unwrap()
+        .session
+        .id;
+    let a_coins: Vec<String> = serde_json::from_str(&f.row(0, &a).reserved).unwrap();
+    let row_b = f.row(0, &b);
+    let mut b_coins: Vec<String> = serde_json::from_str(&row_b.reserved).unwrap();
+    b_coins.extend(a_coins.iter().cloned());
+    assert!(
+        f.db()
+            .replace_shared_session_reservation_durable(
+                &f.wallets[0].to_string(),
+                &b,
+                &serde_json::to_string(&b_coins).unwrap(),
+                row_b.contribution.as_deref(),
+                &row_b.my_shares,
+                &row_b.envelope,
+                row_b.updated_at,
+                1,
+            )
+            .unwrap()
+    );
+    // A's coins are B's too: A signs nothing over them.
+    assert_stage(f.lock(0, &a).unwrap_err(), "dead");
+    // B's discard leaves them locked: A still holds them.
+    let held = f.locked(0);
+    f.run(f.mn().discard_shared_session(f.wallets[0], b.clone()))
+        .unwrap();
+    let a_outpoints: HashSet<OutPoint> = a_coins
+        .iter()
+        .map(|c| {
+            let (t, v) = c.rsplit_once(':').unwrap();
+            OutPoint::new(t.parse().unwrap(), v.parse().unwrap())
+        })
+        .collect();
+    assert!(a_outpoints.is_subset(&f.locked(0)));
+    assert!(f.locked(0).len() < held.len(), "B's own coin released");
+    // With B gone, A signs again.
+    f.lock(0, &a).unwrap();
+}
+
+/// §5.1, §6.3, D23 (slice 1b): a reward change is an MG-04 operation of
+/// kind `update_share`: the payload signed by the share's keychain owner
+/// key, the fee inputs by the wallet's, charged the fee, saved with its
+/// input locks before the hand-off. A second one waits while the first may
+/// still be mined; a resend hands off the same bytes.
+#[test]
+fn test_QT_127_update_share_sends_an_operation() {
+    let f = fx(3, true);
+    let (_, txid) = confirmed(&f, 50);
+    f.follow();
+    let entry = platform_wallet::masternode::MasternodeListSummary {
+        pro_tx_hash: txid.to_byte_array(),
+        service_address: Some("1.2.3.4:19999".parse().unwrap()),
+        platform_http_port: None,
+        operator_public_key: [1; 48],
+        voting_key_id: [1; 20],
+        platform_node_id: None,
+        is_valid: true,
+        is_evonode: false,
+        has_extended_net_info: true,
+    };
+    *f.seam.list.lock().unwrap() = Some(vec![entry]);
+    f.credit(0, 9, COIN);
+    let req = UpdateShareRequest {
+        pro_tx_hash: txid.to_string(),
+        share_index: 0,
+        reward: RewardChoice::NewAddress,
+    };
+    let fee = f
+        .run(f.mn().preview_update_share(f.wallets[0], req.clone()))
+        .unwrap()
+        .fee;
+    let update = |max: u64| {
+        let grant = f.grant(0, max);
+        f.run(f.mn().update_share(f.wallets[0], req.clone(), grant))
+    };
+    assert_eq!(
+        send_code(&update(fee - 1).unwrap_err()),
+        "send.grant_exceeded"
+    );
+    assert!(f.net.sent().is_empty());
+
+    let op = update(fee).unwrap();
+    assert_eq!(op.kind, crate::masternodes::ProTxOperationKind::UpdateShare);
+    assert_eq!(op.state, crate::masternodes::ProTxOperationState::Sent);
+    assert_eq!(op.fee, fee);
+    assert_eq!(op.pro_tx_hash.as_deref(), Some(txid.to_string().as_str()));
+    let sent = f.net.sent();
+    assert_eq!(sent.len(), 1);
+    let tx = &sent[0];
+    let fee_input = tx.input[0].previous_output;
+    assert!(tx.input.iter().all(|i| !i.script_sig.is_empty()));
+    let special =
+        dw_protx::shared::SpecialTx::from_bytes(&dashcore::consensus::serialize(tx)).unwrap();
+    assert_eq!(
+        special.tx_type,
+        dw_protx::shared::TRANSACTION_PROVIDER_UPDATE_SHARE
+    );
+    let p: dw_protx::shared::ProUpShareTx =
+        dashcore::consensus::deserialize(&special.payload).unwrap();
+    assert_eq!((p.pro_tx_hash, p.share_index), (txid, 0));
+    assert_eq!(p.inputs_hash, special.inputs_hash());
+    // Signed by share 0's owner key over the payload's hash.
+    let owner = f.session_of(0, &only_session(&f)).rows[0]
+        .owner_address
+        .clone()
+        .unwrap();
+    let key_id = super::super::protx::keys::p2pkh_id(&owner, dashcore::Network::Regtest).unwrap();
+    assert!(dw_protx::rules::signed_by(&p.sig, p.sign_hash(), key_id));
+    assert!(f.locked(0).contains(&fee_input), "locked with its row");
+
+    // D23: one at a time per masternode.
+    let e = update(fee).unwrap_err();
+    assert_eq!(code(e), "masternodes.update_pending");
+    // MG-04's resend, over the new kind.
+    let grant = f.grant(0, fee);
+    f.run(f.mn().resend_operation(f.wallets[0], op.id.clone(), grant))
+        .unwrap();
+    let sent = f.net.sent();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].txid(), tx.txid());
+    let ops = f.run(f.mn().operations(f.wallets[0])).unwrap();
+    assert_eq!(ops.len(), 1);
+}
+
+/// The id of wallet 0's one session.
+fn only_session(f: &Fx) -> String {
+    f.run(f.mn().shared_sessions(f.wallets[0])).unwrap()[0]
+        .id
+        .clone()
 }

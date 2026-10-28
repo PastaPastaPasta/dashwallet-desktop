@@ -557,10 +557,22 @@ impl NetworkSession {
         .await?
         .unwrap_or_default();
         let w = wallet.to_string();
-        let rows = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
+        let (rows, held) = self
+            .appdb_op(move |db| {
+                Ok((
+                    db.masternode_ops(&w)?,
+                    db.held_outpoints(&w, dw_appdb::Holder::None)?,
+                ))
+            })
+            .await?;
         let (history, unspent) = self.op_view(wallet).await?;
         let mut pending = Vec::new();
         let mut used = InUse::default();
+        // A coin another row will spend is no collateral (BL-346).
+        used.collateral.extend(
+            held.iter()
+                .filter_map(|(txid, vout)| Some(OutPoint::new(txid.parse().ok()?, *vout))),
+        );
         let mut external_collaterals = HashMap::new();
         for o in &owned {
             let r = &o.record;

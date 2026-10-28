@@ -233,6 +233,8 @@ pub struct KeyPick {
 pub enum ProTxOperationKind {
     Registration,
     UpdateRegistrar,
+    /// A shared masternode's reward change, a ProUpShareTx (MG-04b §5.1).
+    UpdateShare,
 }
 
 /// An operation's state, derived on every read (MG-04 §5).

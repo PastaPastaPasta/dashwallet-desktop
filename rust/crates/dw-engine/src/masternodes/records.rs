@@ -200,6 +200,14 @@ pub struct MasternodePayout {
     pub unattributed: bool,
 }
 
+/// The shares of a shared masternode this wallet holds, from its confirmed
+/// sessions (MG-04b D29): one per session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldShares {
+    pub held: u8,
+    pub of: u8,
+}
+
 /// One masternode in a wallet's overview.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MasternodeRow {
@@ -224,6 +232,10 @@ pub struct MasternodeRow {
     /// reported and its payouts are left out of every total (MG-03 D25;
     /// shares are MG-03b).
     pub shared_unsupported: bool,
+    /// A shared masternode one of this wallet's sessions registered
+    /// (MG-04b §13, "you hold k of n"). Its payouts still read as
+    /// `shared_unsupported` until MG-03b reads the share table.
+    pub shares: Option<HeldShares>,
     pub roles: MasternodeRoles,
     pub collateral: CollateralState,
     pub payout_address: Option<String>,

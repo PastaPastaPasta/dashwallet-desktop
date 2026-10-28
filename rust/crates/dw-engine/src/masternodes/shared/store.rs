@@ -406,17 +406,56 @@ impl ChainView {
         })
     }
 
-    /// Another transaction in a block spends one of `inputs`.
-    fn spent_in_block(&self, inputs: &[OutPoint], except: Option<&Txid>) -> bool {
-        self.history.iter().any(|(id, e)| {
-            Some(id) != except
-                && e.context.block_info().is_some()
-                && e.tx
-                    .input
-                    .iter()
-                    .any(|i| inputs.contains(&i.previous_output))
-        })
+    /// The lowest height of a block holding another transaction that
+    /// spends one of `inputs`.
+    fn conflict_height(&self, inputs: &[OutPoint], except: Option<&Txid>) -> Option<u32> {
+        self.history
+            .iter()
+            .filter(|(id, e)| {
+                Some(*id) != except
+                    && e.tx
+                        .input
+                        .iter()
+                        .any(|i| inputs.contains(&i.previous_output))
+            })
+            .filter_map(|(_, e)| Some(e.context.block_info()?.height()))
+            .min()
     }
+}
+
+/// Whether the follower releases a session's locks (§11, D17): its
+/// registration confirmed; its inputs spent while it isn't out (dead); or,
+/// out, another transaction spending one of them in a block `buried` says a
+/// reorg won't undo (Opus-h NIT-4: a shallower conflict may yet give way to
+/// the registration). A row that no longer parses is judged by its stored
+/// `txid`, `reserved` and `out_at` (BL-346 (c)).
+pub(crate) fn releasable(
+    row: &SharedSessionRow,
+    network: dashcore::Network,
+    chain: &ChainView,
+    buried: impl Fn(u32) -> bool,
+) -> bool {
+    let stored = row.txid.as_deref().and_then(|t| Txid::from_str(t).ok());
+    let (txid, inputs) = match Loaded::of(row.clone(), network) {
+        Ok(l) => match derive_stage(&l, chain) {
+            SharedStage::Confirmed { .. } | SharedStage::Dead { .. } => return true,
+            SharedStage::Conflicted => (session_hash(&l, chain).or(stored), l.own_inputs()),
+            _ => return false,
+        },
+        Err(_) => {
+            let reserved = reserved_of(row);
+            if stored.is_some_and(|t| chain.confirmed_height(&t).is_some()) {
+                return true;
+            }
+            if row.out_at.is_none() {
+                return reserved.iter().any(|o| !chain.unspent.contains(o));
+            }
+            (stored, reserved)
+        }
+    };
+    chain
+        .conflict_height(&inputs, txid.as_ref())
+        .is_some_and(buried)
 }
 
 /// The registration's txid, once every input is signed: its ProTx hash.
@@ -449,7 +488,7 @@ pub(crate) fn derive_stage(l: &Loaded, chain: &ChainView) -> SharedStage {
     }
     let own = l.own_inputs();
     if l.out() {
-        if chain.spent_in_block(&own, txid.as_ref()) {
+        if chain.conflict_height(&own, txid.as_ref()).is_some() {
             return SharedStage::Conflicted;
         }
         return out_stage(l.role);
@@ -618,6 +657,7 @@ pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
         terms: terms_view(s),
         node_run_by: s.operator_secret_holder.clone(),
         fee: l.recorded.as_ref().and_then(|r| r.fee),
+        debit: l.recorded.as_ref().map(Recorded::debit),
         pro_tx_hash: session_hash(l, chain).map(|t| t.to_string()),
         txid: l.row.txid.clone(),
         reserved: reserved_of(&l.row)

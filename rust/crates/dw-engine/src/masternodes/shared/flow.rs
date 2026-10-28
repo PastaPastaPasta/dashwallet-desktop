@@ -3,8 +3,9 @@
 //! keys and coins a party commits (D10, D9), the checks every signing call
 //! runs (§4, §5, D17), and the follower's lock release (§11).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
+use dashcore::hashes::Hash as _;
 use dashcore::{OutPoint, Txid};
 use dw_appdb::{SharedSessionRow, SharedSessionUpdate};
 use dw_protx::shared::rules as shared_rules;
@@ -21,12 +22,13 @@ use super::super::MasternodesError;
 use super::super::follow::load_notes;
 use super::super::protx::build::{Context, refused, tx_size};
 use super::super::protx::keys::{InUse, p2pkh_id};
+use super::super::records::HeldShares;
 use super::super::shared_records::{RewardChoice, SharedRole, SharedSession, SharedStage};
 use super::build::{Selected, placeholder, select};
 use super::store::{
     Approved, ChainView, Loaded, Recorded, RecordedChange, consent_refusal, derive_stage,
-    encode_outpoints, envelope_refusal, funding_refusal, json, reserved_of, session_hash,
-    stage_refusal, view,
+    encode_outpoints, envelope_refusal, funding_refusal, json, releasable, reserved_of,
+    session_hash, stage_refusal, view,
 };
 use crate::coins::{CoinFence, now_secs, own_address_info, read_coins};
 use crate::send::plan::fee_for;
@@ -35,7 +37,7 @@ use crate::{EngineError, NetworkSession, WalletId};
 
 /// Labels of the addresses a session issues (address book, D10).
 const REFUND_LABEL: &str = "Shared masternode refund";
-const REWARD_LABEL: &str = "Shared masternode reward";
+pub(super) const REWARD_LABEL: &str = "Shared masternode reward";
 
 /// A party's own row as it commits it (D10): the keychain owner key, a
 /// fresh refund address and the reward.
@@ -145,7 +147,6 @@ impl NetworkSession {
         let (history, unspent) = self.op_view(wallet).await?;
         #[cfg(test)]
         let history = {
-            use dashcore::hashes::Hash as _;
             use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
             let mut history = history;
             let mined = (self.masternodes.protx_seam())
@@ -248,19 +249,23 @@ impl NetworkSession {
     }
 
     /// The coins a contribution may take: the automatic-selection
-    /// candidates the owner signer signs for, plus `also` (this session's
-    /// own reserved coins, for `set_shared_fee`) while unspent.
+    /// candidates the owner signer signs for, plus `also` (session `id`'s
+    /// own reserved coins, for `set_shared_fee`) while unspent and no other
+    /// row holds them (BL-346).
     async fn shared_candidates(
         &self,
         fence: &CoinFence,
         w: &PlatformWallet,
+        id: &str,
         also: &[OutPoint],
     ) -> Result<Vec<(Utxo, DerivationPath)>, MasternodesError> {
         let mut coins = self.protx_candidates(fence, w, &HashSet::new()).await?;
         if !also.is_empty() {
+            let others = self.held_by_others(fence.wallet_id(), id).await?;
             let state = w.state().await;
             for c in read_coins(&state.core_wallet).coins {
                 if also.contains(&c.utxo.outpoint)
+                    && !others.contains(&c.utxo.outpoint)
                     && !coins.iter().any(|(u, _)| u.outpoint == c.utxo.outpoint)
                     && let Some(info) = own_address_info(&state.core_wallet, &c.utxo.address)
                 {
@@ -299,19 +304,21 @@ impl NetworkSession {
         Ok((selected, change))
     }
 
-    /// The reservation of a contribution (D9): `target` selected from the
-    /// candidates (and `also`, see [`Self::shared_candidates`]) under the
-    /// wallet's coin fence, which the caller took before it picked the
-    /// keys and holds until the row is written (D63).
+    /// The reservation of session `id`'s contribution (D9): `target`
+    /// selected from the candidates (and `also`, see
+    /// [`Self::shared_candidates`]) under the wallet's coin fence, which the
+    /// caller took before it picked the keys and holds until the row is
+    /// written (D63).
     pub(crate) async fn shared_reserve(
         &self,
         fence: &CoinFence,
+        id: &str,
         also: &[OutPoint],
         target: u64,
         reuse: Option<&str>,
     ) -> Result<(Selected, Option<RecordedChange>), MasternodesError> {
         let w = self.wallet(&fence.wallet_id()).await?;
-        let candidates = self.shared_candidates(fence, &w, also).await?;
+        let candidates = self.shared_candidates(fence, &w, id, also).await?;
         self.shared_selection(&w, candidates, target, reuse).await
     }
 
@@ -329,9 +336,11 @@ impl NetworkSession {
                 reason: super::super::shared_records::DeadReason::InputsSpent,
             })
         };
-        // Each one reserved by this session and still persistently locked:
-        // a released lock lets another send select the coin.
+        // Each one reserved by this session, by no other row (BL-346), and
+        // still persistently locked: a released lock lets another send
+        // select the coin.
         let reserved = reserved_of(&l.row);
+        let others = self.held_by_others(wallet, &l.row.id).await?;
         let w = wallet.to_string();
         let locked: HashSet<OutPoint> = self
             .appdb_op(move |db| db.locks(&w))
@@ -342,7 +351,7 @@ impl NetworkSession {
             .collect();
         if !outpoints
             .iter()
-            .all(|o| reserved.contains(o) && locked.contains(o))
+            .all(|o| reserved.contains(o) && !others.contains(o) && locked.contains(o))
         {
             return Err(dead());
         }
@@ -358,6 +367,22 @@ impl NetworkSession {
             })
             .collect::<Option<Vec<_>>>()
             .ok_or_else(dead)
+    }
+
+    /// The coins a masternode row other than session `id` holds (BL-346).
+    async fn held_by_others(
+        &self,
+        wallet: WalletId,
+        id: &str,
+    ) -> Result<HashSet<OutPoint>, MasternodesError> {
+        let (w, id) = (wallet.to_string(), id.to_string());
+        let held = self
+            .appdb_op(move |db| db.held_outpoints(&w, dw_appdb::Holder::Session(&id)))
+            .await?;
+        Ok(held
+            .iter()
+            .filter_map(|(txid, vout)| Some(OutPoint::new(txid.parse().ok()?, *vout)))
+            .collect())
     }
 
     /// Writes `session` and this wallet's side over the stored row.
@@ -545,9 +570,38 @@ impl NetworkSession {
             .ok_or(MasternodesError::SharedRegistrationUnknown)
     }
 
+    /// The shared masternodes the wallet's confirmed sessions registered,
+    /// with this wallet's shares of each (§13; a share key without its
+    /// session is MG-03b's, D29).
+    pub(crate) async fn held_shares(
+        &self,
+        wallet: WalletId,
+    ) -> Result<HashMap<[u8; 32], HeldShares>, MasternodesError> {
+        let rows = self.shared_rows(wallet).await?;
+        if rows.iter().all(|r| r.out_at.is_none()) {
+            return Ok(HashMap::new());
+        }
+        let chain = self.shared_chain(wallet).await?;
+        let mut held: HashMap<[u8; 32], HeldShares> = HashMap::new();
+        for l in loaded_all(rows, self.network.core_network()) {
+            let (SharedStage::Confirmed { .. }, Some(txid)) =
+                (derive_stage(&l, &chain), session_hash(&l, &chain))
+            else {
+                continue;
+            };
+            let of = u8::try_from(l.session.shares.len()).unwrap_or(u8::MAX);
+            let entry = held
+                .entry(txid.to_byte_array())
+                .or_insert(HeldShares { held: 0, of });
+            entry.held = entry.held.saturating_add(1);
+        }
+        Ok(held)
+    }
+
     /// The follower's pass over the wallet's sessions (§11): a session
-    /// read `confirmed`, `conflicted` or `dead` releases its locks; one out
-    /// and open never does (D17). Each row is judged by
+    /// read `confirmed` or `dead`, or `conflicted` by a buried spend
+    /// ([`releasable`]), releases its locks; one out and open never does
+    /// (D17). Each row is judged by
     /// [`Self::follow_shared_row`] against one chain snapshot read after
     /// the rows.
     pub(crate) async fn shared_follow_pass(
@@ -594,16 +648,20 @@ impl NetworkSession {
         if &row != listed {
             return Ok(false);
         }
-        let Ok(l) = Loaded::of(row, self.network.core_network()) else {
-            return Ok(false);
+        let (tip, chainlock) = {
+            let t = self.hub.tracker();
+            (t.tip_height(), t.chainlock_height())
         };
-        if !matches!(
-            derive_stage(&l, chain),
-            SharedStage::Confirmed { .. } | SharedStage::Conflicted | SharedStage::Dead { .. }
-        ) {
+        let buried = |height: u32| {
+            chainlock.is_some_and(|c| height <= c)
+                || tip.is_some_and(|t| {
+                    t.saturating_sub(height) + 1 >= crate::history::RECOMMENDED_CONFIRMATIONS
+                })
+        };
+        if !releasable(&row, self.network.core_network(), chain, buried) {
             return Ok(false);
         }
-        let (w, id, expected) = (wallet.to_string(), l.row.id.clone(), l.row.reserved);
+        let (w, id, expected) = (wallet.to_string(), row.id.clone(), row.reserved);
         Ok(self
             .appdb_op(move |db| {
                 db.release_shared_session_locks_durable(&w, &id, &expected, now_secs())

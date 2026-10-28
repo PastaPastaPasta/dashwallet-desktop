@@ -228,6 +228,12 @@ pub struct SharedSession {
     pub node_run_by: String,
     /// The registration fee this wallet reserved: the coordinator's (D9).
     pub fee: Option<u64>,
+    /// What this wallet's funding signature debits it, once its
+    /// contribution is recorded: its inputs less its change, so its share,
+    /// the coordinator's fee and any dust change it gave up (D9). A
+    /// `sign_shared_funding` or `send_shared_registration` grant must
+    /// cover it.
+    pub debit: Option<u64>,
     /// Once every input is signed: the registration's txid.
     pub pro_tx_hash: Option<String>,
     /// The txid of this wallet's signed copy, once it signed its inputs.

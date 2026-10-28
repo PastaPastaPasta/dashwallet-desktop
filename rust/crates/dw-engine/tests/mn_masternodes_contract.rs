@@ -34,7 +34,8 @@ use quote::ToTokens;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-/// Calls with real bodies: all of MG-03's, MG-04's and MG-04b slice 1a's.
+/// Calls with real bodies: all of MG-03's, MG-04's and MG-04b slice 1a's
+/// and 1b's.
 const IMPLEMENTED: &[&str] = &[
     "NetworkSession.masternodes",
     "Masternodes.list_state",
@@ -74,8 +75,11 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.unlock_shared_terms",
     "Masternodes.approve_shared",
     "Masternodes.sign_shared_funding",
+    "Masternodes.send_shared_registration",
+    "Masternodes.abandon_shared_session",
     "Masternodes.discard_shared_session",
     "Masternodes.preview_update_share",
+    "Masternodes.update_share",
 ];
 
 /// The facade's files in `src/masternodes/` (mn-engine.md §0). A new file
@@ -1071,7 +1075,7 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
         }
 
         // Shared masternodes (MG-04b §7): arguments, the wallet, v24 (not
-        // seen on this session) or `can_send`, then the session.
+        // seen on this session), then the session.
         let shared = || StartSharedRequest {
             shares: ["A", "B"]
                 .into_iter()
@@ -1104,7 +1108,7 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
         let cap = mn.shared_capability(wallet).await.unwrap();
         assert_eq!(
             (cap.v24, cap.evonode_shares, cap.can_send),
-            (Activation::Unknown, Activation::Inactive, false)
+            (Activation::Unknown, Activation::Inactive, true)
         );
         assert!(mn.shared_sessions(wallet).await.unwrap().is_empty());
         for refused in [
@@ -1130,8 +1134,17 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.sign_shared_funding(wallet, "zz".into(), "g".into())
                 .await
                 .map(drop),
+            mn.send_shared_registration(wallet, "zz".into(), "g".into())
+                .await
+                .map(drop),
+            mn.abandon_shared_session(wallet, "zz".into(), "g".into())
+                .await
+                .map(drop),
             mn.discard_shared_session(wallet, "zz".into()).await,
             mn.preview_update_share(wallet, share("zz")).await.map(drop),
+            mn.update_share(wallet, share("zz"), "g".into())
+                .await
+                .map(drop),
         ] {
             assert_eq!(code(refused), "invalid_argument");
         }
@@ -1147,7 +1160,13 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.sign_shared_funding(wallet, hash.clone(), "g".into())
                 .await
                 .map(drop),
+            mn.send_shared_registration(wallet, hash.clone(), "g".into())
+                .await
+                .map(drop),
             mn.preview_update_share(wallet, share(&hash))
+                .await
+                .map(drop),
+            mn.update_share(wallet, share(&hash), "g".into())
                 .await
                 .map(drop),
         ] {
@@ -1160,6 +1179,9 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
                 .map(drop),
             mn.shared_message(wallet, hash.clone()).await.map(drop),
             mn.unlock_shared_terms(wallet, hash.clone()).await.map(drop),
+            mn.abandon_shared_session(wallet, hash.clone(), "g".into())
+                .await
+                .map(drop),
             mn.discard_shared_session(wallet, hash.clone()).await,
         ] {
             assert_eq!(code(refused), "masternodes.shared_session_not_found");
@@ -1395,6 +1417,18 @@ fn errors_never_quote_a_secret_shaped_argument() {
                     .map(drop),
             ),
             (
+                "send_shared_registration",
+                mn.send_shared_registration(as_wallet, secret(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "abandon_shared_session",
+                mn.abandon_shared_session(as_wallet, secret(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
                 "discard_shared_session",
                 mn.discard_shared_session(as_wallet, secret()).await,
             ),
@@ -1407,6 +1441,20 @@ fn errors_never_quote_a_secret_shaped_argument() {
                         share_index: 0,
                         reward: RewardChoice::Address { address: secret() },
                     },
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "update_share",
+                mn.update_share(
+                    as_wallet,
+                    UpdateShareRequest {
+                        pro_tx_hash: secret(),
+                        share_index: 0,
+                        reward: RewardChoice::Address { address: secret() },
+                    },
+                    secret(),
                 )
                 .await
                 .map(drop),

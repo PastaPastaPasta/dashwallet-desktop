@@ -338,10 +338,11 @@ pub(crate) struct CoinFences {
     /// takes the coin fences.
     #[cfg(test)]
     pub(crate) pause_broadcast: std::sync::Mutex<Option<Arc<TestPause>>>,
-    /// Tests: holds the next shared session's row write (`start_shared`,
-    /// `join_shared`) after its reservation, its fence held (MG-04b D63).
+    /// Tests: holds the next masternode row write after its reservation,
+    /// its fence held: a shared session's (`start_shared`, `join_shared`,
+    /// MG-04b D63) or a ProTx operation's (`save_operation`, BL-352).
     #[cfg(test)]
-    pub(crate) pause_shared_write: std::sync::Mutex<Option<Arc<TestPause>>>,
+    pub(crate) pause_row_write: std::sync::Mutex<Option<Arc<TestPause>>>,
 }
 
 /// A one-shot pause point for tests.
@@ -460,6 +461,43 @@ impl CoinFences {
         #[cfg(test)]
         pause_at(&self.pause_broadcast).await;
     }
+}
+
+/// Tests: runs `first` up to its row write (held at
+/// [`CoinFences::pause_row_write`]), then `second` for two seconds, then
+/// lets both finish: `second` waits for the fence `first` holds from its
+/// keys to its write, or, without it, reads the keys and coins in use
+/// before `first`'s row is written.
+#[cfg(test)]
+pub(crate) fn write_paused<A, B>(
+    engine: &crate::Engine,
+    session: &NetworkSession,
+    first: impl std::future::Future<Output = A> + Send + 'static,
+    second: impl std::future::Future<Output = B> + Send + 'static,
+) -> (A, B)
+where
+    A: Send + 'static,
+    B: Send + 'static,
+{
+    use std::sync::atomic::Ordering::SeqCst;
+    let pause = Arc::new(TestPause::default());
+    *session.coin_fences.pause_row_write.lock().unwrap() = Some(Arc::clone(&pause));
+    let first = session.rt.spawn(first);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while !pause.reached.load(SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the first call reaches its write"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let second = session.rt.spawn(second);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    pause.release.notify_one();
+    (
+        engine.block_on(first).unwrap(),
+        engine.block_on(second).unwrap(),
+    )
 }
 
 #[cfg(test)]
@@ -874,8 +912,10 @@ impl NetworkSession {
 
     /// "Unlock unspent": deletes a user lock or releases a dust lock (which
     /// dust protection then leaves alone). An outpoint that is neither
-    /// locked nor an unspent output is `OutpointNotFound`. Under the coin
-    /// fence, as "Lock unspent".
+    /// locked nor an unspent output is `OutpointNotFound`; one a masternode
+    /// row holds (a ProTx operation's inputs, a shared session's
+    /// reservation, MG-04b BL-346) is refused and nothing is unlocked. Under
+    /// the coin fence, as "Lock unspent": rows take coins only under it.
     pub async fn unlock_outpoints(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -908,13 +948,19 @@ impl NetworkSession {
                 .collect();
             this.require_unspent(wallet_id, &unlisted).await?;
             this.appdb_op(move |db| {
+                let held = db.held_outpoints(&id, dw_appdb::Holder::None)?;
+                if keys.iter().any(|k| held.contains(k)) {
+                    return Ok(Err(EngineError::InvalidArgument(
+                        "the coin is reserved by a masternode registration".into(),
+                    )));
+                }
                 let now = now_secs();
                 for (txid, vout) in &keys {
                     db.unlock(&id, txid, *vout, now)?;
                 }
-                Ok(())
+                Ok(Ok(()))
             })
-            .await
+            .await?
         })
         .await
     }

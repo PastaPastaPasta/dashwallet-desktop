@@ -126,12 +126,28 @@ fn test_QT_126_shared_commands_on_a_datadir_without_a_wallet_report_wallet_not_f
             vec!["mn", "shared", "approve", SESSION, "--consent-hash", SECRET],
             b"",
         ),
+        (vec!["mn", "shared", "sign", SESSION], b""),
+        (vec!["mn", "shared", "send", SESSION], b""),
+        (vec!["mn", "shared", "abandon", SESSION], b""),
         (vec!["mn", "shared", "discard", SESSION], b""),
         (
             vec![
                 "mn",
                 "shared",
                 "preview-update-share",
+                SECRET,
+                "--share-index",
+                "0",
+                "--reward",
+                SECRET,
+            ],
+            b"",
+        ),
+        (
+            vec![
+                "mn",
+                "shared",
+                "update-share",
                 SECRET,
                 "--share-index",
                 "0",
@@ -149,10 +165,10 @@ fn test_QT_126_shared_commands_on_a_datadir_without_a_wallet_report_wallet_not_f
 }
 
 #[test]
-fn test_QT_126_shared_capability_on_a_fresh_wallet_cannot_send() {
+fn test_QT_126_shared_capability_on_a_fresh_wallet() {
     let dir = datadir(true);
     let capability = result(&dwcli(dir.as_ref(), &["mn", "shared", "capability"], b""));
-    assert_eq!(capability["can_send"], false, "{capability}");
+    assert_eq!(capability["can_send"], true, "{capability}");
     assert_eq!(capability["v24"], "unknown", "{capability}");
     assert_eq!(capability["evonode_shares"], "inactive", "{capability}");
 
@@ -296,11 +312,12 @@ fn test_QT_126_shared_command_lines_that_are_refused_name_no_value() {
             "--share-index",
             SECRET,
         ],
-        // Slice 1b's commands aren't here.
-        &["mn", "shared", "sign", SESSION],
-        &["mn", "shared", "send", SESSION],
-        &["mn", "shared", "abandon", SESSION],
-        &["mn", "shared", "update-share", SESSION],
+        // Slice 1b's commands: a bad fee, a missing share or reward.
+        &["mn", "shared", "sign"],
+        &["mn", "shared", "send"],
+        &["mn", "shared", "abandon", SESSION, "--max-fee", SECRET],
+        &["mn", "shared", "update-share", SECRET, "--share-index", "0"],
+        &["mn", "shared", "update-share", SECRET, "--reward", "refund"],
     ];
     for args in refused {
         let out = dwcli(path, args, b"");

@@ -52,11 +52,6 @@ pub mod sync;
 #[doc(hidden)]
 pub mod test_support;
 
-/// A marker the release check reads (MG-04b r2-m4): `test_support` gives
-/// it `SHARED_SEND_OVERRIDE`, so its presence shows whether the
-/// capability override is compiled in.
-#[doc(hidden)]
-pub struct TestSupportProbe;
 mod tools;
 mod tx_actions;
 mod wallets;

@@ -16,7 +16,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use dashcore::{OutPoint, Transaction, Txid};
-use dw_appdb::{AttemptEnd, MasternodeOpRow};
+use dw_appdb::{AttemptEnd, Holder, MasternodeOpRow};
 
 use super::super::MasternodesError;
 use super::super::protx_records::{
@@ -39,12 +39,14 @@ pub(crate) fn kind_name(kind: ProTxOperationKind) -> &'static str {
     match kind {
         ProTxOperationKind::Registration => "registration",
         ProTxOperationKind::UpdateRegistrar => "update_registrar",
+        ProTxOperationKind::UpdateShare => "update_share",
     }
 }
 
 pub(crate) fn kind_of(name: &str) -> ProTxOperationKind {
     match name {
         "update_registrar" => ProTxOperationKind::UpdateRegistrar,
+        "update_share" => ProTxOperationKind::UpdateShare,
         _ => ProTxOperationKind::Registration,
     }
 }
@@ -400,6 +402,8 @@ impl NetworkSession {
         let w = wallet.to_string();
         let locks: Vec<(String, u32)> =
             locks.iter().map(|o| (o.txid.to_string(), o.vout)).collect();
+        #[cfg(test)]
+        crate::coins::pause_at(&self.coin_fences.pause_row_write).await;
         self.appdb_op(move |db| db.insert_masternode_op_durable(&w, &row, &locks, now_secs()))
             .await?;
         self.masternodes.local_change();
@@ -489,7 +493,8 @@ impl NetworkSession {
             let now = now_secs();
             for (id, inputs) in &settled {
                 for o in inputs {
-                    db.unlock(&w, &o.txid.to_string(), o.vout, now)?;
+                    let holder = Holder::Operation(id);
+                    db.release_lock(&w, holder, &o.txid.to_string(), o.vout, now)?;
                 }
                 db.clear_masternode_op_inputs(&w, id)?;
             }
@@ -574,7 +579,8 @@ impl NetworkSession {
                 }
                 let now = now_secs();
                 for o in &unlock {
-                    db.unlock(&w, &o.txid.to_string(), o.vout, now)?;
+                    let holder = Holder::Operation(&id);
+                    db.release_lock(&w, holder, &o.txid.to_string(), o.vout, now)?;
                 }
                 Ok(true)
             })
