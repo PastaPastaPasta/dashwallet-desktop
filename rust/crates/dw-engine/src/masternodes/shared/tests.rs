@@ -46,11 +46,18 @@ const PHRASES: [&str; 3] = [
 #[derive(Default)]
 struct Net {
     sent: Mutex<Vec<Transaction>>,
+    /// The next hand-off is refused, never sent (a first attempt then
+    /// releases its inputs).
+    reject: std::sync::atomic::AtomicBool,
 }
 
 impl Net {
     fn sent(&self) -> Vec<Transaction> {
         self.sent.lock().unwrap().clone()
+    }
+
+    fn reject_next(&self) {
+        self.reject.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -64,6 +71,10 @@ impl TestBroadcaster for Net {
         tx: &Transaction,
         _: bool,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Txid, PlatformWalletError>> + Send>> {
+        if self.reject.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            let refused = PlatformWalletError::TransactionBroadcast("bad-txns-test".into());
+            return Box::pin(async move { Err(refused) });
+        }
         self.sent.lock().unwrap().push(tx.clone());
         let txid = tx.txid();
         Box::pin(async move { Ok(txid) })
@@ -1903,12 +1914,13 @@ fn test_QT_126_the_coordinator_signs_last_and_sends() {
         .unwrap_err();
     assert_stage(e, "sent");
 
-    // A resend: the same bytes, charged the fee.
+    // A resend: the same bytes, its grant covering the debit (refunded,
+    // the bytes being out already).
     assert_eq!(
-        send_code(&f.send(0, &id, FEE - 1).unwrap_err()),
+        send_code(&f.send(0, &id, FEE).unwrap_err()),
         "send.grant_exceeded"
     );
-    f.send(0, &id, FEE).unwrap();
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
     let sent = f.net.sent();
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[1].txid(), tx.txid());
@@ -1931,6 +1943,49 @@ fn test_QT_126_the_coordinator_signs_last_and_sends() {
         assert_eq!(row.shares, Some(HeldShares { held: 1, of: 3 }));
         assert!(row.mine && row.payouts_incomplete);
     }
+}
+
+/// D71 (validator r1 of 1b, M1): a first hand-off the network refused keeps
+/// `out_at` and records its code; nothing moved, so the resend that hands
+/// the registration off is charged the whole debit again.
+#[test]
+fn test_QT_126_a_refused_hand_off_is_resent_at_its_debit() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.net.reject_next();
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    let row = f.row(0, &id);
+    assert!(row.out_at.is_some() && row.last_error.is_some(), "{row:?}");
+    assert!(f.net.sent().is_empty());
+    assert_eq!(
+        send_code(&f.send(0, &id, FEE).unwrap_err()),
+        "send.grant_exceeded"
+    );
+    let done = f.send(0, &id, 400 * COIN + FEE).unwrap();
+    assert_eq!(done.session.stage, SharedStage::Sent);
+    assert_eq!(f.net.sent().len(), 1);
+    assert_eq!(f.row(0, &id).last_error, None);
+}
+
+/// D72 (validator r1 of 1b, m1): the coordinator abandons a registration
+/// the network refused, and the user's exit stands: no resend after it.
+#[test]
+fn test_QT_126_an_abandoned_registration_is_never_resent() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.net.reject_next();
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    f.abandon(0, &id).unwrap();
+    let row = f.row(0, &id);
+    assert!(row.abandon_txid.is_some());
+    let sent = f.net.sent();
+    assert_eq!(sent.len(), 1);
+    let spent = sent[0].input[0].previous_output.to_string();
+    assert!(row.reserved.contains(&spent), "{row:?}");
+    assert_stage(f.send(0, &id, 400 * COIN + FEE).unwrap_err(), "abandoned");
+    assert_eq!(f.net.sent().len(), 1);
 }
 
 /// D24: only the coordinator sends; a participant's call names its role.
@@ -2031,6 +2086,59 @@ fn test_QT_126_an_unreadable_out_session_is_released_by_its_stored_columns() {
     assert!(f.locked(1).is_empty());
 }
 
+/// BL-346 (c), D70: an unreadable session not yet out keeps its coins
+/// while they are unspent, and releases them once one is spent (it can no
+/// longer be signed).
+#[test]
+fn test_QT_126_an_unreadable_session_before_out_releases_once_a_coin_is_spent() {
+    let f = fx(1, true);
+    f.credit(0, 1, 501 * COIN);
+    let id = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE))
+        .unwrap()
+        .session
+        .id;
+    let reserved = f.locked(0);
+    f.rewrite(0, &id, |u| u.envelope = "{".into());
+    f.follow();
+    assert_eq!(f.locked(0), reserved, "unspent: kept");
+    f.spend(0, *reserved.iter().next().unwrap());
+    f.follow();
+    assert!(f.locked(0).is_empty());
+}
+
+/// BL-346 (c): an unreadable out session whose stored registration is in
+/// a block releases at once, whatever its depth.
+#[test]
+fn test_QT_126_an_unreadable_confirmed_session_releases_at_once() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    let tx = f.net.sent()[0].clone();
+    f.rewrite(0, &id, |u| u.envelope = "{".into());
+    f.mine(tx, 80);
+    f.tip(80);
+    f.follow();
+    assert!(f.locked(0).is_empty());
+}
+
+/// QT-091, D72: a coordinator whose registration the wallet recorded holds
+/// no unspent coin to abandon with until that transaction is abandoned.
+#[test]
+fn test_QT_126_a_recorded_registration_is_abandoned_first() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    // The wallet records the registration it handed off: its inputs spent.
+    for coin in f.locked(0) {
+        f.spend(0, coin);
+    }
+    assert_stage(f.abandon(0, &id).unwrap_err(), "sent");
+    assert_eq!(f.net.sent().len(), 1);
+    assert!(f.row(0, &id).abandon_txid.is_none());
+}
+
 /// BL-346 (a): coin control's unlock never frees a coin a session
 /// reserves, and refuses the whole request (nothing unlocked).
 #[test]
@@ -2049,6 +2157,24 @@ fn test_QT_126_unlock_outpoints_never_frees_a_reserved_coin() {
     assert_eq!(f.locked(0), HashSet::from([free, reserved]));
     f.run(f.session.unlock_outpoints(w, vec![free])).unwrap();
     assert_eq!(f.locked(0), HashSet::from([reserved]));
+}
+
+/// BL-346 (b): a coin another session holds is never a new session's,
+/// even when its lock row is gone (a lock an older build released).
+#[test]
+fn test_QT_126_a_new_session_never_takes_a_held_coin() {
+    let f = fx(2, true);
+    let a = two_joined(&f);
+    let a_coins: Vec<String> = serde_json::from_str(&f.row(0, &a).reserved).unwrap();
+    let w = f.wallets[0].to_string();
+    for c in &a_coins {
+        let (t, v) = c.rsplit_once(':').unwrap();
+        f.db().unlock(&w, t, v.parse().unwrap(), 2).unwrap();
+    }
+    if let Ok(b) = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE)) {
+        let b_coins: Vec<String> = serde_json::from_str(&f.row(0, &b.session.id).reserved).unwrap();
+        assert!(b_coins.iter().all(|c| !a_coins.contains(c)), "{b_coins:?}");
+    }
 }
 
 /// BL-346 (a, b): a coin two sessions claim (a row this version didn't

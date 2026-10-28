@@ -9,7 +9,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut};
+use dashcore::hashes::Hash as _;
+use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dw_protx::shared::session::Stage;
 use dw_protx::shared::{ProRegTxV3, SpecialTx};
 use key_wallet::wallet::managed_wallet_info::fee::FeeRate;
@@ -164,8 +165,10 @@ impl NetworkSession {
     }
 
     /// A resend of the coordinator's saved registration (§7's "resend the
-    /// same way"): the same bytes under a new lease charged the fee (§6.3),
-    /// refused while another pending spend holds one of its inputs, as
+    /// same way"): the same bytes under a new lease charged the debit, since
+    /// a first hand-off that never left was released and refunded; the
+    /// fence refunds it again when the bytes may be out already (D71).
+    /// Refused while another pending spend holds one of its inputs, as
     /// MG-04's resend.
     pub(super) async fn resend_registration(
         self: &Arc<Self>,
@@ -196,7 +199,7 @@ impl NetworkSession {
         let fee = rec.fee.unwrap_or(0);
         let lease = self.shared_lease(wallet, grant).await?;
         let result = async {
-            let (charge, _) = charge_fee(&lease, fee)?;
+            let (charge, _) = charge_fee(&lease, rec.debit())?;
             let change = change_of(rec, self.network.core_network());
             let summary = self
                 .shared_summary(&fence, &tx, fee, change.as_ref())
@@ -210,7 +213,8 @@ impl NetworkSession {
     }
 
     /// The exit from an out session (§9.3, D26): the largest of its
-    /// reserved coins the wallet still holds unspent, spent whole to a
+    /// reserved coins the wallet still holds unspent and no other pending
+    /// spend holds, spent whole to a
     /// fresh change address of its own (charged the fee), `abandon_txid`
     /// saved before the hand-off. The row and its locks stay until a block
     /// settles the session (`confirmed`, or `conflicted` by this spend).
@@ -224,13 +228,17 @@ impl NetworkSession {
         fence: CoinFence,
     ) -> Result<(), MasternodesError> {
         let reserved = reserved_of(row);
+        // Every pending spend's coins (an earlier abandon's among them).
+        let pending = (self.spends).held_by_others(&wallet, SpendOwner::Tx(Txid::all_zeros()));
         let w = self.wallet(&wallet).await?;
         let coin = {
             let state = w.state().await;
             read_coins(&state.core_wallet)
                 .coins
                 .into_iter()
-                .filter(|c| reserved.contains(&c.utxo.outpoint))
+                .filter(|c| {
+                    reserved.contains(&c.utxo.outpoint) && !pending.contains(&c.utxo.outpoint)
+                })
                 .max_by_key(|c| (c.utxo.value(), c.utxo.outpoint))
                 .and_then(|c| {
                     let path = own_address_info(&state.core_wallet, &c.utxo.address)?.path;
@@ -280,15 +288,6 @@ impl NetworkSession {
             let coins = [(utxo.clone(), path)];
             let inputs = to_sign(&tx, &coins)?;
             sign_p2pkh_inputs(&signer, &mut tx, &inputs, SIGHASH_ALL).await?;
-            // Another pending spend of the coin (the registration's, handed
-            // off this session) refuses, as MG-04's resend.
-            if (self
-                .spends
-                .held_by_others(&wallet, SpendOwner::Tx(tx.txid())))
-            .contains(&outpoint)
-            {
-                return Err(EngineError::from(SendFailure::OutpointUnavailable(outpoint)).into());
-            }
             let txid = tx.txid().to_string();
             let (w_id, id) = (wallet.to_string(), row.id.clone());
             let saved = self

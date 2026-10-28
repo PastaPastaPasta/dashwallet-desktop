@@ -686,6 +686,13 @@ impl Masternodes {
                 SharedStage::Combined => {
                     s.send_registration(wallet, &grant, &l, &ctx, fence).await?
                 }
+                // The user's exit stands: an abandoned registration isn't
+                // handed off again (D72).
+                SharedStage::Sent if l.row.abandon_txid.is_some() => {
+                    return Err(MasternodesError::SharedStage {
+                        stage: "abandoned".into(),
+                    });
+                }
                 SharedStage::Sent => s.resend_registration(wallet, &grant, &l, fence).await?,
                 stage => return Err(stage_refusal(stage)),
             }

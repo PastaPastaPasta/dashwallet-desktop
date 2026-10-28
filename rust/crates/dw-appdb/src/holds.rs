@@ -40,14 +40,16 @@ impl Holder<'_> {
 }
 
 /// Every `"txid:vout"` a row of `wallet_id` other than `except` holds, as
-/// one query: the rows' JSON arrays, an invalid one read as empty.
+/// one query: the rows' JSON arrays, any other column read as empty.
 const HELD: &str = "
     SELECT j.value FROM shared_mn_sessions s,
-        json_each(CASE WHEN json_valid(s.reserved) THEN s.reserved ELSE '[]' END) j
+        json_each(CASE WHEN json_valid(s.reserved) AND json_type(s.reserved) = 'array'
+            THEN s.reserved ELSE '[]' END) j
     WHERE s.wallet_id = ?1 AND s.id IS NOT ?2 AND j.type = 'text'
     UNION
     SELECT j.value FROM masternode_ops o,
-        json_each(CASE WHEN json_valid(o.fee_inputs) THEN o.fee_inputs ELSE '[]' END) j
+        json_each(CASE WHEN json_valid(o.fee_inputs) AND json_type(o.fee_inputs) = 'array'
+            THEN o.fee_inputs ELSE '[]' END) j
     WHERE o.wallet_id = ?1 AND o.id IS NOT ?3 AND j.type = 'text'";
 
 fn held_on(conn: &Connection, wallet_id: &str, except: Holder<'_>) -> Result<HashSet<String>> {
@@ -183,6 +185,10 @@ mod tests {
         db.insert_masternode_op_durable(W, &operation("o2", "not json"), &[], 1)
             .unwrap();
         db.insert_masternode_op_durable(W, &operation("o3", "[7]"), &[], 1)
+            .unwrap();
+        db.insert_masternode_op_durable(W, &operation("o4", r#"{"k":"d:3"}"#), &[], 1)
+            .unwrap();
+        db.insert_masternode_op_durable(W, &operation("o5", r#""e:4""#), &[], 1)
             .unwrap();
         let all = db.held_outpoints(W, Holder::None).unwrap();
         assert_eq!(

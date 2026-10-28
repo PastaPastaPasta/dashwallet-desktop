@@ -828,10 +828,19 @@ impl NetworkSession {
         let (coins, _) = self
             .source_coins(fence, &CoinSource::Any, &HashSet::new())
             .await?;
+        // A coin a masternode row holds is never another's, its lock row
+        // or not (BL-346).
+        let w = fence.wallet_id().to_string();
+        let held = self
+            .appdb_op(move |db| db.held_outpoints(&w, dw_appdb::Holder::None))
+            .await?;
         let state = wallet.state().await;
         let picked = coins
             .into_iter()
-            .filter(|u| !exclude.contains(&u.outpoint))
+            .filter(|u| {
+                !exclude.contains(&u.outpoint)
+                    && !held.contains(&(u.outpoint.txid.to_string(), u.outpoint.vout))
+            })
             .filter_map(|u| {
                 let path = own_address_info(&state.core_wallet, &u.address)?.path;
                 signable(&path, network).then_some((u, path))

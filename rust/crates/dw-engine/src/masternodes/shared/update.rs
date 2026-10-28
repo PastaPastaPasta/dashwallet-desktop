@@ -43,6 +43,8 @@ pub(super) struct ShareUpdate {
     pub recorded: Recorded,
     pub reward_script: ScriptBuf,
     pub refund_script: ScriptBuf,
+    /// The share's owner key id, which its signature must recover to.
+    pub owner_key_id: [u8; 20],
     pub mn_terms: ProTxTerms,
 }
 
@@ -186,6 +188,7 @@ impl NetworkSession {
             recorded,
             reward_script,
             refund_script: share.refund_script.clone(),
+            owner_key_id: share.owner_key_id,
             mn_terms,
         })
     }
@@ -222,6 +225,11 @@ impl NetworkSession {
             let sig = signer
                 .sign_update_share(plan.recorded.owner_index, &payload_bytes(&plan.payload))
                 .map_err(signer_refusal)?;
+            // The keychain key must be the share's (the vault signs what
+            // it's given, D11): else Core refuses the bytes.
+            if !dw_protx::rules::signed_by(&sig, plan.payload.sign_hash(), plan.owner_key_id) {
+                return Err(MasternodesError::ShareNotMine);
+            }
             plan.payload.sig = sig.to_vec();
             plan.tx.payload = payload_bytes(&plan.payload);
             let own: Vec<_> = plan

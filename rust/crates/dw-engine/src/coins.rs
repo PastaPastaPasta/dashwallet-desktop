@@ -493,6 +493,7 @@ where
     }
     let second = session.rt.spawn(second);
     std::thread::sleep(std::time::Duration::from_secs(2));
+    assert!(!second.is_finished(), "the second call waits for the first");
     pause.release.notify_one();
     (
         engine.block_on(first).unwrap(),
@@ -951,7 +952,7 @@ impl NetworkSession {
                 let held = db.held_outpoints(&id, dw_appdb::Holder::None)?;
                 if keys.iter().any(|k| held.contains(k)) {
                     return Ok(Err(EngineError::InvalidArgument(
-                        "the coin is reserved by a masternode registration".into(),
+                        "the coin is reserved by a masternode transaction".into(),
                     )));
                 }
                 let now = now_secs();

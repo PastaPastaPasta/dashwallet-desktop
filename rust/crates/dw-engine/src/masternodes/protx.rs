@@ -986,7 +986,9 @@ impl NetworkSession {
                 db.set_setting_durable(&w, &key, None)
             } else {
                 db.set_setting_durable(&w, &key, Some(&now.to_string()))?;
-                db.unlock(&w, &txid, vout, now).map(|_| ())
+                // A coin a row reserved since stays locked (MG-04b D69).
+                db.release_lock(&w, Holder::None, &txid, vout, now)
+                    .map(|_| ())
             }
         })
         .await?;
