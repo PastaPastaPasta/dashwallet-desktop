@@ -280,7 +280,7 @@ impl NetworkSession {
                 return Err(MasternodesError::SharedSessionNotFound);
             }
             let summary = self
-                .summary_of(&w, &tx, &[utxo.clone()], fee, Some(&address))
+                .summary_of(&w, &tx, std::slice::from_ref(&utxo), fee, Some(&address))
                 .await;
             self.deliver_shared(wallet, &row.id, tx, summary, charge, fence, false)
                 .await
