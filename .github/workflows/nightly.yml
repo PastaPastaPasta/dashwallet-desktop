@@ -3,7 +3,9 @@
 # - crossui-linux: scripts/crossui-linux-demo.sh (the SwiftCrossUI app driven through AT-SPI under
 #   Xvfb in Docker, M1 and M2 flows);
 # - shielded: the engine with its non-default `shielded` feature (E0-12), built, linted and its
-#   prover warm-up run, so the halo2 build cost stays out of PR CI but the feature does not rot.
+#   prover warm-up run, so the halo2 build cost stays out of PR CI but the feature does not rot;
+# - release-check: the release leg of dw-engine's tests/mg04b_release_check.rs (MG-04b D71), which
+#   PR CI, testing in debug only, never runs.
 #
 # `schedule` runs only from the repository's default branch. Once the setup steps have passed,
 # every suite step runs even when an earlier one failed, so one run reports them all.
@@ -175,6 +177,31 @@ jobs:
         working-directory: rust
         timeout-minutes: 15
         run: target/debug/examples/shielded_warmup
+
+  # Blocking: proves the shared-masternode sending override (`test_support`, debug `test-support`
+  # builds only) absent from a release build with the feature on; the test's `const` assert fails
+  # the build otherwise. The debug legs run in PR CI.
+  release-check:
+    name: Release check (MG-04b sending override)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: ci/github/linux-free-disk.sh
+      - name: protoc
+        run: ci/github/install-protoc.sh
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+      - name: mg04b_release_check (release)
+        working-directory: rust
+        run: cargo test --release -p dw-engine --features test-support --test mg04b_release_check --locked
 
   # Non-blocking: on the runner the demo fails 4 AT-SPI checks, two of them known-intermittent
   # (docs/ci.md, "Known gaps"). A red X here does not turn the nightly red; the regtest job does.

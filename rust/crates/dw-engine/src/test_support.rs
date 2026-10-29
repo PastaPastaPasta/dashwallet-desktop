@@ -29,9 +29,9 @@ pub async fn fetch_identity_balance(
 }
 
 /// The shared-masternode facade with sending set by hand (MG-04b r2-m4,
-/// DEC-678): the only way past the `unsupported` refusal of the calls that
-/// produce bytes the network accepts while `SHARED_SENDING` is off, for the
-/// in-process session tests of other crates. Compiled only where this
+/// DEC-678): whatever `SHARED_SENDING` says, the calls that produce bytes
+/// the network accepts send or refuse `unsupported` as `can_send` says, for
+/// the in-process session tests of other crates. Compiled only where this
 /// module is (a debug build with `test-support`); the release check
 /// (`tests/mg04b_release_check.rs`) proves it absent from a release build.
 pub fn shared_masternodes_with_send_override(

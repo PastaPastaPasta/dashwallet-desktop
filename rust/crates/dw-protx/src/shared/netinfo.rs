@@ -84,6 +84,99 @@ fn is_embedded_ipv6(addr: &[u8]) -> bool {
         || addr.starts_with(&[0xfd, 0x6b, 0x88, 0xc0, 0x87, 0x24])
 }
 
+/// The IP service `ExtNetInfo::AddEntry` (rc.3 `evo/netinfo.cpp:500-551`)
+/// reads from one entry, before `ValidateService`: `SplitHostPort` with no
+/// default port, then, for a host of `SAFE_CHARS_IPV4_6` only (`:28,512`),
+/// `Lookup` without name lookups (`:542`), which splits the host again
+/// (`netbase.cpp:194-209`) and decodes it as `getaddrinfo` with
+/// `AI_NUMERICHOST` does (`netbase.cpp:44-59,147-174`): glibc's
+/// [`inet_aton_exact`], else an IPv6 address, an IPv4-mapped one read as
+/// IPv4 (`SetLegacyIPv6`, `netaddress.cpp:135-162`). An IPv6 address with
+/// the TorV2 or internal prefix is returned as is; Core never adds one
+/// (invalid, or dropped by `LookupIntern`), and
+/// [`ServiceAddr::from_socket_addr`] refuses it. `None` for anything else,
+/// including a host Core would read as a domain or privacy network (MG-04b
+/// D5). Pure Rust, so the same reading on every target (D78). dash-qt's
+/// verdicts on these forms are in testdata/shared_envelopes.json (M9);
+/// testdata/oracle/glibc checks the reading against glibc's `getaddrinfo`.
+pub fn parse_core_service(entry: &str) -> Option<SocketAddr> {
+    let (addr, port) = split_host_port(entry, 0);
+    let ip_safe = |s: &str| {
+        s.bytes()
+            .all(|b| b.is_ascii_hexdigit() || b".:[]".contains(&b))
+    };
+    if addr.is_empty() || !ip_safe(addr) {
+        return None;
+    }
+    let (host, port) = split_host_port(addr, port);
+    let ip = match inet_aton_exact(host) {
+        Some(v4) => IpAddr::V4(v4),
+        None => host.parse::<Ipv6Addr>().ok()?.to_canonical(),
+    };
+    Some(SocketAddr::new(ip, port))
+}
+
+/// `SplitHostPort` (rc.3 `util/strencodings.cpp:101-126`): the text after
+/// the last colon is the port when that colon is the only one or follows
+/// `]` and the text is a `ParseUInt16`; otherwise `port` is kept. One pair
+/// of enclosing brackets is then stripped from the host.
+fn split_host_port(input: &str, mut port: u16) -> (&str, u16) {
+    let mut host = input;
+    if let Some(colon) = input.rfind(':') {
+        let bracketed = input.starts_with('[') && input.as_bytes()[colon - 1] == b']';
+        let multi = input[..colon].contains(':');
+        if (colon == 0 || bracketed || !multi)
+            && let Some(n) = parse_u16(&input[colon + 1..])
+        {
+            (host, port) = (&input[..colon], n);
+        }
+    }
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    (host, port)
+}
+
+/// `ParseUInt16` (rc.3 `util/strencodings.cpp:234-270`): one optional `+`,
+/// then decimal digits only (`std::from_chars`), leading zeros allowed.
+fn parse_u16(s: &str) -> Option<u16> {
+    let digits = s.strip_prefix('+').unwrap_or(s);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// glibc's `__inet_aton_exact`: one to four parts split by `.`, each a C
+/// number (`strtoul` base 0: a leading `0` is octal; `0x` hex can't pass
+/// `SAFE_CHARS_IPV4_6`), every part but the last one byte, the last filling
+/// the bytes left: `127.1` is 127.0.0.1 and `2130706433` is too.
+fn inet_aton_exact(host: &str) -> Option<Ipv4Addr> {
+    let parts = host
+        .split('.')
+        .map(|part| {
+            let (digits, radix) = match part.strip_prefix('0') {
+                Some(rest) if !rest.is_empty() => (rest, 8),
+                _ => (part, 10),
+            };
+            if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+                return None;
+            }
+            u32::from_str_radix(digits, radix).ok()
+        })
+        .collect::<Option<Vec<u32>>>()?;
+    let (&last, bytes) = parts.split_last()?;
+    if bytes.len() > 3 || bytes.iter().any(|&b| b > 0xff) || last > u32::MAX >> (8 * bytes.len()) {
+        return None;
+    }
+    let high = bytes
+        .iter()
+        .enumerate()
+        .fold(0, |word, (i, &b)| word | b << (24 - 8 * i));
+    Some(Ipv4Addr::from(high | last))
+}
+
 /// A `CService` in ADDRv2 form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceAddr {
@@ -586,6 +679,46 @@ impl NetInfoEntry {
     }
 }
 
+impl NetInfoEntry {
+    /// The bytes Core's unique-property map hashes for this entry
+    /// (`GetUniquePropertyHash`, rc.3 `evo/deterministicmns.h:526-547`, an
+    /// untagged `SerializeHash`). A service is its `CService`: ADDRv1 for
+    /// IPv4 and IPv6 (`netaddress.h:329-361`, an IPv4 address behind the
+    /// `::ffff:` prefix), ADDRv2 for the others (`:381-395`), then the port
+    /// big-endian (`:563-567`). A domain is its `DomainPort`: a compact-size
+    /// string, then the port big-endian (`evo/netinfo.h:176-180`). Untagged,
+    /// so an IPv6 service and a 15-character domain can be one property
+    /// (MG-04b D39).
+    pub fn unique_property(&self) -> Vec<u8> {
+        let mut key = Vec::new();
+        let port = match self {
+            Self::Service(s) => {
+                match s.network {
+                    BIP155_IPV4 => {
+                        key.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff])
+                    }
+                    BIP155_IPV6 => {}
+                    network => {
+                        key.push(network);
+                        VarInt(s.address.len() as u64)
+                            .consensus_encode(&mut key)
+                            .ok();
+                    }
+                }
+                key.extend_from_slice(&s.address);
+                s.port
+            }
+            Self::Domain { name, port } => {
+                VarInt(name.len() as u64).consensus_encode(&mut key).ok();
+                key.extend_from_slice(name.as_bytes());
+                *port
+            }
+        };
+        key.extend_from_slice(&port.to_be_bytes());
+        key
+    }
+}
+
 fn write_port<W: std::io::Write + ?Sized>(w: &mut W, port: u16) -> Result<usize, std::io::Error> {
     w.write_all(&port.to_be_bytes())?;
     Ok(2)
@@ -730,6 +863,101 @@ mod tests {
     fn test_QT_126_empty_net_info_is_version_and_zero_purposes() {
         assert_eq!(serialize(&ExtNetInfo::default()), [1, 0]);
         assert_eq!(ExtNetInfo::core_p2p(&[]).unwrap(), ExtNetInfo::default());
+    }
+
+    /// M9: the forms dash-qt reads (testdata/shared_envelopes.json has its
+    /// verdicts); the cases here pin the edges of each step.
+    #[test]
+    fn test_QT_126_services_parse_as_core_reads_them() {
+        let v4: SocketAddr = "127.0.0.1:19901".parse().unwrap();
+        for form in [
+            "127.0.0.1:19901",
+            "127.1:19901",
+            "127.0.1:19901",
+            "2130706433:19901",
+            "0177.0.0.01:19901",
+            "127.000.000.001:19901",
+            "127.0.0.1:019901",
+            "127.0.0.1:+19901",
+            "[127.0.0.1]:19901",
+            "[[127.0.0.1]]:19901",
+            "[127.0.0.1:19901]",
+            "[::ffff:127.0.0.1]:19901",
+            "[::ffff:7f00:1]:19901",
+        ] {
+            assert_eq!(parse_core_service(form), Some(v4), "{form}");
+        }
+        let v6: SocketAddr = "[2001:db8::1]:9999".parse().unwrap();
+        assert_eq!(parse_core_service("[2001:db8::1]:9999"), Some(v6));
+        // No port: 0, which `ValidateService` refuses.
+        assert_eq!(parse_core_service("127.0.0.1"), "127.0.0.1:0".parse().ok());
+        assert_eq!(parse_core_service("[::1]"), "[::1]:0".parse().ok());
+        for form in [
+            "",
+            ":19901",
+            "0x7f.0.0.1:19901",
+            "localhost:19901",
+            "127.0.0.08:19901",
+            "127.0.0.256:19901",
+            "127.0.0.1.:19901",
+            "127..0.1:19901",
+            "127.0.0.0.1:19901",
+            "127.16777216:19901",
+            "4294967296:19901",
+            "127.0.0.1:19901:19901",
+            "::ffff:127.0.0.1:19901",
+            "[::1%1]:19901",
+        ] {
+            assert_eq!(parse_core_service(form), None, "{form}");
+        }
+        // A port Core can't parse stays part of the host.
+        // `+` fails `SAFE_CHARS_IPV4_6` before `Lookup`'s split would take it
+        // as the port (rc.3 `evo/netinfo.cpp:512`; from the source, not the
+        // oracle run).
+        assert_eq!(parse_core_service("[127.0.0.1:+19901]"), None);
+        // `ParseIntegral` strips one `+` only (`util/strencodings.cpp:234-270`).
+        for form in [
+            "127.0.0.1:-19901",
+            "127.0.0.1:84437",
+            "127.0.0.1:+-1",
+            "127.0.0.1:++19901",
+        ] {
+            assert_eq!(parse_core_service(form), None, "{form}");
+        }
+        // glibc bounds every part but the last by 0xff; `383 << 24` would
+        // wrap to 127 (review r1 of 1c, n-1).
+        for form in ["383.0.0.1:19901", "383.1:19901"] {
+            assert_eq!(parse_core_service(form), None, "{form}");
+        }
+    }
+
+    /// MG-04b D39: Core's unique-property bytes, untagged.
+    #[test]
+    fn test_QT_126_unique_property_is_cores_serialization() {
+        let key = |text: &str| service(text).unique_property();
+        assert_eq!(
+            key("1.2.3.4:19999"),
+            [
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4, 0x4e, 0x1f
+            ]
+        );
+        let tor = NetInfoEntry::Service(ServiceAddr {
+            network: BIP155_TORV3,
+            address: vec![0x11; 32],
+            port: 9999,
+        });
+        let mut want = vec![BIP155_TORV3, 32];
+        want.extend([0x11; 32]);
+        want.extend([0x27, 0x0f]);
+        assert_eq!(tor.unique_property(), want);
+        // The review's pair: 0x0f "abcdefghij.klmn" 19999, both ways.
+        let domain = |name: &str| NetInfoEntry::Domain {
+            name: name.into(),
+            port: 19999,
+        };
+        let v6 = key("[f61:6263:6465:6667:6869:6a2e:6b6c:6d6e]:19999");
+        assert_eq!(v6, domain("abcdefghij.klmn").unique_property());
+        assert_ne!(v6, domain("abcdefghij.klmo").unique_property());
     }
 
     #[test]

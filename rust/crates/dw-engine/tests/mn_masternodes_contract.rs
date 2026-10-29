@@ -1109,7 +1109,7 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
         let cap = mn.shared_capability(wallet).await.unwrap();
         assert_eq!(
             (cap.v24, cap.evonode_shares, cap.can_send),
-            (Activation::Unknown, Activation::Inactive, false)
+            (Activation::Unknown, Activation::Inactive, true)
         );
         assert!(mn.shared_sessions(wallet).await.unwrap().is_empty());
         for refused in [
@@ -1164,9 +1164,6 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.send_shared_registration(wallet, hash.clone(), "g".into())
                 .await
                 .map(drop),
-            mn.abandon_shared_session(wallet, hash.clone(), "g".into())
-                .await
-                .map(drop),
             mn.preview_update_share(wallet, share(&hash))
                 .await
                 .map(drop),
@@ -1184,6 +1181,10 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.shared_message(wallet, hash.clone()).await.map(drop),
             mn.unlock_shared_terms(wallet, hash.clone()).await.map(drop),
             mn.discard_shared_session(wallet, hash.clone()).await,
+            // Sending is on (slice 1c) and abandoning has no v24 gate.
+            mn.abandon_shared_session(wallet, hash.clone(), "g".into())
+                .await
+                .map(drop),
         ] {
             assert_eq!(code(refused), "masternodes.shared_session_not_found");
         }

@@ -185,6 +185,12 @@ pub struct ShareRow {
 pub struct ShareTermsView {
     /// `coreP2PAddrs`.
     pub service: String,
+    /// What `service` registers, when Core reads an entry of it other than
+    /// as written (an octal or short IPv4 form, an IPv4-mapped IPv6 address,
+    /// a `+` port): each entry's reading, joined by ", ". `None` when every
+    /// entry reads as written or one can't be read (MG-04b D78). Missing
+    /// from an `approved_terms` row written before it, read as `None`.
+    pub service_read: Option<String>,
     /// 96 hex, basic serialization.
     pub operator_public_key: String,
     pub voting_address: String,

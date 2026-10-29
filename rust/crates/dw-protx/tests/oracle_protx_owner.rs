@@ -327,7 +327,7 @@ fn test_MG04_rules_accept_dashd_and_name_mutants() {
         // A listed masternode with the same operator key.
         let listed = ListedMasternode {
             pro_tx_hash: [0xee; 32],
-            service: None,
+            net_info: Vec::new(),
             operator_public_key: *p.operator_public_key.as_ref(),
             voting_key_id: [0; 20],
             platform_node_id: None,

@@ -165,11 +165,11 @@ fn test_QT_126_shared_commands_on_a_datadir_without_a_wallet_report_wallet_not_f
 }
 
 #[test]
-fn test_QT_126_shared_capability_on_a_fresh_wallet_cannot_send() {
+fn test_QT_126_shared_capability_on_a_fresh_wallet() {
     let dir = datadir(true);
     let capability = result(&dwcli(dir.as_ref(), &["mn", "shared", "capability"], b""));
-    // Sending is off until slice 1c (DEC-678).
-    assert_eq!(capability["can_send"], false, "{capability}");
+    // Sending is on since slice 1c (DEC-678); creation waits for v24.
+    assert_eq!(capability["can_send"], true, "{capability}");
     assert_eq!(capability["v24"], "unknown", "{capability}");
     assert_eq!(capability["evonode_shares"], "inactive", "{capability}");
 
@@ -252,26 +252,11 @@ fn test_QT_126_shared_refusals_are_the_facades_codes_and_quote_nothing() {
     );
     assert_eq!(code(&out), "invalid_argument");
 
-    // Sending is off (DEC-678): the calls that produce bytes the network
-    // accepts refuse before the session. `sign` and `send` read the
-    // session first to size their grant.
-    let out = run(&["mn", "shared", "abandon", SESSION], b"");
-    assert_eq!(code(&out), "masternodes.unsupported");
-    let out = run(
-        &[
-            "mn",
-            "shared",
-            "update-share",
-            SECRET,
-            "--share-index",
-            "0",
-            "--reward",
-            "refund",
-        ],
-        b"",
-    );
-    assert_eq!(code(&out), "masternodes.unsupported");
-    for command in ["sign", "send"] {
+    // Sending is on (slice 1c, DEC-678): the calls that produce bytes the
+    // network accepts reach the session, which doesn't exist. The engine's
+    // `test_QT_126_sending_is_on_as_shipped_and_the_switch_refuses` covers
+    // the switch turned off.
+    for command in ["abandon", "sign", "send"] {
         let out = run(&["mn", "shared", command, SESSION], b"");
         assert_eq!(
             code(&out),

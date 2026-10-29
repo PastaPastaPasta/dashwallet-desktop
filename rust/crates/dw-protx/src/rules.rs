@@ -32,10 +32,14 @@ use dashcore::hashes::Hash;
 use dashcore::secp256k1::Message;
 use dashcore::sign_message::{MessageSignature, signed_msg_hash};
 use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
+use dashcore::sml::masternode_list_entry::net_info::{self as list_net_info, Bip155Network};
 use dashcore::{Network, OutPoint, PubkeyHash, ScriptBuf, Transaction, Txid};
 
 use crate::params::{MAX_OPERATOR_REWARD, collateral_amount};
 use crate::service::{self, ServiceError};
+use crate::shared::netinfo::{
+    BIP155_CJDNS, BIP155_I2P, BIP155_IPV4, BIP155_IPV6, BIP155_TORV3, NetInfoEntry, ServiceAddr,
+};
 
 /// A reject reason, verbatim from Core (`bad-protx-…`).
 pub type Reject = &'static str;
@@ -51,8 +55,10 @@ pub const EXT_ADDR: u16 = 3;
 pub struct ListedMasternode {
     /// Wire order.
     pub pro_tx_hash: [u8; 32],
-    /// The primary Core P2P address, `None` when it has no socket form.
-    pub service: Option<SocketAddr>,
+    /// Every network-info entry the list holds for it, of every purpose
+    /// ([`listed_net_info`]): each is a unique property of Core's list
+    /// (`bad-protx-dup-netinfo-entry`, MG-04b D39).
+    pub net_info: Vec<NetInfoEntry>,
     /// As the list serializes it (basic for version 2 and later, legacy
     /// for version 1).
     pub operator_public_key: [u8; 48],
@@ -61,6 +67,87 @@ pub struct ListedMasternode {
     /// The collateral, when the wallet knows it (only the wallet's own
     /// masternodes: the SPV list carries none).
     pub collateral: Option<OutPoint>,
+}
+
+/// A listed masternode's network-info entries as Core's list holds them,
+/// each a unique property (rc.3 `deterministicmns.cpp:459-470`): a legacy
+/// entry's one address, or a version-3 entry's every entry of every
+/// purpose, services and domains, in wire order. A service is keyed as
+/// `GetUniquePropertyHash` keys a `CService` (`deterministicmns.h:526-547`):
+/// by network, address and port, an IPv4-mapped IPv6 address as its IPv4
+/// one and an IPv6 address never flipped to CJDNS (a legacy entry's
+/// `CService` is read as written). No entries for a legacy entry without a
+/// service, or an entry dashcore couldn't read.
+pub fn listed_net_info(info: &MasternodeNetInfo) -> Vec<NetInfoEntry> {
+    match info {
+        MasternodeNetInfo::Legacy(addr) => legacy_entry(*addr).into_iter().collect(),
+        MasternodeNetInfo::Extended(ext) => ext
+            .purposes
+            .iter()
+            .flat_map(|(_, entries)| entries)
+            .filter_map(|e| match e {
+                list_net_info::NetInfoEntry::Service {
+                    network,
+                    addr,
+                    port,
+                } => Some(NetInfoEntry::Service(ServiceAddr {
+                    network: match network {
+                        Bip155Network::Ipv4 => BIP155_IPV4,
+                        Bip155Network::Ipv6 => BIP155_IPV6,
+                        Bip155Network::TorV3 => BIP155_TORV3,
+                        Bip155Network::I2p => BIP155_I2P,
+                        Bip155Network::Cjdns => BIP155_CJDNS,
+                    },
+                    address: addr.clone(),
+                    port: *port,
+                })),
+                list_net_info::NetInfoEntry::Domain { host, port } => Some(NetInfoEntry::Domain {
+                    name: host.clone(),
+                    port: *port,
+                }),
+                list_net_info::NetInfoEntry::Invalid => None,
+            })
+            .collect(),
+    }
+}
+
+/// A legacy (`MnNetInfo`) address as the entry Core keys it by, `None` for
+/// no service.
+fn legacy_entry(addr: SocketAddr) -> Option<NetInfoEntry> {
+    if service::is_no_service(&addr) {
+        return None;
+    }
+    let (network, address) = match addr.ip().to_canonical() {
+        IpAddr::V4(ip) => (BIP155_IPV4, ip.octets().to_vec()),
+        IpAddr::V6(ip) => (BIP155_IPV6, ip.octets().to_vec()),
+    };
+    Some(NetInfoEntry::Service(ServiceAddr {
+        network,
+        address,
+        port: addr.port(),
+    }))
+}
+
+/// `bad-protx-dup-netinfo-entry` (rc.3 `specialtxman.cpp:1235-1245`): one
+/// of `entries` is a unique property of a listed masternode on another
+/// collateral, whichever purpose either side holds it under, compared by
+/// Core's untagged key ([`NetInfoEntry::unique_property`]), so a service
+/// and a domain can clash.
+pub(crate) fn check_net_info_unique<'a>(
+    entries: impl IntoIterator<Item = &'a NetInfoEntry>,
+    collateral: OutPoint,
+    list: &[ListedMasternode],
+) -> Result<(), Reject> {
+    for entry in entries {
+        let key = entry.unique_property();
+        if list.iter().any(|e| {
+            e.collateral != Some(collateral)
+                && e.net_info.iter().any(|l| l.unique_property() == key)
+        }) {
+            return Err("bad-protx-dup-netinfo-entry");
+        }
+    }
+    Ok(())
 }
 
 /// The hash160 a P2PKH script pays, `None` for any other script.
@@ -319,9 +406,9 @@ pub fn check_inputs_hash(tx: &Transaction, inputs_hash: [u8; 32]) -> Result<(), 
 }
 
 /// `CheckProRegTx`'s list checks of a version-2 payload: a service another
-/// collateral's masternode holds, an operator key any masternode holds
-/// under either serialization, or an evonode's platform node id already
-/// listed. Core v24 compares the operator key under both schemes
+/// collateral's masternode holds under any purpose, an operator key any
+/// masternode holds under either serialization, or an evonode's platform
+/// node id already listed. Core v24 compares the operator key under both schemes
 /// (`specialtxman.cpp:1266-1274`); before v24 only the payload's own, so
 /// this is stricter there (MG-04 D5).
 pub fn check_registration_list(
@@ -329,18 +416,10 @@ pub fn check_registration_list(
     collateral: OutPoint,
     list: &[ListedMasternode],
 ) -> Result<(), Reject> {
-    let service = legacy_service(&p.service_address)?;
-    let service = (!service::is_no_service(&service)).then(|| normalized(service));
+    let service = legacy_entry(legacy_service(&p.service_address)?);
+    check_net_info_unique(&service, collateral, list)?;
     let operator: [u8; 48] = *p.operator_public_key.as_ref();
     let scheme = operator_scheme(p.version);
-    for e in list {
-        if let (Some(ours), Some(theirs)) = (service, e.service)
-            && ours == normalized(theirs)
-            && e.collateral != Some(collateral)
-        {
-            return Err("bad-protx-dup-netinfo-entry");
-        }
-    }
     if list
         .iter()
         .any(|e| holds_operator_key(e, &operator, scheme))
@@ -364,17 +443,6 @@ fn legacy_service(service: &MasternodeNetInfo) -> Result<SocketAddr, Reject> {
     match service {
         MasternodeNetInfo::Legacy(addr) => Ok(*addr),
         MasternodeNetInfo::Extended(_) => Err("bad-protx-netinfo-version"),
-    }
-}
-
-/// An address with an IPv4-mapped IPv6 address shown as IPv4.
-pub(crate) fn normalized(addr: SocketAddr) -> SocketAddr {
-    match addr.ip() {
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => SocketAddr::new(IpAddr::V4(v4), addr.port()),
-            None => addr,
-        },
-        IpAddr::V4(_) => addr,
     }
 }
 
@@ -609,7 +677,7 @@ mod tests {
         let collateral = OutPoint::new(Txid::from_byte_array([9; 32]), 0);
         let entry = |service: &str, op: [u8; 48], node: [u8; 20]| ListedMasternode {
             pro_tx_hash: [4; 32],
-            service: Some(service.parse().unwrap()),
+            net_info: listed_net_info(&MasternodeNetInfo::Legacy(service.parse().unwrap())),
             operator_public_key: op,
             voting_key_id: [8; 20],
             platform_node_id: Some(node),
@@ -636,6 +704,143 @@ mod tests {
         assert_eq!(
             check_registration_list(&p, collateral, &list),
             Err("bad-protx-dup-platformnodeid")
+        );
+    }
+
+    /// MG-04b D39: every entry of a listed masternode is Core's unique
+    /// property, whatever its purpose; an IPv4-mapped legacy address is its
+    /// IPv4 one, and a domain or another network's address isn't a service.
+    #[test]
+    fn every_listed_net_info_entry_is_unique() {
+        use dashcore::sml::masternode_list_entry::net_info::{
+            ExtNetInfo, NetInfoEntry as ListEntry, NetInfoPurpose,
+        };
+        let p = payload(false);
+        let collateral = OutPoint::new(Txid::from_byte_array([9; 32]), 0);
+        let ipv4 = |a: [u8; 4], port| ListEntry::Service {
+            network: Bip155Network::Ipv4,
+            addr: a.to_vec(),
+            port,
+        };
+        let listed = |info: MasternodeNetInfo| ListedMasternode {
+            pro_tx_hash: [4; 32],
+            net_info: listed_net_info(&info),
+            operator_public_key: [0x88; 48],
+            voting_key_id: [8; 20],
+            platform_node_id: None,
+            collateral: None,
+        };
+        let ext = |purposes| {
+            MasternodeNetInfo::Extended(ExtNetInfo {
+                version: 1,
+                purposes,
+            })
+        };
+        // The payload's service, 127.0.0.1:19899, as another masternode's
+        // second Core P2P entry, and as its Platform P2P entry.
+        for purposes in [
+            vec![(
+                NetInfoPurpose::CoreP2P,
+                vec![ipv4([127, 0, 0, 2], 19899), ipv4([127, 0, 0, 1], 19899)],
+            )],
+            vec![
+                (NetInfoPurpose::CoreP2P, vec![ipv4([127, 0, 0, 2], 19899)]),
+                (
+                    NetInfoPurpose::PlatformP2P,
+                    vec![ipv4([127, 0, 0, 1], 19899)],
+                ),
+            ],
+        ] {
+            let list = [listed(ext(purposes))];
+            assert_eq!(
+                check_registration_list(&p, collateral, &list),
+                Err("bad-protx-dup-netinfo-entry")
+            );
+        }
+        let mapped = MasternodeNetInfo::Legacy("[::ffff:127.0.0.1]:19899".parse().unwrap());
+        assert_eq!(
+            check_registration_list(&p, collateral, &[listed(mapped)]),
+            Err("bad-protx-dup-netinfo-entry")
+        );
+        let other = ext(vec![
+            (NetInfoPurpose::CoreP2P, vec![ipv4([127, 0, 0, 1], 19900)]),
+            (
+                NetInfoPurpose::PlatformHttps,
+                vec![ListEntry::Domain {
+                    host: "127.0.0.1".into(),
+                    port: 19899,
+                }],
+            ),
+        ]);
+        assert_eq!(
+            check_registration_list(&p, collateral, &[listed(other)]),
+            Ok(())
+        );
+        assert!(listed_net_info(&MasternodeNetInfo::Legacy(service::NO_SERVICE)).is_empty());
+        // A domain is listed too, keyed by host and port.
+        let domain = ListEntry::Domain {
+            host: "node.example".into(),
+            port: 19999,
+        };
+        let holder = listed(ext(vec![(NetInfoPurpose::PlatformHttps, vec![domain])]));
+        let ours = NetInfoEntry::Domain {
+            name: "node.example".into(),
+            port: 19999,
+        };
+        assert_eq!(
+            check_net_info_unique([&ours], collateral, &[holder]),
+            Err("bad-protx-dup-netinfo-entry")
+        );
+        // A version-3 IPv6 entry is listed as IPv6 (review r1 of 1c, n-2).
+        let v6: std::net::Ipv6Addr = "2a01:4f8::1".parse().unwrap();
+        let holder = listed(ext(vec![(
+            NetInfoPurpose::CoreP2P,
+            vec![
+                ipv4([127, 0, 0, 2], 19899),
+                ListEntry::Service {
+                    network: Bip155Network::Ipv6,
+                    addr: v6.octets().to_vec(),
+                    port: 9999,
+                },
+            ],
+        )]));
+        let ours = NetInfoEntry::Service(ServiceAddr {
+            network: BIP155_IPV6,
+            address: v6.octets().to_vec(),
+            port: 9999,
+        });
+        assert_eq!(holder.net_info[1], ours);
+        assert_eq!(
+            check_net_info_unique([&ours], collateral, &[holder]),
+            Err("bad-protx-dup-netinfo-entry")
+        );
+        // Core's key is untagged: a listed 15-character domain is this
+        // IPv6 service (n-3).
+        let holder = listed(ext(vec![(
+            NetInfoPurpose::PlatformHttps,
+            vec![ListEntry::Domain {
+                host: "abcdefghij.klmn".into(),
+                port: 19999,
+            }],
+        )]));
+        let ours = |text: &str| {
+            NetInfoEntry::Service(ServiceAddr::from_socket_addr(text.parse().unwrap()).unwrap())
+        };
+        assert_eq!(
+            check_net_info_unique(
+                [&ours("[f61:6263:6465:6667:6869:6a2e:6b6c:6d6e]:19999")],
+                collateral,
+                std::slice::from_ref(&holder)
+            ),
+            Err("bad-protx-dup-netinfo-entry")
+        );
+        assert_eq!(
+            check_net_info_unique(
+                [&ours("[f61:6263:6465:6667:6869:6a2e:6b6c:6d6f]:19999")],
+                collateral,
+                &[holder]
+            ),
+            Ok(())
         );
     }
 

@@ -525,6 +525,7 @@ mod tests {
             is_valid: valid,
             is_evonode: false,
             has_extended_net_info: false,
+            net_info: None,
         }
     }
 

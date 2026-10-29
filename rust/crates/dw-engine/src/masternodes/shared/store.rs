@@ -11,8 +11,11 @@ use dw_appdb::SharedSessionRow;
 use dw_protx::shared::SpecialTx;
 use dw_protx::shared::envelope::EnvelopeError;
 use dw_protx::shared::json::Json;
+use dw_protx::shared::netinfo::parse_core_service;
 use dw_protx::shared::session::consent::{FundingMismatch, OwnSide};
-use dw_protx::shared::session::funding::{decode_frozen, verify_consent_signature};
+use dw_protx::shared::session::funding::{
+    decode_frozen, service_entries, verify_consent_signature,
+};
 use dw_protx::shared::session::merge::Refusal;
 use dw_protx::shared::session::{
     Change, Contribution, Input, Session, Share, Stage, is_session_id,
@@ -528,10 +531,23 @@ pub(crate) fn derive_stage(l: &Loaded, chain: &ChainView) -> SharedStage {
     }
 }
 
+/// [`ShareTermsView::service_read`]: Core's reading of each entry of
+/// `coreP2PAddrs` ([`parse_core_service`]), when one isn't its text.
+fn service_read(text: &str) -> Option<String> {
+    let read = service_entries(text)
+        .map(|e| parse_core_service(e).map(|a| (e, a.to_string())))
+        .collect::<Option<Vec<_>>>()?;
+    read.iter().any(|(e, a)| e != a).then(|| {
+        let read: Vec<_> = read.into_iter().map(|(_, a)| a).collect();
+        read.join(", ")
+    })
+}
+
 pub(crate) fn terms_view(session: &Session) -> ShareTermsView {
     let t = &session.terms;
     ShareTermsView {
         service: t.core_p2p_addrs.clone(),
+        service_read: service_read(&t.core_p2p_addrs),
         operator_public_key: t.operator_pub_key.clone(),
         voting_address: t.voting_address.clone(),
         operator_reward: t.operator_reward,

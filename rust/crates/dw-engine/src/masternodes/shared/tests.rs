@@ -28,8 +28,8 @@ use zeroize::Zeroizing;
 use super::super::protx::ops::{CrashPoint, Seam};
 use crate::masternodes::{
     HeldShares, Masternodes, MasternodesError, OperatorChoice, RewardChoice, ShareSlot, ShareTerms,
-    SharedImport, SharedNext, SharedOutcome, SharedRole, SharedSession, SharedStage,
-    StartSharedRequest, UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
+    ShareTermsView, SharedImport, SharedNext, SharedOutcome, SharedRole, SharedSession,
+    SharedStage, StartSharedRequest, UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
 };
 use crate::send::TestBroadcaster;
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
@@ -191,14 +191,14 @@ fn fx(n: usize, v24: bool) -> Fx {
 }
 
 impl Fx {
-    /// The facade with sending on (the override; 1c's switch).
+    /// The facade as shipped: sending on since slice 1c (DEC-678).
     fn mn(&self) -> Masternodes {
-        Masternodes::with_shared_send(&self.session, true)
+        self.session.masternodes()
     }
 
-    /// The facade as shipped: sending off (DEC-678).
-    fn shipped(&self) -> Masternodes {
-        self.session.masternodes()
+    /// The facade with the switch off.
+    fn sending_off(&self) -> Masternodes {
+        Masternodes::with_shared_send(&self.session, false)
     }
 
     fn db(&self) -> Arc<dw_appdb::AppDb> {
@@ -593,6 +593,118 @@ fn three_approved(f: &Fx) -> String {
     id
 }
 
+/// D78: a dash-qt coordinator's service in a form Core reads (one 32-bit
+/// number; an IPv4-mapped IPv6 in brackets) is joined, locked and approved
+/// by a participant, and the frozen registration carries 127.0.0.1.
+#[test]
+fn test_QT_126_a_participant_joins_a_core_form_service() {
+    let want = dw_protx::shared::ExtNetInfo::core_p2p(&["127.0.0.1:19999".parse().unwrap()]);
+    for service in ["2130706433:19999", "[::ffff:127.0.0.1]:19999"] {
+        let f = fx(2, true);
+        f.credit(0, 1, 501 * COIN);
+        f.credit(1, 2, 500 * COIN + 50_000);
+        let id = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE))
+            .unwrap()
+            .session
+            .id;
+        // The coordinator's draft as dash-qt would hold it; this wallet's
+        // own input is a.b.c.d:port only (D5).
+        f.rewrite(0, &id, |u| {
+            let mut s = parse(&u.envelope);
+            s.terms.core_p2p_addrs = service.into();
+            u.envelope = s.to_text();
+        });
+        f.imported(1, &f.message(0, &id));
+        let b = f.join(1, &id);
+        f.imported(0, &b.message.text);
+        let locked = f.lock(0, &id).unwrap();
+        let frozen = parse(&locked.message.text);
+        assert_eq!(frozen.terms.core_p2p_addrs, service);
+        let registered = dw_protx::shared::session::funding::decode_frozen(&frozen)
+            .unwrap()
+            .payload
+            .net_info;
+        assert_eq!(Some(registered), want, "{service}");
+        let (s, _) = f.imported(1, &locked.message.text);
+        assert_eq!(
+            (s.stage, s.next),
+            (SharedStage::Signing, SharedNext::Approve),
+            "{service}"
+        );
+        // What the participant approves shows the address it registers.
+        assert_eq!(s.terms.service, service);
+        assert_eq!(s.terms.service_read.as_deref(), Some("127.0.0.1:19999"));
+        f.approve(1, &id).unwrap();
+    }
+    // An entry that reads as written shows no reading.
+    let f = fx(2, true);
+    f.credit(0, 1, 501 * COIN);
+    let a = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE)).unwrap();
+    assert_eq!(a.session.terms.service_read, None);
+    // An approval stored before the field still reads.
+    let old: ShareTermsView = serde_json::from_str(
+        r#"{"service":"1.2.3.4:19999","operator_public_key":"","voting_address":"",
+            "operator_reward":0,"early_period_blocks":0,"early_penalty":0}"#,
+    )
+    .unwrap();
+    assert_eq!(old.service_read, None);
+}
+
+/// Review r1 of 1c, Sol m-1: the reading is this wallet's on every target;
+/// a coordinator whose libc read the text otherwise freezes another
+/// address, which the frozen check refuses. The participant's reserved
+/// share was never out: the session discards and its coins unlock (D17).
+#[test]
+fn test_QT_126_a_frozen_service_read_otherwise_is_refused_and_releases_the_share() {
+    let f = fx(2, true);
+    f.credit(0, 1, 501 * COIN);
+    f.credit(1, 2, 500 * COIN + 50_000);
+    let id = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE))
+        .unwrap()
+        .session
+        .id;
+    f.rewrite(0, &id, |u| {
+        let mut s = parse(&u.envelope);
+        s.terms.core_p2p_addrs = "127.1:19999".into();
+        u.envelope = s.to_text();
+    });
+    f.imported(1, &f.message(0, &id));
+    let b = f.join(1, &id);
+    assert!(!f.locked(1).is_empty(), "joining reserves B's share");
+    f.imported(0, &b.message.text);
+    let locked = f.lock(0, &id).unwrap();
+
+    // The coordinator's payload as its libc read "127.1".
+    let frozen_as = |service: &str| {
+        let mut s = parse(&locked.message.text);
+        let frozen = decode_frozen(&s).unwrap();
+        let mut payload = frozen.payload;
+        payload.net_info =
+            dw_protx::shared::ExtNetInfo::core_p2p(&[service.parse().unwrap()]).unwrap();
+        let mut tx = frozen.tx;
+        tx.payload = dashcore::consensus::serialize(&payload);
+        s.consent_hash = dw_protx::shared::ProRegTxV3::display_hash(&payload.consent_hash(&tx));
+        s.protx = hex::encode(tx.to_bytes());
+        s
+    };
+    assert!(check_frozen(&frozen_as("127.0.0.1:19999")).is_ok());
+    let other = frozen_as("127.0.0.2:19999");
+    assert!(matches!(
+        check_frozen(&other),
+        Err(dw_protx::shared::envelope::EnvelopeError::Parse("protx"))
+    ));
+    match f.import(1, &other.to_text()).unwrap_err() {
+        MasternodesError::SharedMessage { reason, .. } => assert_eq!(reason, "parse"),
+        e => panic!("{e:?}"),
+    }
+
+    // Nothing of B's is out: discarding unlocks every reserved coin.
+    assert!(f.row(1, &id).out_at.is_none());
+    f.run(f.mn().discard_shared_session(f.wallets[1], id.clone()))
+        .unwrap();
+    assert!(f.locked(1).is_empty(), "no reservation is left");
+}
+
 #[test]
 fn test_QT_126_three_wallets_reach_the_signed_registration() {
     let f = fx(3, true);
@@ -714,22 +826,22 @@ fn test_QT_126_three_wallets_reach_the_signed_registration() {
     }
 }
 
-/// DEC-678: as shipped, sending is off. The capability says so, and every
-/// call that produces bytes the network accepts refuses
-/// `unsupported{feature: "shared_masternodes"}` before reading its session,
-/// writing or charging nothing; the override turns it on.
+/// DEC-678: as shipped since slice 1c, sending is on. With the switch off
+/// the capability says so, and every call that produces bytes the network
+/// accepts refuses `unsupported{feature: "shared_masternodes"}` before
+/// reading its session, writing or charging nothing.
 #[test]
-fn test_QT_126_sending_is_off_as_shipped() {
+fn test_QT_126_sending_is_on_as_shipped_and_the_switch_refuses() {
     let f = fx(3, true);
     let id = three_approved(&f);
     f.both_signed(&id);
     let before: Vec<_> = (0..3).map(|w| f.row(w, &id)).collect();
-    let cap = f.run(f.shipped().shared_capability(f.wallets[0])).unwrap();
-    assert!(!cap.can_send);
+    let cap = f.run(f.mn().shared_capability(f.wallets[0])).unwrap();
+    assert!(cap.can_send);
     assert_eq!(cap.v24, crate::masternodes::Activation::Active);
     assert_eq!(cap.evonode_shares, crate::masternodes::Activation::Inactive);
     assert!(
-        f.run(f.mn().shared_capability(f.wallets[0]))
+        !f.run(f.sending_off().shared_capability(f.wallets[0]))
             .unwrap()
             .can_send
     );
@@ -741,21 +853,21 @@ fn test_QT_126_sending_is_off_as_shipped() {
     let (w0, w1) = (f.wallets[0], f.wallets[1]);
     for e in [
         f.run(
-            f.shipped()
+            f.sending_off()
                 .sign_shared_funding(w1, id.clone(), f.grant(1, COIN)),
         )
         .map(drop),
         f.run(
-            f.shipped()
+            f.sending_off()
                 .send_shared_registration(w0, id.clone(), f.grant(0, 500 * COIN)),
         )
         .map(drop),
         f.run(
-            f.shipped()
+            f.sending_off()
                 .abandon_shared_session(w0, id.clone(), f.grant(0, COIN)),
         )
         .map(drop),
-        f.run(f.shipped().update_share(w0, update, f.grant(0, COIN)))
+        f.run(f.sending_off().update_share(w0, update, f.grant(0, COIN)))
             .map(drop),
     ] {
         match e.unwrap_err() {
@@ -1305,6 +1417,7 @@ fn test_QT_127_update_share_preview_and_d30() {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: true,
+        net_info: None,
     };
     *f.seam.list.lock().unwrap() = Some(vec![entry]);
     f.credit(0, 9, COIN);
@@ -2053,6 +2166,7 @@ fn test_QT_126_a_registration_mined_under_another_txid_is_confirmed() {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: true,
+        net_info: None,
     };
     *f.seam.list.lock().unwrap() = Some(vec![entry]);
     *f.seam.list_height.lock().unwrap() = 110;
@@ -2565,6 +2679,7 @@ fn test_QT_127_update_share_refuses_a_key_that_isnt_the_shares() {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: true,
+        net_info: None,
     };
     *f.seam.list.lock().unwrap() = Some(vec![entry]);
     f.credit(0, 9, COIN);
@@ -2603,6 +2718,7 @@ fn test_QT_127_update_share_sends_an_operation() {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: true,
+        net_info: None,
     };
     *f.seam.list.lock().unwrap() = Some(vec![entry]);
     f.credit(0, 9, COIN);
@@ -2657,12 +2773,13 @@ fn test_QT_127_update_share_sends_an_operation() {
     // D23: one at a time per masternode.
     let e = update(fee).unwrap_err();
     assert_eq!(code(e), "masternodes.update_pending");
-    // MG-04's resend, over the new kind: shared sending, so refused as
-    // shipped (DEC-678).
-    let refused = f.run(
-        f.shipped()
-            .resend_operation(f.wallets[0], op.id.clone(), f.grant(0, fee)),
-    );
+    // MG-04's resend, over the new kind: shared sending, so refused with
+    // the switch off (DEC-678).
+    let refused = f.run(f.sending_off().resend_operation(
+        f.wallets[0],
+        op.id.clone(),
+        f.grant(0, fee),
+    ));
     assert!(
         matches!(refused, Err(MasternodesError::Unsupported { .. })),
         "{refused:?}"

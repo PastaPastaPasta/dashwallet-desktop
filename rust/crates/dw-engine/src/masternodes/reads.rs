@@ -1029,6 +1029,7 @@ mod tests {
                 is_valid: true,
                 is_evonode: false,
                 has_extended_net_info: shared,
+                net_info: None,
             }],
         }
     }
