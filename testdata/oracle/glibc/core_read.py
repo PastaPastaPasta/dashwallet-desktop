@@ -67,8 +67,10 @@ def lookup_intern(name):
     `SetLegacyIPv6` (`netaddress.cpp:135-162`) leaves it, or `TORV2` for a
     TORv2-in-IPv6 address, which it leaves as the invalid `::`."""
     try:
+        # Bytes, so CPython's IDNA codec doesn't refuse a name before glibc
+        # sees it (a label over 63 characters, as `"0" * 63 + "1.2.3.4"`).
         infos = socket.getaddrinfo(
-            name, None, socket.AF_UNSPEC, socket.SOCK_STREAM, socket.IPPROTO_TCP, socket.AI_NUMERICHOST
+            name.encode(), None, socket.AF_UNSPEC, socket.SOCK_STREAM, socket.IPPROTO_TCP, socket.AI_NUMERICHOST
         )
     except (socket.gaierror, UnicodeError, ValueError):
         return None
@@ -127,7 +129,7 @@ EDGES = [
     "[1:2:3:4:5:6:7:8]:9999", "[fd87:d87e:eb43::1]:9999", "[fd6b:88c0:8724::1]:9999",
     "[fc00::1]:9999", "[fe80::1]:9999", "[::ffff:1.2.3.04]:9999", "[::ffff:1.2.3]:9999",
     "[[::1]]:9999", "[::1]:9999:", "[]:9999", "[:9999", "]:9999", "1.2.3.4]:9999", "[1.2.3.4:9999",
-    "[f61:6263:6465:6667:6869:6a2e:6b6c:6d6e]:19999",
+    "[f61:6263:6465:6667:6869:6a2e:6b6c:6d6e]:19999", "0" * 63 + "1.2.3.4:9999",
 ]
 
 # Pieces the structured generator joins.

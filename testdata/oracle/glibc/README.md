@@ -33,8 +33,11 @@ python3 -I ../testdata/oracle/glibc/core_read.py --reader target/debug/examples/
 ```
 
 The committed run (2026-10-29, glibc 2.43, seed 20261029, the default):
-300,074 entries (74 hand-picked), 14,894 read as a service, 285,180 refused,
-0 mismatches. The script exits 1 on any mismatch and lists the first 20.
+300,075 entries (75 hand-picked), 14,895 read as a service, 285,180 refused,
+0 mismatches. The host goes to `getaddrinfo` as bytes: as a str, CPython's
+IDNA codec refuses some names (a label over 63 characters) before glibc
+reads them (review r2 of 1c, n-1). The script exits 1 on any mismatch and
+lists the first 20.
 
 Another libc may read an unusual form differently (v24 defines no text form
 beyond `AddEntry`). A coordinator on such a libc then freezes a payload the
