@@ -51,6 +51,7 @@ use crate::send::{
     CoinSource, MAX_TX_FEE, MIN_FEE_PER_KB, PreparedInput, PreparedOutput, PreparedSummary,
     SendFailure, l1_address,
 };
+use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
 
 /// `nSequence` of every input: final, as the wallet's ordinary send sets it
@@ -531,15 +532,8 @@ pub(crate) fn check_request(
 }
 
 impl NetworkSession {
-    /// The context of a ProTx: the synced list (`ListUnavailable`
-    /// otherwise), the wallet's masternodes and operations, and every key
-    /// and collateral they use.
-    pub(crate) async fn protx_context(
-        &self,
-        wallet: WalletId,
-    ) -> Result<Context, MasternodesError> {
-        let network = self.network.core_network();
-        let manager = self.manager()?;
+    /// The masternode list as [`read_list`] reads it, or the test seam's.
+    pub(crate) async fn protx_list(&self, manager: &Manager) -> ListView {
         #[cfg(test)]
         let seamed = (self.masternodes.protx_seam()).and_then(|s| {
             let height = *s.list_height.lock().unwrap();
@@ -551,10 +545,22 @@ impl NetworkSession {
         });
         #[cfg(not(test))]
         let seamed = None;
-        let list = match seamed {
+        match seamed {
             Some(list) => list,
-            None => read_list(self, &manager).await,
-        };
+            None => read_list(self, manager).await,
+        }
+    }
+
+    /// The context of a ProTx: the synced list (`ListUnavailable`
+    /// otherwise), the wallet's masternodes and operations, and every key
+    /// and collateral they use.
+    pub(crate) async fn protx_context(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Context, MasternodesError> {
+        let network = self.network.core_network();
+        let manager = self.manager()?;
+        let list = self.protx_list(&manager).await;
         if !list.synced {
             return Err(MasternodesError::ListUnavailable);
         }

@@ -1019,6 +1019,42 @@ fn test_QT_126_restarts_keep_locks_and_never_reselect() {
     ));
 }
 
+/// D3 (BL-501): a version-3 entry in the synced list makes v24 active
+/// before the follower's tick has noted it, as a short `dwcli` run needs; a
+/// version-2 entry or an unsynced list doesn't.
+#[test]
+fn test_QT_126_a_version_3_entry_in_the_synced_list_is_v24_before_the_note() {
+    let f = fx(1, false);
+    let (mn, w) = (f.mn(), f.wallets[0]);
+    let v24 = || f.run(mn.shared_capability(w)).unwrap().v24;
+    let entry = |extended| platform_wallet::masternode::MasternodeListSummary {
+        pro_tx_hash: [3; 32],
+        service_address: Some("1.2.3.4:19999".parse().unwrap()),
+        platform_http_port: None,
+        operator_public_key: [3; 48],
+        voting_key_id: [3; 20],
+        platform_node_id: None,
+        is_valid: true,
+        is_evonode: false,
+        has_extended_net_info: extended,
+        net_info: None,
+    };
+    use crate::masternodes::Activation::{Active, Unknown};
+    *f.seam.list.lock().unwrap() = Some(vec![entry(false)]);
+    assert_eq!(v24(), Unknown);
+    *f.seam.list.lock().unwrap() = None;
+    assert_eq!(v24(), Unknown);
+    *f.seam.list.lock().unwrap() = Some(vec![entry(false), entry(true)]);
+    assert_eq!(v24(), Active);
+    let notes = super::super::follow::load_notes(&f.db()).unwrap();
+    assert!(!notes.any_shared_seen);
+    // Creation reads it the same way: a start gets past the v24 check.
+    let e = f
+        .run(mn.start_shared(w, request(&[("A", 500), ("B", 500)], FEE)))
+        .unwrap_err();
+    assert_ne!(code(e), "masternodes.unsupported");
+}
+
 #[test]
 fn test_QT_126_calls_refuse_in_order() {
     let f = fx(2, false);
