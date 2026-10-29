@@ -96,7 +96,7 @@ impl Masternodes {
             let fence = s.coin_fence(wallet).await?;
             let w = s.wallet(&wallet).await?;
             let exclude = s.check_collateral(wallet, &fence, &w, &reg).await?;
-            let coins = s.protx_candidates(&fence, &w, &exclude).await?;
+            let coins = s.protx_candidates(&fence, &w, &exclude, None).await?;
             let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
             let funding = plan_funding(&utxos, &reg.outputs(), reg.sized_payload(), CHANGE_LEN)
                 .map_err(EngineError::from)?;
@@ -161,7 +161,7 @@ impl Masternodes {
                 };
                 let exclude: HashSet<OutPoint> =
                     existing.iter().map(|(u, _, _)| u.outpoint).collect();
-                let coins = s.protx_candidates(&fence, &w, &exclude).await?;
+                let coins = s.protx_candidates(&fence, &w, &exclude, None).await?;
                 let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
                 let funding = plan_funding(&utxos, &reg.outputs(), reg.sized_payload(), CHANGE_LEN)
                     .map_err(EngineError::from)?;
@@ -438,8 +438,8 @@ impl Masternodes {
             let reg = build::registration_of(&terms, s.network.core_network())?;
             let fence = s.coin_fence(wallet).await?;
             // The old inputs leave the row's locks first, so the new plan
-            // may take the ones still unspent; one another row holds stays
-            // locked (BL-346).
+            // may take the ones still unspent (its own holds don't count
+            // against it); one another row holds stays locked (BL-346).
             s.appdb_op({
                 let (w_id, id, old) = (w_id.clone(), operation.clone(), old.clone());
                 move |db| {
@@ -518,7 +518,7 @@ impl Masternodes {
             let up = s.resolve_update(wallet, &request, &ctx, false).await?;
             let fence = s.coin_fence(wallet).await?;
             let w = s.wallet(&wallet).await?;
-            let coins = s.protx_candidates(&fence, &w, &HashSet::new()).await?;
+            let coins = s.protx_candidates(&fence, &w, &HashSet::new(), None).await?;
             let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
             let funding = plan_funding(&utxos, &up.outputs(), up.sized_payload(), CHANGE_LEN)
                 .map_err(EngineError::from)?;
@@ -566,7 +566,7 @@ impl Masternodes {
             let result = async {
                 let _flight = s.claim_operation(wallet, &id)?;
                 let w = s.wallet(&wallet).await?;
-                let coins = s.protx_candidates(&fence, &w, &HashSet::new()).await?;
+                let coins = s.protx_candidates(&fence, &w, &HashSet::new(), None).await?;
                 let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
                 let funding = plan_funding(&utxos, &up.outputs(), up.sized_payload(), CHANGE_LEN)
                     .map_err(EngineError::from)?;
@@ -838,7 +838,9 @@ impl NetworkSession {
         };
         let network = self.network.core_network();
         let w = self.wallet(&wallet).await?;
-        let coins = self.protx_candidates(fence, &w, &HashSet::new()).await?;
+        let coins = self
+            .protx_candidates(fence, &w, &HashSet::new(), Some(id))
+            .await?;
         let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
         let funding = plan_funding(&utxos, &reg.outputs(), reg.sized_payload(), CHANGE_LEN)
             .map_err(EngineError::from)?;

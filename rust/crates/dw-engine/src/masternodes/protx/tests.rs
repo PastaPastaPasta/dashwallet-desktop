@@ -2596,3 +2596,38 @@ fn mg04_an_update_waits_for_a_registrations_keys() {
     assert_ne!(a.operator_public_key, b.operator_public_key);
     assert_ne!(op.terms.operator_public_key, b.operator_public_key);
 }
+
+/// Opus r1 m-1: a refresh releases its old inputs, and the new plan may
+/// take the ones still unspent, though the row lists them until the plan
+/// is saved: its own holds don't count against it (BL-346).
+#[test]
+fn mg04_a_refresh_reuses_its_own_unspent_input() {
+    let f = fx(Library::Accept);
+    let only = f.credit(1, COIN);
+    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
+    let public = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let address = dashcore::Address::p2pkh(&public, dashcore::Network::Regtest);
+    let outpoint = OutPoint::new(Txid::from_byte_array([0x77; 32]), 1);
+    let req = request(CollateralChoice::External {
+        outpoint: format!("{}-1", outpoint.txid),
+        address: address.to_string(),
+    });
+    let op = f
+        .engine
+        .block_on(f.mn().prepare_external_registration(f.wallet, req))
+        .unwrap();
+    assert_eq!(op.state, ProTxOperationState::NeedsSignature);
+    assert!(f.locked().contains(&only));
+    let fresh = f
+        .engine
+        .block_on(f.mn().refresh_external_registration(f.wallet, op.id.clone()))
+        .unwrap();
+    assert_eq!(fresh.state, ProTxOperationState::NeedsSignature);
+    assert!(f.locked().contains(&only));
+    let row = f.db().masternode_op(&f.wallet.to_string(), &op.id).unwrap().unwrap();
+    assert_eq!(
+        super::ops::decode_inputs(&row.fee_inputs),
+        vec![only],
+        "the refreshed plan spends the same coin"
+    );
+}

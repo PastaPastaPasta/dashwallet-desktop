@@ -817,12 +817,14 @@ impl NetworkSession {
     /// The wallet's coins a ProTx may spend, with their key paths: the
     /// automatic-selection candidates (`CoinSource::Any`: not locked,
     /// reserved or immature) the `MasternodeOwner` signer signs for,
-    /// without `exclude`.
+    /// without `exclude` and without what a masternode row other than
+    /// `operation` holds (a refresh may take its own unspent inputs).
     pub(crate) async fn protx_candidates(
         &self,
         fence: &CoinFence,
         wallet: &PlatformWallet,
         exclude: &HashSet<OutPoint>,
+        operation: Option<&str>,
     ) -> Result<Vec<(Utxo, DerivationPath)>, MasternodesError> {
         let network = self.network.core_network();
         let (coins, _) = self
@@ -831,8 +833,14 @@ impl NetworkSession {
         // A coin a masternode row holds is never another's, its lock row
         // or not (BL-346).
         let w = fence.wallet_id().to_string();
+        let operation = operation.map(str::to_owned);
         let held = self
-            .appdb_op(move |db| db.held_outpoints(&w, dw_appdb::Holder::None))
+            .appdb_op(move |db| {
+                let holder = operation
+                    .as_deref()
+                    .map_or(dw_appdb::Holder::None, dw_appdb::Holder::Operation);
+                db.held_outpoints(&w, holder)
+            })
             .await?;
         let state = wallet.state().await;
         let picked = coins
