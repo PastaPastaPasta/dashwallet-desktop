@@ -7,8 +7,9 @@
 //! cargo test -p dw-engine --features test-support --test mg04b_release_check
 //! ```
 //!
-//! The release run proves the override absent; the debug run proves the
-//! probe can see it, so the release result isn't vacuous.
+//! The release run proves the override absent (the nightly's release-check
+//! job runs it); the debug run, in PR CI, proves the probe can see it, so
+//! the release result isn't vacuous.
 
 /// `SHARED_SEND_OVERRIDE` where `test_support` doesn't give
 /// `TestSupportProbe` its inherent constant: an inherent associated
