@@ -388,22 +388,32 @@ impl ChainView {
 
     /// The session's registration in the wallet's history: the
     /// transaction spending exactly the frozen template's inputs, in order,
-    /// to its outputs. A participant holds only its own signed copy, whose
-    /// txid isn't the ProTx hash unless it signed last, so the txid can't
-    /// find it (§3.2 step 6, "or see the ProRegTx"); and the pinned library
-    /// reads a version-3 payload with the version-2 layout (BL-187), so the
-    /// payload isn't compared.
-    fn registration(&self, session: &Session) -> Option<Txid> {
+    /// to its outputs, whatever its scriptSigs. A participant holds only
+    /// its own signed copy, whose txid isn't the ProTx hash unless it
+    /// signed last, so the txid can't find it (§3.2 step 6, "or see the
+    /// ProRegTx"); a copy mined with another valid scriptSig has another
+    /// txid than the one the coordinator sent (review r1 of 1b, m-2); and
+    /// the pinned library reads a version-3 payload with the version-2
+    /// layout (BL-187), so the payload isn't compared. Of several copies,
+    /// the one in the lowest block, else `sent`, else the lowest txid.
+    fn registration(&self, session: &Session, sent: Option<&Txid>) -> Option<Txid> {
         if session.stage < Stage::Frozen {
             return None;
         }
         let template = decode_frozen(session).ok()?.tx;
-        self.history.iter().find_map(|(id, e)| {
-            let same_inputs = e.tx.input.len() == template.input.len()
-                && (e.tx.input.iter().zip(&template.input))
-                    .all(|(a, b)| a.previous_output == b.previous_output);
-            (same_inputs && e.tx.output == template.output).then_some(*id)
-        })
+        self.history
+            .iter()
+            .filter(|(_, e)| {
+                e.tx.input.len() == template.input.len()
+                    && (e.tx.input.iter().zip(&template.input))
+                        .all(|(a, b)| a.previous_output == b.previous_output)
+                    && e.tx.output == template.output
+            })
+            .min_by_key(|(id, e)| {
+                let height = e.context.block_info().map(|b| b.height());
+                (height.is_none(), height, Some(*id) != sent, **id)
+            })
+            .map(|(id, _)| *id)
     }
 
     /// The lowest height of a block holding another transaction that
@@ -472,10 +482,17 @@ pub(crate) fn complete_txid(session: &Session) -> Option<Txid> {
         .then(|| frozen.tx.txid())
 }
 
-/// The session's ProTx hash: its complete registration's txid, from the
-/// envelope or the wallet's history.
+/// The session's ProTx hash: the registration in the wallet's history
+/// ([`ChainView::registration`], so a copy mined under another txid is
+/// still this session's, review r1 of 1b, m-2), else its complete
+/// registration's txid from the envelope. [`derive_stage`], [`releasable`]
+/// (and with them `conflict_height`'s exception), `shared_confirmed` and
+/// `held_shares` all read it.
 pub(crate) fn session_hash(l: &Loaded, chain: &ChainView) -> Option<Txid> {
-    complete_txid(&l.session).or_else(|| chain.registration(&l.session))
+    let complete = complete_txid(&l.session);
+    chain
+        .registration(&l.session, complete.as_ref())
+        .or(complete)
 }
 
 /// The session's stage (§3, §9.2), first match: confirmed, conflicted or

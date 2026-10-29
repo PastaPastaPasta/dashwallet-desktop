@@ -2002,6 +2002,78 @@ fn test_QT_126_the_coordinator_signs_last_and_sends() {
     }
 }
 
+/// Review r1 of 1b, m-2: the registration mined with another valid
+/// scriptSig on a participant's input (another txid, the same inputs and
+/// outputs) is the session's registration for every party, the coordinator
+/// included: confirmed, its shares held under the mined ProTx hash, and a
+/// reward change of it accepted.
+#[test]
+fn test_QT_126_a_registration_mined_under_another_txid_is_confirmed() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    let mut tx = f.net.sent()[0].clone();
+    let sent = tx.txid();
+    let own: Vec<String> = serde_json::from_str(&f.row(0, &id).reserved).unwrap();
+    let theirs = tx
+        .input
+        .iter()
+        .position(|i| {
+            !own.contains(&format!(
+                "{}:{}",
+                i.previous_output.txid, i.previous_output.vout
+            ))
+        })
+        .unwrap();
+    // Stands in for the participant's second valid signature.
+    let mut script = tx.input[theirs].script_sig.to_bytes();
+    script.insert(0, 0x00);
+    tx.input[theirs].script_sig = dashcore::ScriptBuf::from(script);
+    let mined = tx.txid();
+    assert_ne!(mined, sent);
+    f.mine(tx, 101);
+    f.tip(110);
+    for w in 0..3 {
+        let session = f.session_of(w, &id);
+        assert_eq!(session.stage, SharedStage::Confirmed { height: 101 }, "wallet {w}");
+        assert_eq!(session.pro_tx_hash, Some(mined.to_string()), "wallet {w}");
+    }
+    f.follow();
+    let overview = f.run(f.mn().list(f.wallets[0])).unwrap();
+    let row = (overview.masternodes.iter())
+        .find(|r| r.pro_tx_hash == mined.to_string())
+        .unwrap();
+    assert_eq!(row.shares, Some(HeldShares { held: 1, of: 3 }));
+    let entry = platform_wallet::masternode::MasternodeListSummary {
+        pro_tx_hash: mined.to_byte_array(),
+        service_address: Some("1.2.3.4:19999".parse().unwrap()),
+        platform_http_port: None,
+        operator_public_key: [1; 48],
+        voting_key_id: [1; 20],
+        platform_node_id: None,
+        is_valid: true,
+        is_evonode: false,
+        has_extended_net_info: true,
+    };
+    *f.seam.list.lock().unwrap() = Some(vec![entry]);
+    *f.seam.list_height.lock().unwrap() = 110;
+    f.credit(0, 9, COIN);
+    let op = f
+        .run(f.mn().update_share(
+            f.wallets[0],
+            UpdateShareRequest {
+                pro_tx_hash: mined.to_string(),
+                share_index: 0,
+                reward: RewardChoice::NewAddress,
+            },
+            f.grant(0, COIN),
+        ))
+        .unwrap();
+    assert_eq!(op.state, crate::masternodes::ProTxOperationState::Sent);
+    assert_eq!(op.pro_tx_hash, Some(mined.to_string()));
+}
+
 /// D71 (validator r1 of 1b, M1): a first hand-off the network refused keeps
 /// `out_at` and records its code; nothing moved, so the resend that hands
 /// the registration off is charged the whole debit again.
