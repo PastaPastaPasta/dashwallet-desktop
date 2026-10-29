@@ -357,6 +357,7 @@ fn listed(info: &Value) -> ListedMasternode {
             .unwrap()
             .to_byte_array(),
         service: None,
+        net_info: Vec::new(),
         operator_public_key: operator_key(str_of(&info["state"], "pubKeyOperator")),
         voting_key_id: key_id_of(str_of(&info["state"], "votingAddress")),
         platform_node_id: None,

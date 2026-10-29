@@ -1305,6 +1305,7 @@ fn test_QT_127_update_share_preview_and_d30() {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: true,
+        net_info: None,
     };
     *f.seam.list.lock().unwrap() = Some(vec![entry]);
     f.credit(0, 9, COIN);
@@ -2053,6 +2054,7 @@ fn test_QT_126_a_registration_mined_under_another_txid_is_confirmed() {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: true,
+        net_info: None,
     };
     *f.seam.list.lock().unwrap() = Some(vec![entry]);
     *f.seam.list_height.lock().unwrap() = 110;
@@ -2565,6 +2567,7 @@ fn test_QT_127_update_share_refuses_a_key_that_isnt_the_shares() {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: true,
+        net_info: None,
     };
     *f.seam.list.lock().unwrap() = Some(vec![entry]);
     f.credit(0, 9, COIN);
@@ -2603,6 +2606,7 @@ fn test_QT_127_update_share_sends_an_operation() {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: true,
+        net_info: None,
     };
     *f.seam.list.lock().unwrap() = Some(vec![entry]);
     f.credit(0, 9, COIN);
