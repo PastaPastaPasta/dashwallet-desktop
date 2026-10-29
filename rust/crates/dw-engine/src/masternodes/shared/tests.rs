@@ -191,7 +191,13 @@ fn fx(n: usize, v24: bool) -> Fx {
 }
 
 impl Fx {
+    /// The facade with sending on (the override; 1c's switch).
     fn mn(&self) -> Masternodes {
+        Masternodes::with_shared_send(&self.session, true)
+    }
+
+    /// The facade as shipped: sending off (DEC-678).
+    fn pin(&self) -> Masternodes {
         self.session.masternodes()
     }
 
@@ -708,15 +714,52 @@ fn test_QT_126_three_wallets_reach_the_signed_registration() {
     }
 }
 
-/// D1, lifted in slice 1b: the pin represents and decodes every shared
-/// transaction, so the capability says the wallet can send them.
+/// DEC-678: as shipped, sending is off. The capability says so, and every
+/// call that produces bytes the network accepts refuses
+/// `unsupported{feature: "shared_masternodes"}` before reading its session,
+/// writing or charging nothing; the override turns it on.
 #[test]
-fn test_QT_126_the_capability_can_send() {
-    let f = fx(1, true);
-    let cap = f.run(f.mn().shared_capability(f.wallets[0])).unwrap();
-    assert!(cap.can_send);
+fn test_QT_126_sending_is_off_as_shipped() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    let before: Vec<_> = (0..3).map(|w| f.row(w, &id)).collect();
+    let cap = f.run(f.pin().shared_capability(f.wallets[0])).unwrap();
+    assert!(!cap.can_send);
     assert_eq!(cap.v24, crate::masternodes::Activation::Active);
     assert_eq!(cap.evonode_shares, crate::masternodes::Activation::Inactive);
+    assert!(
+        f.run(f.mn().shared_capability(f.wallets[0]))
+            .unwrap()
+            .can_send
+    );
+    let update = UpdateShareRequest {
+        pro_tx_hash: id.clone(),
+        share_index: 0,
+        reward: RewardChoice::Refund,
+    };
+    let (w0, w1) = (f.wallets[0], f.wallets[1]);
+    for e in [
+        f.run(f.pin().sign_shared_funding(w1, id.clone(), f.grant(1, COIN)))
+            .map(drop),
+        f.run(f.pin().send_shared_registration(w0, id.clone(), f.grant(0, 500 * COIN)))
+            .map(drop),
+        f.run(f.pin().abandon_shared_session(w0, id.clone(), f.grant(0, COIN)))
+            .map(drop),
+        f.run(f.pin().update_share(w0, update, f.grant(0, COIN)))
+            .map(drop),
+    ] {
+        match e.unwrap_err() {
+            MasternodesError::Unsupported { feature, field } => {
+                assert_eq!((feature.as_str(), field), ("shared_masternodes", None));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(f.net.sent().is_empty());
+    for (w, row) in before.iter().enumerate() {
+        assert_eq!(&f.row(w, &id), row);
+    }
 }
 
 #[test]

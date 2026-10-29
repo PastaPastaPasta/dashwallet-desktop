@@ -50,6 +50,10 @@ use crate::{EngineError, NetworkSession};
 #[derive(Clone)]
 pub struct Masternodes {
     pub(super) session: Arc<NetworkSession>,
+    /// The shared-masternode sending override (MG-04b r2-m4, DEC-678):
+    /// only the test-support constructor sets it.
+    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
+    shared_send: bool,
 }
 
 impl NetworkSession {
@@ -57,6 +61,8 @@ impl NetworkSession {
     pub fn masternodes(self: &Arc<Self>) -> Masternodes {
         Masternodes {
             session: Arc::clone(self),
+            #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
+            shared_send: shared::SHARED_SENDING,
         }
     }
 }

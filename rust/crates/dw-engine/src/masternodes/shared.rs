@@ -1,9 +1,8 @@
 //! Shared masternodes, slice 1a (MG-04b §7, mn-engine §2.4): v24's
 //! multi-party registration, as dash-qt's session envelope runs it. This
 //! wallet takes part as coordinator or participant up to its consent
-//! signature; nothing here produces bytes the network accepts while
-//! `can_send` is false (D1), and the one call that would,
-//! `sign_shared_funding`, refuses then.
+//! signature; slice 1b adds the calls that produce bytes the network
+//! accepts, each refusing while [`SHARED_SENDING`] is off (D1, DEC-678).
 //!
 //! Every signing call begins its own `SharedMasternode` lease from a
 //! `MasternodeOp` grant and signs with the vault's shared owner signer
@@ -62,6 +61,15 @@ fn unrecorded() -> MasternodesError {
 }
 
 /// `masternodes.unsupported{feature: "shared_masternodes"}`.
+/// The one switch for shared-masternode sending (DEC-678): off until slice
+/// 1c closes D39 (every net-info entry of the list) and M9 (the dash-qt
+/// envelope oracle), whose last commit turns it on. While it is off,
+/// `can_send` is false and every call that produces bytes the network
+/// accepts (`sign_shared_funding`, `send_shared_registration`,
+/// `abandon_shared_session`, `update_share`) refuses
+/// `unsupported{feature: "shared_masternodes"}` after the wallet check.
+pub(super) const SHARED_SENDING: bool = false;
+
 fn unsupported(field: Option<&str>) -> MasternodesError {
     MasternodesError::Unsupported {
         feature: "shared_masternodes".into(),
@@ -127,11 +135,50 @@ fn terms_of(request: &StartSharedRequest, operator: [u8; 48], voting: &str) -> T
 }
 
 impl Masternodes {
+    /// Whether a call may produce bytes the network accepts:
+    /// [`SHARED_SENDING`], or the test-support override.
+    fn shared_can_send(&self) -> bool {
+        #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
+        {
+            self.shared_send
+        }
+        #[cfg(not(any(test, all(debug_assertions, feature = "test-support"))))]
+        {
+            SHARED_SENDING
+        }
+    }
+
+    /// `unsupported{feature: "shared_masternodes"}` unless the call may
+    /// produce bytes the network accepts.
+    fn require_sending(&self) -> Result<(), MasternodesError> {
+        if self.shared_can_send() {
+            Ok(())
+        } else {
+            Err(unsupported(None))
+        }
+    }
+}
+
+/// The sending override (r2-m4): compiled only in tests and in a debug
+/// build with `test-support`, reached from other crates only through
+/// `test_support::shared_masternodes_with_send_override`.
+#[cfg(any(test, all(debug_assertions, feature = "test-support")))]
+impl Masternodes {
+    pub(crate) fn with_shared_send(session: &Arc<NetworkSession>, can_send: bool) -> Self {
+        Self {
+            session: Arc::clone(session),
+            shared_send: can_send,
+        }
+    }
+}
+
+impl Masternodes {
     /// What this session can do with shared masternodes (D1, D3, D4).
     pub async fn shared_capability(
         &self,
         wallet: WalletId,
     ) -> Result<SharedCapability, MasternodesError> {
+        let can_send = self.shared_can_send();
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             Ok(SharedCapability {
@@ -141,9 +188,7 @@ impl Masternodes {
                     Activation::Unknown
                 },
                 evonode_shares: Activation::Inactive,
-                // BL-187's pin represents and decodes every shared
-                // transaction, and slice 1b sends them (D1).
-                can_send: true,
+                can_send,
             })
         })
         .await
@@ -613,7 +658,8 @@ impl Masternodes {
         .await
     }
 
-    /// Participant (§3.2 step 5) †: re-checks the reservation (D17) and §4,
+    /// Participant (§3.2 step 5) †: `unsupported` while sending is off
+    /// ([`SHARED_SENDING`]). Re-checks the reservation (D17) and §4,
     /// charges `I − C` (D18), signs only its own inputs (SIGHASH_ALL), saves
     /// the signed copy with `out_at` before returning the Signed
     /// Contribution, the coin fence held from the re-check to that write.
@@ -624,8 +670,10 @@ impl Masternodes {
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
         check_session_id(&session)?;
+        let sending = self.require_sending();
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
+            sending?;
             let ctx = v24_context(&s, wallet).await?;
             let (_flight, l) = s
                 .claim_loaded(
@@ -655,12 +703,13 @@ impl Masternodes {
         .await
     }
 
-    /// Coordinator (§3.1 step 5) †: at `combined`, once every other
+    /// Coordinator (§3.1 step 5) †: `unsupported` while sending is off
+    /// ([`SHARED_SENDING`]). At `combined`, once every other
     /// party's inputs are signed (`shared_stage{stage: "unsigned"}`
     /// otherwise), signs its own last (D24), charged its debit (D18), saves
     /// the complete registration with `out_at` and hands it off through the
     /// fence (§6.3). At `sent`, hands the saved bytes off again (a resend,
-    /// charged the fee). Returns the Final Record; the hand-off's failure is
+    /// charged the debit, D71). Returns the Final Record; the hand-off's failure is
     /// the session's `last_error`.
     pub async fn send_shared_registration(
         &self,
@@ -669,8 +718,10 @@ impl Masternodes {
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
         check_session_id(&session)?;
+        let sending = self.require_sending();
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
+            sending?;
             let ctx = v24_context(&s, wallet).await?;
             let _flight = s.claim_shared_session(wallet, &session)?;
             let l = s.shared_loaded(wallet, &session).await?;
@@ -701,7 +752,8 @@ impl Masternodes {
         .await
     }
 
-    /// The exit from a session that may be out (§9.3, D26) †: spends the
+    /// The exit from a session that may be out (§9.3, D26) †: `unsupported`
+    /// while sending is off ([`SHARED_SENDING`]). Spends the
     /// largest of its reserved coins the wallet holds unspent to a fresh
     /// address of its own under its own lease (charged the fee), through
     /// the fence, `abandon_txid` saved first. The row is kept and reads
@@ -716,8 +768,10 @@ impl Masternodes {
         grant: String,
     ) -> Result<SharedSession, MasternodesError> {
         check_session_id(&session)?;
+        let sending = self.require_sending();
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
+            sending?;
             let _flight = s.claim_shared_session(wallet, &session)?;
             let row = s
                 .shared_row(wallet, &session)
@@ -809,7 +863,8 @@ impl Masternodes {
         .await
     }
 
-    /// A reward change (§5.1, §6.3) †: [`Self::preview_update_share`]'s
+    /// A reward change (§5.1, §6.3) †: `unsupported` while sending is off
+    /// ([`SHARED_SENDING`]). [`Self::preview_update_share`]'s
     /// ProUpShareTx, signed by the share's keychain owner key and paid by
     /// the wallet's coins under one `SharedMasternode` lease charged the
     /// fee, then sent as an MG-04 operation of kind `update_share`: saved
@@ -823,9 +878,11 @@ impl Masternodes {
         grant: String,
     ) -> Result<ProTxOperation, MasternodesError> {
         let hash = parse_pro_tx_hash(&request.pro_tx_hash)?;
+        let sending = self.require_sending();
         self.protx_op(move |s| async move {
             check_reward(&request.reward, s.network.core_network())?;
             s.require_wallet(&wallet)?;
+            sending?;
             s.send_share_update(wallet, request, hash, &grant).await
         })
         .await

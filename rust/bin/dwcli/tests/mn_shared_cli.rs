@@ -165,10 +165,11 @@ fn test_QT_126_shared_commands_on_a_datadir_without_a_wallet_report_wallet_not_f
 }
 
 #[test]
-fn test_QT_126_shared_capability_on_a_fresh_wallet() {
+fn test_QT_126_shared_capability_on_a_fresh_wallet_cannot_send() {
     let dir = datadir(true);
     let capability = result(&dwcli(dir.as_ref(), &["mn", "shared", "capability"], b""));
-    assert_eq!(capability["can_send"], true, "{capability}");
+    // Sending is off until slice 1c (DEC-678).
+    assert_eq!(capability["can_send"], false, "{capability}");
     assert_eq!(capability["v24"], "unknown", "{capability}");
     assert_eq!(capability["evonode_shares"], "inactive", "{capability}");
 
@@ -250,6 +251,34 @@ fn test_QT_126_shared_refusals_are_the_facades_codes_and_quote_nothing() {
         b"",
     );
     assert_eq!(code(&out), "invalid_argument");
+
+    // Sending is off (DEC-678): the calls that produce bytes the network
+    // accepts refuse before the session. `sign` and `send` read the
+    // session first to size their grant.
+    let out = run(&["mn", "shared", "abandon", SESSION], b"");
+    assert_eq!(code(&out), "masternodes.unsupported");
+    let out = run(
+        &[
+            "mn",
+            "shared",
+            "update-share",
+            SECRET,
+            "--share-index",
+            "0",
+            "--reward",
+            "refund",
+        ],
+        b"",
+    );
+    assert_eq!(code(&out), "masternodes.unsupported");
+    for command in ["sign", "send"] {
+        let out = run(&["mn", "shared", command, SESSION], b"");
+        assert_eq!(
+            code(&out),
+            "masternodes.shared_session_not_found",
+            "{command}"
+        );
+    }
 
     // `--out` writes nothing when the call fails.
     let file = path.join("message.json");
