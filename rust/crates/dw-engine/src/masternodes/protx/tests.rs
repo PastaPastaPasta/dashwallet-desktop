@@ -331,11 +331,11 @@ impl Fx {
             .unwrap();
     }
 
-    /// `tx` in a block of the wallet's history, as key-wallet records it.
     fn tip(&self, height: u32) {
         self.session.hub.tracker().set_tip_height(height);
     }
 
+    /// `tx` in a block of the wallet's history, as key-wallet records it.
     fn confirm(&self, tx: Transaction, height: u32) {
         use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
         self.record(
@@ -2630,11 +2630,18 @@ fn mg04_a_refresh_reuses_its_own_unspent_input() {
     assert!(f.locked().contains(&only));
     let fresh = f
         .engine
-        .block_on(f.mn().refresh_external_registration(f.wallet, op.id.clone()))
+        .block_on(
+            f.mn()
+                .refresh_external_registration(f.wallet, op.id.clone()),
+        )
         .unwrap();
     assert_eq!(fresh.state, ProTxOperationState::NeedsSignature);
     assert!(f.locked().contains(&only));
-    let row = f.db().masternode_op(&f.wallet.to_string(), &op.id).unwrap().unwrap();
+    let row = f
+        .db()
+        .masternode_op(&f.wallet.to_string(), &op.id)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         super::ops::decode_inputs(&row.fee_inputs),
         vec![only],

@@ -135,7 +135,9 @@ impl NetworkSession {
             sig: vec![0; 65],
         };
         let w = self.wallet(&wallet).await?;
-        let coins = self.protx_candidates(fence, &w, &HashSet::new(), None).await?;
+        let coins = self
+            .protx_candidates(fence, &w, &HashSet::new(), None)
+            .await?;
         let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
         let funding = plan_funding(&utxos, &[], payload_bytes(&payload).len(), CHANGE_LEN)
             .map_err(EngineError::from)?;

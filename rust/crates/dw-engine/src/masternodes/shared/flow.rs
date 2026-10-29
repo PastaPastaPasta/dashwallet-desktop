@@ -272,7 +272,9 @@ impl NetworkSession {
         id: &str,
         also: &[OutPoint],
     ) -> Result<Vec<(Utxo, DerivationPath)>, MasternodesError> {
-        let mut coins = self.protx_candidates(fence, w, &HashSet::new(), None).await?;
+        let mut coins = self
+            .protx_candidates(fence, w, &HashSet::new(), None)
+            .await?;
         if !also.is_empty() {
             let others = self.held_by_others(fence.wallet_id(), id).await?;
             let state = w.state().await;

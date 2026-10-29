@@ -159,22 +159,25 @@ pub(crate) fn state_of(
             height: block.height(),
         };
     }
-    if conflict_height(&tx, history).is_some() {
+    if tx_conflict_height(&tx, history).is_some() {
         ProTxOperationState::Conflicted
     } else {
         unsettled
     }
 }
 
-/// The lowest block holding another transaction that spends one of `tx`'s
-/// inputs.
-fn conflict_height(tx: &Transaction, history: &HashMap<Txid, TxEntry>) -> Option<u32> {
-    let txid = tx.txid();
-    let inputs: HashSet<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
+/// The lowest height of a block holding another transaction than `except`
+/// that spends one of `inputs`: MG-04's operations and the shared sessions
+/// alike (D70).
+pub(crate) fn conflict_height(
+    history: &HashMap<Txid, TxEntry>,
+    inputs: &[OutPoint],
+    except: Option<&Txid>,
+) -> Option<u32> {
     history
         .iter()
         .filter(|(id, e)| {
-            **id != txid
+            Some(*id) != except
                 && e.tx
                     .input
                     .iter()
@@ -182,6 +185,12 @@ fn conflict_height(tx: &Transaction, history: &HashMap<Txid, TxEntry>) -> Option
         })
         .filter_map(|(_, e)| Some(e.context.block_info()?.height()))
         .min()
+}
+
+/// [`conflict_height`] of `tx`'s inputs.
+fn tx_conflict_height(tx: &Transaction, history: &HashMap<Txid, TxEntry>) -> Option<u32> {
+    let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
+    conflict_height(history, &inputs, Some(&tx.txid()))
 }
 
 pub(crate) fn operation_of(
@@ -508,7 +517,7 @@ impl NetworkSession {
             .filter(|r| match state_of(r, &history, &unspent) {
                 ProTxOperationState::Confirmed { .. } => true,
                 ProTxOperationState::Conflicted => signed_tx(r)
-                    .and_then(|tx| conflict_height(&tx, &history))
+                    .and_then(|tx| tx_conflict_height(&tx, &history))
                     .is_some_and(&buried),
                 _ => false,
             })

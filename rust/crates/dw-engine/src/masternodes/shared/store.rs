@@ -20,6 +20,7 @@ use dw_protx::shared::session::{
 use serde::{Deserialize, Serialize};
 
 use super::super::MasternodesError;
+use super::super::protx::ops::conflict_height;
 use super::super::shared_records::{
     DeadReason, KeyBase, ShareRow, ShareTermsView, SharedKind, SharedNext, SharedRole,
     SharedSession, SharedStage, SharedWarning,
@@ -415,22 +416,6 @@ impl ChainView {
             })
             .map(|(id, _)| *id)
     }
-
-    /// The lowest height of a block holding another transaction that
-    /// spends one of `inputs`.
-    fn conflict_height(&self, inputs: &[OutPoint], except: Option<&Txid>) -> Option<u32> {
-        self.history
-            .iter()
-            .filter(|(id, e)| {
-                Some(*id) != except
-                    && e.tx
-                        .input
-                        .iter()
-                        .any(|i| inputs.contains(&i.previous_output))
-            })
-            .filter_map(|(_, e)| Some(e.context.block_info()?.height()))
-            .min()
-    }
 }
 
 /// Whether the follower releases a session's locks (§11, D17): its
@@ -463,9 +448,7 @@ pub(crate) fn releasable(
             (stored, reserved)
         }
     };
-    chain
-        .conflict_height(&inputs, txid.as_ref())
-        .is_some_and(buried)
+    conflict_height(&chain.history, &inputs, txid.as_ref()).is_some_and(buried)
 }
 
 /// The registration's txid, once every input is signed: its ProTx hash.
@@ -505,7 +488,7 @@ pub(crate) fn derive_stage(l: &Loaded, chain: &ChainView) -> SharedStage {
     }
     let own = l.own_inputs();
     if l.out() {
-        if chain.conflict_height(&own, txid.as_ref()).is_some() {
+        if conflict_height(&chain.history, &own, txid.as_ref()).is_some() {
             return SharedStage::Conflicted;
         }
         return out_stage(l.role);
