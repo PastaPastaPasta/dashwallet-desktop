@@ -197,7 +197,7 @@ impl Fx {
     }
 
     /// The facade as shipped: sending off (DEC-678).
-    fn pin(&self) -> Masternodes {
+    fn shipped(&self) -> Masternodes {
         self.session.masternodes()
     }
 
@@ -724,7 +724,7 @@ fn test_QT_126_sending_is_off_as_shipped() {
     let id = three_approved(&f);
     f.both_signed(&id);
     let before: Vec<_> = (0..3).map(|w| f.row(w, &id)).collect();
-    let cap = f.run(f.pin().shared_capability(f.wallets[0])).unwrap();
+    let cap = f.run(f.shipped().shared_capability(f.wallets[0])).unwrap();
     assert!(!cap.can_send);
     assert_eq!(cap.v24, crate::masternodes::Activation::Active);
     assert_eq!(cap.evonode_shares, crate::masternodes::Activation::Inactive);
@@ -740,13 +740,22 @@ fn test_QT_126_sending_is_off_as_shipped() {
     };
     let (w0, w1) = (f.wallets[0], f.wallets[1]);
     for e in [
-        f.run(f.pin().sign_shared_funding(w1, id.clone(), f.grant(1, COIN)))
-            .map(drop),
-        f.run(f.pin().send_shared_registration(w0, id.clone(), f.grant(0, 500 * COIN)))
-            .map(drop),
-        f.run(f.pin().abandon_shared_session(w0, id.clone(), f.grant(0, COIN)))
-            .map(drop),
-        f.run(f.pin().update_share(w0, update, f.grant(0, COIN)))
+        f.run(
+            f.shipped()
+                .sign_shared_funding(w1, id.clone(), f.grant(1, COIN)),
+        )
+        .map(drop),
+        f.run(
+            f.shipped()
+                .send_shared_registration(w0, id.clone(), f.grant(0, 500 * COIN)),
+        )
+        .map(drop),
+        f.run(
+            f.shipped()
+                .abandon_shared_session(w0, id.clone(), f.grant(0, COIN)),
+        )
+        .map(drop),
+        f.run(f.shipped().update_share(w0, update, f.grant(0, COIN)))
             .map(drop),
     ] {
         match e.unwrap_err() {
@@ -2036,7 +2045,11 @@ fn test_QT_126_a_registration_mined_under_another_txid_is_confirmed() {
     f.tip(110);
     for w in 0..3 {
         let session = f.session_of(w, &id);
-        assert_eq!(session.stage, SharedStage::Confirmed { height: 101 }, "wallet {w}");
+        assert_eq!(
+            session.stage,
+            SharedStage::Confirmed { height: 101 },
+            "wallet {w}"
+        );
         assert_eq!(session.pro_tx_hash, Some(mined.to_string()), "wallet {w}");
     }
     f.follow();
@@ -2383,7 +2396,10 @@ fn test_QT_126_a_reserved_coin_is_no_mg04_collateral() {
             crate::masternodes::CollateralChoice::External { .. }
         );
         let preview = f.run(f.mn().preview_registration(f.wallets[0], req.clone()));
-        assert_eq!(code(preview.unwrap_err()), "masternodes.collateral_unavailable");
+        assert_eq!(
+            code(preview.unwrap_err()),
+            "masternodes.collateral_unavailable"
+        );
         let e = if external {
             f.run(f.mn().prepare_external_registration(f.wallets[0], req))
                 .unwrap_err()
@@ -2395,7 +2411,10 @@ fn test_QT_126_a_reserved_coin_is_no_mg04_collateral() {
     }
     assert!(f.net.sent().is_empty());
     assert!(f.locked(0).contains(&x));
-    assert_eq!(f.row(0, &id).reserved, serde_json::to_string(&reserved).unwrap());
+    assert_eq!(
+        f.row(0, &id).reserved,
+        serde_json::to_string(&reserved).unwrap()
+    );
 }
 
 /// BL-346 (b): a coin another session holds is never a new session's,
@@ -2587,7 +2606,17 @@ fn test_QT_127_update_share_sends_an_operation() {
     // D23: one at a time per masternode.
     let e = update(fee).unwrap_err();
     assert_eq!(code(e), "masternodes.update_pending");
-    // MG-04's resend, over the new kind.
+    // MG-04's resend, over the new kind: shared sending, so refused as
+    // shipped (DEC-678).
+    let refused = f.run(
+        f.shipped()
+            .resend_operation(f.wallets[0], op.id.clone(), f.grant(0, fee)),
+    );
+    assert!(
+        matches!(refused, Err(MasternodesError::Unsupported { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(f.net.sent().len(), 1);
     let grant = f.grant(0, fee);
     f.run(f.mn().resend_operation(f.wallets[0], op.id.clone(), grant))
         .unwrap();

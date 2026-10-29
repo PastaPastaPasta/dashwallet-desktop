@@ -518,7 +518,9 @@ impl Masternodes {
             let up = s.resolve_update(wallet, &request, &ctx, false).await?;
             let fence = s.coin_fence(wallet).await?;
             let w = s.wallet(&wallet).await?;
-            let coins = s.protx_candidates(&fence, &w, &HashSet::new(), None).await?;
+            let coins = s
+                .protx_candidates(&fence, &w, &HashSet::new(), None)
+                .await?;
             let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
             let funding = plan_funding(&utxos, &up.outputs(), up.sized_payload(), CHANGE_LEN)
                 .map_err(EngineError::from)?;
@@ -566,7 +568,9 @@ impl Masternodes {
             let result = async {
                 let _flight = s.claim_operation(wallet, &id)?;
                 let w = s.wallet(&wallet).await?;
-                let coins = s.protx_candidates(&fence, &w, &HashSet::new(), None).await?;
+                let coins = s
+                    .protx_candidates(&fence, &w, &HashSet::new(), None)
+                    .await?;
                 let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
                 let funding = plan_funding(&utxos, &up.outputs(), up.sized_payload(), CHANGE_LEN)
                     .map_err(EngineError::from)?;
@@ -649,17 +653,23 @@ impl Masternodes {
 
     /// Hands a signed, unsettled row's saved bytes to the fence again (D7):
     /// under its own lease from a `MasternodeOp` grant, charged the row's
-    /// fee, its inputs reserved again unless another owner holds one.
+    /// fee, its inputs reserved again unless another owner holds one. An
+    /// `update_share` row's bytes are shared sending: refused while the
+    /// switch is off (DEC-678), like `update_share` itself.
     pub async fn resend_operation(
         &self,
         wallet: WalletId,
         operation: String,
         grant: String,
     ) -> Result<ProTxOperation, MasternodesError> {
+        let sending = self.require_sending();
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             let _flight = s.claim_operation(wallet, &operation)?;
             let row = s.op_row(wallet, &operation).await?;
+            if kind_of(&row.kind) == ProTxOperationKind::UpdateShare {
+                sending?;
+            }
             // An update resends only while no other update of its
             // masternode would race it, held against a new update (D43, D49).
             let update = row.kind == "update_registrar";
