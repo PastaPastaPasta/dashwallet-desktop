@@ -313,6 +313,14 @@ fn test_QT_126_mutated_join_signatures_fail_as_in_dashd() {
                 .all(|(s, sig)| verify_hash_canonical(consent, s.owner_key_id, sig));
             assert!(!all_valid, "{}", str_of(m, "mutation"));
             assert_eq!(verdict(m), Err("bad-protx-shares-sig".into()));
+            // §5's rules refuse it with dashd's reason (review r1 of 1a, M9).
+            assert_eq!(
+                check_registration(&tx, &p, &[], true, Network::Regtest, true)
+                    .map_err(str::to_owned),
+                verdict(m),
+                "{}",
+                str_of(m, "mutation")
+            );
         }
     }
 }
