@@ -253,23 +253,13 @@ fn test_QT_126_shared_refusals_are_the_facades_codes_and_quote_nothing() {
     assert_eq!(code(&out), "invalid_argument");
 
     // Sending is off (DEC-678): the calls that produce bytes the network
-    // accepts refuse before the session. `sign` and `send` read the
-    // session first to size their grant.
+    // accepts refuse before the session; `abandon`, which has no v24 gate,
+    // shows it is the switch. `update-share` previews first to size its
+    // grant, so here it would refuse v24 `unknown` whatever the switch says;
+    // the engine's `test_QT_126_sending_is_off_as_shipped` covers it with
+    // v24 active (r2 of 1b, n-2). `sign` and `send` read the session first
+    // to size their grant.
     let out = run(&["mn", "shared", "abandon", SESSION], b"");
-    assert_eq!(code(&out), "masternodes.unsupported");
-    let out = run(
-        &[
-            "mn",
-            "shared",
-            "update-share",
-            SECRET,
-            "--share-index",
-            "0",
-            "--reward",
-            "refund",
-        ],
-        b"",
-    );
     assert_eq!(code(&out), "masternodes.unsupported");
     for command in ["sign", "send"] {
         let out = run(&["mn", "shared", command, SESSION], b"");
