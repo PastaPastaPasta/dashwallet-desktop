@@ -2258,6 +2258,65 @@ fn test_QT_126_unlock_outpoints_never_frees_a_reserved_coin() {
     assert_eq!(f.locked(0), HashSet::from([reserved]));
 }
 
+/// Opus r1 M-1 (mutant 10's killer): a session's reserved coin is locked,
+/// and an existing collateral may be a coin the user locked (as in Core),
+/// so the held set in `protx_context` alone keeps an MG-04 registration
+/// from naming it, as an existing coin or as an external one (D69).
+#[test]
+fn test_QT_126_a_reserved_coin_is_no_mg04_collateral() {
+    let f = fx(1, true);
+    let x = f.credit(0, 1, 1_000 * COIN);
+    let id = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE))
+        .unwrap()
+        .session
+        .id;
+    let reserved: Vec<String> = serde_json::from_str(&f.row(0, &id).reserved).unwrap();
+    assert_eq!(reserved, vec![format!("{}:{}", x.txid, x.vout)]);
+    assert!(f.locked(0).contains(&x));
+    f.credit(0, 2, COIN);
+    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes([0x5e; 32]).unwrap();
+    let key = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let outpoint = format!("{}-{}", x.txid, x.vout);
+    for collateral in [
+        crate::masternodes::CollateralChoice::ExistingUtxo {
+            outpoint: outpoint.clone(),
+        },
+        crate::masternodes::CollateralChoice::External {
+            outpoint: outpoint.clone(),
+            address: dashcore::Address::p2pkh(&key, dashcore::Network::Regtest).to_string(),
+        },
+    ] {
+        let req = crate::masternodes::RegistrationRequest {
+            kind: crate::masternodes::MasternodeType::Regular,
+            collateral,
+            service: "1.2.3.5".into(),
+            operator: OperatorChoice::NextUnused,
+            operator_reward: 0,
+            owner_index: None,
+            voting: VotingChoice::NextUnused,
+            payout: crate::masternodes::PayoutChoice::NewAddress,
+            evonode: None,
+        };
+        let external = matches!(
+            req.collateral,
+            crate::masternodes::CollateralChoice::External { .. }
+        );
+        let preview = f.run(f.mn().preview_registration(f.wallets[0], req.clone()));
+        assert_eq!(code(preview.unwrap_err()), "masternodes.collateral_unavailable");
+        let e = if external {
+            f.run(f.mn().prepare_external_registration(f.wallets[0], req))
+                .unwrap_err()
+        } else {
+            f.run(f.mn().register(f.wallets[0], req, f.grant(0, COIN)))
+                .unwrap_err()
+        };
+        assert_eq!(code(e), "masternodes.collateral_unavailable");
+    }
+    assert!(f.net.sent().is_empty());
+    assert!(f.locked(0).contains(&x));
+    assert_eq!(f.row(0, &id).reserved, serde_json::to_string(&reserved).unwrap());
+}
+
 /// BL-346 (b): a coin another session holds is never a new session's,
 /// even when its lock row is gone (a lock an older build released).
 #[test]

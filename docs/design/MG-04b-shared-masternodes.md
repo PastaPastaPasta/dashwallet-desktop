@@ -960,10 +960,13 @@ Review r2's nine (r2-m6, DEC-312):
 The mutant list lives in the scratch script with, for each, the test that kills it. Each READY report lists the
 mutants whose code is in that slice with their killing test (1a: the creation and envelope paths, and 20's release
 check; 1b: 18 and 31 on the coordinator's send and the abandon, with the fence, hold and release paths of D68–D73;
-20's release check stays with the switch, D71); part 2's lists all 33. Of 1b's 30 scratch mutants, four are defense in
-depth no reachable state exercises, so no test kills them: the held-coin filters behind the lock in `set_shared_fee`'s
-re-selection and in `protx_context`'s collateral set (a held coin stays locked, D69), and the fences in
-`sign_shared_funding` and `approve_shared` (every writer of a reservation or its lock is fenced, D68, D69).
+20's release check stays with the switch, D71); part 2's lists all 33. Of 1b's 30 scratch mutants, three are defense in
+depth no reachable state exercises, so no test kills them: the held-coin filter behind the lock in `set_shared_fee`'s
+re-selection (a held coin stays locked, D69), and the fences in `sign_shared_funding` and `approve_shared` (every
+writer of a reservation or its lock is fenced, D68, D69). The held coins in `protx_context`'s collateral set (mutant 10)
+guard a reachable state: an existing collateral may be a coin the user locked, so that set alone keeps an MG-04
+registration from naming a session's reserved coin, existing or external; `test_QT_126_a_reserved_coin_is_no_mg04_collateral`
+kills it (review r1 of 1b, Opus M-1).
 
 ## 13. Slices
 
