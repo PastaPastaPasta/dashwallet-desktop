@@ -871,6 +871,12 @@ impl Drop for AttemptGuard {
 }
 
 impl FenceState {
+    /// [`Self::writes`], for tests that wait for a write to land.
+    #[cfg(test)]
+    pub(super) fn writes_running(&self) -> usize {
+        self.writes
+    }
+
     fn attempt(
         &mut self,
         (wallet, artifact): (WalletId, ArtifactId),

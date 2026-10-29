@@ -2276,7 +2276,9 @@ async fn a_dropped_admit_or_register_keeps_the_fence_consistent() {
     let (t, rec) = table();
     let j = with_journal(&t);
     let l = begin(&t, W, 1_000, 1_000, 0).await.unwrap();
-    j.stall_ms.store(150, Ordering::SeqCst);
+    // Long enough that each abort lands while its write is stalled; the
+    // waits below are on the fence, not on the clock (BL-500).
+    j.stall_ms.store(1_000, Ordering::SeqCst);
 
     // A step-scoped admit dropped during its marker write: the placeholder
     // goes; the durable marker makes the same step a Resend.
@@ -2288,23 +2290,25 @@ async fn a_dropped_admit_or_register_keeps_the_fence_consistent() {
         let (t, req) = (Arc::clone(&t), req.clone());
         async move { t.admit(req).await }
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    until(|| committing(&t, "topup/x/st", art(1))).await;
     dropped.abort();
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(dropped.await.unwrap_err().is_cancelled());
+    until(|| t.with_j(|i, _| i.fence.writes_running() == 0)).await;
     j.stall_ms.store(0, Ordering::SeqCst);
     assert_eq!(j.load().1.len(), 1, "the marker is durable");
     resend(t.admit(req).await);
 
     // A register dropped during its write still enters the entry and
     // keeps its charge.
-    j.stall_ms.store(150, Ordering::SeqCst);
+    j.stall_ms.store(1_000, Ordering::SeqCst);
     let dropped = tokio::spawn({
         let l = l.clone();
         async move { register(&l, art(2), 100).await }
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    until(|| t.with_j(|i, _| !i.fence.registering.is_empty())).await;
     dropped.abort();
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(dropped.await.unwrap_err().is_cancelled());
+    until(|| t.with_j(|i, _| i.fence.registering.is_empty())).await;
     j.stall_ms.store(0, Ordering::SeqCst);
     assert_eq!(budget(&l, BudgetPurpose::Funding), Some((1_000, 100)));
     first(t.admit(asset_lock(&l, art(2))).await).finish(Outcome::Sent);
