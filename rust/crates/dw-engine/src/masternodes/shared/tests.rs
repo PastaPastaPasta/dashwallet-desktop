@@ -593,6 +593,48 @@ fn three_approved(f: &Fx) -> String {
     id
 }
 
+/// D78: a dash-qt coordinator's service in a form Core reads (one 32-bit
+/// number; an IPv4-mapped IPv6 in brackets) is joined, locked and approved
+/// by a participant, and the frozen registration carries 127.0.0.1.
+#[test]
+fn test_QT_126_a_participant_joins_a_core_form_service() {
+    let want = dw_protx::shared::ExtNetInfo::core_p2p(&["127.0.0.1:19999".parse().unwrap()]);
+    for service in ["2130706433:19999", "[::ffff:127.0.0.1]:19999"] {
+        let f = fx(2, true);
+        f.credit(0, 1, 501 * COIN);
+        f.credit(1, 2, 500 * COIN + 50_000);
+        let id = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE))
+            .unwrap()
+            .session
+            .id;
+        // The coordinator's draft as dash-qt would hold it; this wallet's
+        // own input is a.b.c.d:port only (D5).
+        f.rewrite(0, &id, |u| {
+            let mut s = parse(&u.envelope);
+            s.terms.core_p2p_addrs = service.into();
+            u.envelope = s.to_text();
+        });
+        f.imported(1, &f.message(0, &id));
+        let b = f.join(1, &id);
+        f.imported(0, &b.message.text);
+        let locked = f.lock(0, &id).unwrap();
+        let frozen = parse(&locked.message.text);
+        assert_eq!(frozen.terms.core_p2p_addrs, service);
+        let registered = dw_protx::shared::session::funding::decode_frozen(&frozen)
+            .unwrap()
+            .payload
+            .net_info;
+        assert_eq!(Some(registered), want, "{service}");
+        let (s, _) = f.imported(1, &locked.message.text);
+        assert_eq!(
+            (s.stage, s.next),
+            (SharedStage::Signing, SharedNext::Approve),
+            "{service}"
+        );
+        f.approve(1, &id).unwrap();
+    }
+}
+
 #[test]
 fn test_QT_126_three_wallets_reach_the_signed_registration() {
     let f = fx(3, true);

@@ -86,9 +86,10 @@ fn is_embedded_ipv6(addr: &[u8]) -> bool {
 
 /// The IP service `ExtNetInfo::AddEntry` (rc.3 `evo/netinfo.cpp:500-551`)
 /// reads from one entry, before `ValidateService`: `SplitHostPort` with no
-/// default port, then, for a host of `SAFE_CHARS_IPV4_6` only, `Lookup`
-/// without name lookups, which splits the host again (`netbase.cpp:194-209`)
-/// and decodes it as `getaddrinfo` with `AI_NUMERICHOST` does: glibc's
+/// default port, then, for a host of `SAFE_CHARS_IPV4_6` only (`:28,512`),
+/// `Lookup` without name lookups (`:542`), which splits the host again
+/// (`netbase.cpp:194-209`) and decodes it as `getaddrinfo` with
+/// `AI_NUMERICHOST` does (`netbase.cpp:44-59,147-174`): glibc's
 /// [`inet_aton_exact`], else an IPv6 address, an IPv4-mapped one read as
 /// IPv4 (`SetLegacyIPv6`, `netaddress.cpp:135-162`). An IPv6 address with
 /// the TorV2 or internal prefix is returned as is; Core never adds one
