@@ -130,17 +130,20 @@ fn legacy_entry(addr: SocketAddr) -> Option<NetInfoEntry> {
 
 /// `bad-protx-dup-netinfo-entry` (rc.3 `specialtxman.cpp:1235-1245`): one
 /// of `entries` is a unique property of a listed masternode on another
-/// collateral, whichever purpose either side holds it under.
+/// collateral, whichever purpose either side holds it under, compared by
+/// Core's untagged key ([`NetInfoEntry::unique_property`]), so a service
+/// and a domain can clash.
 pub(crate) fn check_net_info_unique<'a>(
     entries: impl IntoIterator<Item = &'a NetInfoEntry>,
     collateral: OutPoint,
     list: &[ListedMasternode],
 ) -> Result<(), Reject> {
     for entry in entries {
-        if list
-            .iter()
-            .any(|e| e.collateral != Some(collateral) && e.net_info.contains(entry))
-        {
+        let key = entry.unique_property();
+        if list.iter().any(|e| {
+            e.collateral != Some(collateral)
+                && e.net_info.iter().any(|l| l.unique_property() == key)
+        }) {
             return Err("bad-protx-dup-netinfo-entry");
         }
     }
@@ -787,6 +790,57 @@ mod tests {
         assert_eq!(
             check_net_info_unique([&ours], collateral, &[holder]),
             Err("bad-protx-dup-netinfo-entry")
+        );
+        // A version-3 IPv6 entry is listed as IPv6 (review r1 of 1c, n-2).
+        let v6: std::net::Ipv6Addr = "2a01:4f8::1".parse().unwrap();
+        let holder = listed(ext(vec![(
+            NetInfoPurpose::CoreP2P,
+            vec![
+                ipv4([127, 0, 0, 2], 19899),
+                ListEntry::Service {
+                    network: Bip155Network::Ipv6,
+                    addr: v6.octets().to_vec(),
+                    port: 9999,
+                },
+            ],
+        )]));
+        let ours = NetInfoEntry::Service(ServiceAddr {
+            network: BIP155_IPV6,
+            address: v6.octets().to_vec(),
+            port: 9999,
+        });
+        assert_eq!(holder.net_info[1], ours);
+        assert_eq!(
+            check_net_info_unique([&ours], collateral, &[holder]),
+            Err("bad-protx-dup-netinfo-entry")
+        );
+        // Core's key is untagged: a listed 15-character domain is this
+        // IPv6 service (n-3).
+        let holder = listed(ext(vec![(
+            NetInfoPurpose::PlatformHttps,
+            vec![ListEntry::Domain {
+                host: "abcdefghij.klmn".into(),
+                port: 19999,
+            }],
+        )]));
+        let ours = |text: &str| {
+            NetInfoEntry::Service(ServiceAddr::from_socket_addr(text.parse().unwrap()).unwrap())
+        };
+        assert_eq!(
+            check_net_info_unique(
+                [&ours("[f61:6263:6465:6667:6869:6a2e:6b6c:6d6e]:19999")],
+                collateral,
+                std::slice::from_ref(&holder)
+            ),
+            Err("bad-protx-dup-netinfo-entry")
+        );
+        assert_eq!(
+            check_net_info_unique(
+                [&ours("[f61:6263:6465:6667:6869:6a2e:6b6c:6d6f]:19999")],
+                collateral,
+                &[holder]
+            ),
+            Ok(())
         );
     }
 

@@ -650,6 +650,61 @@ fn test_QT_126_a_participant_joins_a_core_form_service() {
     assert_eq!(old.service_read, None);
 }
 
+/// Review r1 of 1c, Sol m-1: the reading is this wallet's on every target;
+/// a coordinator whose libc read the text otherwise freezes another
+/// address, which the frozen check refuses. The participant's reserved
+/// share was never out: the session discards and its coins unlock (D17).
+#[test]
+fn test_QT_126_a_frozen_service_read_otherwise_is_refused_and_releases_the_share() {
+    let f = fx(2, true);
+    f.credit(0, 1, 501 * COIN);
+    f.credit(1, 2, 500 * COIN + 50_000);
+    let id = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE))
+        .unwrap()
+        .session
+        .id;
+    f.rewrite(0, &id, |u| {
+        let mut s = parse(&u.envelope);
+        s.terms.core_p2p_addrs = "127.1:19999".into();
+        u.envelope = s.to_text();
+    });
+    f.imported(1, &f.message(0, &id));
+    let b = f.join(1, &id);
+    assert!(!f.locked(1).is_empty(), "joining reserves B's share");
+    f.imported(0, &b.message.text);
+    let locked = f.lock(0, &id).unwrap();
+
+    // The coordinator's payload as its libc read "127.1".
+    let frozen_as = |service: &str| {
+        let mut s = parse(&locked.message.text);
+        let frozen = decode_frozen(&s).unwrap();
+        let mut payload = frozen.payload;
+        payload.net_info =
+            dw_protx::shared::ExtNetInfo::core_p2p(&[service.parse().unwrap()]).unwrap();
+        let mut tx = frozen.tx;
+        tx.payload = dashcore::consensus::serialize(&payload);
+        s.consent_hash = dw_protx::shared::ProRegTxV3::display_hash(&payload.consent_hash(&tx));
+        s.protx = hex::encode(tx.to_bytes());
+        s
+    };
+    assert!(check_frozen(&frozen_as("127.0.0.1:19999")).is_ok());
+    let other = frozen_as("127.0.0.2:19999");
+    assert!(matches!(
+        check_frozen(&other),
+        Err(dw_protx::shared::envelope::EnvelopeError::Parse("protx"))
+    ));
+    match f.import(1, &other.to_text()).unwrap_err() {
+        MasternodesError::SharedMessage { reason, .. } => assert_eq!(reason, "parse"),
+        e => panic!("{e:?}"),
+    }
+
+    // Nothing of B's is out: discarding unlocks every reserved coin.
+    assert!(f.row(1, &id).out_at.is_none());
+    f.run(f.mn().discard_shared_session(f.wallets[1], id.clone()))
+        .unwrap();
+    assert!(f.locked(1).is_empty(), "no reservation is left");
+}
+
 #[test]
 fn test_QT_126_three_wallets_reach_the_signed_registration() {
     let f = fx(3, true);

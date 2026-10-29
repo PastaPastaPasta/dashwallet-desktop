@@ -96,8 +96,9 @@ fn is_embedded_ipv6(addr: &[u8]) -> bool {
 /// (invalid, or dropped by `LookupIntern`), and
 /// [`ServiceAddr::from_socket_addr`] refuses it. `None` for anything else,
 /// including a host Core would read as a domain or privacy network (MG-04b
-/// D5). dash-qt's verdicts on these forms are in
-/// testdata/shared_envelopes.json (M9).
+/// D5). Pure Rust, so the same reading on every target (D78). dash-qt's
+/// verdicts on these forms are in testdata/shared_envelopes.json (M9);
+/// testdata/oracle/glibc checks the reading against glibc's `getaddrinfo`.
 pub fn parse_core_service(entry: &str) -> Option<SocketAddr> {
     let (addr, port) = split_host_port(entry, 0);
     let ip_safe = |s: &str| {
@@ -678,6 +679,46 @@ impl NetInfoEntry {
     }
 }
 
+impl NetInfoEntry {
+    /// The bytes Core's unique-property map hashes for this entry
+    /// (`GetUniquePropertyHash`, rc.3 `evo/deterministicmns.h:526-547`, an
+    /// untagged `SerializeHash`). A service is its `CService`: ADDRv1 for
+    /// IPv4 and IPv6 (`netaddress.h:329-361`, an IPv4 address behind the
+    /// `::ffff:` prefix), ADDRv2 for the others (`:381-395`), then the port
+    /// big-endian (`:563-567`). A domain is its `DomainPort`: a compact-size
+    /// string, then the port big-endian (`evo/netinfo.h:176-180`). Untagged,
+    /// so an IPv6 service and a 15-character domain can be one property
+    /// (MG-04b D39).
+    pub fn unique_property(&self) -> Vec<u8> {
+        let mut key = Vec::new();
+        let port = match self {
+            Self::Service(s) => {
+                match s.network {
+                    BIP155_IPV4 => {
+                        key.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff])
+                    }
+                    BIP155_IPV6 => {}
+                    network => {
+                        key.push(network);
+                        VarInt(s.address.len() as u64)
+                            .consensus_encode(&mut key)
+                            .ok();
+                    }
+                }
+                key.extend_from_slice(&s.address);
+                s.port
+            }
+            Self::Domain { name, port } => {
+                VarInt(name.len() as u64).consensus_encode(&mut key).ok();
+                key.extend_from_slice(name.as_bytes());
+                *port
+            }
+        };
+        key.extend_from_slice(&port.to_be_bytes());
+        key
+    }
+}
+
 fn write_port<W: std::io::Write + ?Sized>(w: &mut W, port: u16) -> Result<usize, std::io::Error> {
     w.write_all(&port.to_be_bytes())?;
     Ok(2)
@@ -874,9 +915,49 @@ mod tests {
         // as the port (rc.3 `evo/netinfo.cpp:512`; from the source, not the
         // oracle run).
         assert_eq!(parse_core_service("[127.0.0.1:+19901]"), None);
-        for form in ["127.0.0.1:-19901", "127.0.0.1:84437", "127.0.0.1:+-1"] {
+        // `ParseIntegral` strips one `+` only (`util/strencodings.cpp:234-270`).
+        for form in [
+            "127.0.0.1:-19901",
+            "127.0.0.1:84437",
+            "127.0.0.1:+-1",
+            "127.0.0.1:++19901",
+        ] {
             assert_eq!(parse_core_service(form), None, "{form}");
         }
+        // glibc bounds every part but the last by 0xff; `383 << 24` would
+        // wrap to 127 (review r1 of 1c, n-1).
+        for form in ["383.0.0.1:19901", "383.1:19901"] {
+            assert_eq!(parse_core_service(form), None, "{form}");
+        }
+    }
+
+    /// MG-04b D39: Core's unique-property bytes, untagged.
+    #[test]
+    fn test_QT_126_unique_property_is_cores_serialization() {
+        let key = |text: &str| service(text).unique_property();
+        assert_eq!(
+            key("1.2.3.4:19999"),
+            [
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4, 0x4e, 0x1f
+            ]
+        );
+        let tor = NetInfoEntry::Service(ServiceAddr {
+            network: BIP155_TORV3,
+            address: vec![0x11; 32],
+            port: 9999,
+        });
+        let mut want = vec![BIP155_TORV3, 32];
+        want.extend([0x11; 32]);
+        want.extend([0x27, 0x0f]);
+        assert_eq!(tor.unique_property(), want);
+        // The review's pair: 0x0f "abcdefghij.klmn" 19999, both ways.
+        let domain = |name: &str| NetInfoEntry::Domain {
+            name: name.into(),
+            port: 19999,
+        };
+        let v6 = key("[f61:6263:6465:6667:6869:6a2e:6b6c:6d6e]:19999");
+        assert_eq!(v6, domain("abcdefghij.klmn").unique_property());
+        assert_ne!(v6, domain("abcdefghij.klmo").unique_property());
     }
 
     #[test]
