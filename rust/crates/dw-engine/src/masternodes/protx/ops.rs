@@ -16,7 +16,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use dashcore::{OutPoint, Transaction, Txid};
-use dw_appdb::{AttemptEnd, MasternodeOpRow};
+use dw_appdb::{AttemptEnd, Holder, MasternodeOpRow};
 
 use super::super::MasternodesError;
 use super::super::protx_records::{
@@ -39,12 +39,14 @@ pub(crate) fn kind_name(kind: ProTxOperationKind) -> &'static str {
     match kind {
         ProTxOperationKind::Registration => "registration",
         ProTxOperationKind::UpdateRegistrar => "update_registrar",
+        ProTxOperationKind::UpdateShare => "update_share",
     }
 }
 
 pub(crate) fn kind_of(name: &str) -> ProTxOperationKind {
     match name {
         "update_registrar" => ProTxOperationKind::UpdateRegistrar,
+        "update_share" => ProTxOperationKind::UpdateShare,
         _ => ProTxOperationKind::Registration,
     }
 }
@@ -157,20 +159,38 @@ pub(crate) fn state_of(
             height: block.height(),
         };
     }
-    let inputs: HashSet<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
-    let conflicted = history.iter().any(|(id, e)| {
-        *id != txid
-            && e.context.block_info().is_some()
-            && e.tx
-                .input
-                .iter()
-                .any(|i| inputs.contains(&i.previous_output))
-    });
-    if conflicted {
+    if tx_conflict_height(&tx, history).is_some() {
         ProTxOperationState::Conflicted
     } else {
         unsettled
     }
+}
+
+/// The lowest height of a block holding another transaction than `except`
+/// that spends one of `inputs`: MG-04's operations and the shared sessions
+/// alike (D70).
+pub(crate) fn conflict_height(
+    history: &HashMap<Txid, TxEntry>,
+    inputs: &[OutPoint],
+    except: Option<&Txid>,
+) -> Option<u32> {
+    history
+        .iter()
+        .filter(|(id, e)| {
+            Some(*id) != except
+                && e.tx
+                    .input
+                    .iter()
+                    .any(|i| inputs.contains(&i.previous_output))
+        })
+        .filter_map(|(_, e)| Some(e.context.block_info()?.height()))
+        .min()
+}
+
+/// [`conflict_height`] of `tx`'s inputs.
+fn tx_conflict_height(tx: &Transaction, history: &HashMap<Txid, TxEntry>) -> Option<u32> {
+    let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
+    conflict_height(history, &inputs, Some(&tx.txid()))
 }
 
 pub(crate) fn operation_of(
@@ -400,6 +420,8 @@ impl NetworkSession {
         let w = wallet.to_string();
         let locks: Vec<(String, u32)> =
             locks.iter().map(|o| (o.txid.to_string(), o.vout)).collect();
+        #[cfg(test)]
+        crate::coins::pause_at(&self.coin_fences.pause_row_write).await;
         self.appdb_op(move |db| db.insert_masternode_op_durable(&w, &row, &locks, now_secs()))
             .await?;
         self.masternodes.local_change();
@@ -458,8 +480,26 @@ impl NetworkSession {
         Ok(())
     }
 
-    /// Releases the inputs of settled rows (in a block, or conflicted): the
-    /// coins are spent, so the locks only clutter coin control (D25).
+    /// Whether a block at `height` is one a reorg won't undo (MG-04b D70,
+    /// Opus-h NIT-4): at or under the ChainLock, or
+    /// `RECOMMENDED_CONFIRMATIONS` deep at the tip.
+    pub(crate) fn buried(&self) -> impl Fn(u32) -> bool + use<> {
+        let (tip, chainlock) = {
+            let t = self.hub.tracker();
+            (t.tip_height(), t.chainlock_height())
+        };
+        move |height| {
+            chainlock.is_some_and(|c| height <= c)
+                || tip.is_some_and(|t| {
+                    t.saturating_sub(height) + 1 >= crate::history::RECOMMENDED_CONFIRMATIONS
+                })
+        }
+    }
+
+    /// Releases the inputs of settled rows: in a block, or conflicted by a
+    /// spend [`Self::buried`] says a reorg won't undo (MG-04b D70, review
+    /// r1 of 1b n-5). The coins are spent, so the locks only clutter coin
+    /// control (D25).
     pub(crate) async fn settle_operation_locks(
         &self,
         wallet: WalletId,
@@ -470,14 +510,16 @@ impl NetworkSession {
             return Ok(());
         }
         let (history, unspent) = self.op_view(wallet).await?;
+        let buried = self.buried();
         let settled: Vec<(String, Vec<OutPoint>)> = rows
             .iter()
             .filter(|r| r.fee_inputs != "[]")
-            .filter(|r| {
-                matches!(
-                    state_of(r, &history, &unspent),
-                    ProTxOperationState::Confirmed { .. } | ProTxOperationState::Conflicted
-                )
+            .filter(|r| match state_of(r, &history, &unspent) {
+                ProTxOperationState::Confirmed { .. } => true,
+                ProTxOperationState::Conflicted => signed_tx(r)
+                    .and_then(|tx| tx_conflict_height(&tx, &history))
+                    .is_some_and(&buried),
+                _ => false,
             })
             .map(|r| (r.id.clone(), decode_inputs(&r.fee_inputs)))
             .collect();
@@ -489,7 +531,8 @@ impl NetworkSession {
             let now = now_secs();
             for (id, inputs) in &settled {
                 for o in inputs {
-                    db.unlock(&w, &o.txid.to_string(), o.vout, now)?;
+                    let holder = Holder::Operation(id);
+                    db.release_lock(&w, holder, &o.txid.to_string(), o.vout, now)?;
                 }
                 db.clear_masternode_op_inputs(&w, id)?;
             }
@@ -574,7 +617,8 @@ impl NetworkSession {
                 }
                 let now = now_secs();
                 for o in &unlock {
-                    db.unlock(&w, &o.txid.to_string(), o.vout, now)?;
+                    let holder = Holder::Operation(&id);
+                    db.release_lock(&w, holder, &o.txid.to_string(), o.vout, now)?;
                 }
                 Ok(true)
             })

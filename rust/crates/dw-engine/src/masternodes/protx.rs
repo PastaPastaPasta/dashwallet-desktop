@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use dashcore::OutPoint;
 use dashcore::hashes::Hash;
-use dw_appdb::MasternodeOpRow;
+use dw_appdb::{Holder, MasternodeOpRow};
 use dw_protx::params::collateral_amount;
 use dw_vault::VaultSigner;
 use platform_wallet::wallet::platform_wallet::PlatformWallet;
@@ -26,7 +26,7 @@ use self::build::{
     Collateral, Funding, decode_signature, existing_coin, finish_registration, plan_funding,
     sign_message, summarize, to_sign, unsigned_registration,
 };
-use self::ops::{Delivery, encode_inputs, kind_name, operation_of, state_name, state_of};
+use self::ops::{Delivery, encode_inputs, kind_name, kind_of, operation_of, state_name, state_of};
 use super::protx_records::{
     CollateralChoice, ProTxKeys, ProTxOperation, ProTxOperationKind, ProTxOperationState,
     RegistrationPreview, RegistrationRequest, UpdateRegistrarPreview, UpdateRegistrarRequest,
@@ -96,7 +96,7 @@ impl Masternodes {
             let fence = s.coin_fence(wallet).await?;
             let w = s.wallet(&wallet).await?;
             let exclude = s.check_collateral(wallet, &fence, &w, &reg).await?;
-            let coins = s.protx_candidates(&fence, &w, &exclude).await?;
+            let coins = s.protx_candidates(&fence, &w, &exclude, None).await?;
             let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
             let funding = plan_funding(&utxos, &reg.outputs(), reg.sized_payload(), CHANGE_LEN)
                 .map_err(EngineError::from)?;
@@ -129,6 +129,9 @@ impl Masternodes {
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             build::check_request(&request, s.network.core_network())?;
+            // The fence from the keys to the row's write (BL-352, as MG-04b
+            // D63): another call can't take the same keys or coins.
+            let fence = s.coin_fence(wallet).await?;
             let ctx = s.protx_context(wallet).await?;
             let reg = s.resolve_registration(wallet, &request, &ctx, true).await?;
             let lease = s
@@ -139,7 +142,6 @@ impl Masternodes {
             let result = async {
                 let _flight = s.claim_operation(wallet, &id)?;
                 let network = s.network.core_network();
-                let fence = s.coin_fence(wallet).await?;
                 let w = s.wallet(&wallet).await?;
                 let snapshot = s.coin_snapshot(&fence, &w).await?;
                 let existing = match &reg.collateral {
@@ -159,7 +161,7 @@ impl Masternodes {
                 };
                 let exclude: HashSet<OutPoint> =
                     existing.iter().map(|(u, _, _)| u.outpoint).collect();
-                let coins = s.protx_candidates(&fence, &w, &exclude).await?;
+                let coins = s.protx_candidates(&fence, &w, &exclude, None).await?;
                 let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
                 let funding = plan_funding(&utxos, &reg.outputs(), reg.sized_payload(), CHANGE_LEN)
                     .map_err(EngineError::from)?;
@@ -243,7 +245,7 @@ impl Masternodes {
                 #[cfg(test)]
                 ops::crash_at(&s, ops::CrashPoint::Saved)?;
                 let summary = s
-                    .summary_of(&w, &tx, &utxos, &funding, change.as_ref())
+                    .summary_of(&w, &tx, &utxos, funding.fee, change.as_ref())
                     .await;
                 s.deliver(
                     wallet,
@@ -284,11 +286,12 @@ impl Masternodes {
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             build::check_request(&request, s.network.core_network())?;
+            // The fence from the keys to the row's write (BL-352).
+            let fence = s.coin_fence(wallet).await?;
             let ctx = s.protx_context(wallet).await?;
             let reg = s.resolve_registration(wallet, &request, &ctx, true).await?;
             let id = ops::new_id();
             let _flight = s.claim_operation(wallet, &id)?;
-            let fence = s.coin_fence(wallet).await?;
             let row = s.prepared_row(wallet, &fence, &reg, &id, &request).await?;
             let inputs = ops::decode_inputs(&row.fee_inputs);
             s.save_operation(wallet, row, inputs).await?;
@@ -383,12 +386,7 @@ impl Masternodes {
                     return Err(MasternodesError::OperationNotFound);
                 }
                 let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
-                let funding = Funding {
-                    inputs: utxos.clone(),
-                    fee: row.fee,
-                    change: None,
-                };
-                let summary = s.summary_of(&w, &tx, &utxos, &funding, None).await;
+                let summary = s.summary_of(&w, &tx, &utxos, row.fee, None).await;
                 s.deliver(
                     wallet,
                     Delivery {
@@ -435,24 +433,25 @@ impl Masternodes {
                 .map_err(|e| EngineError::Internal(format!("stored request: {e}")))?;
             let old = ops::decode_inputs(&row.fee_inputs);
             let w_id = wallet.to_string();
+            let terms: super::protx_records::ProTxTerms = serde_json::from_str(&row.terms)
+                .map_err(|e| EngineError::Internal(format!("stored ProTx terms: {e}")))?;
+            let reg = build::registration_of(&terms, s.network.core_network())?;
+            let fence = s.coin_fence(wallet).await?;
             // The old inputs leave the row's locks first, so the new plan
-            // may take the ones still unspent.
+            // may take the ones still unspent (its own holds don't count
+            // against it); one another row holds stays locked (BL-346).
             s.appdb_op({
-                let w_id = w_id.clone();
-                let old = old.clone();
+                let (w_id, id, old) = (w_id.clone(), operation.clone(), old.clone());
                 move |db| {
                     let now = now_secs();
                     for o in &old {
-                        db.unlock(&w_id, &o.txid.to_string(), o.vout, now)?;
+                        let holder = Holder::Operation(&id);
+                        db.release_lock(&w_id, holder, &o.txid.to_string(), o.vout, now)?;
                     }
                     Ok(())
                 }
             })
             .await?;
-            let terms: super::protx_records::ProTxTerms = serde_json::from_str(&row.terms)
-                .map_err(|e| EngineError::Internal(format!("stored ProTx terms: {e}")))?;
-            let reg = build::registration_of(&terms, s.network.core_network())?;
-            let fence = s.coin_fence(wallet).await?;
             let fresh = match s
                 .prepared_row(wallet, &fence, &reg, &operation, &request)
                 .await
@@ -519,7 +518,9 @@ impl Masternodes {
             let up = s.resolve_update(wallet, &request, &ctx, false).await?;
             let fence = s.coin_fence(wallet).await?;
             let w = s.wallet(&wallet).await?;
-            let coins = s.protx_candidates(&fence, &w, &HashSet::new()).await?;
+            let coins = s
+                .protx_candidates(&fence, &w, &HashSet::new(), None)
+                .await?;
             let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
             let funding = plan_funding(&utxos, &up.outputs(), up.sized_payload(), CHANGE_LEN)
                 .map_err(EngineError::from)?;
@@ -555,6 +556,8 @@ impl Masternodes {
             s.require_wallet(&wallet)?;
             update::check_update_request(&request, s.network.core_network())?;
             let updating = s.masternodes.update_lock().await;
+            // The fence from the keys to the row's write (BL-352).
+            let fence = s.coin_fence(wallet).await?;
             let ctx = s.protx_context(wallet).await?;
             let up = s.resolve_update(wallet, &request, &ctx, true).await?;
             let lease = s
@@ -564,9 +567,10 @@ impl Masternodes {
             let id = ops::new_id();
             let result = async {
                 let _flight = s.claim_operation(wallet, &id)?;
-                let fence = s.coin_fence(wallet).await?;
                 let w = s.wallet(&wallet).await?;
-                let coins = s.protx_candidates(&fence, &w, &HashSet::new()).await?;
+                let coins = s
+                    .protx_candidates(&fence, &w, &HashSet::new(), None)
+                    .await?;
                 let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
                 let funding = plan_funding(&utxos, &up.outputs(), up.sized_payload(), CHANGE_LEN)
                     .map_err(EngineError::from)?;
@@ -603,7 +607,7 @@ impl Masternodes {
                 #[cfg(test)]
                 ops::crash_at(&s, ops::CrashPoint::Saved)?;
                 let summary = s
-                    .summary_of(&w, &tx, &utxos, &funding, change.as_ref())
+                    .summary_of(&w, &tx, &utxos, funding.fee, change.as_ref())
                     .await;
                 s.deliver(
                     wallet,
@@ -649,17 +653,23 @@ impl Masternodes {
 
     /// Hands a signed, unsettled row's saved bytes to the fence again (D7):
     /// under its own lease from a `MasternodeOp` grant, charged the row's
-    /// fee, its inputs reserved again unless another owner holds one.
+    /// fee, its inputs reserved again unless another owner holds one. An
+    /// `update_share` row's bytes are shared sending: refused while the
+    /// switch is off (DEC-678), like `update_share` itself.
     pub async fn resend_operation(
         &self,
         wallet: WalletId,
         operation: String,
         grant: String,
     ) -> Result<ProTxOperation, MasternodesError> {
+        let sending = self.require_sending();
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             let _flight = s.claim_operation(wallet, &operation)?;
             let row = s.op_row(wallet, &operation).await?;
+            if kind_of(&row.kind) == ProTxOperationKind::UpdateShare {
+                sending?;
+            }
             // An update resends only while no other update of its
             // masternode would race it, held against a new update (D43, D49).
             let update = row.kind == "update_registrar";
@@ -683,9 +693,10 @@ impl Masternodes {
             }
             let tx = ops::signed_tx(&row)
                 .ok_or_else(|| EngineError::Internal("stored signed transaction".into()))?;
-            let flow = match row.kind.as_str() {
-                "update_registrar" => FlowKind::KeyChange,
-                _ => FlowKind::MasternodeRegistration,
+            let flow = match kind_of(&row.kind) {
+                ProTxOperationKind::UpdateRegistrar => FlowKind::KeyChange,
+                ProTxOperationKind::UpdateShare => FlowKind::SharedMasternode,
+                ProTxOperationKind::Registration => FlowKind::MasternodeRegistration,
             };
             let lease = s
                 .begin_lease(wallet, flow, &[grant])
@@ -695,27 +706,11 @@ impl Masternodes {
                 let fence = s.coin_fence(wallet).await?;
                 let w = s.wallet(&wallet).await?;
                 let maybe_out = row.sent_at.is_some();
-                let others =
-                    (s.spends).held_by_others(&wallet, crate::send::SpendOwner::Tx(tx.txid()));
-                if let Some(i) = tx
-                    .input
-                    .iter()
-                    .find(|i| others.contains(&i.previous_output))
-                {
-                    return Err(EngineError::from(SendFailure::OutpointUnavailable(
-                        i.previous_output,
-                    ))
-                    .into());
-                }
+                s.check_resend_inputs(wallet, &tx)?;
                 let coins = s.input_coins(&fence, &w, &tx, false).await?;
                 let (charge, _) = charge_fee(&lease, row.fee)?;
                 let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
-                let funding = Funding {
-                    inputs: utxos.clone(),
-                    fee: row.fee,
-                    change: None,
-                };
-                let summary = s.summary_of(&w, &tx, &utxos, &funding, None).await;
+                let summary = s.summary_of(&w, &tx, &utxos, row.fee, None).await;
                 s.deliver(
                     wallet,
                     Delivery {
@@ -779,14 +774,17 @@ impl Masternodes {
     }
 }
 
-fn json<T: serde::Serialize>(value: &T) -> Result<String, MasternodesError> {
+pub(super) fn json<T: serde::Serialize>(value: &T) -> Result<String, MasternodesError> {
     serde_json::to_string(value)
         .map_err(|e| EngineError::Internal(format!("encoding a ProTx record: {e}")).into())
 }
 
 /// `fee` charged to `lease`'s masternode budget: the charge (refunded on
 /// drop unless bound to the signed txid) and the signer the grant redeemed.
-fn charge_fee(lease: &Lease, fee: u64) -> Result<(SpendCharge, VaultSigner), EngineError> {
+pub(super) fn charge_fee(
+    lease: &Lease,
+    fee: u64,
+) -> Result<(SpendCharge, VaultSigner), EngineError> {
     let (charge, signer) = lease
         .charge_tx_signer(BudgetPurpose::Masternode, fee)
         .map_err(|e| lease_failure(e, fee))?;
@@ -797,7 +795,7 @@ fn charge_fee(lease: &Lease, fee: u64) -> Result<(SpendCharge, VaultSigner), Eng
 }
 
 /// A fresh change address, when `funding` has change.
-async fn change_address(
+pub(super) async fn change_address(
     w: &PlatformWallet,
     funding: &Funding,
 ) -> Result<Option<dashcore::Address>, EngineError> {
@@ -850,7 +848,9 @@ impl NetworkSession {
         };
         let network = self.network.core_network();
         let w = self.wallet(&wallet).await?;
-        let coins = self.protx_candidates(fence, &w, &HashSet::new()).await?;
+        let coins = self
+            .protx_candidates(fence, &w, &HashSet::new(), Some(id))
+            .await?;
         let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
         let funding = plan_funding(&utxos, &reg.outputs(), reg.sized_payload(), CHANGE_LEN)
             .map_err(EngineError::from)?;
@@ -883,7 +883,7 @@ impl NetworkSession {
     /// `fence`. `unspent`: each must still be an unspent coin of the wallet
     /// (a submit); a resend takes what the wallet still lists and signs
     /// nothing.
-    async fn input_coins(
+    pub(super) async fn input_coins(
         &self,
         fence: &crate::coins::CoinFence,
         w: &PlatformWallet,
@@ -919,12 +919,32 @@ impl NetworkSession {
         Ok(out)
     }
 
-    async fn summary_of(
+    /// A resend's check (MG-04 D7): no other pending spend holds an input
+    /// of `tx`.
+    pub(super) fn check_resend_inputs(
+        &self,
+        wallet: WalletId,
+        tx: &dashcore::Transaction,
+    ) -> Result<(), MasternodesError> {
+        let others = (self.spends).held_by_others(&wallet, crate::send::SpendOwner::Tx(tx.txid()));
+        match tx
+            .input
+            .iter()
+            .find(|i| others.contains(&i.previous_output))
+        {
+            Some(i) => {
+                Err(EngineError::from(SendFailure::OutpointUnavailable(i.previous_output)).into())
+            }
+            None => Ok(()),
+        }
+    }
+
+    pub(super) async fn summary_of(
         &self,
         w: &PlatformWallet,
         tx: &dashcore::Transaction,
         inputs: &[key_wallet::Utxo],
-        funding: &Funding,
+        fee: u64,
         change: Option<&dashcore::Address>,
     ) -> crate::send::PreparedSummary {
         let network = self.network.core_network();
@@ -933,7 +953,7 @@ impl NetworkSession {
         summarize(
             tx,
             inputs,
-            funding.fee,
+            fee,
             change.as_ref(),
             |script| {
                 dashcore::Address::from_script(script, network)
@@ -977,7 +997,9 @@ impl NetworkSession {
                 db.set_setting_durable(&w, &key, None)
             } else {
                 db.set_setting_durable(&w, &key, Some(&now.to_string()))?;
-                db.unlock(&w, &txid, vout, now).map(|_| ())
+                // A coin a row reserved since stays locked (MG-04b D69).
+                db.release_lock(&w, Holder::None, &txid, vout, now)
+                    .map(|_| ())
             }
         })
         .await?;

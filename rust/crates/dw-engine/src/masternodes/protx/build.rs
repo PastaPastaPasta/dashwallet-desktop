@@ -557,10 +557,22 @@ impl NetworkSession {
         .await?
         .unwrap_or_default();
         let w = wallet.to_string();
-        let rows = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
+        let (rows, held) = self
+            .appdb_op(move |db| {
+                Ok((
+                    db.masternode_ops(&w)?,
+                    db.held_outpoints(&w, dw_appdb::Holder::None)?,
+                ))
+            })
+            .await?;
         let (history, unspent) = self.op_view(wallet).await?;
         let mut pending = Vec::new();
         let mut used = InUse::default();
+        // A coin another row will spend is no collateral (BL-346).
+        used.collateral.extend(
+            held.iter()
+                .filter_map(|(txid, vout)| Some(OutPoint::new(txid.parse().ok()?, *vout))),
+        );
         let mut external_collaterals = HashMap::new();
         for o in &owned {
             let r = &o.record;
@@ -805,21 +817,38 @@ impl NetworkSession {
     /// The wallet's coins a ProTx may spend, with their key paths: the
     /// automatic-selection candidates (`CoinSource::Any`: not locked,
     /// reserved or immature) the `MasternodeOwner` signer signs for,
-    /// without `exclude`.
+    /// without `exclude` and without what a masternode row other than
+    /// `operation` holds (a refresh may take its own unspent inputs).
     pub(crate) async fn protx_candidates(
         &self,
         fence: &CoinFence,
         wallet: &PlatformWallet,
         exclude: &HashSet<OutPoint>,
+        operation: Option<&str>,
     ) -> Result<Vec<(Utxo, DerivationPath)>, MasternodesError> {
         let network = self.network.core_network();
         let (coins, _) = self
             .source_coins(fence, &CoinSource::Any, &HashSet::new())
             .await?;
+        // A coin a masternode row holds is never another's, its lock row
+        // or not (BL-346).
+        let w = fence.wallet_id().to_string();
+        let operation = operation.map(str::to_owned);
+        let held = self
+            .appdb_op(move |db| {
+                let holder = operation
+                    .as_deref()
+                    .map_or(dw_appdb::Holder::None, dw_appdb::Holder::Operation);
+                db.held_outpoints(&w, holder)
+            })
+            .await?;
         let state = wallet.state().await;
         let picked = coins
             .into_iter()
-            .filter(|u| !exclude.contains(&u.outpoint))
+            .filter(|u| {
+                !exclude.contains(&u.outpoint)
+                    && !held.contains(&(u.outpoint.txid.to_string(), u.outpoint.vout))
+            })
             .filter_map(|u| {
                 let path = own_address_info(&state.core_wallet, &u.address)?.path;
                 signable(&path, network).then_some((u, path))

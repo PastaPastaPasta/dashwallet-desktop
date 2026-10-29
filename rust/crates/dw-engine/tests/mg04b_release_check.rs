@@ -45,21 +45,25 @@ fn the_override_is_compiled_only_in_a_debug_test_support_build() {
 #[cfg(not(debug_assertions))]
 #[test]
 fn a_release_build_has_no_override() {
-    assert_eq!(
-        COMPILED_IN, false,
+    assert!(
+        !COMPILED_IN,
         "the capability override is in a release build"
     );
 }
 
-/// No shipped binary names the override.
+/// No shipped binary, and no other crate linking dw-engine, names the
+/// override (validator r1 of the 1b fix round, NIT-3).
 #[test]
 fn no_binary_source_names_the_override() {
-    let bins = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bin");
-    let mut stack = vec![bins];
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut stack = vec![manifest.join("../../bin"), manifest.join("..")];
     let mut scanned = 0;
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).unwrap() {
             let path = entry.unwrap().path();
+            if path.ends_with("dw-engine") || path.ends_with("target") {
+                continue;
+            }
             if path.is_dir() {
                 stack.push(path);
             } else if path.extension().is_some_and(|e| e == "rs") {

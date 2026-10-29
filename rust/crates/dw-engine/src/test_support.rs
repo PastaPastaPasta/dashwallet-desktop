@@ -28,12 +28,12 @@ pub async fn fetch_identity_balance(
     session.on_runtime(fetch).await
 }
 
-/// The shared-masternode facade with `can_send` set by hand (MG-04b r2-m4):
-/// the only way to reach `sign_shared_funding` past its `unsupported`
-/// refusal, for the in-process session tests of other crates. Compiled
-/// only where this module is (a debug build with `test-support`); the
-/// release check (`tests/mg04b_release_check.rs`) proves it absent from a
-/// release build.
+/// The shared-masternode facade with sending set by hand (MG-04b r2-m4,
+/// DEC-678): the only way past the `unsupported` refusal of the calls that
+/// produce bytes the network accepts while `SHARED_SENDING` is off, for the
+/// in-process session tests of other crates. Compiled only where this
+/// module is (a debug build with `test-support`); the release check
+/// (`tests/mg04b_release_check.rs`) proves it absent from a release build.
 pub fn shared_masternodes_with_send_override(
     session: &std::sync::Arc<NetworkSession>,
     can_send: bool,

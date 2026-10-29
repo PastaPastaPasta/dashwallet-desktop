@@ -126,12 +126,28 @@ fn test_QT_126_shared_commands_on_a_datadir_without_a_wallet_report_wallet_not_f
             vec!["mn", "shared", "approve", SESSION, "--consent-hash", SECRET],
             b"",
         ),
+        (vec!["mn", "shared", "sign", SESSION], b""),
+        (vec!["mn", "shared", "send", SESSION], b""),
+        (vec!["mn", "shared", "abandon", SESSION], b""),
         (vec!["mn", "shared", "discard", SESSION], b""),
         (
             vec![
                 "mn",
                 "shared",
                 "preview-update-share",
+                SECRET,
+                "--share-index",
+                "0",
+                "--reward",
+                SECRET,
+            ],
+            b"",
+        ),
+        (
+            vec![
+                "mn",
+                "shared",
+                "update-share",
                 SECRET,
                 "--share-index",
                 "0",
@@ -152,6 +168,7 @@ fn test_QT_126_shared_commands_on_a_datadir_without_a_wallet_report_wallet_not_f
 fn test_QT_126_shared_capability_on_a_fresh_wallet_cannot_send() {
     let dir = datadir(true);
     let capability = result(&dwcli(dir.as_ref(), &["mn", "shared", "capability"], b""));
+    // Sending is off until slice 1c (DEC-678).
     assert_eq!(capability["can_send"], false, "{capability}");
     assert_eq!(capability["v24"], "unknown", "{capability}");
     assert_eq!(capability["evonode_shares"], "inactive", "{capability}");
@@ -235,6 +252,34 @@ fn test_QT_126_shared_refusals_are_the_facades_codes_and_quote_nothing() {
     );
     assert_eq!(code(&out), "invalid_argument");
 
+    // Sending is off (DEC-678): the calls that produce bytes the network
+    // accepts refuse before the session. `sign` and `send` read the
+    // session first to size their grant.
+    let out = run(&["mn", "shared", "abandon", SESSION], b"");
+    assert_eq!(code(&out), "masternodes.unsupported");
+    let out = run(
+        &[
+            "mn",
+            "shared",
+            "update-share",
+            SECRET,
+            "--share-index",
+            "0",
+            "--reward",
+            "refund",
+        ],
+        b"",
+    );
+    assert_eq!(code(&out), "masternodes.unsupported");
+    for command in ["sign", "send"] {
+        let out = run(&["mn", "shared", command, SESSION], b"");
+        assert_eq!(
+            code(&out),
+            "masternodes.shared_session_not_found",
+            "{command}"
+        );
+    }
+
     // `--out` writes nothing when the call fails.
     let file = path.join("message.json");
     let file_arg = file.to_str().unwrap();
@@ -296,11 +341,12 @@ fn test_QT_126_shared_command_lines_that_are_refused_name_no_value() {
             "--share-index",
             SECRET,
         ],
-        // Slice 1b's commands aren't here.
-        &["mn", "shared", "sign", SESSION],
-        &["mn", "shared", "send", SESSION],
-        &["mn", "shared", "abandon", SESSION],
-        &["mn", "shared", "update-share", SESSION],
+        // Slice 1b's commands: a bad fee, a missing share or reward.
+        &["mn", "shared", "sign"],
+        &["mn", "shared", "send"],
+        &["mn", "shared", "abandon", SESSION, "--max-fee", SECRET],
+        &["mn", "shared", "update-share", SECRET, "--share-index", "0"],
+        &["mn", "shared", "update-share", SECRET, "--reward", "refund"],
     ];
     for args in refused {
         let out = dwcli(path, args, b"");

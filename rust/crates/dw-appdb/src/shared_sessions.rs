@@ -9,7 +9,7 @@
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
-use crate::{AppDb, AppDbError, Result};
+use crate::{AppDb, AppDbError, Holder, Result};
 
 /// One `shared_mn_sessions` row. `kind`, `role` and the JSON columns are
 /// the engine's encodings; this crate interprets only `reserved`.
@@ -119,10 +119,17 @@ fn outpoints(conn: &Connection, reserved: &str) -> Result<Vec<(String, u32)>> {
         .collect()
 }
 
-/// Unlocks the outpoints of `reserved`, inside a caller's transaction.
-fn unlock_reserved(conn: &Connection, wallet_id: &str, reserved: &str, now: u64) -> Result<()> {
+/// Unlocks the outpoints of session `id`'s `reserved`, inside a caller's
+/// transaction, but those another row holds (BL-346).
+fn unlock_reserved(
+    conn: &Connection,
+    wallet_id: &str,
+    id: &str,
+    reserved: &str,
+    now: u64,
+) -> Result<()> {
     for (txid, vout) in outpoints(conn, reserved)? {
-        AppDb::unlock_on(conn, wallet_id, &txid, vout, now)?;
+        AppDb::release_lock_on(conn, wallet_id, Holder::Session(id), &txid, vout, now)?;
     }
     Ok(())
 }
@@ -270,7 +277,7 @@ impl AppDb {
             let Some(old) = old else {
                 return Ok(false);
             };
-            unlock_reserved(&tx, wallet_id, &old, now)?;
+            unlock_reserved(&tx, wallet_id, id, &old, now)?;
             lock_reserved(&tx, wallet_id, reserved, now)?;
             tx.execute(
                 "UPDATE shared_mn_sessions SET reserved = ?3, contribution = ?4, my_shares = ?5,
@@ -314,6 +321,40 @@ impl AppDb {
         })
     }
 
+    /// Records how a hand-off of a session's bytes ended: `error`, its
+    /// failure's code, or `None`. `false` when the session is gone.
+    pub fn record_shared_session_attempt(
+        &self,
+        wallet_id: &str,
+        id: &str,
+        error: Option<&str>,
+    ) -> Result<bool> {
+        Ok(self.conn().execute(
+            "UPDATE shared_mn_sessions SET last_error = ?3 WHERE wallet_id = ?1 AND id = ?2",
+            params![wallet_id, id, error],
+        )? == 1)
+    }
+
+    /// Records an out session's abandon spend (MG-04b §9.3), synced, before
+    /// its bytes can leave: `false`, and nothing written, when the session
+    /// is gone or isn't out.
+    pub fn set_shared_session_abandon_durable(
+        &self,
+        wallet_id: &str,
+        id: &str,
+        txid: &str,
+        now: u64,
+    ) -> Result<bool> {
+        self.durably(|conn| {
+            Ok(conn.execute(
+                "UPDATE shared_mn_sessions SET abandon_txid = ?3,
+                     updated_at = MAX(updated_at, ?4)
+                 WHERE wallet_id = ?1 AND id = ?2 AND out_at IS NOT NULL",
+                params![wallet_id, id, txid, sql_u64(now)],
+            )? == 1)
+        })
+    }
+
     /// Deletes a session nothing of which may be out and unlocks its
     /// coins, in one synced transaction: `false` (and nothing deleted or
     /// unlocked) when its `out_at` is set or it is gone.
@@ -336,7 +377,7 @@ impl AppDb {
             let Some(reserved) = reserved else {
                 return Ok(false);
             };
-            unlock_reserved(&tx, wallet_id, &reserved, now)?;
+            unlock_reserved(&tx, wallet_id, id, &reserved, now)?;
             tx.commit()?;
             Ok(true)
         })
@@ -368,7 +409,7 @@ impl AppDb {
             if reserved.as_deref() != Some(expected) {
                 return Ok(false);
             }
-            unlock_reserved(&tx, wallet_id, expected, now)?;
+            unlock_reserved(&tx, wallet_id, id, expected, now)?;
             tx.execute(
                 "UPDATE shared_mn_sessions SET reserved = '[]' WHERE wallet_id = ?1 AND id = ?2",
                 params![wallet_id, id],

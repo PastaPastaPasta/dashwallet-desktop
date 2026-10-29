@@ -97,6 +97,11 @@ impl Claim {
         };
         match kind_of(&row.kind) {
             ProTxOperationKind::UpdateRegistrar => claim,
+            // Core's mempool indexes no key of a ProUpShareTx.
+            ProTxOperationKind::UpdateShare => Claim {
+                operator: None,
+                ..claim
+            },
             ProTxOperationKind::Registration => Claim {
                 node_id: terms.platform.as_ref().and_then(|p| hex20(&p.node_id).ok()),
                 service: Some(terms.service.clone()).filter(|s| !s.is_empty()),

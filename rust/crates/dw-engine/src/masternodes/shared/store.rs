@@ -17,9 +17,11 @@ use dw_protx::shared::session::merge::Refusal;
 use dw_protx::shared::session::{
     Change, Contribution, Input, Session, Share, Stage, is_session_id,
 };
+use key_wallet::transaction_checking::TransactionContext;
 use serde::{Deserialize, Serialize};
 
 use super::super::MasternodesError;
+use super::super::protx::ops::conflict_height;
 use super::super::shared_records::{
     DeadReason, KeyBase, ShareRow, ShareTermsView, SharedKind, SharedNext, SharedRole,
     SharedSession, SharedStage, SharedWarning,
@@ -388,35 +390,85 @@ impl ChainView {
 
     /// The session's registration in the wallet's history: the
     /// transaction spending exactly the frozen template's inputs, in order,
-    /// to its outputs. A participant holds only its own signed copy, whose
-    /// txid isn't the ProTx hash unless it signed last, so the txid can't
-    /// find it (§3.2 step 6, "or see the ProRegTx"); and the pinned library
-    /// reads a version-3 payload with the version-2 layout (BL-187), so the
-    /// payload isn't compared.
-    fn registration(&self, session: &Session) -> Option<Txid> {
+    /// to its outputs, whatever its scriptSigs. A participant holds only
+    /// its own signed copy, whose txid isn't the ProTx hash unless it
+    /// signed last, so the txid can't find it (§3.2 step 6, "or see the
+    /// ProRegTx"); a copy mined with another valid scriptSig has another
+    /// txid than the one the coordinator sent (review r1 of 1b, m-2); and
+    /// the pinned library reads a version-3 payload with the version-2
+    /// layout (BL-187), so the payload isn't compared. Of several copies,
+    /// [`copy_rank`]'s best.
+    fn registration(&self, session: &Session, sent: Option<&Txid>) -> Option<Txid> {
         if session.stage < Stage::Frozen {
             return None;
         }
         let template = decode_frozen(session).ok()?.tx;
-        self.history.iter().find_map(|(id, e)| {
-            let same_inputs = e.tx.input.len() == template.input.len()
-                && (e.tx.input.iter().zip(&template.input))
-                    .all(|(a, b)| a.previous_output == b.previous_output);
-            (same_inputs && e.tx.output == template.output).then_some(*id)
-        })
+        self.history
+            .iter()
+            .filter(|(_, e)| {
+                e.tx.input.len() == template.input.len()
+                    && (e.tx.input.iter().zip(&template.input))
+                        .all(|(a, b)| a.previous_output == b.previous_output)
+                    && e.tx.output == template.output
+            })
+            .min_by_key(|(id, e)| copy_rank(id, &e.context, sent))
+            .map(|(id, _)| *id)
     }
+}
 
-    /// Another transaction in a block spends one of `inputs`.
-    fn spent_in_block(&self, inputs: &[OutPoint], except: Option<&Txid>) -> bool {
-        self.history.iter().any(|(id, e)| {
-            Some(id) != except
-                && e.context.block_info().is_some()
-                && e.tx
-                    .input
-                    .iter()
-                    .any(|i| inputs.contains(&i.previous_output))
-        })
-    }
+/// How [`ChainView::registration`] ranks a registration's copies, best
+/// first: a copy in a ChainLocked block, final; then a copy in a block
+/// before one outside; then `sent`, since two copies in blocks without a
+/// ChainLock mean a reorg left one record stale, and the copy the
+/// coordinator handed off stays its registration rather than whichever
+/// record is lower (validator r1 of the 1b fix round, NIT-4); then the
+/// lowest block, then the lowest txid.
+pub(super) fn copy_rank(
+    id: &Txid,
+    context: &TransactionContext,
+    sent: Option<&Txid>,
+) -> (bool, bool, bool, Option<u32>, Txid) {
+    let height = context.block_info().map(|b| b.height());
+    (
+        !matches!(context, TransactionContext::InChainLockedBlock(_)),
+        height.is_none(),
+        Some(id) != sent,
+        height,
+        *id,
+    )
+}
+
+/// Whether the follower releases a session's locks (§11, D17): its
+/// registration confirmed; its inputs spent while it isn't out (dead); or,
+/// out, another transaction spending one of them in a block `buried` says a
+/// reorg won't undo (Opus-h NIT-4: a shallower conflict may yet give way to
+/// the registration). A row that no longer parses is judged by its stored
+/// `txid`, `reserved` and `out_at` (BL-346 (c)).
+pub(crate) fn releasable(
+    row: &SharedSessionRow,
+    network: dashcore::Network,
+    chain: &ChainView,
+    buried: impl Fn(u32) -> bool,
+) -> bool {
+    let stored = row.txid.as_deref().and_then(|t| Txid::from_str(t).ok());
+    let (txid, inputs) = match Loaded::of(row.clone(), network) {
+        Ok(l) => match derive_stage(&l, chain) {
+            SharedStage::Confirmed { .. } | SharedStage::Dead { .. } => return true,
+            SharedStage::Conflicted => (session_hash(&l, chain).or(stored), l.own_inputs()),
+            _ => return false,
+        },
+        Err(_) => {
+            let reserved = reserved_of(row);
+            if stored.is_some_and(|t| chain.confirmed_height(&t).is_some()) {
+                return true;
+            }
+            if row.out_at.is_none() {
+                return reserved.iter().any(|o| !chain.unspent.contains(o));
+            }
+            (stored, reserved)
+        }
+    };
+    conflict_height(&chain.history, &inputs, txid.as_ref()).is_some_and(buried)
 }
 
 /// The registration's txid, once every input is signed: its ProTx hash.
@@ -433,10 +485,17 @@ pub(crate) fn complete_txid(session: &Session) -> Option<Txid> {
         .then(|| frozen.tx.txid())
 }
 
-/// The session's ProTx hash: its complete registration's txid, from the
-/// envelope or the wallet's history.
+/// The session's ProTx hash: the registration in the wallet's history
+/// ([`ChainView::registration`], so a copy mined under another txid is
+/// still this session's, review r1 of 1b, m-2), else its complete
+/// registration's txid from the envelope. [`derive_stage`], [`releasable`]
+/// (and with them `conflict_height`'s exception), `shared_confirmed` and
+/// `held_shares` all read it.
 pub(crate) fn session_hash(l: &Loaded, chain: &ChainView) -> Option<Txid> {
-    complete_txid(&l.session).or_else(|| chain.registration(&l.session))
+    let complete = complete_txid(&l.session);
+    chain
+        .registration(&l.session, complete.as_ref())
+        .or(complete)
 }
 
 /// The session's stage (§3, §9.2), first match: confirmed, conflicted or
@@ -449,7 +508,7 @@ pub(crate) fn derive_stage(l: &Loaded, chain: &ChainView) -> SharedStage {
     }
     let own = l.own_inputs();
     if l.out() {
-        if chain.spent_in_block(&own, txid.as_ref()) {
+        if conflict_height(&chain.history, &own, txid.as_ref()).is_some() {
             return SharedStage::Conflicted;
         }
         return out_stage(l.role);
@@ -618,6 +677,7 @@ pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
         terms: terms_view(s),
         node_run_by: s.operator_secret_holder.clone(),
         fee: l.recorded.as_ref().and_then(|r| r.fee),
+        debit: l.recorded.as_ref().map(Recorded::debit),
         pro_tx_hash: session_hash(l, chain).map(|t| t.to_string()),
         txid: l.row.txid.clone(),
         reserved: reserved_of(&l.row)

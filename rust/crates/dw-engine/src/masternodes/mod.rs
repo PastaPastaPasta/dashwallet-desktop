@@ -30,10 +30,10 @@ pub use protx_records::{
     SignRequest, UpdateRegistrarPreview, UpdateRegistrarRequest, VotingChoice,
 };
 pub use records::{
-    AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, KeyCheck,
-    ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState, MasternodeOverview,
-    MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus, MasternodeType,
-    RegistrationFacts, UntrackOutcome,
+    AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, HeldShares,
+    KeyCheck, ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState,
+    MasternodeOverview, MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus,
+    MasternodeType, RegistrationFacts, UntrackOutcome,
 };
 pub use shared_records::{
     Activation, DeadReason, JoinSharedRequest, KeyBase, RewardChoice, ShareRow, ShareSlot,
@@ -50,8 +50,8 @@ use crate::{EngineError, NetworkSession};
 #[derive(Clone)]
 pub struct Masternodes {
     pub(super) session: Arc<NetworkSession>,
-    /// The shared-masternode capability override (MG-04b r2-m4): only the
-    /// test-support constructor sets it.
+    /// The shared-masternode sending override (MG-04b r2-m4, DEC-678):
+    /// only the test-support constructor sets it.
     #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
     shared_send: bool,
 }
@@ -62,7 +62,7 @@ impl NetworkSession {
         Masternodes {
             session: Arc::clone(self),
             #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
-            shared_send: false,
+            shared_send: shared::SHARED_SENDING,
         }
     }
 }

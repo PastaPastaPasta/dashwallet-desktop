@@ -338,6 +338,12 @@ impl SyncTracker {
         self.running = true;
     }
 
+    /// Moves the ChainLock, as a progress report would (tests only).
+    #[cfg(test)]
+    pub(crate) fn set_chainlock_height(&mut self, height: u32) {
+        self.readings.chainlock_height = Some(height);
+    }
+
     pub(crate) fn set_tip_time(&mut self, height: u32, time: Option<u64>) {
         self.tip_time_height = Some(height);
         self.tip_time = time;

@@ -331,6 +331,10 @@ impl Fx {
             .unwrap();
     }
 
+    fn tip(&self, height: u32) {
+        self.session.hub.tracker().set_tip_height(height);
+    }
+
     /// `tx` in a block of the wallet's history, as key-wallet records it.
     fn confirm(&self, tx: Transaction, height: u32) {
         use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
@@ -1150,6 +1154,32 @@ fn mg04_a_confirmed_registration_settles_and_its_collateral_lock_follows_the_use
         .unwrap();
     assert!(f.locked().is_empty());
     f.follow();
+    assert_eq!(f.locked(), HashSet::from([collateral]));
+    // A coin a row holds stays locked through a release (MG-04b D69).
+    let session = dw_appdb::SharedSessionRow {
+        id: "ab".repeat(32),
+        kind: "registration".into(),
+        role: "coordinator".into(),
+        envelope: "{}".into(),
+        my_shares: "{}".into(),
+        contribution: None,
+        reserved: format!("[\"{collateral}\"]"),
+        approved_terms: None,
+        base_keys: None,
+        signed_tx: None,
+        txid: None,
+        out_at: None,
+        abandon_txid: None,
+        created_at: 1,
+        updated_at: 1,
+        last_error: None,
+    };
+    (f.db())
+        .insert_shared_session_durable(&f.wallet.to_string(), &session, 1)
+        .unwrap();
+    f.engine
+        .block_on(f.mn().release_collateral(f.wallet, hash.clone()))
+        .unwrap();
     assert_eq!(f.locked(), HashSet::from([collateral]));
 
     let unknown = f
@@ -2082,9 +2112,15 @@ fn mg04_a_conflicted_update_lets_the_next_one_through() {
     assert_eq!(e.code(), "masternodes.update_pending");
 
     f.confirm(rival, 60);
+    // MG-04b D70 (review r1 of 1b, n-5): a conflict a reorg may undo keeps
+    // the inputs locked; five blocks deep it may, six it won't.
+    f.tip(64);
     let ops = f.operations();
     let settled = ops.iter().find(|o| o.id == first.id).unwrap();
     assert_eq!(settled.state, ProTxOperationState::Conflicted);
+    assert!(f.locked().contains(&input), "D70");
+    f.tip(65);
+    f.operations();
     let locked = f.engine.block_on(f.session.locked_outpoints(f.wallet));
     let locked = locked.unwrap();
     assert!(
@@ -2474,4 +2510,141 @@ fn mg04_voting_never_shares_the_owner_key() {
         })
         .unwrap_err();
     assert_eq!(e.code(), "invalid_argument", "{e:?}");
+}
+
+impl Fx {
+    /// [`crate::coins::write_paused`]: `first` held at its row write.
+    fn write_paused<A, B>(
+        &self,
+        first: impl Future<Output = A> + Send + 'static,
+        second: impl Future<Output = B> + Send + 'static,
+    ) -> (A, B)
+    where
+        A: Send + 'static,
+        B: Send + 'static,
+    {
+        crate::coins::write_paused(&self.engine, &self.session, first, second)
+    }
+
+    /// A `FundNew` registration of the next unused keys (at a service of
+    /// its own), held at its row write by [`Self::write_paused`].
+    fn first_registration(
+        &self,
+    ) -> impl Future<Output = Result<ProTxOperation, MasternodesError>> + Send + 'static {
+        let (m, w, grant) = (self.mn(), self.wallet, self.grant(COIN));
+        let req = RegistrationRequest {
+            service: "1.2.3.5".into(),
+            ..request(CollateralChoice::FundNew)
+        };
+        async move { m.register(w, req, grant).await }
+    }
+}
+
+/// BL-352: a registration holds the coin fence from its keys to its row's
+/// write (as MG-04b D63), so another one waits and takes the next keys and
+/// other coins.
+#[test]
+fn mg04_concurrent_registrations_take_different_keys_and_coins() {
+    let f = fx(Library::Accept);
+    f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    f.credit(2, MASTERNODE_COLLATERAL + COIN);
+    let (m, w, grant) = (f.mn(), f.wallet, f.grant(COIN));
+    let (a, b) = f.write_paused(f.first_registration(), async move {
+        m.register(w, request(CollateralChoice::FundNew), grant)
+            .await
+    });
+    let (a, b) = (a.unwrap().terms, b.unwrap().terms);
+    assert_ne!(a.owner_address, b.owner_address);
+    assert_ne!(a.voting_address, b.voting_address);
+    assert_ne!(a.operator_public_key, b.operator_public_key);
+    let rows = f.rows();
+    assert_eq!(rows.len(), 2);
+    assert_ne!(rows[0].fee_inputs, rows[1].fee_inputs);
+}
+
+/// BL-352: an external registration's prepare waits for the fence before
+/// it picks its keys.
+#[test]
+fn mg04_an_external_prepare_waits_for_a_registrations_keys() {
+    let f = fx(Library::Accept);
+    f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    f.credit(2, COIN);
+    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
+    let public = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let address = dashcore::Address::p2pkh(&public, dashcore::Network::Regtest);
+    let req = request(CollateralChoice::External {
+        outpoint: format!("{}-1", Txid::from_byte_array([0x77; 32])),
+        address: address.to_string(),
+    });
+    let (m, w) = (f.mn(), f.wallet);
+    let (a, b) = f.write_paused(f.first_registration(), async move {
+        m.prepare_external_registration(w, req).await
+    });
+    let (a, b) = (a.unwrap().terms, b.unwrap().terms);
+    assert_ne!(a.owner_address, b.owner_address);
+    assert_ne!(a.voting_address, b.voting_address);
+    assert_ne!(a.operator_public_key, b.operator_public_key);
+}
+
+/// BL-352: an update waits for the fence before it picks its new operator
+/// key, so it never takes the one a registration is writing.
+#[test]
+fn mg04_an_update_waits_for_a_registrations_keys() {
+    let f = fx(Library::Accept);
+    let (_, op) = f.registered();
+    f.credit(3, MASTERNODE_COLLATERAL + COIN);
+    let hash = op.pro_tx_hash.clone().unwrap();
+    let (m, w, grant) = (f.mn(), f.wallet, f.grant(COIN));
+    let req = UpdateRegistrarRequest {
+        operator: KeepOr::Set(OperatorChoice::NextUnused),
+        ..keep(&hash)
+    };
+    let (a, b) = f.write_paused(f.first_registration(), async move {
+        m.update_registrar(w, req, grant).await
+    });
+    let (a, b) = (a.unwrap().terms, b.unwrap().terms);
+    assert_ne!(a.operator_public_key, b.operator_public_key);
+    assert_ne!(op.terms.operator_public_key, b.operator_public_key);
+}
+
+/// Opus r1 m-1: a refresh releases its old inputs, and the new plan may
+/// take the ones still unspent, though the row lists them until the plan
+/// is saved: its own holds don't count against it (BL-346).
+#[test]
+fn mg04_a_refresh_reuses_its_own_unspent_input() {
+    let f = fx(Library::Accept);
+    let only = f.credit(1, COIN);
+    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
+    let public = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let address = dashcore::Address::p2pkh(&public, dashcore::Network::Regtest);
+    let outpoint = OutPoint::new(Txid::from_byte_array([0x77; 32]), 1);
+    let req = request(CollateralChoice::External {
+        outpoint: format!("{}-1", outpoint.txid),
+        address: address.to_string(),
+    });
+    let op = f
+        .engine
+        .block_on(f.mn().prepare_external_registration(f.wallet, req))
+        .unwrap();
+    assert_eq!(op.state, ProTxOperationState::NeedsSignature);
+    assert!(f.locked().contains(&only));
+    let fresh = f
+        .engine
+        .block_on(
+            f.mn()
+                .refresh_external_registration(f.wallet, op.id.clone()),
+        )
+        .unwrap();
+    assert_eq!(fresh.state, ProTxOperationState::NeedsSignature);
+    assert!(f.locked().contains(&only));
+    let row = f
+        .db()
+        .masternode_op(&f.wallet.to_string(), &op.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        super::ops::decode_inputs(&row.fee_inputs),
+        vec![only],
+        "the refreshed plan spends the same coin"
+    );
 }
