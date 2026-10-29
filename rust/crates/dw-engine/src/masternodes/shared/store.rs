@@ -17,6 +17,7 @@ use dw_protx::shared::session::merge::Refusal;
 use dw_protx::shared::session::{
     Change, Contribution, Input, Session, Share, Stage, is_session_id,
 };
+use key_wallet::transaction_checking::TransactionContext;
 use serde::{Deserialize, Serialize};
 
 use super::super::MasternodesError;
@@ -396,7 +397,7 @@ impl ChainView {
     /// txid than the one the coordinator sent (review r1 of 1b, m-2); and
     /// the pinned library reads a version-3 payload with the version-2
     /// layout (BL-187), so the payload isn't compared. Of several copies,
-    /// the one in the lowest block, else `sent`, else the lowest txid.
+    /// [`copy_rank`]'s best.
     fn registration(&self, session: &Session, sent: Option<&Txid>) -> Option<Txid> {
         if session.stage < Stage::Frozen {
             return None;
@@ -410,12 +411,31 @@ impl ChainView {
                         .all(|(a, b)| a.previous_output == b.previous_output)
                     && e.tx.output == template.output
             })
-            .min_by_key(|(id, e)| {
-                let height = e.context.block_info().map(|b| b.height());
-                (height.is_none(), height, Some(*id) != sent, **id)
-            })
+            .min_by_key(|(id, e)| copy_rank(id, &e.context, sent))
             .map(|(id, _)| *id)
     }
+}
+
+/// How [`ChainView::registration`] ranks a registration's copies, best
+/// first: a copy in a ChainLocked block, final; then a copy in a block
+/// before one outside; then `sent`, since two copies in blocks without a
+/// ChainLock mean a reorg left one record stale, and the copy the
+/// coordinator handed off stays its registration rather than whichever
+/// record is lower (validator r1 of the 1b fix round, NIT-4); then the
+/// lowest block, then the lowest txid.
+pub(super) fn copy_rank(
+    id: &Txid,
+    context: &TransactionContext,
+    sent: Option<&Txid>,
+) -> (bool, bool, bool, Option<u32>, Txid) {
+    let height = context.block_info().map(|b| b.height());
+    (
+        !matches!(context, TransactionContext::InChainLockedBlock(_)),
+        height.is_none(),
+        Some(id) != sent,
+        height,
+        *id,
+    )
 }
 
 /// Whether the follower releases a session's locks (§11, D17): its

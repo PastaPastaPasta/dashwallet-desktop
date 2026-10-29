@@ -2022,25 +2022,10 @@ fn test_QT_126_a_registration_mined_under_another_txid_is_confirmed() {
     let id = three_approved(&f);
     f.both_signed(&id);
     f.send(0, &id, 400 * COIN + FEE).unwrap();
-    let mut tx = f.net.sent()[0].clone();
-    let sent = tx.txid();
-    let own: Vec<String> = serde_json::from_str(&f.row(0, &id).reserved).unwrap();
-    let theirs = tx
-        .input
-        .iter()
-        .position(|i| {
-            !own.contains(&format!(
-                "{}:{}",
-                i.previous_output.txid, i.previous_output.vout
-            ))
-        })
-        .unwrap();
-    // Stands in for the participant's second valid signature.
-    let mut script = tx.input[theirs].script_sig.to_bytes();
-    script.insert(0, 0x00);
-    tx.input[theirs].script_sig = dashcore::ScriptBuf::from(script);
+    let sent = f.net.sent()[0].clone();
+    let tx = another_copy(&f, &id, &sent, 0x00);
     let mined = tx.txid();
-    assert_ne!(mined, sent);
+    assert_ne!(mined, sent.txid());
     f.mine(tx, 101);
     f.tip(110);
     for w in 0..3 {
@@ -2085,6 +2070,72 @@ fn test_QT_126_a_registration_mined_under_another_txid_is_confirmed() {
         .unwrap();
     assert_eq!(op.state, crate::masternodes::ProTxOperationState::Sent);
     assert_eq!(op.pro_tx_hash, Some(mined.to_string()));
+}
+
+/// The coordinator's sent registration `tx` with another valid scriptSig on
+/// a participant's input, `prefix` standing in for the participant's second
+/// signature: another txid, the same inputs and outputs.
+fn another_copy(f: &Fx, id: &str, tx: &Transaction, prefix: u8) -> Transaction {
+    let own: Vec<String> = serde_json::from_str(&f.row(0, id).reserved).unwrap();
+    let theirs = tx
+        .input
+        .iter()
+        .position(|i| {
+            !own.contains(&format!(
+                "{}:{}",
+                i.previous_output.txid, i.previous_output.vout
+            ))
+        })
+        .unwrap();
+    let mut copy = tx.clone();
+    let mut script = copy.input[theirs].script_sig.to_bytes();
+    script.insert(0, prefix);
+    copy.input[theirs].script_sig = dashcore::ScriptBuf::from(script);
+    copy
+}
+
+/// Validator r1 of the 1b fix round, NIT-4: with the sent copy and another
+/// in blocks and no ChainLock, one record is stale; the sent copy stays the
+/// registration, though the other's block is lower and its txid sorts first.
+#[test]
+fn test_QT_126_a_stale_block_copy_does_not_move_the_sent_registration() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    let sent = f.net.sent()[0].clone();
+    let other = (0..=u8::MAX)
+        .map(|p| another_copy(&f, &id, &sent, p))
+        .find(|c| c.txid() < sent.txid())
+        .unwrap();
+    f.mine(other, 101);
+    f.mine(sent.clone(), 103);
+    f.tip(110);
+    let session = f.session_of(0, &id);
+    assert_eq!(session.stage, SharedStage::Confirmed { height: 103 });
+    assert_eq!(session.pro_tx_hash, Some(sent.txid().to_string()));
+}
+
+/// [`copy_rank`](super::store::copy_rank): a ChainLocked copy before the
+/// sent one in a block, a copy in a block before the sent one outside.
+#[test]
+fn test_QT_126_a_chainlocked_or_mined_copy_ranks_first() {
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+
+    use super::store::copy_rank;
+    let block = |h| BlockInfo::new(h, dashcore::BlockHash::all_zeros(), 0);
+    let (a, b) = (
+        Txid::from_byte_array([1; 32]),
+        Txid::from_byte_array([2; 32]),
+    );
+    let locked = copy_rank(
+        &b,
+        &TransactionContext::InChainLockedBlock(block(105)),
+        Some(&a),
+    );
+    assert!(locked < copy_rank(&a, &TransactionContext::InBlock(block(101)), Some(&a)));
+    let mined = copy_rank(&b, &TransactionContext::InBlock(block(105)), Some(&a));
+    assert!(mined < copy_rank(&a, &TransactionContext::Mempool, Some(&a)));
 }
 
 /// D71 (validator r1 of 1b, M1): a first hand-off the network refused keeps
