@@ -720,7 +720,27 @@ fn abandon(mut passphrase: Option<Zeroizing<Vec<u8>>>, why: &str, last_lines: im
     std::process::exit(1)
 }
 
+/// The stack the command line runs on: the engine's worker size
+/// (`dw_engine`'s `ENGINE_THREAD_STACK_SIZE`).
+const CLI_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+/// Runs [`cli_main`] on a thread with [`CLI_STACK_SIZE`]. A debug build's
+/// argument parsing alone (clap's command tree, every subcommand's
+/// arguments) takes about 1 MiB of stack since MG-04b slice 1b's `mn shared`
+/// commands, all of Windows' main-thread stack: every command overflowed
+/// before printing anything. A panic that escapes it panics `main` as it
+/// would have, its message already printed by the hooks.
 fn main() -> ExitCode {
+    let cli = std::thread::Builder::new()
+        .name("dwcli".into())
+        .stack_size(CLI_STACK_SIZE)
+        .spawn(cli_main)
+        .expect("start the command line's thread");
+    cli.join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+fn cli_main() -> ExitCode {
     // Links never reach a log or a panic message (DASHPAY §3.8, DP5-01
     // D14); DashPay commands withhold panic messages altogether. The log
     // starts once the arguments are parsed (`log::init`).

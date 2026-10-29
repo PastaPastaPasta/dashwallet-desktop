@@ -148,13 +148,19 @@ mod blocked_last_line {
         (reader, writer)
     }
 
-    /// Whether the process's main thread is blocked writing to stdout.
+    /// Whether a thread of the process is blocked writing to stdout: the
+    /// command line's, which isn't the main thread (`CLI_STACK_SIZE`).
     fn writing_stdout(pid: u32) -> bool {
-        let Ok(syscall) = std::fs::read_to_string(format!("/proc/{pid}/syscall")) else {
+        let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
             return false;
         };
-        let mut fields = syscall.split_whitespace();
-        fields.next() == Some(&libc::SYS_write.to_string()) && fields.next() == Some("0x1")
+        tasks.flatten().any(|task| {
+            let Ok(syscall) = std::fs::read_to_string(task.path().join("syscall")) else {
+                return false;
+            };
+            let mut fields = syscall.split_whitespace();
+            fields.next() == Some(&libc::SYS_write.to_string()) && fields.next() == Some("0x1")
+        })
     }
 
     /// How many times each needle occurs in the process's anonymous memory
