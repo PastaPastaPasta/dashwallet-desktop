@@ -20,7 +20,9 @@ use super::super::protx::charge_fee;
 use super::super::protx::ops::error_code;
 use super::super::shared_records::SharedStage;
 use super::build::sign_own_inputs;
-use super::store::{Loaded, Recorded, message_refusal, reserved_of, stage_refusal};
+use super::store::{
+    Loaded, Recorded, message_refusal, out_stage, reserved_of, role_of, stage_refusal,
+};
 use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
 use crate::coins::{CoinFence, now_secs, own_address_info, read_coins};
 use crate::send::plan::dust_threshold;
@@ -201,6 +203,10 @@ impl NetworkSession {
     /// settles the session (`confirmed`, or `conflicted` by this spend).
     /// A coordinator whose registration the wallet recorded holds none
     /// unspent until that transaction is abandoned (QT-091, as MG-04 D49).
+    /// With no such coin it refuses `shared_stage` naming the caller's
+    /// stage while out (`sent` or `funding_signed`, review r1 of 1b n-2);
+    /// a coin worth no more than the fee and dust is
+    /// `send.amount_with_fee_exceeds_balance`.
     pub(super) async fn abandon_session(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -227,7 +233,7 @@ impl NetworkSession {
                 })
         };
         let Some((utxo, path)) = coin else {
-            return Err(sent());
+            return Err(stage_refusal(out_stage(role_of(&row.role))));
         };
         let outpoint = utxo.outpoint;
         let address = w

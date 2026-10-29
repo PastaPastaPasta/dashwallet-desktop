@@ -2196,6 +2196,12 @@ fn test_QT_126_abandon_spends_a_reserved_coin_and_releases_once_buried() {
     assert_eq!(spend.output.len(), 1);
     assert!(spend.special_transaction_payload.is_none());
     assert_eq!(f.locked(1), reserved, "kept until a block settles it");
+    // Its one coin is the abandon's (the wallet's record of it, as the
+    // test network records nothing): no coin left, refused at the
+    // participant's out stage (review r1 of 1b, n-2).
+    f.spend(1, spend.input[0].previous_output);
+    assert_stage(f.abandon(1, &id).unwrap_err(), "funding_signed");
+    assert_eq!(f.net.sent().len(), 1);
 
     f.mine(spend, 60);
     assert_eq!(f.session_of(1, &id).stage, SharedStage::Conflicted);
@@ -2252,6 +2258,9 @@ fn test_QT_126_an_unreadable_out_session_is_released_by_its_stored_columns() {
     f.tip(70);
     f.follow();
     assert_eq!(f.locked(1), reserved, "one deep: kept");
+    f.tip(74);
+    f.follow();
+    assert_eq!(f.locked(1), reserved, "five deep: kept (D70)");
     f.tip(75);
     f.follow();
     assert!(f.locked(1).is_empty());
@@ -2401,10 +2410,17 @@ fn test_QT_126_a_new_session_never_takes_a_held_coin() {
         let (t, v) = c.rsplit_once(':').unwrap();
         f.db().unlock(&w, t, v.parse().unwrap(), 2).unwrap();
     }
-    if let Ok(b) = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE)) {
-        let b_coins: Vec<String> = serde_json::from_str(&f.row(0, &b.session.id).reserved).unwrap();
-        assert!(b_coins.iter().all(|c| !a_coins.contains(c)), "{b_coins:?}");
-    }
+    // A's coins are the wallet's only ones: none is free.
+    let e = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE)).unwrap_err();
+    assert_eq!(send_code(&e), "send.amount_exceeds_balance");
+    // Given another coin, the new session takes it and none of A's.
+    let other = f.credit(0, 3, 501 * COIN);
+    let b = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE))
+        .unwrap()
+        .session
+        .id;
+    let b_coins: Vec<String> = serde_json::from_str(&f.row(0, &b).reserved).unwrap();
+    assert_eq!(b_coins, vec![format!("{}:{}", other.txid, other.vout)]);
 }
 
 /// BL-346 (a, b): a coin two sessions claim (a row this version didn't
