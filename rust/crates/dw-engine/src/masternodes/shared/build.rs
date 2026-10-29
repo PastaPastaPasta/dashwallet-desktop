@@ -77,17 +77,11 @@ pub(crate) fn coordinator_services(text: &str) -> Result<Vec<SocketAddr>, Servic
 /// `[::ffff:127.0.0.1]`, …), is accepted; anything else (an fc00::/8
 /// address flipped to CJDNS first, as Core does) is refused.
 pub(crate) fn participant_services_ok(text: &str) -> bool {
-    let Some(parsed) = service_entries(text)
-        .map(parse_core_service)
-        .collect::<Option<Vec<_>>>()
-    else {
-        return false;
-    };
-    let Some(services) = parsed
-        .iter()
-        .map(|a| {
-            ServiceAddr::from_socket_addr(*a)
-                .map(|s| NetInfoEntry::Service(s.maybe_flip_to_cjdns()))
+    let Some(services) = service_entries(text)
+        .map(|e| {
+            parse_core_service(e)
+                .and_then(ServiceAddr::from_socket_addr)
+                .map(NetInfoEntry::Service)
         })
         .collect::<Option<Vec<_>>>()
     else {
@@ -421,7 +415,7 @@ mod tests {
         for form in ["1.2.772:9999", "[::ffff:1.2.3.4]:9999", "[1.2.3.4]:+9999"] {
             assert!(participant_services_ok(form), "{form}");
             assert_eq!(net_info_of(form), net_info_of("1.2.3.4:9999"), "{form}");
-            assert_eq!(coordinator_services(form).ok(), None, "{form}");
+            assert!(coordinator_services(form).is_err(), "{form}");
         }
     }
 

@@ -110,10 +110,7 @@ pub fn parse_core_service(entry: &str) -> Option<SocketAddr> {
     let (host, port) = split_host_port(addr, port);
     let ip = match inet_aton_exact(host) {
         Some(v4) => IpAddr::V4(v4),
-        None => {
-            let v6: Ipv6Addr = host.parse().ok()?;
-            v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4)
-        }
+        None => host.parse::<Ipv6Addr>().ok()?.to_canonical(),
     };
     Some(SocketAddr::new(ip, port))
 }
@@ -122,8 +119,8 @@ pub fn parse_core_service(entry: &str) -> Option<SocketAddr> {
 /// the last colon is the port when that colon is the only one or follows
 /// `]` and the text is a `ParseUInt16`; otherwise `port` is kept. One pair
 /// of enclosing brackets is then stripped from the host.
-fn split_host_port(input: &str, port: u16) -> (&str, u16) {
-    let (mut host, mut port) = (input, port);
+fn split_host_port(input: &str, mut port: u16) -> (&str, u16) {
+    let mut host = input;
     if let Some(colon) = input.rfind(':') {
         let bracketed = input.starts_with('[') && input.as_bytes()[colon - 1] == b']';
         let multi = input[..colon].contains(':');

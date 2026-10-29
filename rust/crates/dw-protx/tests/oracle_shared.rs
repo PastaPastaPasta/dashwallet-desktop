@@ -364,7 +364,6 @@ fn listed(info: &Value) -> ListedMasternode {
         pro_tx_hash: Txid::from_str(str_of(info, "proTxHash"))
             .unwrap()
             .to_byte_array(),
-        service: None,
         net_info: Vec::new(),
         operator_public_key: operator_key(str_of(&info["state"], "pubKeyOperator")),
         voting_key_id: key_id_of(str_of(&info["state"], "votingAddress")),

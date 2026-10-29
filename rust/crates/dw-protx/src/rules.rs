@@ -55,8 +55,6 @@ pub const EXT_ADDR: u16 = 3;
 pub struct ListedMasternode {
     /// Wire order.
     pub pro_tx_hash: [u8; 32],
-    /// The primary Core P2P address, `None` when it has no socket form.
-    pub service: Option<SocketAddr>,
     /// Every network-info entry the list holds for it, of every purpose
     /// ([`listed_net_info`]): each is a unique property of Core's list
     /// (`bad-protx-dup-netinfo-entry`, MG-04b D39).
@@ -119,8 +117,7 @@ fn legacy_entry(addr: SocketAddr) -> Option<NetInfoEntry> {
     if service::is_no_service(&addr) {
         return None;
     }
-    let addr = normalized(addr);
-    let (network, address) = match addr.ip() {
+    let (network, address) = match addr.ip().to_canonical() {
         IpAddr::V4(ip) => (BIP155_IPV4, ip.octets().to_vec()),
         IpAddr::V6(ip) => (BIP155_IPV6, ip.octets().to_vec()),
     };
@@ -406,9 +403,9 @@ pub fn check_inputs_hash(tx: &Transaction, inputs_hash: [u8; 32]) -> Result<(), 
 }
 
 /// `CheckProRegTx`'s list checks of a version-2 payload: a service another
-/// collateral's masternode holds under any purpose, an operator key any masternode holds
-/// under either serialization, or an evonode's platform node id already
-/// listed. Core v24 compares the operator key under both schemes
+/// collateral's masternode holds under any purpose, an operator key any
+/// masternode holds under either serialization, or an evonode's platform
+/// node id already listed. Core v24 compares the operator key under both schemes
 /// (`specialtxman.cpp:1266-1274`); before v24 only the payload's own, so
 /// this is stricter there (MG-04 D5).
 pub fn check_registration_list(
@@ -443,17 +440,6 @@ fn legacy_service(service: &MasternodeNetInfo) -> Result<SocketAddr, Reject> {
     match service {
         MasternodeNetInfo::Legacy(addr) => Ok(*addr),
         MasternodeNetInfo::Extended(_) => Err("bad-protx-netinfo-version"),
-    }
-}
-
-/// An address with an IPv4-mapped IPv6 address shown as IPv4.
-pub(crate) fn normalized(addr: SocketAddr) -> SocketAddr {
-    match addr.ip() {
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => SocketAddr::new(IpAddr::V4(v4), addr.port()),
-            None => addr,
-        },
-        IpAddr::V4(_) => addr,
     }
 }
 
@@ -688,7 +674,6 @@ mod tests {
         let collateral = OutPoint::new(Txid::from_byte_array([9; 32]), 0);
         let entry = |service: &str, op: [u8; 48], node: [u8; 20]| ListedMasternode {
             pro_tx_hash: [4; 32],
-            service: Some(service.parse().unwrap()),
             net_info: listed_net_info(&MasternodeNetInfo::Legacy(service.parse().unwrap())),
             operator_public_key: op,
             voting_key_id: [8; 20],
@@ -736,7 +721,6 @@ mod tests {
         };
         let listed = |info: MasternodeNetInfo| ListedMasternode {
             pro_tx_hash: [4; 32],
-            service: info.primary_service_address(),
             net_info: listed_net_info(&info),
             operator_public_key: [0x88; 48],
             voting_key_id: [8; 20],

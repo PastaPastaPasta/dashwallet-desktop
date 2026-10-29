@@ -837,11 +837,14 @@ pub fn check_dissolution(
 #[cfg(test)]
 #[allow(non_snake_case)]
 mod tests {
+    use super::super::netinfo::{BIP155_TORV3, ServiceAddr};
     use super::super::registration::NULL_JOIN_SIGNATURE;
     use super::*;
     use crate::payloads::sign_hash_compact;
+    use crate::rules::listed_net_info;
     use crate::rules::{p2pkh_key_id, signed_by};
     use dashcore::secp256k1::SecretKey;
+    use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
     use dashcore::{TxIn, TxOut, Witness};
 
     const COIN: u64 = 100_000_000;
@@ -1248,7 +1251,6 @@ mod tests {
     fn listed(hash: u8, operator: [u8; 48]) -> ListedMasternode {
         ListedMasternode {
             pro_tx_hash: [hash; 32],
-            service: None,
             net_info: Vec::new(),
             operator_public_key: operator,
             voting_key_id: [0; 20],
@@ -1688,15 +1690,8 @@ mod tests {
     ) -> ListedMasternode {
         ListedMasternode {
             pro_tx_hash: [0xBB; 32],
-            service: service.map(|s| s.parse().unwrap()),
             net_info: service
-                .map(|s| {
-                    crate::rules::listed_net_info(
-                        &dashcore::sml::masternode_list_entry::MasternodeNetInfo::Legacy(
-                            s.parse().unwrap(),
-                        ),
-                    )
-                })
+                .map(|s| listed_net_info(&MasternodeNetInfo::Legacy(s.parse().unwrap())))
                 .unwrap_or_default(),
             operator_public_key: operator,
             voting_key_id: [0; 20],
@@ -1836,11 +1831,7 @@ mod tests {
         );
         // Every entry of the payload, not only its first.
         let mut q = p.clone();
-        q.net_info = crate::shared::ExtNetInfo::core_p2p(&[
-            "8.8.8.6:19999".parse().unwrap(),
-            "8.8.8.8:19999".parse().unwrap(),
-        ])
-        .unwrap();
+        q.net_info = net(&["8.8.8.6:19999", "8.8.8.8:19999"]);
         assert_eq!(
             check_registration(&tx, &q, &[], true, net_id, false),
             Ok(())
@@ -1856,8 +1847,8 @@ mod tests {
             ),
             Err("bad-protx-dup-netinfo-entry")
         );
-        let tor = NetInfoEntry::Service(super::super::netinfo::ServiceAddr {
-            network: super::super::netinfo::BIP155_TORV3,
+        let tor = NetInfoEntry::Service(ServiceAddr {
+            network: BIP155_TORV3,
             address: vec![0x11; 32],
             port: 19999,
         });

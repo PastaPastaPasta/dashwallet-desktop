@@ -28,8 +28,8 @@ use zeroize::Zeroizing;
 use super::super::protx::ops::{CrashPoint, Seam};
 use crate::masternodes::{
     HeldShares, Masternodes, MasternodesError, OperatorChoice, RewardChoice, ShareSlot, ShareTerms,
-    SharedImport, SharedNext, SharedOutcome, SharedRole, SharedSession, SharedStage,
-    StartSharedRequest, UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
+    ShareTermsView, SharedImport, SharedNext, SharedOutcome, SharedRole, SharedSession,
+    SharedStage, StartSharedRequest, UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
 };
 use crate::send::TestBroadcaster;
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
@@ -631,8 +631,23 @@ fn test_QT_126_a_participant_joins_a_core_form_service() {
             (SharedStage::Signing, SharedNext::Approve),
             "{service}"
         );
+        // What the participant approves shows the address it registers.
+        assert_eq!(s.terms.service, service);
+        assert_eq!(s.terms.service_read.as_deref(), Some("127.0.0.1:19999"));
         f.approve(1, &id).unwrap();
     }
+    // An entry that reads as written shows no reading.
+    let f = fx(2, true);
+    f.credit(0, 1, 501 * COIN);
+    let a = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE)).unwrap();
+    assert_eq!(a.session.terms.service_read, None);
+    // An approval stored before the field still reads.
+    let old: ShareTermsView = serde_json::from_str(
+        r#"{"service":"1.2.3.4:19999","operator_public_key":"","voting_address":"",
+            "operator_reward":0,"early_period_blocks":0,"early_penalty":0}"#,
+    )
+    .unwrap();
+    assert_eq!(old.service_read, None);
 }
 
 #[test]

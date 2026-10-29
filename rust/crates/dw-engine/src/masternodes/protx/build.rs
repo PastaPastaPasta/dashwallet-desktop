@@ -457,14 +457,12 @@ fn listed(list: &ListView, owned: &[OwnedMasternode]) -> Vec<ListedMasternode> {
         .iter()
         .map(|e| ListedMasternode {
             pro_tx_hash: e.pro_tx_hash,
-            service: e.service_address,
             // A persisted summary carries no entries (platform-wallet stores
             // none): its primary service stands in.
-            net_info: match &e.net_info {
-                Some(info) => rules::listed_net_info(info),
-                None => (e.service_address.iter())
-                    .flat_map(|s| rules::listed_net_info(&MasternodeNetInfo::Legacy(*s)))
-                    .collect(),
+            net_info: match (&e.net_info, e.service_address) {
+                (Some(info), _) => rules::listed_net_info(info),
+                (None, Some(s)) => rules::listed_net_info(&MasternodeNetInfo::Legacy(s)),
+                (None, None) => Vec::new(),
             },
             operator_public_key: e.operator_public_key,
             voting_key_id: e.voting_key_id,
