@@ -159,20 +159,29 @@ pub(crate) fn state_of(
             height: block.height(),
         };
     }
-    let inputs: HashSet<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
-    let conflicted = history.iter().any(|(id, e)| {
-        *id != txid
-            && e.context.block_info().is_some()
-            && e.tx
-                .input
-                .iter()
-                .any(|i| inputs.contains(&i.previous_output))
-    });
-    if conflicted {
+    if conflict_height(&tx, history).is_some() {
         ProTxOperationState::Conflicted
     } else {
         unsettled
     }
+}
+
+/// The lowest block holding another transaction that spends one of `tx`'s
+/// inputs.
+fn conflict_height(tx: &Transaction, history: &HashMap<Txid, TxEntry>) -> Option<u32> {
+    let txid = tx.txid();
+    let inputs: HashSet<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
+    history
+        .iter()
+        .filter(|(id, e)| {
+            **id != txid
+                && e.tx
+                    .input
+                    .iter()
+                    .any(|i| inputs.contains(&i.previous_output))
+        })
+        .filter_map(|(_, e)| Some(e.context.block_info()?.height()))
+        .min()
 }
 
 pub(crate) fn operation_of(
@@ -462,8 +471,26 @@ impl NetworkSession {
         Ok(())
     }
 
-    /// Releases the inputs of settled rows (in a block, or conflicted): the
-    /// coins are spent, so the locks only clutter coin control (D25).
+    /// Whether a block at `height` is one a reorg won't undo (MG-04b D70,
+    /// Opus-h NIT-4): at or under the ChainLock, or
+    /// `RECOMMENDED_CONFIRMATIONS` deep at the tip.
+    pub(crate) fn buried(&self) -> impl Fn(u32) -> bool + use<> {
+        let (tip, chainlock) = {
+            let t = self.hub.tracker();
+            (t.tip_height(), t.chainlock_height())
+        };
+        move |height| {
+            chainlock.is_some_and(|c| height <= c)
+                || tip.is_some_and(|t| {
+                    t.saturating_sub(height) + 1 >= crate::history::RECOMMENDED_CONFIRMATIONS
+                })
+        }
+    }
+
+    /// Releases the inputs of settled rows: in a block, or conflicted by a
+    /// spend [`Self::buried`] says a reorg won't undo (MG-04b D70, review
+    /// r1 of 1b n-5). The coins are spent, so the locks only clutter coin
+    /// control (D25).
     pub(crate) async fn settle_operation_locks(
         &self,
         wallet: WalletId,
@@ -474,14 +501,16 @@ impl NetworkSession {
             return Ok(());
         }
         let (history, unspent) = self.op_view(wallet).await?;
+        let buried = self.buried();
         let settled: Vec<(String, Vec<OutPoint>)> = rows
             .iter()
             .filter(|r| r.fee_inputs != "[]")
-            .filter(|r| {
-                matches!(
-                    state_of(r, &history, &unspent),
-                    ProTxOperationState::Confirmed { .. } | ProTxOperationState::Conflicted
-                )
+            .filter(|r| match state_of(r, &history, &unspent) {
+                ProTxOperationState::Confirmed { .. } => true,
+                ProTxOperationState::Conflicted => signed_tx(r)
+                    .and_then(|tx| conflict_height(&tx, &history))
+                    .is_some_and(&buried),
+                _ => false,
             })
             .map(|r| (r.id.clone(), decode_inputs(&r.fee_inputs)))
             .collect();

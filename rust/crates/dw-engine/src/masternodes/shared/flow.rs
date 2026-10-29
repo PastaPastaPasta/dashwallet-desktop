@@ -661,17 +661,7 @@ impl NetworkSession {
         if &row != listed {
             return Ok(false);
         }
-        let (tip, chainlock) = {
-            let t = self.hub.tracker();
-            (t.tip_height(), t.chainlock_height())
-        };
-        let buried = |height: u32| {
-            chainlock.is_some_and(|c| height <= c)
-                || tip.is_some_and(|t| {
-                    t.saturating_sub(height) + 1 >= crate::history::RECOMMENDED_CONFIRMATIONS
-                })
-        };
-        if !releasable(&row, self.network.core_network(), chain, buried) {
+        if !releasable(&row, self.network.core_network(), chain, self.buried()) {
             return Ok(false);
         }
         let (w, id, expected) = (wallet.to_string(), row.id.clone(), row.reserved);
