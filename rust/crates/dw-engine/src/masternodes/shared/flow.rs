@@ -102,10 +102,20 @@ pub(crate) fn check_reward(
 
 impl NetworkSession {
     /// D3: v24 is active once a version-3 entry was seen (MG-03's durable
-    /// notes), else unknown.
+    /// notes) or the synced list holds one, else unknown. The notes are the
+    /// follower's, written on its tick; a call that runs before the first
+    /// tick after the list synced (a short `dwcli` run) reads the list
+    /// (BL-501).
     pub(crate) async fn v24_active(&self) -> Result<bool, MasternodesError> {
         let notes = self.appdb_op(load_notes).await?;
-        Ok(notes.any_shared_seen || !notes.shared_seen.is_empty())
+        if notes.any_shared_seen || !notes.shared_seen.is_empty() {
+            return Ok(true);
+        }
+        let Ok(manager) = self.manager() else {
+            return Ok(false);
+        };
+        let list = self.protx_list(&manager).await;
+        Ok(list.synced && list.entries.iter().any(|e| e.has_extended_net_info))
     }
 
     pub(crate) async fn shared_rows(
