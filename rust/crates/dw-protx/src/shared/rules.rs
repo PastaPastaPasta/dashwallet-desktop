@@ -1834,6 +1834,28 @@ mod tests {
             check(&tx, &p, &[holding(second)]),
             Err("bad-protx-dup-netinfo-entry")
         );
+        // Every entry of the payload, not only its first.
+        let mut q = p.clone();
+        q.net_info = crate::shared::ExtNetInfo::core_p2p(&[
+            "8.8.8.6:19999".parse().unwrap(),
+            "8.8.8.8:19999".parse().unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(
+            check_registration(&tx, &q, &[], true, net_id, false),
+            Ok(())
+        );
+        assert_eq!(
+            check_registration(
+                &tx,
+                &q,
+                &[other_mn(Some("8.8.8.8:19999"), UNRELATED, None)],
+                true,
+                net_id,
+                false
+            ),
+            Err("bad-protx-dup-netinfo-entry")
+        );
         let tor = NetInfoEntry::Service(super::super::netinfo::ServiceAddr {
             network: super::super::netinfo::BIP155_TORV3,
             address: vec![0x11; 32],

@@ -873,6 +873,10 @@ mod tests {
             assert_eq!(parse_core_service(form), None, "{form}");
         }
         // A port Core can't parse stays part of the host.
+        // `+` fails `SAFE_CHARS_IPV4_6` before `Lookup`'s split would take it
+        // as the port (rc.3 `evo/netinfo.cpp:512`; from the source, not the
+        // oracle run).
+        assert_eq!(parse_core_service("[127.0.0.1:+19901]"), None);
         for form in ["127.0.0.1:-19901", "127.0.0.1:84437", "127.0.0.1:+-1"] {
             assert_eq!(parse_core_service(form), None, "{form}");
         }

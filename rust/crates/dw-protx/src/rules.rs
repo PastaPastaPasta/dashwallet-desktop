@@ -790,6 +790,20 @@ mod tests {
             Ok(())
         );
         assert!(listed_net_info(&MasternodeNetInfo::Legacy(service::NO_SERVICE)).is_empty());
+        // A domain is listed too, keyed by host and port.
+        let domain = ListEntry::Domain {
+            host: "node.example".into(),
+            port: 19999,
+        };
+        let holder = listed(ext(vec![(NetInfoPurpose::PlatformHttps, vec![domain])]));
+        let ours = NetInfoEntry::Domain {
+            name: "node.example".into(),
+            port: 19999,
+        };
+        assert_eq!(
+            check_net_info_unique([&ours], collateral, &[holder]),
+            Err("bad-protx-dup-netinfo-entry")
+        );
     }
 
     /// `CheckMalleable` (MG-04b D66): an operator key that decodes to a G1
