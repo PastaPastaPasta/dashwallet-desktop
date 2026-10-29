@@ -191,14 +191,14 @@ fn fx(n: usize, v24: bool) -> Fx {
 }
 
 impl Fx {
-    /// The facade with sending on (the override; 1c's switch).
+    /// The facade as shipped: sending on since slice 1c (DEC-678).
     fn mn(&self) -> Masternodes {
-        Masternodes::with_shared_send(&self.session, true)
+        self.session.masternodes()
     }
 
-    /// The facade as shipped: sending off (DEC-678).
-    fn shipped(&self) -> Masternodes {
-        self.session.masternodes()
+    /// The facade with the switch off.
+    fn sending_off(&self) -> Masternodes {
+        Masternodes::with_shared_send(&self.session, false)
     }
 
     fn db(&self) -> Arc<dw_appdb::AppDb> {
@@ -714,22 +714,22 @@ fn test_QT_126_three_wallets_reach_the_signed_registration() {
     }
 }
 
-/// DEC-678: as shipped, sending is off. The capability says so, and every
-/// call that produces bytes the network accepts refuses
-/// `unsupported{feature: "shared_masternodes"}` before reading its session,
-/// writing or charging nothing; the override turns it on.
+/// DEC-678: as shipped since slice 1c, sending is on. With the switch off
+/// the capability says so, and every call that produces bytes the network
+/// accepts refuses `unsupported{feature: "shared_masternodes"}` before
+/// reading its session, writing or charging nothing.
 #[test]
-fn test_QT_126_sending_is_off_as_shipped() {
+fn test_QT_126_sending_is_on_as_shipped_and_the_switch_refuses() {
     let f = fx(3, true);
     let id = three_approved(&f);
     f.both_signed(&id);
     let before: Vec<_> = (0..3).map(|w| f.row(w, &id)).collect();
-    let cap = f.run(f.shipped().shared_capability(f.wallets[0])).unwrap();
-    assert!(!cap.can_send);
+    let cap = f.run(f.mn().shared_capability(f.wallets[0])).unwrap();
+    assert!(cap.can_send);
     assert_eq!(cap.v24, crate::masternodes::Activation::Active);
     assert_eq!(cap.evonode_shares, crate::masternodes::Activation::Inactive);
     assert!(
-        f.run(f.mn().shared_capability(f.wallets[0]))
+        !f.run(f.sending_off().shared_capability(f.wallets[0]))
             .unwrap()
             .can_send
     );
@@ -741,21 +741,21 @@ fn test_QT_126_sending_is_off_as_shipped() {
     let (w0, w1) = (f.wallets[0], f.wallets[1]);
     for e in [
         f.run(
-            f.shipped()
+            f.sending_off()
                 .sign_shared_funding(w1, id.clone(), f.grant(1, COIN)),
         )
         .map(drop),
         f.run(
-            f.shipped()
+            f.sending_off()
                 .send_shared_registration(w0, id.clone(), f.grant(0, 500 * COIN)),
         )
         .map(drop),
         f.run(
-            f.shipped()
+            f.sending_off()
                 .abandon_shared_session(w0, id.clone(), f.grant(0, COIN)),
         )
         .map(drop),
-        f.run(f.shipped().update_share(w0, update, f.grant(0, COIN)))
+        f.run(f.sending_off().update_share(w0, update, f.grant(0, COIN)))
             .map(drop),
     ] {
         match e.unwrap_err() {
@@ -2661,12 +2661,13 @@ fn test_QT_127_update_share_sends_an_operation() {
     // D23: one at a time per masternode.
     let e = update(fee).unwrap_err();
     assert_eq!(code(e), "masternodes.update_pending");
-    // MG-04's resend, over the new kind: shared sending, so refused as
-    // shipped (DEC-678).
-    let refused = f.run(
-        f.shipped()
-            .resend_operation(f.wallets[0], op.id.clone(), f.grant(0, fee)),
-    );
+    // MG-04's resend, over the new kind: shared sending, so refused with
+    // the switch off (DEC-678).
+    let refused = f.run(f.sending_off().resend_operation(
+        f.wallets[0],
+        op.id.clone(),
+        f.grant(0, fee),
+    ));
     assert!(
         matches!(refused, Err(MasternodesError::Unsupported { .. })),
         "{refused:?}"
