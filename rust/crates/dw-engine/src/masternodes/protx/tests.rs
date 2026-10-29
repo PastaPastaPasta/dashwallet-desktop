@@ -1076,6 +1076,7 @@ fn mg04_requests_are_refused_offline_first() {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: false,
+        net_info: None,
     }]);
     let mut given = request(CollateralChoice::FundNew);
     given.operator = OperatorChoice::Given {
@@ -1089,6 +1090,54 @@ fn mg04_requests_are_refused_offline_first() {
     assert!(
         matches!(preview(dup_service), MasternodesError::ProtxRefused { reason, .. } if reason == "bad-protx-dup-netinfo-entry")
     );
+    // MG-04b D39: any net-info entry of a listed masternode, here another
+    // version-3 masternode's second Core P2P entry; a persisted summary,
+    // which carries no entries, compares its primary service only.
+    let second = |net_info| platform_wallet::masternode::MasternodeListSummary {
+        pro_tx_hash: [8; 32],
+        service_address: Some("1.2.3.7:19899".parse().unwrap()),
+        platform_http_port: None,
+        operator_public_key: [8; 48],
+        voting_key_id: [8; 20],
+        platform_node_id: None,
+        is_valid: true,
+        is_evonode: false,
+        has_extended_net_info: true,
+        net_info,
+    };
+    let ext = {
+        use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
+        use dashcore::sml::masternode_list_entry::net_info::{
+            Bip155Network, ExtNetInfo, NetInfoEntry, NetInfoPurpose,
+        };
+        let ipv4 = |last| NetInfoEntry::Service {
+            network: Bip155Network::Ipv4,
+            addr: vec![1, 2, 3, last],
+            port: 19899,
+        };
+        MasternodeNetInfo::Extended(ExtNetInfo {
+            version: 1,
+            purposes: vec![(NetInfoPurpose::CoreP2P, vec![ipv4(7), ipv4(6)])],
+        })
+    };
+    let with_service = |service: &str| {
+        let mut r = request(CollateralChoice::FundNew);
+        r.service = service.into();
+        r
+    };
+    let listed = f.seam.list.lock().unwrap().clone();
+    *f.seam.list.lock().unwrap() = Some(vec![second(Some(ext))]);
+    assert!(
+        matches!(preview(with_service("1.2.3.6")), MasternodesError::ProtxRefused { reason, .. } if reason == "bad-protx-dup-netinfo-entry")
+    );
+    *f.seam.list.lock().unwrap() = Some(vec![second(None)]);
+    f.engine
+        .block_on(
+            f.mn()
+                .preview_registration(f.wallet, with_service("1.2.3.6")),
+        )
+        .unwrap();
+    *f.seam.list.lock().unwrap() = listed;
     // NextUnused skips the listed key.
     let ok = f
         .engine
@@ -1457,6 +1506,7 @@ fn mg04_evonode_requests_are_refused_before_signing() {
         is_valid: true,
         is_evonode: true,
         has_extended_net_info: false,
+        net_info: None,
     }]);
     let dup = evonode(
         CollateralChoice::FundNew,
@@ -1503,6 +1553,7 @@ fn entry_of(tx: &Transaction) -> platform_wallet::masternode::MasternodeListSumm
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: false,
+        net_info: None,
     }
 }
 

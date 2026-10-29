@@ -52,7 +52,8 @@ use crate::params::{
     collateral_amount,
 };
 use crate::rules::{
-    ListedMasternode, Reject, holds_operator_key, is_valid_operator_key, normalized, p2pkh_key_id,
+    ListedMasternode, Reject, check_net_info_unique, holds_operator_key, is_valid_operator_key,
+    p2pkh_key_id,
 };
 
 /// A registered shared masternode, as the wallet knows it.
@@ -502,16 +503,12 @@ fn check_payout_list_key_safe(
 /// - Not shared, with an output of `tx` as collateral:
 ///   `bad-protx-collateral-reuse` / `bad-protx-payee-reuse` (1226-1229).
 /// - The list (1231-1288): `bad-protx-dup-netinfo-entry` for a service
-///   another collateral's masternode holds (1235-1240). Core's list holds
-///   every entry of every masternode as a unique property, services and
-///   domains of all purposes (`deterministicmns.cpp:459-470`), and the SML
-///   carries a version-3 entry's whole net info (`simplifiedmns.h:81`; the
-///   pin's `MasternodeNetInfo::Extended`), but [`ListedMasternode`] keeps
-///   only the primary service, so only that is compared here: a collision
-///   with another masternode's second Core P2P entry, its Platform entries
-///   or a domain (1241-1245) passes here and Core refuses it (MG-04b D39:
-///   platform-wallet's `MasternodeListSummary` keeps the primary endpoint
-///   only; a known gap until it and `ListedMasternode` carry every entry).
+///   (1236-1240) or domain (1241-1245) of the payload another collateral's
+///   masternode holds. Core's list holds every entry of every masternode as
+///   a unique property, services and domains of all purposes
+///   (`deterministicmns.cpp:459-470`); the SML carries a version-3 entry's
+///   whole net info (`simplifiedmns.h:81`), and [`ListedMasternode::net_info`]
+///   every entry of it (MG-04b D39, [`crate::rules::listed_net_info`]).
 ///   `bad-protx-netinfo-entry` (1247) can't arise after the trivial checks.
 ///   `bad-protx-dup-key`: owner keys (each share's, 1255-1259, or
 ///   `keyIDOwner`, 1263) aren't in the SML, so are skipped;
@@ -576,19 +573,7 @@ pub fn check_registration(
         p.collateral
     };
 
-    for entry in p.net_info.all_entries() {
-        let NetInfoEntry::Service(service) = entry else {
-            continue;
-        };
-        let Some(addr) = service.socket_addr() else {
-            continue;
-        };
-        if list.iter().any(|e| {
-            e.service.map(normalized) == Some(normalized(addr)) && e.collateral != Some(collateral)
-        }) {
-            return Err("bad-protx-dup-netinfo-entry");
-        }
-    }
+    check_net_info_unique(p.net_info.all_entries(), collateral, list)?;
     if list
         .iter()
         .any(|e| holds_operator_key(e, &p.operator_public_key, BlsScheme::Modern))
@@ -852,11 +837,14 @@ pub fn check_dissolution(
 #[cfg(test)]
 #[allow(non_snake_case)]
 mod tests {
+    use super::super::netinfo::{BIP155_TORV3, ServiceAddr};
     use super::super::registration::NULL_JOIN_SIGNATURE;
     use super::*;
     use crate::payloads::sign_hash_compact;
+    use crate::rules::listed_net_info;
     use crate::rules::{p2pkh_key_id, signed_by};
     use dashcore::secp256k1::SecretKey;
+    use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
     use dashcore::{TxIn, TxOut, Witness};
 
     const COIN: u64 = 100_000_000;
@@ -1263,7 +1251,7 @@ mod tests {
     fn listed(hash: u8, operator: [u8; 48]) -> ListedMasternode {
         ListedMasternode {
             pro_tx_hash: [hash; 32],
-            service: None,
+            net_info: Vec::new(),
             operator_public_key: operator,
             voting_key_id: [0; 20],
             platform_node_id: None,
@@ -1702,7 +1690,9 @@ mod tests {
     ) -> ListedMasternode {
         ListedMasternode {
             pro_tx_hash: [0xBB; 32],
-            service: service.map(|s| s.parse().unwrap()),
+            net_info: service
+                .map(|s| listed_net_info(&MasternodeNetInfo::Legacy(s.parse().unwrap())))
+                .unwrap_or_default(),
             operator_public_key: operator,
             voting_key_id: [0; 20],
             platform_node_id: None,
@@ -1828,6 +1818,45 @@ mod tests {
             check(&tx, &p, &[other_mn(Some("8.8.8.8:19998"), UNRELATED, None)]),
             Ok(())
         );
+        // Any entry of another masternode, whatever its purpose (MG-04b
+        // D39); another network's address or a domain isn't the service.
+        let holding = |net_info: Vec<NetInfoEntry>| ListedMasternode {
+            net_info,
+            ..other_mn(Some("8.8.8.7:19999"), UNRELATED, None)
+        };
+        let second = [entries("8.8.8.7:19999"), entries("8.8.8.8:19999")].concat();
+        assert_eq!(
+            check(&tx, &p, &[holding(second)]),
+            Err("bad-protx-dup-netinfo-entry")
+        );
+        // Every entry of the payload, not only its first.
+        let mut q = p.clone();
+        q.net_info = net(&["8.8.8.6:19999", "8.8.8.8:19999"]);
+        assert_eq!(
+            check_registration(&tx, &q, &[], true, net_id, false),
+            Ok(())
+        );
+        assert_eq!(
+            check_registration(
+                &tx,
+                &q,
+                &[other_mn(Some("8.8.8.8:19999"), UNRELATED, None)],
+                true,
+                net_id,
+                false
+            ),
+            Err("bad-protx-dup-netinfo-entry")
+        );
+        let tor = NetInfoEntry::Service(ServiceAddr {
+            network: BIP155_TORV3,
+            address: vec![0x11; 32],
+            port: 19999,
+        });
+        let domain = NetInfoEntry::Domain {
+            name: "8.8.8.8".into(),
+            port: 19999,
+        };
+        assert_eq!(check(&tx, &p, &[holding(vec![tor, domain])]), Ok(()));
         // The operator key under either scheme, even for the same collateral.
         let legacy = crate::bls::legacy_of(&crate::bls::TEST_OPERATOR_KEY).unwrap();
         for key in [crate::bls::TEST_OPERATOR_KEY, legacy] {

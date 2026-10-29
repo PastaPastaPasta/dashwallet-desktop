@@ -13,7 +13,9 @@ use dashcore::hashes::Hash;
 use dashcore::{Address, Network, OutPoint, ScriptBuf, TxIn, TxOut, Txid};
 
 use super::super::envelope::{EnvelopeError, decode_base64, decode_tx_hex, is_hex};
-use super::super::netinfo::{NetInfoStatus, PURPOSE_CORE_P2P, ServiceAddr, validate_service};
+use super::super::netinfo::{
+    NetInfoStatus, PURPOSE_CORE_P2P, ServiceAddr, parse_core_service, validate_service,
+};
 use super::super::registration::{
     MN_TYPE_REGULAR, SHARED_COLLATERAL_SCRIPT, TRANSACTION_PROVIDER_REGISTER,
 };
@@ -180,10 +182,11 @@ pub fn service_entries(addrs: &str) -> impl Iterator<Item = &str> {
 /// never matches: its `ValidateService` ([`validate_service`]: a valid,
 /// known-network address, routable where `network` requires it, a port
 /// that isn't zero or bad), a repeated address (`IsAddrDuplicate`), or more
-/// than `MAX_ENTRIES_EXTNETINFO` (`ProcessCandidate`); and one that isn't a
-/// numeric `ip:port` (MG-04b D5: no domains or privacy networks).
+/// than `MAX_ENTRIES_EXTNETINFO` (`ProcessCandidate`); and one that isn't an
+/// IP service as Core reads it ([`parse_core_service`]; MG-04b D5: no
+/// domains or privacy networks).
 pub fn net_info_matches(net_info: &ExtNetInfo, addrs: &str, network: Network) -> bool {
-    let entries: Option<Vec<SocketAddr>> = service_entries(addrs).map(|e| e.parse().ok()).collect();
+    let entries: Option<Vec<SocketAddr>> = service_entries(addrs).map(parse_core_service).collect();
     let Some(entries) = entries else {
         return false;
     };

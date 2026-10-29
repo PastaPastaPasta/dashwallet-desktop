@@ -60,15 +60,14 @@ fn unrecorded() -> MasternodesError {
     EngineError::Internal("a shared session without its recorded contribution".into()).into()
 }
 
-/// The one switch for shared-masternode sending (DEC-678): off until slice
-/// 1c closes D39 (every net-info entry of the list) and M9 (the dash-qt
-/// envelope oracle), whose last commit turns it on. While it is off,
-/// `can_send` is false and every call that produces bytes the network
-/// accepts (`sign_shared_funding`, `send_shared_registration`,
-/// `abandon_shared_session`, `update_share`, and `resend_operation` of an
-/// `update_share` row) refuses `unsupported{feature: "shared_masternodes"}`
-/// after the wallet check.
-pub(super) const SHARED_SENDING: bool = false;
+/// The one switch for shared-masternode sending (DEC-678): on since slice
+/// 1c closed D39 (every net-info entry of the list, D75) and M9 (the
+/// dash-qt envelope oracle, D78). Turned off, `can_send` is false and every
+/// call that produces bytes the network accepts (`sign_shared_funding`,
+/// `send_shared_registration`, `abandon_shared_session`, `update_share`,
+/// and `resend_operation` of an `update_share` row) refuses
+/// `unsupported{feature: "shared_masternodes"}` after the wallet check.
+pub(super) const SHARED_SENDING: bool = true;
 
 /// `masternodes.unsupported{feature: "shared_masternodes"}`.
 fn unsupported(field: Option<&str>) -> MasternodesError {

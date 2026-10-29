@@ -16,6 +16,7 @@ use dashcore::address::Payload;
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::blockdata::transaction::special_transaction::provider_registration::ProviderRegistrationPayload;
 use dashcore::hashes::Hash;
+use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
 use dashcore::{Address, Network, OutPoint, PubkeyHash, ScriptBuf, Transaction, TxIn, TxOut};
 use dw_protx::params::{MAX_OPERATOR_REWARD, collateral_amount, default_ports};
 use dw_protx::payloads::{
@@ -50,6 +51,7 @@ use crate::send::{
     CoinSource, MAX_TX_FEE, MIN_FEE_PER_KB, PreparedInput, PreparedOutput, PreparedSummary,
     SendFailure, l1_address,
 };
+use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
 
 /// `nSequence` of every input: final, as the wallet's ordinary send sets it
@@ -448,14 +450,21 @@ pub(crate) fn parse_service(text: &str, network: Network) -> Result<SocketAddr, 
     })
 }
 
-/// The list as Core's duplicate checks compare it; the wallet's own
-/// masternodes carry their collateral (the list has none).
+/// The list as Core's duplicate checks compare it, every net-info entry of
+/// every purpose (MG-04b D39); the wallet's own masternodes carry their
+/// collateral (the list has none).
 fn listed(list: &ListView, owned: &[OwnedMasternode]) -> Vec<ListedMasternode> {
     list.entries
         .iter()
         .map(|e| ListedMasternode {
             pro_tx_hash: e.pro_tx_hash,
-            service: e.service_address,
+            // A persisted summary carries no entries (platform-wallet stores
+            // none): its primary service stands in.
+            net_info: match (&e.net_info, e.service_address) {
+                (Some(info), _) => rules::listed_net_info(info),
+                (None, Some(s)) => rules::listed_net_info(&MasternodeNetInfo::Legacy(s)),
+                (None, None) => Vec::new(),
+            },
             operator_public_key: e.operator_public_key,
             voting_key_id: e.voting_key_id,
             platform_node_id: e.platform_node_id,
@@ -523,15 +532,8 @@ pub(crate) fn check_request(
 }
 
 impl NetworkSession {
-    /// The context of a ProTx: the synced list (`ListUnavailable`
-    /// otherwise), the wallet's masternodes and operations, and every key
-    /// and collateral they use.
-    pub(crate) async fn protx_context(
-        &self,
-        wallet: WalletId,
-    ) -> Result<Context, MasternodesError> {
-        let network = self.network.core_network();
-        let manager = self.manager()?;
+    /// The masternode list as [`read_list`] reads it, or the test seam's.
+    pub(crate) async fn protx_list(&self, manager: &Manager) -> ListView {
         #[cfg(test)]
         let seamed = (self.masternodes.protx_seam()).and_then(|s| {
             let height = *s.list_height.lock().unwrap();
@@ -543,10 +545,22 @@ impl NetworkSession {
         });
         #[cfg(not(test))]
         let seamed = None;
-        let list = match seamed {
+        match seamed {
             Some(list) => list,
-            None => read_list(self, &manager).await,
-        };
+            None => read_list(self, manager).await,
+        }
+    }
+
+    /// The context of a ProTx: the synced list (`ListUnavailable`
+    /// otherwise), the wallet's masternodes and operations, and every key
+    /// and collateral they use.
+    pub(crate) async fn protx_context(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Context, MasternodesError> {
+        let network = self.network.core_network();
+        let manager = self.manager()?;
+        let list = self.protx_list(&manager).await;
         if !list.synced {
             return Err(MasternodesError::ListUnavailable);
         }

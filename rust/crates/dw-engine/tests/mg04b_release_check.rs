@@ -7,8 +7,9 @@
 //! cargo test -p dw-engine --features test-support --test mg04b_release_check
 //! ```
 //!
-//! The release run proves the override absent; the debug run proves the
-//! probe can see it, so the release result isn't vacuous.
+//! The release run proves the override absent (the nightly's release-check
+//! job runs it); the debug run, in PR CI, proves the probe can see it, so
+//! the release result isn't vacuous.
 
 /// `SHARED_SEND_OVERRIDE` where `test_support` doesn't give
 /// `TestSupportProbe` its inherent constant: an inherent associated
@@ -78,11 +79,11 @@ fn no_binary_source_names_the_override() {
     assert!(scanned > 0, "no binary sources found");
 }
 
-/// The debug counterpart: the shipped facade says `can_send: false`, and
-/// only the override turns it on.
+/// The debug counterpart: the shipped facade says `can_send: true` (slice
+/// 1c, DEC-678), and the override sets it either way.
 #[cfg(all(debug_assertions, feature = "test-support"))]
 #[test]
-fn the_override_alone_turns_can_send_on() {
+fn the_override_sets_can_send() {
     use std::sync::Arc;
 
     use dw_engine::{DashNetwork, Engine, EngineConfig, EngineEvent, EventSink, ImportOptions};
@@ -139,12 +140,16 @@ fn the_override_alone_turns_can_send_on() {
     let shipped = engine
         .block_on(session.masternodes().shared_capability(wallet))
         .unwrap();
-    assert!(!shipped.can_send);
-    let overridden = dw_engine::test_support::shared_masternodes_with_send_override(&session, true);
-    assert!(
-        engine
-            .block_on(overridden.shared_capability(wallet))
-            .unwrap()
-            .can_send
-    );
+    assert!(shipped.can_send);
+    for can_send in [false, true] {
+        let overridden =
+            dw_engine::test_support::shared_masternodes_with_send_override(&session, can_send);
+        assert_eq!(
+            engine
+                .block_on(overridden.shared_capability(wallet))
+                .unwrap()
+                .can_send,
+            can_send
+        );
+    }
 }

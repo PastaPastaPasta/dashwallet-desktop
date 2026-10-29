@@ -91,6 +91,7 @@ pub(in crate::governance) fn summary(
         is_valid: true,
         is_evonode: evonode,
         has_extended_net_info: false,
+        net_info: None,
     }
 }
 
