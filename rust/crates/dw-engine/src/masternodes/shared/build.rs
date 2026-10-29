@@ -12,7 +12,7 @@ use dashcore::{OutPoint, PubkeyHash, ScriptBuf, TxOut, Txid};
 use dw_protx::params::MASTERNODE_COLLATERAL;
 use dw_protx::shared::envelope::decode_base64;
 use dw_protx::shared::netinfo::{
-    EXT_NET_INFO_VERSION, NetInfoEntry, PURPOSE_CORE_P2P, ServiceAddr,
+    EXT_NET_INFO_VERSION, NetInfoEntry, PURPOSE_CORE_P2P, ServiceAddr, parse_core_service,
 };
 use dw_protx::shared::rawtx::{SIGHASH_ALL, SPECIAL_VERSION};
 use dw_protx::shared::registration::{
@@ -73,12 +73,13 @@ pub(crate) fn coordinator_services(text: &str) -> Result<Vec<SocketAddr>, Servic
 }
 
 /// D5 for a participant: a dash-qt coordinator's empty, IPv4 or IPv6
-/// service is accepted; anything else (an fc00::/8 address flipped to
-/// CJDNS first, as Core does) is refused.
+/// service, in any form Core reads (`parse_core_service`: `127.1`,
+/// `[::ffff:127.0.0.1]`, …), is accepted; anything else (an fc00::/8
+/// address flipped to CJDNS first, as Core does) is refused.
 pub(crate) fn participant_services_ok(text: &str) -> bool {
-    let Ok(parsed) = service_entries(text)
-        .map(parse_entry)
-        .collect::<Result<Vec<_>, _>>()
+    let Some(parsed) = service_entries(text)
+        .map(parse_core_service)
+        .collect::<Option<Vec<_>>>()
     else {
         return false;
     };
@@ -103,11 +104,12 @@ pub(crate) fn participant_services_ok(text: &str) -> bool {
 }
 
 /// The payload's net info for `coreP2PAddrs`, as `shared_register_prepare`
-/// builds it (the empty info for an empty service). `None`: not one Core
-/// can carry (more than four entries, an address without an IP form).
+/// builds it with `AddEntry` (the empty info for an empty service). `None`:
+/// not one Core can carry (more than four entries, an address without an IP
+/// form).
 pub(crate) fn net_info_of(text: &str) -> Option<ExtNetInfo> {
     let parsed = service_entries(text)
-        .map(|e| e.parse::<SocketAddr>().ok())
+        .map(parse_core_service)
         .collect::<Option<Vec<_>>>()?;
     ExtNetInfo::core_p2p(&parsed)
 }
@@ -415,6 +417,12 @@ mod tests {
         assert!(participant_services_ok("[2001:db8::1]:9999"));
         assert!(!participant_services_ok("[fc00::1]:9999"));
         assert!(!participant_services_ok("example.com:9999"));
+        // Core's forms of 1.2.3.4 (M9): read as dash-qt reads them.
+        for form in ["1.2.772:9999", "[::ffff:1.2.3.4]:9999", "[1.2.3.4]:+9999"] {
+            assert!(participant_services_ok(form), "{form}");
+            assert_eq!(net_info_of(form), net_info_of("1.2.3.4:9999"), "{form}");
+            assert_eq!(coordinator_services(form).ok(), None, "{form}");
+        }
     }
 
     /// fixes-1a M8: entries split as `NetInfoMatches`' `[,\s]+` without

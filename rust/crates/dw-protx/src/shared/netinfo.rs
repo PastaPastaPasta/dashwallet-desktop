@@ -84,6 +84,100 @@ fn is_embedded_ipv6(addr: &[u8]) -> bool {
         || addr.starts_with(&[0xfd, 0x6b, 0x88, 0xc0, 0x87, 0x24])
 }
 
+/// The IP service `ExtNetInfo::AddEntry` (rc.3 `evo/netinfo.cpp:500-551`)
+/// reads from one entry, before `ValidateService`: `SplitHostPort` with no
+/// default port, then, for a host of `SAFE_CHARS_IPV4_6` only, `Lookup`
+/// without name lookups, which splits the host again (`netbase.cpp:194-209`)
+/// and decodes it as `getaddrinfo` with `AI_NUMERICHOST` does: glibc's
+/// [`inet_aton_exact`], else an IPv6 address, an IPv4-mapped one read as
+/// IPv4 (`SetLegacyIPv6`, `netaddress.cpp:135-162`). An IPv6 address with
+/// the TorV2 or internal prefix is returned as is; Core never adds one
+/// (invalid, or dropped by `LookupIntern`), and
+/// [`ServiceAddr::from_socket_addr`] refuses it. `None` for anything else,
+/// including a host Core would read as a domain or privacy network (MG-04b
+/// D5). dash-qt's verdicts on these forms are in
+/// testdata/shared_envelopes.json (M9).
+pub fn parse_core_service(entry: &str) -> Option<SocketAddr> {
+    let (addr, port) = split_host_port(entry, 0);
+    let ip_safe = |s: &str| {
+        s.bytes()
+            .all(|b| b.is_ascii_hexdigit() || b".:[]".contains(&b))
+    };
+    if addr.is_empty() || !ip_safe(addr) {
+        return None;
+    }
+    let (host, port) = split_host_port(addr, port);
+    let ip = match inet_aton_exact(host) {
+        Some(v4) => IpAddr::V4(v4),
+        None => {
+            let v6: Ipv6Addr = host.parse().ok()?;
+            v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4)
+        }
+    };
+    Some(SocketAddr::new(ip, port))
+}
+
+/// `SplitHostPort` (rc.3 `util/strencodings.cpp:101-126`): the text after
+/// the last colon is the port when that colon is the only one or follows
+/// `]` and the text is a `ParseUInt16`; otherwise `port` is kept. One pair
+/// of enclosing brackets is then stripped from the host.
+fn split_host_port(input: &str, port: u16) -> (&str, u16) {
+    let (mut host, mut port) = (input, port);
+    if let Some(colon) = input.rfind(':') {
+        let bracketed = input.starts_with('[') && input.as_bytes()[colon - 1] == b']';
+        let multi = input[..colon].contains(':');
+        if (colon == 0 || bracketed || !multi)
+            && let Some(n) = parse_u16(&input[colon + 1..])
+        {
+            (host, port) = (&input[..colon], n);
+        }
+    }
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    (host, port)
+}
+
+/// `ParseUInt16` (rc.3 `util/strencodings.cpp:234-270`): one optional `+`,
+/// then decimal digits only (`std::from_chars`), leading zeros allowed.
+fn parse_u16(s: &str) -> Option<u16> {
+    let digits = s.strip_prefix('+').unwrap_or(s);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// glibc's `__inet_aton_exact`: one to four parts split by `.`, each a C
+/// number (`strtoul` base 0: a leading `0` is octal; `0x` hex can't pass
+/// `SAFE_CHARS_IPV4_6`), every part but the last one byte, the last filling
+/// the bytes left: `127.1` is 127.0.0.1 and `2130706433` is too.
+fn inet_aton_exact(host: &str) -> Option<Ipv4Addr> {
+    let parts = host
+        .split('.')
+        .map(|part| {
+            let (digits, radix) = match part.strip_prefix('0') {
+                Some(rest) if !rest.is_empty() => (rest, 8),
+                _ => (part, 10),
+            };
+            if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+                return None;
+            }
+            u32::from_str_radix(digits, radix).ok()
+        })
+        .collect::<Option<Vec<u32>>>()?;
+    let (&last, bytes) = parts.split_last()?;
+    if bytes.len() > 3 || bytes.iter().any(|&b| b > 0xff) || last > u32::MAX >> (8 * bytes.len()) {
+        return None;
+    }
+    let high = bytes
+        .iter()
+        .enumerate()
+        .fold(0, |word, (i, &b)| word | b << (24 - 8 * i));
+    Some(Ipv4Addr::from(high | last))
+}
+
 /// A `CService` in ADDRv2 form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceAddr {
@@ -730,6 +824,57 @@ mod tests {
     fn test_QT_126_empty_net_info_is_version_and_zero_purposes() {
         assert_eq!(serialize(&ExtNetInfo::default()), [1, 0]);
         assert_eq!(ExtNetInfo::core_p2p(&[]).unwrap(), ExtNetInfo::default());
+    }
+
+    /// M9: the forms dash-qt reads (testdata/shared_envelopes.json has its
+    /// verdicts); the cases here pin the edges of each step.
+    #[test]
+    fn test_QT_126_services_parse_as_core_reads_them() {
+        let v4: SocketAddr = "127.0.0.1:19901".parse().unwrap();
+        for form in [
+            "127.0.0.1:19901",
+            "127.1:19901",
+            "127.0.1:19901",
+            "2130706433:19901",
+            "0177.0.0.01:19901",
+            "127.000.000.001:19901",
+            "127.0.0.1:019901",
+            "127.0.0.1:+19901",
+            "[127.0.0.1]:19901",
+            "[[127.0.0.1]]:19901",
+            "[127.0.0.1:19901]",
+            "[::ffff:127.0.0.1]:19901",
+            "[::ffff:7f00:1]:19901",
+        ] {
+            assert_eq!(parse_core_service(form), Some(v4), "{form}");
+        }
+        let v6: SocketAddr = "[2001:db8::1]:9999".parse().unwrap();
+        assert_eq!(parse_core_service("[2001:db8::1]:9999"), Some(v6));
+        // No port: 0, which `ValidateService` refuses.
+        assert_eq!(parse_core_service("127.0.0.1"), "127.0.0.1:0".parse().ok());
+        assert_eq!(parse_core_service("[::1]"), "[::1]:0".parse().ok());
+        for form in [
+            "",
+            ":19901",
+            "0x7f.0.0.1:19901",
+            "localhost:19901",
+            "127.0.0.08:19901",
+            "127.0.0.256:19901",
+            "127.0.0.1.:19901",
+            "127..0.1:19901",
+            "127.0.0.0.1:19901",
+            "127.16777216:19901",
+            "4294967296:19901",
+            "127.0.0.1:19901:19901",
+            "::ffff:127.0.0.1:19901",
+            "[::1%1]:19901",
+        ] {
+            assert_eq!(parse_core_service(form), None, "{form}");
+        }
+        // A port Core can't parse stays part of the host.
+        for form in ["127.0.0.1:-19901", "127.0.0.1:84437", "127.0.0.1:+-1"] {
+            assert_eq!(parse_core_service(form), None, "{form}");
+        }
     }
 
     #[test]
