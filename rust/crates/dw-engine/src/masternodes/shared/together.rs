@@ -28,6 +28,7 @@ use dw_protx::shared::envelope::{
     ReceivedSigs, SigEntry, SigsEnvelope, SigsKind, decode_message, fingerprint,
 };
 use dw_protx::shared::json::Json;
+use dw_protx::shared::registration::ProRegTxV3;
 use dw_protx::shared::rules::{self as shared_rules, SharedMn};
 use dw_protx::shared::together::{self, Checked, Refusal};
 use dw_protx::shared::{CompactSignature, ProDisTx, SpecialTx};
@@ -225,6 +226,30 @@ pub(crate) struct TogetherView {
     pub ops: Vec<MasternodeOpRow>,
 }
 
+/// The masternode as the history holds its registration at `height` (D29):
+/// no list needed.
+fn known_mn(hash: [u8; 32], height: u32, p: &ProRegTxV3) -> SharedMn<'_> {
+    let txid = Txid::from_byte_array(hash);
+    SharedMn {
+        pro_tx_hash: txid,
+        collateral: OutPoint::new(txid, p.collateral.vout),
+        shares: &p.shares,
+        registered_height: height,
+        early_period_blocks: p.early_period_blocks,
+        early_penalty: p.early_penalty,
+        voting_key_id: p.voting_key_id,
+    }
+}
+
+/// The operation the session was handed off as: the one whose signed bytes
+/// carry its `txid`.
+fn handed_off<'a>(t: &Together, v: &'a TogetherView) -> Option<&'a MasternodeOpRow> {
+    let txid = t.row.txid.as_deref()?;
+    v.ops
+        .iter()
+        .find(|r| signed_tx(r).is_some_and(|tx| tx.txid().to_string() == txid))
+}
+
 /// Whether `tx` is `request` signed: the same transaction once its
 /// ProDisTx's `vchSigs` are emptied. A wallet missing a signature knows the
 /// dissolution's bytes only this way.
@@ -375,30 +400,48 @@ impl NetworkSession {
         t: &Together,
         v: &TogetherView,
     ) -> Result<SharedSession, MasternodesError> {
-        // The masternode as the history holds its registration (D29): no
-        // list needed.
         let known = in_history(&v.chain, t.hash).ok();
-        let txid = Txid::from_byte_array(t.hash);
-        let mn = known.as_ref().map(|(height, p)| SharedMn {
-            pro_tx_hash: txid,
-            collateral: OutPoint::new(txid, p.collateral.vout),
-            shares: &p.shares,
-            registered_height: *height,
-            early_period_blocks: p.early_period_blocks,
-            early_penalty: p.early_penalty,
-            voting_key_id: p.voting_key_id,
-        });
-        let op = t.row.txid.as_deref().and_then(|txid| {
-            v.ops
-                .iter()
-                .find(|r| signed_tx(r).is_some_and(|tx| tx.txid().to_string() == txid))
-        });
-        let op_state = match op {
+        let mn = known
+            .as_ref()
+            .map(|(height, p)| known_mn(t.hash, *height, p));
+        let op_state = match handed_off(t, v) {
             Some(row) => Some(self.op_state(wallet, row).await?),
             None => None,
         };
         let stage = derive_stage(t, mn.as_ref(), v, op_state);
         Ok(view(t, mn.as_ref(), v, stage, self.network.core_network()))
+    }
+
+    /// Whether `row`, a dissolve-together session, may be discarded (D17):
+    /// `Ok` with the `txid` it is marked out with, `None` when it isn't.
+    /// Out and handed off (an operation holds its txid), its stage
+    /// (`shared_stage`); out and never handed off, it may go: the send saves
+    /// the operation before the bytes leave (D95). A row that no longer
+    /// parses goes unless out (D57).
+    pub(crate) async fn together_discard(
+        &self,
+        wallet: WalletId,
+        row: SharedSessionRow,
+    ) -> Result<Option<String>, MasternodesError> {
+        let out = row.out_at.is_some();
+        let Ok(t) = Together::of(row, self.network.core_network()) else {
+            return match out {
+                true => Err(stage_refusal(SharedStage::Sent)),
+                false => Ok(None),
+            };
+        };
+        let v = self.together_read(wallet).await?;
+        if !out {
+            return Ok(None);
+        }
+        if handed_off(&t, &v).is_some() {
+            let stage = self.together_session(wallet, &t, &v).await?.stage;
+            return Err(stage_refusal(stage));
+        }
+        match t.row.txid.clone() {
+            Some(txid) => Ok(Some(txid)),
+            None => Err(stage_refusal(SharedStage::Sent)),
+        }
     }
 
     /// The session's stage, derived now (D94).

@@ -140,6 +140,23 @@ fn imported_with(
     }
 }
 
+fn discard(f: &Fx, w: usize, id: &str) -> Result<(), MasternodesError> {
+    f.run(f.mn().discard_shared_session(f.wallets[w], id.to_string()))
+}
+
+/// A prepares with its share the actor, B and C approve, C's session
+/// holds every signature: the session id and C's last Reply.
+fn combined_at_c(f: &Fx, txid: Txid) -> (String, SharedOutcome) {
+    let a = start(f, 0, txid, 0, FEE_T).unwrap();
+    let id = a.session.id;
+    f.imported(1, &a.message.text);
+    let b = approve(f, 1, &id, 0, false).unwrap();
+    f.imported(2, &b.message.text);
+    let c = approve(f, 2, &id, 0, false).unwrap();
+    assert_eq!(c.session.stage, SharedStage::Combined);
+    (id, c)
+}
+
 fn flags(s: &SharedSession) -> (Vec<bool>, Vec<bool>) {
     (
         s.rows.iter().map(|r| r.mine).collect(),
@@ -606,10 +623,31 @@ fn test_QT_127_a_delisted_masternode_kills_the_session() {
     // Approve and send name the stage, before the list's refusal.
     assert_stage(send(&f, 0, &id).unwrap_err(), "dead");
     assert_stage(approve(&f, 1, &id, 0, false).unwrap_err(), "dead");
-    f.run(f.mn().discard_shared_session(f.wallets[0], id.clone()))
-        .unwrap();
+    discard(&f, 0, &id).unwrap();
     assert!(matches!(
         f.run(f.mn().shared_session(f.wallets[0], id)),
+        Err(MasternodesError::SharedSessionNotFound)
+    ));
+}
+
+/// D95 (review r1 n-3): a session marked out whose bytes never reached an
+/// operation (the send stopped between its two writes) can be discarded;
+/// the send saves the operation before the bytes leave.
+#[test]
+fn test_QT_127_a_session_out_but_never_handed_off_can_be_discarded() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    let (id, c) = combined_at_c(&f, txid);
+    let combined = c.session.txid.unwrap();
+    assert!(
+        f.db()
+            .mark_shared_session_out_durable(&f.wallets[2].to_string(), &id, &[7], &combined, 1)
+            .unwrap()
+    );
+    assert_eq!(f.session_of(2, &id).stage, SharedStage::Combined);
+    discard(&f, 2, &id).unwrap();
+    assert!(matches!(
+        f.run(f.mn().shared_session(f.wallets[2], id)),
         Err(MasternodesError::SharedSessionNotFound)
     ));
 }

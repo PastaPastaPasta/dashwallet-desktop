@@ -853,20 +853,21 @@ impl Masternodes {
                 .shared_row(wallet, &session)
                 .await?
                 .ok_or(MasternodesError::SharedSessionNotFound)?;
-            if row.out_at.is_some() {
-                let stage = match row.kind == together::KIND {
-                    true => match together::Together::of(row, s.network.core_network()) {
-                        Ok(t) => s.together_stage(wallet, &t).await?,
-                        Err(_) => SharedStage::Sent,
-                    },
-                    false => s.stored_stage(wallet, &row).await?,
-                };
-                return Err(stage_refusal(stage));
-            }
+            let out = match row.kind == together::KIND {
+                true => s.together_discard(wallet, row).await?,
+                false if row.out_at.is_some() => {
+                    return Err(stage_refusal(s.stored_stage(wallet, &row).await?));
+                }
+                false => None,
+            };
             let (w, id) = (wallet.to_string(), session.clone());
             let deleted = s
                 .appdb_op(move |db| {
-                    db.delete_unsent_shared_session_durable(&w, &id, crate::coins::now_secs())
+                    let now = crate::coins::now_secs();
+                    match out {
+                        Some(txid) => db.delete_out_shared_session_durable(&w, &id, &txid, now),
+                        None => db.delete_unsent_shared_session_durable(&w, &id, now),
+                    }
                 })
                 .await?;
             if !deleted {
