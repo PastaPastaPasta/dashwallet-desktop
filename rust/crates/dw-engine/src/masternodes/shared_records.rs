@@ -338,3 +338,48 @@ pub struct UpdateSharePreview {
     /// What the wallet would pay: the fee.
     pub total_debit: u64,
 }
+
+/// A unilateral dissolution, now, by one of this wallet's shares (§5,
+/// §8): the share is the actor, and pays `fee` (duffs, at most Core's
+/// 1,000,000) and, during the early period, the masternode's penalty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DissolveRequest {
+    pub pro_tx_hash: String,
+    pub share_index: u16,
+    pub fee: u64,
+}
+
+/// What one share gets back from a dissolution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareReturn {
+    pub share_index: u16,
+    /// Duffs: the principal, plus a part of the penalty for a non-actor,
+    /// less the penalty and the fee for the actor (0: no output).
+    pub amount: u64,
+    /// The share's refund address; `None` for a script no address reads.
+    pub refund_address: Option<String>,
+    /// This wallet's share.
+    pub mine: bool,
+}
+
+/// What `preview_dissolve` would build: Core's `BuildDissolution` output
+/// for the share, with the penalty `DissolveShared` picks. Signs nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DissolvePreview {
+    /// Mined at the next height, the dissolution is early, so it pays the
+    /// penalty.
+    pub early: bool,
+    pub penalty: u64,
+    pub fee: u64,
+    /// The first height at which a dissolution pays no penalty: the
+    /// registration's height plus the early period.
+    pub valid_from_height: u32,
+    /// Every share in share order.
+    pub returns: Vec<ShareReturn>,
+    /// `ActorOutputDust`: this share's output is below the dust threshold,
+    /// valid but not relayed.
+    pub warnings: Vec<SharedWarning>,
+    /// What the wallet's share gives up, what the grant must cover: the
+    /// penalty and the fee (§6.3).
+    pub total_debit: u64,
+}

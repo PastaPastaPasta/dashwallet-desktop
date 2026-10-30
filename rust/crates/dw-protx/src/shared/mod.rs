@@ -39,6 +39,7 @@ use dashcore::consensus::encode::{self, Decodable, Encodable, VarInt};
 use dashcore::hashes::{Hash, HashEngine, sha256d};
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 
+pub mod dissolve;
 pub mod envelope;
 pub mod json;
 pub mod netinfo;

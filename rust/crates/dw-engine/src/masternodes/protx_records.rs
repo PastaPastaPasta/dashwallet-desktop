@@ -235,6 +235,8 @@ pub enum ProTxOperationKind {
     UpdateRegistrar,
     /// A shared masternode's reward change, a ProUpShareTx (MG-04b §5.1).
     UpdateShare,
+    /// A shared masternode's dissolution, a ProDisTx (MG-04b §5).
+    Dissolve,
 }
 
 /// An operation's state, derived on every read (MG-04 §5).

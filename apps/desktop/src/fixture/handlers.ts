@@ -791,7 +791,10 @@ export const HANDLERS: Handlers = {
           ? ["spend"]
           : flow === "voting"
             ? ["governance"]
-            : flow === "masternodeRegistration" || flow === "keyChange" || flow === "sharedMasternode"
+            : flow === "masternodeRegistration" ||
+                flow === "keyChange" ||
+                flow === "sharedMasternode" ||
+                flow === "dissolution"
               ? ["masternodeOp"]
               : ["platformOp"];
     const found = grants.map((id) => checkGrant(world, id, walletId, kinds));

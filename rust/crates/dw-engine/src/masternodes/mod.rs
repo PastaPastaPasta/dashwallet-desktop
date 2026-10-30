@@ -36,10 +36,10 @@ pub use records::{
     MasternodeType, RegistrationFacts, UntrackOutcome,
 };
 pub use shared_records::{
-    Activation, DeadReason, JoinSharedRequest, KeyBase, RewardChoice, ShareRow, ShareSlot,
-    ShareTerms, ShareTermsView, SharedCapability, SharedImport, SharedKind, SharedMessage,
-    SharedNext, SharedOutcome, SharedRole, SharedSession, SharedStage, SharedWarning,
-    StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
+    Activation, DeadReason, DissolvePreview, DissolveRequest, JoinSharedRequest, KeyBase,
+    RewardChoice, ShareReturn, ShareRow, ShareSlot, ShareTerms, ShareTermsView, SharedCapability,
+    SharedImport, SharedKind, SharedMessage, SharedNext, SharedOutcome, SharedRole, SharedSession,
+    SharedStage, SharedWarning, StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
 };
 pub use tracking::MAX_MASTERNODE_LABEL;
 

@@ -29,6 +29,13 @@ Usage (a fresh regtest dashd with v24 activated by miners):
   dashd -regtest -datadir=$DIR -daemon -listen=0 -rpcport=29681 -port=29682 -rpcuser=u -rpcpassword=p \\
         -fallbackfee=0.00001 -txindex=1 -vbparams=v24:0:999999999999:0:10:8:6:5:0
   python3 testdata/oracle/dashd/gen_shared_vectors.py --rpc http://u:p@127.0.0.1:29681
+
+With --dissolve-shapes (on another fresh dashd) it writes only
+testdata/shared_dissolve_shapes.json: a registration whose early penalty is
+its smallest share less 50,000 duffs, and unilateral `shared_dissolve`
+standbys in the shapes the files above lack (MG-04b 2a review r1 n-3): the
+actor holding the last share, the actor's output omitted (penalty and fee
+take its whole share), and the actor's output left dust.
 """
 import argparse
 import base64
@@ -356,14 +363,8 @@ def unanimous(rpc, name, reg, actor, fee):
     }
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--rpc", required=True)
-    args = ap.parse_args()
-    rpc = Rpc(args.rpc)
-    info = rpc.call("getnetworkinfo")
-    source = f"regtest dashd {info.get('buildversion', info['subversion'])}, gen_shared_vectors.py"
-
+def setup(rpc):
+    """The wallets, v24 active and mnsync done; returns the height."""
     for w in [MINER] + PARTIES:
         if w not in rpc.call("listwallets"):
             # Legacy wallets: dumpprivkey hands the test the owner keys.
@@ -373,7 +374,45 @@ def main():
     while not v24_active(rpc):
         mine(rpc, 10)
     finish_mnsync(rpc)
-    activation = height(rpc)
+    return height(rpc)
+
+
+def dissolve_shapes(rpc, source):
+    """shared_dissolve_shapes.json: three shares 400/300/300, the early
+    penalty 300 DASH less 50,000 duffs, and early standbys paying it."""
+    parties = [party(rpc, w, amount) for w, amount in zip(PARTIES, [400 * COIN, 300 * COIN, 300 * COIN])]
+    reg = register(rpc, "penalty_near_a_share", parties, "127.0.0.1:19903", addr(rpc, "s0"), "0",
+                   20, 300 * COIN - 50_000, 30_000)
+    cases = [
+        # The actor holds the last share: 40,000 duffs back, last.
+        standby(rpc, "last_actor_penalty", reg, 2, 10_000, True),
+        # The penalty and fee take the whole share: no actor output.
+        standby(rpc, "last_actor_omitted", reg, 2, 50_000, True),
+        standby(rpc, "middle_actor_omitted", reg, 1, 50_000, True),
+        # 100 duffs back: valid, but dust to relay (MG-04b D83).
+        standby(rpc, "last_actor_dust", reg, 2, 49_900, True),
+    ]
+    write_json(os.path.join(TESTDATA, "shared_dissolve_shapes.json"), {
+        "source": source,
+        "network": "regtest",
+        "registration": reg,
+        "cases": cases,
+    })
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--rpc", required=True)
+    ap.add_argument("--dissolve-shapes", action="store_true")
+    args = ap.parse_args()
+    rpc = Rpc(args.rpc)
+    info = rpc.call("getnetworkinfo")
+    source = f"regtest dashd {info.get('buildversion', info['subversion'])}, gen_shared_vectors.py"
+
+    activation = setup(rpc)
+    if args.dissolve_shapes:
+        dissolve_shapes(rpc, source + " --dissolve-shapes")
+        return
 
     a_parties = [
         party(rpc, "s0", 400 * COIN),

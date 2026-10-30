@@ -32,6 +32,7 @@ use super::protx_records::{
     RegistrationPreview, RegistrationRequest, UpdateRegistrarPreview, UpdateRegistrarRequest,
 };
 use super::records::MasternodeType;
+use super::shared::list_settled;
 use super::{Masternodes, MasternodesError, parse_pro_tx_hash};
 use crate::coins::{now_secs, wallet_funds_address};
 use crate::platform::lease::Lease;
@@ -644,8 +645,9 @@ impl Masternodes {
             let w = wallet.to_string();
             let rows = s.appdb_op(move |db| db.masternode_ops(&w)).await?;
             let (history, unspent) = s.op_view(wallet).await?;
+            let view = s.dissolution_view(wallet, &rows).await;
             rows.iter()
-                .map(|r| operation_of(r, state_of(r, &history, &unspent)))
+                .map(|r| operation_of(r, list_settled(r, state_of(r, &history, &unspent), &view)))
                 .collect()
         })
         .await
@@ -654,8 +656,10 @@ impl Masternodes {
     /// Hands a signed, unsettled row's saved bytes to the fence again (D7):
     /// under its own lease from a `MasternodeOp` grant, charged the row's
     /// fee, its inputs reserved again unless another owner holds one. An
-    /// `update_share` row's bytes are shared sending: refused while the
-    /// switch is off (DEC-678), like `update_share` itself.
+    /// `update_share` or `dissolve` row's bytes are shared sending: refused
+    /// while the switch is off (DEC-678), like the calls that made them. A
+    /// `dissolve` row is charged what its share gives up, the penalty and
+    /// the fee (MG-04b §6.3).
     pub async fn resend_operation(
         &self,
         wallet: WalletId,
@@ -667,13 +671,18 @@ impl Masternodes {
             s.require_wallet(&wallet)?;
             let _flight = s.claim_operation(wallet, &operation)?;
             let row = s.op_row(wallet, &operation).await?;
-            if kind_of(&row.kind) == ProTxOperationKind::UpdateShare {
+            let shared = matches!(
+                kind_of(&row.kind),
+                ProTxOperationKind::UpdateShare | ProTxOperationKind::Dissolve
+            );
+            if shared {
                 sending?;
             }
             // An update resends only while no other update of its
-            // masternode would race it, held against a new update (D43, D49).
+            // masternode would race it, held against a new update (D43, D49;
+            // MG-04b D23 for the shared ones).
             let update = row.kind == "update_registrar";
-            let _updating = match update {
+            let _updating = match update || shared {
                 true => Some(s.masternodes.update_lock().await),
                 false => None,
             };
@@ -691,13 +700,20 @@ impl Masternodes {
             if update && let Some(conflict) = s.resend_conflict(&row).await? {
                 return Err(conflict);
             }
+            if shared && let Some(hash) = row.pro_tx_hash.as_deref() {
+                let hash = parse_pro_tx_hash(hash)?;
+                s.check_no_pending_maintenance(wallet, hash, Some(&row.id))
+                    .await?;
+            }
             let tx = ops::signed_tx(&row)
                 .ok_or_else(|| EngineError::Internal("stored signed transaction".into()))?;
             let flow = match kind_of(&row.kind) {
                 ProTxOperationKind::UpdateRegistrar => FlowKind::KeyChange,
                 ProTxOperationKind::UpdateShare => FlowKind::SharedMasternode,
+                ProTxOperationKind::Dissolve => FlowKind::Dissolution,
                 ProTxOperationKind::Registration => FlowKind::MasternodeRegistration,
             };
+            let debit = super::shared::row_debit(&row)?;
             let lease = s
                 .begin_lease(wallet, flow, &[grant])
                 .await
@@ -708,7 +724,7 @@ impl Masternodes {
                 let maybe_out = row.sent_at.is_some();
                 s.check_resend_inputs(wallet, &tx)?;
                 let coins = s.input_coins(&fence, &w, &tx, false).await?;
-                let (charge, _) = charge_fee(&lease, row.fee)?;
+                let (charge, _) = charge_fee(&lease, debit)?;
                 let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
                 let summary = s.summary_of(&w, &tx, &utxos, row.fee, None).await;
                 s.deliver(

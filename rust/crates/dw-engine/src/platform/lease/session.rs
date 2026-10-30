@@ -30,9 +30,10 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         FlowKind::AcceptAndPay => &[GrantKind::PlatformOp, GrantKind::Spend],
         FlowKind::ContactPayment | FlowKind::Proposal => &[GrantKind::Spend],
         FlowKind::Voting => &[GrantKind::Governance],
-        FlowKind::MasternodeRegistration | FlowKind::KeyChange | FlowKind::SharedMasternode => {
-            &[GrantKind::MasternodeOp]
-        }
+        FlowKind::MasternodeRegistration
+        | FlowKind::KeyChange
+        | FlowKind::SharedMasternode
+        | FlowKind::Dissolution => &[GrantKind::MasternodeOp],
         FlowKind::Registration
         | FlowKind::TopUp
         | FlowKind::Withdraw

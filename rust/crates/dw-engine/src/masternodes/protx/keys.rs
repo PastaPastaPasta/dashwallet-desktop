@@ -97,8 +97,8 @@ impl Claim {
         };
         match kind_of(&row.kind) {
             ProTxOperationKind::UpdateRegistrar => claim,
-            // Core's mempool indexes no key of a ProUpShareTx.
-            ProTxOperationKind::UpdateShare => Claim {
+            // Core's mempool indexes no key of a ProUpShareTx or ProDisTx.
+            ProTxOperationKind::UpdateShare | ProTxOperationKind::Dissolve => Claim {
                 operator: None,
                 ..claim
             },

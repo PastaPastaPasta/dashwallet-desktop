@@ -127,12 +127,12 @@ impl AppDb {
         })
     }
 
-    /// The wallet's operations, newest first.
+    /// The wallet's operations, newest first (by insertion within a second).
     pub fn masternode_ops(&self, wallet_id: &str) -> Result<Vec<MasternodeOpRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT {COLUMNS} FROM masternode_ops WHERE wallet_id = ?1
-             ORDER BY created_at DESC, id"
+             ORDER BY created_at DESC, rowid DESC"
         ))?;
         let rows = stmt.query_map([wallet_id], read_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
