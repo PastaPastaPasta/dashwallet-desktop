@@ -82,6 +82,10 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.update_share",
     "Masternodes.preview_dissolve",
     "Masternodes.dissolve",
+    "Masternodes.create_standby",
+    "Masternodes.standby",
+    "Masternodes.export_standby",
+    "Masternodes.send_standby",
 ];
 
 /// The facade's files in `src/masternodes/` (mn-engine.md §0). A new file
@@ -1159,6 +1163,26 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.dissolve(wallet, dissolution("zz"), "g".into())
                 .await
                 .map(drop),
+            mn.create_standby(wallet, "zz".into(), 1_000, "g".into())
+                .await
+                .map(drop),
+            mn.standby(wallet, "zz".into()).await.map(drop),
+            mn.export_standby(wallet, "zz".into(), 0, 1_000, "g".into())
+                .await
+                .map(drop),
+            mn.send_standby(
+                wallet,
+                "zz".into(),
+                0,
+                1_000,
+                StandbyVariant::Full,
+                "g".into(),
+            )
+            .await
+            .map(drop),
+            mn.create_standby(wallet, hash.clone(), 0, "g".into())
+                .await
+                .map(drop),
             // Core's builder refuses a fee of 0 or above its ceiling.
             mn.preview_dissolve(
                 wallet,
@@ -1209,9 +1233,26 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.dissolve(wallet, dissolution(&hash), "g".into())
                 .await
                 .map(drop),
+            mn.create_standby(wallet, hash.clone(), 1_000, "g".into())
+                .await
+                .map(drop),
+            mn.export_standby(wallet, hash.clone(), 0, 1_000, "g".into())
+                .await
+                .map(drop),
+            mn.send_standby(
+                wallet,
+                hash.clone(),
+                0,
+                1_000,
+                StandbyVariant::Immediate,
+                "g".into(),
+            )
+            .await
+            .map(drop),
         ] {
             assert_eq!(code(refused), "masternodes.unsupported");
         }
+        assert!(mn.standby(wallet, hash.clone()).await.unwrap().is_empty());
         for refused in [
             mn.shared_session(wallet, hash.clone()).await.map(drop),
             mn.set_shared_fee(wallet, hash.clone(), 1_000)
@@ -1522,6 +1563,32 @@ fn errors_never_quote_a_secret_shaped_argument() {
                         share_index: 0,
                         fee: 1_000,
                     },
+                    secret(),
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "create_standby",
+                mn.create_standby(as_wallet, secret(), 1_000, secret())
+                    .await
+                    .map(drop),
+            ),
+            ("standby", mn.standby(as_wallet, secret()).await.map(drop)),
+            (
+                "export_standby",
+                mn.export_standby(as_wallet, secret(), 0, 1_000, secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "send_standby",
+                mn.send_standby(
+                    as_wallet,
+                    secret(),
+                    0,
+                    1_000,
+                    StandbyVariant::Full,
                     secret(),
                 )
                 .await

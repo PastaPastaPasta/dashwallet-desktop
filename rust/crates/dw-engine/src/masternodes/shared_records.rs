@@ -155,6 +155,9 @@ pub enum SharedNext {
     Sign,
     /// Sign the coordinator's inputs and send (slice 1b).
     Send,
+    /// A confirmed registration with a share of this wallet that has no
+    /// standby: prepare one (`create_standby`, D21).
+    CreateStandby,
     Nothing,
 }
 
@@ -278,18 +281,25 @@ pub struct SharedOutcome {
     pub message: SharedMessage,
 }
 
-/// What an import did (§3.0). Standbys join in part 2.
+/// What an import did (§3.0).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SharedImport {
     Session {
-        session: SharedSession,
+        /// Boxed: a session is several times a standby's description.
+        session: Box<SharedSession>,
         /// Whether the session changed.
         changed: bool,
         /// The received object's recomputed fingerprint: the code its
         /// sender reads out (n-2).
         received_code: String,
         warnings: Vec<SharedWarning>,
+    },
+    /// A pasted standby passed D32's checks (m-19).
+    Standby {
+        description: StandbyDescription,
+        /// Whether it was stored: `false` when the wallet holds it already.
+        stored: bool,
     },
 }
 
@@ -382,4 +392,66 @@ pub struct DissolvePreview {
     /// What the wallet's share gives up, what the grant must cover: the
     /// penalty and the fee (§6.3).
     pub total_debit: u64,
+}
+
+/// A standby's two variants (§9.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StandbyVariant {
+    /// Penalty 0: valid from `full_valid_from`.
+    Full,
+    /// The early penalty paid: valid now.
+    Immediate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StandbySource {
+    /// Signed by this wallet (`create_standby`).
+    Created,
+    /// Pasted (`import_shared_message`).
+    Imported,
+}
+
+/// A stored standby, by masternode, actor share and fee (§8, §9.4). The
+/// signed bytes stay inside: `export_standby` hands them out under a grant
+/// (m-22).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Standby {
+    pub pro_tx_hash: String,
+    pub share_index: u16,
+    pub fee: u64,
+    /// The first height the full-principal variant is valid at: the
+    /// registration's height plus the early period.
+    pub full_valid_from: u32,
+    /// Which variants are stored. At penalty 0 the two are one transaction,
+    /// stored once as the full one (m-20); an import may hold either.
+    pub full: bool,
+    pub immediate: bool,
+    pub source: StandbySource,
+    pub created_at: u64,
+}
+
+/// A pasted standby, described as dash-qt describes one before it offers
+/// to broadcast it (`masternodelist.cpp:300-373`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StandbyDescription {
+    pub standby: Standby,
+    pub variant: StandbyVariant,
+    pub txid: String,
+    /// What the actor pays the others: 0 for the full variant.
+    pub penalty: u64,
+    /// Every share in share order.
+    pub returns: Vec<ShareReturn>,
+    /// Every share gets its principal back (Core's note): the full
+    /// variant; the immediate one pays the others the penalty.
+    pub returns_principal: bool,
+}
+
+/// Core's standby file (§9.4, D22): `standby-dissolution-<first 8 of the
+/// ProTx hash>-share<k>.txt` and its text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StandbyFile {
+    pub file_name: String,
+    pub text: String,
 }

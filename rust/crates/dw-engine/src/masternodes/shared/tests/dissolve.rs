@@ -13,12 +13,12 @@ use crate::masternodes::{
 /// [`confirmed`]'s masternode in the synced list at 100, its registration
 /// in the history with its payload (the vault's dissolution signer reads
 /// the share table from it, D29).
-fn listed(f: &Fx) -> (String, Txid) {
+pub(super) fn listed(f: &Fx) -> (String, Txid) {
     listed_with(f, COIN)
 }
 
 /// [`listed`] with the terms' early penalty `early_penalty`.
-fn listed_with(f: &Fx, early_penalty: u64) -> (String, Txid) {
+pub(super) fn listed_with(f: &Fx, early_penalty: u64) -> (String, Txid) {
     let (id, txid) = confirmed_with(f, 50, early_penalty);
     f.follow();
     let entry = platform_wallet::masternode::MasternodeListSummary {
@@ -79,7 +79,11 @@ fn request(txid: Txid, share: u16, fee: u64) -> DissolveRequest {
 
 /// Wallet `w` dissolves its share `w` now, at fee 1,000 under a 2-DASH
 /// grant.
-fn dissolve_now(f: &Fx, txid: Txid, w: usize) -> Result<ProTxOperation, MasternodesError> {
+pub(super) fn dissolve_now(
+    f: &Fx,
+    txid: Txid,
+    w: usize,
+) -> Result<ProTxOperation, MasternodesError> {
     let share = u16::try_from(w).unwrap();
     f.run(f.mn().dissolve(
         f.wallets[w],
@@ -88,7 +92,7 @@ fn dissolve_now(f: &Fx, txid: Txid, w: usize) -> Result<ProTxOperation, Masterno
     ))
 }
 
-fn assert_update_pending(e: MasternodesError, operation: &str) {
+pub(super) fn assert_update_pending(e: MasternodesError, operation: &str) {
     assert!(
         matches!(&e, MasternodesError::UpdatePending { operation: o } if o == operation),
         "{e:?}"

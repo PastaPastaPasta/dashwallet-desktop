@@ -9,15 +9,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashcore::hashes::Hash;
-use dashcore::{Address, OutPoint, ScriptBuf, Txid};
+use dashcore::{Address, OutPoint, ScriptBuf, TxOut, Txid};
 use dw_appdb::MasternodeOpRow;
 use dw_protx::shared::dissolve::{
     BuildError, Dissolution, build_dissolution, check_fee, is_early, penalty_free_from,
 };
 use dw_protx::shared::rules::{self as shared_rules, SharedMn};
 use dw_protx::shared::session::funding::decode_frozen;
-use dw_protx::shared::{CollateralShare, ProDisTx};
+use dw_protx::shared::standby::early_penalty;
+use dw_protx::shared::{CollateralShare, ProDisTx, SpecialTx};
 use key_wallet::wallet::managed_wallet_info::fee::FeeRate;
+use platform_wallet::masternode::MasternodeListSummary;
 use serde::{Deserialize, Serialize};
 
 use super::super::MasternodesError;
@@ -32,10 +34,10 @@ use super::super::records::MasternodeType;
 use super::super::shared_records::{DissolveRequest, ShareReturn, SharedWarning};
 use super::flow::signer_refusal;
 use super::store::envelope_refusal;
-use crate::coins::now_secs;
+use crate::coins::{CoinFence, now_secs};
 use crate::platform::{FlowKind, PlatformError};
-use crate::send::MIN_FEE_PER_KB;
 use crate::send::plan::{dust_threshold, fee_for};
+use crate::send::{MIN_FEE_PER_KB, SpendCharge};
 use crate::{EngineError, NetworkSession, WalletId};
 
 /// A `dissolve` row's `request`: the caller's, with what the share gives
@@ -48,6 +50,10 @@ pub(crate) struct DissolveRecord {
     pub penalty: u64,
     /// The actor's output, 0 when the transaction omits it (D27).
     pub actor_output: u64,
+    /// The actor share isn't this wallet's (an imported standby, §9.4):
+    /// the wallet gives up nothing (§6.3).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub foreign: bool,
 }
 
 /// What a row's resend is charged: a `dissolve` row what its share gives
@@ -62,15 +68,44 @@ pub(crate) fn row_debit(row: &MasternodeOpRow) -> Result<u64, MasternodesError> 
 }
 
 impl DissolveRecord {
-    /// What the share gives up: the penalty and the fee.
+    /// What the wallet's share gives up: the penalty and the fee, or
+    /// nothing when the actor share isn't the wallet's.
     pub(crate) fn debit(&self) -> u64 {
-        self.penalty.saturating_add(self.request.fee)
+        match self.foreign {
+            true => 0,
+            false => self.penalty.saturating_add(self.request.fee),
+        }
     }
 }
 
+/// A signed dissolution to save and hand off.
+pub(super) struct HandOff<'a> {
+    pub id: &'a str,
+    pub signed: SpecialTx,
+    pub record: DissolveRecord,
+    pub terms: &'a ProTxTerms,
+    pub hash: [u8; 32],
+    pub charge: SpendCharge,
+    pub fence: CoinFence,
+}
+
 /// Core's builder's refusals are `INVALID_PARAMETER`s, with its texts.
-fn build_refusal(e: BuildError) -> MasternodesError {
+pub(super) fn build_refusal(e: BuildError) -> MasternodesError {
     invalid(&e.to_string())
+}
+
+/// The fee of `dissolution` is at least the relay minimum for its size,
+/// which with its one signature is exact.
+pub(super) fn check_relay_fee(dissolution: &Dissolution, fee: u64) -> Result<(), MasternodesError> {
+    let size = dissolution.signed(vec![[0; 65]]).to_bytes().len();
+    let floor = fee_for(FeeRate::new(MIN_FEE_PER_KB), size)
+        .ok_or(EngineError::Send(crate::send::SendFailure::TxTooLarge))?;
+    if fee < floor {
+        return Err(invalid(&format!(
+            "the fee is below the relay minimum of {floor} duffs"
+        )));
+    }
+    Ok(())
 }
 
 /// The argument checks before the wallet's (§7's order).
@@ -150,11 +185,7 @@ impl NetworkSession {
         let network = self.network.core_network();
         let txid = Txid::from_byte_array(hash);
         let (l, height) = self.shared_confirmed(wallet, txid).await?;
-        let listed = ctx.entries.iter().find(|e| e.pro_tx_hash == hash);
-        let (Some(list_height), Some(listed)) = (ctx.list_height.filter(|h| *h > height), listed)
-        else {
-            return Err(MasternodesError::SharedTooEarly);
-        };
+        let (list_height, listed) = listed_above(ctx, hash, height)?;
         let index = usize::from(request.share_index);
         let recorded = l
             .recorded
@@ -179,42 +210,20 @@ impl NetworkSession {
         };
         let spend_height = list_height + 1;
         let early = is_early(&mn, spend_height);
-        let penalty = if early {
-            mn.early_penalty.max(0) as u64
-        } else {
-            0
-        };
+        let penalty = if early { early_penalty(&mn) } else { 0 };
         let dissolution = build_dissolution(&mn, request.share_index, penalty, request.fee)
             .map_err(build_refusal)?;
-        // The size with its one signature is exact.
-        let size = dissolution.signed(vec![[0; 65]]).to_bytes().len();
-        let floor = fee_for(FeeRate::new(MIN_FEE_PER_KB), size)
-            .ok_or(EngineError::Send(crate::send::SendFailure::TxTooLarge))?;
-        if request.fee < floor {
-            return Err(invalid(&format!(
-                "the fee is below the relay minimum of {floor} duffs"
-            )));
-        }
+        check_relay_fee(&dissolution, request.fee)?;
         let actor_output = dissolution.actor_output;
         let warnings = actor_warnings(actor_output, &actor.refund_script);
-        // Outputs are the non-actors in share order, then the actor's.
-        let mut paid = dissolution.tx.output.iter();
-        let returns = p
-            .shares
-            .iter()
-            .enumerate()
-            .map(|(i, s)| ShareReturn {
-                share_index: i as u16,
-                amount: match i == index {
-                    true => actor_output,
-                    false => paid.next().map_or(0, |o| o.value),
-                },
-                refund_address: Address::from_script(&s.refund_script, network)
-                    .ok()
-                    .map(|a| a.to_string()),
-                mine: i == index,
-            })
-            .collect();
+        let returns = share_returns(
+            &p.shares,
+            &dissolution.tx.output,
+            request.share_index,
+            actor_output,
+            |i| i == request.share_index,
+            network,
+        );
         let terms = &l.session.terms;
         let mn_terms = ProTxTerms {
             masternode_type: MasternodeType::Regular,
@@ -227,9 +236,7 @@ impl NetworkSession {
             operator_public_key: terms.operator_pub_key.clone(),
             operator_index: None,
             operator_reward: u16::try_from(terms.operator_reward).unwrap_or(0),
-            payout_address: Address::from_script(&actor.refund_script, network)
-                .map(|a| a.to_string())
-                .unwrap_or_default(),
+            payout_address: address_of(&actor.refund_script, network).unwrap_or_default(),
             collateral: None,
             collateral_outpoint: Some(format!("{txid}-{}", p.collateral.vout)),
             collateral_address: None,
@@ -310,57 +317,79 @@ impl NetworkSession {
                 return Err(MasternodesError::ShareNotMine);
             }
             plan.check(vec![sig], true)?;
-            let signed = plan.dissolution.signed(vec![sig]);
-            let tx = super::send::typed(&signed)?;
-            let txid = tx.txid();
-            let now = now_secs();
             let record = DissolveRecord {
                 request: request.clone(),
                 penalty: plan.penalty,
                 actor_output: plan.actor_output,
+                foreign: false,
             };
-            let row = MasternodeOpRow {
-                id: id.clone(),
-                kind: kind_name(ProTxOperationKind::Dissolve).into(),
-                terms: json(&plan.mn_terms)?,
-                request: json(&record)?,
-                unsigned_tx: None,
-                sign_address: None,
-                sign_message: None,
-                // The collateral isn't the wallet's coin: no fee inputs,
-                // no locks (§6.3).
-                fee_inputs: ops::encode_inputs(&[]),
-                signed_tx: Some(signed.to_bytes()),
-                txid: Some(txid.to_string()),
-                pro_tx_hash: Some(Txid::from_byte_array(hash).to_string()),
-                locked_collateral: false,
-                fee: request.fee,
-                created_at: now,
-                signed_at: Some(now),
-                sent_at: None,
-                last_error: None,
+            let handed = HandOff {
+                id: &id,
+                signed: plan.dissolution.signed(vec![sig]),
+                record,
+                terms: &plan.mn_terms,
+                hash,
+                charge,
+                fence,
             };
-            self.save_operation(wallet, row, Vec::new()).await?;
-            drop(updating);
-            let w = self.wallet(&wallet).await?;
-            let summary = self.summary_of(&w, &tx, &[], request.fee, None).await;
-            self.deliver(
-                wallet,
-                Delivery {
-                    id: id.clone(),
-                    tx,
-                    summary,
-                    charge,
-                    fence,
-                    maybe_out: false,
-                },
-            )
-            .await?;
-            self.operation(wallet, &id).await
+            self.hand_off_dissolution(wallet, handed, updating).await
         }
         .await;
         lease.end();
         result
+    }
+
+    /// Saves a signed dissolution as a `dissolve` operation, then hands it
+    /// off as MG-04's rows are; D23's lock is released once the row is
+    /// saved.
+    pub(super) async fn hand_off_dissolution(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        h: HandOff<'_>,
+        updating: tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<ProTxOperation, MasternodesError> {
+        let tx = super::send::typed(&h.signed)?;
+        let txid = tx.txid();
+        let now = now_secs();
+        let fee = h.record.request.fee;
+        let row = MasternodeOpRow {
+            id: h.id.to_string(),
+            kind: kind_name(ProTxOperationKind::Dissolve).into(),
+            terms: json(h.terms)?,
+            request: json(&h.record)?,
+            unsigned_tx: None,
+            sign_address: None,
+            sign_message: None,
+            // The collateral isn't the wallet's coin: no fee inputs, no
+            // locks (§6.3).
+            fee_inputs: ops::encode_inputs(&[]),
+            signed_tx: Some(h.signed.to_bytes()),
+            txid: Some(txid.to_string()),
+            pro_tx_hash: Some(Txid::from_byte_array(h.hash).to_string()),
+            locked_collateral: false,
+            fee,
+            created_at: now,
+            signed_at: Some(now),
+            sent_at: None,
+            last_error: None,
+        };
+        self.save_operation(wallet, row, Vec::new()).await?;
+        drop(updating);
+        let w = self.wallet(&wallet).await?;
+        let summary = self.summary_of(&w, &tx, &[], fee, None).await;
+        self.deliver(
+            wallet,
+            Delivery {
+                id: h.id.to_string(),
+                tx,
+                summary,
+                charge: h.charge,
+                fence: h.fence,
+                maybe_out: false,
+            },
+        )
+        .await?;
+        self.operation(wallet, h.id).await
     }
 
     /// What [`list_settled`] reads for `rows`: nothing unless one is an
@@ -400,12 +429,21 @@ impl NetworkSession {
             .hub
             .wallet_state(&wallet)
             .map_or(0, |s| s.synced_height);
+        let chain = self.shared_chain(wallet).await.ok();
         let mut registered = HashMap::new();
         for hash in hashes {
-            if let Ok((_, at)) = self
-                .shared_confirmed(wallet, Txid::from_byte_array(hash))
-                .await
-            {
+            let txid = Txid::from_byte_array(hash);
+            let at = match self.shared_confirmed(wallet, txid).await {
+                Ok((_, at)) => Some(at),
+                // A standby sent without the session (D86, D87): the
+                // registration's block in the wallet's history.
+                Err(_) => chain
+                    .as_ref()
+                    .and_then(|c| c.history.get(&txid))
+                    .and_then(|e| e.context.block_info())
+                    .map(|b| b.height()),
+            };
+            if let Some(at) = at {
                 registered.insert(hash, at);
             }
         }
@@ -419,7 +457,7 @@ impl NetworkSession {
 
     /// The masternode's registration from the wallet's history (D29), in
     /// the bytes the vault's dissolution signer reads.
-    async fn registration_bytes(
+    pub(super) async fn registration_bytes(
         &self,
         wallet: WalletId,
         hash: [u8; 32],
@@ -433,16 +471,62 @@ impl NetworkSession {
     }
 }
 
-const DUST_REFUSAL: &str =
+pub(super) const DUST_REFUSAL: &str =
     "the actor's output is below the dust threshold and would not be relayed";
 
 /// n-10: an actor output in (0, dust) is valid and Core's builder keeps
 /// it, but it isn't relayed (`providertx_service.cpp:674-676`).
-fn actor_warnings(actor_output: u64, refund: &ScriptBuf) -> Vec<SharedWarning> {
+pub(super) fn actor_warnings(actor_output: u64, refund: &ScriptBuf) -> Vec<SharedWarning> {
     match actor_output > 0 && actor_output < dust_threshold(refund.len()) {
         true => vec![SharedWarning::ActorOutputDust],
         false => Vec::new(),
     }
+}
+
+/// m-16: the list's height and its entry of `hash`, the list above the
+/// registration's block `height`; else `shared_too_early`.
+pub(super) fn listed_above(
+    ctx: &Context,
+    hash: [u8; 32],
+    height: u32,
+) -> Result<(u32, &MasternodeListSummary), MasternodesError> {
+    let listed = ctx.entries.iter().find(|e| e.pro_tx_hash == hash);
+    match (ctx.list_height.filter(|h| *h > height), listed) {
+        (Some(list_height), Some(listed)) => Ok((list_height, listed)),
+        _ => Err(MasternodesError::SharedTooEarly),
+    }
+}
+
+/// Each share's return from a dissolution by `actor` paying `outputs`:
+/// the non-actors in share order, then the actor's `actor_output`,
+/// omitted at 0 (`BuildDissolution`).
+pub(super) fn share_returns(
+    shares: &[CollateralShare],
+    outputs: &[TxOut],
+    actor: u16,
+    actor_output: u64,
+    mine: impl Fn(u16) -> bool,
+    network: dashcore::Network,
+) -> Vec<ShareReturn> {
+    let mut paid = outputs.iter();
+    (0u16..)
+        .zip(shares)
+        .map(|(i, s)| ShareReturn {
+            share_index: i,
+            amount: match i == actor {
+                true => actor_output,
+                false => paid.next().map_or(0, |o| o.value),
+            },
+            refund_address: address_of(&s.refund_script, network),
+            mine: mine(i),
+        })
+        .collect()
+}
+
+pub(super) fn address_of(script: &ScriptBuf, network: dashcore::Network) -> Option<String> {
+    Address::from_script(script, network)
+        .ok()
+        .map(|a| a.to_string())
 }
 
 /// What [`list_settled`] reads (D81).
@@ -498,10 +582,13 @@ fn row_hash(row: &MasternodeOpRow) -> Option<[u8; 32]> {
     super::super::parse_pro_tx_hash(hash).ok()
 }
 
-/// A `dissolve` row whose transaction omits its actor output.
+/// A `dissolve` row whose transaction may never be in the wallet's
+/// history: its actor output omitted, or another share's standby
+/// (`foreign`, D87), whose actor output pays another wallet.
 fn unseen_dissolution(row: &MasternodeOpRow) -> bool {
     kind_of(&row.kind) == ProTxOperationKind::Dissolve
-        && serde_json::from_str::<DissolveRecord>(&row.request).is_ok_and(|r| r.actor_output == 0)
+        && serde_json::from_str::<DissolveRecord>(&row.request)
+            .is_ok_and(|r| r.actor_output == 0 || r.foreign)
 }
 
 #[cfg(test)]
@@ -522,6 +609,7 @@ mod tests {
             },
             penalty: 5,
             actor_output,
+            foreign: false,
         };
         MasternodeOpRow {
             id: "a".into(),
@@ -619,6 +707,18 @@ mod tests {
     #[test]
     fn test_QT_127_a_resent_dissolution_is_charged_its_penalty_and_fee() {
         assert_eq!(row_debit(&row(0)).unwrap(), 1_005);
+        // Another share's standby gives up nothing of the wallet's.
+        let mut record: DissolveRecord = serde_json::from_str(&row(0).request).unwrap();
+        record.foreign = true;
+        let foreign = MasternodeOpRow {
+            request: serde_json::to_string(&record).unwrap(),
+            ..row(0)
+        };
+        assert_eq!(row_debit(&foreign).unwrap(), 0);
+        assert!(
+            !row(0).request.contains("foreign"),
+            "the 2a row's JSON is unchanged"
+        );
         let update = MasternodeOpRow {
             kind: "update_share".into(),
             request: "{}".into(),

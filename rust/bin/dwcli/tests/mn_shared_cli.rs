@@ -171,6 +171,32 @@ fn test_QT_126_shared_commands_on_a_datadir_without_a_wallet_report_wallet_not_f
             vec!["mn", "shared", "dissolve", SECRET, "--share-index", "0"],
             b"",
         ),
+        (vec!["mn", "shared", "create-standby", SECRET], b""),
+        (vec!["mn", "shared", "standby", SECRET], b""),
+        (
+            vec![
+                "mn",
+                "shared",
+                "export-standby",
+                SECRET,
+                "--share-index",
+                "0",
+            ],
+            b"",
+        ),
+        (
+            vec![
+                "mn",
+                "shared",
+                "send-standby",
+                SECRET,
+                "--share-index",
+                "0",
+                "--variant",
+                "full",
+            ],
+            b"",
+        ),
     ];
     for (args, stdin) in commands {
         let out = dwcli(dir.as_ref(), &args, stdin);
@@ -280,6 +306,53 @@ fn test_QT_126_shared_refusals_are_the_facades_codes_and_quote_nothing() {
         );
     }
 
+    // Slice 2b's standbys: a fresh wallet stores none, and the calls that
+    // sign, hand out or send one need v24 first; the request is checked
+    // before that.
+    let out = run(&["mn", "shared", "standby", SESSION], b"");
+    assert_eq!(result(&out), serde_json::json!([]));
+    for args in [
+        &["standby", "nothex"][..],
+        &["create-standby", "nothex"],
+        &["create-standby", SESSION, "--fee", "0"],
+        &["export-standby", "nothex", "--share-index", "0"],
+        &[
+            "send-standby",
+            "nothex",
+            "--share-index",
+            "0",
+            "--variant",
+            "full",
+        ],
+    ] {
+        let out = run(&[&["mn", "shared"][..], args].concat(), b"");
+        assert_eq!(code(&out), "invalid_argument", "{args:?}");
+    }
+    let standby_file = path.join("standby.txt");
+    for args in [
+        &["create-standby", SESSION][..],
+        &[
+            "export-standby",
+            SESSION,
+            "--share-index",
+            "0",
+            "--out",
+            standby_file.to_str().unwrap(),
+        ],
+        &[
+            "send-standby",
+            SESSION,
+            "--share-index",
+            "0",
+            "--variant",
+            "immediate",
+        ],
+    ] {
+        let out = run(&[&["mn", "shared"][..], args].concat(), b"");
+        assert_eq!(code(&out), "masternodes.unsupported", "{args:?}");
+    }
+    assert!(!standby_file.exists());
+
     // `--out` writes nothing when the call fails.
     let file = path.join("message.json");
     let file_arg = file.to_str().unwrap();
@@ -364,6 +437,28 @@ fn test_QT_126_shared_command_lines_that_are_refused_name_no_value() {
             "preview-dissolve",
             SECRET,
             "--share-index",
+            SECRET,
+        ],
+        // Slice 2b's: a bad fee, share or variant, or none.
+        &["mn", "shared", "create-standby", SECRET, "--fee", SECRET],
+        &["mn", "shared", "export-standby", SECRET],
+        &[
+            "mn",
+            "shared",
+            "export-standby",
+            SECRET,
+            "--share-index",
+            SECRET,
+        ],
+        &["mn", "shared", "send-standby", SECRET, "--share-index", "0"],
+        &[
+            "mn",
+            "shared",
+            "send-standby",
+            SECRET,
+            "--share-index",
+            "0",
+            "--variant",
             SECRET,
         ],
     ];
