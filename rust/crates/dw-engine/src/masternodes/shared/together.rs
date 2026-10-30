@@ -774,7 +774,14 @@ impl NetworkSession {
             (None, None) => return Err(message_refusal("parse")),
         };
         let ctx = super::v24_context(self, wallet).await?;
-        let reg = self.registered(wallet, hash, &ctx).await?;
+        let reg = match self.registered(wallet, hash, &ctx).await {
+            // A late reply once the masternode has left the list: the stored
+            // session's stage, as approve and send read it first.
+            Err(MasternodesError::SharedTooEarly) => {
+                return Err(self.late_refusal(wallet, hash, &request).await?);
+            }
+            r => r?,
+        };
         let mn = reg.mn();
         let checked = together::check(&request, &mn).map_err(request_refusal)?;
         check_relay(&checked, &mn)?;
@@ -821,6 +828,32 @@ impl NetworkSession {
             received_code: code,
             warnings,
         })
+    }
+
+    /// The refusal of a message for `request` while the masternode isn't in
+    /// the list above its registration: the stored session's stage once it
+    /// is past `signing` and `combined` (a late reply), else
+    /// `shared_too_early`.
+    async fn late_refusal(
+        &self,
+        wallet: WalletId,
+        hash: [u8; 32],
+        request: &SpecialTx,
+    ) -> Result<MasternodesError, MasternodesError> {
+        let network = self.network.core_network();
+        for row in self.together_rows(wallet).await? {
+            let Ok(t) = Together::of(row, network) else {
+                continue;
+            };
+            if t.hash != hash || t.request != *request {
+                continue;
+            }
+            let stage = self.together_stage(wallet, &t).await?;
+            if !matches!(stage, SharedStage::Signing | SharedStage::Combined) {
+                return Ok(stage_refusal(stage));
+            }
+        }
+        Ok(MasternodesError::SharedTooEarly)
     }
 
     /// Signs this wallet's shares of an imported request (§4's unanimous

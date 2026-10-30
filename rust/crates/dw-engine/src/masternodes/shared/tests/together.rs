@@ -637,6 +637,11 @@ fn test_QT_127_a_delisted_masternode_kills_the_session() {
     // Approve and send name the stage, before the list's refusal.
     assert_stage(send(&f, 0, &id).unwrap_err(), "dead");
     assert_stage(approve(&f, 1, &id, 0, false).unwrap_err(), "dead");
+    // A late copy names the stage too, not the list (review r1 n-6).
+    assert_stage(
+        import_into(&f, 1, &a.message.text, None).unwrap_err(),
+        "dead",
+    );
     discard(&f, 0, &id).unwrap();
     assert!(matches!(
         f.run(f.mn().shared_session(f.wallets[0], id)),
@@ -647,12 +652,23 @@ fn test_QT_127_a_delisted_masternode_kills_the_session() {
 /// D94 with D81's guard (review r1 m-1): C sends; A and B never take C's
 /// last Reply. The dissolution empties A's synced list before A's filter
 /// scan reaches its block: A's session keeps its stage, isn't discarded,
-/// and reads `confirmed` once the scan finds the block.
+/// and reads `confirmed` once the scan finds the block. A late Reply is
+/// `shared_too_early` while the session is still `signing`, then names its
+/// stage; a copy of A's other request of the masternode names that one's.
 #[test]
 fn test_QT_127_a_session_waits_for_the_scan_before_reading_dead() {
     let f = fx(3, true);
-    let (_, txid) = listed(&f);
-    let (id, _) = combined_at_c(&f, txid);
+    let (reg_id, txid) = listed(&f);
+    let p = registration(&f, &reg_id);
+    let other = sigs_text(
+        txid,
+        &together::prepare(&shared_mn(&p, txid), 1, FEE_T + 1)
+            .unwrap()
+            .tx,
+        &[],
+    );
+    let (r2, _, _, _) = imported_with(&f, 0, &other, None);
+    let (id, c) = combined_at_c(&f, txid);
     send(&f, 2, &id).unwrap();
     let tx = f.net.sent()[0].clone();
     delisted(&f, 105);
@@ -662,12 +678,30 @@ fn test_QT_127_a_session_waits_for_the_scan_before_reading_dead() {
         discard(&f, 0, &id).unwrap_err().code(),
         "masternodes.shared_too_early"
     );
+    assert_eq!(
+        import_into(&f, 0, &c.message.text, None)
+            .unwrap_err()
+            .code(),
+        "masternodes.shared_too_early"
+    );
     f.mine(tx, 105);
     scanned_to(&f, 0, 105);
     assert_eq!(
         f.session_of(0, &id).stage,
         SharedStage::Confirmed { height: 105 }
     );
+    assert_stage(
+        import_into(&f, 0, &c.message.text, None).unwrap_err(),
+        "confirmed",
+    );
+    // The other request's session: its collateral spent by another.
+    assert_eq!(
+        f.session_of(0, &r2.id).stage,
+        SharedStage::Dead {
+            reason: DeadReason::Delisted
+        }
+    );
+    assert_stage(import_into(&f, 0, &other, None).unwrap_err(), "dead");
 }
 
 /// D95 (review r1 n-3): a session marked out whose bytes never reached an
