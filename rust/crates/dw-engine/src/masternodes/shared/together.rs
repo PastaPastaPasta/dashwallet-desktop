@@ -1019,7 +1019,7 @@ impl NetworkSession {
 /// by its share's owner key is taken; a byte-identical repeat is ignored; a
 /// second, different signature of a share is skipped, the first kept. The
 /// count taken, and the skipped entries' warning.
-fn absorb(
+pub(super) fn absorb(
     mn: &SharedMn,
     sign_hash: [u8; 32],
     sigs: &mut BTreeMap<u16, CompactSignature>,

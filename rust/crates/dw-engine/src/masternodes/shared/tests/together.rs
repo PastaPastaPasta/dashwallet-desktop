@@ -11,9 +11,12 @@ use dw_protx::shared::envelope::{
 };
 use dw_protx::shared::rules::{SharedMn, check_dissolution, verify_hash_canonical};
 use dw_protx::shared::together::{self, Checked};
-use dw_protx::shared::{ProDisTx, ProRegTxV3, SpecialTx, TRANSACTION_PROVIDER_DISSOLVE};
+use dw_protx::shared::{
+    CollateralShare, ProDisTx, ProRegTxV3, SpecialTx, TRANSACTION_PROVIDER_DISSOLVE,
+};
 
-use super::dissolve::{assert_update_pending, delisted, dissolve_now, listed, request};
+use super::super::together::absorb;
+use super::dissolve::{assert_update_pending, confirm, delisted, dissolve_now, listed, request};
 use super::*;
 use crate::masternodes::{
     DeadReason, ProTxOperation, ProTxOperationKind, ProTxOperationState, SharedKind, SharedWarning,
@@ -277,10 +280,10 @@ fn test_QT_127_three_wallets_dissolve_together() {
         (a2.stage, a2.next),
         (SharedStage::Combined, SharedNext::Send)
     );
-    assert!(
-        !imported_with(&f, 0, &c.message.text, None).1,
-        "held already"
-    );
+    // Held already: nothing changes, and no warning (dash-qt is silent on
+    // a byte-identical repeat).
+    let (_, changed, _, warnings) = imported_with(&f, 0, &c.message.text, None);
+    assert!(!changed && warnings.is_empty(), "{warnings:?}");
 
     // C sends: its share isn't the actor's, so the row is foreign and
     // charged nothing; the switch refuses it.
@@ -704,6 +707,53 @@ fn test_QT_127_a_session_waits_for_the_scan_before_reading_dead() {
     assert_stage(import_into(&f, 0, &other, None).unwrap_err(), "dead");
 }
 
+/// D94 (review r1 m-2): another dissolution of the masternode in a block
+/// kills an unsent session, while the list still holds the masternode.
+#[test]
+fn test_QT_127_another_dissolution_mined_kills_the_session() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    let (id, _) = combined_at_c(&f, txid);
+    dissolve_now(&f, txid, 1).unwrap();
+    // `listed`'s list still holds the masternode.
+    f.mine(f.net.sent()[0].clone(), 101);
+    assert_eq!(
+        f.session_of(0, &id).stage,
+        SharedStage::Dead {
+            reason: DeadReason::Delisted
+        }
+    );
+}
+
+/// The actor's wallet sends (review r1 m-2): its row isn't `foreign`, and
+/// it is charged nothing. Another dissolution mined then conflicts the
+/// operation, and the session reads `conflicted`.
+#[test]
+fn test_QT_127_the_actor_sends_and_a_conflict_reads_conflicted() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    let (id, c) = combined_at_c(&f, txid);
+    f.imported(0, &c.message.text);
+    let op = send(&f, 0, &id).unwrap();
+    let row: serde_json::Value = serde_json::from_str(
+        &f.db()
+            .masternode_op(&f.wallets[0].to_string(), &op.id)
+            .unwrap()
+            .unwrap()
+            .request,
+    )
+    .unwrap();
+    assert_eq!(
+        (row["foreign"].as_bool(), row["together"].as_bool()),
+        (None, Some(true))
+    );
+    assert_eq!(f.session_of(0, &id).stage, SharedStage::Sent);
+    let mut theirs = f.net.sent()[0].clone();
+    theirs.output.swap(0, 1);
+    confirm(&f, 0, theirs, 101);
+    assert_eq!(f.session_of(0, &id).stage, SharedStage::Conflicted);
+}
+
 /// D95 (review r1 n-3): a session marked out whose bytes never reached an
 /// operation (the send stopped between its two writes) can be discarded;
 /// the send saves the operation before the bytes leave.
@@ -724,6 +774,63 @@ fn test_QT_127_a_session_out_but_never_handed_off_can_be_discarded() {
         f.run(f.mn().shared_session(f.wallets[2], id)),
         Err(MasternodesError::SharedSessionNotFound)
     ));
+}
+
+/// `addSignatures` on a share signed already (review r1 m-2): the same
+/// bytes again are taken silently as nothing, a second valid signature is
+/// skipped and the first kept.
+#[test]
+fn test_QT_127_a_second_signature_of_a_share_keeps_the_first() {
+    use dashcore::secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
+    let secret = SecretKey::from_secret_bytes([0x5e; 32]).unwrap();
+    let key = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let shares = [CollateralShare {
+        amount: 100 * COIN,
+        refund_script: dashcore::ScriptBuf::new(),
+        reward_script: dashcore::ScriptBuf::new(),
+        owner_key_id: key.pubkey_hash().to_byte_array(),
+    }];
+    let txid = Txid::from_byte_array([3; 32]);
+    let mn = SharedMn {
+        pro_tx_hash: txid,
+        collateral: OutPoint::new(txid, 0),
+        shares: &shares,
+        registered_height: 50,
+        early_period_blocks: 0,
+        early_penalty: 0,
+        voting_key_id: [1; 20],
+    };
+    let hash = [7; 32];
+    let sign = |nonce: u8| {
+        let sig = RecoverableSignature::sign_ecdsa_recoverable_with_noncedata(
+            Message::from_digest(hash),
+            &secret,
+            &[nonce; 32],
+        );
+        let (recid, rs) = sig.serialize_compact();
+        let mut out = [0; 65];
+        out[0] = 27 + 4 + recid.to_u8();
+        out[1..].copy_from_slice(&rs);
+        out
+    };
+    let (first, second) = (sign(1), sign(2));
+    assert_ne!(first, second);
+    assert!(together::verifies(&mn, hash, 0, &first) && together::verifies(&mn, hash, 0, &second));
+    let entry = |sig| [SigEntry::Signature { index: 0, sig }];
+    let mut sigs = BTreeMap::new();
+    assert_eq!(absorb(&mn, hash, &mut sigs, &entry(first)), (1, None));
+    assert_eq!(absorb(&mn, hash, &mut sigs, &entry(first)), (0, None));
+    assert_eq!(
+        absorb(&mn, hash, &mut sigs, &entry(second)),
+        (
+            0,
+            Some(SharedWarning::SkippedSignatures {
+                shares: vec![0],
+                count: 1
+            })
+        )
+    );
+    assert_eq!(sigs[&0], first);
 }
 
 /// A session survives a restart: the row is all of it.
