@@ -54,6 +54,11 @@ pub(crate) struct DissolveRecord {
     /// the wallet gives up nothing (§6.3).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub foreign: bool,
+    /// A dissolution every owner signed (`send_maintenance`, MG-04b D95):
+    /// the shares gave up their fee at approval, so sending and resending
+    /// it charge nothing (§6.3).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub together: bool,
 }
 
 /// What a row's resend is charged: a `dissolve` row what its share gives
@@ -69,9 +74,10 @@ pub(crate) fn row_debit(row: &MasternodeOpRow) -> Result<u64, MasternodesError> 
 
 impl DissolveRecord {
     /// What the wallet's share gives up: the penalty and the fee, or
-    /// nothing when the actor share isn't the wallet's.
+    /// nothing when the actor share isn't the wallet's or every owner
+    /// signed (its approval was charged).
     pub(crate) fn debit(&self) -> u64 {
-        match self.foreign {
+        match self.foreign || self.together {
             true => 0,
             false => self.penalty.saturating_add(self.request.fee),
         }
@@ -103,14 +109,19 @@ pub(super) fn check_relay_fee(dissolution: &Dissolution, fee: u64) -> Result<(),
 /// `fee` is at least the relay minimum for a transaction of `size` bytes:
 /// below it no node relays it (`MIN_FEE_PER_KB`).
 pub(super) fn check_relay_fee_of_size(size: usize, fee: u64) -> Result<(), MasternodesError> {
-    let floor = fee_for(FeeRate::new(MIN_FEE_PER_KB), size)
-        .ok_or(EngineError::Send(crate::send::SendFailure::TxTooLarge))?;
+    let floor = relay_floor(size)?;
     if fee < floor {
         return Err(invalid(&format!(
             "the fee is below the relay minimum of {floor} duffs"
         )));
     }
     Ok(())
+}
+
+/// The relay minimum for a transaction of `size` bytes (`MIN_FEE_PER_KB`).
+pub(super) fn relay_floor(size: usize) -> Result<u64, MasternodesError> {
+    Ok(fee_for(FeeRate::new(MIN_FEE_PER_KB), size)
+        .ok_or(EngineError::Send(crate::send::SendFailure::TxTooLarge))?)
 }
 
 /// The argument checks before the wallet's (§7's order).
@@ -327,6 +338,7 @@ impl NetworkSession {
                 penalty: plan.penalty,
                 actor_output: plan.actor_output,
                 foreign: false,
+                together: false,
             };
             let handed = HandOff {
                 id: &id,
@@ -397,6 +409,30 @@ impl NetworkSession {
         self.operation(wallet, h.id).await
     }
 
+    /// D81's two readings for `list`, taken after it: a height its entries
+    /// aren't above, and the wallet's filter-scan checkpoint. The pinned SPV
+    /// library gives the entries without their height, and its engine takes
+    /// a diff before its progress says so: bound the entries' height by the
+    /// readings taken after them, the headers' included. The engine asks for
+    /// no diff above a stored header, and the header reading is published
+    /// before that request's round trip ends; it isn't certain to be (D81
+    /// names the residual).
+    pub(super) fn list_scan(&self, wallet: WalletId, list: &ListView) -> (u32, u32) {
+        let list_bound = {
+            let t = self.hub.tracker();
+            [list.height, t.masternode_list_height(), t.tip_height()]
+                .into_iter()
+                .flatten()
+                .max()
+                .unwrap_or(0)
+        };
+        let scanned = self
+            .hub
+            .wallet_state(&wallet)
+            .map_or(0, |s| s.synced_height);
+        (list_bound, scanned)
+    }
+
     /// What [`list_settled`] reads for `rows`: nothing unless one is an
     /// [`unseen_dissolution`].
     pub(crate) async fn dissolution_view(
@@ -416,24 +452,7 @@ impl NetworkSession {
             return DissolutionView::default();
         };
         let list = self.protx_list(&manager).await;
-        // The pinned SPV library gives the entries without their height, and
-        // its engine takes a diff before its progress says so: bound the
-        // entries' height by the readings taken after them, the headers'
-        // included. The engine asks for no diff above a stored header, and
-        // the header reading is published before that request's round trip
-        // ends; it isn't certain to be (D81 names the residual).
-        let list_bound = {
-            let t = self.hub.tracker();
-            [list.height, t.masternode_list_height(), t.tip_height()]
-                .into_iter()
-                .flatten()
-                .max()
-                .unwrap_or(0)
-        };
-        let scanned = self
-            .hub
-            .wallet_state(&wallet)
-            .map_or(0, |s| s.synced_height);
+        let (list_bound, scanned) = self.list_scan(wallet, &list);
         let chain = self.shared_chain(wallet).await.ok();
         let mut registered = HashMap::new();
         for hash in hashes {
@@ -615,6 +634,7 @@ mod tests {
             penalty: 5,
             actor_output,
             foreign: false,
+            together: false,
         };
         MasternodeOpRow {
             id: "a".into(),
@@ -720,6 +740,14 @@ mod tests {
             ..row(0)
         };
         assert_eq!(row_debit(&foreign).unwrap(), 0);
+        // Every owner signed: the approvals were charged.
+        record.foreign = false;
+        record.together = true;
+        let together = MasternodeOpRow {
+            request: serde_json::to_string(&record).unwrap(),
+            ..row(0)
+        };
+        assert_eq!(row_debit(&together).unwrap(), 0);
         assert!(
             !row(0).request.contains("foreign"),
             "the 2a row's JSON is unchanged"

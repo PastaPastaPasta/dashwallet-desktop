@@ -364,16 +364,49 @@ impl AppDb {
         id: &str,
         now: u64,
     ) -> Result<bool> {
+        self.delete_shared_session_where(
+            "DELETE FROM shared_mn_sessions
+             WHERE wallet_id = ?1 AND id = ?2 AND out_at IS NULL RETURNING reserved",
+            params![wallet_id, id],
+            wallet_id,
+            id,
+            now,
+        )
+    }
+
+    /// Deletes a session marked out with `txid` whose bytes the caller has
+    /// found were never handed off, and unlocks its coins, in one synced
+    /// transaction: `false` (and nothing deleted or unlocked) when it isn't
+    /// out, is out with another txid, or is gone.
+    pub fn delete_out_shared_session_durable(
+        &self,
+        wallet_id: &str,
+        id: &str,
+        txid: &str,
+        now: u64,
+    ) -> Result<bool> {
+        self.delete_shared_session_where(
+            "DELETE FROM shared_mn_sessions
+             WHERE wallet_id = ?1 AND id = ?2 AND out_at IS NOT NULL AND txid = ?3
+             RETURNING reserved",
+            params![wallet_id, id, txid],
+            wallet_id,
+            id,
+            now,
+        )
+    }
+
+    fn delete_shared_session_where(
+        &self,
+        delete: &str,
+        params: &[&dyn rusqlite::ToSql],
+        wallet_id: &str,
+        id: &str,
+        now: u64,
+    ) -> Result<bool> {
         self.durably(|conn| {
             let tx = conn.unchecked_transaction()?;
-            let reserved: Option<String> = tx
-                .query_row(
-                    "DELETE FROM shared_mn_sessions
-                     WHERE wallet_id = ?1 AND id = ?2 AND out_at IS NULL RETURNING reserved",
-                    params![wallet_id, id],
-                    |r| r.get(0),
-                )
-                .optional()?;
+            let reserved: Option<String> = tx.query_row(delete, params, |r| r.get(0)).optional()?;
             let Some(reserved) = reserved else {
                 return Ok(false);
             };
@@ -771,6 +804,36 @@ mod tests {
         );
         assert!(db.shared_session(W, &id(1)).unwrap().is_some());
         assert_eq!(active_locks(&db), pairs(&[("t", 0), ("u", 1)]));
+    }
+
+    #[test]
+    fn a_session_out_with_its_txid_is_deleted_by_that_txid_only() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.insert_shared_session_durable(W, &row(1, &[("t", 0)]), 1)
+            .unwrap();
+        db.insert_shared_session_durable(W, &row(2, &[("v", 2)]), 1)
+            .unwrap();
+        // Not out: the unsent delete's.
+        assert!(
+            !db.delete_out_shared_session_durable(W, &id(2), "tx", 5)
+                .unwrap()
+        );
+        db.mark_shared_session_out_durable(W, &id(1), &[7], "tx", 30)
+            .unwrap();
+        assert!(
+            !db.delete_out_shared_session_durable(W, &id(1), "ty", 31)
+                .unwrap()
+        );
+        assert!(
+            !db.delete_out_shared_session_durable(W2, &id(1), "tx", 31)
+                .unwrap()
+        );
+        assert!(
+            db.delete_out_shared_session_durable(W, &id(1), "tx", 31)
+                .unwrap()
+        );
+        assert!(db.shared_session(W, &id(1)).unwrap().is_none());
+        assert_eq!(active_locks(&db), pairs(&[("v", 2)]));
     }
 
     #[test]

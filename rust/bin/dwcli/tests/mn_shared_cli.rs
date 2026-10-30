@@ -197,6 +197,12 @@ fn test_QT_126_shared_commands_on_a_datadir_without_a_wallet_report_wallet_not_f
             ],
             b"",
         ),
+        (
+            vec!["mn", "shared", "dissolve-together", SECRET, "--actor", "0"],
+            b"",
+        ),
+        (vec!["mn", "shared", "approve-maintenance", SESSION], b""),
+        (vec!["mn", "shared", "send-maintenance", SESSION], b""),
     ];
     for (args, stdin) in commands {
         let out = dwcli(dir.as_ref(), &args, stdin);
@@ -352,6 +358,32 @@ fn test_QT_126_shared_refusals_are_the_facades_codes_and_quote_nothing() {
         assert_eq!(code(&out), "masternodes.unsupported", "{args:?}");
     }
     assert!(!standby_file.exists());
+
+    // Slice 2c's dissolve together: the request is checked first, then v24;
+    // approving reads the session for its grant's cap.
+    for args in [
+        &["dissolve-together", "nothex", "--actor", "0"][..],
+        &["dissolve-together", SESSION, "--actor", "0", "--fee", "0"],
+        &["approve-maintenance", "nothex"],
+        &["send-maintenance", "nothex"],
+    ] {
+        let out = run(&[&["mn", "shared"][..], args].concat(), b"");
+        assert_eq!(code(&out), "invalid_argument", "{args:?}");
+    }
+    for (args, want) in [
+        (
+            &["dissolve-together", SESSION, "--actor", "0"][..],
+            "masternodes.unsupported",
+        ),
+        (
+            &["approve-maintenance", SESSION, "--accept-actor-fee"],
+            "masternodes.shared_session_not_found",
+        ),
+        (&["send-maintenance", SESSION], "masternodes.unsupported"),
+    ] {
+        let out = run(&[&["mn", "shared"][..], args].concat(), b"");
+        assert_eq!(code(&out), want, "{args:?}");
+    }
 
     // `--out` writes nothing when the call fails.
     let file = path.join("message.json");

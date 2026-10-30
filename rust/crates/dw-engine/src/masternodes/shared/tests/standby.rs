@@ -68,6 +68,24 @@ fn export(f: &Fx, w: usize, txid: Txid, share: u16) -> Result<StandbyFile, Maste
     )
 }
 
+/// [`export`] with the file's date estimated from `now`.
+fn export_at(
+    f: &Fx,
+    w: usize,
+    txid: Txid,
+    share: u16,
+    now: u64,
+) -> Result<StandbyFile, MasternodesError> {
+    f.run(f.mn().export_standby_at(
+        f.wallets[w],
+        txid.to_string(),
+        share,
+        1_000,
+        f.grant(w, 0),
+        now,
+    ))
+}
+
 /// The hex lines under the file's two labels.
 fn hex_lines(file: &StandbyFile) -> (Option<String>, Option<String>) {
     let lines: Vec<&str> = file.text.lines().collect();
@@ -154,10 +172,13 @@ fn test_QT_127_create_standby_signs_cores_pair_and_stores_it() {
         created_at: made[0].created_at,
     };
     assert_eq!(made, vec![expected.clone()]);
-    // Signing again gives the same bytes: nothing new is stored.
-    let file = export(&f, 0, txid, 0).unwrap();
+    // Signing again gives the same bytes: nothing new is stored. Both files
+    // are dated from one clock reading, so a minute turning between them
+    // changes nothing.
+    let now = crate::coins::now_secs();
+    let file = export_at(&f, 0, txid, 0, now).unwrap();
     assert_eq!(create(&f, 0, txid, COIN + 1_000).unwrap(), vec![expected]);
-    assert_eq!(export(&f, 0, txid, 0).unwrap().text, file.text);
+    assert_eq!(export_at(&f, 0, txid, 0, now).unwrap().text, file.text);
     // Nothing went out, nothing is an operation, nothing is locked.
     assert!(f.net.sent().is_empty());
     assert!(f.run(f.mn().operations(f.wallets[0])).unwrap().is_empty());

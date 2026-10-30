@@ -133,6 +133,13 @@ pub enum MasternodesError {
     /// The registration ProRegTx isn't in the wallet's history (MG-04b D29).
     #[error("the shared masternode's registration is unknown to this wallet")]
     SharedRegistrationUnknown,
+    /// A dissolve-together request another wallet prepared takes `fee`
+    /// duffs from this wallet's actor share, above the relay minimum:
+    /// approving it needs `accept_actor_fee` (MG-04b m-15).
+    #[error(
+        "the request takes a fee of {fee} duffs from this wallet's share: accept it to approve"
+    )]
+    SharedActorFee { fee: u64 },
     /// A lease refused (MG-05 D12).
     #[error(transparent)]
     Platform(#[from] PlatformError),
@@ -170,6 +177,7 @@ impl MasternodesError {
             Self::ShareNotMine => "masternodes.share_not_mine",
             Self::SharedTooEarly => "masternodes.shared_too_early",
             Self::SharedRegistrationUnknown => "masternodes.shared_registration_unknown",
+            Self::SharedActorFee { .. } => "masternodes.shared_actor_fee",
             Self::Platform(e) => e.code(),
             Self::Engine(e) => e.code(),
         }

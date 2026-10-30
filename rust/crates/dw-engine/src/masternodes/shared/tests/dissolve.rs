@@ -45,7 +45,7 @@ pub(super) fn listed_with(f: &Fx, early_penalty: u64) -> (String, Txid) {
 
 /// `tx` in a block at `height` of wallet `w`'s history, as key-wallet
 /// records it (the seam's blocks reach the session stages only).
-fn confirm(f: &Fx, w: usize, tx: Transaction, height: u32) {
+pub(super) fn confirm(f: &Fx, w: usize, tx: Transaction, height: u32) {
     use key_wallet::account::{AccountType, StandardAccountType};
     use key_wallet::managed_account::transaction_record::{
         TransactionDirection, TransactionRecord,
@@ -69,7 +69,7 @@ fn confirm(f: &Fx, w: usize, tx: Transaction, height: u32) {
     (f.session.hub.history).with_wallet(f.wallets[w], |h| h.upsert(&record, None));
 }
 
-fn request(txid: Txid, share: u16, fee: u64) -> DissolveRequest {
+pub(super) fn request(txid: Txid, share: u16, fee: u64) -> DissolveRequest {
     DissolveRequest {
         pro_tx_hash: txid.to_string(),
         share_index: share,
@@ -99,7 +99,7 @@ pub(super) fn assert_update_pending(e: MasternodesError, operation: &str) {
     );
 }
 
-fn script(address: &str) -> dashcore::ScriptBuf {
+pub(super) fn script(address: &str) -> dashcore::ScriptBuf {
     address
         .parse::<dashcore::Address<_>>()
         .unwrap()
@@ -462,7 +462,7 @@ fn op_state_of(f: &Fx, id: &str) -> ProTxOperationState {
 }
 
 /// The masternode out of the synced list, which reads `height`.
-fn delisted(f: &Fx, height: u32) {
+pub(super) fn delisted(f: &Fx, height: u32) {
     *f.seam.list.lock().unwrap() = Some(Vec::new());
     *f.seam.list_height.lock().unwrap() = height;
 }

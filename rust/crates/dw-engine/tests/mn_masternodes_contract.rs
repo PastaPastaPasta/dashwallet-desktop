@@ -86,6 +86,9 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.standby",
     "Masternodes.export_standby",
     "Masternodes.send_standby",
+    "Masternodes.start_dissolve_together",
+    "Masternodes.approve_maintenance",
+    "Masternodes.send_maintenance",
 ];
 
 /// The facade's files in `src/masternodes/` (mn-engine.md §0). A new file
@@ -785,6 +788,7 @@ fn error_codes_match_the_contract() {
             MasternodesError::ShareNotMine,
             MasternodesError::SharedTooEarly,
             MasternodesError::SharedRegistrationUnknown,
+            MasternodesError::SharedActorFee { fee: 0 },
         ],
         MasternodesError::code,
     );
@@ -1180,6 +1184,15 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             )
             .await
             .map(drop),
+            mn.start_dissolve_together(wallet, dissolution("zz"), "g".into())
+                .await
+                .map(drop),
+            mn.approve_maintenance(wallet, "zz".into(), "g".into(), false)
+                .await
+                .map(drop),
+            mn.send_maintenance(wallet, "zz".into(), "g".into())
+                .await
+                .map(drop),
             mn.create_standby(wallet, hash.clone(), 0, "g".into())
                 .await
                 .map(drop),
@@ -1249,6 +1262,15 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             )
             .await
             .map(drop),
+            mn.start_dissolve_together(wallet, dissolution(&hash), "g".into())
+                .await
+                .map(drop),
+            mn.approve_maintenance(wallet, hash.clone(), "g".into(), false)
+                .await
+                .map(drop),
+            mn.send_maintenance(wallet, hash.clone(), "g".into())
+                .await
+                .map(drop),
         ] {
             assert_eq!(code(refused), "masternodes.unsupported");
         }
@@ -1593,6 +1615,32 @@ fn errors_never_quote_a_secret_shaped_argument() {
                 )
                 .await
                 .map(drop),
+            ),
+            (
+                "start_dissolve_together",
+                mn.start_dissolve_together(
+                    as_wallet,
+                    DissolveRequest {
+                        pro_tx_hash: secret(),
+                        share_index: 0,
+                        fee: 1_000,
+                    },
+                    secret(),
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "approve_maintenance",
+                mn.approve_maintenance(as_wallet, secret(), secret(), true)
+                    .await
+                    .map(drop),
+            ),
+            (
+                "send_maintenance",
+                mn.send_maintenance(as_wallet, secret(), secret())
+                    .await
+                    .map(drop),
             ),
         ]
     });
