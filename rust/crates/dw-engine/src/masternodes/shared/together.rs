@@ -858,9 +858,9 @@ impl NetworkSession {
 
     /// Signs this wallet's shares of an imported request (§4's unanimous
     /// row) under a lease charged the fee when its actor share pays it
-    /// (§6.3). A request this wallet didn't prepare whose actor share is
-    /// this wallet's needs `accept_actor_fee` unless its fee is at most the
-    /// relay minimum (m-15).
+    /// (§6.3). Signing the actor share here (only a request another wallet
+    /// prepared leaves it unsigned) needs `accept_actor_fee` unless the fee
+    /// is at most the relay minimum (m-15).
     pub(super) async fn approve_together(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -876,8 +876,11 @@ impl NetworkSession {
         if stage != SharedStage::Signing {
             return Err(stage_refusal(stage));
         }
-        // D23: a signature that can't be mined while another dissolution
-        // or reward change of the masternode may be is never charged.
+        // D23: no signature is charged while an operation of the masternode
+        // (a dissolution or reward change) is pending. Another together
+        // session of it is no operation until sent: each request whose
+        // actor share this wallet signs is charged its fee, though one
+        // dissolution at most is mined (D95).
         self.check_no_pending_maintenance(wallet, t.hash, None)
             .await?;
         let reg = self.registered(wallet, t.hash, &ctx).await?;
@@ -894,10 +897,10 @@ impl NetworkSession {
         check_relay(&checked, &mn)?;
         check_dust(&checked, &mn)?;
         // The fee leaves the actor share: charged with its signature (§6.3).
+        // The preparer signed its actor share at start, so only a request
+        // another wallet prepared signs it here (m-15).
         let actor_signing = to_sign.iter().any(|(share, _)| *share == checked.actor);
-        let prepared_here = role_of(&t.row.role) == SharedRole::Coordinator;
         if actor_signing
-            && !prepared_here
             && !accept_actor_fee
             && checked.fee > relay_floor(combined_size(&checked, &mn))?
         {
