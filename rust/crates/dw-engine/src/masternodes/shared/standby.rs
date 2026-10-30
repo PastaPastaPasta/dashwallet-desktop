@@ -29,8 +29,8 @@ use super::super::protx::ops;
 use super::super::protx_records::{ProTxOperation, ProTxTerms};
 use super::super::records::MasternodeType;
 use super::super::shared_records::{
-    DissolveRequest, SharedImport, SharedNext, SharedSession, SharedStage, SharedWarning, Standby,
-    StandbyDescription, StandbyFile, StandbySource, StandbyVariant,
+    DissolveRequest, SharedImport, SharedKind, SharedNext, SharedSession, SharedStage,
+    SharedWarning, Standby, StandbyDescription, StandbyFile, StandbySource, StandbyVariant,
 };
 use super::super::{MasternodesError, display_hex};
 use super::dissolve::{
@@ -85,7 +85,7 @@ impl Registered {
     }
 
     /// The `dissolve` row's terms for `actor`, as 2a's (`plan_dissolve`).
-    fn terms(
+    pub(super) fn terms(
         &self,
         actor: u16,
         owner_index: Option<u32>,
@@ -114,7 +114,7 @@ impl Registered {
     }
 }
 
-fn p2pkh_address(id: [u8; 20], network: dashcore::Network) -> String {
+pub(super) fn p2pkh_address(id: [u8; 20], network: dashcore::Network) -> String {
     address_of(
         &ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array(id)),
         network,
@@ -256,7 +256,10 @@ pub(super) fn file_text(f: &FileFacts) -> String {
 
 /// The shared registration `hash` in a block of the wallet's history, and
 /// that block's height (D29); else `shared_registration_unknown`.
-fn in_history(chain: &ChainView, hash: [u8; 32]) -> Result<(u32, ProRegTxV3), MasternodesError> {
+pub(super) fn in_history(
+    chain: &ChainView,
+    hash: [u8; 32],
+) -> Result<(u32, ProRegTxV3), MasternodesError> {
     let entry = chain
         .history
         .get(&Txid::from_byte_array(hash))
@@ -308,7 +311,7 @@ impl NetworkSession {
 
     /// The keychain owner index of each share of `reg` that is this
     /// wallet's (D10).
-    async fn my_shares(
+    pub(super) async fn my_shares(
         &self,
         wallet: WalletId,
         reg: &Registered,
@@ -655,6 +658,7 @@ impl NetworkSession {
             penalty: standby::variant_penalty(&mn, checked.variant),
             actor_output: checked.actor_output,
             foreign: owner_index.is_none(),
+            together: false,
         };
         let terms = reg.terms(checked.actor, owner_index, self.network.core_network());
         let lease = self
@@ -691,7 +695,8 @@ impl NetworkSession {
         sessions: &mut [SharedSession],
     ) -> Result<(), MasternodesError> {
         let waiting = |s: &SharedSession| {
-            matches!(s.stage, SharedStage::Confirmed { .. })
+            s.kind == SharedKind::Registration
+                && matches!(s.stage, SharedStage::Confirmed { .. })
                 && s.next == SharedNext::Nothing
                 && s.pro_tx_hash.is_some()
         };

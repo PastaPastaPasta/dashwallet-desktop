@@ -22,8 +22,8 @@ use dw_engine::governance::{GovernanceError, NameChoice};
 use dw_engine::masternodes::{
     AttachedKeyRole, CollateralChoice, DissolveRequest, EvonodeTerms, JoinSharedRequest, KeepOr,
     MasternodeType, Masternodes, MasternodesError, OperatorChoice, PayoutChoice,
-    PlatformNodeChoice, RegistrationRequest, RewardChoice, ShareSlot, ShareTerms, StandbyVariant,
-    StartSharedRequest, UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
+    PlatformNodeChoice, RegistrationRequest, RewardChoice, ShareSlot, ShareTerms, SharedKind,
+    StandbyVariant, StartSharedRequest, UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
 };
 use dw_engine::{Engine, EngineError, NetworkSession, WalletId};
 use dw_protx::params::MAX_ENVELOPE_BYTES;
@@ -393,6 +393,32 @@ enum SharedCommand {
         #[arg(long)]
         max_debit: Option<u64>,
     },
+    /// Prepare the masternode's unanimous dissolution with one of this
+    /// wallet's shares the actor, and sign every share of this wallet (a
+    /// grant capped at the fee); prints the session and the Request for
+    /// every other owner to approve.
+    DissolveTogether {
+        pro_tx_hash: String,
+        /// The share (row index) of this wallet that pays the fee.
+        #[arg(long)]
+        actor: u16,
+        /// Duffs, from the actor's share; dash-qt's together-tab default
+        /// (`DEFAULT_DISSOLVE_FEE`).
+        #[arg(long, default_value_t = 100_000)]
+        fee: u64,
+    },
+    /// Sign this wallet's shares of an imported dissolve-together request
+    /// (a grant capped at the session's `debit`); prints the Reply.
+    ApproveMaintenance {
+        session: String,
+        /// Approve a request that takes its fee from this wallet's share
+        /// (`actor_fee`).
+        #[arg(long)]
+        accept_actor_fee: bool,
+    },
+    /// Combine a complete dissolve-together session and send it (a grant
+    /// capped at 0); prints the operation.
+    SendMaintenance { session: String },
 }
 
 #[derive(Args)]
@@ -692,10 +718,9 @@ fn standby_debit(
     all_shares: bool,
 ) -> Result<u64, Failure> {
     let sessions = engine.block_on(mn.shared_sessions(wallet))?;
-    let Some(session) = sessions
-        .iter()
-        .find(|s| s.pro_tx_hash.as_deref() == Some(pro_tx_hash))
-    else {
+    let Some(session) = sessions.iter().find(|s| {
+        s.kind == SharedKind::Registration && s.pro_tx_hash.as_deref() == Some(pro_tx_hash)
+    }) else {
         return Ok(0);
     };
     let each = fee
@@ -1265,6 +1290,30 @@ fn shared_command(
                 grant,
             ))?)
         }
+        SharedCommand::DissolveTogether {
+            pro_tx_hash,
+            actor,
+            fee,
+        } => {
+            let request = DissolveRequest {
+                pro_tx_hash,
+                share_index: actor,
+                fee,
+            };
+            let grant = masternode_grant(session, passphrase, w, fee)?;
+            value(engine.block_on(mn.start_dissolve_together(w, request, grant))?)
+        }
+        SharedCommand::ApproveMaintenance {
+            session: id,
+            accept_actor_fee,
+        } => {
+            let grant = debit_grant(&id)?;
+            value(engine.block_on(mn.approve_maintenance(w, id, grant, accept_actor_fee))?)
+        }
+        SharedCommand::SendMaintenance { session: id } => {
+            let grant = masternode_grant(session, passphrase, w, 0)?;
+            value(engine.block_on(mn.send_maintenance(w, id, grant))?)
+        }
     }
 }
 
@@ -1383,6 +1432,11 @@ mod tests {
             ],
             &["preview-dissolve", HASH, "--share-index", "0"],
             &["dissolve", HASH, "--share-index", "1", "--fee", "1000000"],
+            &["dissolve-together", HASH, "--actor", "0"],
+            &["dissolve-together", HASH, "--actor", "2", "--fee", "1000"],
+            &["approve-maintenance", SESSION],
+            &["approve-maintenance", SESSION, "--accept-actor-fee"],
+            &["send-maintenance", SESSION],
             &["sessions", "--wallet", "w"],
         ] {
             assert!(shared(args).is_ok(), "{args:?}");
@@ -1438,6 +1492,11 @@ mod tests {
             &["preview-dissolve", HASH],
             &["dissolve", HASH, "--share-index", "0", "--fee", "-1"],
             &["dissolve", HASH, "--share-index", "x"],
+            // Slice 2c's: the actor is named.
+            &["dissolve-together", HASH],
+            &["dissolve-together", "--actor", "0"],
+            &["approve-maintenance"],
+            &["send-maintenance"],
         ] {
             assert!(refused(args).is_some(), "{args:?}");
         }

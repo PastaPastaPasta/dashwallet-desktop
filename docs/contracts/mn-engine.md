@@ -1,9 +1,9 @@
 # MG masternodes engine contract (`dw-engine` facade)
 
-Contract-Version: 15
+Contract-Version: 16
 
 Status: **draft**, 2026-10-17 (ROADMAP MG-03; version 2 after the Sol r1 review: D23–D28; version 3 after Sol r2: D30–D32; version 4 adds MG-04's ProTx owner flows, §2.3, citing
-[`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on; version 5, after MG-04's r2 review, adds `operation` to `masternodes.protx_refused`; version 6 adds MG-04b slice 1a's shared-masternode sessions, §2.4, citing [`MG-04b-shared-masternodes.md`](../design/MG-04b-shared-masternodes.md)'s D-rows as "MG-04b D1" and so on; version 7, after the slice's validator review, binds `lock_shared_terms` to a revision and `approve_shared` to a consent hash, and adds `SharedSession.consent_hash`, MG-04b D56; version 8 adds `sign_shared_funding`'s consent-hash refusal, MG-04b D65; version 9 adds slice 1b's sending: `can_send` true, `send_shared_registration`, `abandon_shared_session`, `update_share` and `ProTxOperationKind::UpdateShare`, `SharedSession.debit`, `MasternodeRow.shares`, MG-04b D68–D75; version 10, after its review r1, puts sending behind one switch that is off until slice 1c, `can_send` false and the four sending calls refusing `unsupported`, DEC-678, MG-04b D71); version 11, after its review r2, says where `resend_operation` of an `update_share` row refuses (MG-04b D71); version 12 turns sending on (slice 1c: D39 closed by MG-04b D75, M9 by D78); version 13 adds `ShareTermsView.service_read`, Core's reading of a service written in another form (MG-04b D78); version 14 adds MG-04b slice 2a's dissolve now: `preview_dissolve`, `dissolve`, `ProTxOperationKind::Dissolve`, `DissolveRequest`, `DissolvePreview` and `ShareReturn`, a `dissolve` row's resend and state, MG-04b D79–D83; version 15 adds MG-04b slice 2b's standby: `create_standby`, `standby`, `export_standby`, `send_standby`, `Standby`, `StandbyDescription`, `StandbyFile`, `StandbySource`, `StandbyVariant`, `SharedImport::Standby` (and `SharedImport::Session`'s session boxed, its JSON unchanged), `SharedNext::CreateStandby`, a `dissolve` row of another share's standby, MG-04b D84–D91. Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
+[`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on; version 5, after MG-04's r2 review, adds `operation` to `masternodes.protx_refused`; version 6 adds MG-04b slice 1a's shared-masternode sessions, §2.4, citing [`MG-04b-shared-masternodes.md`](../design/MG-04b-shared-masternodes.md)'s D-rows as "MG-04b D1" and so on; version 7, after the slice's validator review, binds `lock_shared_terms` to a revision and `approve_shared` to a consent hash, and adds `SharedSession.consent_hash`, MG-04b D56; version 8 adds `sign_shared_funding`'s consent-hash refusal, MG-04b D65; version 9 adds slice 1b's sending: `can_send` true, `send_shared_registration`, `abandon_shared_session`, `update_share` and `ProTxOperationKind::UpdateShare`, `SharedSession.debit`, `MasternodeRow.shares`, MG-04b D68–D75; version 10, after its review r1, puts sending behind one switch that is off until slice 1c, `can_send` false and the four sending calls refusing `unsupported`, DEC-678, MG-04b D71); version 11, after its review r2, says where `resend_operation` of an `update_share` row refuses (MG-04b D71); version 12 turns sending on (slice 1c: D39 closed by MG-04b D75, M9 by D78); version 13 adds `ShareTermsView.service_read`, Core's reading of a service written in another form (MG-04b D78); version 14 adds MG-04b slice 2a's dissolve now: `preview_dissolve`, `dissolve`, `ProTxOperationKind::Dissolve`, `DissolveRequest`, `DissolvePreview` and `ShareReturn`, a `dissolve` row's resend and state, MG-04b D79–D83; version 15 adds MG-04b slice 2b's standby: `create_standby`, `standby`, `export_standby`, `send_standby`, `Standby`, `StandbyDescription`, `StandbyFile`, `StandbySource`, `StandbyVariant`, `SharedImport::Standby` (and `SharedImport::Session`'s session boxed, its JSON unchanged), `SharedNext::CreateStandby`, a `dissolve` row of another share's standby, MG-04b D84–D91; version 16 adds MG-04b slice 2c's dissolve together: `start_dissolve_together`, `approve_maintenance`, `send_maintenance`, `masternodes.shared_actor_fee{fee}`, `SharedWarning::SkippedSignatures` and `NoApprovals`, the import of a `dissolve` sigs envelope and of a targeted bare array, a dissolve-together session's stages, and a `dissolve` row it sends, MG-04b D92–D98. Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
 the changes in §1 below.
@@ -131,13 +131,14 @@ signing call saves its row durably, with its inputs locked (MG-04 D25), before t
 | `release_collateral(wallet: WalletId, pro_tx_hash: String)` | async | Unlocks the collateral coin of one of the wallet's masternodes and remembers the release, so the follower leaves it unlocked (MG-04 D9). Sends nothing. `invalid_argument`, `masternodes.not_found` (not the wallet's), `masternodes.collateral_unavailable` (no resolved collateral). **Implemented.** | `MasternodesError` |
 | `lock_collateral(wallet: WalletId, pro_tx_hash: String)` | async | Locks it again and forgets the release. Refuses as `release_collateral`. **Implemented.** | `MasternodesError` |
 
-### 2.4 Shared masternodes (MG-04b, slices 1a, 1b, 2a and 2b)
+### 2.4 Shared masternodes (MG-04b, slices 1a, 1b, 2a, 2b and 2c)
 
 v24's multi-party registration as dash-qt's session envelope runs it (MG-04b §2–§4): this wallet takes part as
 coordinator or participant, and the coordinator signs last and sends the registration (slice 1b). Messages pass as
 text (`SharedMessage.text`, Core's file name with it). A session id is 64 lower-case hex. The calls that produce bytes the network accepts
 (`sign_shared_funding`, `send_shared_registration`, `abandon_shared_session`, `update_share`, `dissolve`,
-`create_standby`, `export_standby`, `send_standby`, and `resend_operation` of an `update_share` or `dissolve` row)
+`create_standby`, `export_standby`, `send_standby`, `start_dissolve_together`, `approve_maintenance`,
+`send_maintenance`, and `resend_operation` of an `update_share` or `dissolve` row)
 are behind one switch, on since MG-04b slice 1c (DEC-678,
 MG-04b D71): turned off, `can_send` is false and each of them refuses `masternodes.unsupported{feature: "shared_masternodes"}` right after
 the wallet check; `resend_operation` refuses it once it has read the row (§2.3). On, they hold the
@@ -147,8 +148,8 @@ and each participant contributes exactly its share.
 Refusals, in order (MG-04b §7): arguments (`invalid_argument`), `wallet_not_found` (naming no id),
 `masternodes.unsupported{feature: "shared_masternodes"}` (sending off for the calls above; v24 not `active` for `start_shared`, `join_shared`,
 `lock_shared_terms`, `approve_shared`, `sign_shared_funding`, `send_shared_registration`, `preview_update_share`,
-`update_share`, `preview_dissolve`, `dissolve`, `create_standby`, `export_standby`, `send_standby` and the import
-of a standby; `field:
+`update_share`, `preview_dissolve`, `dissolve`, `create_standby`, `export_standby`, `send_standby`,
+`start_dissolve_together`, `approve_maintenance`, `send_maintenance` and the import of a standby or a sigs message; `field:
 "service"` for a coordinator service that isn't IPv4, MG-04b D5; `approve_shared` can only judge the service from the
 session's terms, so it refuses it after the session checks below, and never for a session it already approved), the list (`masternodes.list_unavailable`,
 `masternodes.shared_too_early`, `masternodes.shared_registration_unknown`), the session
@@ -173,7 +174,7 @@ unlocks it: another row's release skips it, and m1's `unlock_outpoints` refuses 
 | `shared_session(wallet: WalletId, session: String)` | async | One `SharedSession`. **Implemented.** | `MasternodesError` |
 | `start_shared(wallet: WalletId, request: StartSharedRequest)` | async | Coordinator: checks the request (2 to 8 shares, distinct trimmed labels, an IPv4 service, Core's share rules), picks the keychain owner, voting and operator keys (§2.3's rule), selects and locks confirmed coins for its share and the fee, issues its refund address, saves the draft and returns it with its Invitation. **Implemented.** | `MasternodesError` |
 | `set_shared_fee(wallet: WalletId, session: String, fee: u64)` | async | Coordinator, `draft`, while no other party's contribution is in (else `shared_stage{stage: "replied"}`, MG-04b D33): re-selects its coins for share + the new fee (the old locks released in the same write), `revision` + 1. **Implemented.** | `MasternodesError` |
-| `import_shared_message(wallet: WalletId, text: String, target: Option<String>)` | async | Applies a pasted or opened message by MG-04b §3.0's table: a new participant session from an Invitation (`invited`, no coin touched), or the next copy of a held one; a re-pasted copy changes nothing (`changed: false`). Signs nothing. A standby (one hex line of a type-10 transaction) is checked as MG-04b D89 lists, against the registration in the wallet's history and the synced list (`shared_message{reason: "not_standby"}` first for a payload that doesn't decode, which names the masternode; `shared_registration_unknown`, `shared_too_early`, then `not_standby`, Core's rules as `protx_refused{reason}` with `bad-prodis-sig` for its signature, `shared_message{reason: "outputs"}`, then `invalid_argument` for a fee below the relay minimum), stored (`source: imported`, D84) and described (`SharedImport::Standby{description, stored}`; `stored: false` when the wallet holds that variant already). A sigs envelope or a targeted bare array is `unsupported`; a bare array without a target is `shared_message{reason: "parse"}`. **Implemented.** | `MasternodesError` |
+| `import_shared_message(wallet: WalletId, text: String, target: Option<String>)` | async | Applies a pasted or opened message by MG-04b §3.0's table: a new participant session from an Invitation (`invited`, no coin touched), or the next copy of a held one; a re-pasted copy changes nothing (`changed: false`). Signs nothing. A standby (one hex line of a type-10 transaction) is checked as MG-04b D89 lists, against the registration in the wallet's history and the synced list (`shared_message{reason: "not_standby"}` first for a payload that doesn't decode, which names the masternode; `shared_registration_unknown`, `shared_too_early`, then `not_standby`, Core's rules as `protx_refused{reason}` with `bad-prodis-sig` for its signature, `shared_message{reason: "outputs"}`, then `invalid_argument` for a fee below the relay minimum), stored (`source: imported`, D84) and described (`SharedImport::Standby{description, stored}`; `stored: false` when the wallet holds that variant already). A `dissolve` sigs envelope, or a bare signature array for the dissolve-together session named by `target`, is checked as MG-04b D92 lists against the registration in the wallet's history and the synced list (`shared_registration_unknown`, `shared_too_early`, then `shared_message{reason}`: `not_dissolution`, `other_masternode`, `signed`, `outputs`, `other_session` for another request or masternode than the target's; then `invalid_argument` below the relay minimum of the combined size, D96); its signatures are taken one by one, each verified by its share's owner key, and the rest skipped with `SharedWarning::SkippedSignatures` (§2.5's rules; `NoApprovals` for a `signatures` value that isn't an array); the session is created (`participant`) or updated, `changed` saying whether the stored session changed (a signature taken, or this wallet's shares of it). A bare array's `received_code` is its own JSON's fingerprint. A `registrar` envelope is `unsupported` until the key change (MG-04b D45, D97); a bare array without a target is `shared_message{reason: "parse"}`, and a target of another kind `invalid_argument`. **Implemented.** | `MasternodesError` |
 | `join_shared(wallet: WalletId, session: String, request: JoinSharedRequest)` | async | Participant, `invited`: fills the named share (or the single open one), picks its owner key, issues its refund address, locks coins for the share, records its contribution, returns the Details. **Implemented.** | `MasternodesError` |
 | `shared_message(wallet: WalletId, session: String)` | async | `SharedMessage`: the message to copy now, its code and Core's file name (`shared-mn-session-<CODE>.json`). **Implemented.** | `MasternodesError` |
 | `lock_shared_terms(wallet: WalletId, session: String, revision: u32, grant: String)` | async | Coordinator, `draft`, at `revision`: the `SharedSession.revision` the coordinator reviewed, from the session record (`shared_session`, or `mn shared show`); another revision now (a reply absorbed since) is `shared_message{reason: "conflict"}` (MG-04b D56). Then every row and contribution in (else `shared_stage{stage: "incomplete"}`): freezes the registration, runs MG-04b §3.1 step 3's checks and the fee floor (`shared_funding_mismatch{reason: "fee_low", needed}`), checks its reservation, signs its shares' consent (charged 0), returns Locked Terms. **Implemented.** | `MasternodesError` |
@@ -191,6 +192,9 @@ unlocks it: another row's release skips it, and m1's `unlock_outpoints` refuses 
 | `standby(wallet: WalletId, pro_tx_hash: String)` | async | The wallet's stored standbys of the masternode by share and fee, as `Standby` (which variants are held, `full_valid_from` from the registration's current block, the source): never their bytes (MG-04b m-22). **Implemented.** | `MasternodesError` |
 | `export_standby(wallet: WalletId, pro_tx_hash: String, share: u16, fee: u64, grant: String)` | async | `StandbyFile`: Core's file name (`standby-dissolution-<first 8 of the hash>-share<k>.txt`) and text (`standbyFileText`; MG-04b D90's dates and unit) of the standby of `share` paying `fee`, under a `MasternodeOp` grant charged 0 (MG-04b D21). `invalid_argument` when no such standby is stored; then the registration and list as `create_standby`'s, then the lease. **Implemented.** | `MasternodesError` |
 | `send_standby(wallet: WalletId, pro_tx_hash: String, share: u16, fee: u64, variant: StandbyVariant, grant: String)` | async | Hands a stored variant to the network as a `ProTxOperation` of kind `dissolve`, as `dissolve` does (MG-04b D87): `update_pending` as `dissolve`'s; `invalid_argument` when no such standby is stored; the registration and list as `create_standby`'s; `shared_stage{stage: "full_valid"}` for the immediate variant once the full one is valid and stored (m-20, D88); `shared_too_early` for the full one before it is valid (D85); `invalid_argument` for a variant not stored; the stored bytes checked again as an import, `invalid_argument` for a fee below the relay minimum; `invalid_argument` for a dust actor output (D83); then a `Dissolution` lease charged the variant's penalty and the fee, or 0 when the actor share isn't the wallet's (a `foreign` row, whose resend is charged 0 too, and which settles by the list as an unseen dissolution does, MG-04b D87). Validity is judged at the tip: the list's height, or the headers' when the list lags them (D85). **Implemented.** | `MasternodesError` |
+| `start_dissolve_together(wallet: WalletId, request: DissolveRequest, grant: String)` | async | Prepares the masternode's unanimous ProDisTx as `protx shared_dissolve_prepare` does (`BuildDissolution` with penalty 0 and `request.fee` from the actor's share, MG-04b D92) with `request.share_index` the actor, a share of this wallet (`share_not_mine`), and signs every share of this wallet over `MakeSignHash(tx, n)` under one `Dissolution` lease charged the fee (§6.3; the vault reads the share table from the registration in the history, MG-04b D29). `update_pending` as `dissolve`'s (MG-04b D23); the relay minimum of the combined size (`invalid_argument`, D96); a dust actor output refused (`invalid_argument`, D83); Core's rules on the combined shape. Returns `SharedOutcome`: the session (kind `dissolve_together`, this wallet its coordinator, id m-17's, D93) and its `Request`. The same request again signs what is missing and returns the session, its role kept (a request imported first stays this wallet's as participant, its message the `Reply`). **Implemented.** | `MasternodesError` |
+| `approve_maintenance(wallet: WalletId, session: String, grant: String, accept_actor_fee: bool)` | async | A dissolve-together session at `signing` (else `shared_stage`, `dead` for a delisted masternode), then `update_pending` as `dissolve`'s: the request re-checked (D92) and the relay minimum, then every share of this wallet not yet signed is signed under one `Dissolution` lease charged the fee when the actor share is among them, else 0 (§6.3). A request this wallet didn't prepare whose actor share it signs now is `masternodes.shared_actor_fee{fee}` unless `accept_actor_fee`, or unless its fee is at most the relay minimum (MG-04b m-15, D96). Nothing left to sign returns the session uncharged. Returns `SharedOutcome` with the `Reply`. `invalid_argument` for a session of another kind. **Implemented.** | `MasternodesError` |
+| `send_maintenance(wallet: WalletId, session: String, grant: String)` | async | A dissolve-together session at `combined` (else `shared_stage`, `dead` for a delisted masternode): the signatures inserted in share order (`InsertUnanimousSignatures`), Core's rules with them, the relay minimum and D83, `update_pending` as `dissolve`'s; under a `Dissolution` lease charged 0, `signed_tx`, `txid` and `out_at` written durably, then handed off as a `ProTxOperation` of kind `dissolve` (penalty 0; `foreign` when the actor share isn't this wallet's; its resend charged 0, MG-04b D95). Any wallet holding every signature may send. **Implemented.** | `MasternodesError` |
 
 ## 3. Surface (generated)
 
@@ -198,7 +202,7 @@ Generated by `mn_masternodes_contract.rs` from the facade's source files; `DW_BL
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: masternodes-surface -->
-<!-- surface-sha256: a14cbbedeefc0b6138b258c305d1a3d12f9cbcef793776be44bd13a81bea2978 version: 15 -->
+<!-- surface-sha256: a11bd88745e1c3ce3c4dc82f0fb1fb5fc702337cc017e5b941a06be59be2766d version: 16 -->
 
 ```rust
 // src/masternodes/errors.rs
@@ -231,6 +235,7 @@ pub enum MasternodesError {
     ShareNotMine,
     SharedTooEarly,
     SharedRegistrationUnknown,
+    SharedActorFee { fee: u64 },
     Platform(PlatformError),
     Engine(EngineError),
 }
@@ -647,6 +652,9 @@ impl Masternodes {
     pub async fn standby(&self, wallet: WalletId, pro_tx_hash: String) -> Result<Vec<Standby>, MasternodesError>;
     pub async fn export_standby(&self, wallet: WalletId, pro_tx_hash: String, share: u16, fee: u64, grant: String) -> Result<StandbyFile, MasternodesError>;
     pub async fn send_standby(&self, wallet: WalletId, pro_tx_hash: String, share: u16, fee: u64, variant: StandbyVariant, grant: String) -> Result<ProTxOperation, MasternodesError>;
+    pub async fn start_dissolve_together(&self, wallet: WalletId, request: DissolveRequest, grant: String) -> Result<SharedOutcome, MasternodesError>;
+    pub async fn approve_maintenance(&self, wallet: WalletId, session: String, grant: String, accept_actor_fee: bool) -> Result<SharedOutcome, MasternodesError>;
+    pub async fn send_maintenance(&self, wallet: WalletId, session: String, grant: String) -> Result<ProTxOperation, MasternodesError>;
 }
 // src/masternodes/shared_records.rs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -824,6 +832,8 @@ pub enum SharedWarning {
     EmptyService,
     ActorOutputDust,
     PenaltyPaidAfterPeriod,
+    SkippedSignatures { shares: Vec<u16>, count: u32 },
+    NoApprovals,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateShareRequest {
@@ -917,7 +927,7 @@ impl Masternodes {
 
 | Error enum | Codes |
 |---|---|
-| `MasternodesError` | `masternodes.list_unavailable`, `masternodes.not_found`, `masternodes.already_tracked`, `masternodes.not_tracked`, `masternodes.key_mismatch`, `masternodes.not_evonode`, `masternodes.no_identity`, `masternodes.platform_unavailable`, `masternodes.unsupported`, `masternodes.not_implemented`, `masternodes.protx_refused`, `masternodes.collateral_unavailable`, `masternodes.signature_mismatch`, `masternodes.operation_not_found`, `masternodes.operation_state`, `masternodes.in_flight`, `masternodes.keys_exhausted`, `masternodes.no_owner_key`, `masternodes.update_pending`, `masternodes.update_superseded`, `masternodes.shared_session_not_found`, `masternodes.shared_stage`, `masternodes.shared_message`, `masternodes.shared_funding_mismatch`, `masternodes.share_not_mine`, `masternodes.shared_too_early`, `masternodes.shared_registration_unknown` |
+| `MasternodesError` | `masternodes.list_unavailable`, `masternodes.not_found`, `masternodes.already_tracked`, `masternodes.not_tracked`, `masternodes.key_mismatch`, `masternodes.not_evonode`, `masternodes.no_identity`, `masternodes.platform_unavailable`, `masternodes.unsupported`, `masternodes.not_implemented`, `masternodes.protx_refused`, `masternodes.collateral_unavailable`, `masternodes.signature_mismatch`, `masternodes.operation_not_found`, `masternodes.operation_state`, `masternodes.in_flight`, `masternodes.keys_exhausted`, `masternodes.no_owner_key`, `masternodes.update_pending`, `masternodes.update_superseded`, `masternodes.shared_session_not_found`, `masternodes.shared_stage`, `masternodes.shared_message`, `masternodes.shared_funding_mismatch`, `masternodes.share_not_mine`, `masternodes.shared_too_early`, `masternodes.shared_registration_unknown`, `masternodes.shared_actor_fee` |
 
 - `masternodes.list_unavailable`: the call needs the synced SPV list and there is none yet (or it is still syncing).
 No code carries a hash, a key or a wallet id the caller passed, and no message repeats one: a pasted private key has
@@ -970,7 +980,8 @@ a hash's shape (D23).
   abandoned session (MG-04b D72).
 - `masternodes.shared_message{reason, share}`: a pasted or opened message is refused: `not_shared`, `too_large`,
   `parse`, `network`, `other_session`, `terms_changed`, `older`, `conflict` (also a lock or approval of a copy other
-  than the session's current one, MG-04b D56), `bad_signature` (with `share`), `not_participant`, `labels`. A change
+  than the session's current one, MG-04b D56), `bad_signature` (with `share`), `not_participant`, `labels`;
+  for a dissolve-together request `not_dissolution`, `other_masternode`, `signed` and `outputs` (MG-04b D92). A change
   to this wallet's own row is `shared_funding_mismatch{reason: "row_changed"}`. Never the text (MG-00 D36).
 - `masternodes.shared_funding_mismatch{reason, needed}`: a consent or funding check of MG-04b §4 fails:
   `foreign_input`, `overdraw`, `row_changed`, `contribution_changed`, `time_lock`, `template`, `join_signature`,
@@ -979,6 +990,9 @@ a hash's shape (D23).
 - `masternodes.shared_too_early`: a maintenance call while the list's tip is at or below the registration's height.
 - `masternodes.shared_registration_unknown`: the registration isn't a confirmed one of this wallet's sessions
   (MG-04b D29).
+- `masternodes.shared_actor_fee{fee}`: `approve_maintenance` of a dissolve-together request another wallet prepared
+  that takes `fee` duffs, above the relay minimum, from this wallet's actor share, without `accept_actor_fee`
+  (MG-04b m-15, D96).
 - `masternodes.unsupported{feature: "shared_masternodes"}` also covers v24 not `active` (§2.4);
   `masternodes.protx_refused` also carries Core's shared reasons and
   `bad-protx-shared-mn` (§2.3, MG-04b D30).
@@ -1077,7 +1091,19 @@ the caller reviewed (MG-04b D56).
 
 `SharedSession.next` says what this wallet does next (`join`, `copy`, `wait`, `lock`, `approve`, `sign`, `send`,
 `create_standby` for a confirmed registration in the synced list while a share of the wallet has no standby (MG-04b D91), `nothing`), and `warnings` lists `zero_penalty`, `empty_service` and `unvalued_inputs` (another party's inputs this
-wallet can't value). `stale` and `dead{reason: delisted}` are maintenance's (part 2).
+wallet can't value). `stale` is the key change's (part 2).
+
+A dissolve-together session (`kind: dissolve_together`, MG-04b D94) uses the same `SharedStage`, first match wins:
+`confirmed{height}` when its combined transaction is in a block of the history; once sent from here, its `dissolve`
+operation's `confirmed{height}`, `conflicted`, else `sent`; the collateral spent in a block of the history by the
+request signed, `confirmed{height}`, or by another transaction, `dead{reason: delisted}`; `dead{reason: delisted}`
+when the synced list above the registration's height omits the masternode; `combined` with every share's signature;
+else `signing`. A wallet the dissolution pays nothing can't see it, and reads `dead{delisted}` (MG-04b D94). Its `next` is
+`approve` while a share of this wallet is unsigned, `copy` while another's is, `send` once combined, `wait` once
+sent, else `nothing`; `fee` is the request's, `debit` and `actor_fee` the fee when the actor share is this wallet's
+(`debit` 0 otherwise), and `warnings` `actor_output_dust` (D83). An import's own `warnings` add `skipped_signatures{shares,
+count}` and `no_approvals` (MG-04b §2.5, D92, D97).
+`discard_shared_session` deletes one not sent; `abandon_shared_session` refuses it (`invalid_argument`, D95).
 
 ## 6. Events
 

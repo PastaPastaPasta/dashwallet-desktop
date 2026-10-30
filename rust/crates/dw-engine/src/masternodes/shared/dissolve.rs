@@ -54,6 +54,11 @@ pub(crate) struct DissolveRecord {
     /// the wallet gives up nothing (§6.3).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub foreign: bool,
+    /// A dissolution every owner signed (`send_maintenance`, MG-04b D95):
+    /// the shares gave up their fee at approval, so sending and resending
+    /// it charge nothing (§6.3).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub together: bool,
 }
 
 /// What a row's resend is charged: a `dissolve` row what its share gives
@@ -69,9 +74,10 @@ pub(crate) fn row_debit(row: &MasternodeOpRow) -> Result<u64, MasternodesError> 
 
 impl DissolveRecord {
     /// What the wallet's share gives up: the penalty and the fee, or
-    /// nothing when the actor share isn't the wallet's.
+    /// nothing when the actor share isn't the wallet's or every owner
+    /// signed (its approval was charged).
     pub(crate) fn debit(&self) -> u64 {
-        match self.foreign {
+        match self.foreign || self.together {
             true => 0,
             false => self.penalty.saturating_add(self.request.fee),
         }
@@ -103,14 +109,19 @@ pub(super) fn check_relay_fee(dissolution: &Dissolution, fee: u64) -> Result<(),
 /// `fee` is at least the relay minimum for a transaction of `size` bytes:
 /// below it no node relays it (`MIN_FEE_PER_KB`).
 pub(super) fn check_relay_fee_of_size(size: usize, fee: u64) -> Result<(), MasternodesError> {
-    let floor = fee_for(FeeRate::new(MIN_FEE_PER_KB), size)
-        .ok_or(EngineError::Send(crate::send::SendFailure::TxTooLarge))?;
+    let floor = relay_floor(size)?;
     if fee < floor {
         return Err(invalid(&format!(
             "the fee is below the relay minimum of {floor} duffs"
         )));
     }
     Ok(())
+}
+
+/// The relay minimum for a transaction of `size` bytes (`MIN_FEE_PER_KB`).
+pub(super) fn relay_floor(size: usize) -> Result<u64, MasternodesError> {
+    Ok(fee_for(FeeRate::new(MIN_FEE_PER_KB), size)
+        .ok_or(EngineError::Send(crate::send::SendFailure::TxTooLarge))?)
 }
 
 /// The argument checks before the wallet's (§7's order).
@@ -327,6 +338,7 @@ impl NetworkSession {
                 penalty: plan.penalty,
                 actor_output: plan.actor_output,
                 foreign: false,
+                together: false,
             };
             let handed = HandOff {
                 id: &id,
@@ -615,6 +627,7 @@ mod tests {
             penalty: 5,
             actor_output,
             foreign: false,
+            together: false,
         };
         MasternodeOpRow {
             id: "a".into(),
@@ -720,6 +733,14 @@ mod tests {
             ..row(0)
         };
         assert_eq!(row_debit(&foreign).unwrap(), 0);
+        // Every owner signed: the approvals were charged.
+        record.foreign = false;
+        record.together = true;
+        let together = MasternodeOpRow {
+            request: serde_json::to_string(&record).unwrap(),
+            ..row(0)
+        };
+        assert_eq!(row_debit(&together).unwrap(), 0);
         assert!(
             !row(0).request.contains("foreign"),
             "the 2a row's JSON is unchanged"

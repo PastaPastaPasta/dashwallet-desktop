@@ -35,6 +35,13 @@ Sessions:
       (`shared_sign`), combines (`shared_combine`) and signs P's input right after, in
       `runCombineAndSign`'s order (sharedmncreatedialog.cpp:2576-2591); B's funding signature then
       completes the transaction, which B can no longer discard (D24, D17); the script broadcasts it.
+  T   dissolving S3's masternode together (slice 2c), both ways. dashd as P prepares
+      (`protx shared_dissolve_prepare`, P the actor) and signs; B imports the request, approves
+      (charged nothing) and replies; dashd's `shared_combine` of B's reply passes
+      `testmempoolaccept`, unsent. Then B prepares with its share the actor at exactly the relay
+      minimum (one duff less is refused), dashd signs it (`shared_sign`) and B imports the
+      signature as a bare array for its session, combines and sends: Core mines dashd's
+      `shared_combine` bytes, the masternode leaves the list, and P's unsent request reads dead.
 
 Run (DWCLI = a built dwcli, DASHCORE_DIR = Dash Core v24.0.0-rc.3; on a loaded machine add
 `--timeout-factor=4`, dashd's start alone can take over the default 60 s):
@@ -484,6 +491,60 @@ class DwdShared(DwdProtx):
                      (p_row["ownerAddress"], p_row["refundAddress"]))
         self.check_table(pro_tx, rows)
         assert_equal(shared(b, "show", sid)["stage"]["kind"], "confirmed")
+
+        self.log.info("5. T: S3's masternode dissolved together, prepared by dashd, then by B")
+        # m-16: the list one block above the registration.
+        h = self.mine()
+        # dashd as P: P's share pays the default fee; B's approval moves none of its coins.
+        prep = node.protx("shared_dissolve_prepare", pro_tx, 0)
+        p_sigs = node.protx("shared_sign", prep["tx"])["signatures"]
+        assert_equal([s["shareIndex"] for s in p_sigs], [0])
+        request = seal({"type": "dash-shared-mn-sigs", "version": 1, "network": "regtest", "kind": "dissolve",
+                        "proTxHash": pro_tx, "tx": prep["tx"], "signatures": p_sigs})
+        got = shared(b, "import", stdin=request)
+        t1 = got["session"]
+        assert_equal((t1["kind"], t1["role"], t1["stage"]["kind"], t1["next"]),
+                     ("dissolve_together", "participant", "signing", "approve"))
+        assert_equal((t1["fee"], t1["debit"], t1["actor_fee"]), (100_000, 0, None))
+        reply = shared(b, "approve-maintenance", t1["id"])
+        assert_equal((reply["message"]["name"], reply["session"]["stage"]["kind"]), ("Reply", "combined"))
+        b_sigs = json.loads(reply["message"]["text"])["signatures"]
+        assert_equal([s["shareIndex"] for s in b_sigs], [0, 1])
+        p_combined = node.protx("shared_combine", prep["tx"], b_sigs, False)
+        assert_equal(node.testmempoolaccept([p_combined])[0]["allowed"], True)
+
+        # B prepares with its own share the actor, at the relay minimum of the combined size.
+        low = shared(b, "dissolve-together", pro_tx, "--actor", "1", "--fee", "1",
+                     error="invalid_argument")
+        floor = int(low["message"].split("relay minimum of ")[1].split()[0])
+        shared(b, "dissolve-together", pro_tx, "--actor", "1", "--fee", str(floor - 1), error="invalid_argument")
+        started = shared(b, "dissolve-together", pro_tx, "--actor", "1", "--fee", str(floor))
+        t2 = started["session"]
+        assert_equal((started["message"]["name"], t2["role"], t2["stage"]["kind"], t2["next"]),
+                     ("Request", "coordinator", "signing", "copy"))
+        assert_equal((t2["fee"], t2["debit"], t2["actor_fee"]), (floor, floor, floor))
+        b_request = json.loads(started["message"]["text"])
+        assert_equal([s["shareIndex"] for s in b_request["signatures"]], [1])
+        # dashd signs B's request; B takes P's signature as a bare array for its session.
+        p_sig = node.protx("shared_sign", b_request["tx"])["signatures"]
+        got = shared(b, "import", "--target", t2["id"], stdin=json.dumps(p_sig))
+        assert_equal((got["changed"], got["session"]["stage"]["kind"], got["session"]["next"]),
+                     (True, "combined", "send"))
+        want = node.protx("shared_combine", b_request["tx"], p_sig + b_request["signatures"], False)
+        assert_equal(node.testmempoolaccept([want])[0]["allowed"], True)
+        self.start_miner()
+        try:
+            op = shared(b, "send-maintenance", t2["id"])
+        finally:
+            self.stop_miner()
+        assert handed_off(op)
+        assert_equal((op["kind"], op["fee"]), ("dissolve", floor))
+        h = self.wait_mined(op["txid"])
+        assert_equal(node.getrawtransaction(op["txid"]), want)
+        assert pro_tx not in {m["proTxHash"] for m in node.protx("list", "registered", True)}, pro_tx
+        assert_equal({o["id"]: o for o in b.mn(h, "operations")}[op["id"]]["state"]["kind"], "confirmed")
+        assert_equal(shared(b, "show", t2["id"])["stage"]["kind"], "confirmed")
+        assert_equal(shared(b, "show", t1["id"])["stage"], {"kind": "dead", "reason": "delisted"})
 
 
 if __name__ == "__main__":

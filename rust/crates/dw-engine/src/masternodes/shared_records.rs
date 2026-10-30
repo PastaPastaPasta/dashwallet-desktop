@@ -321,6 +321,19 @@ pub enum SharedWarning {
     EmptyService,
     ActorOutputDust,
     PenaltyPaidAfterPeriod,
+    /// Signature entries of a sigs message that weren't taken, each with
+    /// dash-qt's reason (`addSignatures`, MG-04b §2.5): missing its share
+    /// number or signature, out of range, not a 65-byte base64 signature,
+    /// not verifying, or a second, different signature of a share. `shares`
+    /// are the readable share numbers among them.
+    SkippedSignatures {
+        shares: Vec<u16>,
+        count: u32,
+    },
+    /// A sigs message whose `signatures` isn't an array: "This message
+    /// does not contain any approvals." (`sharedmndialogs.cpp:569-572`);
+    /// the rest of it is taken.
+    NoApprovals,
 }
 
 /// A ProUpShareTx to preview for one of this wallet's shares (§8).

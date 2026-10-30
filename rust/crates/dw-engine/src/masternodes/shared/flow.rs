@@ -20,7 +20,7 @@ use platform_wallet::wallet::platform_wallet::PlatformWallet;
 
 use super::super::MasternodesError;
 use super::super::follow::load_notes;
-use super::super::protx::build::{Context, refused, tx_size};
+use super::super::protx::build::{Context, invalid, refused, tx_size};
 use super::super::protx::keys::{InUse, p2pkh_id};
 use super::super::records::HeldShares;
 use super::super::shared_records::{RewardChoice, SharedRole, SharedSession, SharedStage};
@@ -30,6 +30,7 @@ use super::store::{
     encode_outpoints, envelope_refusal, funding_refusal, json, out_stage, releasable, reserved_of,
     role_of, session_hash, stage_refusal, view,
 };
+use super::together;
 use crate::coins::{CoinFence, now_secs, own_address_info, read_coins};
 use crate::send::plan::fee_for;
 use crate::send::{MIN_FEE_PER_KB, SendFailure};
@@ -118,12 +119,18 @@ impl NetworkSession {
         Ok(list.synced && list.entries.iter().any(|e| e.has_extended_net_info))
     }
 
+    /// The wallet's registration sessions: a dissolve-together row is
+    /// [`super::together`]'s (D93).
     pub(crate) async fn shared_rows(
         &self,
         wallet: WalletId,
     ) -> Result<Vec<SharedSessionRow>, MasternodesError> {
         let w = wallet.to_string();
-        Ok(self.appdb_op(move |db| db.shared_sessions(&w)).await?)
+        let rows = self.appdb_op(move |db| db.shared_sessions(&w)).await?;
+        Ok(rows
+            .into_iter()
+            .filter(|r| r.kind != together::KIND)
+            .collect())
     }
 
     /// The stored row of a session of the wallet, if it has one.
@@ -149,7 +156,8 @@ impl NetworkSession {
         })
     }
 
-    /// A stored session, parsed (`shared_session_not_found` otherwise).
+    /// A stored registration session, parsed (`shared_session_not_found`
+    /// otherwise; `invalid_argument` for a dissolve-together session).
     pub(crate) async fn shared_loaded(
         &self,
         wallet: WalletId,
@@ -159,6 +167,9 @@ impl NetworkSession {
             .shared_row(wallet, id)
             .await?
             .ok_or(MasternodesError::SharedSessionNotFound)?;
+        if row.kind == together::KIND {
+            return Err(invalid("not a registration session"));
+        }
         Loaded::of(row, self.network.core_network())
     }
 

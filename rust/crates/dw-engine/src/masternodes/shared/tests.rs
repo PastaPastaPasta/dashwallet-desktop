@@ -36,6 +36,7 @@ use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, Wa
 
 mod dissolve;
 mod standby;
+mod together;
 
 const COIN: u64 = 100_000_000;
 const FEE: u64 = 100_000;
@@ -1202,11 +1203,11 @@ fn test_QT_126_messages_are_refused_without_echo() {
         assert!(!e.to_string().contains(secret));
         assert_message(e, reason);
     }
-    // Maintenance messages are part 2.
+    // A bare array is for a dissolve-together session of the wallet (2c).
     let e = f
         .run(mn.import_shared_message(w, "[]".into(), Some("ab".repeat(32))))
         .unwrap_err();
-    assert_eq!(code(e), "masternodes.unsupported");
+    assert_eq!(code(e), "masternodes.shared_session_not_found");
     // A frozen copy without a session of ours: nothing to check it against.
     let g = fx(2, true);
     let id = {

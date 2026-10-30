@@ -36,6 +36,15 @@ its smallest share less 50,000 duffs, and unilateral `shared_dissolve`
 standbys in the shapes the files above lack (MG-04b 2a review r1 n-3): the
 actor holding the last share, the actor's output omitted (penalty and fee
 take its whole share), and the actor's output left dust.
+
+With --together (on another fresh dashd) it writes only
+testdata/shared_together.json (MG-04b slice 2c): on a three-share
+registration in its early period, `shared_dissolve_prepare`'s request and,
+each signed by every owner's `shared_sign` and combined by `shared_combine`,
+requests edited from it: the fee over Core's ceiling, a non-actor paid one
+duff short, the actor's output paid to another script, a lock time, and the
+actor paying a larger fee; `testmempoolaccept` on each combined transaction;
+and `shared_combine`'s refusals of a missing and a duplicate share.
 """
 import argparse
 import base64
@@ -400,10 +409,72 @@ def dissolve_shapes(rpc, source):
     })
 
 
+def signed_request(rpc, name, tx_hex):
+    """Every owner's `shared_sign` on the request `tx_hex`, the signatures
+    combined by `shared_combine` (not submitted), and `testmempoolaccept`."""
+    signed, entries = sign_all(rpc, tx_hex)
+    tx = rpc.call("protx", "shared_combine", tx_hex, entries, False)
+    return {"name": name, "request": tx_hex, "shared_sign": signed, "signatures": entries,
+            "tx_hex": tx, "accept": accept(rpc, tx)}
+
+
+def combine_error(rpc, tx_hex, entries):
+    try:
+        rpc.call("protx", "shared_combine", tx_hex, entries, False)
+    except RuntimeError as e:
+        return str(e)
+    raise RuntimeError("shared_combine took the signatures")
+
+
+def together(rpc, source):
+    """shared_together.json: three shares 400/300/300 with an early period,
+    the actor share 2 paying 50,000 duffs."""
+    parties = [party(rpc, w, amount) for w, amount in zip(PARTIES, [400 * COIN, 300 * COIN, 300 * COIN])]
+    reg = register(rpc, "together", parties, "127.0.0.1:19904", addr(rpc, "s0"), "0", 20, 1 * COIN, 30_000)
+    actor, fee = 2, 50_000
+    prep = rpc.call("protx", "shared_dissolve_prepare", reg["pro_tx_hash"], actor, fee)
+    request = prep["tx"]
+    raw = bytes.fromhex(request)
+    first, first_value, _ = output_bytes(rpc, request, 0)
+    last, last_value, _ = output_bytes(rpc, request, 2)
+    other = script_of(rpc, addr(rpc, "s0"))
+    assert len(other) == len(last) - 9, "the actor's refund and the other script are P2PKH"
+
+    def with_output(old, value, script):
+        return replace_once(request, old, value.to_bytes(8, "little") + bytes([len(script)]) + script)
+
+    # The prepared request ends with the lock time, then the 38-byte payload.
+    locked = (raw[:-42] + (1).to_bytes(4, "little") + raw[-38:]).hex()
+    edits = [
+        ("fee_over_ceiling", with_output(last, last_value - (1_000_001 - fee), last[9:])),
+        ("non_actor_short", with_output(first, first_value - 1, first[9:])),
+        ("actor_paid_elsewhere", with_output(last, last_value, other)),
+        ("lock_time", locked),
+        # Accepted by both: the actor pays 1,000 duffs more.
+        ("actor_fee_more", with_output(last, last_value - 1_000, last[9:])),
+    ]
+    prepared = signed_request(rpc, "prepared", request)
+    prepared["signHash"] = prep["signHash"]
+    entries = prepared["signatures"]
+    write_json(os.path.join(TESTDATA, "shared_together.json"), {
+        "source": source,
+        "network": "regtest",
+        "registration": reg,
+        "actor_index": actor,
+        "fee": fee,
+        "protx_info": rpc.call("protx", "info", reg["pro_tx_hash"]),
+        "prepared": prepared,
+        "edited": [signed_request(rpc, name, h) for name, h in edits],
+        "combine_missing_share": combine_error(rpc, request, entries[:-1]),
+        "combine_duplicate_share": combine_error(rpc, request, entries + entries[:1]),
+    })
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rpc", required=True)
     ap.add_argument("--dissolve-shapes", action="store_true")
+    ap.add_argument("--together", action="store_true")
     args = ap.parse_args()
     rpc = Rpc(args.rpc)
     info = rpc.call("getnetworkinfo")
@@ -412,6 +483,9 @@ def main():
     activation = setup(rpc)
     if args.dissolve_shapes:
         dissolve_shapes(rpc, source + " --dissolve-shapes")
+        return
+    if args.together:
+        together(rpc, source + " --together")
         return
 
     a_parties = [

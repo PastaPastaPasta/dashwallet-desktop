@@ -38,6 +38,7 @@ use dw_protx::shared::rules::{
 };
 use dw_protx::shared::session::funding::{Frozen, verify_consent_signature};
 use dw_protx::shared::standby::{self, Variant};
+use dw_protx::shared::together::{self, CombineError, Refusal};
 use dw_protx::shared::{
     CollateralShare, ProDisTx, ProUpShareTx, ProUpSharedRegTx, TRANSACTION_PROVIDER_DISSOLVE,
     TRANSACTION_PROVIDER_UPDATE_SHARE, TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR, payload_bytes,
@@ -812,6 +813,96 @@ fn test_QT_127_standby_pair_equals_dashds_standby() {
     assert_eq!(checked, 8);
     assert_eq!(mutations, 24);
     println!("{checked} standbys, {mutations} refused mutations");
+}
+
+/// Dissolve together (MG-04b 2c, D92) against `shared_together.json`:
+/// `together::prepare` is `shared_dissolve_prepare`'s request and sign hash,
+/// every owner's `shared_sign` signature verifies, and `together::combine`
+/// is `shared_combine`'s transaction, which the rules take as dashd does.
+/// Of the requests edited from it, each signed by every owner's
+/// `shared_sign` and combined by dashd, `together::check` refuses all but
+/// the one where the actor pays a larger fee: three dashd refuses at
+/// consensus, and the lock time it takes (D16). `shared_combine`'s refusal
+/// of a missing share is `CombineError::Count`'s text.
+#[test]
+fn test_QT_127_dissolve_together_equals_dashds() {
+    let doc = load("shared_together.json");
+    let info = &doc["protx_info"];
+    let shares = shares_listed(info);
+    let mn = shared_mn(info, &shares);
+    let actor = doc["actor_index"].as_u64().unwrap() as u16;
+    let fee = doc["fee"].as_u64().unwrap();
+    let combined = |c: &Value| {
+        let checked = together::check(&tx_of(str_of(c, "request")), &mn).unwrap();
+        let sigs = signatures(c);
+        for (i, sig) in sigs.iter().enumerate() {
+            assert!(together::verifies(&mn, checked.sign_hash, i as u16, sig));
+        }
+        let sigs = (0u16..).zip(sigs).collect();
+        let tx = together::combine(&checked, &mn, &sigs).unwrap();
+        assert_eq!(tx, tx_of(str_of(c, "tx_hex")), "{}", str_of(c, "name"));
+        (checked, tx)
+    };
+    let at = |c: &Value| {
+        let mut at = c.clone();
+        at["protx_info"] = info.clone();
+        at
+    };
+
+    let prepared = &doc["prepared"];
+    let request = tx_of(str_of(prepared, "request"));
+    assert_eq!(together::prepare(&mn, actor, fee).unwrap().tx, request);
+    let (checked, tx) = combined(prepared);
+    assert_eq!((checked.actor, checked.fee), (actor, fee));
+    assert_eq!(checked.sign_hash, display(str_of(prepared, "signHash")));
+    assert_eq!(verdict(&prepared["accept"]), Ok(()));
+    assert_eq!(rules_verdict(&at(prepared), &tx, &[]), Ok(()));
+
+    let mut refused = Vec::new();
+    for c in doc["edited"].as_array().unwrap() {
+        let name = str_of(c, "name");
+        let edited = tx_of(str_of(c, "request"));
+        let combined_tx = tx_of(str_of(c, "tx_hex"));
+        assert_eq!(
+            rules_verdict(&at(c), &combined_tx, &[]),
+            verdict(&c["accept"]),
+            "{name}"
+        );
+        match name {
+            "actor_fee_more" => {
+                let (checked, _) = combined(c);
+                assert_eq!((checked.actor, checked.fee), (actor, fee + 1_000));
+            }
+            _ => {
+                assert_eq!(
+                    together::check(&edited, &mn),
+                    Err(Refusal::NotBuilt),
+                    "{name}"
+                );
+                refused.push((name, verdict(&c["accept"]).err()));
+            }
+        }
+    }
+    assert_eq!(
+        refused,
+        [
+            ("fee_over_ceiling", Some("bad-prodis-fee".to_owned())),
+            (
+                "non_actor_short",
+                Some("bad-prodis-penalty-floor".to_owned())
+            ),
+            ("actor_paid_elsewhere", Some("bad-prodis-payee".to_owned())),
+            ("lock_time", None),
+        ]
+    );
+
+    let mut sigs: std::collections::BTreeMap<u16, [u8; 65]> =
+        (0u16..).zip(signatures(prepared)).collect();
+    sigs.remove(&2);
+    let missing = together::combine(&checked, &mn, &sigs).unwrap_err();
+    assert_eq!(missing, CombineError::Count);
+    assert!(str_of(&doc, "combine_missing_share").contains(&missing.to_string()));
+    assert!(str_of(&doc, "combine_duplicate_share").contains("duplicate shareIndex"));
 }
 
 /// dashd's own funding signatures on each registration: every input's

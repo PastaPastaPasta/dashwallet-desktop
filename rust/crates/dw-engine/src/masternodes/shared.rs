@@ -25,6 +25,7 @@ mod store;
 #[cfg(test)]
 #[allow(non_snake_case)]
 mod tests;
+mod together;
 mod update;
 
 use std::sync::Arc;
@@ -219,6 +220,18 @@ impl Masternodes {
                 .map(|l| view(l, &chain))
                 .collect();
             s.prompt_standbys(wallet, &mut sessions).await?;
+            let rows = s.together_rows(wallet).await?;
+            if !rows.is_empty() {
+                let v = s.together_read(wallet).await?;
+                for row in rows {
+                    // Skipped as an unparsed registration is.
+                    let Ok(t) = together::Together::of(row, network) else {
+                        continue;
+                    };
+                    sessions.push(s.together_session(wallet, &t, &v).await?);
+                }
+                sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
+            }
             Ok(sessions)
         })
         .await
@@ -233,6 +246,9 @@ impl Masternodes {
         check_session_id(&session)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
+            if s.is_together(wallet, &session).await? {
+                return Ok(s.together_outcome(wallet, &session).await?.session);
+            }
             s.shared_view(wallet, &session).await
         })
         .await
@@ -392,9 +408,10 @@ impl Masternodes {
 
     /// Detects a pasted or opened message (§2.1) and applies it by §3.0's
     /// table. Signs nothing; never repeats the text in a refusal (MG-00
-    /// D36). A standby is checked and stored (§9.4, D32). `target`: the
-    /// session a bare signatures array is for (until maintenance sessions
-    /// join, such arrays and sigs envelopes are `unsupported`).
+    /// D36). A standby is checked and stored (§9.4, D32); a `dissolve`
+    /// sigs envelope opens or adds to a dissolve-together session (D92,
+    /// D97). `target`: the dissolve-together session a bare signatures
+    /// array is for. A `registrar` envelope is `unsupported` (D45).
     pub async fn import_shared_message(
         &self,
         wallet: WalletId,
@@ -413,9 +430,14 @@ impl Masternodes {
                     return Err(message_refusal("parse"));
                 }
                 Ok(Message::Standby(tx)) => return s.import_standby(wallet, tx).await,
-                // Maintenance sessions are part 2's later slices.
-                Ok(Message::BareSigs(_) | Message::Sigs(_)) => {
-                    return Err(unsupported(None));
+                // A unanimous dissolution (D92); the key change's is 2d's
+                // (D45).
+                Ok(Message::Sigs(r)) => {
+                    return s.import_together(wallet, Some(r), None, target).await;
+                }
+                Ok(Message::BareSigs(entries)) => {
+                    let bare = (entries, together::bare_code(&text));
+                    return s.import_together(wallet, None, Some(bare), target).await;
                 }
                 Err(e) => return Err(envelope_refusal(e)),
             };
@@ -532,6 +554,10 @@ impl Masternodes {
         check_session_id(&session)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
+            if s.is_together(wallet, &session).await? {
+                let t = s.together_loaded(wallet, &session).await?;
+                return Ok(t.message(s.network.core_network()));
+            }
             let l = s.shared_loaded(wallet, &session).await?;
             message_of(&l)
         })
@@ -789,6 +815,11 @@ impl Masternodes {
                 .shared_row(wallet, &session)
                 .await?
                 .ok_or(MasternodesError::SharedSessionNotFound)?;
+            if row.kind == together::KIND {
+                // Nothing of a dissolve-together session is this wallet's
+                // to spend back (D95).
+                return Err(invalid("not a registration session"));
+            }
             let stage = s.stored_stage(wallet, &row).await?;
             if row.out_at.is_none()
                 || matches!(
@@ -823,7 +854,14 @@ impl Masternodes {
                 .await?
                 .ok_or(MasternodesError::SharedSessionNotFound)?;
             if row.out_at.is_some() {
-                return Err(stage_refusal(s.stored_stage(wallet, &row).await?));
+                let stage = match row.kind == together::KIND {
+                    true => match together::Together::of(row, s.network.core_network()) {
+                        Ok(t) => s.together_stage(wallet, &t).await?,
+                        Err(_) => SharedStage::Sent,
+                    },
+                    false => s.stored_stage(wallet, &row).await?,
+                };
+                return Err(stage_refusal(stage));
             }
             let (w, id) = (wallet.to_string(), session.clone());
             let deleted = s
@@ -1041,6 +1079,72 @@ impl Masternodes {
             sending?;
             s.send_standby(wallet, hash, share, fee, variant, &grant)
                 .await
+        })
+        .await
+    }
+
+    /// Prepares the unanimous dissolution of a shared masternode (§3.3,
+    /// `protx shared_dissolve_prepare`) with `share_index` the actor, one
+    /// of this wallet's shares, paying `fee`, and signs every share of this
+    /// wallet under one `Dissolution` lease charged the fee (§6.3) †:
+    /// `unsupported` while sending is off ([`SHARED_SENDING`]). Returns the
+    /// session (this wallet its coordinator) and its Request.
+    pub async fn start_dissolve_together(
+        &self,
+        wallet: WalletId,
+        request: DissolveRequest,
+        grant: String,
+    ) -> Result<SharedOutcome, MasternodesError> {
+        let hash = parse_pro_tx_hash(&request.pro_tx_hash)?;
+        dissolve::check_request(&request)?;
+        let sending = self.require_sending();
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            sending?;
+            s.start_together(wallet, request, hash, &grant).await
+        })
+        .await
+    }
+
+    /// Signs this wallet's unsigned shares of a dissolve-together session
+    /// under one `Dissolution` lease charged the fee when the actor share
+    /// is this wallet's, else 0 (§6.3) †. A request another wallet prepared
+    /// that takes its fee from this wallet's share is
+    /// `shared_actor_fee{fee}` unless `accept_actor_fee` (m-15). Returns the
+    /// session and its Reply.
+    pub async fn approve_maintenance(
+        &self,
+        wallet: WalletId,
+        session: String,
+        grant: String,
+        accept_actor_fee: bool,
+    ) -> Result<SharedOutcome, MasternodesError> {
+        check_session_id(&session)?;
+        let sending = self.require_sending();
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            sending?;
+            s.approve_together(wallet, &session, &grant, accept_actor_fee)
+                .await
+        })
+        .await
+    }
+
+    /// Combines a complete dissolve-together session and sends it as an
+    /// MG-04 operation of kind `dissolve` (D95) †, charged nothing (the
+    /// approvals were). D23 holds it as it holds `dissolve`.
+    pub async fn send_maintenance(
+        &self,
+        wallet: WalletId,
+        session: String,
+        grant: String,
+    ) -> Result<ProTxOperation, MasternodesError> {
+        check_session_id(&session)?;
+        let sending = self.require_sending();
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            sending?;
+            s.send_together(wallet, &session, &grant).await
         })
         .await
     }

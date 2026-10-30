@@ -35,6 +35,10 @@
 //!   `sharedmndialogs.cpp:1634-1646`), the full-principal and immediate
 //!   unilateral dissolutions by one share, and the check a pasted standby
 //!   passes before it is stored or sent (MG-04b D89).
+//! - [`together`]: the unanimous dissolution every owner signs
+//!   (`PrepareSharedDissolution`, `InsertUnanimousSignatures`) and the
+//!   check a received request passes before any owner signs it (MG-04b
+//!   D92).
 //!
 //! These payloads are consensus-valid only once the v24 fork is active
 //! (`GetValidatedPayload`, `specialtxman.cpp:1097-1122`).
@@ -52,6 +56,7 @@ pub mod registration;
 pub mod rules;
 pub mod session;
 pub mod standby;
+pub mod together;
 
 pub use netinfo::ExtNetInfo;
 pub use rawtx::SpecialTx;

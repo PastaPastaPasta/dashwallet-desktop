@@ -384,7 +384,7 @@ pub(crate) struct ChainView {
 }
 
 impl ChainView {
-    fn confirmed_height(&self, txid: &Txid) -> Option<u32> {
+    pub(crate) fn confirmed_height(&self, txid: &Txid) -> Option<u32> {
         self.history
             .get(txid)
             .and_then(|e| e.context.block_info())
