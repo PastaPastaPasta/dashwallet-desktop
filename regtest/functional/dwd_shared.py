@@ -513,6 +513,28 @@ class DwdShared(DwdProtx):
         p_combined = node.protx("shared_combine", prep["tx"], b_sigs, False)
         assert_equal(node.testmempoolaccept([p_combined])[0]["allowed"], True)
 
+        # D96's relay minimum is dashd's: with P's share the actor, B refuses dashd's request one duff
+        # below it, and dashd's mempool refuses that request combined for its fee. PreChecks checks
+        # the fee before the payload's signatures (validation.cpp:1058, :1103), so share 1's slot
+        # holds P's signature; at the minimum the same bytes fail only on that signature.
+        def dashd_request(fee):
+            return node.protx("shared_dissolve_prepare", pro_tx, 0, fee)["tx"]
+
+        def sealed(tx):
+            return seal({"type": "dash-shared-mn-sigs", "version": 1, "network": "regtest", "kind": "dissolve",
+                         "proTxHash": pro_tx, "tx": tx, "signatures": []})
+
+        low = shared(b, "import", stdin=sealed(dashd_request(1)), error="invalid_argument")
+        p_floor = int(low["message"].split("relay minimum of ")[1].split()[0])
+        for fee, reason in ((p_floor - 1, "min relay fee not met"), (p_floor, "bad-prodis-sig")):
+            tx = dashd_request(fee)
+            if fee < p_floor:
+                shared(b, "import", stdin=sealed(tx), error="invalid_argument")
+            sig = node.protx("shared_sign", tx)["signatures"][0]["signature"]
+            filled = node.protx("shared_combine", tx, [{"shareIndex": 0, "signature": sig},
+                                                      {"shareIndex": 1, "signature": sig}], False)
+            assert_equal(node.testmempoolaccept([filled])[0]["reject-reason"], reason)
+
         # B prepares with its own share the actor, at the relay minimum of the combined size.
         low = shared(b, "dissolve-together", pro_tx, "--actor", "1", "--fee", "1",
                      error="invalid_argument")
