@@ -1047,12 +1047,35 @@ impl Masternodes {
         fee: u64,
         grant: String,
     ) -> Result<StandbyFile, MasternodesError> {
+        self.export_standby_at(
+            wallet,
+            pro_tx_hash,
+            share,
+            fee,
+            grant,
+            crate::coins::now_secs(),
+        )
+        .await
+    }
+
+    /// [`Self::export_standby`] with `now` the clock the file's date is
+    /// estimated from (the tests freeze it).
+    pub(crate) async fn export_standby_at(
+        &self,
+        wallet: WalletId,
+        pro_tx_hash: String,
+        share: u16,
+        fee: u64,
+        grant: String,
+        now: u64,
+    ) -> Result<StandbyFile, MasternodesError> {
         let hash = parse_pro_tx_hash(&pro_tx_hash)?;
         let sending = self.require_sending();
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             sending?;
-            s.export_standby(wallet, hash, share, fee, &grant).await
+            s.export_standby(wallet, hash, share, fee, &grant, now)
+                .await
         })
         .await
     }

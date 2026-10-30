@@ -483,7 +483,8 @@ impl NetworkSession {
     }
 
     /// Core's file of a stored standby (§9.4, D22) under a `MasternodeOp`
-    /// grant charged nothing (D21): the bytes leave the wallet.
+    /// grant charged nothing (D21): the bytes leave the wallet. `now` is the
+    /// clock the full variant's date is estimated from.
     pub(super) async fn export_standby(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -491,6 +492,7 @@ impl NetworkSession {
         share_index: u16,
         fee: u64,
         grant: &str,
+        now: u64,
     ) -> Result<StandbyFile, MasternodesError> {
         let ctx = super::v24_context(self, wallet).await?;
         let row = self.standby_row(wallet, hash, share_index, fee).await?;
@@ -518,7 +520,7 @@ impl NetworkSession {
                 share_index,
                 share_count: reg.shares.len(),
                 created: row.created_at,
-                now: now_secs(),
+                now,
                 tip: reg.tip,
                 full_valid_from: penalty_free_from(&reg.mn()),
                 penalty: standby::early_penalty(&reg.mn()),
