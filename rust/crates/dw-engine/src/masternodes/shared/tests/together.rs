@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use dashcore::hashes::sha256;
 use dw_protx::shared::envelope::{
     ReceivedSigs, SharedMessage as Message, SigEntry, SigsEnvelope, SigsKind, decode_message,
     encode_base64, fingerprint,
@@ -227,14 +228,22 @@ fn test_QT_127_three_wallets_dissolve_together() {
         format!("shared-mn-session-{}.json", s.code)
     );
     assert_eq!(s.code, id[..6].to_ascii_uppercase());
-    // The request is `PrepareSharedDissolution`'s, the id m-17's.
+    // The request is `PrepareSharedDissolution`'s, the id m-17's: SHA-256
+    // of `dissolve`, the ProTx hash and the sign hash in internal order.
+    // Core has no id for a sigs envelope (dash-qt's collector keys on the
+    // ProTx hash and `ComputeSharedSignHash`, sharedmndialogs.cpp:253-291;
+    // a registration's is `GetRandHash()`, mnsharesession.cpp:253): the
+    // wallet's own (§3.3, n-r2-5).
     let received = read_sigs(&a.message.text);
     let prepared = together::prepare(&mn, 0, FEE_T).unwrap();
     assert_eq!(received.tx.as_ref(), Some(&prepared.tx));
     let checked: Checked = together::check(&prepared.tx, &mn).unwrap();
+    let mut preimage = b"dissolve".to_vec();
+    preimage.extend(txid.to_byte_array());
+    preimage.extend(checked.sign_hash);
     assert_eq!(
         id,
-        super::super::together::session_id(txid.to_byte_array(), checked.sign_hash)
+        hex::encode(sha256::Hash::hash(&preimage).to_byte_array())
     );
     assert_eq!(a.message.code, s.message_code);
     // Starting it again signs nothing new and charges nothing.
@@ -774,6 +783,37 @@ fn test_QT_127_a_session_out_but_never_handed_off_can_be_discarded() {
         f.run(f.mn().shared_session(f.wallets[2], id)),
         Err(MasternodesError::SharedSessionNotFound)
     ));
+}
+
+/// D96 at start (mutant M13): one duff below the relay minimum of the
+/// combined size signs and charges nothing; at it, the start is charged
+/// the fee under the same grant, untouched by the refusal.
+#[test]
+fn test_QT_127_start_refuses_a_fee_below_the_relay_minimum() {
+    let f = fx(3, true);
+    let (reg_id, txid) = listed(&f);
+    let p = registration(&f, &reg_id);
+    let size = together::prepare(&shared_mn(&p, txid), 0, 1)
+        .unwrap()
+        .signed(vec![[0; 65]; 3])
+        .to_bytes()
+        .len() as u64;
+    let grant = f.grant(0, size);
+    let start_at = |fee: u64| {
+        f.run(
+            f.mn()
+                .start_dissolve_together(f.wallets[0], request(txid, 0, fee), grant.clone()),
+        )
+    };
+    assert_invalid(start_at(size - 1).unwrap_err());
+    assert!(
+        f.run(f.mn().shared_sessions(f.wallets[0]))
+            .unwrap()
+            .iter()
+            .all(|s| s.kind != SharedKind::DissolveTogether)
+    );
+    let s = start_at(size).unwrap().session;
+    assert_eq!((s.fee, s.debit), (Some(size), Some(size)));
 }
 
 /// `addSignatures` on a share signed already (review r1 m-2): the same
