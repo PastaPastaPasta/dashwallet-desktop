@@ -37,6 +37,7 @@ use dw_protx::shared::rules::{
     check_update_shared_registrar, verify_hash_canonical,
 };
 use dw_protx::shared::session::funding::{Frozen, verify_consent_signature};
+use dw_protx::shared::standby::{self, Variant};
 use dw_protx::shared::{
     CollateralShare, ProDisTx, ProUpShareTx, ProUpSharedRegTx, TRANSACTION_PROVIDER_DISSOLVE,
     TRANSACTION_PROVIDER_UPDATE_SHARE, TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR, payload_bytes,
@@ -733,6 +734,84 @@ fn test_QT_127_zero_penalty_standby_valid_from_the_early_periods_end() {
     assert_eq!(verdict(&late["accept"]), Ok(()));
     // Mined, it takes the masternode out of the list.
     assert_eq!(late["listed_after"], false);
+}
+
+/// Every unilateral `shared_dissolve` dashd signed (with `submit=false`,
+/// the standby `createStandby` writes) passes the import's check (MG-04b
+/// D89) as the variant its `payPenalty` chose, and is the matching half of
+/// [`standby::pair`] for its actor and fee, signed; the full variant is
+/// valid where dashd accepts it. Every mutation dashd refuses, the check
+/// refuses. The dust shape passes: relay policy is the send's (D83).
+#[test]
+fn test_QT_127_standby_pair_equals_dashds_standby() {
+    let shapes = load("shared_dissolve_shapes.json");
+    let cases = maintenance()
+        .cases
+        .into_iter()
+        .chain(shapes["cases"].as_array().unwrap().iter().cloned())
+        .filter(|c| c.get("kind").is_none_or(|k| k == "dissolve_unilateral"));
+    let mut checked = 0;
+    let mut mutations = 0;
+    for c in cases {
+        let name = str_of(&c, "name");
+        let tx = tx_of(str_of(&c, "tx_hex"));
+        let shares = shares_listed(&c["protx_info"]);
+        let mn = shared_mn(&c["protx_info"], &shares);
+        let spend_height = c["accept"]["tip_height"].as_u64().unwrap() as u32 + 1;
+        let actor = c["actor_index"].as_u64().unwrap() as u16;
+        let fee = c["fee"].as_u64().unwrap();
+        let variant = if c["pay_penalty"].as_bool().unwrap() && mn.early_penalty > 0 {
+            Variant::Immediate
+        } else {
+            Variant::Full
+        };
+        let got =
+            standby::check(&tx, &mn, spend_height).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(
+            (got.variant, got.actor, got.fee),
+            (variant, actor, fee),
+            "{name}"
+        );
+
+        let p: ProDisTx = dashcore::consensus::deserialize(&tx.payload).unwrap();
+        let pair = standby::pair(&mn, actor, fee).unwrap();
+        assert_eq!(pair.immediate.is_none(), mn.early_penalty == 0, "{name}");
+        let half = match variant {
+            Variant::Full => &pair.full,
+            Variant::Immediate => pair.immediate.as_ref().unwrap(),
+        };
+        assert_eq!(half.signed(p.sigs.clone()), tx, "{name}");
+        assert_eq!(got.actor_output, half.actor_output, "{name}");
+        if variant == Variant::Full {
+            assert_eq!(
+                standby::full_valid(&mn, spend_height),
+                verdict(&c["accept"]).is_ok(),
+                "{name}"
+            );
+        }
+        checked += 1;
+
+        for m in c
+            .get("mutations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if verdict(m).is_ok() || name == "last_actor_dust" {
+                continue;
+            }
+            let mutated = tx_of(str_of(m, "tx_hex"));
+            assert!(
+                standby::check(&mutated, &mn, spend_height).is_err(),
+                "{name} {}",
+                str_of(m, "mutation")
+            );
+            mutations += 1;
+        }
+    }
+    assert_eq!(checked, 8);
+    assert_eq!(mutations, 24);
+    println!("{checked} standbys, {mutations} refused mutations");
 }
 
 /// dashd's own funding signatures on each registration: every input's

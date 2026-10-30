@@ -78,13 +78,15 @@ fn columns(conn: &rusqlite::Connection, table: &str) -> Result<Vec<(String, bool
 /// wallet's proposals, which `mg_proposals` carries.
 /// `shared_mn_sessions` (MG-04b D19): this installation's sessions, whose
 /// reserved coins and locks are this machine's; a sent one is in the history
-/// a restore reads again.
-const NOT_EXPORTED: [&str; 5] = [
+/// a restore reads again. `shared_mn_standby` (MG-04b D19): signed
+/// dissolutions of this installation; the exported file is the backup.
+const NOT_EXPORTED: [&str; 6] = [
     "dp_contact_info",
     "masternode_ops",
     "removed_wallets",
     "mg_proposals_kept",
     "shared_mn_sessions",
+    "shared_mn_standby",
 ];
 
 /// Tables and the column that scopes their rows to a wallet.

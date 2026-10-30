@@ -20,6 +20,7 @@ mod dissolve;
 mod flow;
 mod import;
 mod send;
+mod standby;
 mod store;
 #[cfg(test)]
 #[allow(non_snake_case)]
@@ -48,7 +49,8 @@ use super::protx_records::{OperatorChoice, ProTxOperation, VotingChoice};
 use super::shared_records::{
     Activation, DissolvePreview, DissolveRequest, JoinSharedRequest, RewardChoice,
     SharedCapability, SharedImport, SharedMessage, SharedOutcome, SharedRole, SharedSession,
-    SharedStage, SharedWarning, StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
+    SharedStage, SharedWarning, Standby, StandbyFile, StandbyVariant, StartSharedRequest,
+    UpdateSharePreview, UpdateShareRequest,
 };
 use super::{Masternodes, MasternodesError, display_hex, parse_pro_tx_hash};
 use crate::platform::lease::Lease;
@@ -67,8 +69,8 @@ fn unrecorded() -> MasternodesError {
 /// dash-qt envelope oracle, D78). Turned off, `can_send` is false and every
 /// call that produces bytes the network accepts (`sign_shared_funding`,
 /// `send_shared_registration`, `abandon_shared_session`, `update_share`,
-/// `dissolve`, and `resend_operation` of an `update_share` or `dissolve`
-/// row) refuses
+/// `dissolve`, `create_standby`, `export_standby`, `send_standby`, and
+/// `resend_operation` of an `update_share` or `dissolve` row) refuses
 /// `unsupported{feature: "shared_masternodes"}` after the wallet check.
 pub(super) const SHARED_SENDING: bool = true;
 
@@ -112,9 +114,12 @@ async fn outcome(
 ) -> Result<SharedOutcome, MasternodesError> {
     let l = s.shared_loaded(wallet, id).await?;
     let chain = s.shared_chain(wallet).await?;
+    let mut session = view(&l, &chain);
+    s.prompt_standbys(wallet, std::slice::from_mut(&mut session))
+        .await?;
     Ok(SharedOutcome {
         message: message_of(&l)?,
-        session: view(&l, &chain),
+        session,
     })
 }
 
@@ -209,10 +214,12 @@ impl Masternodes {
             let network = s.network.core_network();
             // A row that doesn't parse is skipped, as every other reader
             // does; `shared_session` of its id reports it.
-            Ok(flow::loaded_all(rows, network)
+            let mut sessions: Vec<SharedSession> = flow::loaded_all(rows, network)
                 .iter()
                 .map(|l| view(l, &chain))
-                .collect())
+                .collect();
+            s.prompt_standbys(wallet, &mut sessions).await?;
+            Ok(sessions)
         })
         .await
     }
@@ -385,8 +392,9 @@ impl Masternodes {
 
     /// Detects a pasted or opened message (§2.1) and applies it by §3.0's
     /// table. Signs nothing; never repeats the text in a refusal (MG-00
-    /// D36). `target`: the session a bare signatures array is for (part 2:
-    /// in 1a such arrays, sigs envelopes and standbys are `unsupported`).
+    /// D36). A standby is checked and stored (§9.4, D32). `target`: the
+    /// session a bare signatures array is for (until maintenance sessions
+    /// join, such arrays and sigs envelopes are `unsupported`).
     pub async fn import_shared_message(
         &self,
         wallet: WalletId,
@@ -404,8 +412,9 @@ impl Masternodes {
                 Ok(Message::BareSigs(_)) if target.is_none() => {
                     return Err(message_refusal("parse"));
                 }
-                // Maintenance and standbys are part 2.
-                Ok(Message::BareSigs(_) | Message::Sigs(_) | Message::Standby(_)) => {
+                Ok(Message::Standby(tx)) => return s.import_standby(wallet, tx).await,
+                // Maintenance sessions are part 2's later slices.
+                Ok(Message::BareSigs(_) | Message::Sigs(_)) => {
                     return Err(unsupported(None));
                 }
                 Err(e) => return Err(envelope_refusal(e)),
@@ -434,7 +443,7 @@ impl Masternodes {
             };
             let session = s.shared_view(wallet, &id).await?;
             Ok(SharedImport::Session {
-                session,
+                session: Box::new(session),
                 changed,
                 received_code: received.code,
                 warnings: if received.edited {
@@ -942,6 +951,96 @@ impl Masternodes {
             s.require_wallet(&wallet)?;
             sending?;
             s.send_dissolve(wallet, request, hash, &grant).await
+        })
+        .await
+    }
+
+    /// Signs both standby variants paying `fee` (one when the penalty is
+    /// 0) for each of this wallet's shares of the masternode and stores
+    /// them (§9.4, D21) †: `unsupported` while sending is off
+    /// ([`SHARED_SENDING`]). One `Dissolution` lease is charged what the
+    /// immediate variants give up, the penalty and the fee per share
+    /// (§6.3). Returns the masternode's standbys.
+    pub async fn create_standby(
+        &self,
+        wallet: WalletId,
+        pro_tx_hash: String,
+        fee: u64,
+        grant: String,
+    ) -> Result<Vec<Standby>, MasternodesError> {
+        let hash = parse_pro_tx_hash(&pro_tx_hash)?;
+        dissolve::check_request(&DissolveRequest {
+            pro_tx_hash,
+            share_index: 0,
+            fee,
+        })?;
+        let sending = self.require_sending();
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            sending?;
+            s.create_standbys(wallet, hash, fee, &grant).await
+        })
+        .await
+    }
+
+    /// The wallet's standbys of the masternode, by share and fee: their
+    /// descriptions, never their bytes (m-22).
+    pub async fn standby(
+        &self,
+        wallet: WalletId,
+        pro_tx_hash: String,
+    ) -> Result<Vec<Standby>, MasternodesError> {
+        let hash = parse_pro_tx_hash(&pro_tx_hash)?;
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            s.standbys(wallet, hash).await
+        })
+        .await
+    }
+
+    /// Core's file of the standby of `share` paying `fee` (§9.4, D22) †:
+    /// the signed bytes leave the wallet, so it takes a `MasternodeOp{0}`
+    /// "Dissolution" grant and charges nothing (m-22, D21).
+    pub async fn export_standby(
+        &self,
+        wallet: WalletId,
+        pro_tx_hash: String,
+        share: u16,
+        fee: u64,
+        grant: String,
+    ) -> Result<StandbyFile, MasternodesError> {
+        let hash = parse_pro_tx_hash(&pro_tx_hash)?;
+        let sending = self.require_sending();
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            sending?;
+            s.export_standby(wallet, hash, share, fee, &grant).await
+        })
+        .await
+    }
+
+    /// Sends a variant of the stored standby of `share` paying `fee` as an
+    /// operation of kind `dissolve` (§9.4) †: `unsupported` while sending
+    /// is off ([`SHARED_SENDING`]). The full variant before it is valid is
+    /// `shared_too_early`; the immediate one once the full one is valid
+    /// and stored is `shared_stage{full_valid}` (m-20). D23 holds it as it
+    /// holds `dissolve`.
+    pub async fn send_standby(
+        &self,
+        wallet: WalletId,
+        pro_tx_hash: String,
+        share: u16,
+        fee: u64,
+        variant: StandbyVariant,
+        grant: String,
+    ) -> Result<ProTxOperation, MasternodesError> {
+        let hash = parse_pro_tx_hash(&pro_tx_hash)?;
+        let sending = self.require_sending();
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            sending?;
+            s.send_standby(wallet, hash, share, fee, variant, &grant)
+                .await
         })
         .await
     }

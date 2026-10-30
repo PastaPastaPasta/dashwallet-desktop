@@ -33,6 +33,7 @@ mod provenance;
 mod registration;
 mod rows;
 mod shared_sessions;
+mod shared_standby;
 pub use avatar::AvatarRow;
 pub use dashpay_journal::{ContestWatch, JournalEntry, JournalPage, JournalRow};
 pub use holds::Holder;
@@ -44,6 +45,7 @@ pub use registration::{
 };
 pub use rows::{SqlValue, TableRows};
 pub use shared_sessions::{SharedSessionRow, SharedSessionUpdate};
+pub use shared_standby::StandbyRow;
 
 mod embedded {
     refinery::embed_migrations!("./migrations");
@@ -213,7 +215,7 @@ pub(crate) static CHILD_STARTS: std::sync::RwLock<()> = std::sync::RwLock::new((
 /// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
 /// with an insert trigger that skips rows of a removed wallet (migration
 /// `V2026101302`, DEC-210). Settings are cleared by scope.
-pub(crate) const WALLET_TABLES: [&str; 17] = [
+pub(crate) const WALLET_TABLES: [&str; 18] = [
     "wallets",
     "address_book",
     "labels",
@@ -231,6 +233,7 @@ pub(crate) const WALLET_TABLES: [&str; 17] = [
     "mg_proposals",
     "masternode_ops",
     "shared_mn_sessions",
+    "shared_mn_standby",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -1563,7 +1566,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026102201);
+        assert_eq!(db.schema_version().unwrap(), 2026103001);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();

@@ -201,7 +201,10 @@ impl NetworkSession {
     ) -> Result<SharedSession, MasternodesError> {
         let l = self.shared_loaded(wallet, id).await?;
         let chain = self.shared_chain(wallet).await?;
-        Ok(view(&l, &chain))
+        let mut session = view(&l, &chain);
+        self.prompt_standbys(wallet, std::slice::from_mut(&mut session))
+            .await?;
+        Ok(session)
     }
 
     /// Every owner key of every share of the wallet's sessions, and the

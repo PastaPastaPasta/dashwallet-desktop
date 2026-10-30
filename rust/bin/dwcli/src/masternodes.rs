@@ -22,7 +22,7 @@ use dw_engine::governance::{GovernanceError, NameChoice};
 use dw_engine::masternodes::{
     AttachedKeyRole, CollateralChoice, DissolveRequest, EvonodeTerms, JoinSharedRequest, KeepOr,
     MasternodeType, Masternodes, MasternodesError, OperatorChoice, PayoutChoice,
-    PlatformNodeChoice, RegistrationRequest, RewardChoice, ShareSlot, ShareTerms,
+    PlatformNodeChoice, RegistrationRequest, RewardChoice, ShareSlot, ShareTerms, StandbyVariant,
     StartSharedRequest, UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
 };
 use dw_engine::{Engine, EngineError, NetworkSession, WalletId};
@@ -336,7 +336,7 @@ enum SharedCommand {
         /// The share (row index) of this wallet: the actor.
         #[arg(long)]
         share_index: u16,
-        /// Duffs, from the share; dash-qt's default.
+        /// Duffs, from the share; dash-qt's minimum (`MIN_DISSOLVE_FEE`).
         #[arg(long, default_value_t = 1_000)]
         fee: u64,
     },
@@ -347,9 +347,51 @@ enum SharedCommand {
         /// The share (row index) of this wallet: the actor.
         #[arg(long)]
         share_index: u16,
-        /// Duffs, from the share; dash-qt's default.
+        /// Duffs, from the share; dash-qt's minimum (`MIN_DISSOLVE_FEE`).
         #[arg(long, default_value_t = 1_000)]
         fee: u64,
+    },
+    /// Sign and store a standby (full principal and immediate) for each of
+    /// this wallet's shares; prints the masternode's standbys.
+    CreateStandby {
+        pro_tx_hash: String,
+        /// Duffs, from each share; dash-qt's minimum (`MIN_DISSOLVE_FEE`).
+        #[arg(long, default_value_t = 1_000)]
+        fee: u64,
+        /// The grant's cap, in duffs. Default: the shares of this wallet
+        /// its session names, each the penalty and the fee; 0 without a
+        /// session.
+        #[arg(long)]
+        max_debit: Option<u64>,
+    },
+    /// The masternode's stored standbys (no transaction bytes).
+    Standby { pro_tx_hash: String },
+    /// Core's standby file (a grant capped at 0): prints its name and
+    /// text; `--out` also writes the text to that file.
+    ExportStandby {
+        pro_tx_hash: String,
+        #[arg(long)]
+        share_index: u16,
+        #[arg(long, default_value_t = 1_000)]
+        fee: u64,
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+    /// Send a stored standby's variant; prints the operation.
+    SendStandby {
+        pro_tx_hash: String,
+        #[arg(long)]
+        share_index: u16,
+        #[arg(long, default_value_t = 1_000)]
+        fee: u64,
+        /// `full` or `immediate`.
+        #[arg(long, value_parser = parse_variant)]
+        variant: StandbyVariant,
+        /// The grant's cap, in duffs. Default: the fee, and for the
+        /// immediate variant the penalty its session names; 0 without a
+        /// session.
+        #[arg(long)]
+        max_debit: Option<u64>,
     },
 }
 
@@ -626,6 +668,47 @@ fn parse_reward(s: &str) -> Result<RewardChoice, String> {
             address: address.into(),
         }),
     }
+}
+
+fn parse_variant(s: &str) -> Result<StandbyVariant, String> {
+    match s {
+        "full" => Ok(StandbyVariant::Full),
+        "immediate" => Ok(StandbyVariant::Immediate),
+        _ => Err("full or immediate".into()),
+    }
+}
+
+/// A standby grant's cap: `shares` of this wallet each giving up `fee`
+/// and, with `penalty`, the early penalty of the masternode's session; 0
+/// when no session names it (a restored wallet, or another share's
+/// standby, which is charged 0), so the engine's own refusal comes first.
+fn standby_debit(
+    engine: &Engine,
+    mn: &Masternodes,
+    wallet: WalletId,
+    pro_tx_hash: &str,
+    fee: u64,
+    penalty: bool,
+    all_shares: bool,
+) -> Result<u64, Failure> {
+    let sessions = engine.block_on(mn.shared_sessions(wallet))?;
+    let Some(session) = sessions
+        .iter()
+        .find(|s| s.pro_tx_hash.as_deref() == Some(pro_tx_hash))
+    else {
+        return Ok(0);
+    };
+    let each = fee
+        + if penalty {
+            u64::try_from(session.terms.early_penalty).unwrap_or(0)
+        } else {
+            0
+        };
+    let shares = match all_shares {
+        true => session.rows.iter().filter(|r| r.mine).count() as u64,
+        false => 1,
+    };
+    Ok(each * shares)
 }
 
 /// A failed command: the facade's code and message.
@@ -1125,6 +1208,62 @@ fn shared_command(
             let preview = engine.block_on(mn.preview_dissolve(w, request.clone()))?;
             let grant = masternode_grant(session, passphrase, w, preview.total_debit)?;
             value(engine.block_on(mn.dissolve(w, request, grant))?)
+        }
+        SharedCommand::CreateStandby {
+            pro_tx_hash,
+            fee,
+            max_debit,
+        } => {
+            let max = match max_debit {
+                Some(max) => max,
+                None => standby_debit(engine, mn, w, &pro_tx_hash, fee, true, true)?,
+            };
+            let grant = masternode_grant(session, passphrase, w, max)?;
+            value(engine.block_on(mn.create_standby(w, pro_tx_hash, fee, grant))?)
+        }
+        SharedCommand::Standby { pro_tx_hash } => {
+            value(engine.block_on(mn.standby(w, pro_tx_hash))?)
+        }
+        SharedCommand::ExportStandby {
+            pro_tx_hash,
+            share_index,
+            fee,
+            out,
+        } => {
+            let grant = masternode_grant(session, passphrase, w, 0)?;
+            let file =
+                engine.block_on(mn.export_standby(w, pro_tx_hash, share_index, fee, grant))?;
+            if let Some(path) = out {
+                std::fs::write(path, &file.text).map_err(|_| Failure {
+                    code: "invalid_argument".into(),
+                    message: "writing --out failed".into(),
+                })?;
+            }
+            value(file)
+        }
+        SharedCommand::SendStandby {
+            pro_tx_hash,
+            share_index,
+            fee,
+            variant,
+            max_debit,
+        } => {
+            let max = match max_debit {
+                Some(max) => max,
+                None => {
+                    let immediate = variant == StandbyVariant::Immediate;
+                    standby_debit(engine, mn, w, &pro_tx_hash, fee, immediate, false)?
+                }
+            };
+            let grant = masternode_grant(session, passphrase, w, max)?;
+            value(engine.block_on(mn.send_standby(
+                w,
+                pro_tx_hash,
+                share_index,
+                fee,
+                variant,
+                grant,
+            ))?)
         }
     }
 }

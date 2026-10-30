@@ -31,6 +31,10 @@
 //!   Core's order with Core's reasons, run before anything is signed
 //!   (MG-04b §5.1), and [`rules::ShareReward`], which resets a reward to the
 //!   refund script, never to an empty one (MG-04b D31).
+//! - [`standby`]: dash-qt's standby pair (`createStandby`,
+//!   `sharedmndialogs.cpp:1634-1646`), the full-principal and immediate
+//!   unilateral dissolutions by one share, and the check a pasted standby
+//!   passes before it is stored or sent (MG-04b D89).
 //!
 //! These payloads are consensus-valid only once the v24 fork is active
 //! (`GetValidatedPayload`, `specialtxman.cpp:1097-1122`).
@@ -47,6 +51,7 @@ pub mod rawtx;
 pub mod registration;
 pub mod rules;
 pub mod session;
+pub mod standby;
 
 pub use netinfo::ExtNetInfo;
 pub use rawtx::SpecialTx;

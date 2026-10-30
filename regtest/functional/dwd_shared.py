@@ -25,6 +25,11 @@ Sessions:
       edits the envelope as dash-qt would (its row and contribution, the funding template, the
       fingerprint), signs its consent with `protx shared_sign` and its input with
       `signrawtransactionwithwallet`; A signs last and sends (D24).
+  S   standbys of S2's masternode (slice 2b): A creates its pair in the early period and exports
+      Core's file, whose immediate variant dashd accepts at once and whose full one it refuses
+      (`bad-prodis-penalty-floor`); A imports Q's full variant from dashd's `protx shared_dissolve`
+      (`submit=false`); past the period A sends Q's, which Core mines byte for byte, and the
+      masternode leaves the list.
   S3  dashd as a dash-qt coordinator P (600 DASH) with B as participant (400): the script builds
       the Invitation, absorbs B's Details, runs `protx shared_register_prepare`, signs P's consent
       (`shared_sign`), combines (`shared_combine`) and signs P's input right after, in
@@ -353,6 +358,62 @@ class DwdShared(DwdProtx):
                      (q_row["ownerAddress"], q_row["refundAddress"]))
         self.check_table(pro_tx, rows)
         assert_equal(shared(a, "show", sid)["stage"]["kind"], "confirmed")
+
+        self.log.info("3b. S: standbys of S2's masternode, created, exported, imported and sent")
+        valid_from = self.core_info(pro_tx)[1]["registeredHeight"] + EARLY_BLOCKS
+        assert_equal(shared(a, "show", sid)["next"], "create_standby")
+        created = shared(a, "create-standby", pro_tx)
+        assert_equal([(s["share_index"], s["fee"], s["full"], s["immediate"], s["source"], s["full_valid_from"])
+                      for s in created], [(0, 1_000, True, True, "created", valid_from)])
+        # Signing again stores nothing new (D84); the prompt is answered (D91).
+        assert_equal(shared(a, "create-standby", pro_tx), created)
+        assert_equal(shared(a, "standby", pro_tx), created)
+        assert_equal(shared(a, "show", sid)["next"], "nothing")
+        out = os.path.join(self.options.tmpdir, "standby.txt")
+        exported = shared(a, "export-standby", pro_tx, "--share-index", "0", "--out", out)
+        assert_equal(exported["file_name"], f"standby-dissolution-{pro_tx[:8]}-share1.txt")
+        with open(out, encoding="utf-8") as f:
+            assert_equal(f.read(), exported["text"])
+        lines = exported["text"].split("\n")
+        hex_after = lambda prefix: lines[1 + next(i for i, l in enumerate(lines) if l.startswith(prefix))]
+        full_hex, immediate_hex = hex_after("FULL PRINCIPAL — valid from block"), hex_after("IMMEDIATE — pays")
+        assert_equal(node.testmempoolaccept([immediate_hex])[0]["allowed"], True)
+        assert_equal(node.testmempoolaccept([full_hex])[0]["reject-reason"], "bad-prodis-penalty-floor")
+        # dashd as Q (share 1) signs its full variant without sending it; A stores it.
+        q_full = node.protx("shared_dissolve", pro_tx, 1, 1_000, False, False)
+        got = shared(a, "import", stdin=q_full)
+        assert_equal((got["kind"], got["stored"]), ("standby", True))
+        d = got["description"]
+        assert_equal((d["variant"], d["penalty"], d["returns_principal"]), ("full", 0, True))
+        assert_equal((d["standby"]["share_index"], d["standby"]["source"]), (1, "imported"))
+        assert_equal(shared(a, "import", stdin=q_full)["stored"], False)
+        assert_equal([(s["share_index"], s["full"], s["immediate"]) for s in shared(a, "standby", pro_tx)],
+                     [(0, True, True), (1, True, False)])
+        send_q = ("send-standby", pro_tx, "--share-index", "1", "--variant", "full")
+        shared(a, *send_q, error="masternodes.shared_too_early")
+        # The full variants are valid in the block at `valid_from` (D85).
+        h = self.mine(valid_from - 1 - self.tip())
+        shared(a, "send-standby", pro_tx, "--share-index", "0", "--variant", "immediate",
+               error="masternodes.shared_stage")
+        assert_equal(node.testmempoolaccept([full_hex])[0]["allowed"], True)
+        self.start_miner()
+        try:
+            op = shared(a, *send_q)
+        finally:
+            self.stop_miner()
+        assert handed_off(op)
+        assert_equal(op["kind"], "dissolve")
+        h = self.wait_mined(op["txid"])
+        assert_equal(node.getrawtransaction(op["txid"]), q_full)
+        assert pro_tx not in {m["proTxHash"] for m in node.protx("list", "registered", True)}, pro_tx
+        assert_equal({o["id"]: o for o in a.mn(h, "operations")}[op["id"]]["state"]["kind"], "confirmed")
+        # Delisted: nothing left to prompt. A's own standby is held while the dissolution may be
+        # reorged out (D23), then refused as unlisted.
+        assert_equal(shared(a, "show", sid)["next"], "nothing")
+        own_full = ("send-standby", pro_tx, "--share-index", "0", "--variant", "full")
+        shared(a, *own_full, error="masternodes.update_pending")
+        h = self.mine(6)  # RECOMMENDED_CONFIRMATIONS: buried
+        shared(a, *own_full, error="masternodes.shared_too_early")
 
         self.log.info("4. S3: dashd as a dash-qt coordinator, B's signature completes the transaction")
         p_coin = self.own_coin(601 * COIN)
