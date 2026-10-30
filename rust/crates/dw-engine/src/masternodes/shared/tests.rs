@@ -543,10 +543,17 @@ fn assert_message(e: MasternodesError, reason: &str) {
 /// The three-party session up to every approval: A coordinates (400),
 /// B and C take 300 each. Returns the session id.
 fn three_approved(f: &Fx) -> String {
+    three_approved_with(f, COIN)
+}
+
+/// [`three_approved`] with the terms' early penalty `early_penalty`.
+fn three_approved_with(f: &Fx, early_penalty: u64) -> String {
     f.credit(0, 1, 401 * COIN);
     f.credit(1, 2, 300 * COIN + 50_000);
     f.credit(2, 3, 350 * COIN);
-    let invitation = start(f, 0, request(&[("A", 400), ("B", 300), ("C", 300)], FEE)).unwrap();
+    let mut req = request(&[("A", 400), ("B", 300), ("C", 300)], FEE);
+    req.terms.early_penalty = early_penalty;
+    let invitation = start(f, 0, req).unwrap();
     let id = invitation.session.id.clone();
     assert_eq!(invitation.message.name, "Invitation");
     assert_eq!(
@@ -1364,7 +1371,12 @@ fn test_QT_126_in_flight_mark_is_per_session() {
 /// A confirmed registration of A's: the participants' inputs signed, the
 /// coordinator's stood in (1b signs them), confirmed at `height`.
 fn confirmed(f: &Fx, height: u32) -> (String, Txid) {
-    let id = three_approved(f);
+    confirmed_with(f, height, COIN)
+}
+
+/// [`confirmed`] with the terms' early penalty `early_penalty`.
+fn confirmed_with(f: &Fx, height: u32, early_penalty: u64) -> (String, Txid) {
+    let id = three_approved_with(f, early_penalty);
     let request = f.message(0, &id);
     for w in [1, 2] {
         f.imported(w, &request);
@@ -1397,8 +1409,11 @@ fn confirmed(f: &Fx, height: u32) -> (String, Txid) {
             },
         )
         .unwrap();
-    // The pinned library reads no version-3 payload (BL-187): the history
-    // holds its inputs and outputs under the ProTx hash.
+    // The session stages find the registration by its txid, so the history
+    // holds its inputs and outputs under the ProTx hash, without its
+    // payload; a test the payload matters to (the vault's dissolution
+    // signer reads the share table from it, D29) puts the typed
+    // registration in instead (`dissolve::listed`).
     let txid = tx.txid();
     let mined = Transaction {
         version: 3,

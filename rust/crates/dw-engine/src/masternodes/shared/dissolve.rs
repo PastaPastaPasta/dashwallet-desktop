@@ -5,6 +5,7 @@
 //! by the share's keychain owner key and sent as an MG-04 operation of kind
 //! `dissolve`. It spends the collateral only: no fee inputs, no change.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashcore::hashes::Hash;
@@ -274,7 +275,8 @@ impl NetworkSession {
         let ctx = super::v24_context(self, wallet).await?;
         let updating = self.masternodes.update_lock().await;
         let fence = self.coin_fence(wallet).await?;
-        self.check_no_pending_maintenance(wallet, hash).await?;
+        self.check_no_pending_maintenance(wallet, hash, None)
+            .await?;
         let plan = self.plan_dissolve(wallet, &request, hash, &ctx).await?;
         // D83: the preview warns of a dust actor output; sending refuses
         // it, as no node would relay the transaction.
@@ -361,19 +363,58 @@ impl NetworkSession {
         result
     }
 
-    /// What [`list_settled`] reads: the synced list when `needed` (some
-    /// row is an [`unseen_dissolution`]), else none, and the height the
-    /// wallet has scanned to.
-    pub(crate) async fn dissolution_list(&self, wallet: WalletId, needed: bool) -> (ListView, u32) {
-        if !needed {
-            return (ListView::default(), 0);
+    /// What [`list_settled`] reads for `rows`: nothing unless one is an
+    /// [`unseen_dissolution`].
+    pub(crate) async fn dissolution_view(
+        &self,
+        wallet: WalletId,
+        rows: &[MasternodeOpRow],
+    ) -> DissolutionView {
+        let hashes: Vec<[u8; 32]> = rows
+            .iter()
+            .filter(|r| unseen_dissolution(r))
+            .filter_map(row_hash)
+            .collect();
+        if hashes.is_empty() {
+            return DissolutionView::default();
         }
-        let list = match self.manager() {
-            Ok(manager) => self.protx_list(&manager).await,
-            Err(_) => ListView::default(),
+        let Ok(manager) = self.manager() else {
+            return DissolutionView::default();
         };
-        let scanned = self.hub.wallet_state(&wallet).map_or(0, |s| s.tip());
-        (list, scanned)
+        let list = self.protx_list(&manager).await;
+        // The pinned SPV library gives the entries without their height, and
+        // its engine takes a diff before its progress says so: bound the
+        // entries' height by the readings taken after them, the headers'
+        // included. The engine asks for no diff above a stored header, and
+        // the header reading is published before that request's round trip
+        // ends; it isn't certain to be (D81 names the residual).
+        let list_bound = {
+            let t = self.hub.tracker();
+            [list.height, t.masternode_list_height(), t.tip_height()]
+                .into_iter()
+                .flatten()
+                .max()
+                .unwrap_or(0)
+        };
+        let scanned = self
+            .hub
+            .wallet_state(&wallet)
+            .map_or(0, |s| s.synced_height);
+        let mut registered = HashMap::new();
+        for hash in hashes {
+            if let Ok((_, at)) = self
+                .shared_confirmed(wallet, Txid::from_byte_array(hash))
+                .await
+            {
+                registered.insert(hash, at);
+            }
+        }
+        DissolutionView {
+            list,
+            list_bound,
+            scanned,
+            registered,
+        }
     }
 
     /// The masternode's registration from the wallet's history (D29), in
@@ -404,39 +445,61 @@ fn actor_warnings(actor_output: u64, refund: &ScriptBuf) -> Vec<SharedWarning> {
     }
 }
 
+/// What [`list_settled`] reads (D81).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DissolutionView {
+    pub list: ListView,
+    /// A height the entries' list isn't above (D81).
+    pub list_bound: u32,
+    /// The wallet's filter-scan checkpoint (`synced_height`): every block
+    /// up to it that pays the wallet is in its history. The best processed
+    /// block isn't: filter batches commit with gaps.
+    pub scanned: u32,
+    /// The height of each unseen row's registration, while it is in a
+    /// block of the wallet's history.
+    pub registered: HashMap<[u8; 32], u32>,
+}
+
 /// D27: the wallet sees its dissolution by the collateral leaving the
 /// list. One that pays this wallet nothing (its actor output omitted) is
 /// never in the history, so a `sent` one reads `confirmed`, at the list's
-/// height, once its masternode is out of the synced list; every other
-/// dissolution of it pays this wallet's refund and so is in the history
-/// (`conflicted` there), but only once the wallet has scanned up to the
-/// list's height: `scanned` below it, the masternode may have left by
-/// such a dissolution the history doesn't hold yet, so it stays `sent`.
+/// height, once its masternode is out of the synced list (D81). Every
+/// other dissolution of it pays this wallet's refund and so is in the
+/// history (`conflicted` there), but only once the wallet has scanned to
+/// the list's height: below it, another's dissolution may have emptied the
+/// list unseen, so the row stays `sent`. So it does while the registration
+/// isn't in a block at or below that height (a reorg took it out).
 pub(crate) fn list_settled(
     row: &MasternodeOpRow,
     state: ProTxOperationState,
-    list: &ListView,
-    scanned: u32,
+    view: &DissolutionView,
 ) -> ProTxOperationState {
-    if state != ProTxOperationState::Sent || !unseen_dissolution(row) || !list.synced {
+    if state != ProTxOperationState::Sent || !unseen_dissolution(row) || !view.list.synced {
         return state;
     }
-    let Some(height) = list.height.filter(|h| scanned >= *h) else {
+    let Some(hash) = row_hash(row) else {
         return state;
     };
-    let gone = row
-        .pro_tx_hash
-        .as_deref()
-        .and_then(|h| super::super::parse_pro_tx_hash(h).ok())
-        .is_some_and(|hash| list.entry(&hash).is_none());
-    match gone {
-        true => ProTxOperationState::Confirmed { height },
+    let gone = view.list.entry(&hash).is_none();
+    let registered = view
+        .registered
+        .get(&hash)
+        .is_some_and(|at| *at <= view.list_bound);
+    match gone && registered && view.scanned >= view.list_bound {
+        true => ProTxOperationState::Confirmed {
+            height: view.list_bound,
+        },
         false => state,
     }
 }
 
+fn row_hash(row: &MasternodeOpRow) -> Option<[u8; 32]> {
+    let hash = row.pro_tx_hash.as_deref()?;
+    super::super::parse_pro_tx_hash(hash).ok()
+}
+
 /// A `dissolve` row whose transaction omits its actor output.
-pub(crate) fn unseen_dissolution(row: &MasternodeOpRow) -> bool {
+fn unseen_dissolution(row: &MasternodeOpRow) -> bool {
     kind_of(&row.kind) == ProTxOperationKind::Dissolve
         && serde_json::from_str::<DissolveRecord>(&row.request).is_ok_and(|r| r.actor_output == 0)
 }
@@ -503,30 +566,54 @@ mod tests {
         }
     }
 
+    /// A synced list at 120 holding `entries`, the wallet scanned to
+    /// `scanned`, the registration in a block at `registered`.
+    fn view(entries: &[[u8; 32]], scanned: u32, registered: Option<u32>) -> DissolutionView {
+        DissolutionView {
+            list: list(true, entries),
+            list_bound: 120,
+            scanned,
+            registered: registered.map(|at| (HASH, at)).into_iter().collect(),
+        }
+    }
+
     #[test]
     fn test_QT_127_an_unseen_sent_dissolution_confirms_when_its_masternode_leaves_the_list() {
         use ProTxOperationState::*;
-        let gone = list(true, &[[8; 32]]);
+        let gone = view(&[[8; 32]], 120, Some(50));
         assert_eq!(
-            list_settled(&row(0), Sent, &gone, 120),
+            list_settled(&row(0), Sent, &gone),
             Confirmed { height: 120 }
         );
         // Still listed, the list unsynced, the wallet's scan behind the
-        // list, or not sent: as derived.
-        assert_eq!(list_settled(&row(0), Sent, &list(true, &[HASH]), 120), Sent);
-        assert_eq!(list_settled(&row(0), Sent, &list(false, &[]), 120), Sent);
-        assert_eq!(list_settled(&row(0), Sent, &gone, 119), Sent);
+        // list, the registration out of a block or above the list, or not
+        // sent: as derived.
+        assert_eq!(
+            list_settled(&row(0), Sent, &view(&[HASH], 120, Some(50))),
+            Sent
+        );
+        let unsynced = DissolutionView {
+            list: list(false, &[]),
+            ..gone.clone()
+        };
+        assert_eq!(list_settled(&row(0), Sent, &unsynced), Sent);
+        assert_eq!(list_settled(&row(0), Sent, &view(&[], 119, Some(50))), Sent);
+        assert_eq!(list_settled(&row(0), Sent, &view(&[], 120, None)), Sent);
+        assert_eq!(
+            list_settled(&row(0), Sent, &view(&[], 120, Some(121))),
+            Sent
+        );
         for state in [Signed, NotSent, Conflicted, Confirmed { height: 3 }] {
-            assert_eq!(list_settled(&row(0), state, &gone, 120), state);
+            assert_eq!(list_settled(&row(0), state, &gone), state);
         }
         // One paying this wallet is seen in the history, not the list.
         assert!(!unseen_dissolution(&row(1)));
-        assert_eq!(list_settled(&row(1), Sent, &gone, 120), Sent);
+        assert_eq!(list_settled(&row(1), Sent, &gone), Sent);
         let update = MasternodeOpRow {
             kind: "update_share".into(),
             ..row(0)
         };
-        assert_eq!(list_settled(&update, Sent, &gone, 120), Sent);
+        assert_eq!(list_settled(&update, Sent, &gone), Sent);
     }
 
     #[test]

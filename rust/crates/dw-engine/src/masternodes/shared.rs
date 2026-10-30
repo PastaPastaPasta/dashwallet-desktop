@@ -12,7 +12,7 @@
 //! its reservation, D17), the message, Core's rules, the consent checks,
 //! the lease.
 
-pub(super) use self::dissolve::{list_settled, row_debit, unseen_dissolution};
+pub(super) use self::dissolve::{list_settled, row_debit};
 pub(super) use self::store::check_session_id;
 
 mod build;

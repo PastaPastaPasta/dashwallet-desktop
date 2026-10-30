@@ -8,7 +8,10 @@
 //! - testdata/shared_maintenance.json: `shared_update_share`,
 //!   `shared_update_registrar_prepare`, `shared_dissolve` (both
 //!   `payPenalty`) and `shared_dissolve_prepare`, each with `testmempoolaccept`
-//!   at its height, on it and on mutations, and `protx info` at that time.
+//!   at its height, on it and on mutations, and `protx info` at that time;
+//! - testdata/shared_dissolve_shapes.json (`--dissolve-shapes`): a third
+//!   registration and `shared_dissolve` standbys with the actor holding the
+//!   last share and its output omitted or dust.
 //!
 //! The wallet's codecs must read and re-write dashd's bytes, its digests
 //! must equal dashd's sign hashes, its signatures over them must equal
@@ -588,6 +591,85 @@ fn test_QT_127_build_dissolution_equals_dashds_shared_dissolve() {
         rebuilt += 1;
     }
     assert_eq!(rebuilt, 4);
+}
+
+/// The shapes the maintenance file lacks (MG-04b 2a review r1 n-3): the
+/// actor holding the last share, and its output omitted (the penalty and
+/// fee take its share) or left dust. Rebuilt and signed byte for byte, and
+/// Core's rules give dashd's verdicts, except that dashd refuses the dust
+/// one by relay policy (`dust`), which the rules don't check (D83).
+#[test]
+fn test_QT_127_build_dissolution_equals_dashds_in_every_shape() {
+    let doc = load("shared_dissolve_shapes.json");
+    let owners: Vec<[u8; 32]> = doc["registration"]["parties"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| secret_of(str_of(p, "owner_wif")))
+        .collect();
+    let cases = doc["cases"].as_array().unwrap();
+    let names: Vec<&str> = cases.iter().map(|c| str_of(c, "name")).collect();
+    assert_eq!(
+        names,
+        [
+            "last_actor_penalty",
+            "last_actor_omitted",
+            "middle_actor_omitted",
+            "last_actor_dust",
+        ]
+    );
+    for c in cases {
+        let name = str_of(c, "name");
+        let tx = tx_of(str_of(c, "tx_hex"));
+        let shares = shares_listed(&c["protx_info"]);
+        let mn = shared_mn(&c["protx_info"], &shares);
+        let actor = c["actor_index"].as_u64().unwrap() as u16;
+        assert!(c["pay_penalty"].as_bool().unwrap(), "{name}");
+        let built = build_dissolution(
+            &mn,
+            actor,
+            mn.early_penalty as u64,
+            c["fee"].as_u64().unwrap(),
+        )
+        .unwrap();
+        let sig = sign_hash_compact(&owners[usize::from(actor)], &built.sign_hash(1)).unwrap();
+        assert_eq!(built.signed(vec![sig]).to_bytes(), tx.to_bytes(), "{name}");
+        let (kept, back) = match name {
+            "last_actor_penalty" => (true, 40_000),
+            "last_actor_dust" => (true, 100),
+            _ => (false, 0),
+        };
+        assert_eq!(built.actor_output, back, "{name}");
+        assert_eq!(tx.output.len(), shares.len() - usize::from(!kept), "{name}");
+        if kept {
+            let last = tx.output.last().unwrap();
+            assert_eq!(last.value, back, "{name}");
+            assert_eq!(last.script_pubkey, shares[usize::from(actor)].refund_script);
+        }
+        let mutations = c["mutations"].as_array().unwrap();
+        if name == "last_actor_dust" {
+            assert_eq!(rules_verdict(c, &tx, &[]), Ok(()));
+            assert_eq!(verdict(&c["accept"]), Err("dust".to_owned()));
+            assert!(
+                mutations
+                    .iter()
+                    .all(|m| verdict(m) == Err("dust".to_owned()))
+            );
+            continue;
+        }
+        assert_eq!(rules_verdict(c, &tx, &[]), verdict(&c["accept"]), "{name}");
+        for m in mutations {
+            let mut at = c.clone();
+            at["accept"] = m.clone();
+            let mutated = tx_of(str_of(m, "tx_hex"));
+            assert_eq!(
+                rules_verdict(&at, &mutated, &[]),
+                verdict(m),
+                "{name} {}",
+                str_of(m, "mutation")
+            );
+        }
+    }
 }
 
 #[test]

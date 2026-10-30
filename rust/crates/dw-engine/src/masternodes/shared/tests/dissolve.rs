@@ -6,13 +6,20 @@ use dw_protx::shared::rules::{SharedMn, check_dissolution};
 use dw_protx::shared::{ProDisTx, SpecialTx, TRANSACTION_PROVIDER_DISSOLVE};
 
 use super::*;
-use crate::masternodes::{DissolveRequest, ProTxOperationKind, ProTxOperationState};
+use crate::masternodes::{
+    DissolveRequest, ProTxOperation, ProTxOperationKind, ProTxOperationState, SharedWarning,
+};
 
 /// [`confirmed`]'s masternode in the synced list at 100, its registration
 /// in the history with its payload (the vault's dissolution signer reads
 /// the share table from it, D29).
 fn listed(f: &Fx) -> (String, Txid) {
-    let (id, txid) = confirmed(f, 50);
+    listed_with(f, COIN)
+}
+
+/// [`listed`] with the terms' early penalty `early_penalty`.
+fn listed_with(f: &Fx, early_penalty: u64) -> (String, Txid) {
+    let (id, txid) = confirmed_with(f, 50, early_penalty);
     f.follow();
     let entry = platform_wallet::masternode::MasternodeListSummary {
         pro_tx_hash: txid.to_byte_array(),
@@ -68,6 +75,24 @@ fn request(txid: Txid, share: u16, fee: u64) -> DissolveRequest {
         share_index: share,
         fee,
     }
+}
+
+/// Wallet `w` dissolves its share `w` now, at fee 1,000 under a 2-DASH
+/// grant.
+fn dissolve_now(f: &Fx, txid: Txid, w: usize) -> Result<ProTxOperation, MasternodesError> {
+    let share = u16::try_from(w).unwrap();
+    f.run(f.mn().dissolve(
+        f.wallets[w],
+        request(txid, share, 1_000),
+        f.grant(w, 2 * COIN),
+    ))
+}
+
+fn assert_update_pending(e: MasternodesError, operation: &str) {
+    assert!(
+        matches!(&e, MasternodesError::UpdatePending { operation: o } if o == operation),
+        "{e:?}"
+    );
 }
 
 fn script(address: &str) -> dashcore::ScriptBuf {
@@ -297,10 +322,7 @@ fn test_QT_127_dissolve_sends_an_operation() {
         },
         f.grant(0, COIN),
     ));
-    assert!(
-        matches!(update, Err(MasternodesError::UpdatePending { ref operation }) if *operation == op.id),
-        "{update:?}"
-    );
+    assert_update_pending(update.unwrap_err(), &op.id);
 
     // The resend: shared sending, charged the penalty and the fee again.
     let refused = f.run(f.sending_off().resend_operation(
@@ -340,12 +362,7 @@ fn test_QT_127_dissolve_sends_an_operation() {
 fn test_QT_127_another_dissolution_mined_conflicts_ours() {
     let f = fx(3, true);
     let (_, txid) = listed(&f);
-    let op = f
-        .run(
-            f.mn()
-                .dissolve(f.wallets[0], request(txid, 0, 1_000), f.grant(0, 2 * COIN)),
-        )
-        .unwrap();
+    let op = dissolve_now(&f, txid, 0).unwrap();
     let ours = f.net.sent()[0].clone();
     let mut theirs = ours.clone();
     theirs.output.swap(0, 1);
@@ -370,12 +387,7 @@ fn test_QT_127_dissolve_refuses_a_key_that_isnt_the_actors() {
         c["owner_index"] = (c["owner_index"].as_u64().unwrap() + 1).into();
         u.contribution = Some(c.to_string());
     });
-    let e = f
-        .run(
-            f.mn()
-                .dissolve(f.wallets[0], request(txid, 0, 1_000), f.grant(0, 2 * COIN)),
-        )
-        .unwrap_err();
+    let e = dissolve_now(&f, txid, 0).unwrap_err();
     assert!(matches!(e, MasternodesError::ShareNotMine), "{e:?}");
     assert!(f.net.sent().is_empty());
     assert!(f.run(f.mn().operations(f.wallets[0])).unwrap().is_empty());
@@ -400,69 +412,229 @@ fn test_QT_127_a_sent_update_share_holds_dissolve() {
         ))
         .unwrap();
     assert_eq!(update.kind, ProTxOperationKind::UpdateShare);
-    let e = f
-        .run(
-            f.mn()
-                .dissolve(f.wallets[0], request(txid, 0, 1_000), f.grant(0, 2 * COIN)),
-        )
-        .unwrap_err();
-    assert!(
-        matches!(e, MasternodesError::UpdatePending { ref operation } if *operation == update.id),
-        "{e:?}"
-    );
+    let e = dissolve_now(&f, txid, 0).unwrap_err();
+    assert_update_pending(e, &update.id);
     assert_eq!(f.net.sent().len(), 1);
 }
 
-/// D81 in the engine: a `sent` dissolve paying this wallet nothing (the
-/// fixture's penalty can't consume a share, so a copy of a sent row whose
-/// record says so) reads `confirmed` by the list, at its height, once the
-/// masternode has left it and the wallet's scan has reached that height.
-#[test]
-fn test_QT_127_an_unseen_dissolution_confirms_by_the_list_after_the_scan() {
-    let f = fx(3, true);
-    let (_, txid) = listed(&f);
-    let op = f
-        .run(
-            f.mn()
-                .dissolve(f.wallets[0], request(txid, 0, 1_000), f.grant(0, 2 * COIN)),
-        )
-        .unwrap();
+/// [`unseen_copy`]'s row.
+const UNSEEN: &str = "unseen";
+
+/// A copy, as row [`UNSEEN`], of `op`'s sent row whose record says its
+/// transaction pays this wallet nothing (the fixture's penalty can't
+/// consume a share).
+fn unseen_copy(f: &Fx, op: &str) {
     let w = f.wallets[0].to_string();
     let db = f.db();
-    let row = db.masternode_op(&w, &op.id).unwrap().unwrap();
+    let row = db.masternode_op(&w, op).unwrap().unwrap();
     let mut record: serde_json::Value = serde_json::from_str(&row.request).unwrap();
     record["actor_output"] = 0.into();
     let unseen = dw_appdb::MasternodeOpRow {
-        id: "unseen".into(),
+        id: UNSEEN.into(),
         request: record.to_string(),
         sent_at: None,
         ..row
     };
     db.insert_masternode_op_durable(&w, &unseen, &[], 0)
         .unwrap();
-    db.begin_masternode_op_attempt(&w, "unseen", 1).unwrap();
-    let scanned = |height: u32| {
-        let mut state = f
-            .session
-            .hub
-            .wallet_state(&f.wallets[0])
-            .unwrap_or_default();
-        (state.synced_height, state.processed_height) = (height, height);
-        f.session.hub.set_wallet_state(f.wallets[0], state);
-    };
-    let state = || {
-        let ops = f.run(f.mn().operations(f.wallets[0])).unwrap();
-        let of = |id: &str| ops.iter().find(|o| o.id == id).unwrap().state;
-        (of("unseen"), of(&op.id))
-    };
-    use ProTxOperationState::{Confirmed, Sent};
-    scanned(100);
-    assert_eq!(state(), (Sent, Sent), "still listed");
+    db.begin_masternode_op_attempt(&w, UNSEEN, 1).unwrap();
+}
+
+/// Wallet 0's filter-scan checkpoint and best processed block.
+fn scanned(f: &Fx, synced: u32, processed: u32) {
+    let mut state = f
+        .session
+        .hub
+        .wallet_state(&f.wallets[0])
+        .unwrap_or_default();
+    (state.synced_height, state.processed_height) = (synced, processed);
+    f.session.hub.set_wallet_state(f.wallets[0], state);
+}
+
+/// Wallet 0's operation `id`'s state.
+fn op_state_of(f: &Fx, id: &str) -> ProTxOperationState {
+    let ops = f.run(f.mn().operations(f.wallets[0])).unwrap();
+    ops.iter().find(|o| o.id == id).unwrap().state
+}
+
+/// The masternode out of the synced list, which reads `height`.
+fn delisted(f: &Fx, height: u32) {
     *f.seam.list.lock().unwrap() = Some(Vec::new());
-    *f.seam.list_height.lock().unwrap() = 105;
-    scanned(104);
-    assert_eq!(state(), (Sent, Sent), "the scan is behind the list");
-    scanned(105);
+    *f.seam.list_height.lock().unwrap() = height;
+}
+
+/// D81 in the engine: a `sent` dissolve paying this wallet nothing reads
+/// `confirmed` by the list, at its height, once the masternode has left it,
+/// the wallet's filter scan has reached that height, and the registration
+/// is still in a block.
+#[test]
+fn test_QT_127_an_unseen_dissolution_confirms_by_the_list_after_the_scan() {
+    use ProTxOperationState::{Confirmed, Sent};
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    let op = dissolve_now(&f, txid, 0).unwrap();
+    unseen_copy(&f, &op.id);
+    scanned(&f, 100, 100);
+    assert_eq!(op_state_of(&f, UNSEEN), Sent, "still listed");
+    delisted(&f, 105);
+    // The best processed block isn't a scan checkpoint: filter batches
+    // commit with gaps (review r1 m-1).
+    scanned(&f, 104, 105);
+    assert_eq!(op_state_of(&f, UNSEEN), Sent, "the scan is behind the list");
+    // The list's reading may lag its entries: the headers bound it.
+    f.tip(106);
+    scanned(&f, 105, 106);
+    assert_eq!(
+        op_state_of(&f, UNSEEN),
+        Sent,
+        "the scan is behind the headers"
+    );
+    scanned(&f, 106, 106);
+    assert_eq!(op_state_of(&f, UNSEEN), Confirmed { height: 106 });
     // The row paying this wallet waits for its history.
-    assert_eq!(state(), (Confirmed { height: 105 }, Sent));
+    assert_eq!(op_state_of(&f, &op.id), Sent);
+    // A reorg takes the registration out of its block: nothing was
+    // dissolved, so the row is `sent` again (review r1 n-1).
+    f.seam
+        .shared_mined
+        .lock()
+        .unwrap()
+        .retain(|(t, _, _)| *t != txid);
+    assert_eq!(op_state_of(&f, UNSEEN), Sent, "the registration is out");
+}
+
+/// D81, review r1 m-1: another participant's dissolution empties the list
+/// before this wallet's scan reaches its block. The row stays `sent`, then
+/// reads `conflicted` once the scan finds that dissolution, which pays
+/// this wallet's refund.
+#[test]
+fn test_QT_127_anothers_dissolution_ahead_of_the_scan_stays_sent_then_conflicts() {
+    use ProTxOperationState::{Conflicted, Sent};
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    let op = dissolve_now(&f, txid, 0).unwrap();
+    unseen_copy(&f, &op.id);
+    dissolve_now(&f, txid, 1).unwrap();
+    let theirs = f.net.sent()[1].clone();
+    let refund = script(
+        f.session_of(0, &only_session(&f)).rows[0]
+            .refund_address
+            .as_deref()
+            .unwrap(),
+    );
+    assert!(theirs.output.iter().any(|o| o.script_pubkey == refund));
+    delisted(&f, 105);
+    scanned(&f, 104, 105);
+    assert_eq!(op_state_of(&f, UNSEEN), Sent);
+    confirm(&f, 0, theirs, 105);
+    scanned(&f, 105, 105);
+    assert_eq!(op_state_of(&f, UNSEEN), Conflicted);
+    assert_eq!(op_state_of(&f, &op.id), Conflicted);
+}
+
+/// D83, review r1 m-2: an early dissolution leaving the actor's output in
+/// (0, dust) is previewed with the warning but refused on send, nothing
+/// saved or sent; a fee raised by the output omits it, and that sends.
+#[test]
+fn test_QT_127_dissolve_refuses_a_dust_actor_output() {
+    let f = fx(3, true);
+    let (_, txid) = listed_with(&f, 300 * COIN - 1_100);
+    let p = f
+        .run(
+            f.mn()
+                .preview_dissolve(f.wallets[1], request(txid, 1, 1_000)),
+        )
+        .unwrap();
+    assert_eq!((p.penalty, p.returns[1].amount), (300 * COIN - 1_100, 100));
+    assert_eq!(p.warnings, vec![SharedWarning::ActorOutputDust]);
+    let e = f
+        .run(f.mn().dissolve(
+            f.wallets[1],
+            request(txid, 1, 1_000),
+            f.grant(1, 300 * COIN),
+        ))
+        .unwrap_err();
+    assert!(e.to_string().contains("dust"), "{e}");
+    assert_eq!(code(e), "invalid_argument");
+    assert!(f.net.sent().is_empty());
+    assert!(f.run(f.mn().operations(f.wallets[1])).unwrap().is_empty());
+
+    let p = f
+        .run(
+            f.mn()
+                .preview_dissolve(f.wallets[1], request(txid, 1, 1_100)),
+        )
+        .unwrap();
+    assert_eq!((p.returns[1].amount, p.warnings.len()), (0, 0));
+    let op = f
+        .run(f.mn().dissolve(
+            f.wallets[1],
+            request(txid, 1, 1_100),
+            f.grant(1, 300 * COIN),
+        ))
+        .unwrap();
+    assert_eq!(op.state, ProTxOperationState::Sent);
+    assert_eq!(
+        f.net.sent()[0].output.len(),
+        2,
+        "the actor's output omitted"
+    );
+}
+
+/// D23, review r1 n-2: a reward change one block deep still holds the
+/// dissolution (a reorg may put it back out); buried, it doesn't. When a
+/// reorg does put it back out after the dissolution went, the two resend
+/// as `update_registrar` rows do (MG-04 D43, D49): the reward change is
+/// superseded by the later dissolution, which waits for the reward change
+/// to be mined and buried again, then resends.
+#[test]
+fn test_QT_127_a_reward_change_holds_dissolve_until_buried_and_after_a_reorg() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    f.credit(0, 9, COIN);
+    let update = f
+        .run(f.mn().update_share(
+            f.wallets[0],
+            UpdateShareRequest {
+                pro_tx_hash: txid.to_string(),
+                share_index: 0,
+                reward: RewardChoice::NewAddress,
+            },
+            f.grant(0, COIN),
+        ))
+        .unwrap();
+    let u = f.net.sent()[0].clone();
+    confirm(&f, 0, u.clone(), 101);
+    f.tip(101);
+    assert_update_pending(dissolve_now(&f, txid, 0).unwrap_err(), &update.id);
+    f.tip(106);
+    let op = dissolve_now(&f, txid, 0).unwrap();
+    assert_eq!(f.net.sent().len(), 2);
+
+    // A reorg takes the reward change's block.
+    (f.session.hub.history).with_wallet(f.wallets[0], |h| h.truncate(&[u.txid()], &[]));
+    f.tip(105);
+    assert_eq!(op_state_of(&f, &update.id), ProTxOperationState::Sent);
+    let resend = |id: &str, max: u64| {
+        f.run(
+            f.mn()
+                .resend_operation(f.wallets[0], id.to_string(), f.grant(0, max)),
+        )
+    };
+    assert_update_pending(resend(&op.id, 2 * COIN).unwrap_err(), &update.id);
+    let superseded = resend(&update.id, COIN).unwrap_err();
+    assert!(
+        matches!(&superseded, MasternodesError::UpdateSuperseded { operation } if *operation == op.id),
+        "{superseded:?}"
+    );
+    assert_eq!(f.net.sent().len(), 2, "neither resent");
+
+    // Mined again: one block deep it still holds, buried it doesn't.
+    confirm(&f, 0, u, 106);
+    f.tip(106);
+    assert_update_pending(resend(&op.id, 2 * COIN).unwrap_err(), &update.id);
+    f.tip(111);
+    resend(&op.id, 2 * COIN).unwrap();
+    assert_eq!(f.net.sent().len(), 3);
+    assert_eq!(f.net.sent()[2].txid(), f.net.sent()[1].txid());
 }

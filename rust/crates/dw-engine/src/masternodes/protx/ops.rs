@@ -22,7 +22,7 @@ use super::super::MasternodesError;
 use super::super::protx_records::{
     ProTxOperation, ProTxOperationKind, ProTxOperationState, ProTxTerms, SignRequest,
 };
-use super::super::shared::{list_settled, unseen_dissolution};
+use super::super::shared::list_settled;
 use crate::coins::{CoinFence, now_secs, read_coins};
 use crate::history::TxEntry;
 use crate::send::{PreparedSummary, SpendCharge};
@@ -398,13 +398,10 @@ impl NetworkSession {
         row: &MasternodeOpRow,
     ) -> Result<ProTxOperationState, MasternodesError> {
         let (history, unspent) = self.op_view(wallet).await?;
-        let (list, scanned) = self.dissolution_list(wallet, unseen_dissolution(row)).await;
-        Ok(list_settled(
-            row,
-            state_of(row, &history, &unspent),
-            &list,
-            scanned,
-        ))
+        let view = self
+            .dissolution_view(wallet, std::slice::from_ref(row))
+            .await;
+        Ok(list_settled(row, state_of(row, &history, &unspent), &view))
     }
 
     pub(crate) async fn operation(

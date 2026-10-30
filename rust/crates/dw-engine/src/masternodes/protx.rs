@@ -32,7 +32,7 @@ use super::protx_records::{
     RegistrationPreview, RegistrationRequest, UpdateRegistrarPreview, UpdateRegistrarRequest,
 };
 use super::records::MasternodeType;
-use super::shared::{list_settled, unseen_dissolution};
+use super::shared::list_settled;
 use super::{Masternodes, MasternodesError, parse_pro_tx_hash};
 use crate::coins::{now_secs, wallet_funds_address};
 use crate::platform::lease::Lease;
@@ -645,14 +645,9 @@ impl Masternodes {
             let w = wallet.to_string();
             let rows = s.appdb_op(move |db| db.masternode_ops(&w)).await?;
             let (history, unspent) = s.op_view(wallet).await?;
-            let (list, scanned) = s
-                .dissolution_list(wallet, rows.iter().any(unseen_dissolution))
-                .await;
+            let view = s.dissolution_view(wallet, &rows).await;
             rows.iter()
-                .map(|r| {
-                    let state = state_of(r, &history, &unspent);
-                    operation_of(r, list_settled(r, state, &list, scanned))
-                })
+                .map(|r| operation_of(r, list_settled(r, state_of(r, &history, &unspent), &view)))
                 .collect()
         })
         .await
@@ -676,16 +671,18 @@ impl Masternodes {
             s.require_wallet(&wallet)?;
             let _flight = s.claim_operation(wallet, &operation)?;
             let row = s.op_row(wallet, &operation).await?;
-            if matches!(
+            let shared = matches!(
                 kind_of(&row.kind),
                 ProTxOperationKind::UpdateShare | ProTxOperationKind::Dissolve
-            ) {
+            );
+            if shared {
                 sending?;
             }
             // An update resends only while no other update of its
-            // masternode would race it, held against a new update (D43, D49).
+            // masternode would race it, held against a new update (D43, D49;
+            // MG-04b D23 for the shared ones).
             let update = row.kind == "update_registrar";
-            let _updating = match update {
+            let _updating = match update || shared {
                 true => Some(s.masternodes.update_lock().await),
                 false => None,
             };
@@ -702,6 +699,11 @@ impl Masternodes {
             }
             if update && let Some(conflict) = s.resend_conflict(&row).await? {
                 return Err(conflict);
+            }
+            if shared && let Some(hash) = row.pro_tx_hash.as_deref() {
+                let hash = parse_pro_tx_hash(hash)?;
+                s.check_no_pending_maintenance(wallet, hash, Some(&row.id))
+                    .await?;
             }
             let tx = ops::signed_tx(&row)
                 .ok_or_else(|| EngineError::Internal("stored signed transaction".into()))?;
