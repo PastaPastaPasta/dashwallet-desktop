@@ -97,7 +97,12 @@ pub(super) fn build_refusal(e: BuildError) -> MasternodesError {
 /// The fee of `dissolution` is at least the relay minimum for its size,
 /// which with its one signature is exact.
 pub(super) fn check_relay_fee(dissolution: &Dissolution, fee: u64) -> Result<(), MasternodesError> {
-    let size = dissolution.signed(vec![[0; 65]]).to_bytes().len();
+    check_relay_fee_of_size(dissolution.signed(vec![[0; 65]]).to_bytes().len(), fee)
+}
+
+/// `fee` is at least the relay minimum for a transaction of `size` bytes:
+/// below it no node relays it (`MIN_FEE_PER_KB`).
+pub(super) fn check_relay_fee_of_size(size: usize, fee: u64) -> Result<(), MasternodesError> {
     let floor = fee_for(FeeRate::new(MIN_FEE_PER_KB), size)
         .ok_or(EngineError::Send(crate::send::SendFailure::TxTooLarge))?;
     if fee < floor {

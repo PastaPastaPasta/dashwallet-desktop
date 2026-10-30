@@ -810,7 +810,7 @@ fn test_QT_127_standby_pair_equals_dashds_standby() {
         }
     }
     assert_eq!(checked, 8);
-    assert!(mutations > 0);
+    assert_eq!(mutations, 24);
     println!("{checked} standbys, {mutations} refused mutations");
 }
 

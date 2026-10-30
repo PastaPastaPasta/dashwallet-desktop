@@ -16,6 +16,7 @@ use dashcore::hashes::Hash;
 use dashcore::{OutPoint, PubkeyHash, ScriptBuf, Txid};
 use dw_appdb::StandbyRow;
 use dw_protx::shared::dissolve::{Dissolution, penalty_free_from};
+use dw_protx::shared::registration::ProRegTxV3;
 use dw_protx::shared::rules::SharedMn;
 use dw_protx::shared::session::funding::decode_shared_protx;
 use dw_protx::shared::standby::{self, Refusal, Variant};
@@ -34,9 +35,10 @@ use super::super::shared_records::{
 use super::super::{MasternodesError, display_hex};
 use super::dissolve::{
     DUST_REFUSAL, DissolveRecord, HandOff, actor_warnings, address_of, build_refusal,
-    check_relay_fee, listed_above, share_returns,
+    check_relay_fee, check_relay_fee_of_size, listed_above, share_returns,
 };
 use super::flow::signer_refusal;
+use super::store::ChainView;
 use super::store::message_refusal;
 use crate::coins::now_secs;
 use crate::csv_export::iso_local;
@@ -136,13 +138,15 @@ fn variant_of(v: Variant) -> StandbyVariant {
     }
 }
 
-/// A stored row's description: no bytes (m-22).
-fn standby_of(row: &StandbyRow) -> Standby {
+/// A stored row's description: no bytes (m-22). `full_valid_from` is the
+/// registration's current block plus the period when the history holds
+/// it, not the height stored, which a reorg may have moved (review r1 n-1).
+fn standby_of(row: &StandbyRow, full_valid_from: Option<u32>) -> Standby {
     Standby {
         pro_tx_hash: row.pro_tx_hash.clone(),
         share_index: row.share_index,
         fee: row.fee,
-        full_valid_from: row.full_valid_from,
+        full_valid_from: full_valid_from.unwrap_or(row.full_valid_from),
         full: row.full_tx.is_some(),
         immediate: row.immediate_tx.is_some(),
         source: match row.source.as_str() {
@@ -250,6 +254,23 @@ pub(super) fn file_text(f: &FileFacts) -> String {
     lines.join("\n")
 }
 
+/// The shared registration `hash` in a block of the wallet's history, and
+/// that block's height (D29); else `shared_registration_unknown`.
+fn in_history(chain: &ChainView, hash: [u8; 32]) -> Result<(u32, ProRegTxV3), MasternodesError> {
+    let entry = chain
+        .history
+        .get(&Txid::from_byte_array(hash))
+        .ok_or(MasternodesError::SharedRegistrationUnknown)?;
+    let height = entry
+        .context
+        .block_info()
+        .map(|b| b.height())
+        .ok_or(MasternodesError::SharedRegistrationUnknown)?;
+    let (_, p) = decode_shared_protx(&hex::encode(dashcore::consensus::serialize(&entry.tx)))
+        .ok_or(MasternodesError::SharedRegistrationUnknown)?;
+    Ok((height, p))
+}
+
 impl NetworkSession {
     /// The masternode `hash` as the standby calls read it ([`Registered`]):
     /// `shared_registration_unknown` unless its registration is a shared
@@ -263,17 +284,7 @@ impl NetworkSession {
     ) -> Result<Registered, MasternodesError> {
         let txid = Txid::from_byte_array(hash);
         let chain = self.shared_chain(wallet).await?;
-        let entry = chain
-            .history
-            .get(&txid)
-            .ok_or(MasternodesError::SharedRegistrationUnknown)?;
-        let height = entry
-            .context
-            .block_info()
-            .map(|b| b.height())
-            .ok_or(MasternodesError::SharedRegistrationUnknown)?;
-        let (_, p) = decode_shared_protx(&hex::encode(dashcore::consensus::serialize(&entry.tx)))
-            .ok_or(MasternodesError::SharedRegistrationUnknown)?;
+        let (height, p) = in_history(&chain, hash)?;
         let (list_height, listed) = listed_above(ctx, hash, height)?;
         let tip = list_height.max(self.hub.tracker().tip_height().unwrap_or(0));
         Ok(Registered {
@@ -357,7 +368,13 @@ impl NetworkSession {
         hash: [u8; 32],
     ) -> Result<Vec<Standby>, MasternodesError> {
         let rows = self.standby_rows(wallet, Some(hash)).await?;
-        Ok(rows.iter().map(standby_of).collect())
+        let valid_from = match self.shared_chain(wallet).await {
+            Ok(chain) => in_history(&chain, hash)
+                .ok()
+                .map(|(height, p)| height.saturating_add(p.early_period_blocks)),
+            Err(_) => None,
+        };
+        Ok(rows.iter().map(|r| standby_of(r, valid_from)).collect())
     }
 
     /// Both variants for each of this wallet's shares of `hash`, paying
@@ -441,7 +458,7 @@ impl NetworkSession {
                     return Err(e);
                 }
             };
-            // Nothing new stored, nothing kept: the charge goes back.
+            // A store failing before any row is written refunds the charge.
             let mut wrote = false;
             for row in rows {
                 match self.store_standby(wallet, row).await {
@@ -500,7 +517,7 @@ impl NetworkSession {
                 created: row.created_at,
                 now: now_secs(),
                 tip: reg.tip,
-                full_valid_from: row.full_valid_from,
+                full_valid_from: penalty_free_from(&reg.mn()),
                 penalty: standby::early_penalty(&reg.mn()),
                 chain,
                 full_hex: hex_of(&row.full_tx),
@@ -524,6 +541,9 @@ impl NetworkSession {
         let reg = self.registered(wallet, hash, &ctx).await?;
         let mn = reg.mn();
         let checked = standby::check(&tx, &mn, reg.spend_height).map_err(standby_refusal)?;
+        // dashd's RPC builds one at any fee; below the relay minimum no node
+        // would take it (D89, review r1 m-1), as `create_standby` refuses.
+        check_relay_fee_of_size(tx.to_bytes().len(), checked.fee)?;
         let bytes = Some(tx.to_bytes());
         let (full_tx, immediate_tx) = match checked.variant {
             Variant::Full => (bytes, None),
@@ -551,7 +571,7 @@ impl NetworkSession {
             .collect();
         Ok(SharedImport::Standby {
             description: StandbyDescription {
-                standby: standby_of(&kept),
+                standby: standby_of(&kept, Some(penalty_free_from(&mn))),
                 variant: variant_of(checked.variant),
                 txid: tx.txid().to_string(),
                 penalty: standby::variant_penalty(&mn, checked.variant),
@@ -609,6 +629,15 @@ impl NetworkSession {
             .map_err(|e| EngineError::Internal(format!("stored standby: {e}")))?;
         // The list may have moved on since it was stored.
         let checked = standby::check(&tx, &mn, reg.spend_height).map_err(standby_refusal)?;
+        if variant_of(checked.variant) != variant {
+            return Err(EngineError::Internal(
+                "a stored standby reads as the other variant".into(),
+            )
+            .into());
+        }
+        // A row stored before the import refused it (review r1 m-1): sent,
+        // it would stay `sent` and hold every update of the masternode (D23).
+        check_relay_fee_of_size(tx.to_bytes().len(), checked.fee)?;
         let actor = &reg.shares[usize::from(checked.actor)];
         // D83: a dust actor output is never relayed.
         if actor_warnings(checked.actor_output, &actor.refund_script)

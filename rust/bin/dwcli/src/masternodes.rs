@@ -336,7 +336,7 @@ enum SharedCommand {
         /// The share (row index) of this wallet: the actor.
         #[arg(long)]
         share_index: u16,
-        /// Duffs, from the share; dash-qt's default.
+        /// Duffs, from the share; dash-qt's minimum (`MIN_DISSOLVE_FEE`).
         #[arg(long, default_value_t = 1_000)]
         fee: u64,
     },
@@ -347,7 +347,7 @@ enum SharedCommand {
         /// The share (row index) of this wallet: the actor.
         #[arg(long)]
         share_index: u16,
-        /// Duffs, from the share; dash-qt's default.
+        /// Duffs, from the share; dash-qt's minimum (`MIN_DISSOLVE_FEE`).
         #[arg(long, default_value_t = 1_000)]
         fee: u64,
     },
@@ -355,7 +355,7 @@ enum SharedCommand {
     /// this wallet's shares; prints the masternode's standbys.
     CreateStandby {
         pro_tx_hash: String,
-        /// Duffs, from each share; dash-qt's default.
+        /// Duffs, from each share; dash-qt's minimum (`MIN_DISSOLVE_FEE`).
         #[arg(long, default_value_t = 1_000)]
         fee: u64,
         /// The grant's cap, in duffs. Default: the shares of this wallet

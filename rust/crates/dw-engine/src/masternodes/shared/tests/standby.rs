@@ -6,6 +6,7 @@
 use dw_protx::shared::rules::SharedMn;
 use dw_protx::shared::standby::{self, Variant};
 use dw_protx::shared::{CollateralShare, ProDisTx, SpecialTx};
+use dw_vault::GrantKind;
 
 use super::dissolve::{assert_update_pending, dissolve_now, listed, listed_with};
 use super::*;
@@ -422,7 +423,10 @@ fn test_QT_127_send_standby_refuses_the_immediate_once_the_full_is_valid() {
     list_at(&f, 1_048);
     let e = send(&f, 0, txid, 0, StandbyVariant::Full, 2 * COIN).unwrap_err();
     assert!(matches!(e, MasternodesError::SharedTooEarly), "{e:?}");
-    list_at(&f, 1_049);
+    // The list lags the headers: the tip judges (review r1 m-2), as dash-qt
+    // judges at the chain's tip.
+    list_at(&f, 1_047);
+    f.tip(1_049);
     let e = send(&f, 0, txid, 0, StandbyVariant::Immediate, 2 * COIN).unwrap_err();
     assert!(
         matches!(&e, MasternodesError::SharedStage { stage } if stage == "full_valid"),
@@ -628,6 +632,160 @@ fn test_QT_127_an_imported_standby_is_refused_with_the_failing_check() {
     );
     *f.seam.shared_mined.lock().unwrap() = mined;
     assert!(standbys(&f, 1, txid).is_empty(), "nothing stored");
+}
+
+/// Review r1 m-1: dashd's RPC builds a standby at any fee. One below the
+/// relay minimum is refused on import, as `create_standby` refuses it, and
+/// one stored before is refused on send, nothing saved or charged: sent, it
+/// would stay `sent` and hold the masternode's updates (D23).
+#[test]
+fn test_QT_127_a_standby_below_the_relay_minimum_is_refused() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    create(&f, 0, txid, COIN + 1_000).unwrap();
+    let (full, _) = hex_lines(&export(&f, 0, txid, 0).unwrap());
+    // `protx shared_dissolve <hash> 0 100 false false`: the actor's output,
+    // last, keeps 900 more; signed by its owner key.
+    let mut cheap = decode(&full.unwrap());
+    cheap.output.last_mut().unwrap().value += 900;
+    let mut p: ProDisTx = dashcore::consensus::deserialize(&cheap.payload).unwrap();
+    p.sigs.clear();
+    cheap.payload = dw_protx::shared::payload_bytes(&p);
+    let registration = {
+        let mined = f.seam.shared_mined.lock().unwrap();
+        let (_, typed, _) = mined.iter().find(|(t, _, _)| *t == txid).unwrap();
+        dashcore::consensus::serialize(typed)
+    };
+    let (_, reg) =
+        dw_protx::shared::session::funding::decode_shared_protx(&hex::encode(&registration))
+            .unwrap();
+    let index = f
+        .run(
+            f.session
+                .keychain_owner(f.wallets[0], reg.shares[0].owner_key_id),
+        )
+        .unwrap()
+        .unwrap();
+    let vault = f.session.vault();
+    let token = vault
+        .redeem_grant(
+            &f.grant(0, 0),
+            GrantKind::MasternodeOp,
+            Some(&f.wallets[0].0),
+        )
+        .unwrap();
+    let sig = vault
+        .masternode_signer(&f.wallets[0].0, &token)
+        .unwrap()
+        .sign_dissolution(index, &cheap.to_bytes(), &registration, 1)
+        .unwrap();
+    p.sigs = vec![sig];
+    cheap.payload = dw_protx::shared::payload_bytes(&p);
+    let cheap_hex = hex::encode(cheap.to_bytes());
+
+    let e = import(&f, 1, &cheap_hex).unwrap_err();
+    assert!(e.to_string().contains("relay minimum"), "{e}");
+    assert_eq!(code(e), "invalid_argument");
+    assert!(standbys(&f, 1, txid).is_empty(), "nothing stored");
+
+    // Stored before the import refused it.
+    f.db()
+        .store_standby_durable(
+            &f.wallets[0].to_string(),
+            &dw_appdb::StandbyRow {
+                pro_tx_hash: txid.to_string(),
+                share_index: 0,
+                fee: 100,
+                full_tx: Some(cheap.to_bytes()),
+                immediate_tx: None,
+                full_valid_from: 1_050,
+                source: "imported".into(),
+                created_at: 0,
+            },
+        )
+        .unwrap();
+    list_at(&f, 1_049);
+    let grant = f.grant(0, 2 * COIN);
+    let e = f
+        .run(f.mn().send_standby(
+            f.wallets[0],
+            txid.to_string(),
+            0,
+            100,
+            StandbyVariant::Full,
+            grant.clone(),
+        ))
+        .unwrap_err();
+    assert!(e.to_string().contains("relay minimum"), "{e}");
+    assert_eq!(code(e), "invalid_argument");
+    assert!(f.net.sent().is_empty());
+    assert!(f.run(f.mn().operations(f.wallets[0])).unwrap().is_empty());
+    // Nothing charged: the grant, untouched, sends the relayable one.
+    f.run(f.mn().send_standby(
+        f.wallets[0],
+        txid.to_string(),
+        0,
+        1_000,
+        StandbyVariant::Full,
+        grant,
+    ))
+    .unwrap();
+}
+
+/// Review r1 n-2: the send checks that the bytes it read are the variant
+/// asked for, whatever the store holds.
+#[test]
+fn test_QT_127_send_standby_refuses_a_variant_in_the_wrong_column() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    create(&f, 0, txid, COIN + 1_000).unwrap();
+    let (full, _) = hex_lines(&export(&f, 0, txid, 0).unwrap());
+    f.db()
+        .store_standby_durable(
+            &f.wallets[0].to_string(),
+            &dw_appdb::StandbyRow {
+                pro_tx_hash: txid.to_string(),
+                share_index: 0,
+                fee: 2_000,
+                full_tx: None,
+                immediate_tx: Some(decode(&full.unwrap()).to_bytes()),
+                full_valid_from: 1_050,
+                source: "imported".into(),
+                created_at: 0,
+            },
+        )
+        .unwrap();
+    let e = f
+        .run(f.mn().send_standby(
+            f.wallets[0],
+            txid.to_string(),
+            0,
+            2_000,
+            StandbyVariant::Immediate,
+            f.grant(0, 2 * COIN),
+        ))
+        .unwrap_err();
+    assert_eq!(code(e), "internal");
+    assert!(f.net.sent().is_empty());
+}
+
+/// Review r1 n-1: a standby shows the period's end from the registration's
+/// current block, not the one stored.
+#[test]
+fn test_QT_127_a_standby_shows_the_registrations_current_block() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    let created = create(&f, 0, txid, COIN + 1_000).unwrap();
+    assert_eq!(created[0].full_valid_from, 1_050);
+    // A reorg moves the registration three blocks later.
+    for (t, _, at) in f.seam.shared_mined.lock().unwrap().iter_mut() {
+        if *t == txid {
+            *at = 53;
+        }
+    }
+    assert_eq!(standbys(&f, 0, txid)[0].full_valid_from, 1_053);
+    let file = export(&f, 0, txid, 0).unwrap();
+    assert!(file.text.contains("valid from block 1053"), "{}", file.text);
 }
 
 /// D83: a standby whose actor output is dust is signed as Core signs it,
