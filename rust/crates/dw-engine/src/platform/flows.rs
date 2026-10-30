@@ -47,6 +47,9 @@ pub enum FlowKind {
     /// A shared masternode's consent and funding signatures under a
     /// `MasternodeOp` grant (MG-04b §6.3, "Shared masternode").
     SharedMasternode,
+    /// A shared masternode's dissolution signatures under a `MasternodeOp`
+    /// grant (MG-04b §6.3, "Dissolution").
+    Dissolution,
     /// A governance proposal's fee transaction under a `Spend` grant
     /// (MG-06 D10, MG-00 D35 "Proposal").
     Proposal,

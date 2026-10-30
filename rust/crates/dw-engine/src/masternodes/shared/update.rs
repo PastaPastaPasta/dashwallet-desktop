@@ -19,7 +19,7 @@ use super::super::MasternodesError;
 use super::super::protx::build::{
     Context, Funding, SEQUENCE, plan_funding, preview_script, refused,
 };
-use super::super::protx::ops::{self, Delivery, encode_inputs, kind_name};
+use super::super::protx::ops::{self, Delivery, encode_inputs, kind_name, kind_of};
 use super::super::protx::{CHANGE_LEN, change_address, charge_fee, json};
 use super::super::protx_records::{
     ProTxOperation, ProTxOperationKind, ProTxOperationState, ProTxTerms,
@@ -200,8 +200,8 @@ impl NetworkSession {
     /// wallet's, both under one `SharedMasternode` lease charged the fee,
     /// saved as an `update_share` operation with its input locks, and
     /// handed off as MG-04's rows are. One at a time per masternode (D23):
-    /// `update_pending{operation}` while another `update_share` of it may
-    /// still be mined.
+    /// `update_pending{operation}` while another `update_share` or a
+    /// `dissolve` of it may still be mined.
     pub(super) async fn send_share_update(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -214,7 +214,7 @@ impl NetworkSession {
         // The fence from the reward address and the coins to the row's
         // write and its hand-off (BL-352's order).
         let fence = self.coin_fence(wallet).await?;
-        self.check_no_pending_share_update(wallet, hash).await?;
+        self.check_no_pending_maintenance(wallet, hash).await?;
         let mut plan = self
             .plan_share_update(wallet, &request, hash, &ctx, &fence, true)
             .await?;
@@ -300,9 +300,10 @@ impl NetworkSession {
         result
     }
 
-    /// D23: another `update_share` of masternode `hash` that may still be
-    /// mined (`signed`, `not_sent`, `sent`) is `update_pending`.
-    async fn check_no_pending_share_update(
+    /// D23: another `update_share` or `dissolve` of masternode `hash` that
+    /// may still be mined (`signed`, `not_sent`, `sent`) is
+    /// `update_pending`.
+    pub(super) async fn check_no_pending_maintenance(
         &self,
         wallet: WalletId,
         hash: [u8; 32],
@@ -311,8 +312,10 @@ impl NetworkSession {
         let w = wallet.to_string();
         let rows = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
         for row in rows.iter().filter(|r| {
-            r.kind == kind_name(ProTxOperationKind::UpdateShare)
-                && r.pro_tx_hash.as_deref() == Some(target.as_str())
+            matches!(
+                kind_of(&r.kind),
+                ProTxOperationKind::UpdateShare | ProTxOperationKind::Dissolve
+            ) && r.pro_tx_hash.as_deref() == Some(target.as_str())
         }) {
             if matches!(
                 self.op_state(wallet, row).await?,

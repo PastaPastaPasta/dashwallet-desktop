@@ -38,6 +38,8 @@ pub enum FlowKindName {
     KeyChange,
     /// A shared masternode's signatures under a `masternodeOp` grant (MG-04b).
     SharedMasternode,
+    /// A shared masternode's dissolution under a `masternodeOp` grant (MG-04b).
+    Dissolution,
     /// A governance proposal's fee under a `spend` grant (MG-06).
     Proposal,
 }
@@ -45,12 +47,12 @@ pub enum FlowKindName {
 mirror_enum!(FlowKind => FlowKindName {
     Registration, TopUp, Withdraw, NameRegistration, ProfileEdit, ContactRequest, Accept,
     AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment, Voting,
-    MasternodeRegistration, KeyChange, SharedMasternode, Proposal
+    MasternodeRegistration, KeyChange, SharedMasternode, Dissolution, Proposal
 });
 mirror_enum!(FlowKindName => FlowKind {
     Registration, TopUp, Withdraw, NameRegistration, ProfileEdit, ContactRequest, Accept,
     AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment, Voting,
-    MasternodeRegistration, KeyChange, SharedMasternode, Proposal
+    MasternodeRegistration, KeyChange, SharedMasternode, Dissolution, Proposal
 });
 
 /// A lease budget: `funding`, `spend` and `masternode` are duffs, `credits`

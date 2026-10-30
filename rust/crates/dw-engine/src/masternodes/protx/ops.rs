@@ -22,6 +22,7 @@ use super::super::MasternodesError;
 use super::super::protx_records::{
     ProTxOperation, ProTxOperationKind, ProTxOperationState, ProTxTerms, SignRequest,
 };
+use super::super::shared::{list_settled, unseen_dissolution};
 use crate::coins::{CoinFence, now_secs, read_coins};
 use crate::history::TxEntry;
 use crate::send::{PreparedSummary, SpendCharge};
@@ -40,6 +41,7 @@ pub(crate) fn kind_name(kind: ProTxOperationKind) -> &'static str {
         ProTxOperationKind::Registration => "registration",
         ProTxOperationKind::UpdateRegistrar => "update_registrar",
         ProTxOperationKind::UpdateShare => "update_share",
+        ProTxOperationKind::Dissolve => "dissolve",
     }
 }
 
@@ -47,6 +49,7 @@ pub(crate) fn kind_of(name: &str) -> ProTxOperationKind {
     match name {
         "update_registrar" => ProTxOperationKind::UpdateRegistrar,
         "update_share" => ProTxOperationKind::UpdateShare,
+        "dissolve" => ProTxOperationKind::Dissolve,
         _ => ProTxOperationKind::Registration,
     }
 }
@@ -395,7 +398,13 @@ impl NetworkSession {
         row: &MasternodeOpRow,
     ) -> Result<ProTxOperationState, MasternodesError> {
         let (history, unspent) = self.op_view(wallet).await?;
-        Ok(state_of(row, &history, &unspent))
+        let (list, scanned) = self.dissolution_list(wallet, unseen_dissolution(row)).await;
+        Ok(list_settled(
+            row,
+            state_of(row, &history, &unspent),
+            &list,
+            scanned,
+        ))
     }
 
     pub(crate) async fn operation(

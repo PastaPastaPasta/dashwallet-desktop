@@ -12,9 +12,11 @@
 //! its reservation, D17), the message, Core's rules, the consent checks,
 //! the lease.
 
+pub(super) use self::dissolve::{list_settled, row_debit, unseen_dissolution};
 pub(super) use self::store::check_session_id;
 
 mod build;
+mod dissolve;
 mod flow;
 mod import;
 mod send;
@@ -44,9 +46,9 @@ use super::protx::build::{Context, invalid, shared_voting};
 use super::protx::ops::InFlight;
 use super::protx_records::{OperatorChoice, ProTxOperation, VotingChoice};
 use super::shared_records::{
-    Activation, JoinSharedRequest, RewardChoice, SharedCapability, SharedImport, SharedMessage,
-    SharedOutcome, SharedRole, SharedSession, SharedStage, SharedWarning, StartSharedRequest,
-    UpdateSharePreview, UpdateShareRequest,
+    Activation, DissolvePreview, DissolveRequest, JoinSharedRequest, RewardChoice,
+    SharedCapability, SharedImport, SharedMessage, SharedOutcome, SharedRole, SharedSession,
+    SharedStage, SharedWarning, StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
 };
 use super::{Masternodes, MasternodesError, display_hex, parse_pro_tx_hash};
 use crate::platform::lease::Lease;
@@ -65,7 +67,8 @@ fn unrecorded() -> MasternodesError {
 /// dash-qt envelope oracle, D78). Turned off, `can_send` is false and every
 /// call that produces bytes the network accepts (`sign_shared_funding`,
 /// `send_shared_registration`, `abandon_shared_session`, `update_share`,
-/// and `resend_operation` of an `update_share` row) refuses
+/// `dissolve`, and `resend_operation` of an `update_share` or `dissolve`
+/// row) refuses
 /// `unsupported{feature: "shared_masternodes"}` after the wallet check.
 pub(super) const SHARED_SENDING: bool = true;
 
@@ -884,6 +887,61 @@ impl Masternodes {
             s.require_wallet(&wallet)?;
             sending?;
             s.send_share_update(wallet, request, hash, &grant).await
+        })
+        .await
+    }
+
+    /// The unilateral ProDisTx this wallet would send now for one of its
+    /// shares (§5, §8): Core's `BuildDissolution` output for the share as
+    /// actor, with the penalty `DissolveShared` picks at the next height,
+    /// from the registration of a confirmed session of the wallet; the fee
+    /// at least the relay minimum for its size and Core's rules run on it.
+    /// Signs nothing.
+    pub async fn preview_dissolve(
+        &self,
+        wallet: WalletId,
+        request: DissolveRequest,
+    ) -> Result<DissolvePreview, MasternodesError> {
+        let hash = parse_pro_tx_hash(&request.pro_tx_hash)?;
+        dissolve::check_request(&request)?;
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            let ctx = v24_context(&s, wallet).await?;
+            let plan = s.plan_dissolve(wallet, &request, hash, &ctx).await?;
+            Ok(DissolvePreview {
+                early: plan.early,
+                penalty: plan.penalty,
+                fee: request.fee,
+                valid_from_height: plan.valid_from_height,
+                returns: plan.returns,
+                warnings: plan.warnings,
+                total_debit: plan.penalty + request.fee,
+            })
+        })
+        .await
+    }
+
+    /// Dissolve now (§5, §6.3) †: `unsupported` while sending is off
+    /// ([`SHARED_SENDING`]). [`Self::preview_dissolve`]'s ProDisTx, signed
+    /// by the share's keychain owner key under one `Dissolution` lease
+    /// charged what the share gives up (the penalty and the fee), then
+    /// sent as an MG-04 operation of kind `dissolve`, saved before the
+    /// hand-off. `masternodes.update_pending{operation}` while a reward
+    /// change or another dissolution of the masternode may still be mined
+    /// (D23).
+    pub async fn dissolve(
+        &self,
+        wallet: WalletId,
+        request: DissolveRequest,
+        grant: String,
+    ) -> Result<ProTxOperation, MasternodesError> {
+        let hash = parse_pro_tx_hash(&request.pro_tx_hash)?;
+        dissolve::check_request(&request)?;
+        let sending = self.require_sending();
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            sending?;
+            s.send_dissolve(wallet, request, hash, &grant).await
         })
         .await
     }

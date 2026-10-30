@@ -24,6 +24,7 @@ use dashcore::{Address, Network, OutPoint, ScriptBuf, Txid};
 use dw_protx::params::MASTERNODE_COLLATERAL;
 use dw_protx::payloads::sign_hash_compact;
 use dw_protx::rules::{ListedMasternode, signed_by};
+use dw_protx::shared::dissolve::build_dissolution;
 use dw_protx::shared::envelope::encode_base64;
 use dw_protx::shared::netinfo::ExtNetInfo;
 use dw_protx::shared::rawtx::SpecialTx;
@@ -554,6 +555,39 @@ fn test_QT_127_maintenance_digests_and_signatures_equal_dashds() {
             k => panic!("kind {k}"),
         }
     }
+}
+
+#[test]
+fn test_QT_127_build_dissolution_equals_dashds_shared_dissolve() {
+    let m = maintenance();
+    let mut rebuilt = 0;
+    for c in &m.cases {
+        if str_of(c, "kind") != "dissolve_unilateral" {
+            continue;
+        }
+        let name = str_of(c, "name");
+        let tx = tx_of(str_of(c, "tx_hex"));
+        let shares = shares_listed(&c["protx_info"]);
+        let mn = shared_mn(&c["protx_info"], &shares);
+        let actor = c["actor_index"].as_u64().unwrap() as u16;
+        // `DissolveShared`: `pay_penalty` takes `nEarlyPenalty`, else 0.
+        let penalty = if c["pay_penalty"].as_bool().unwrap() {
+            mn.early_penalty as u64
+        } else {
+            0
+        };
+        let built = build_dissolution(&mn, actor, penalty, c["fee"].as_u64().unwrap()).unwrap();
+        let p: ProDisTx = dashcore::consensus::deserialize(&tx.payload).unwrap();
+        assert_eq!(built.signed(p.sigs.clone()), tx, "{name}");
+        if name != "standby_no_early" {
+            // Registration B's owners aren't in `owners`.
+            let sig =
+                sign_hash_compact(&m.owners[usize::from(actor)], &built.sign_hash(1)).unwrap();
+            assert_eq!(built.signed(vec![sig]).to_bytes(), tx.to_bytes(), "{name}");
+        }
+        rebuilt += 1;
+    }
+    assert_eq!(rebuilt, 4);
 }
 
 #[test]

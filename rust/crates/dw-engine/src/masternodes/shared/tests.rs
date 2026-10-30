@@ -34,6 +34,8 @@ use crate::masternodes::{
 use crate::send::TestBroadcaster;
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
 
+mod dissolve;
+
 const COIN: u64 = 100_000_000;
 const FEE: u64 = 100_000;
 const PHRASES: [&str; 3] = [

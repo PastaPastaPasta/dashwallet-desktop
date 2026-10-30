@@ -20,10 +20,10 @@ use std::time::{Duration, Instant};
 use clap::{Args, Subcommand};
 use dw_engine::governance::{GovernanceError, NameChoice};
 use dw_engine::masternodes::{
-    AttachedKeyRole, CollateralChoice, EvonodeTerms, JoinSharedRequest, KeepOr, MasternodeType,
-    Masternodes, MasternodesError, OperatorChoice, PayoutChoice, PlatformNodeChoice,
-    RegistrationRequest, RewardChoice, ShareSlot, ShareTerms, StartSharedRequest,
-    UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
+    AttachedKeyRole, CollateralChoice, DissolveRequest, EvonodeTerms, JoinSharedRequest, KeepOr,
+    MasternodeType, Masternodes, MasternodesError, OperatorChoice, PayoutChoice,
+    PlatformNodeChoice, RegistrationRequest, RewardChoice, ShareSlot, ShareTerms,
+    StartSharedRequest, UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
 };
 use dw_engine::{Engine, EngineError, NetworkSession, WalletId};
 use dw_protx::params::MAX_ENVELOPE_BYTES;
@@ -327,6 +327,29 @@ enum SharedCommand {
         share_index: u16,
         #[arg(long, value_parser = parse_reward)]
         reward: RewardChoice,
+    },
+    /// Preview dissolving the masternode now by one of this wallet's
+    /// shares: what each share gets back, the penalty while early, the
+    /// fee; signs nothing.
+    PreviewDissolve {
+        pro_tx_hash: String,
+        /// The share (row index) of this wallet: the actor.
+        #[arg(long)]
+        share_index: u16,
+        /// Duffs, from the share; dash-qt's default.
+        #[arg(long, default_value_t = 1_000)]
+        fee: u64,
+    },
+    /// Sign and send the dissolution `preview-dissolve` shows (a grant
+    /// capped at its penalty and fee); prints the operation.
+    Dissolve {
+        pro_tx_hash: String,
+        /// The share (row index) of this wallet: the actor.
+        #[arg(long)]
+        share_index: u16,
+        /// Duffs, from the share; dash-qt's default.
+        #[arg(long, default_value_t = 1_000)]
+        fee: u64,
     },
 }
 
@@ -1077,6 +1100,32 @@ fn shared_command(
             let grant = masternode_grant(session, passphrase, w, preview.total_debit)?;
             value(engine.block_on(mn.update_share(w, request, grant))?)
         }
+        SharedCommand::PreviewDissolve {
+            pro_tx_hash,
+            share_index,
+            fee,
+        } => {
+            let request = DissolveRequest {
+                pro_tx_hash,
+                share_index,
+                fee,
+            };
+            value(engine.block_on(mn.preview_dissolve(w, request))?)
+        }
+        SharedCommand::Dissolve {
+            pro_tx_hash,
+            share_index,
+            fee,
+        } => {
+            let request = DissolveRequest {
+                pro_tx_hash,
+                share_index,
+                fee,
+            };
+            let preview = engine.block_on(mn.preview_dissolve(w, request.clone()))?;
+            let grant = masternode_grant(session, passphrase, w, preview.total_debit)?;
+            value(engine.block_on(mn.dissolve(w, request, grant))?)
+        }
     }
 }
 
@@ -1193,6 +1242,8 @@ mod tests {
                 "--reward",
                 "refund",
             ],
+            &["preview-dissolve", HASH, "--share-index", "0"],
+            &["dissolve", HASH, "--share-index", "1", "--fee", "1000000"],
             &["sessions", "--wallet", "w"],
         ] {
             assert!(shared(args).is_ok(), "{args:?}");
@@ -1243,6 +1294,11 @@ mod tests {
             &["abandon"],
             &["abandon", SESSION, "--max-fee", "x"],
             &["update-share", HASH, "--share-index", "0"],
+            // Slice 2a's: the masternode and the share are named.
+            &["preview-dissolve", "--share-index", "0"],
+            &["preview-dissolve", HASH],
+            &["dissolve", HASH, "--share-index", "0", "--fee", "-1"],
+            &["dissolve", HASH, "--share-index", "x"],
         ] {
             assert!(refused(args).is_some(), "{args:?}");
         }

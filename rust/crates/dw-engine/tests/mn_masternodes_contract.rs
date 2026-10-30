@@ -34,8 +34,8 @@ use quote::ToTokens;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-/// Calls with real bodies: all of MG-03's, MG-04's and MG-04b slice 1a's
-/// and 1b's.
+/// Calls with real bodies: all of MG-03's, MG-04's and MG-04b slices 1a's,
+/// 1b's and 2a's.
 const IMPLEMENTED: &[&str] = &[
     "NetworkSession.masternodes",
     "Masternodes.list_state",
@@ -80,6 +80,8 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.discard_shared_session",
     "Masternodes.preview_update_share",
     "Masternodes.update_share",
+    "Masternodes.preview_dissolve",
+    "Masternodes.dissolve",
 ];
 
 /// The facade's files in `src/masternodes/` (mn-engine.md §0). A new file
@@ -1102,6 +1104,11 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             share_index: 0,
             reward: RewardChoice::Refund,
         };
+        let dissolution = |hash: &str| DissolveRequest {
+            pro_tx_hash: hash.into(),
+            share_index: 0,
+            fee: 1_000,
+        };
         let join = || JoinSharedRequest {
             share_index: None,
             reward: RewardChoice::Refund,
@@ -1146,6 +1153,32 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.update_share(wallet, share("zz"), "g".into())
                 .await
                 .map(drop),
+            mn.preview_dissolve(wallet, dissolution("zz"))
+                .await
+                .map(drop),
+            mn.dissolve(wallet, dissolution("zz"), "g".into())
+                .await
+                .map(drop),
+            // Core's builder refuses a fee of 0 or above its ceiling.
+            mn.preview_dissolve(
+                wallet,
+                DissolveRequest {
+                    fee: 0,
+                    ..dissolution(&hash)
+                },
+            )
+            .await
+            .map(drop),
+            mn.dissolve(
+                wallet,
+                DissolveRequest {
+                    fee: 1_000_001,
+                    ..dissolution(&hash)
+                },
+                "g".into(),
+            )
+            .await
+            .map(drop),
         ] {
             assert_eq!(code(refused), "invalid_argument");
         }
@@ -1168,6 +1201,12 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
                 .await
                 .map(drop),
             mn.update_share(wallet, share(&hash), "g".into())
+                .await
+                .map(drop),
+            mn.preview_dissolve(wallet, dissolution(&hash))
+                .await
+                .map(drop),
+            mn.dissolve(wallet, dissolution(&hash), "g".into())
                 .await
                 .map(drop),
         ] {
@@ -1455,6 +1494,33 @@ fn errors_never_quote_a_secret_shaped_argument() {
                         pro_tx_hash: secret(),
                         share_index: 0,
                         reward: RewardChoice::Address { address: secret() },
+                    },
+                    secret(),
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "preview_dissolve",
+                mn.preview_dissolve(
+                    as_wallet,
+                    DissolveRequest {
+                        pro_tx_hash: secret(),
+                        share_index: 0,
+                        fee: 1_000,
+                    },
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "dissolve",
+                mn.dissolve(
+                    as_wallet,
+                    DissolveRequest {
+                        pro_tx_hash: secret(),
+                        share_index: 0,
+                        fee: 1_000,
                     },
                     secret(),
                 )

@@ -18,6 +18,9 @@ Sessions:
       address); start, join, lock, approve, sign, send; `protx info` shows the table.
   R   the reward change (ProUpShareTx): B moves its rewards to a new address, C resets its own to
       its refund address.
+  D   dissolve now (ProDisTx, slice 2a): A dissolves S1's masternode alone in the early period, so
+      it pays the penalty, split over B and C; the outputs Core mines are the preview's, the
+      masternode leaves the list, and A's operation reads `confirmed`.
   S2  dashd's wallet as a dash-qt participant Q (300 DASH) under coordinator A (700): this script
       edits the envelope as dash-qt would (its row and contribution, the funding template, the
       fingerprint), signs its consent with `protx shared_sign` and its input with
@@ -279,6 +282,35 @@ class DwdShared(DwdProtx):
         assert b_reward not in (rows[1]["refund_address"], rows[1]["owner_address"]), b_reward
         assert_equal(node.validateaddress(b_reward)["isvalid"], True)
         self.check_table(pro_tx, rows, [rows[0]["refund_address"], b_reward, rows[2]["refund_address"]])
+
+        self.log.info("2b. D: A dissolves S1 alone in the early period, paying the penalty")
+        preview = shared(a, "preview-dissolve", pro_tx, "--share-index", "0")
+        assert_equal((preview["early"], preview["penalty"], preview["fee"]), (True, EARLY_PENALTY, 1_000))
+        assert_equal(preview["total_debit"], EARLY_PENALTY + 1_000)
+        assert_equal(preview["valid_from_height"], self.core_info(pro_tx)[1]["registeredHeight"] + EARLY_BLOCKS)
+        half = EARLY_PENALTY // 2
+        want = [(400 * COIN - EARLY_PENALTY - 1_000, rows[0]["refund_address"], True),
+                (300 * COIN + half, rows[1]["refund_address"], False),
+                (300 * COIN + EARLY_PENALTY - half, rows[2]["refund_address"], False)]
+        assert_equal([(r["amount"], r["refund_address"], r["mine"]) for r in preview["returns"]], want)
+        assert_equal(preview["warnings"], [])
+        self.start_miner()
+        try:
+            op = shared(a, "dissolve", pro_tx, "--share-index", "0")
+        finally:
+            self.stop_miner()
+        assert handed_off(op)
+        assert_equal((op["kind"], op["fee"]), ("dissolve", 1_000))
+        h = self.wait_mined(op["txid"])
+        # Core's builder order: the non-actors in share order, then the actor.
+        mined = node.getrawtransaction(op["txid"], True)
+        assert_equal(mined["type"], 10)
+        got = [(round(o["value"] * COIN), o["scriptPubKey"]["address"]) for o in mined["vout"]]
+        assert_equal(got, [(amount, address) for amount, address, _ in want[1:] + want[:1]])
+        assert pro_tx not in {m["proTxHash"] for m in node.protx("list", "registered", True)}, pro_tx
+        ops = {o["id"]: o for o in a.mn(h, "operations")}
+        assert_equal(ops[op["id"]]["state"]["kind"], "confirmed")
+        shared(a, "preview-dissolve", pro_tx, "--share-index", "0", error="masternodes.shared_too_early")
 
         self.log.info("3. S2: dashd's wallet as a dash-qt participant under coordinator A")
         q_coin = self.own_coin(301 * COIN)

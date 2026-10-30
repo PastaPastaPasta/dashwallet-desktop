@@ -156,6 +156,21 @@ fn test_QT_126_shared_commands_on_a_datadir_without_a_wallet_report_wallet_not_f
             ],
             b"",
         ),
+        (
+            vec![
+                "mn",
+                "shared",
+                "preview-dissolve",
+                SECRET,
+                "--share-index",
+                "0",
+            ],
+            b"",
+        ),
+        (
+            vec!["mn", "shared", "dissolve", SECRET, "--share-index", "0"],
+            b"",
+        ),
     ];
     for (args, stdin) in commands {
         let out = dwcli(dir.as_ref(), &args, stdin);
@@ -332,6 +347,25 @@ fn test_QT_126_shared_command_lines_that_are_refused_name_no_value() {
         &["mn", "shared", "abandon", SESSION, "--max-fee", SECRET],
         &["mn", "shared", "update-share", SECRET, "--share-index", "0"],
         &["mn", "shared", "update-share", SECRET, "--reward", "refund"],
+        // Slice 2a's: a bad fee or share.
+        &[
+            "mn",
+            "shared",
+            "dissolve",
+            SECRET,
+            "--share-index",
+            "0",
+            "--fee",
+            SECRET,
+        ],
+        &[
+            "mn",
+            "shared",
+            "preview-dissolve",
+            SECRET,
+            "--share-index",
+            SECRET,
+        ],
     ];
     for args in refused {
         let out = dwcli(path, args, b"");
