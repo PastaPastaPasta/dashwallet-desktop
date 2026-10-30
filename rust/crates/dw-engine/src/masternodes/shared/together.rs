@@ -15,7 +15,8 @@
 //! is derived on every read (D94): `signing` while a signature is missing,
 //! `combined` once every share signed, then `sent`, `confirmed` or
 //! `conflicted` as the operation it was sent as, and `dead{delisted}` when
-//! the masternode left the list without a send from this wallet. The
+//! the masternode left the list without a send from this wallet, once the
+//! wallet has scanned to the list's height (D81's guard). The
 //! registration is read from the wallet's history (D29), as the standby's.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -223,7 +224,29 @@ fn envelope(
 pub(crate) struct TogetherView {
     pub chain: ChainView,
     pub list: Option<ListView>,
+    /// D81's height the list's entries aren't above.
+    pub list_bound: u32,
+    /// D81's filter-scan checkpoint (`synced_height`).
+    pub scanned: u32,
     pub ops: Vec<MasternodeOpRow>,
+}
+
+impl TogetherView {
+    /// The masternode out of the synced list, one block or more past its
+    /// registration.
+    fn list_gone(&self, t: &Together, mn: &SharedMn) -> bool {
+        self.list.as_ref().is_some_and(|l| {
+            l.synced
+                && l.height.is_some_and(|h| h > mn.registered_height)
+                && l.entry(&t.hash).is_none()
+        })
+    }
+
+    /// D81's guard: below the list's height the dissolution that removed the
+    /// masternode may be this session's own, not yet in the history.
+    fn scanned_to_list(&self) -> bool {
+        self.scanned >= self.list_bound
+    }
 }
 
 /// The masternode as the history holds its registration at `height` (D29):
@@ -282,8 +305,9 @@ fn collateral_spend(chain: &ChainView, collateral: OutPoint) -> Option<(u32, &Tr
 /// D94: the combined transaction in a block of the history; else the
 /// operation the session was sent as (its txid's); else the collateral
 /// spent in a block, by the request signed (`confirmed`) or by another
-/// transaction, or the masternode out of the synced list (`dead`); then
-/// the signatures.
+/// transaction, or the masternode out of the synced list once the wallet
+/// has scanned to the list's height (`dead`, D81's guard); then the
+/// signatures.
 fn derive_stage(
     t: &Together,
     mn: Option<&SharedMn>,
@@ -318,9 +342,7 @@ fn derive_stage(
         Some(_) => return dead,
         None => {}
     }
-    let delisted = v.list.as_ref().is_some_and(|l| {
-        l.synced && l.height.is_some_and(|h| h > mn.registered_height) && l.entry(&t.hash).is_none()
-    });
+    let delisted = v.list_gone(t, mn) && v.scanned_to_list();
     match (delisted, t.sigs.len() == mn.shares.len()) {
         (true, _) => dead,
         (false, true) => SharedStage::Combined,
@@ -388,9 +410,16 @@ impl NetworkSession {
             Ok(manager) => Some(self.protx_list(&manager).await),
             Err(_) => None,
         };
+        let (list_bound, scanned) = list.as_ref().map_or((0, 0), |l| self.list_scan(wallet, l));
         let w = wallet.to_string();
         let ops = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
-        Ok(TogetherView { chain, list, ops })
+        Ok(TogetherView {
+            chain,
+            list,
+            list_bound,
+            scanned,
+            ops,
+        })
     }
 
     /// The session's record, its stage derived now (D94).
@@ -414,10 +443,13 @@ impl NetworkSession {
 
     /// Whether `row`, a dissolve-together session, may be discarded (D17):
     /// `Ok` with the `txid` it is marked out with, `None` when it isn't.
-    /// Out and handed off (an operation holds its txid), its stage
-    /// (`shared_stage`); out and never handed off, it may go: the send saves
-    /// the operation before the bytes leave (D95). A row that no longer
-    /// parses goes unless out (D57).
+    /// While the masternode is out of the synced list and the wallet hasn't
+    /// scanned to the list's height, `shared_too_early`: the dissolution
+    /// that removed it may be this session's own (D94, D81). Out and handed
+    /// off (an operation holds its txid), its stage (`shared_stage`); out
+    /// and never handed off, it may go: the send saves the operation before
+    /// the bytes leave (D95). A row that no longer parses goes unless out
+    /// (D57).
     pub(crate) async fn together_discard(
         &self,
         wallet: WalletId,
@@ -431,6 +463,13 @@ impl NetworkSession {
             };
         };
         let v = self.together_read(wallet).await?;
+        let known = in_history(&v.chain, t.hash).ok();
+        let mn = known
+            .as_ref()
+            .map(|(height, p)| known_mn(t.hash, *height, p));
+        if mn.is_some_and(|mn| v.list_gone(&t, &mn) && !v.scanned_to_list()) {
+            return Err(MasternodesError::SharedTooEarly);
+        }
         if !out {
             return Ok(None);
         }

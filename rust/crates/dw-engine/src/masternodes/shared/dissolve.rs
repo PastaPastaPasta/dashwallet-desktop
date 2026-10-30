@@ -409,6 +409,30 @@ impl NetworkSession {
         self.operation(wallet, h.id).await
     }
 
+    /// D81's two readings for `list`, taken after it: a height its entries
+    /// aren't above, and the wallet's filter-scan checkpoint. The pinned SPV
+    /// library gives the entries without their height, and its engine takes
+    /// a diff before its progress says so: bound the entries' height by the
+    /// readings taken after them, the headers' included. The engine asks for
+    /// no diff above a stored header, and the header reading is published
+    /// before that request's round trip ends; it isn't certain to be (D81
+    /// names the residual).
+    pub(super) fn list_scan(&self, wallet: WalletId, list: &ListView) -> (u32, u32) {
+        let list_bound = {
+            let t = self.hub.tracker();
+            [list.height, t.masternode_list_height(), t.tip_height()]
+                .into_iter()
+                .flatten()
+                .max()
+                .unwrap_or(0)
+        };
+        let scanned = self
+            .hub
+            .wallet_state(&wallet)
+            .map_or(0, |s| s.synced_height);
+        (list_bound, scanned)
+    }
+
     /// What [`list_settled`] reads for `rows`: nothing unless one is an
     /// [`unseen_dissolution`].
     pub(crate) async fn dissolution_view(
@@ -428,24 +452,7 @@ impl NetworkSession {
             return DissolutionView::default();
         };
         let list = self.protx_list(&manager).await;
-        // The pinned SPV library gives the entries without their height, and
-        // its engine takes a diff before its progress says so: bound the
-        // entries' height by the readings taken after them, the headers'
-        // included. The engine asks for no diff above a stored header, and
-        // the header reading is published before that request's round trip
-        // ends; it isn't certain to be (D81 names the residual).
-        let list_bound = {
-            let t = self.hub.tracker();
-            [list.height, t.masternode_list_height(), t.tip_height()]
-                .into_iter()
-                .flatten()
-                .max()
-                .unwrap_or(0)
-        };
-        let scanned = self
-            .hub
-            .wallet_state(&wallet)
-            .map_or(0, |s| s.synced_height);
+        let (list_bound, scanned) = self.list_scan(wallet, &list);
         let chain = self.shared_chain(wallet).await.ok();
         let mut registered = HashMap::new();
         for hash in hashes {

@@ -144,6 +144,17 @@ fn discard(f: &Fx, w: usize, id: &str) -> Result<(), MasternodesError> {
     f.run(f.mn().discard_shared_session(f.wallets[w], id.to_string()))
 }
 
+/// Wallet `w`'s filter scan at `height`: D81's checkpoint.
+fn scanned_to(f: &Fx, w: usize, height: u32) {
+    let mut state = f
+        .session
+        .hub
+        .wallet_state(&f.wallets[w])
+        .unwrap_or_default();
+    (state.synced_height, state.processed_height) = (height, height);
+    f.session.hub.set_wallet_state(f.wallets[w], state);
+}
+
 /// A prepares with its share the actor, B and C approve, C's session
 /// holds every signature: the session id and C's last Reply.
 fn combined_at_c(f: &Fx, txid: Txid) -> (String, SharedOutcome) {
@@ -610,6 +621,9 @@ fn test_QT_127_a_delisted_masternode_kills_the_session() {
     let id = a.session.id;
     f.imported(1, &a.message.text);
     delisted(&f, 200);
+    for w in [0, 1] {
+        scanned_to(&f, w, 200);
+    }
     let s = f.session_of(0, &id);
     assert_eq!(
         (s.stage, s.next),
@@ -628,6 +642,32 @@ fn test_QT_127_a_delisted_masternode_kills_the_session() {
         f.run(f.mn().shared_session(f.wallets[0], id)),
         Err(MasternodesError::SharedSessionNotFound)
     ));
+}
+
+/// D94 with D81's guard (review r1 m-1): C sends; A and B never take C's
+/// last Reply. The dissolution empties A's synced list before A's filter
+/// scan reaches its block: A's session keeps its stage, isn't discarded,
+/// and reads `confirmed` once the scan finds the block.
+#[test]
+fn test_QT_127_a_session_waits_for_the_scan_before_reading_dead() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    let (id, _) = combined_at_c(&f, txid);
+    send(&f, 2, &id).unwrap();
+    let tx = f.net.sent()[0].clone();
+    delisted(&f, 105);
+    scanned_to(&f, 0, 104);
+    assert_eq!(f.session_of(0, &id).stage, SharedStage::Signing);
+    assert_eq!(
+        discard(&f, 0, &id).unwrap_err().code(),
+        "masternodes.shared_too_early"
+    );
+    f.mine(tx, 105);
+    scanned_to(&f, 0, 105);
+    assert_eq!(
+        f.session_of(0, &id).stage,
+        SharedStage::Confirmed { height: 105 }
+    );
 }
 
 /// D95 (review r1 n-3): a session marked out whose bytes never reached an
