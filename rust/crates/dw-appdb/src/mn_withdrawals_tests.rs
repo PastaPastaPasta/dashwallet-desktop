@@ -987,6 +987,12 @@ fn the_backfill_writes_once_with_its_marker() {
     let db = AppDb::open_in_memory().unwrap();
     db.insert_masternode_op_with_barrier_durable(W, &update_op("a", true), &[], 1, Some(&[9]))
         .unwrap();
+    for op in ["b", "x"] {
+        db.insert_masternode_op_durable(W, &update_op(op, true), &[], 1)
+            .unwrap();
+    }
+    db.insert_masternode_op_durable(W, &update_op("unsigned", false), &[], 1)
+        .unwrap();
     let barrier = |op: &str, script: u8| NewPayoutBarrier {
         pro_tx_hash: PRO_TX.into(),
         op_id: op.into(),
@@ -1007,9 +1013,19 @@ fn the_backfill_writes_once_with_its_marker() {
     assert!(!db.payout_barriers_backfilled().unwrap());
     assert_eq!(db.payout_barriers().unwrap().len(), 1);
 
+    // An operation discarded since the engine read it (gone), or one
+    // without signed bytes, gets no barrier.
     assert_eq!(
-        db.backfill_payout_barriers_durable(&[barrier("a", 1), barrier("b", 2)], 5)
-            .unwrap(),
+        db.backfill_payout_barriers_durable(
+            &[
+                barrier("a", 1),
+                barrier("b", 2),
+                barrier("gone", 4),
+                barrier("unsigned", 5),
+            ],
+            5
+        )
+        .unwrap(),
         Some(1)
     );
     assert!(db.payout_barriers_backfilled().unwrap());
@@ -1249,7 +1265,11 @@ fn cases() -> Vec<Case> {
         },
         Case {
             point: fault::MN_BARRIER_BACKFILL,
-            setup: |_| {},
+            // The backfill writes a barrier only for a signed row it finds.
+            setup: |db| {
+                db.insert_masternode_op_durable(W, &update_op("op", true), &[], 1)
+                    .unwrap()
+            },
             write: |db| {
                 let barrier = NewPayoutBarrier {
                     pro_tx_hash: PRO_TX.into(),

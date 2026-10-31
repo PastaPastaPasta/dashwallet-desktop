@@ -15,6 +15,8 @@ use tokio::runtime::Handle;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
+pub(crate) use super::protx::barriers::backfill_payout_barriers;
+
 use super::aggregate::{OwnedMasternode, add_history, aggregate};
 use super::records::AttachedKeyRole;
 use crate::events::{EngineEvent, EventSink};
@@ -271,6 +273,10 @@ pub(crate) struct MasternodesRuntime {
     pub(super) ids_verified: AtomicBool,
     /// ProTx operations with a call running on them (MG-04 §5).
     protx_in_flight: Mutex<HashSet<(WalletId, String)>>,
+    /// This session's open backfilled the payout-change barriers, or found
+    /// them backfilled (MG-13 P16). Until then a barrier may be missing,
+    /// and a masternode withdrawal's quote reads `payout_change_pending`.
+    barriers_ready: AtomicBool,
     /// The ProTx hand-off's test seam (MG-04 §7).
     #[cfg(test)]
     protx_seam: Mutex<Option<Arc<super::protx::ops::Seam>>>,
@@ -301,9 +307,24 @@ impl MasternodesRuntime {
             unsettled: Mutex::default(),
             ids_verified: AtomicBool::new(false),
             protx_in_flight: Mutex::default(),
+            barriers_ready: AtomicBool::new(false),
             #[cfg(test)]
             protx_seam: Mutex::default(),
         }
+    }
+
+    /// Whether every payout-change barrier is in place (`barriers_ready`).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "MG-13's quote reads it (commit 4)")
+    )]
+    pub(crate) fn barriers_ready(&self) -> bool {
+        self.barriers_ready.load(Ordering::SeqCst)
+    }
+
+    /// The outcome of the open's barrier backfill (MG-13 P16).
+    pub(crate) fn set_barriers_ready(&self, ready: bool) {
+        self.barriers_ready.store(ready, Ordering::SeqCst);
     }
 
     pub(crate) fn protx_in_flight(&self) -> std::sync::MutexGuard<'_, HashSet<(WalletId, String)>> {

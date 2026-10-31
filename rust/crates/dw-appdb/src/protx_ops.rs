@@ -190,6 +190,16 @@ impl AppDb {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Every wallet id with an operation, loaded or not: the engine's
+    /// barrier backfill reads them all (MG-13 P16).
+    pub fn masternode_op_wallets(&self) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT DISTINCT wallet_id FROM masternode_ops ORDER BY wallet_id")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn masternode_op(&self, wallet_id: &str, id: &str) -> Result<Option<MasternodeOpRow>> {
         let conn = self.conn();
         Ok(conn
@@ -502,6 +512,17 @@ mod tests {
         assert_eq!(db.masternode_op(W, "a").unwrap().unwrap().sent_at, Some(5));
         assert!(!db.delete_unsent_masternode_op(W, "a").unwrap());
         assert!(db.masternode_op(W, "a").unwrap().is_some());
+    }
+
+    #[test]
+    fn the_wallets_with_operations_are_listed_once_each() {
+        let db = AppDb::open_in_memory().unwrap();
+        assert!(db.masternode_op_wallets().unwrap().is_empty());
+        for (w, id) in [("bb", "a"), (W, "b"), ("bb", "c")] {
+            db.insert_masternode_op_durable(w, &row(id, true), &[], 1)
+                .unwrap();
+        }
+        assert_eq!(db.masternode_op_wallets().unwrap(), [W, "bb"]);
     }
 
     #[test]

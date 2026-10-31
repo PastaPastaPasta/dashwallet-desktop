@@ -462,6 +462,19 @@ impl NetworkSession {
             Arc::clone(&sink),
             &Handle::current(),
         );
+        // The barriers of payout changes signed before MG-13, once per app
+        // database, before anything can quote a withdrawal (P16).
+        masternodes.set_barriers_ready({
+            let (db, core) = (Arc::clone(&appdb), network.core_network());
+            tokio::task::spawn_blocking(move || {
+                crate::masternodes::follow::backfill_payout_barriers(
+                    &db,
+                    core,
+                    crate::events::unix_now(),
+                )
+            })
+            .await?
+        });
         // A change of the wallet set re-reads the masternodes (MG-03 D28).
         let sink = masternodes.watch_wallets(sink);
         let journal = crate::platform::lease::session::open_journal(&data_dir).await;

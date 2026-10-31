@@ -131,7 +131,11 @@ impl AppDb {
     /// a barrier for each of `barriers` (the engine's choice of the existing
     /// payout-changing operations with signed bytes), keeping any barrier an
     /// operation already has, and sets the "done" marker
-    /// ([`PAYOUT_BARRIERS_BACKFILLED`]). The number of barriers written;
+    /// ([`PAYOUT_BARRIERS_BACKFILLED`]). A barrier is written only while its
+    /// operation's signed row is still there, checked in this transaction:
+    /// the engine read the rows before it, and another process's discard
+    /// meanwhile must not leave a barrier without its row (r4 m1). The
+    /// number of barriers written;
     /// `None`, with nothing written, when the marker was already set (by
     /// another process, say).
     pub fn backfill_payout_barriers_durable(
@@ -151,7 +155,15 @@ impl AppDb {
             }
             let mut written = 0;
             for barrier in barriers {
-                written += write_barrier(&tx, barrier, now, true)?;
+                let signed: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM masternode_ops
+                         WHERE wallet_id = ?1 AND id = ?2 AND signed_tx IS NOT NULL)",
+                    params![barrier.created_by, barrier.op_id],
+                    |r| r.get(0),
+                )?;
+                if signed {
+                    written += write_barrier(&tx, barrier, now, true)?;
+                }
             }
             Self::put_setting(
                 &tx,

@@ -29,6 +29,8 @@ use crate::masternodes::{
 use crate::send::{SendFailure, SpendOwner, TestBroadcaster};
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
 
+mod barriers;
+
 const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const COIN: u64 = 100_000_000;
