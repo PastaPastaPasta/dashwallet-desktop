@@ -11,7 +11,8 @@ use dw_protx::shared::{
 };
 
 use super::super::store::reserved_of;
-use super::dissolve::{assert_update_pending, dissolve_now, listed};
+use super::dissolve::{assert_update_pending, delisted, dissolve_now, listed};
+use super::together::scanned_to;
 use super::*;
 use crate::masternodes::{
     DeadReason, KeepOr, KeyChangeRequest, MaintenanceSent, OperatorChoice, SharedKind,
@@ -492,6 +493,62 @@ fn test_QT_127_a_sent_key_change_is_abandoned_by_a_spend_to_the_wallet() {
     f.tip(200);
     f.follow();
     assert!(reserved.iter().all(|o| !f.locked(0).contains(o)));
+}
+
+/// r1 M-1: a request out stays valid in Core whatever keys the list took
+/// since, so once the list leaves its base for other keys than its own the
+/// funder's session reads `stale`: no resend (it would undo the later
+/// change), other maintenance still waits (Core may mine it), and the
+/// abandon spends a fee input to the wallet. The list holding its own keys
+/// before the scan finds its block is not stale.
+#[test]
+fn test_QT_127_a_sent_key_change_whose_base_moved_is_stale() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, a) = complete(&f, txid);
+    let requested = a.session.key_change.unwrap().requested.operator_public_key;
+    let requested: [u8; 48] = hex::decode(requested).unwrap().try_into().unwrap();
+    send(&f, 0, &id, COIN).unwrap();
+    list_keys(&f, txid, requested, [1; 20]);
+    assert_eq!(f.session_of(0, &id).stage, SharedStage::Sent);
+    list_keys(&f, txid, listed_operator(), [2; 20]);
+    let s = f.session_of(0, &id);
+    assert_eq!((s.stage, s.next), (SharedStage::Stale, SharedNext::Abandon));
+    assert_message(send(&f, 0, &id, COIN).unwrap_err(), "stale");
+    assert_eq!(f.net.sent().len(), 1);
+    assert_update_pending(dissolve_now(&f, txid, 0).unwrap_err(), &id);
+    f.follow();
+    let reserved = reserved_of(&f.row(0, &id));
+    assert!(reserved.iter().all(|o| f.locked(0).contains(o)));
+    abandon(&f, 0, &id, COIN).unwrap();
+    let out = f.net.sent();
+    assert_eq!(out.len(), 2);
+    assert!(reserved.contains(&out[1].input[0].previous_output));
+}
+
+/// r1 m-1: a request out whose masternode left the list can never be mined
+/// (`bad-proupsharedreg-hash`): once the wallet has scanned to the list's
+/// height it reads `dead{delisted}` and the follower releases its locks,
+/// with no spend.
+#[test]
+fn test_QT_127_a_sent_key_change_of_a_delisted_masternode_is_dead() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, _) = complete(&f, txid);
+    send(&f, 0, &id, COIN).unwrap();
+    let reserved = reserved_of(&f.row(0, &id));
+    delisted(&f, 200);
+    assert_eq!(f.session_of(0, &id).stage, SharedStage::Sent);
+    scanned_to(&f, 0, 200);
+    assert_eq!(
+        f.session_of(0, &id).stage,
+        SharedStage::Dead {
+            reason: DeadReason::Delisted
+        }
+    );
+    f.follow();
+    assert!(reserved.iter().all(|o| !f.locked(0).contains(o)));
+    assert_eq!(f.net.sent().len(), 1);
 }
 
 /// A sent key change is resent as the same bytes, charged the fee again.

@@ -154,7 +154,7 @@ fn discard(f: &Fx, w: usize, id: &str) -> Result<(), MasternodesError> {
 }
 
 /// Wallet `w`'s filter scan at `height`: D81's checkpoint.
-fn scanned_to(f: &Fx, w: usize, height: u32) {
+pub(super) fn scanned_to(f: &Fx, w: usize, height: u32) {
     let mut state = f
         .session
         .hub

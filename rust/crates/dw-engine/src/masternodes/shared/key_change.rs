@@ -295,20 +295,24 @@ fn same_keys(k: Keys, base: &KeyBase, network: dashcore::Network) -> bool {
 
 /// The stage (D103), first match. The funder: abandoned before its send;
 /// its sent transaction in a block (`confirmed`); out, a fee input spent in
-/// a block by another transaction (`conflicted`), else `sent`; not out, a
-/// fee input spent (`dead{inputs_spent}`). Then for every wallet: the
-/// masternode out of the synced list once the wallet has scanned to its
-/// height (`dead{delisted}`, D81's guard); for an approver, the list's keys
-/// the requested ones (`confirmed` at the list's height, D27); the list's
-/// keys other than the base (`stale`, D25); then the signatures.
+/// a block by another transaction (`conflicted`); not out, a fee input
+/// spent (`dead{inputs_spent}`). Then for every wallet: the masternode out
+/// of the synced list once the wallet has scanned to its height
+/// (`dead{delisted}`, D81's guard); for an approver, the list's keys the
+/// requested ones (`confirmed` at the list's height, D27); the list's keys
+/// other than the base (`stale`, D25), for a request out other than its
+/// requested ones too; then `sent` for one out, else the signatures. A
+/// request out stays valid in Core whatever keys the list took since (the
+/// owners' signatures don't commit to the base), so its resend would undo
+/// a later change: `stale` refuses it.
 fn derive_stage(
     k: &KeyChange,
     mn: Option<&SharedMn>,
     v: &TogetherView,
     network: dashcore::Network,
 ) -> SharedStage {
+    let out = k.funded.is_some() && k.row.out_at.is_some();
     if let Some(f) = &k.funded {
-        let out = k.row.out_at.is_some();
         if f.abandoned_at.is_some() && !out {
             return SharedStage::Dead {
                 reason: DeadReason::Abandoned,
@@ -323,16 +327,17 @@ fn derive_stage(
             if conflict_height(&v.chain.history, &own, txid.as_ref()).is_some() {
                 return SharedStage::Conflicted;
             }
-            return SharedStage::Sent;
-        }
-        if own.iter().any(|o| !v.chain.unspent.contains(o)) {
+        } else if own.iter().any(|o| !v.chain.unspent.contains(o)) {
             return SharedStage::Dead {
                 reason: DeadReason::InputsSpent,
             };
         }
     }
     let Some(mn) = mn else {
-        return SharedStage::Signing;
+        return match out {
+            true => SharedStage::Sent,
+            false => SharedStage::Signing,
+        };
     };
     let list = v.list.as_ref();
     let gone = list.is_some_and(|l| {
@@ -349,9 +354,12 @@ fn derive_stage(
             let height = list.and_then(|l| l.height).unwrap_or(0);
             return SharedStage::Confirmed { height };
         }
-        if !same_keys(current, &k.base, network) {
+        if !same_keys(current, &k.base, network) && !(out && current == requested) {
             return SharedStage::Stale;
         }
+    }
+    if out {
+        return SharedStage::Sent;
     }
     match k.sigs.len() == mn.shares.len() {
         true => SharedStage::Combined,
@@ -445,8 +453,9 @@ impl NetworkSession {
 
     /// D23 for a key change sent from this wallet: one of masternode `hash`
     /// out (`signed_tx` saved) and not yet buried in a block is
-    /// `update_pending{operation}`, naming the session. `except`: the
-    /// session being resent.
+    /// `update_pending{operation}`, naming the session, `stale` included:
+    /// Core may still mine it until the abandon spends a fee input (D105).
+    /// `except`: the session being resent.
     pub(crate) async fn check_no_key_change_out(
         &self,
         wallet: WalletId,
@@ -476,7 +485,7 @@ impl NetworkSession {
             }
             let pending = match self.key_change_session(&k, &v).stage {
                 SharedStage::Confirmed { height } => !buried(height),
-                SharedStage::Sent => true,
+                SharedStage::Sent | SharedStage::Stale => true,
                 _ => false,
             };
             if pending {
@@ -723,25 +732,32 @@ impl NetworkSession {
         let _flight = self.claim_shared_session(wallet, &id)?;
         // The same request as one abandoned before its send, whose coins
         // were released and selected again: the abandoned row gives way
-        // (D102). Any other row holds its coins, so its id can't recur.
-        if let Some(old) = self.key_change_stored(wallet, &id).await? {
-            let abandoned = old
-                .funded
-                .as_ref()
-                .is_some_and(|f| f.abandoned_at.is_some());
-            if old.row.out_at.is_some() || !abandoned {
-                return Err(stage_refusal(self.key_change_stage(wallet, &old).await?));
+        // (D102), once the new one is signed. Any other row holds its
+        // coins, so its id can't recur.
+        let replaces = match self.key_change_stored(wallet, &id).await? {
+            None => false,
+            Some(old) => {
+                let abandoned = old
+                    .funded
+                    .as_ref()
+                    .is_some_and(|f| f.abandoned_at.is_some());
+                if old.row.out_at.is_some() || !abandoned {
+                    return Err(stage_refusal(self.key_change_stage(wallet, &old).await?));
+                }
+                true
             }
+        };
+        let mut sigs = BTreeMap::new();
+        let to_sign: Vec<(u16, u32)> = unsigned(&mine, &sigs).collect();
+        self.sign_key_change(wallet, grant, &mn, &checked, &to_sign, &mut sigs)
+            .await?;
+        if replaces {
             let (w, old_id) = (wallet.to_string(), id.clone());
             self.appdb_op(move |db| {
                 db.delete_unsent_shared_session_durable(&w, &old_id, now_secs())
             })
             .await?;
         }
-        let mut sigs = BTreeMap::new();
-        let to_sign: Vec<(u16, u32)> = unsigned(&mine, &sigs).collect();
-        self.sign_key_change(wallet, grant, &mn, &checked, &to_sign, &mut sigs)
-            .await?;
         let funded = Funded {
             fee: funding.fee,
             inputs: encode_outpoints(&inputs),
