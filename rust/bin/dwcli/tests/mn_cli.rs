@@ -196,6 +196,40 @@ fn mn_failures_are_json_lines_that_never_quote_the_arguments() {
             ],
             b"",
         ),
+        (&["mn", "withdraw-quote", SECRET], b""),
+        (&["mn", "withdraw-quote", SECRET, "--wallet", SECRET], b""),
+        (
+            &[
+                "mn", "withdraw", SECRET, "--key", "payout", "--all", "--to", SECRET,
+            ],
+            b"",
+        ),
+        (
+            &[
+                "mn", "withdraw", SECRET, "--key", "owner", "--all", "--to", SECRET,
+            ],
+            b"",
+        ),
+        (
+            &[
+                "mn",
+                "withdraw-retry",
+                SECRET,
+                SECRET,
+                "--key",
+                "payout",
+                "--credits",
+                "1",
+                "--to",
+                SECRET,
+            ],
+            b"",
+        ),
+        (&["mn", "recheck-withdrawal", SECRET], b""),
+        (
+            &["mn", "mark-withdrawal", SECRET, "--mark", "received"],
+            b"",
+        ),
         (
             &["mn", "--spv", "--sync-timeout", "1", "status", SECRET],
             b"",
@@ -501,4 +535,66 @@ fn mn_a_failed_teardown_prints_the_error_line_not_ok() {
     };
     let (code, _) = error(&out);
     assert_eq!(code, "shutdown", "{out:?}");
+}
+
+/// The evonode credit withdrawal commands (MG-13) on a session without
+/// Platform: the records read app.sqlite only, a quote and a withdrawal
+/// need Platform, and an owner key's `--to` is refused before either.
+#[test]
+fn mn_withdrawal_commands_answer_in_json_lines() {
+    let dir = dw_testutil::private_tempdir();
+    std::fs::write(dir.path().join("pass"), "dwcli mn passphrase\n").unwrap();
+    for args in [&["init-vault"][..], &["create"]] {
+        let out = dwcli(dir.path(), "pass", args, b"");
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    }
+    let hash = "ab".repeat(32);
+    let id = "00".repeat(16);
+
+    let out = dwcli(dir.path(), "pass", &["mn", "withdrawals", &hash], b"");
+    assert!(out.status.success(), "{out:?}");
+    let line: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(line, serde_json::json!({"ok": true, "result": []}));
+
+    for (args, want) in [
+        (
+            &["mn", "withdraw-quote", &hash][..],
+            "masternodes.platform_unavailable",
+        ),
+        (
+            &["mn", "withdraw", &hash, "--key", "payout", "--credits", "5"],
+            "masternodes.platform_unavailable",
+        ),
+        (
+            &[
+                "mn", "withdraw", &hash, "--key", "owner", "--all", "--to", "x",
+            ],
+            "invalid_argument",
+        ),
+        (
+            &[
+                "mn",
+                "withdraw-retry",
+                &hash,
+                &id,
+                "--key",
+                "owner",
+                "--all",
+            ],
+            "masternodes.platform_unavailable",
+        ),
+        (
+            &["mn", "recheck-withdrawal", &id],
+            "masternodes.withdrawal_not_found",
+        ),
+        (
+            &["mn", "mark-withdrawal", &id, "--mark", "not-received"],
+            "masternodes.withdrawal_not_found",
+        ),
+        (&["mn", "recheck-withdrawal", "zz"], "invalid_argument"),
+    ] {
+        let out = dwcli(dir.path(), "pass", args, b"");
+        let (code, _) = error(&out);
+        assert_eq!(code, want, "{args:?}");
+    }
 }
