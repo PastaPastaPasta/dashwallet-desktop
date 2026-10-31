@@ -620,21 +620,23 @@ fn test_QT_127_start_key_change_refusals() {
         code(start(&f, 0, keep.clone(), 0).unwrap_err()),
         "invalid_argument"
     );
-    let p2sh = KeyChangeRequest {
-        voting: KeepOr::Set(VotingChoice::Address {
-            address: "8gXjr5h1nwEJKRd2SV4UkMxwy6ivMHDf6o".into(),
-        }),
-        ..keep.clone()
-    };
-    assert_eq!(code(start(&f, 0, p2sh, 0).unwrap_err()), "invalid_argument");
-    // Share 1's owner key as the voting key: MG-04 D52.
-    let p = registration(&f, &reg_id);
     let network = dashcore::Network::Regtest;
-    let owner = super::super::standby::p2pkh_address(p.shares[1].owner_key_id, network);
     let voting = |address: String| KeyChangeRequest {
         voting: KeepOr::Set(VotingChoice::Address { address }),
         ..keep.clone()
     };
+    let p2sh = dashcore::Address::new(
+        network,
+        dashcore::address::Payload::ScriptHash(dashcore::ScriptHash::from_byte_array([7; 20])),
+    );
+    let e = start(&f, 0, voting(p2sh.to_string()), 0).unwrap_err();
+    assert!(
+        matches!(e.engine(), Some(crate::EngineError::InvalidArgument(m)) if m.contains("P2PKH")),
+        "{e:?}"
+    );
+    // Share 1's owner key as the voting key: MG-04 D52.
+    let p = registration(&f, &reg_id);
+    let owner = super::super::standby::p2pkh_address(p.shares[1].owner_key_id, network);
     assert_eq!(
         code(start(&f, 0, voting(owner), 0).unwrap_err()),
         "invalid_argument"
