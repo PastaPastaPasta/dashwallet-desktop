@@ -50,6 +50,7 @@ use dashcore::{OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 pub mod dissolve;
 pub mod envelope;
 pub mod json;
+pub mod key_change;
 pub mod netinfo;
 pub mod rawtx;
 pub mod registration;

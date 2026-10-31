@@ -20,7 +20,8 @@ use super::super::together::absorb;
 use super::dissolve::{assert_update_pending, confirm, delisted, dissolve_now, listed, request};
 use super::*;
 use crate::masternodes::{
-    DeadReason, ProTxOperation, ProTxOperationKind, ProTxOperationState, SharedKind, SharedWarning,
+    DeadReason, MaintenanceSent, ProTxOperation, ProTxOperationKind, ProTxOperationState,
+    SharedKind, SharedWarning,
 };
 
 const FEE_T: u64 = 10_000;
@@ -112,6 +113,10 @@ fn send(f: &Fx, w: usize, id: &str) -> Result<ProTxOperation, MasternodesError> 
         f.mn()
             .send_maintenance(f.wallets[w], id.to_string(), f.grant(w, 0)),
     )
+    .map(|sent| match sent {
+        MaintenanceSent::Operation { operation } => *operation,
+        MaintenanceSent::Session { .. } => panic!("a dissolution is sent as an operation"),
+    })
 }
 
 fn import_into(
@@ -149,7 +154,7 @@ fn discard(f: &Fx, w: usize, id: &str) -> Result<(), MasternodesError> {
 }
 
 /// Wallet `w`'s filter scan at `height`: D81's checkpoint.
-fn scanned_to(f: &Fx, w: usize, height: u32) {
+pub(super) fn scanned_to(f: &Fx, w: usize, height: u32) {
     let mut state = f
         .session
         .hub
@@ -499,8 +504,8 @@ fn test_QT_127_an_actor_fee_needs_acceptance() {
 
 /// §2.5 and D92 at import: the request must be the registration's, built
 /// by Core's builder byte for byte; signatures are taken one by one as
-/// dash-qt takes them; a bare array needs its target; the key change's
-/// envelope stays unsupported (D45).
+/// dash-qt takes them; a bare array needs its target; a `registrar`
+/// envelope is the key change's import (D104), which refuses a ProDisTx.
 #[test]
 fn test_QT_127_dissolve_together_import_refusals_and_skips() {
     let f = fx(3, true);
@@ -518,14 +523,11 @@ fn test_QT_127_dissolve_together_import_refusals_and_skips() {
         ..sigs_envelope(txid, &tx, &[])
     }
     .to_text();
-    assert!(matches!(
-        refused(&registrar),
-        MasternodesError::Unsupported { .. }
-    ));
-    // Before its target is looked up.
+    assert_message(refused(&registrar), "not_key_change");
+    // Its target is a key-change session's.
     assert!(matches!(
         import_into(&f, 1, &registrar, Some(SESSION_NONE)).unwrap_err(),
-        MasternodesError::Unsupported { .. }
+        MasternodesError::SharedSessionNotFound
     ));
     let testnet = SigsEnvelope {
         network: dashcore::Network::Testnet,

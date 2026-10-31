@@ -313,6 +313,19 @@ impl NetworkSession {
         hash: [u8; 32],
         resent: Option<&str>,
     ) -> Result<(), MasternodesError> {
+        self.check_no_pending_ops(wallet, hash, resent).await?;
+        // A key change this wallet sent is held as an operation is (D105).
+        self.check_no_key_change_out(wallet, hash, None).await
+    }
+
+    /// [`Self::check_no_pending_maintenance`]'s operations: the
+    /// `update_share` and `dissolve` rows of masternode `hash`.
+    pub(crate) async fn check_no_pending_ops(
+        &self,
+        wallet: WalletId,
+        hash: [u8; 32],
+        resent: Option<&str>,
+    ) -> Result<(), MasternodesError> {
         let target = Txid::from_byte_array(hash).to_string();
         let w = wallet.to_string();
         // Newest first: a resent row's later ones come before it.

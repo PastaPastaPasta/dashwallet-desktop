@@ -632,8 +632,11 @@ impl NetworkSession {
                 external_collaterals.insert(hash, address.script_pubkey());
             }
         }
-        // A shared session's keys are the wallet's too (MG-04b D10).
+        // A shared session's keys are the wallet's too (MG-04b D10), and a
+        // key change's operator key a pending claim (MG-04b D99).
         self.shared_keys_in_use(wallet, &mut used).await?;
+        self.key_change_keys(wallet, &mut used, &mut pending)
+            .await?;
         Ok(Context {
             listed: listed(&list, &owned),
             list_height: list.height,

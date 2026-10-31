@@ -21,7 +21,7 @@ use clap::{Args, Subcommand};
 use dw_engine::governance::{GovernanceError, NameChoice};
 use dw_engine::masternodes::{
     AttachedKeyRole, CollateralChoice, DissolveRequest, EvonodeTerms, JoinSharedRequest, KeepOr,
-    MasternodeType, Masternodes, MasternodesError, OperatorChoice, PayoutChoice,
+    KeyChangeRequest, MasternodeType, Masternodes, MasternodesError, OperatorChoice, PayoutChoice,
     PlatformNodeChoice, RegistrationRequest, RewardChoice, ShareSlot, ShareTerms, SharedKind,
     StandbyVariant, StartSharedRequest, UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
 };
@@ -416,9 +416,59 @@ enum SharedCommand {
         #[arg(long)]
         accept_actor_fee: bool,
     },
-    /// Combine a complete dissolve-together session and send it (a grant
-    /// capped at 0); prints the operation.
+    /// Send a complete maintenance session: a dissolve-together session as
+    /// an operation (a grant capped at 0), a key change this wallet funds as
+    /// the session (a grant capped at its fee); prints which.
     SendMaintenance { session: String },
+    /// Prepare a change of the masternode's operator and voting keys that
+    /// every owner signs, funded by this wallet, and sign this wallet's
+    /// shares (a grant capped at 0); prints the session and the Request.
+    /// A key not named is kept.
+    KeyChange(KeyChangeArgs),
+}
+
+#[derive(Args)]
+struct KeyChangeArgs {
+    pro_tx_hash: String,
+    /// The new operator's BLS public key (96 hex).
+    #[arg(long, conflicts_with_all = ["operator_index", "new_operator"])]
+    operator_key: Option<String>,
+    /// The keychain's operator public key at this index.
+    #[arg(long, conflicts_with = "new_operator")]
+    operator_index: Option<u32>,
+    /// The keychain's next unused operator key.
+    #[arg(long)]
+    new_operator: bool,
+    /// Another wallet's voting address (P2PKH).
+    #[arg(long, conflicts_with_all = ["voting_index", "new_voting"])]
+    voting_address: Option<String>,
+    #[arg(long, conflicts_with = "new_voting")]
+    voting_index: Option<u32>,
+    /// The keychain's next unused voting key.
+    #[arg(long)]
+    new_voting: bool,
+}
+
+impl KeyChangeArgs {
+    fn request(&self) -> KeyChangeRequest {
+        KeyChangeRequest {
+            pro_tx_hash: self.pro_tx_hash.clone(),
+            operator: match (&self.operator_key, self.operator_index, self.new_operator) {
+                (Some(k), _, _) => KeepOr::Set(OperatorChoice::Given {
+                    public_key: k.clone(),
+                }),
+                (None, Some(index), _) => KeepOr::Set(OperatorChoice::Keychain { index }),
+                (None, None, true) => KeepOr::Set(OperatorChoice::NextUnused),
+                (None, None, false) => KeepOr::Keep,
+            },
+            voting: match (&self.voting_address, self.voting_index, self.new_voting) {
+                (Some(a), _, _) => KeepOr::Set(VotingChoice::Address { address: a.clone() }),
+                (None, Some(index), _) => KeepOr::Set(VotingChoice::Keychain { index }),
+                (None, None, true) => KeepOr::Set(VotingChoice::NextUnused),
+                (None, None, false) => KeepOr::Keep,
+            },
+        }
+    }
 }
 
 #[derive(Args)]
@@ -1311,8 +1361,18 @@ fn shared_command(
             value(engine.block_on(mn.approve_maintenance(w, id, grant, accept_actor_fee))?)
         }
         SharedCommand::SendMaintenance { session: id } => {
-            let grant = masternode_grant(session, passphrase, w, 0)?;
+            // A key change's send is charged its fee; a dissolution's 0.
+            let s = engine.block_on(mn.shared_session(w, id.clone()))?;
+            let cap = match s.kind {
+                SharedKind::KeyChange => s.debit.unwrap_or(0),
+                _ => 0,
+            };
+            let grant = masternode_grant(session, passphrase, w, cap)?;
             value(engine.block_on(mn.send_maintenance(w, id, grant))?)
+        }
+        SharedCommand::KeyChange(a) => {
+            let grant = masternode_grant(session, passphrase, w, 0)?;
+            value(engine.block_on(mn.start_key_change(w, a.request(), grant))?)
         }
     }
 }
@@ -1437,6 +1497,14 @@ mod tests {
             &["approve-maintenance", SESSION],
             &["approve-maintenance", SESSION, "--accept-actor-fee"],
             &["send-maintenance", SESSION],
+            &["key-change", HASH, "--new-operator"],
+            &["key-change", HASH, "--operator-index", "3", "--new-voting"],
+            &[
+                "key-change",
+                HASH,
+                "--voting-address",
+                "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n",
+            ],
             &["sessions", "--wallet", "w"],
         ] {
             assert!(shared(args).is_ok(), "{args:?}");
@@ -1497,6 +1565,17 @@ mod tests {
             &["dissolve-together", "--actor", "0"],
             &["approve-maintenance"],
             &["send-maintenance"],
+            // Slice 2d's: the masternode is named, one choice per key.
+            &["key-change", "--new-operator"],
+            &[
+                "key-change",
+                HASH,
+                "--new-operator",
+                "--operator-index",
+                "1",
+            ],
+            &["key-change", HASH, "--voting-index", "x"],
+            &["key-change", HASH, "--new-voting", "--voting-address", "y"],
         ] {
             assert!(refused(args).is_some(), "{args:?}");
         }
@@ -1517,6 +1596,38 @@ mod tests {
             SharedCommand::Approve { ref session, ref consent_hash }
                 if session == SESSION && consent_hash == HASH
         ));
+    }
+
+    /// MG-04b D99: a key not named is kept, and each named one is set as
+    /// its flag says.
+    #[test]
+    fn test_QT_127_key_change_keeps_each_key_not_named() {
+        let request = |args: &[&str]| match shared(args).unwrap().command {
+            SharedCommand::KeyChange(a) => a.request(),
+            _ => panic!("{args:?}"),
+        };
+        assert_eq!(
+            request(&["key-change", HASH, "--new-operator"]),
+            KeyChangeRequest {
+                pro_tx_hash: HASH.into(),
+                operator: KeepOr::Set(OperatorChoice::NextUnused),
+                voting: KeepOr::Keep,
+            }
+        );
+        let r = request(&["key-change", HASH, "--operator-index", "3", "--new-voting"]);
+        assert_eq!(
+            r.operator,
+            KeepOr::Set(OperatorChoice::Keychain { index: 3 })
+        );
+        assert_eq!(r.voting, KeepOr::Set(VotingChoice::NextUnused));
+        let r = request(&["key-change", HASH, "--voting-address", "y1"]);
+        assert_eq!(r.operator, KeepOr::Keep);
+        assert_eq!(
+            r.voting,
+            KeepOr::Set(VotingChoice::Address {
+                address: "y1".into()
+            })
+        );
     }
 
     /// fixes-1a Nit 4: stdin is read up to the envelope limit + 1 bytes;

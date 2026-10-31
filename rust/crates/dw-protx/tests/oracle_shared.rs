@@ -29,6 +29,7 @@ use dw_protx::payloads::sign_hash_compact;
 use dw_protx::rules::{ListedMasternode, signed_by};
 use dw_protx::shared::dissolve::build_dissolution;
 use dw_protx::shared::envelope::encode_base64;
+use dw_protx::shared::key_change;
 use dw_protx::shared::netinfo::ExtNetInfo;
 use dw_protx::shared::rawtx::SpecialTx;
 use dw_protx::shared::registration::{NULL_JOIN_SIGNATURE, ProRegTxV3, SHARED_COLLATERAL_SCRIPT};
@@ -547,9 +548,27 @@ fn test_QT_127_maintenance_digests_and_signatures_equal_dashds() {
                 // Combining fills the signatures; the fee inputs are
                 // re-signed, the prevouts and outputs kept.
                 let p: ProUpSharedRegTx = dashcore::consensus::deserialize(&tx.payload).unwrap();
-                assert_eq!(p, ProUpSharedRegTx { sigs, ..unsigned });
+                assert_eq!(
+                    p,
+                    ProUpSharedRegTx {
+                        sigs: sigs.clone(),
+                        ..unsigned
+                    }
+                );
                 assert_eq!(tx.prevouts(), prepared.prevouts());
                 assert_eq!(tx.output, prepared.output);
+                // The wallet's reader takes dashd's request (its stale fee
+                // signatures and sequences included) and its insert is
+                // dashd's, short of the fee inputs' new scriptSigs.
+                let mn = shared_mn(&c["protx_info"], &shares);
+                let checked = key_change::check(&prepared, &mn).unwrap();
+                assert_eq!(checked.sign_hash, hash);
+                let by_share = (0u16..).zip(sigs).collect();
+                let ours = key_change::combine(&prepared, &checked, &mn, &by_share).unwrap();
+                assert_eq!(ours.payload, tx.payload, "{name}");
+                assert_eq!((ours.prevouts(), &ours.output), (tx.prevouts(), &tx.output));
+                assert_eq!(ours.lock_time, tx.lock_time);
+                assert!(ours.input.iter().all(|i| i.script_sig.is_empty()));
                 let after = &c["protx_info_after"]["state"];
                 assert_eq!(str_of(after, "votingAddress"), str_of(c, "voting_address"));
                 assert_eq!(

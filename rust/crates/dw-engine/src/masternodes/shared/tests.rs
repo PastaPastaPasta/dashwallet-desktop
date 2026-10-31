@@ -35,6 +35,7 @@ use crate::send::TestBroadcaster;
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
 
 mod dissolve;
+mod key_change;
 mod standby;
 mod together;
 

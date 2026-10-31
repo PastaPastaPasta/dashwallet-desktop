@@ -114,7 +114,7 @@ fn check_dust(checked: &Checked, mn: &SharedMn) -> Result<(), MasternodesError> 
 
 /// This wallet's shares (share, keychain owner key) without a signature in
 /// `sigs`.
-fn unsigned<'a>(
+pub(super) fn unsigned<'a>(
     mine: &'a BTreeMap<u16, u32>,
     sigs: &'a BTreeMap<u16, CompactSignature>,
 ) -> impl Iterator<Item = (u16, u32)> + 'a {
@@ -251,7 +251,7 @@ impl TogetherView {
 
 /// The masternode as the history holds its registration at `height` (D29):
 /// no list needed.
-fn known_mn(hash: [u8; 32], height: u32, p: &ProRegTxV3) -> SharedMn<'_> {
+pub(super) fn known_mn(hash: [u8; 32], height: u32, p: &ProRegTxV3) -> SharedMn<'_> {
     let txid = Txid::from_byte_array(hash);
     SharedMn {
         pro_tx_hash: txid,
@@ -731,13 +731,6 @@ impl NetworkSession {
         bare: Option<(Vec<SigEntry>, String)>,
         target: Option<String>,
     ) -> Result<SharedImport, MasternodesError> {
-        if received
-            .as_ref()
-            .is_some_and(|r| r.kind == SigsKind::Registrar)
-        {
-            // The key change is a later slice (D45, D97).
-            return Err(super::unsupported(None));
-        }
         let targeted = match &target {
             Some(id) => Some(self.together_loaded(wallet, id).await?),
             None => None,
@@ -1168,6 +1161,7 @@ fn view(
         warnings,
         approved_terms: None,
         base_keys: None,
+        key_change: None,
         actor_fee: fee.filter(|_| actor_mine),
         created_at: t.row.created_at,
         updated_at: t.row.updated_at,
