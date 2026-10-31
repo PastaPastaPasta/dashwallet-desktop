@@ -360,7 +360,8 @@ fn test_QT_126_shared_refusals_are_the_facades_codes_and_quote_nothing() {
     assert!(!standby_file.exists());
 
     // Slice 2c's dissolve together: the request is checked first, then v24;
-    // approving reads the session for its grant's cap.
+    // approving and sending read the session for its grant's cap (a key
+    // change's send is charged its fee, slice 2d).
     for args in [
         &["dissolve-together", "nothex", "--actor", "0"][..],
         &["dissolve-together", SESSION, "--actor", "0", "--fee", "0"],
@@ -379,7 +380,10 @@ fn test_QT_126_shared_refusals_are_the_facades_codes_and_quote_nothing() {
             &["approve-maintenance", SESSION, "--accept-actor-fee"],
             "masternodes.shared_session_not_found",
         ),
-        (&["send-maintenance", SESSION], "masternodes.unsupported"),
+        (
+            &["send-maintenance", SESSION],
+            "masternodes.shared_session_not_found",
+        ),
     ] {
         let out = run(&[&["mn", "shared"][..], args].concat(), b"");
         assert_eq!(code(&out), want, "{args:?}");
