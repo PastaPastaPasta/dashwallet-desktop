@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::protx_records::{OperatorChoice, VotingChoice};
+use super::protx_records::{KeepOr, OperatorChoice, ProTxOperation, VotingChoice};
 
 /// Whether a deployment is active, as the wallet can tell (MG-04b D3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +134,9 @@ pub enum DeadReason {
     InputsSpent,
     /// The masternode left the list (maintenance).
     Delisted,
+    /// The funder abandoned its key change before sending it: its fee
+    /// inputs are released and it never sends the request (MG-04b D102).
+    Abandoned,
 }
 
 /// What this wallet does next with a session.
@@ -158,6 +161,10 @@ pub enum SharedNext {
     /// A confirmed registration with a share of this wallet that has no
     /// standby: prepare one (`create_standby`, D21).
     CreateStandby,
+    /// A key change this wallet funds whose base the list has left: its
+    /// signatures stay usable until a fee input is spent, so abandon it
+    /// (`abandon_shared_session`, D25).
+    Abandon,
     Nothing,
 }
 
@@ -211,6 +218,40 @@ pub struct KeyBase {
     pub voting_address: String,
 }
 
+/// A key change session's keys (MG-04b §3.3, D25): each key as the synced
+/// list holds it now and as the request sets it ("unchanged" where they
+/// are equal, dash-qt's `sharedmndialogs.cpp:1960-1971`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyChangeView {
+    /// The keys the request writes (a kept key copied from the list when
+    /// it was prepared). The operator key is 96 hex, basic serialization.
+    pub requested: KeyBase,
+    /// The synced list's keys now; `None` while the masternode isn't in it.
+    pub current: Option<KeyBase>,
+    /// This wallet funds the request: it alone may send it (D99).
+    pub funder: bool,
+}
+
+/// A request to change a shared masternode's registrar keys together
+/// (`start_key_change`, §8): each key kept (copied from the synced list)
+/// or set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyChangeRequest {
+    pub pro_tx_hash: String,
+    pub operator: KeepOr<OperatorChoice>,
+    pub voting: KeepOr<VotingChoice>,
+}
+
+/// What `send_maintenance` handed off (D95, D99): a dissolution as an
+/// MG-04 operation of kind `dissolve`, a key change as the session itself,
+/// which holds its fee inputs and their locks (§9.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MaintenanceSent {
+    Operation { operation: Box<ProTxOperation> },
+    Session { session: Box<SharedSession> },
+}
+
 /// A shared-masternode session of the wallet (§8).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedSession {
@@ -253,7 +294,10 @@ pub struct SharedSession {
     pub warnings: Vec<SharedWarning>,
     /// The terms this wallet last approved (M-1 case 2's diff base).
     pub approved_terms: Option<ShareTermsView>,
+    /// A key change's base (D25).
     pub base_keys: Option<KeyBase>,
+    /// A key change's keys, requested and current (D25).
+    pub key_change: Option<KeyChangeView>,
     pub actor_fee: Option<u64>,
     pub created_at: u64,
     pub updated_at: u64,
@@ -334,6 +378,18 @@ pub enum SharedWarning {
     /// does not contain any approvals." (`sharedmndialogs.cpp:569-572`);
     /// the rest of it is taken.
     NoApprovals,
+    /// A key change sets a new operator key: Core resets the operator
+    /// fields and PoSe-bans the masternode until a ProUpServTx signed by
+    /// the new key (rc.3 `specialtxman.cpp:663-673`); the key is written in
+    /// the basic scheme (`providertx_service.cpp:1348`) and the mempool
+    /// takes one operator change of a masternode at a time
+    /// (`txmempool.cpp:1730-1735`) (MG-04b D25, m-12).
+    OperatorReset,
+    /// A complete key change stays usable by the wallet that funds it until
+    /// one of its fee inputs is spent: only that wallet can void it, by
+    /// spending one (an abandon once it is out; before, an abandon only
+    /// releases them, MG-04b D25, D102).
+    UsableByFunder,
 }
 
 /// A ProUpShareTx to preview for one of this wallet's shares (§8).

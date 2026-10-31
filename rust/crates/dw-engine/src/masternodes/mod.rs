@@ -37,10 +37,11 @@ pub use records::{
 };
 pub use shared_records::{
     Activation, DeadReason, DissolvePreview, DissolveRequest, JoinSharedRequest, KeyBase,
-    RewardChoice, ShareReturn, ShareRow, ShareSlot, ShareTerms, ShareTermsView, SharedCapability,
-    SharedImport, SharedKind, SharedMessage, SharedNext, SharedOutcome, SharedRole, SharedSession,
-    SharedStage, SharedWarning, Standby, StandbyDescription, StandbyFile, StandbySource,
-    StandbyVariant, StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
+    KeyChangeRequest, KeyChangeView, MaintenanceSent, RewardChoice, ShareReturn, ShareRow,
+    ShareSlot, ShareTerms, ShareTermsView, SharedCapability, SharedImport, SharedKind,
+    SharedMessage, SharedNext, SharedOutcome, SharedRole, SharedSession, SharedStage,
+    SharedWarning, Standby, StandbyDescription, StandbyFile, StandbySource, StandbyVariant,
+    StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
 };
 pub use tracking::MAX_MASTERNODE_LABEL;
 

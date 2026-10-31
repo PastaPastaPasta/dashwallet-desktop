@@ -34,8 +34,8 @@ use quote::ToTokens;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-/// Calls with real bodies: all of MG-03's, MG-04's and MG-04b slices 1a's,
-/// 1b's and 2a's.
+/// Calls with real bodies: all of MG-03's, MG-04's and MG-04b slices 1a's
+/// to 2d's.
 const IMPLEMENTED: &[&str] = &[
     "NetworkSession.masternodes",
     "Masternodes.list_state",
@@ -89,6 +89,7 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.start_dissolve_together",
     "Masternodes.approve_maintenance",
     "Masternodes.send_maintenance",
+    "Masternodes.start_key_change",
 ];
 
 /// The facade's files in `src/masternodes/` (mn-engine.md §0). A new file
@@ -943,6 +944,15 @@ fn update(hash: &str) -> UpdateRegistrarRequest {
     }
 }
 
+/// A key change of `hash` that rotates the operator key (MG-04b D99).
+fn key_change(hash: &str) -> KeyChangeRequest {
+    KeyChangeRequest {
+        pro_tx_hash: hash.into(),
+        operator: KeepOr::Set(OperatorChoice::NextUnused),
+        voting: KeepOr::Keep,
+    }
+}
+
 /// Every call is implemented, and each refuses in §2's order on a session
 /// whose SPV never ran.
 #[test]
@@ -1193,6 +1203,9 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.send_maintenance(wallet, "zz".into(), "g".into())
                 .await
                 .map(drop),
+            mn.start_key_change(wallet, key_change("zz"), "g".into())
+                .await
+                .map(drop),
             mn.create_standby(wallet, hash.clone(), 0, "g".into())
                 .await
                 .map(drop),
@@ -1269,6 +1282,9 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
                 .await
                 .map(drop),
             mn.send_maintenance(wallet, hash.clone(), "g".into())
+                .await
+                .map(drop),
+            mn.start_key_change(wallet, key_change(&hash), "g".into())
                 .await
                 .map(drop),
         ] {
@@ -1641,6 +1657,21 @@ fn errors_never_quote_a_secret_shaped_argument() {
                 mn.send_maintenance(as_wallet, secret(), secret())
                     .await
                     .map(drop),
+            ),
+            (
+                "start_key_change",
+                mn.start_key_change(
+                    as_wallet,
+                    KeyChangeRequest {
+                        operator: KeepOr::Set(OperatorChoice::Given {
+                            public_key: SECRET.into(),
+                        }),
+                        ..key_change(&secret())
+                    },
+                    secret(),
+                )
+                .await
+                .map(drop),
             ),
         ]
     });

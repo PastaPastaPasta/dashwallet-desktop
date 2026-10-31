@@ -708,6 +708,7 @@ pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
             .base_keys
             .as_deref()
             .and_then(|b| serde_json::from_str::<KeyBase>(b).ok()),
+        key_change: None,
         actor_fee: None,
         created_at: l.row.created_at,
         updated_at: l.row.updated_at,

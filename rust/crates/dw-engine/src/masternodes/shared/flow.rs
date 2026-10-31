@@ -129,7 +129,7 @@ impl NetworkSession {
         let rows = self.appdb_op(move |db| db.shared_sessions(&w)).await?;
         Ok(rows
             .into_iter()
-            .filter(|r| r.kind != together::KIND)
+            .filter(|r| r.kind != together::KIND && r.kind != super::key_change::KIND)
             .collect())
     }
 
@@ -167,7 +167,7 @@ impl NetworkSession {
             .shared_row(wallet, id)
             .await?
             .ok_or(MasternodesError::SharedSessionNotFound)?;
-        if row.kind == together::KIND {
+        if row.kind == together::KIND || row.kind == super::key_change::KIND {
             return Err(invalid("not a registration session"));
         }
         Loaded::of(row, self.network.core_network())
@@ -367,7 +367,7 @@ impl NetworkSession {
     pub(crate) async fn reserved_inputs(
         &self,
         wallet: WalletId,
-        l: &Loaded,
+        row: &SharedSessionRow,
         outpoints: &[OutPoint],
     ) -> Result<Vec<super::build::OwnInput>, MasternodesError> {
         let dead = || {
@@ -378,8 +378,8 @@ impl NetworkSession {
         // Each one reserved by this session, by no other row (BL-346), and
         // still persistently locked: a released lock lets another send
         // select the coin.
-        let reserved = reserved_of(&l.row);
-        let others = self.held_by_others(wallet, &l.row.id).await?;
+        let reserved = reserved_of(row);
+        let others = self.held_by_others(wallet, &row.id).await?;
         let w = wallet.to_string();
         let locked: HashSet<OutPoint> = self
             .appdb_op(move |db| db.locks(&w))
@@ -647,14 +647,13 @@ impl NetworkSession {
         &self,
         wallet: WalletId,
     ) -> Result<(), MasternodesError> {
+        let mut released = self.key_change_follow_pass(wallet).await?;
         let rows = self.shared_rows(wallet).await?;
-        if rows.iter().all(|r| reserved_of(r).is_empty()) {
-            return Ok(());
-        }
-        let chain = self.shared_chain(wallet).await?;
-        let mut released = false;
-        for listed in &rows {
-            released |= self.follow_shared_row(wallet, listed, &chain).await?;
+        if rows.iter().any(|r| !reserved_of(r).is_empty()) {
+            let chain = self.shared_chain(wallet).await?;
+            for listed in &rows {
+                released |= self.follow_shared_row(wallet, listed, &chain).await?;
+            }
         }
         if released {
             self.masternodes.local_change();

@@ -19,6 +19,7 @@ mod build;
 mod dissolve;
 mod flow;
 mod import;
+mod key_change;
 mod send;
 mod standby;
 mod store;
@@ -30,7 +31,9 @@ mod update;
 
 use std::sync::Arc;
 
-use dw_protx::shared::envelope::{SharedMessage as Message, decode_message, encode_base64};
+use dw_protx::shared::envelope::{
+    SharedMessage as Message, SigsKind, decode_message, encode_base64,
+};
 use dw_protx::shared::session::funding::{Frozen, verify_consent_signature};
 use dw_protx::shared::session::merge::add_signature;
 use dw_protx::shared::session::{Session, Share, Stage, Terms};
@@ -48,10 +51,10 @@ use super::protx::build::{Context, invalid, shared_voting};
 use super::protx::ops::InFlight;
 use super::protx_records::{OperatorChoice, ProTxOperation, VotingChoice};
 use super::shared_records::{
-    Activation, DissolvePreview, DissolveRequest, JoinSharedRequest, RewardChoice,
-    SharedCapability, SharedImport, SharedMessage, SharedOutcome, SharedRole, SharedSession,
-    SharedStage, SharedWarning, Standby, StandbyFile, StandbyVariant, StartSharedRequest,
-    UpdateSharePreview, UpdateShareRequest,
+    Activation, DissolvePreview, DissolveRequest, JoinSharedRequest, KeyChangeRequest,
+    MaintenanceSent, RewardChoice, SharedCapability, SharedImport, SharedMessage, SharedOutcome,
+    SharedRole, SharedSession, SharedStage, SharedWarning, Standby, StandbyFile, StandbyVariant,
+    StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
 };
 use super::{Masternodes, MasternodesError, display_hex, parse_pro_tx_hash};
 use crate::platform::lease::Lease;
@@ -230,8 +233,18 @@ impl Masternodes {
                     };
                     sessions.push(s.together_session(wallet, &t, &v).await?);
                 }
-                sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
             }
+            let rows = s.key_change_rows(wallet).await?;
+            if !rows.is_empty() {
+                let v = s.together_read(wallet).await?;
+                for row in rows {
+                    let Ok(k) = key_change::KeyChange::of(row, network) else {
+                        continue;
+                    };
+                    sessions.push(s.key_change_session(&k, &v));
+                }
+            }
+            sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
             Ok(sessions)
         })
         .await
@@ -248,6 +261,9 @@ impl Masternodes {
             s.require_wallet(&wallet)?;
             if s.is_together(wallet, &session).await? {
                 return Ok(s.together_outcome(wallet, &session).await?.session);
+            }
+            if s.is_key_change(wallet, &session).await? {
+                return Ok(s.key_change_outcome(wallet, &session).await?.session);
             }
             s.shared_view(wallet, &session).await
         })
@@ -410,8 +426,8 @@ impl Masternodes {
     /// table. Signs nothing; never repeats the text in a refusal (MG-00
     /// D36). A standby is checked and stored (§9.4, D32); a `dissolve`
     /// sigs envelope opens or adds to a dissolve-together session (D92,
-    /// D97). `target`: the dissolve-together session a bare signatures
-    /// array is for. A `registrar` envelope is `unsupported` (D45).
+    /// D97), a `registrar` one to a key-change session (D104). `target`:
+    /// the maintenance session a bare signatures array is for.
     pub async fn import_shared_message(
         &self,
         wallet: WalletId,
@@ -430,13 +446,20 @@ impl Masternodes {
                     return Err(message_refusal("parse"));
                 }
                 Ok(Message::Standby(tx)) => return s.import_standby(wallet, tx).await,
-                // A unanimous dissolution (D92); the key change's is 2d's
-                // (D45).
+                // A key change (D104), else a unanimous dissolution (D92).
+                Ok(Message::Sigs(r)) if r.kind == SigsKind::Registrar => {
+                    return s.import_key_change(wallet, Some(r), None, target).await;
+                }
                 Ok(Message::Sigs(r)) => {
                     return s.import_together(wallet, Some(r), None, target).await;
                 }
                 Ok(Message::BareSigs(entries)) => {
                     let bare = (entries, together::bare_code(&text));
+                    if let Some(id) = &target
+                        && s.is_key_change(wallet, id).await?
+                    {
+                        return s.import_key_change(wallet, None, Some(bare), target).await;
+                    }
                     return s.import_together(wallet, None, Some(bare), target).await;
                 }
                 Err(e) => return Err(envelope_refusal(e)),
@@ -558,6 +581,10 @@ impl Masternodes {
                 let t = s.together_loaded(wallet, &session).await?;
                 return Ok(t.message(s.network.core_network()));
             }
+            if s.is_key_change(wallet, &session).await? {
+                let k = s.key_change_loaded(wallet, &session).await?;
+                return Ok(k.message(s.network.core_network()));
+            }
             let l = s.shared_loaded(wallet, &session).await?;
             message_of(&l)
         })
@@ -603,7 +630,7 @@ impl Masternodes {
                 });
             }
             let rec = l.recorded.clone().ok_or_else(unrecorded)?;
-            s.reserved_inputs(wallet, &l, &rec.outpoints()).await?;
+            s.reserved_inputs(wallet, &l.row, &rec.outpoints()).await?;
             let mut frozen_session = l.session.clone();
             build::freeze(&mut frozen_session)?;
             let locked = Loaded {
@@ -680,7 +707,7 @@ impl Masternodes {
             let rec = l.recorded.clone().ok_or_else(unrecorded)?;
             // The fence from the reservation's re-check (D50) to the write.
             let _fence = s.coin_fence(wallet).await?;
-            s.reserved_inputs(wallet, &l, &rec.outpoints()).await?;
+            s.reserved_inputs(wallet, &l.row, &rec.outpoints()).await?;
             if l.own_approval() {
                 return outcome(&s, wallet, &session).await;
             }
@@ -725,7 +752,7 @@ impl Masternodes {
             // The fence from the reservation's re-check to the `out_at`
             // write, as a send holds it from its coin read through signing.
             let _fence = s.coin_fence(wallet).await?;
-            let own = s.reserved_inputs(wallet, &l, &rec.outpoints()).await?;
+            let own = s.reserved_inputs(wallet, &l.row, &rec.outpoints()).await?;
             let (_, unspent) = s.op_view(wallet).await?;
             let frozen = s.consent_checks(&l, &ctx, &unspent, true, None)?;
             // D56 at the funding step: the copy is the one this wallet
@@ -820,6 +847,9 @@ impl Masternodes {
                 // to spend back (D95).
                 return Err(invalid("not a registration session"));
             }
+            if row.kind == key_change::KIND {
+                return s.abandon_key_change(wallet, &grant, row).await;
+            }
             let stage = s.stored_stage(wallet, &row).await?;
             if row.out_at.is_none()
                 || matches!(
@@ -853,6 +883,9 @@ impl Masternodes {
                 .shared_row(wallet, &session)
                 .await?
                 .ok_or(MasternodesError::SharedSessionNotFound)?;
+            if row.kind == key_change::KIND {
+                s.key_change_discard(wallet, &row).await?;
+            }
             let out = match row.kind == together::KIND {
                 true => s.together_discard(wallet, row).await?,
                 false if row.out_at.is_some() => {
@@ -1130,12 +1163,36 @@ impl Masternodes {
         .await
     }
 
-    /// Signs this wallet's unsigned shares of a dissolve-together session
-    /// under one `Dissolution` lease charged the fee when the actor share
-    /// is this wallet's, else 0 (§6.3) †. A request another wallet prepared
-    /// that takes its fee from this wallet's share is
-    /// `shared_actor_fee{fee}` unless `accept_actor_fee` (m-15). Returns the
-    /// session and its Reply.
+    /// Prepares a change of a shared masternode's registrar keys
+    /// (`protx shared_update_registrar_prepare`, §3.3): each key kept or
+    /// set, the fee inputs reserved and locked, the list's keys recorded as
+    /// the base (D25), and this wallet's shares signed under a
+    /// `SharedMasternode` lease charged 0 (D100). Returns the session (this
+    /// wallet its funder) and its Request.
+    pub async fn start_key_change(
+        &self,
+        wallet: WalletId,
+        request: KeyChangeRequest,
+        grant: String,
+    ) -> Result<SharedOutcome, MasternodesError> {
+        let hash = parse_pro_tx_hash(&request.pro_tx_hash)?;
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            s.start_key_change_session(wallet, request, hash, &grant)
+                .await
+        })
+        .await
+    }
+
+    /// Signs this wallet's unsigned shares of a maintenance session †. A
+    /// dissolve-together session's under one `Dissolution` lease charged
+    /// the fee when the actor share is this wallet's, else 0 (§6.3); a
+    /// request another wallet prepared that takes its fee from this
+    /// wallet's share is `shared_actor_fee{fee}` unless `accept_actor_fee`
+    /// (m-15). A key change's under a `SharedMasternode` lease charged 0,
+    /// refused `shared_message{stale}` once the list moved off its base
+    /// (D25, D100); `accept_actor_fee` isn't read. Returns the session and
+    /// its Reply.
     pub async fn approve_maintenance(
         &self,
         wallet: WalletId,
@@ -1148,27 +1205,40 @@ impl Masternodes {
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             sending?;
+            if s.is_key_change(wallet, &session).await? {
+                return s.approve_key_change(wallet, &session, &grant).await;
+            }
             s.approve_together(wallet, &session, &grant, accept_actor_fee)
                 .await
         })
         .await
     }
 
-    /// Combines a complete dissolve-together session and sends it as an
-    /// MG-04 operation of kind `dissolve` (D95) †, charged nothing (the
-    /// approvals were). D23 holds it as it holds `dissolve`.
+    /// Sends a complete maintenance session † (D99). A dissolve-together
+    /// session is combined and sent as an MG-04 operation of kind
+    /// `dissolve` (D95), charged nothing (the approvals were). A key change
+    /// is sent by its funder alone: the signatures inserted, its fee inputs
+    /// signed again, charged the fee, the session itself the record
+    /// (`MaintenanceSent::Session`); a key change already `sent` is resent.
+    /// D23 holds either.
     pub async fn send_maintenance(
         &self,
         wallet: WalletId,
         session: String,
         grant: String,
-    ) -> Result<ProTxOperation, MasternodesError> {
+    ) -> Result<MaintenanceSent, MasternodesError> {
         check_session_id(&session)?;
         let sending = self.require_sending();
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             sending?;
-            s.send_together(wallet, &session, &grant).await
+            if s.is_key_change(wallet, &session).await? {
+                return s.send_key_change(wallet, &session, &grant).await;
+            }
+            let operation = s.send_together(wallet, &session, &grant).await?;
+            Ok(MaintenanceSent::Operation {
+                operation: Box::new(operation),
+            })
         })
         .await
     }

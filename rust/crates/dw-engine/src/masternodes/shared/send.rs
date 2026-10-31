@@ -44,7 +44,7 @@ impl NetworkSession {
     /// have the bytes too (D17), so a failed first attempt is resent or
     /// abandoned, never discarded. `maybe_out`: a resend (MG-04 D7).
     #[expect(clippy::too_many_arguments, reason = "one hand-off")]
-    async fn deliver_shared(
+    pub(super) async fn deliver_shared(
         self: &Arc<Self>,
         wallet: WalletId,
         id: &str,
@@ -75,7 +75,7 @@ impl NetworkSession {
 
     /// The summary a hand-off shows, read under `fence`: this wallet's
     /// inputs of `tx`, its fee, its change.
-    async fn shared_summary(
+    pub(super) async fn shared_summary(
         &self,
         fence: &CoinFence,
         tx: &Transaction,
@@ -101,7 +101,9 @@ impl NetworkSession {
         fence: CoinFence,
     ) -> Result<(), MasternodesError> {
         let rec = l.recorded.as_ref().ok_or_else(super::unrecorded)?;
-        let own = self.reserved_inputs(wallet, l, &rec.outpoints()).await?;
+        let own = self
+            .reserved_inputs(wallet, &l.row, &rec.outpoints())
+            .await?;
         let (_, unspent) = self.op_view(wallet).await?;
         let frozen = self.consent_checks(l, ctx, &unspent, true, None)?;
         let approved = l.approved.as_ref().map(|a| a.consent_hash.as_str());
