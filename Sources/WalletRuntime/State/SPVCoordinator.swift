@@ -135,10 +135,11 @@ public final class SPVCoordinator: SyncStatusProviding, SessionObserving {
             tasks.set("peak", nil)
             return
         }
-        let delay = recheckAt - clock.now()
+        // Until the deadline, not for a delay measured now: the task may
+        // start sleeping after time has moved on.
         let clock = clock
         tasks.set("peak", Task { [weak self] in
-            do { try await clock.sleep(for: delay) } catch { return }
+            do { try await clock.sleep(until: recheckAt) } catch { return }
             self?.reapplyLastSnapshot()
         })
     }

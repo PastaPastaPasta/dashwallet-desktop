@@ -7,6 +7,16 @@ public protocol RuntimeClock: Sendable {
     func now() -> Duration
     /// Suspends for `duration`; throws `CancellationError` when cancelled.
     func sleep(for duration: Duration) async throws
+    /// Suspends until `now()` reaches `deadline`, at once if it has; throws
+    /// `CancellationError` when cancelled. A sleep that starts late still
+    /// ends at the deadline.
+    func sleep(until deadline: Duration) async throws
+}
+
+extension RuntimeClock {
+    public func sleep(until deadline: Duration) async throws {
+        try await sleep(for: max(.zero, deadline - now()))
+    }
 }
 
 /// `RuntimeClock` over `ContinuousClock`.
