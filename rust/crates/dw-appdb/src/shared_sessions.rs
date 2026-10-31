@@ -416,6 +416,42 @@ impl AppDb {
         })
     }
 
+    /// Ends a session nothing of which is out by its own choice (MG-04b
+    /// D102, a key change abandoned before its send): its coins unlocked,
+    /// `reserved` emptied and `contribution` replaced (the record of the
+    /// abandon), the row kept, in one synced transaction. `false`, and
+    /// nothing written, when the session is gone or out.
+    pub fn abandon_unsent_shared_session_durable(
+        &self,
+        wallet_id: &str,
+        id: &str,
+        contribution: &str,
+        now: u64,
+    ) -> Result<bool> {
+        self.durably(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let reserved: Option<String> = tx
+                .query_row(
+                    "SELECT reserved FROM shared_mn_sessions
+                     WHERE wallet_id = ?1 AND id = ?2 AND out_at IS NULL",
+                    params![wallet_id, id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(reserved) = reserved else {
+                return Ok(false);
+            };
+            unlock_reserved(&tx, wallet_id, id, &reserved, now)?;
+            tx.execute(
+                "UPDATE shared_mn_sessions SET reserved = '[]', contribution = ?3, updated_at = ?4
+                 WHERE wallet_id = ?1 AND id = ?2",
+                params![wallet_id, id, contribution, sql_u64(now)],
+            )?;
+            tx.commit()?;
+            Ok(true)
+        })
+    }
+
     /// Unlocks a session's coins and forgets that it held them (`reserved`
     /// becomes `[]`), keeping the row, in one synced transaction: for a
     /// session that is confirmed, conflicted or dead. `expected` is the
@@ -886,6 +922,47 @@ mod tests {
         assert_eq!(active_locks(&db), pairs(&[("t", 0)]));
         assert!(
             !db.release_shared_session_locks_durable(W, &id(2), "[]", 42)
+                .unwrap()
+        );
+    }
+
+    /// MG-04b D102: a key change abandoned before its send unlocks its
+    /// coins and keeps its row with the abandon's record; one out isn't
+    /// touched.
+    #[test]
+    fn abandoning_an_unsent_session_unlocks_its_coins_and_keeps_the_row() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.insert_shared_session_durable(W, &row(1, &[("t", 0), ("u", 1)]), 1)
+            .unwrap();
+        db.insert_shared_session_durable(W, &row(2, &[("v", 2)]), 1)
+            .unwrap();
+        assert!(
+            db.abandon_unsent_shared_session_durable(W, &id(1), "{\"abandoned_at\":5}", 5)
+                .unwrap()
+        );
+        let r = db.shared_session(W, &id(1)).unwrap().unwrap();
+        assert_eq!(
+            (
+                r.reserved.as_str(),
+                r.contribution.as_deref(),
+                r.updated_at,
+                r.out_at
+            ),
+            ("[]", Some("{\"abandoned_at\":5}"), 5, None)
+        );
+        assert_eq!(active_locks(&db), pairs(&[("v", 2)]));
+        // Out: nothing written, its lock kept.
+        db.mark_shared_session_out_durable(W, &id(2), &[7], "tx", 6)
+            .unwrap();
+        assert!(
+            !db.abandon_unsent_shared_session_durable(W, &id(2), "{}", 7)
+                .unwrap()
+        );
+        let r = db.shared_session(W, &id(2)).unwrap().unwrap();
+        assert_eq!((r.reserved, r.contribution), (reserved(&[("v", 2)]), None));
+        assert_eq!(active_locks(&db), pairs(&[("v", 2)]));
+        assert!(
+            !db.abandon_unsent_shared_session_durable(W, &id(3), "{}", 7)
                 .unwrap()
         );
     }
