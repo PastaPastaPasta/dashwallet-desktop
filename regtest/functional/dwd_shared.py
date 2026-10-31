@@ -18,6 +18,13 @@ Sessions:
       address); start, join, lock, approve, sign, send; `protx info` shows the table.
   R   the reward change (ProUpShareTx): B moves its rewards to a new address, C resets its own to
       its refund address.
+  K1  changing S1's keys together (ProUpSharedRegTx, slice 2d): A prepares a rotation of the
+      operator and voting keys to keys dashd holds, funded by A (charged nothing yet); B and C
+      import the Request, approve and reply; B can't send it (only the funder re-signs its fee
+      inputs); A inserts the signatures and sends; Core mines it, `protx info` shows the new keys
+      and the PoSe ban, every wallet's session reads `confirmed`, and dashd, the operator, revives
+      it with `protx update_service` (the wallet never signs as operator). A pending key change
+      holds A's next maintenance call until it is buried (D105).
   D   dissolve now (ProDisTx, slice 2a): A dissolves S1's masternode alone in the early period, so
       it pays the penalty, split over B and C; the outputs Core mines are the preview's, the
       masternode leaves the list, and A's operation reads `confirmed`.
@@ -35,6 +42,12 @@ Sessions:
       (`shared_sign`), combines (`shared_combine`) and signs P's input right after, in
       `runCombineAndSign`'s order (sharedmncreatedialog.cpp:2576-2591); B's funding signature then
       completes the transaction, which B can no longer discard (D24, D17); the script broadcasts it.
+  K2  changing S3's keys together, both ways (slice 2d). dashd as P prepares a voting-key change
+      (`protx shared_update_registrar_prepare`, sequences 0xfffffffe and its prepare-time
+      scriptSigs) and signs; B imports it, approves (charged nothing) and replies; dashd combines
+      (`shared_combine`, which re-signs its fee input) and sends; B's session reads `confirmed` by
+      the list. Then B prepares an operator-key change it funds, dashd signs it (`shared_sign`), B
+      imports the signature as a bare array for its session and sends; dashd revives it.
   T   dissolving S3's masternode together (slice 2c), both ways. dashd as P prepares
       (`protx shared_dissolve_prepare`, P the actor) and signs; B imports the request, approves
       (charged nothing) and replies; dashd's `shared_combine` of B's reply passes
@@ -295,6 +308,63 @@ class DwdShared(DwdProtx):
         assert_equal(node.validateaddress(b_reward)["isvalid"], True)
         self.check_table(pro_tx, rows, [rows[0]["refund_address"], b_reward, rows[2]["refund_address"]])
 
+        self.log.info("2a. K1: S1's operator and voting keys changed together, funded by A")
+        # D23: B's and C's reward changes hold their approvals until buried.
+        h = self.mine(6)
+        before = self.core_info(pro_tx)[1]
+        new_operator, new_voting = node.bls("generate"), node.getnewaddress()
+        started = shared(a, "key-change", pro_tx, "--operator-key", new_operator["public"],
+                         "--voting-address", new_voting)
+        k = started["session"]
+        assert_equal((started["message"]["name"], k["kind"], k["role"], k["stage"]["kind"], k["next"]),
+                     ("Request", "key_change", "coordinator", "signing", "copy"))
+        assert_equal(k["base_keys"], {"operator_public_key": before["pubKeyOperator"],
+                                      "voting_address": before["votingAddress"]})
+        assert_equal(k["key_change"], {
+            "requested": {"operator_public_key": new_operator["public"], "voting_address": new_voting},
+            "current": k["base_keys"], "funder": True})
+        assert_equal([w["kind"] for w in k["warnings"]], ["operator_reset", "usable_by_funder"])
+        assert k["fee"] > 0 and k["debit"] == k["fee"] and len(k["reserved"]) > 0, k
+        for w in (b, c):
+            got = shared(w, "import", stdin=started["message"]["text"])["session"]
+            assert_equal((got["id"], got["role"], got["stage"]["kind"], got["next"], got["fee"]),
+                         (k["id"], "participant", "signing", "approve", None))
+            assert_equal((got["key_change"]["requested"], got["key_change"]["funder"]),
+                         (k["key_change"]["requested"], False))
+            reply = shared(w, "approve-maintenance", k["id"])
+            assert_equal(reply["message"]["name"], "Reply")
+            shared(a, "import", stdin=reply["message"]["text"])
+        # Only the funder can sign its fee inputs again after the insert (CombineShared).
+        shared(b, "send-maintenance", k["id"], error="masternodes.shared_stage")
+        assert_equal(shared(a, "show", k["id"])["next"], "send")
+        self.start_miner()
+        try:
+            sent = shared(a, "send-maintenance", k["id"])
+        finally:
+            self.stop_miner()
+        assert_equal(sent["kind"], "session")
+        assert sent["session"]["stage"]["kind"] in ("sent", "confirmed"), sent
+        h = self.wait_mined(sent["session"]["txid"])
+        mined = node.getrawtransaction(sent["session"]["txid"], True)
+        assert_equal((mined["version"], mined["type"]), (3, 12))
+        assert all(i["sequence"] == SEQUENCE_FINAL for i in mined["vin"]), mined["vin"]
+        st = self.core_info(pro_tx)[1]
+        assert_equal((st["pubKeyOperator"], st["votingAddress"]), (new_operator["public"], new_voting))
+        assert st["PoSeBanHeight"] > 0, st
+        for w in (a, b, c):
+            assert_equal(shared(w, "show", k["id"])["stage"]["kind"], "confirmed")
+        # D105: the key change holds A's next maintenance call until it is buried.
+        shared(a, "dissolve", pro_tx, "--share-index", "0", error="masternodes.update_pending")
+        fee_source = node.getnewaddress()
+        node.sendtoaddress(fee_source, 1)
+        self.mine()
+        node.protx("update_service", pro_tx, service, new_operator["secret"], "", fee_source)
+        h = self.mine()
+        st = self.core_info(pro_tx)[1]
+        assert_equal(st["PoSeBanHeight"], -1)
+        assert st["PoSeRevivedHeight"] > 0, st
+        h = self.mine(6)  # RECOMMENDED_CONFIRMATIONS: buried
+
         self.log.info("2b. D: A dissolves S1 alone in the early period, paying the penalty")
         preview = shared(a, "preview-dissolve", pro_tx, "--share-index", "0")
         assert_equal((preview["early"], preview["penalty"], preview["fee"]), (True, EARLY_PENALTY, 1_000))
@@ -492,6 +562,65 @@ class DwdShared(DwdProtx):
         self.check_table(pro_tx, rows)
         assert_equal(shared(b, "show", sid)["stage"]["kind"], "confirmed")
 
+        self.log.info("4b. K2: S3's keys changed together, prepared by dashd, then by B")
+        # m-16: the list one block above the registration.
+        h = self.mine()
+        fee_source = node.getnewaddress()
+        node.sendtoaddress(fee_source, 1)
+        h = self.mine()
+        p_voting = node.getnewaddress()
+        prep = node.protx("shared_update_registrar_prepare", pro_tx, "", p_voting, fee_source)
+        p_sigs = node.protx("shared_sign", prep["tx"])["signatures"]
+        assert_equal([s["shareIndex"] for s in p_sigs], [0])
+        got = shared(b, "import", stdin=seal({"type": "dash-shared-mn-sigs", "version": 1, "network": "regtest",
+                                              "kind": "registrar", "proTxHash": pro_tx, "tx": prep["tx"],
+                                              "signatures": p_sigs}))
+        k2 = got["session"]
+        assert_equal((k2["kind"], k2["role"], k2["stage"]["kind"], k2["next"], k2["fee"], k2["debit"]),
+                     ("key_change", "participant", "signing", "approve", None, None))
+        assert_equal(k2["key_change"]["requested"]["voting_address"], p_voting)
+        assert_equal([w["kind"] for w in k2["warnings"]], ["usable_by_funder"])
+        reply = shared(b, "approve-maintenance", k2["id"])
+        assert_equal((reply["message"]["name"], reply["session"]["stage"]["kind"]), ("Reply", "combined"))
+        b_sigs = json.loads(reply["message"]["text"])["signatures"]
+        assert_equal([s["shareIndex"] for s in b_sigs], [0, 1])
+        shared(b, "send-maintenance", k2["id"], error="masternodes.shared_stage")
+        combined = node.protx("shared_combine", prep["tx"], b_sigs, False)
+        txid = node.sendrawtransaction(combined)
+        h = self.mine()
+        assert node.getrawtransaction(txid, True)["confirmations"] > 0
+        assert_equal(self.core_info(pro_tx)[1]["votingAddress"], p_voting)
+        assert_equal(shared(b, "show", k2["id"])["stage"]["kind"], "confirmed")
+
+        b_operator = node.bls("generate")
+        started = shared(b, "key-change", pro_tx, "--operator-key", b_operator["public"])
+        k3 = started["session"]
+        assert_equal((k3["role"], k3["next"], k3["base_keys"]["voting_address"]), ("coordinator", "copy", p_voting))
+        b_request = json.loads(started["message"]["text"])
+        assert_equal([s["shareIndex"] for s in b_request["signatures"]], [1])
+        p_sig = node.protx("shared_sign", b_request["tx"])["signatures"]
+        got = shared(b, "import", "--target", k3["id"], stdin=json.dumps(p_sig))
+        assert_equal((got["changed"], got["session"]["stage"]["kind"], got["session"]["next"]),
+                     (True, "combined", "send"))
+        self.start_miner()
+        try:
+            sent = shared(b, "send-maintenance", k3["id"])
+        finally:
+            self.stop_miner()
+        assert_equal(sent["kind"], "session")
+        h = self.wait_mined(sent["session"]["txid"])
+        st = self.core_info(pro_tx)[1]
+        assert_equal((st["pubKeyOperator"], st["votingAddress"]), (b_operator["public"], p_voting))
+        assert st["PoSeBanHeight"] > 0, st
+        assert_equal(shared(b, "show", k3["id"])["stage"]["kind"], "confirmed")
+        fee_source = node.getnewaddress()
+        node.sendtoaddress(fee_source, 1)
+        self.mine()
+        node.protx("update_service", pro_tx, f"127.0.0.1:{p2p_port(18)}", b_operator["secret"], "", fee_source)
+        h = self.mine()
+        assert_equal(self.core_info(pro_tx)[1]["PoSeBanHeight"], -1)
+        h = self.mine(6)  # buried (D105)
+
         self.log.info("5. T: S3's masternode dissolved together, prepared by dashd, then by B")
         # m-16: the list one block above the registration.
         h = self.mine()
@@ -556,9 +685,12 @@ class DwdShared(DwdProtx):
         assert_equal(node.testmempoolaccept([want])[0]["allowed"], True)
         self.start_miner()
         try:
-            op = shared(b, "send-maintenance", t2["id"])
+            sent = shared(b, "send-maintenance", t2["id"])
         finally:
             self.stop_miner()
+        # A dissolution is sent as an operation (MG-04b D95, D99).
+        assert_equal(sent["kind"], "operation")
+        op = sent["operation"]
         assert handed_off(op)
         assert_equal((op["kind"], op["fee"]), ("dissolve", floor))
         h = self.wait_mined(op["txid"])
