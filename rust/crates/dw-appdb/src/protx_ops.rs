@@ -2,11 +2,15 @@
 //! operations. Every delete is `... AND sent_at IS NULL`, so a row whose
 //! bytes may have been handed to the network is never deleted (MG-06 r1
 //! M-1, MG-04 D6); the writes a crash must not lose are synced
-//! ([`AppDb::durably`]).
+//! ([`AppDb::durably`]). A payout-changing update's barrier (MG-13 P16) is
+//! written in the transaction that writes its signed bytes, and deleted with
+//! its unsent row in one transaction.
 
 use rusqlite::{OptionalExtension, Row, params};
 
-use crate::{AppDb, Holder, Result};
+use crate::fault_points::{MN_BARRIER_DISCARD, MN_BARRIER_WRITE};
+use crate::payout_barriers::{NewPayoutBarrier, write_barrier};
+use crate::{AppDb, AppDbError, Holder, Result, fault_before, write_transaction};
 
 /// One `masternode_ops` row. `kind`, `terms` and `request` are the
 /// engine's encodings; this crate does not interpret them.
@@ -91,13 +95,51 @@ impl AppDb {
         locks: &[(String, u32)],
         now: u64,
     ) -> Result<()> {
+        self.insert_masternode_op_with_barrier_durable(wallet_id, row, locks, now, None)
+    }
+
+    /// [`Self::insert_masternode_op_durable`] of a signed ProUpRegTx that
+    /// changes the payout to `new_payout_script` (MG-13 P16): its barrier is
+    /// written in the same transaction as the row (`None`: no barrier, as
+    /// the plain insert). A barrier needs the row's signed bytes, txid and
+    /// ProTx hash (`Invalid`). No barrier is written when the row isn't (a
+    /// removed wallet's, DEC-210).
+    pub fn insert_masternode_op_with_barrier_durable(
+        &self,
+        wallet_id: &str,
+        row: &MasternodeOpRow,
+        locks: &[(String, u32)],
+        now: u64,
+        new_payout_script: Option<&[u8]>,
+    ) -> Result<()> {
         debug_assert!(row.sent_at.is_none());
+        let barrier = match (
+            new_payout_script,
+            &row.signed_tx,
+            &row.txid,
+            &row.pro_tx_hash,
+        ) {
+            (None, ..) => None,
+            (Some(script), Some(_), Some(txid), Some(pro_tx_hash)) => Some(NewPayoutBarrier {
+                pro_tx_hash: pro_tx_hash.clone(),
+                op_id: row.id.clone(),
+                created_by: wallet_id.to_owned(),
+                txid: txid.clone(),
+                payout_script: script.to_vec(),
+            }),
+            (Some(_), ..) => {
+                return Err(AppDbError::Invalid(format!(
+                    "the barrier of operation {} needs its signed bytes, txid and ProTx hash",
+                    row.id
+                )));
+            }
+        };
         self.durably(|conn| {
-            let tx = conn.unchecked_transaction()?;
+            let tx = write_transaction(conn)?;
             for (txid, vout) in locks {
                 Self::lock_manual_on(&tx, wallet_id, txid, *vout, now)?;
             }
-            tx.execute(
+            let inserted = tx.execute(
                 &format!(
                     "INSERT INTO masternode_ops (wallet_id, {COLUMNS})
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
@@ -123,8 +165,18 @@ impl AppDb {
                     row.last_error,
                 ],
             )?;
+            if let Some(barrier) = &barrier {
+                if inserted == 1 {
+                    write_barrier(&tx, barrier, now, false)?;
+                }
+                fault_before(&tx, MN_BARRIER_WRITE)?;
+            }
             Ok(tx.commit()?)
-        })
+        })?;
+        if barrier.is_some() {
+            self.fault_after(MN_BARRIER_WRITE)?;
+        }
+        Ok(())
     }
 
     /// The wallet's operations, newest first (by insertion within a second).
@@ -160,8 +212,35 @@ impl AppDb {
         pro_tx_hash: &str,
         signed_at: u64,
     ) -> Result<bool> {
-        self.durably(|conn| {
-            Ok(conn.execute(
+        self.sign_masternode_op_with_barrier_durable(
+            wallet_id,
+            id,
+            signed_tx,
+            txid,
+            pro_tx_hash,
+            signed_at,
+            None,
+        )
+    }
+
+    /// [`Self::sign_masternode_op_durable`] of an External ProUpRegTx that
+    /// changes the payout to `new_payout_script` (MG-13 P16): its barrier is
+    /// written in the transaction that writes the signed bytes, and only if
+    /// they are written (`None`: no barrier, as the plain sign).
+    #[expect(clippy::too_many_arguments, reason = "one signed operation")]
+    pub fn sign_masternode_op_with_barrier_durable(
+        &self,
+        wallet_id: &str,
+        id: &str,
+        signed_tx: &[u8],
+        txid: &str,
+        pro_tx_hash: &str,
+        signed_at: u64,
+        new_payout_script: Option<&[u8]>,
+    ) -> Result<bool> {
+        let signed = self.durably(|conn| {
+            let tx = write_transaction(conn)?;
+            let signed = tx.execute(
                 "UPDATE masternode_ops SET signed_tx = ?3, txid = ?4, pro_tx_hash = ?5,
                      signed_at = ?6, last_error = NULL
                  WHERE wallet_id = ?1 AND id = ?2 AND signed_tx IS NULL",
@@ -173,8 +252,27 @@ impl AppDb {
                     pro_tx_hash,
                     sql_u64(signed_at)
                 ],
-            )? == 1)
-        })
+            )? == 1;
+            if let Some(script) = new_payout_script {
+                if signed {
+                    let barrier = NewPayoutBarrier {
+                        pro_tx_hash: pro_tx_hash.to_owned(),
+                        op_id: id.to_owned(),
+                        created_by: wallet_id.to_owned(),
+                        txid: txid.to_owned(),
+                        payout_script: script.to_vec(),
+                    };
+                    write_barrier(&tx, &barrier, signed_at, false)?;
+                }
+                fault_before(&tx, MN_BARRIER_WRITE)?;
+            }
+            tx.commit()?;
+            Ok(signed)
+        })?;
+        if new_payout_script.is_some() {
+            self.fault_after(MN_BARRIER_WRITE)?;
+        }
+        Ok(signed)
     }
 
     /// An External row's new prepared transaction (refresh): only while
@@ -286,6 +384,32 @@ impl AppDb {
             "DELETE FROM masternode_ops WHERE wallet_id = ?1 AND id = ?2 AND sent_at IS NULL",
             params![wallet_id, id],
         )? == 1)
+    }
+
+    /// The discard of an unsent operation (MG-13 P16, r4 m1; MG-04 D6), one
+    /// synced transaction: `DELETE FROM masternode_ops WHERE wallet_id AND id
+    /// AND sent_at IS NULL`, and only if that deleted the row, the
+    /// operation's barriers. Whether the operation was deleted; when it was
+    /// not (`sent_at` set, or gone) its barriers stay.
+    pub fn discard_unsent_masternode_op_durable(&self, wallet_id: &str, id: &str) -> Result<bool> {
+        let deleted = self.durably(|conn| {
+            let tx = write_transaction(conn)?;
+            let deleted = tx.execute(
+                "DELETE FROM masternode_ops WHERE wallet_id = ?1 AND id = ?2 AND sent_at IS NULL",
+                params![wallet_id, id],
+            )? == 1;
+            if deleted {
+                tx.execute(
+                    "DELETE FROM mn_payout_barriers WHERE created_by = ?1 AND op_id = ?2",
+                    params![wallet_id, id],
+                )?;
+            }
+            fault_before(&tx, MN_BARRIER_DISCARD)?;
+            tx.commit()?;
+            Ok(deleted)
+        })?;
+        self.fault_after(MN_BARRIER_DISCARD)?;
+        Ok(deleted)
     }
 
     /// Unlocks the collateral `txid:vout` operation `id` locked, unless

@@ -26,7 +26,12 @@ mod dashpay_journal;
 pub mod dispatch;
 #[cfg(all(debug_assertions, any(test, feature = "durability-sim")))]
 pub mod durability_sim;
+#[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+pub mod fault;
+mod fault_points;
 mod holds;
+mod mn_withdrawals;
+mod payout_barriers;
 mod proposals;
 mod protx_ops;
 mod provenance;
@@ -37,6 +42,11 @@ mod shared_standby;
 pub use avatar::AvatarRow;
 pub use dashpay_journal::{ContestWatch, JournalEntry, JournalPage, JournalRow};
 pub use holds::Holder;
+pub use mn_withdrawals::{
+    NotExecutedEvidence, ProvedDocument, SignedWithdrawal, WithdrawalKeyKind, WithdrawalMark,
+    WithdrawalNote, WithdrawalProof, WithdrawalRow, WithdrawalState,
+};
+pub use payout_barriers::{NewPayoutBarrier, PAYOUT_BARRIERS_BACKFILLED, PayoutBarrierRow};
 pub use proposals::ProposalRow;
 pub use protx_ops::{AttemptEnd, MasternodeOpRow};
 pub use registration::{
@@ -263,6 +273,31 @@ pub enum AppDbError {
         wallet: String,
         source: rusqlite::Error,
     },
+    /// MG-13 P6: the identity already has an open withdrawal record (the
+    /// partial unique index `mn_withdrawals_open`, across processes): the
+    /// record was not written. The engine's `withdrawal_pending`.
+    #[error("identity {0} has an open withdrawal")]
+    WithdrawalPending(String),
+    /// MG-13 P4 (b), r4 n1: a payout-change barrier for the masternode
+    /// exists: the withdrawal record was not written.
+    #[error("a payout change of masternode {0} is pending")]
+    PayoutChangePending(String),
+    /// MG-13 P6: a state change outside the table (a final state left, a
+    /// record that is not open moved into the open set), or one only its own
+    /// method makes. Nothing was written.
+    #[error("withdrawal state change {from} -> {to} is not allowed here")]
+    TransitionRefused {
+        from: &'static str,
+        to: &'static str,
+    },
+    /// A caller's argument outside what the write allows; nothing written.
+    #[error("invalid write: {0}")]
+    Invalid(String),
+    /// An armed fault point (debug builds with `fault-inject` only, MG-13
+    /// §3): `before_*` with nothing committed, `after_*` with the write
+    /// committed.
+    #[error("injected fault {0}")]
+    Fault(String),
 }
 
 pub type Result<T> = std::result::Result<T, AppDbError>;
@@ -287,6 +322,25 @@ fn delete_wallet_rows(tx: &rusqlite::Transaction<'_>, wallet_id: &str) -> rusqli
         params![wallet_id, local_scope(wallet_id)],
     )?;
     Ok(())
+}
+
+/// `point`'s before-commit fault, inside the write's transaction (MG-13 §3).
+#[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+fn fault_before(conn: &Connection, point: &'static str) -> Result<()> {
+    fault::hit_on(conn, point, fault::Stage::Before)
+}
+
+#[cfg(not(all(debug_assertions, any(test, feature = "fault-inject"))))]
+#[inline(always)]
+fn fault_before(_conn: &Connection, _point: &'static str) -> Result<()> {
+    Ok(())
+}
+
+/// A write transaction that takes the write lock at its start (waiting up to
+/// the busy timeout), so a read in it can't be overtaken by another
+/// connection's commit before its own write (MG-13 P6, P16).
+fn write_transaction(conn: &Connection) -> rusqlite::Result<rusqlite::Transaction<'_>> {
+    rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
 }
 
 /// Address-book page an entry belongs to (dash-qt `AddressTableModel` purpose).
@@ -529,6 +583,26 @@ impl AppDb {
         // (each statement or transaction is atomic), so a poisoned lock is
         // still a usable connection.
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// A fault point at `stage` of `point` on this database (debug builds
+    /// with `fault-inject`; [`fault`]): the engine's own points (MG-13 §3).
+    #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+    pub fn fault_point(&self, point: &str, stage: fault::Stage) -> Result<()> {
+        fault::hit_on(&self.conn(), point, stage)
+    }
+
+    /// `point`'s after-commit fault, once the write's transaction committed
+    /// and the connection is released.
+    #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+    fn fault_after(&self, point: &'static str) -> Result<()> {
+        self.fault_point(point, fault::Stage::After)
+    }
+
+    #[cfg(not(all(debug_assertions, any(test, feature = "fault-inject"))))]
+    #[inline(always)]
+    fn fault_after(&self, _point: &'static str) -> Result<()> {
+        Ok(())
     }
 
     /// Highest applied migration version.
@@ -1566,7 +1640,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026103001);
+        assert_eq!(db.schema_version().unwrap(), 2026103101);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();

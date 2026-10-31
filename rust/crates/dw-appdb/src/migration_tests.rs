@@ -23,6 +23,7 @@ const MG_PROPOSALS: i64 = 2026102001;
 const PROTX_OPS: i64 = 2026102101;
 const SHARED_SESSIONS: i64 = 2026102201;
 const SHARED_STANDBY: i64 = 2026103001;
+const MG_WITHDRAWALS: i64 = 2026103101;
 
 const DP_TABLES: [&str; 10] = [
     "dp_avatar",
@@ -84,7 +85,7 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), SHARED_STANDBY);
+    assert_eq!(db.schema_version().unwrap(), MG_WITHDRAWALS);
     drop(db);
 
     let conn = Connection::open(&path).unwrap();
@@ -105,7 +106,8 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
             MG_PROPOSALS,
             PROTX_OPS,
             SHARED_SESSIONS,
-            SHARED_STANDBY
+            SHARED_STANDBY,
+            MG_WITHDRAWALS
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -147,7 +149,7 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
     }
 
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), SHARED_STANDBY);
+    assert_eq!(db.schema_version().unwrap(), MG_WITHDRAWALS);
     assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "Main".into())]);
     assert_eq!(
         db.label(W, crate::LabelKind::Tx, "t").unwrap().as_deref(),
@@ -177,7 +179,8 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
             MG_PROPOSALS,
             PROTX_OPS,
             SHARED_SESSIONS,
-            SHARED_STANDBY
+            SHARED_STANDBY,
+            MG_WITHDRAWALS
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -195,7 +198,7 @@ fn reopening_and_rerunning_change_nothing() {
     }
     for _ in 0..3 {
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), SHARED_STANDBY);
+        assert_eq!(db.schema_version().unwrap(), MG_WITHDRAWALS);
         db.conn()
             .execute(
                 "INSERT OR IGNORE INTO dp_main_identity (wallet_id, identity) VALUES (?1, 'id1')",
@@ -229,10 +232,61 @@ fn reopening_and_rerunning_change_nothing() {
             MG_PROPOSALS,
             PROTX_OPS,
             SHARED_SESSIONS,
-            SHARED_STANDBY
+            SHARED_STANDBY,
+            MG_WITHDRAWALS
         ]
     );
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_main_identity"), 1);
+}
+
+/// MG-13 P16: the upgrade from the previous schema (`V2026103001`) adds
+/// the withdrawal and barrier tables, empty, and keeps the operations the
+/// engine's backfill then reads; it writes no barrier itself (dw-appdb
+/// doesn't read `terms`), and the backfill marker is not set.
+#[test]
+fn upgrade_from_shared_standby_adds_the_withdrawal_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(crate::APP_DB_FILE);
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        embedded::migrations::runner()
+            .set_target(Target::Version(SHARED_STANDBY as i32))
+            .run(&mut conn)
+            .unwrap();
+        assert_eq!(*versions(&conn).last().unwrap(), SHARED_STANDBY);
+        conn.execute(
+            "INSERT INTO masternode_ops (id, wallet_id, kind, terms, request, signed_tx, txid,
+                 pro_tx_hash, fee, created_at, signed_at)
+             VALUES ('op', ?1, 'update_registrar', '{}', '{}', x'02', 't', 'p', 1, 1, 2)",
+            [W],
+        )
+        .unwrap();
+        assert!(
+            conn.execute("SELECT 1 FROM mn_withdrawals", []).is_err(),
+            "not there yet"
+        );
+    }
+    let db = AppDb::open(&path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), MG_WITHDRAWALS);
+    assert_eq!(db.masternode_ops(W).unwrap().len(), 1);
+    assert!(db.payout_barriers().unwrap().is_empty());
+    assert!(!db.payout_barriers_backfilled().unwrap());
+    assert!(db.undecided_withdrawals().unwrap().is_empty());
+    let conn = db.conn();
+    for table in ["mn_withdrawals", "mn_payout_barriers"] {
+        let strict: i64 = conn
+            .query_row(
+                "SELECT strict FROM pragma_table_list WHERE name = ?1",
+                [table],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(strict, 1, "{table} is STRICT");
+        assert_eq!(count(&conn, &format!("SELECT COUNT(*) FROM {table}")), 0);
+    }
+    // App-wide: no `wallet_id` column, so neither removal nor export sees them.
+    let scoped = wallet_scoped_tables(&conn);
+    assert!(!scoped.iter().any(|t| t.starts_with("mn_")), "{scoped:?}");
 }
 
 /// Shipped migrations are never edited (refinery refuses a database whose
@@ -307,6 +361,11 @@ fn shipped_migrations_are_unchanged() {
                 "mg_shared_standby".to_string(),
                 CHECKSUM_SHARED_STANDBY
             ),
+            (
+                MG_WITHDRAWALS,
+                "mg_withdrawals".to_string(),
+                CHECKSUM_MG_WITHDRAWALS
+            ),
         ]
     );
 }
@@ -326,6 +385,7 @@ const CHECKSUM_MG_PROPOSALS: u64 = 6981014660522877648;
 const CHECKSUM_PROTX_OPS: u64 = 8127766132692660851;
 const CHECKSUM_SHARED_SESSIONS: u64 = 10802667430796242021;
 const CHECKSUM_SHARED_STANDBY: u64 = 6265244453823859058;
+const CHECKSUM_MG_WITHDRAWALS: u64 = 6908476277065692744;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -746,7 +806,12 @@ fn upgraded_schema_equals_the_fresh_one() {
             .unwrap()
     };
     let (fresh, upgraded) = (schema(&fresh), schema(&upgraded));
-    for index in ["dp_events_unread", "dp_registration_lock"] {
+    for index in [
+        "dp_events_unread",
+        "dp_registration_lock",
+        "mn_withdrawals_open",
+        "mn_payout_barriers_pro_tx",
+    ] {
         assert!(
             fresh
                 .iter()
@@ -776,7 +841,7 @@ fn verification_records_without_a_digest_verify_nothing() {
         .unwrap();
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), SHARED_STANDBY);
+    assert_eq!(db.schema_version().unwrap(), MG_WITHDRAWALS);
     assert!(db.verified_entities().unwrap().is_empty(), "the old row");
     assert_eq!(
         count(
