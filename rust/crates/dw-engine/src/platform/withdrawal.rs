@@ -98,7 +98,7 @@ use crate::{NetworkSession, WalletId};
 
 /// The Core fee rate the withdrawal asks for, in duffs per byte: Platform's
 /// minimum, as the SDK's default (D5).
-const CORE_FEE_PER_BYTE: u32 = MIN_CORE_FEE_PER_BYTE;
+pub(crate) const CORE_FEE_PER_BYTE: u32 = MIN_CORE_FEE_PER_BYTE;
 /// The withdrawals a `withdrawals` read returns at most, newest first.
 const RECENT_WITHDRAWALS: u32 = 20;
 
@@ -337,7 +337,7 @@ impl WithdrawalNonces {
 
 /// Whether Drive takes nonce `k` from an identity whose stored nonce is
 /// `state` (0: none stored), by its own rule.
-fn takes(state: u64, k: u64, id: Identifier) -> bool {
+pub(crate) fn takes(state: u64, k: u64, id: Identifier) -> bool {
     if state == 0 {
         validate_new_identity_nonce(k, id).is_valid()
     } else {
@@ -347,7 +347,7 @@ fn takes(state: u64, k: u64, id: Identifier) -> bool {
 
 /// Reads of a withdrawal's document before one recent enough decides: the
 /// SDK asks another node each time, and one a block behind is common.
-const READ_BACK_TRIES: usize = 3;
+pub(crate) const READ_BACK_TRIES: usize = 3;
 
 /// Which of `signed` executed, by its document read back with its amount;
 /// `None` when none did. Each read is at least as recent as `height`, so a
@@ -432,7 +432,7 @@ where
 
 /// The withdrawals contract, as dpp holds it (a system contract: the
 /// network's is this one).
-fn withdrawals_contract_v() -> Result<Arc<DataContract>, PlatformError> {
+pub(crate) fn withdrawals_contract_v() -> Result<Arc<DataContract>, PlatformError> {
     static CONTRACT: std::sync::OnceLock<Arc<DataContract>> = std::sync::OnceLock::new();
     if let Some(contract) = CONTRACT.get() {
         return Ok(Arc::clone(contract));
@@ -542,7 +542,7 @@ impl Rules {
 /// The document Drive writes for a withdrawal of `credits` to `script`
 /// (`IdentityCreditWithdrawalTransitionAction`), stamped with the contract
 /// version where Drive's `transform_into_action` v1 stamps it.
-fn drive_document(
+pub(crate) fn drive_document(
     credits: u64,
     script: &CoreScript,
     version: &PlatformVersion,
@@ -571,7 +571,7 @@ fn drive_document(
 
 /// What reaches `script` on Core for a withdrawal document: Platform's own
 /// conversion into its asset unlock (module doc).
-fn payout(document: &Document, version: &PlatformVersion) -> Result<u64, PlatformError> {
+pub(crate) fn payout(document: &Document, version: &PlatformVersion) -> Result<u64, PlatformError> {
     let info =
         (document.try_into_asset_unlock_base_transaction_info(0, version)).map_err(internal)?;
     (info.output.first())
@@ -839,7 +839,7 @@ pub(crate) async fn withdraw(
 }
 
 /// A withdrawal document's amount, in credits.
-fn amount_of(d: &Document) -> Option<u64> {
+pub(crate) fn amount_of(d: &Document) -> Option<u64> {
     d.properties()
         .get_integer(withdrawal::properties::AMOUNT)
         .ok()

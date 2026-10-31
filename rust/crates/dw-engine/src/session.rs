@@ -559,6 +559,9 @@ impl NetworkSession {
         }
         session.leases.start_reaper();
         session.masternodes.follow(&session);
+        // MG-13 P8: undecided masternode withdrawals are rechecked from the
+        // start, then periodically.
+        session.masternodes.withdrawals.start(&session);
         // Mode B's funding statuses (E0-04 §2a.5, H15): its evidence source,
         // the tap's hook on tracked-row changes, and a first read of every
         // loaded wallet's rows. The same source resumes tracked rows for
@@ -831,6 +834,8 @@ impl NetworkSession {
         // E0-04 §8.5: revoke, drain and abort the flows before the gate,
         // which waits for the flows' operation guards.
         self.close_leases().await;
+        // No withdrawal recheck outlives the session (MG-13 P8).
+        self.masternodes.withdrawals.stop().await;
         // Registration flows waiting keyless for a proof hold no lease.
         self.platform.registrations.abort_all();
         let _closing = self.gate.close().await;

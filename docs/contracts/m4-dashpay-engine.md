@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 39
+Contract-Version: 40
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -573,7 +573,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: f1bb680835f53eab9760e6a634e00f6e7da0bb182b49d857a79875fa504ab3bf version: 39 -->
+<!-- surface-sha256: f9e7df8b235caa4605fcb636fb2a25dec33a2224fff3bb7c130da0ff190ce24b version: 40 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1012,6 +1012,7 @@ pub enum FlowKind {
     SharedMasternode,
     Dissolution,
     Proposal,
+    MasternodeWithdraw,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1997,7 +1998,7 @@ The shapes are in §3. What they mean, where the name does not say:
   engine charges no more than it quoted; a quote that went stale (a fee change) is `platform.grant_exceeded`, and the
   host quotes again.
 - **`FlowKind`** names what a lease is for; `AcceptAndPay` carries both the `PlatformOp` grant and the payment's
-  `Spend` grant. `Voting`, `MasternodeRegistration` and `KeyChange` are the masternode flows (item 59), with `SharedMasternode` (item 65) and `Dissolution` (item 66); `Proposal` pays a governance proposal's fee (item 60). **`DispatchState`** and **`DispatchResolved`** are the journal's view of a handed-off artifact (§2.11,
+  `Spend` grant. `Voting`, `MasternodeRegistration` and `KeyChange` are the masternode flows (item 59), with `SharedMasternode` (item 65) and `Dissolution` (item 66), and `MasternodeWithdraw` an evonode's Platform credit withdrawal (item 67); `Proposal` pays a governance proposal's fee (item 60). **`DispatchState`** and **`DispatchResolved`** are the journal's view of a handed-off artifact (§2.11,
   §6). **`LeaseView`**, `LeaseStateView` (`Active`, `AwaitingProof`, `Parked{reason}`, `NeedsGrant`,
   `Revoked{cause}`, `Ended`) and `BudgetView{purpose, ceiling, spent}` are E0-04 §4.6's view, owned here
   (E0-04 §16.1); `AwaitingProof`'s deadline is `key_expires_in_secs`. **`RevokeCause`**: `Lock`, `Close`,
@@ -3179,3 +3180,11 @@ renames or reshapes them takes the next version bump:
     kind is `platform.grant_invalid`. `Masternodes.dissolve` and a resend of its operation charge what the wallet's
     share gives up, the penalty and the fee, to `Masternode` before the owner key signs, with `send.grant_exceeded`
     when the cap is short.
+
+**From MG-13** (version 40):
+
+67. **The evonode credit withdrawal's lease (MG-13 P3, P12, version 40).** `FlowKind` gains `MasternodeWithdraw`:
+    one `MasternodeWithdraw{max_credits, destination}` grant of the wallet; any other grant kind is
+    `platform.grant_invalid`. The withdrawal charges its amount plus Platform's fee reserve to `Credits` and takes the
+    grant's single-use `MasternodeWithdrawal` signer in one step, before the owner or payout key signs; the charge
+    goes back when nothing was signed. The calls that use it are the masternodes facade's (mg-engine, MG-13 commit 5).

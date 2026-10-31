@@ -108,10 +108,11 @@ const FACADE: &[&str] = &[
 
 /// Files of `src/masternodes/` that are not part of the facade: the
 /// provider-transaction aggregation, the list reader with its follower, and
-/// the ProTx keys, builder and operations behind `protx.rs`, and the
+/// the ProTx keys, builder and operations behind `protx.rs`, the
 /// shared-masternode session store, builder and import table behind
-/// `shared.rs`.
-const NOT_FACADE: &[&str] = &["aggregate.rs", "follow.rs", "protx", "shared"];
+/// `shared.rs`, and the evonode credit withdrawal's crate-level core
+/// (MG-13; commit 5 binds it in the facade).
+const NOT_FACADE: &[&str] = &["aggregate.rs", "follow.rs", "protx", "shared", "withdrawal"];
 
 const BEGIN: &str = "<!-- BEGIN GENERATED: masternodes-surface -->";
 const END: &str = "<!-- END GENERATED: masternodes-surface -->";

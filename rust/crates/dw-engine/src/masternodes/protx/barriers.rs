@@ -118,10 +118,6 @@ impl NetworkSession {
     /// P16). `None` when that can't be read: the wallet isn't loaded (or
     /// was deleted), or no longer holds the row; then only Platform
     /// evidence clears the barrier.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "MG-13's quote reads it (commit 4)")
-    )]
     pub(crate) async fn barrier_operation_state(
         &self,
         barrier: &PayoutBarrierRow,

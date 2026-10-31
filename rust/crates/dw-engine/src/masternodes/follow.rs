@@ -277,6 +277,8 @@ pub(crate) struct MasternodesRuntime {
     /// them backfilled (MG-13 P16). Until then a barrier may be missing,
     /// and a masternode withdrawal's quote reads `payout_change_pending`.
     barriers_ready: AtomicBool,
+    /// Masternode withdrawals' alarms and background recheck (MG-13 P8).
+    pub(crate) withdrawals: super::withdrawal::WithdrawalRuntime,
     /// The ProTx hand-off's test seam (MG-04 §7).
     #[cfg(test)]
     protx_seam: Mutex<Option<Arc<super::protx::ops::Seam>>>,
@@ -308,16 +310,13 @@ impl MasternodesRuntime {
             ids_verified: AtomicBool::new(false),
             protx_in_flight: Mutex::default(),
             barriers_ready: AtomicBool::new(false),
+            withdrawals: Default::default(),
             #[cfg(test)]
             protx_seam: Mutex::default(),
         }
     }
 
     /// Whether every payout-change barrier is in place (`barriers_ready`).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "MG-13's quote reads it (commit 4)")
-    )]
     pub(crate) fn barriers_ready(&self) -> bool {
         self.barriers_ready.load(Ordering::SeqCst)
     }
