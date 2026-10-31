@@ -5,8 +5,13 @@
 //! and escaped inputs, a refused shape, a secret in `args` in any form or
 //! position the grammar refuses, a secret `id`, and the bearer reader.
 //!
-//! Reading freed blocks may touch bytes that were never initialized; that
-//! is acceptable in this test-only allocator.
+//! Every block is handed out zeroed, so a freed block holds only what its
+//! owner wrote (BL-107). Without that, a scan also reads the stale bytes of
+//! a reused block: the heap could hand a request a block an earlier unarmed
+//! free had left holding the marker (the test's own `long_name` buffer as
+//! `format!` grows it), and a block the request only partly wrote then
+//! counted as a hit. Heap reuse order can make such stale-byte hits
+//! intermittent, consistent with the Windows failures.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -30,7 +35,7 @@ static HITS: AtomicUsize = AtomicUsize::new(0);
 // SAFETY: forwards to `System`; `dealloc` only reads the block it frees.
 unsafe impl GlobalAlloc for Scan {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        unsafe { System.alloc(layout) }
+        unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -44,7 +49,8 @@ unsafe impl GlobalAlloc for Scan {
         unsafe { System.dealloc(ptr, layout) }
     }
     // `realloc` keeps the default (alloc, copy, dealloc), so a block a
-    // reallocation frees is scanned as well.
+    // reallocation frees is scanned as well; `alloc_zeroed` keeps the
+    // default too, which goes through `alloc`.
 }
 
 #[global_allocator]
