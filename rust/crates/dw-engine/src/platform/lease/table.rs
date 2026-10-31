@@ -329,6 +329,9 @@ pub struct LeaseTable {
     pub(crate) tracked: OnceLock<Arc<dyn super::mode_b::TrackedLocks>>,
     /// Serializes Mode B's snapshot refreshes.
     pub(crate) refresh: tokio::sync::Mutex<()>,
+    /// The refreshes and resume passes running in the background, which
+    /// close waits for (BL-544).
+    pub(crate) background: Arc<super::background::Background>,
     /// The catch-up's resume path (H6 part 2); the session installs it.
     pub(crate) resumer: OnceLock<Arc<dyn super::resume::Resumer>>,
     /// The table itself, for work a J step's effects start.
@@ -337,6 +340,10 @@ pub struct LeaseTable {
     /// source reads with the real wallet's.
     #[cfg(test)]
     pub(crate) test_rows: Mutex<HashMap<WalletId, Vec<super::mode_b::TrackedRow>>>,
+    /// Tests: the next read of a wallet's tracked rows signals here once it
+    /// holds the wallet, then never ends on its own.
+    #[cfg(test)]
+    pub(crate) test_hold_rows: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 impl std::fmt::Debug for LeaseTable {
@@ -380,10 +387,13 @@ impl LeaseTable {
             journal: Default::default(),
             tracked: OnceLock::new(),
             refresh: tokio::sync::Mutex::new(()),
+            background: Arc::default(),
             resumer: OnceLock::new(),
             me: me.clone(),
             #[cfg(test)]
             test_rows: Default::default(),
+            #[cfg(test)]
+            test_hold_rows: Default::default(),
         })
     }
 
