@@ -260,6 +260,29 @@ import Testing
         #expect(sync.status?.progress == 1)
     }
 
+    /// BL-575: the peak delay is a deadline, so time that passes before the
+    /// coordinator's timer task starts sleeping still counts toward it.
+    @Test func thePeakDelayCountsTimeBeforeItsTimerSleeps() async throws {
+        let h = Harness {
+            $0.with { $0.snapshot = .success(Fixtures.snapshot(headers: (100, 100), caughtUp: true)) }
+        }
+        h.clock.lateStart = .seconds(1)
+        try await h.start()
+        let sync = h.services.sync
+        // One more refresh, which also lets any refresh the start's events
+        // asked for run first: after it nothing applies a snapshot again,
+        // so only the peak timer can mark the sync done.
+        let refreshes = { (h.engine.calls.filter { $0 == "syncSnapshot" }).count }
+        let before = refreshes()
+        h.engine.events.publish(.syncChanged(.regtest))
+        #expect(await eventually { refreshes() > before })
+        await sync.settle()
+        #expect(sync.status?.isDone == false)
+        h.clock.advance(by: .milliseconds(3250))
+        #expect(await eventually { sync.status?.isDone == true })
+        #expect(sync.status?.progress == 1)
+    }
+
     @Test func stalledAfterFortyFiveQuietSeconds() async throws {
         let h = Harness {
             $0.with { $0.snapshot = .success(Fixtures.snapshot(headers: (10, 100), secondsSinceProgress: 45)) }

@@ -16,17 +16,43 @@ final class ManualClock: RuntimeClock, @unchecked Sendable {
         lock.withLock { current }
     }
 
+    /// How late a `sleep(for:)` begins after it is called, as a task that
+    /// runs late under load would: its deadline moves by this much. A
+    /// `sleep(until:)` keeps its deadline.
+    var lateStart: Duration {
+        get { lock.withLock { late } }
+        set { lock.withLock { late = newValue } }
+    }
+    private var late: Duration = .zero
+
     /// Number of tasks sleeping on this clock.
     var sleeperCount: Int {
         lock.withLock { sleepers.count }
     }
 
     func sleep(for duration: Duration) async throws {
+        try await sleep(.after(duration))
+    }
+
+    func sleep(until deadline: Duration) async throws {
+        try await sleep(.at(deadline))
+    }
+
+    private enum Wake {
+        case after(Duration)
+        case at(Duration)
+    }
+
+    private func sleep(_ wake: Wake) async throws {
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
                 let resumeNow: Bool = lock.withLock {
-                    let deadline = current + duration
+                    let deadline: Duration
+                    switch wake {
+                    case .after(let duration): deadline = current + late + duration
+                    case .at(let at): deadline = at
+                    }
                     if deadline <= current || Task.isCancelled { return true }
                     sleepers[id] = Sleeper(deadline: deadline, continuation: continuation)
                     return false
