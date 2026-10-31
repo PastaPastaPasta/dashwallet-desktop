@@ -3184,7 +3184,13 @@ renames or reshapes them takes the next version bump:
 **From MG-13** (version 40):
 
 67. **The evonode credit withdrawal's lease (MG-13 P3, P12, version 40).** `FlowKind` gains `MasternodeWithdraw`:
-    one `MasternodeWithdraw{max_credits, destination}` grant of the wallet; any other grant kind is
-    `platform.grant_invalid`. The withdrawal charges its amount plus Platform's fee reserve to `Credits` and takes the
-    grant's single-use `MasternodeWithdrawal` signer in one step, before the owner or payout key signs; the charge
-    goes back when nothing was signed. The calls that use it are the masternodes facade's (mg-engine, MG-13 commit 5).
+    one `MasternodeWithdraw{max_credits, destination}` grant of the wallet (grant purpose
+    `GrantPurpose::MasternodeWithdraw`); any other grant kind is `platform.grant_invalid`. `max_credits` caps the
+    withdrawal's amount plus Platform's fee reserve; `destination` is `None` for an owner-key withdrawal (Drive pays
+    the identity's payout key) and, for a payout key, the approved script (`WithdrawalDestination::of_script`, its
+    SHA-256), so a withdrawal to any other script is outside the signer's scope. The grant is single use: it yields
+    one `MasternodeWithdrawal` signer that its first signature consumes. Its quick-unlock value is
+    ceil(`max_credits` / 1000) duffs. The withdrawal charges its amount plus the fee reserve to `Credits` and takes
+    the signer in one step, before the owner or payout key signs; the charge goes back when nothing was signed. The
+    calls that use it are the masternodes facade's ([`mn-engine.md`](mn-engine.md) §2.5: `withdraw_credits` and
+    `retry_withdrawal`).

@@ -27,8 +27,9 @@
 //! - **Recheck** (P8, `recheck.rs`): per nonce group, done only on a proved
 //!   matching document (P7), `not_executed` only on P8's four conditions.
 //!
-//! Not part of the facade: commit 5 binds it (`Masternodes`), and maps
-//! [`WithdrawalError`]'s codes into `MasternodesError`.
+//! Not part of the facade: `masternodes/withdrawals.rs` binds it
+//! (`Masternodes`, mn-engine §2.5), and [`WithdrawalError`] maps into
+//! `MasternodesError` below.
 
 mod check;
 mod drive;
@@ -57,12 +58,9 @@ use crate::EngineError;
 use crate::platform::trust::Rule5;
 use crate::platform::{CreditsError, PlatformError};
 
-#[allow(unused_imports)]
-pub(crate) use check::{Destination, KeyView, PlatformStatus, Quote};
-#[allow(unused_imports)]
-pub(crate) use net::{Answer, MnWithdrawNet, Proved, SdkMnWithdrawals};
-#[allow(unused_imports)]
-pub(crate) use sign::{Request, WithdrawalKeyChoice};
+pub(crate) use check::{Destination, KeyView, Quote};
+pub(crate) use session::WithdrawCall;
+pub(crate) use sign::WithdrawalKeyChoice;
 
 /// Why a destination reads `checking`, with Withdraw off (MG-13 P4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -90,8 +88,7 @@ impl CheckingReason {
 }
 
 /// A masternode withdrawal's refusal (MG-13 P2, P13). The codes are the
-/// facade's (`masternodes.withdrawal_*`); commit 5 maps them into
-/// `MasternodesError`.
+/// facade's (`masternodes.withdrawal_*`), into which they map.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum WithdrawalError {
     /// No usable owner or payout key, or the identity's matching key is
@@ -139,7 +136,9 @@ pub(crate) enum WithdrawalError {
 }
 
 impl WithdrawalError {
-    #[cfg_attr(not(test), expect(dead_code, reason = "commit 5's facade maps it"))]
+    /// What the facade's code for it is (the tests read it; the facade maps
+    /// the variants).
+    #[cfg_attr(not(test), expect(dead_code, reason = "the tests' shorthand"))]
     pub(crate) fn code(&self) -> &'static str {
         match self {
             Self::KeyMissing => "masternodes.withdrawal_key_missing",
@@ -152,6 +151,15 @@ impl WithdrawalError {
             Self::RetryState => "masternodes.withdrawal_retry_state",
             Self::MarkState => "masternodes.withdrawal_mark_state",
             Self::NotFound => "masternodes.withdrawal_not_found",
+            Self::Credits(CreditsError::WithdrawalOutOfRange { .. }) => {
+                "masternodes.withdrawal_amount_out_of_range"
+            }
+            Self::Credits(CreditsError::Platform(PlatformError::InsufficientCredits {
+                ..
+            }))
+            | Self::Platform(PlatformError::InsufficientCredits { .. }) => {
+                "masternodes.withdrawal_amount_insufficient"
+            }
             Self::Credits(e) => e.code(),
             Self::Platform(e) => e.code(),
             Self::Masternodes(e) => e.code(),
@@ -161,6 +169,52 @@ impl WithdrawalError {
 
     fn checking(reason: CheckingReason) -> Self {
         Self::DestinationChecking { reason }
+    }
+}
+
+impl From<WithdrawalError> for MasternodesError {
+    /// The facade's codes (mn-engine §4, P13); DP6-02's amount refusals
+    /// become `withdrawal_amount_*`.
+    fn from(e: WithdrawalError) -> Self {
+        use crate::masternodes::WithdrawalCheckingReason as Facade;
+        type E = MasternodesError;
+        match e {
+            WithdrawalError::KeyMissing => E::WithdrawalKeyMissing,
+            WithdrawalError::Shared => E::WithdrawalShared,
+            WithdrawalError::NoPayoutKey(detail) => E::WithdrawalNoPayoutKey {
+                detail: detail.into(),
+            },
+            WithdrawalError::NoIdentity => E::NoIdentity,
+            WithdrawalError::DestinationChecking { reason } => E::WithdrawalDestinationChecking {
+                reason: match reason {
+                    CheckingReason::PlatformBehind => Facade::PlatformBehind,
+                    CheckingReason::PayoutChangePending => Facade::PayoutChangePending,
+                    CheckingReason::Unverified => Facade::Unverified,
+                    CheckingReason::SpvUnsynced => Facade::SpvUnsynced,
+                },
+            },
+            WithdrawalError::Pending => E::WithdrawalPending,
+            WithdrawalError::Unverified => E::WithdrawalUnverified,
+            WithdrawalError::RetryState => E::WithdrawalRetryState,
+            WithdrawalError::MarkState => E::WithdrawalMarkState,
+            WithdrawalError::NotFound => E::WithdrawalNotFound,
+            WithdrawalError::Credits(CreditsError::WithdrawalOutOfRange { min, max }) => {
+                E::WithdrawalAmountOutOfRange { min, max }
+            }
+            WithdrawalError::Credits(CreditsError::Platform(
+                PlatformError::InsufficientCredits { needed, available },
+            ))
+            | WithdrawalError::Platform(PlatformError::InsufficientCredits { needed, available }) => {
+                E::WithdrawalAmountInsufficient { needed, available }
+            }
+            WithdrawalError::Credits(CreditsError::Platform(e)) | WithdrawalError::Platform(e) => {
+                E::Platform(e)
+            }
+            // Rules::credits refuses with the two above only.
+            WithdrawalError::Credits(e) => E::Engine(EngineError::Internal(e.to_string())),
+            WithdrawalError::Masternodes(e) => e,
+            WithdrawalError::Engine(e) => E::Engine(e),
+        }
     }
 }
 
@@ -376,12 +430,19 @@ pub(crate) fn fault(_db: &AppDb, _point: &str, _stage: Stage) -> Result<(), With
     Ok(())
 }
 
-/// The session's withdrawal state: the alarms and the background recheck
-/// (P8), on `MasternodesRuntime`.
+/// The session's withdrawal state: the alarms, the background recheck (P8)
+/// and the quotes' waits for Platform (P4), on `MasternodesRuntime`.
 #[derive(Default)]
 pub(crate) struct WithdrawalRuntime {
     alarms: Mutex<Vec<Alarm>>,
     task: Mutex<Option<JoinHandle<()>>>,
+    /// The running `withdrawal_ready` waits, one per masternode (wire
+    /// order).
+    ready: Mutex<HashMap<[u8; 32], JoinHandle<()>>>,
+    /// Tests: the scripted Platform, header tip and waits the session's
+    /// calls use instead of the SDK's, SPV's and the defaults.
+    #[cfg(test)]
+    seam: Mutex<Option<tests::Seam>>,
 }
 
 impl WithdrawalRuntime {
@@ -394,7 +455,8 @@ impl WithdrawalRuntime {
         }
     }
 
-    /// The alarms raised this session (commit 5 surfaces them).
+    /// The alarms raised this session (logged as they are raised; MG-10
+    /// surfaces them).
     #[allow(dead_code)]
     pub(crate) fn alarms(&self) -> Vec<Alarm> {
         self.alarms
@@ -404,7 +466,19 @@ impl WithdrawalRuntime {
     }
 
     pub(crate) fn waits(&self) -> Waits {
+        #[cfg(test)]
+        if let Some(seam) = &*self.seam.lock().unwrap_or_else(PoisonError::into_inner) {
+            return seam.waits;
+        }
         Waits::default()
+    }
+
+    /// Runs `wait` as `pro_tx_hash`'s `withdrawal_ready` wait unless one
+    /// runs already. [`Self::stop`] ends them all.
+    pub(crate) fn wait_ready(&self, pro_tx_hash: [u8; 32], wait: impl FnOnce() -> JoinHandle<()>) {
+        let mut ready = self.ready.lock().unwrap_or_else(PoisonError::into_inner);
+        ready.retain(|_, task| !task.is_finished());
+        ready.entry(pro_tx_hash).or_insert_with(wait);
     }
 
     fn set_task(&self, task: JoinHandle<()>) {
@@ -414,10 +488,16 @@ impl WithdrawalRuntime {
         }
     }
 
-    /// Stops the background recheck and waits for it to end (close).
+    /// Stops the background recheck and the `withdrawal_ready` waits, and
+    /// waits for them to end (close).
     pub(crate) async fn stop(&self) {
         let task = (self.task.lock().unwrap_or_else(PoisonError::into_inner)).take();
-        if let Some(task) = task {
+        let ready: Vec<JoinHandle<()>> =
+            (self.ready.lock().unwrap_or_else(PoisonError::into_inner))
+                .drain()
+                .map(|(_, task)| task)
+                .collect();
+        for task in task.into_iter().chain(ready) {
             task.abort();
             let _ = task.await;
         }

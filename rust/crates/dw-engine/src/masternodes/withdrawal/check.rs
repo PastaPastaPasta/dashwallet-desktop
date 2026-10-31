@@ -266,7 +266,6 @@ pub(crate) struct PlatformStatus {
 /// `withdrawal_quote` (P13): the keys held, what can be claimed, the rules,
 /// each key's destination and the open record.
 #[derive(Debug, Clone)]
-#[allow(dead_code, reason = "commit 5's facade reads it")]
 pub(crate) struct Quote {
     pub(crate) owner_key: Option<KeyView>,
     pub(crate) payout_keys: Vec<KeyView>,

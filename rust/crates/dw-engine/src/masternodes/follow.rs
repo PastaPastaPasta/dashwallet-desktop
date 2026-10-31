@@ -378,9 +378,17 @@ impl MasternodesRuntime {
         self.unsettled_keys().contains(&(hash, role))
     }
 
-    /// Something the facade changed itself (tracked set, a label, a key).
+    /// Something the facade changed itself (tracked set, a label, a key, a
+    /// ProTx operation, a withdrawal record), or a withdrawal's destination
+    /// that became fixed (MG-13 P4's `withdrawal_ready`).
     pub fn local_change(&self) {
         self.changes.bump();
+    }
+
+    /// Tests: how many changes §6's event has been told of.
+    #[cfg(test)]
+    pub(crate) fn generation(&self) -> u64 {
+        self.changes.generation.load(Ordering::SeqCst)
     }
 
     /// `sink`, also telling this runtime when the wallet set changes. The

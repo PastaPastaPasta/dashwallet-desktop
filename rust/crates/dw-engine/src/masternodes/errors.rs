@@ -10,6 +10,7 @@ use crate::error::EngineError;
 use crate::platform::PlatformError;
 
 use super::records::AttachedKeyRole;
+use super::withdrawal_records::WithdrawalCheckingReason;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MasternodesError {
@@ -140,6 +141,45 @@ pub enum MasternodesError {
         "the request takes a fee of {fee} duffs from this wallet's share: accept it to approve"
     )]
     SharedActorFee { fee: u64 },
+    /// No usable owner or payout key of the masternode, or the identity key
+    /// it matches is disabled (MG-13 P2).
+    #[error("no usable withdrawal key of this masternode")]
+    WithdrawalKeyMissing,
+    /// A shared masternode has no owner identity (MG-13 F8).
+    #[error("a shared masternode has no owner identity")]
+    WithdrawalShared,
+    /// Drive's window over the identity's TRANSFER keys holds no key it can
+    /// pay (none, all disabled, or another type; multi-payee disables them,
+    /// MG-13 F3, F8). `detail` is diagnostic.
+    #[error("the identity has no usable payout key: {detail}")]
+    WithdrawalNoPayoutKey { detail: String },
+    /// MG-13 P4's (a)–(c) do not hold; nothing was signed.
+    #[error("the withdrawal's destination is still being checked: {}", checking_name(*reason))]
+    WithdrawalDestinationChecking { reason: WithdrawalCheckingReason },
+    /// An open withdrawal of the masternode's identity, a lost race for the
+    /// open slot, or no nonce MG-13 P10 allows.
+    #[error("a withdrawal of this masternode is pending")]
+    WithdrawalPending,
+    /// Rule 5 under `Enforce` (MG-13 P12): the read wasn't SPV-verified.
+    #[error("the Platform read is not SPV-verified")]
+    WithdrawalUnverified,
+    /// Try again from a state other than `refused`, or with its nonce no
+    /// longer taken (MG-13 P15).
+    #[error("this withdrawal cannot be tried again")]
+    WithdrawalRetryState,
+    /// A mark from a state other than `couldnt_confirm` (MG-13 P9).
+    #[error("this withdrawal cannot be marked")]
+    WithdrawalMarkState,
+    /// No withdrawal record has this id.
+    #[error("unknown withdrawal")]
+    WithdrawalNotFound,
+    /// DP6-02's range: a withdrawal takes `min` to `max` credits.
+    #[error("a withdrawal takes {min} to {max} credits")]
+    WithdrawalAmountOutOfRange { min: u64, max: u64 },
+    /// DP6-02's reserve: the balance must hold the amount and the fee
+    /// reserve, `needed` credits.
+    #[error("insufficient credits: {needed} needed, {available} available")]
+    WithdrawalAmountInsufficient { needed: u64, available: u64 },
     /// A lease refused (MG-05 D12).
     #[error(transparent)]
     Platform(#[from] PlatformError),
@@ -178,6 +218,21 @@ impl MasternodesError {
             Self::SharedTooEarly => "masternodes.shared_too_early",
             Self::SharedRegistrationUnknown => "masternodes.shared_registration_unknown",
             Self::SharedActorFee { .. } => "masternodes.shared_actor_fee",
+            Self::WithdrawalKeyMissing => "masternodes.withdrawal_key_missing",
+            Self::WithdrawalShared => "masternodes.withdrawal_shared",
+            Self::WithdrawalNoPayoutKey { .. } => "masternodes.withdrawal_no_payout_key",
+            Self::WithdrawalDestinationChecking { .. } => {
+                "masternodes.withdrawal_destination_checking"
+            }
+            Self::WithdrawalPending => "masternodes.withdrawal_pending",
+            Self::WithdrawalUnverified => "masternodes.withdrawal_unverified",
+            Self::WithdrawalRetryState => "masternodes.withdrawal_retry_state",
+            Self::WithdrawalMarkState => "masternodes.withdrawal_mark_state",
+            Self::WithdrawalNotFound => "masternodes.withdrawal_not_found",
+            Self::WithdrawalAmountOutOfRange { .. } => "masternodes.withdrawal_amount_out_of_range",
+            Self::WithdrawalAmountInsufficient { .. } => {
+                "masternodes.withdrawal_amount_insufficient"
+            }
             Self::Platform(e) => e.code(),
             Self::Engine(e) => e.code(),
         }
@@ -189,6 +244,16 @@ impl MasternodesError {
             Self::Engine(e) => Some(e),
             _ => None,
         }
+    }
+}
+
+/// `withdrawal_destination_checking`'s reason as its JSON names it.
+fn checking_name(reason: WithdrawalCheckingReason) -> &'static str {
+    match reason {
+        WithdrawalCheckingReason::PlatformBehind => "platform_behind",
+        WithdrawalCheckingReason::PayoutChangePending => "payout_change_pending",
+        WithdrawalCheckingReason::Unverified => "unverified",
+        WithdrawalCheckingReason::SpvUnsynced => "spv_unsynced",
     }
 }
 

@@ -7,8 +7,10 @@
 //! The ProTx calls (`protx.rs`, MG-04) sign the owner's side of a ProRegTx
 //! under a `MasternodeOp` grant; no call signs as operator, or takes,
 //! holds or returns an operator secret (MG-01's
-//! guard). An evonode's Platform credit withdrawal (MG-13) lives in
-//! `withdrawal/`.
+//! guard). An evonode's Platform credit withdrawal (MG-13) is
+//! `withdrawals.rs`, its records `withdrawal_records.rs` and its engine
+//! side `withdrawal/`: the owner or payout key signs one withdrawal under a
+//! `MasternodeWithdraw` grant.
 
 mod aggregate;
 mod errors;
@@ -21,6 +23,8 @@ mod shared;
 mod shared_records;
 mod tracking;
 pub(crate) mod withdrawal;
+mod withdrawal_records;
+mod withdrawals;
 
 use std::sync::Arc;
 
@@ -46,6 +50,12 @@ pub use shared_records::{
     StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
 };
 pub use tracking::MAX_MASTERNODE_LABEL;
+pub use withdrawal_records::{
+    CreditWithdrawal, CreditWithdrawalState, HeldWithdrawalKey, NotExecutedFacts,
+    WithdrawalCheckingReason, WithdrawalDestinationCheck, WithdrawalIdentityKey,
+    WithdrawalKeyChoice, WithdrawalKeySource, WithdrawalMark, WithdrawalPlatformStatus,
+    WithdrawalProofFacts, WithdrawalQuote, WithdrawalRules,
+};
 
 use crate::{EngineError, NetworkSession};
 

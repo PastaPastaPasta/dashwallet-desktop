@@ -1,6 +1,7 @@
 //! The session's side of a masternode withdrawal: its [`Env`], the wallet's
-//! keys (P2), the grant's signer and lease (P3, P12), the crate-level calls
-//! commit 5's facade binds, and the background recheck (P8).
+//! keys (P2), the grant's signer and lease (P3, P12), the Platform it reads,
+//! the crate-level calls the facade binds (`masternodes/withdrawals.rs`),
+//! the quote's `withdrawal_ready` wait (P4) and the background recheck (P8).
 
 use std::sync::Arc;
 
@@ -11,15 +12,20 @@ use dpp::state_transition::StateTransition;
 use dw_appdb::{AppDb, PayoutBarrierRow, WithdrawalMark, WithdrawalRow};
 use dw_vault::{SignerError, WithdrawalKey};
 
-use super::check::{Quote, quote};
-use super::net::{MnWithdrawNet, SdkMnWithdrawals};
+use dpp::document::Document;
+use dpp::identity::Identity;
+use dpp::prelude::Identifier;
+use dpp::version::PlatformVersion;
+
+use super::check::{Quote, look_until, quote};
+use super::net::{Answer, MnWithdrawNet, Proved, SdkMnWithdrawals};
 use super::recheck::{mark, recheck_all, recheck_record};
 use super::sign::{Request, WithdrawalKeyChoice, retry, withdraw};
 use super::{
     Alarm, Authorize, Chain, Env, HeldKey, Waits, WalletKeys, WithdrawalError, WithdrawalRuntime,
 };
 use crate::masternodes::protx_records::ProTxOperationState;
-use crate::masternodes::{display_hex, parse_pro_tx_hash};
+use crate::masternodes::{MasternodesError, display_hex, parse_pro_tx_hash};
 use crate::platform::trust::Rule5;
 use crate::platform::withdrawal::destination;
 use crate::platform::{BudgetPurpose, FlowKind};
@@ -53,6 +59,14 @@ impl Env for SessionEnv {
     /// The synced header tip (`sync.rs` `tip_height()`, not the chain-locked
     /// height, P4 (a)), only once dash-spv is caught up.
     fn chain(&self) -> Chain {
+        #[cfg(test)]
+        if let Some(seam) = &*(self.session.masternodes.withdrawals.seam.lock())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            return Chain {
+                header_tip: seam.header_tip,
+            };
+        }
         let tracker = self.session.hub.tracker();
         Chain {
             header_tip: tracker.caught_up().then(|| tracker.tip_height()).flatten(),
@@ -213,8 +227,84 @@ pub(crate) struct WithdrawCall {
     pub(crate) destination: Option<String>,
 }
 
-#[allow(dead_code, reason = "commit 5's facade calls these")]
+/// The Platform the session's withdrawal calls read and send to: the SDK's
+/// proved reads in their own trust scopes ([`SdkMnWithdrawals`]); in tests,
+/// the scripted one the runtime's seam holds.
+enum SessionNet {
+    Sdk(SdkMnWithdrawals),
+    #[cfg(test)]
+    Scripted(Arc<super::tests::Platform>),
+}
+
+impl MnWithdrawNet for SessionNet {
+    fn version(&self) -> &'static PlatformVersion {
+        match self {
+            Self::Sdk(n) => n.version(),
+            #[cfg(test)]
+            Self::Scripted(n) => n.version(),
+        }
+    }
+
+    async fn identity(&self, id: Identifier) -> Result<Proved<Option<Identity>>, PlatformError> {
+        match self {
+            Self::Sdk(n) => n.identity(id).await,
+            #[cfg(test)]
+            Self::Scripted(n) => n.identity(id).await,
+        }
+    }
+
+    async fn nonce_state(&self, id: Identifier) -> Result<Proved<u64>, PlatformError> {
+        match self {
+            Self::Sdk(n) => n.nonce_state(id).await,
+            #[cfg(test)]
+            Self::Scripted(n) => n.nonce_state(id).await,
+        }
+    }
+
+    async fn balance(&self, id: Identifier) -> Result<Proved<Option<u64>>, PlatformError> {
+        match self {
+            Self::Sdk(n) => n.balance(id).await,
+            #[cfg(test)]
+            Self::Scripted(n) => n.balance(id).await,
+        }
+    }
+
+    async fn document(&self, id: Identifier) -> Result<Proved<Option<Document>>, PlatformError> {
+        match self {
+            Self::Sdk(n) => n.document(id).await,
+            #[cfg(test)]
+            Self::Scripted(n) => n.document(id).await,
+        }
+    }
+
+    async fn broadcast(&self, bytes: &[u8]) -> Answer {
+        match self {
+            Self::Sdk(n) => n.broadcast(bytes).await,
+            #[cfg(test)]
+            Self::Scripted(n) => n.broadcast(bytes).await,
+        }
+    }
+}
+
 impl NetworkSession {
+    /// The Platform the withdrawal calls use;
+    /// `masternodes.platform_unavailable` in a session without Platform.
+    fn mn_withdraw_net(&self) -> Result<SessionNet, WithdrawalError> {
+        #[cfg(test)]
+        if let Some(seam) = &*(self.masternodes.withdrawals.seam.lock())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            return Ok(SessionNet::Scripted(Arc::clone(&seam.platform)));
+        }
+        if !self.platform.enabled() {
+            return Err(MasternodesError::PlatformUnavailable {
+                detail: "this session runs without Platform".into(),
+            }
+            .into());
+        }
+        Ok(SessionNet::Sdk(SdkMnWithdrawals(self.manager()?.sdk_arc())))
+    }
+
     /// The masternode's keys, refusing a shared masternode (F8, P2).
     async fn withdrawal_keys(
         self: &Arc<Self>,
@@ -239,14 +329,15 @@ impl NetworkSession {
     }
 
     /// `withdrawal_quote` (P13), waiting up to `wait` while only Platform is
-    /// behind (P4; commit 5's `withdrawal_ready` event reads it again).
+    /// behind (P4); the facade reads once and leaves the wait to
+    /// [`Self::mn_withdrawal_ready_wait`].
     pub(crate) async fn mn_withdrawal_quote(
         self: &Arc<Self>,
-        net: &impl MnWithdrawNet,
         wallet: WalletId,
         pro_tx_hash: &str,
         wait: std::time::Duration,
     ) -> Result<Quote, WithdrawalError> {
+        let net = &self.mn_withdraw_net()?;
         let (hash, keys) = self.withdrawal_keys(wallet, pro_tx_hash).await?;
         let env = SessionEnv::of(self)?;
         quote(&env, net, &keys, self.network.core_network(), &hash, wait).await
@@ -275,11 +366,11 @@ impl NetworkSession {
     /// `withdraw_credits` (P13) under `grant` (a `MasternodeWithdraw` grant).
     pub(crate) async fn mn_withdraw(
         self: &Arc<Self>,
-        net: &impl MnWithdrawNet,
         wallet: WalletId,
         call: &WithdrawCall,
         grant: &str,
     ) -> Result<WithdrawalRow, WithdrawalError> {
+        let net = &self.mn_withdraw_net()?;
         let (hash, keys) = self.withdrawal_keys(wallet, &call.pro_tx_hash).await?;
         let req = self.request(wallet, hash, call)?;
         let env = SessionEnv::of(self)?;
@@ -294,12 +385,12 @@ impl NetworkSession {
     /// `retry_withdrawal` (P13, P15).
     pub(crate) async fn mn_retry_withdrawal(
         self: &Arc<Self>,
-        net: &impl MnWithdrawNet,
         wallet: WalletId,
         refused_id: &str,
         call: &WithdrawCall,
         grant: &str,
     ) -> Result<WithdrawalRow, WithdrawalError> {
+        let net = &self.mn_withdraw_net()?;
         let (hash, keys) = self.withdrawal_keys(wallet, &call.pro_tx_hash).await?;
         let req = self.request(wallet, hash, call)?;
         let env = SessionEnv::of(self)?;
@@ -323,10 +414,10 @@ impl NetworkSession {
     /// `recheck_withdrawal` (P13).
     pub(crate) async fn mn_recheck_withdrawal(
         self: &Arc<Self>,
-        net: &impl MnWithdrawNet,
         id: &str,
     ) -> Result<WithdrawalRow, WithdrawalError> {
-        recheck_record(&SessionEnv::of(self)?, net, id).await
+        let net = self.mn_withdraw_net()?;
+        recheck_record(&SessionEnv::of(self)?, &net, id).await
     }
 
     /// `mark_withdrawal` (P9, P13).
@@ -336,6 +427,43 @@ impl NetworkSession {
         to: WithdrawalMark,
     ) -> Result<WithdrawalRow, WithdrawalError> {
         mark(&SessionEnv::of(self)?, id, to).await
+    }
+
+    /// The withdrawal record `id`.
+    pub(crate) async fn mn_withdrawal(
+        self: &Arc<Self>,
+        id: &str,
+    ) -> Result<WithdrawalRow, WithdrawalError> {
+        let (db, id) = (SessionEnv::of(self)?.db, id.to_owned());
+        (tokio::task::spawn_blocking(move || db.withdrawal(&id)).await??)
+            .ok_or(WithdrawalError::NotFound)
+    }
+
+    /// P4's `withdrawal_ready`: after a quote whose destination read
+    /// `checking{platform_behind}`, the look again every `Waits::poll` for at
+    /// most `Waits::quote` (240 s) while only (a) fails, and §6's event once
+    /// (a)–(c) hold, so the host reads the quote again. Before consent: no
+    /// grant waits on it. One per masternode; the close stops it.
+    pub(crate) fn mn_withdrawal_ready_wait(self: &Arc<Self>, pro_tx_hash: [u8; 32]) {
+        let (weak, rt) = (Arc::downgrade(self), self.rt.clone());
+        self.masternodes
+            .withdrawals
+            .wait_ready(pro_tx_hash, move || {
+                rt.spawn(async move {
+                    let Some(s) = weak.upgrade() else { return };
+                    let (Ok(env), Ok(net)) = (SessionEnv::of(&s), s.mn_withdraw_net()) else {
+                        return;
+                    };
+                    let wait = env.waits().quote;
+                    match look_until(&env, &net, &pro_tx_hash, wait).await {
+                        Ok(seen) if seen.reason.is_none() => s.masternodes.local_change(),
+                        Ok(seen) => tracing::debug!(reason = ?seen.reason,
+                            "a masternode withdrawal's destination still checking"),
+                        Err(e) => tracing::debug!(error = %e,
+                            "waiting for Platform to catch up (MG-13 P4)"),
+                    }
+                })
+            });
     }
 
     /// `withdrawals(pro_tx_hash)` (P13), oldest first.
@@ -363,11 +491,10 @@ impl WithdrawalRuntime {
             loop {
                 let Some(s) = weak.upgrade() else { return };
                 let every = s.masternodes.withdrawals.waits().recheck;
-                if let (Ok(env), Ok(manager)) = (SessionEnv::of(&s), s.manager()) {
-                    let net = SdkMnWithdrawals(manager.sdk_arc());
-                    if let Err(e) = recheck_all(&env, &net).await {
-                        tracing::info!(error = %e, "the masternode withdrawals' recheck");
-                    }
+                if let (Ok(env), Ok(net)) = (SessionEnv::of(&s), s.mn_withdraw_net())
+                    && let Err(e) = recheck_all(&env, &net).await
+                {
+                    tracing::info!(error = %e, "the masternode withdrawals' recheck");
                 }
                 drop(s);
                 tokio::time::sleep(every).await;

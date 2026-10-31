@@ -40,7 +40,6 @@ pub(crate) enum WithdrawalKeyChoice {
     /// Drive pays its window's script; no destination may be given.
     Owner,
     /// The approved script: `destination`, else the signing key's address.
-    #[cfg_attr(not(test), expect(dead_code, reason = "commit 5's facade passes it"))]
     Payout,
 }
 

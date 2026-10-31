@@ -3,7 +3,8 @@
 //! execution, its documents, and each read's heights and provenance), a
 //! scripted session ([`Scene`]: the app DB on disk, rule 5, the header tip,
 //! the barriers' operations) and the real vault's single-use signer
-//! ([`Auth`]); the lease path on a real session; and the fault sweep.
+//! ([`Auth`]); the lease path on a real session; and the fault sweep. The
+//! facade's calls on a real session are `tests/facade.rs`.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -70,6 +71,8 @@ use crate::platform::withdrawal::{
     CORE_FEE_PER_BYTE, READ_BACK_TRIES, Rules, document_id, drive_document, expected_duffs, takes,
 };
 use crate::platform::{PlatformError, WithdrawAmount};
+
+mod facade;
 
 // ---------------------------------------------------------------------------
 // The scripted Platform.
@@ -242,7 +245,7 @@ enum Dev {
 type Hook = Box<dyn FnOnce() + Send>;
 
 /// Platform as a masternode withdrawal sees it.
-struct Platform {
+pub(super) struct Platform {
     world: Mutex<World>,
     old: Mutex<Option<World>>,
     devs: Mutex<HashMap<(Read, Dev), usize>>,
@@ -526,6 +529,15 @@ impl MnWithdrawNet for Platform {
             None => self.check_tx(bytes),
         }
     }
+}
+
+/// What a real session's withdrawal calls use instead of the SDK, SPV's
+/// header tip and the default waits (`WithdrawalRuntime::seam`; the
+/// facade's tests, `tests/facade.rs`).
+pub(super) struct Seam {
+    pub(super) platform: Arc<Platform>,
+    pub(super) header_tip: Option<u32>,
+    pub(super) waits: Waits,
 }
 
 // ---------------------------------------------------------------------------
