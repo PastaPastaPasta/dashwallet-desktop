@@ -19,17 +19,21 @@
 //! change holds, so none is released once `lock()` has returned (vault
 //! module doc, "Release").
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use async_trait::async_trait;
 use dashcore::secp256k1::{Message, PublicKey, SecretKey, ecdsa};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use key_wallet::{ExtendedPubKeySigner, Network, Signer, SignerMethod};
 use zeroize::Zeroizing;
 
-use crate::SignerError;
 use crate::paths::{self, is_bip44_path, is_coinjoin_path};
 use crate::types::{KeySource, WalletId};
 use crate::vault::Vault;
-use crate::vault::masternode::{ROLE_OWNER, ROLE_VOTING};
+use crate::vault::masternode::{ROLE_OWNER, ROLE_PAYOUT, ROLE_VOTING};
+use crate::withdrawal::WithdrawalDestination;
+use crate::{SignerError, VaultError};
 
 /// Which derivations a signer may use, and for what.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -88,6 +92,23 @@ pub enum SignerScope {
     /// what it signs; the engine checks it against the grant's cap first
     /// (MG-05 §2). No operator or platform-node key is in reach.
     MasternodeOwner,
+    /// One masternode Platform credit withdrawal (MG-13 P3, P12), from a
+    /// `MasternodeWithdraw` grant: [`KeyUse::MasternodeWithdrawal`] only,
+    /// which [`VaultSigner::sign_masternode_withdrawal`] alone makes, with a
+    /// keychain owner key `m/9'/coin'/3'/2'/i`, a BIP44 or BIP32 address
+    /// key (the wallet-held payout key), or the `owner` or `payout` key
+    /// attached to a tracked masternode. No digest, message, public key,
+    /// owner payload or vote: the vault lays out what it signs from the
+    /// transition's checked fields. `max_credits` caps the amount;
+    /// `destination` is the output script the user approved for a payout-key
+    /// withdrawal, bound as its SHA-256 ([`WithdrawalDestination`]), and
+    /// `None` for an owner-key one (Drive picks the payout address, so the
+    /// transition carries no script). A signer of this scope signs at most
+    /// once, its clones included (r2 m5).
+    MasternodeWithdrawal {
+        max_credits: u64,
+        destination: Option<WithdrawalDestination>,
+    },
 }
 
 /// What a derived key is used for.
@@ -117,6 +138,10 @@ pub(crate) enum KeyUse {
     /// ([`VaultSigner::sign_shared_consent`] and its siblings, MG-04b
     /// §6.2).
     OwnerPayload,
+    /// An owner or payout key's signature over a masternode identity's
+    /// credit withdrawal the vault checks field by field itself
+    /// ([`VaultSigner::sign_masternode_withdrawal`], MG-13 P3).
+    MasternodeWithdrawal,
 }
 
 impl SignerScope {
@@ -142,7 +167,7 @@ impl SignerScope {
             // ProUpRegTx's owner signature is a plain ECDSA one over the
             // payload's hash, which `Sign` would make for any digest (D50).
             SignerScope::Full => match key_use {
-                KeyUse::OwnerPayload => false,
+                KeyUse::OwnerPayload | KeyUse::MasternodeWithdrawal => false,
                 KeyUse::Sign | KeyUse::Message => !paths::is_owner_key(path, network),
                 _ => true,
             },
@@ -154,7 +179,11 @@ impl SignerScope {
                 sign_or_public_key && paths::identity_auth_key(path, network).is_some()
             }
             SignerScope::DashPayCrypto => match key_use {
-                KeyUse::Sign | KeyUse::Message | KeyUse::Vote | KeyUse::OwnerPayload => false,
+                KeyUse::Sign
+                | KeyUse::Message
+                | KeyUse::Vote
+                | KeyUse::OwnerPayload
+                | KeyUse::MasternodeWithdrawal => false,
                 KeyUse::PublicKey | KeyUse::ExtendedPublicKey => {
                     paths::is_dashpay_receiving_account(path, network)
                         || paths::is_auto_accept_key(path, network)
@@ -188,6 +217,15 @@ impl SignerScope {
                     _ => false,
                 }
             }
+            // MG-13 P3: the withdrawal itself and nothing else, not even
+            // the public key, with an owner key or an address key (the
+            // wallet-held payout key).
+            SignerScope::MasternodeWithdrawal { .. } => {
+                key_use == KeyUse::MasternodeWithdrawal
+                    && (paths::is_owner_key(path, network)
+                        || paths::is_bip44_address(path, network)
+                        || paths::is_bip32_address(path))
+            }
         }
     }
 
@@ -195,11 +233,17 @@ impl SignerScope {
     /// masternode for `key_use` (MG-01 D7): the `voting` key, for
     /// [`KeyUse::Vote`] under [`SignerScope::MasternodeVoting`], and the
     /// `owner` key, for [`KeyUse::OwnerPayload`] under
-    /// [`SignerScope::MasternodeOwner`] (MG-04 D12). Nothing else.
+    /// [`SignerScope::MasternodeOwner`] (MG-04 D12), and the `owner` and
+    /// `payout` keys, for [`KeyUse::MasternodeWithdrawal`] under
+    /// [`SignerScope::MasternodeWithdrawal`] (MG-13 P3). Nothing else.
     pub(crate) fn allows_attached(&self, key_use: KeyUse, role: &str) -> bool {
         match self {
             SignerScope::MasternodeVoting => key_use == KeyUse::Vote && role == ROLE_VOTING,
             SignerScope::MasternodeOwner => key_use == KeyUse::OwnerPayload && role == ROLE_OWNER,
+            SignerScope::MasternodeWithdrawal { .. } => {
+                key_use == KeyUse::MasternodeWithdrawal
+                    && (role == ROLE_OWNER || role == ROLE_PAYOUT)
+            }
             _ => false,
         }
     }
@@ -248,6 +292,10 @@ pub struct VaultSigner {
     epoch: u64,
     /// The data key it signs with ([`KeySource`]).
     key: KeySource,
+    /// Set by the first signature of a [`SignerScope::MasternodeWithdrawal`]
+    /// signer and never cleared, shared with every clone
+    /// ([`Self::consume_single_use`]); `None` for every other scope.
+    spent: Option<Arc<AtomicBool>>,
 }
 
 impl std::fmt::Debug for VaultSigner {
@@ -267,12 +315,15 @@ impl VaultSigner {
         epoch: u64,
         key: KeySource,
     ) -> Self {
+        let spent = matches!(scope, SignerScope::MasternodeWithdrawal { .. })
+            .then(|| Arc::new(AtomicBool::new(false)));
         Self {
             vault,
             wallet_id,
             scope,
             epoch,
             key,
+            spent,
         }
     }
 
@@ -285,8 +336,23 @@ impl VaultSigner {
         self.vault.network()
     }
 
+    /// Spends a single-use signer (MG-13 P3, r2 m5): the first call on a
+    /// [`SignerScope::MasternodeWithdrawal`] signer or any clone of it
+    /// passes and marks it spent, every later one is
+    /// [`VaultError::GrantInvalid`]. The caller makes it before it reads the
+    /// secret and keeps it spent whatever follows, a failed signature
+    /// included. A signer of any other scope is not single-use.
+    pub(crate) fn consume_single_use(&self) -> Result<(), SignerError> {
+        match &self.spent {
+            Some(spent) if spent.swap(true, Ordering::AcqRel) => {
+                Err(SignerError::Vault(VaultError::GrantInvalid))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// The scope check of one use of the key at `path`.
-    fn check(&self, key_use: KeyUse, path: &DerivationPath) -> Result<(), SignerError> {
+    pub(crate) fn check(&self, key_use: KeyUse, path: &DerivationPath) -> Result<(), SignerError> {
         if self.scope.allows(key_use, path, self.vault.network()) {
             Ok(())
         } else {
@@ -536,7 +602,7 @@ mod tests {
     }
 
     const T: Network = Network::Testnet;
-    const ALL_USES: [KeyUse; 9] = [
+    const ALL_USES: [KeyUse; 10] = [
         KeyUse::Sign,
         KeyUse::Message,
         KeyUse::PublicKey,
@@ -546,6 +612,29 @@ mod tests {
         KeyUse::Export,
         KeyUse::Vote,
         KeyUse::OwnerPayload,
+        KeyUse::MasternodeWithdrawal,
+    ];
+    /// A withdrawal scope of each key kind (MG-13 P3).
+    const WITHDRAW_OWNER: SignerScope = SignerScope::MasternodeWithdrawal {
+        max_credits: 1,
+        destination: None,
+    };
+    fn withdraw_payout() -> SignerScope {
+        SignerScope::MasternodeWithdrawal {
+            max_credits: 1,
+            destination: Some(WithdrawalDestination::of_script(&[0x76, 0xa9])),
+        }
+    }
+    /// Every scope but the withdrawal ones.
+    const OTHER_SCOPES: [SignerScope; 8] = [
+        SignerScope::Full,
+        SignerScope::CoinJoinOnly,
+        SignerScope::CoinJoinFunding,
+        SignerScope::PlatformIdentity,
+        SignerScope::DashPayCrypto,
+        SignerScope::PlatformFunding { max_duffs: 1 },
+        SignerScope::MasternodeVoting,
+        SignerScope::MasternodeOwner,
     ];
 
     fn uses(scope: SignerScope, p: &str) -> Vec<KeyUse> {
@@ -565,9 +654,10 @@ mod tests {
     }
 
     /// Everything but an owner payload signature, which only a
-    /// `MasternodeOp` grant's signer makes (MG-04 D38), and no signature or
-    /// message signature at an owner key (D50). A voting key keeps every
-    /// use but the owner payload.
+    /// `MasternodeOp` grant's signer makes (MG-04 D38), or a masternode
+    /// withdrawal, which only a `MasternodeWithdraw` grant's makes (MG-13
+    /// P3), and no signature or message signature at an owner key (D50). A
+    /// voting key keeps every use but those two.
     #[test]
     fn full_scope_allows_everything_but_owner_signatures() {
         for p in ["m/0", "m/44'/1'/0'/0/0", "m/9'/1'/3'/1'/0"] {
@@ -720,6 +810,8 @@ mod tests {
             (SignerScope::MasternodeOwner, KeyUse::OwnerPayload, "payout"),
             (SignerScope::Full, KeyUse::OwnerPayload, "owner"),
             (s, KeyUse::OwnerPayload, "owner"),
+            (WITHDRAW_OWNER, KeyUse::Vote, "voting"),
+            (withdraw_payout(), KeyUse::Vote, "voting"),
         ] {
             assert!(
                 !scope.allows_attached(key_use, role),
@@ -750,9 +842,15 @@ mod tests {
             SignerScope::PlatformFunding { max_duffs: 1 },
             SignerScope::MasternodeVoting,
             SignerScope::Full,
+            WITHDRAW_OWNER,
+            withdraw_payout(),
         ] {
             assert!(
                 !other.allows(KeyUse::OwnerPayload, &path("m/9'/1'/3'/2'/0"), T),
+                "{other:?}"
+            );
+            assert!(
+                !other.allows_attached(KeyUse::OwnerPayload, "owner"),
                 "{other:?}"
             );
         }
@@ -769,6 +867,77 @@ mod tests {
             "m",
         ] {
             assert!(uses(s, other).is_empty(), "{other}");
+        }
+    }
+    /// MG-13 P3: a withdrawal scope makes the withdrawal and nothing else
+    /// (no digest, message, public key, owner payload or vote), with an
+    /// owner key or an address key only; every other scope refuses the
+    /// withdrawal, `Full` included.
+    #[test]
+    fn masternode_withdrawal_withdraws_with_owner_and_address_keys_only() {
+        let withdrawal = vec![KeyUse::MasternodeWithdrawal];
+        for s in [WITHDRAW_OWNER, withdraw_payout()] {
+            for ok in [
+                "m/9'/1'/3'/2'/0",  // keychain owner key
+                "m/9'/1'/3'/2'/19", // keychain owner key
+                "m/44'/1'/0'/0/0",  // BIP44 receive address
+                "m/44'/1'/3'/1/9",  // BIP44 change address
+                "m/0'/1/3",         // BIP32 address
+            ] {
+                assert_eq!(uses(s, ok), withdrawal, "{s:?} {ok}");
+            }
+            for other in [
+                "m/9'/1'/3'/1'/0",  // voting
+                "m/9'/1'/3'/3'/0",  // operator
+                "m/9'/1'/3'/4'/0'", // platform node
+                "m/9'/1'/3'/2'/0'",
+                "m/9'/5'/3'/2'/0",
+                "m/9'/1'/4'/0'/0/1",
+                "m/9'/1'/5'/1'/0",
+                "m/9'/1'/5'/0'/0'/0'/0'",
+                "m/9'/1'/15'/0'/1/2",
+                "m/44'/1'/0'",
+                "m/44'/5'/0'/0/0",
+                "m",
+            ] {
+                assert!(uses(s, other).is_empty(), "{s:?} {other}");
+            }
+        }
+        for other in OTHER_SCOPES {
+            for p in [
+                "m/9'/1'/3'/2'/0",
+                "m/44'/1'/0'/0/0",
+                "m/0'/1/3",
+                "m/9'/1'/3'/1'/0",
+            ] {
+                assert!(
+                    !other.allows(KeyUse::MasternodeWithdrawal, &path(p), T),
+                    "{other:?} {p}"
+                );
+            }
+            for role in ["owner", "voting", "payout"] {
+                assert!(
+                    !other.allows_attached(KeyUse::MasternodeWithdrawal, role),
+                    "{other:?} {role}"
+                );
+            }
+        }
+        for s in [WITHDRAW_OWNER, withdraw_payout()] {
+            assert!(s.allows_attached(KeyUse::MasternodeWithdrawal, "owner"));
+            assert!(s.allows_attached(KeyUse::MasternodeWithdrawal, "payout"));
+            assert!(!s.allows_attached(KeyUse::MasternodeWithdrawal, "voting"));
+            assert!(!s.allows_attached(KeyUse::MasternodeWithdrawal, "operator"));
+            for key_use in ALL_USES
+                .into_iter()
+                .filter(|u| *u != KeyUse::MasternodeWithdrawal)
+            {
+                for role in ["owner", "voting", "payout"] {
+                    assert!(
+                        !s.allows_attached(key_use, role),
+                        "{s:?} {key_use:?} {role}"
+                    );
+                }
+            }
         }
     }
 }

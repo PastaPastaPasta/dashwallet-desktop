@@ -62,6 +62,7 @@ mod signer;
 mod types;
 mod vault;
 mod vote;
+mod withdrawal;
 
 pub use crypto::{CALIBRATION_TARGET, KdfParams, KdfPolicy};
 pub use error::{MnemonicError, SignerError, VaultError};
@@ -86,6 +87,7 @@ pub use vote::{
     FundingOutcome, FundingVote, NameChoice, NameVote, SignedNameVote, VoteSigner, VotingKey,
     is_contested_label,
 };
+pub use withdrawal::{WithdrawalDestination, WithdrawalKey};
 
 /// Directory of the vault inside a network data directory.
 pub const VAULT_DIR: &str = "vault";

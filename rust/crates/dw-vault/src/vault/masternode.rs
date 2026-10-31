@@ -37,13 +37,16 @@ use crate::{SignerError, VaultError};
 const MN_KEY_PREFIX: &str = "mnkey/";
 /// The roles a key may be attached for: the owner and voting keys and the
 /// payout address's key. `operator` and `platform` are refused.
-pub const MASTERNODE_KEY_ROLES: [&str; 3] = [ROLE_OWNER, ROLE_VOTING, "payout"];
+pub const MASTERNODE_KEY_ROLES: [&str; 3] = [ROLE_OWNER, ROLE_VOTING, ROLE_PAYOUT];
 
 /// The role of an attached voting key, the one a vote signer reads (MG-05).
 pub(crate) const ROLE_VOTING: &str = "voting";
 /// The role of an attached owner key, the one a ProUpRegTx's owner
 /// signature reads (MG-04 D12).
 pub(crate) const ROLE_OWNER: &str = "owner";
+/// The role of the attached payout address's key, the one a masternode
+/// credit withdrawal with the payout key reads (MG-13 P3).
+pub(crate) const ROLE_PAYOUT: &str = "payout";
 /// Longest key a caller may attach (a WIF is 52 characters).
 pub const MAX_MASTERNODE_KEY_BYTES: usize = 256;
 

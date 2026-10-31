@@ -338,6 +338,13 @@ impl From<GrantPurpose> for GrantPurposeSpec {
             P::IdentityScan => Self::IdentityScan,
             P::Governance => Self::Governance,
             P::MasternodeOp { max_duffs } => Self::MasternodeOp { max_duffs },
+            // The host cannot request a masternode withdrawal yet (MG-13 is
+            // engine-only; MG-10 binds it): an engine-issued one shows as the
+            // Platform credits it caps, as dw-ffi shows purposes it lacks.
+            P::MasternodeWithdraw { max_credits, .. } => Self::PlatformOp {
+                max_duffs: 0,
+                max_credits,
+            },
         }
     }
 }
