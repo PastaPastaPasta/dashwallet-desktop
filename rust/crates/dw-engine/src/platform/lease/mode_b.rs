@@ -1173,13 +1173,15 @@ impl LeaseTable {
     }
 
     /// Spawns [`Self::refresh_funding`] for `wallet`: the changeset tap and
-    /// a funding call's end, neither of which may wait for it.
+    /// a funding call's end, neither of which may wait for it. Tracked, so
+    /// close waits for it to let go of the wallet; none starts after close
+    /// (BL-544).
     pub(crate) fn request_refresh(self: &Arc<Self>, wallet: WalletId) {
         if self.tracked.get().is_none() {
             return;
         }
         let table = Arc::clone(self);
-        self.rt.spawn(async move {
+        self.background.spawn(&self.rt, async move {
             table.refresh_funding(wallet).await;
         });
     }
@@ -1599,6 +1601,14 @@ impl TrackedLocks for SessionTracked {
     async fn rows(&self, wallet: WalletId) -> Option<Vec<TrackedRow>> {
         let session = self.session.upgrade()?;
         let w = session.wallet(&wallet).await.ok()?;
+        #[cfg(test)]
+        {
+            let hold = session.leases.test_hold_rows.lock().unwrap().take();
+            if let Some(held) = hold {
+                let _ = held.send(());
+                std::future::pending::<()>().await;
+            }
+        }
         // Not `list_tracked_locks`: it reads a wallet whose info is gone
         // (a removal in flight) as no rows, which would read `None` for a
         // funded step. Here that is unknown: the snapshot stays.

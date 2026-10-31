@@ -400,6 +400,9 @@ impl NetworkSession {
         freeze.drain().await;
         freeze.finish(self.vault.status());
         self.leases.abort_tasks();
+        // The refreshes and resume passes hold the session's wallets: none
+        // outlives the close (BL-544).
+        self.leases.background.close().await;
     }
 
     /// The background `DashPayCrypto` of `wallet` (§4.5), created on

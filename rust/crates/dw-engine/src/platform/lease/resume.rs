@@ -214,10 +214,18 @@ impl LeaseTable {
             return;
         };
         let table = Arc::clone(self);
-        let task = self
-            .rt
-            .spawn(async move { table.run_pass(wallet, id).await })
-            .abort_handle();
+        // Tracked, so close waits for it to let go of the wallet (BL-544).
+        let Some(task) = (self.background).spawn(&self.rt, async move {
+            table.run_pass(wallet, id).await;
+        }) else {
+            // Closed since the J step above: the pass never runs.
+            self.with_j(|i, _| {
+                if i.mode_b.passes.current(&wallet, id) {
+                    i.mode_b.passes.running.remove(&wallet);
+                }
+            });
+            return;
+        };
         // Registered so close aborts it. Aborted here when close ran since
         // the J step above (its `abort_tasks` already ran), or when the
         // pass was ended meanwhile (the wallet closed or removed: its
@@ -259,8 +267,15 @@ impl LeaseTable {
                         continue;
                     }
                     let resumer = Arc::clone(resumer);
-                    resumes
-                        .spawn(async move { (row.txid, resumer.resume(wallet, row.txid).await) });
+                    // A resume holds the wallet across the library's wait:
+                    // tracked too, as dropping `resumes` only aborts it. None
+                    // starts after close.
+                    let Some(resume) = (self.background)
+                        .track(async move { (row.txid, resumer.resume(wallet, row.txid).await) })
+                    else {
+                        return;
+                    };
+                    resumes.spawn(resume);
                 }
             }
             while let Some(done) = resumes.join_next().await {

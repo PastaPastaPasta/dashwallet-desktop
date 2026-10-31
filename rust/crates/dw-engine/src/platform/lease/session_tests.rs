@@ -43,6 +43,16 @@ pub(crate) struct Fixture {
     pub(crate) wallet: WalletId,
 }
 
+/// The fixture's session options: every address unreachable.
+fn options() -> crate::SessionOptions {
+    crate::SessionOptions {
+        dapi_addresses: vec!["http://127.0.0.1:1".into()],
+        quorum_url: Some("http://127.0.0.1:1".into()),
+        spv_peers: vec!["127.0.0.1:1".into()],
+        ..Default::default()
+    }
+}
+
 pub(crate) fn fixture(encrypted: bool) -> Fixture {
     let dir = dw_testutil::private_tempdir();
     let rec = Arc::new(Recorder::default());
@@ -60,15 +70,7 @@ pub(crate) fn fixture(encrypted: bool) -> Fixture {
     )
     .unwrap();
     let session = engine
-        .block_on(engine.open_network(
-            DashNetwork::Regtest,
-            crate::SessionOptions {
-                dapi_addresses: vec!["http://127.0.0.1:1".into()],
-                quorum_url: Some("http://127.0.0.1:1".into()),
-                spv_peers: vec!["127.0.0.1:1".into()],
-                ..Default::default()
-            },
-        ))
+        .block_on(engine.open_network(DashNetwork::Regtest, options()))
         .unwrap();
     let pass: Option<&'static [u8]> = encrypted.then_some(PASS);
     engine
@@ -3600,4 +3602,36 @@ fn mg05_a_failed_prepare_refunds_the_masternode_budget() {
     assert_eq!(spent(&l, BudgetPurpose::Masternode), Some(0));
     assert_eq!(spend_of(&l), None);
     assert_eq!(f.reserved(), 0);
+}
+
+/// BL-544: Mode B's funding refresh runs in the background holding the
+/// wallet, and with it the wallet database. Close waits for it, so the
+/// database reopens as soon as `close_network` returns; before, the refresh
+/// still held it and the reopen was `storage_in_use`.
+#[test]
+fn close_waits_for_a_funding_refresh_that_holds_the_wallet() {
+    let mut f = fixture(false);
+    let (hold, held) = tokio::sync::oneshot::channel();
+    *f.session.leases.test_hold_rows.lock().unwrap() = Some(hold);
+    f.session.leases.request_refresh(f.wallet);
+    f.engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(10), held).await })
+        .expect("the refresh reads the wallet")
+        .unwrap();
+    assert!(
+        f.engine
+            .block_on(f.engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+    f.session = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
+        .expect("the wallet database is free once close returns");
+    assert!(
+        f.session
+            .wallet_infos()
+            .unwrap()
+            .iter()
+            .any(|w| w.wallet_id == f.wallet)
+    );
 }

@@ -21,6 +21,7 @@
 //! The library side (Mode A's PR, Mode B's call permits) builds on this
 //! API: P2b and P4 install it, DP1-02 uses it.
 
+pub(crate) mod background;
 pub(crate) mod budget;
 pub(crate) mod call;
 pub(crate) mod fence;
