@@ -153,7 +153,7 @@ impl Engine {
     }
 
     /// Closes the session for `network`. Returns `false` when none was open.
-    /// It waits up to [`CLOSE_LOAD_WAIT`] for a wallet load in flight, then
+    /// It waits up to 30 s for a wallet load in flight, then
     /// is refused with `wallet` ("a wallet is still opening").
     /// `ShieldedSpendUnresolved`, the session left open, while one of its
     /// wallets holds a shielded spend whose result is not known (DEC-1046):
@@ -164,20 +164,29 @@ impl Engine {
         let shared = Arc::clone(&self.shared);
         self.handle
             .spawn(async move {
-                let mut sessions = shared.sessions.lock().await;
-                let Some(session) = sessions.get(&network).cloned() else {
+                let Some(session) = shared.sessions.lock().await.get(&network).cloned() else {
                     return Ok(false);
                 };
                 // From the check to the commit no wallet loads and no
                 // signing shielded call starts (E1 r2 R2-3). A load in
-                // flight is waited for, briefly; a call running refuses the
-                // close.
+                // flight is waited for, briefly, without the sessions lock,
+                // so opens, lookups and quit go on meanwhile; a call running
+                // refuses the close.
                 let loads = session.platform.wallet_loads.write();
                 let Ok(_loads) = tokio::time::timeout(CLOSE_LOAD_WAIT, loads).await else {
                     return Err(EngineError::Wallet(
                         "a wallet is still opening; close the network once it is open".into(),
                     ));
                 };
+                let mut sessions = shared.sessions.lock().await;
+                // Closed (quit) or reopened while it waited: nothing of this
+                // session is left to close.
+                if !sessions
+                    .get(&network)
+                    .is_some_and(|open| Arc::ptr_eq(open, &session))
+                {
+                    return Ok(false);
+                }
                 let Ok(_preflight) = session.platform.close_preflight.try_write() else {
                     return Err(EngineError::ShieldedSpendUnresolved);
                 };

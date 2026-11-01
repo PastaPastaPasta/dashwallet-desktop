@@ -348,9 +348,9 @@ fn close_wallet_and_the_network_close_are_refused_while_a_spend_is_unresolved() 
     );
 }
 
-/// Own review r1, minors 1-3: a shielded call of the wallet in flight (here its
-/// lock, as a send holds it from its quote to its record) refuses the
-/// network close, and Close Wallet waits for it to end; a spend it stored
+/// Own review r1, minors 1-3: a shielded call of the wallet in flight (here
+/// its guards, as a send holds them from its quote to its record: the close
+/// preflight's read side, then the wallet's lock) refuses the network close, and Close Wallet waits for it to end; a spend it stored
 /// meanwhile then refuses the unload, which leaves the wallet loaded with
 /// its background lease (the passes are not held back).
 #[test]
@@ -362,6 +362,7 @@ fn a_close_waits_for_or_refuses_a_shielded_call_in_flight() {
     engine.block_on(session.ensure_background());
     assert!(session.leases.background(&wallet).is_some());
 
+    let signing = engine.block_on(session.platform.close_preflight.read());
     let spending = engine.block_on(pool::wallet_lock(&session, wallet).lock_owned());
     let closed = engine.block_on(engine.close_network(DashNetwork::Regtest));
     assert!(
@@ -380,6 +381,7 @@ fn a_close_waits_for_or_refuses_a_shielded_call_in_flight() {
     // The call stores its spend, then ends.
     store_spends(&engine, &session, wallet);
     drop(spending);
+    drop(signing);
     let unloaded = rx.recv_timeout(Duration::from_secs(30)).unwrap();
     assert!(
         matches!(unloaded, Err(EngineError::ShieldedSpendUnresolved)),
@@ -475,6 +477,8 @@ fn a_spend_started_during_the_close_check_waits_and_finds_the_session_closed() {
 /// held as a load holds it) up to `CLOSE_LOAD_WAIT`, then goes ahead once
 /// it ends; past the bound it is refused as `wallet`, "a wallet is still
 /// opening", the session left open, never `shielded_spend_unresolved`.
+/// The wait holds no engine-wide lock (review m4), and a quit during it
+/// leaves the close nothing to close.
 #[test]
 fn a_close_waits_for_a_wallet_load_and_never_calls_it_a_payment() {
     let dir = dw_testutil::private_tempdir();
@@ -501,10 +505,38 @@ fn a_close_waits_for_a_wallet_load_and_never_calls_it_a_payment() {
         let closing = scope.spawn(close);
         std::thread::sleep(Duration::from_millis(300));
         assert!(!closing.is_finished(), "the close waits for the load");
+        // The wait holds no engine-wide lock: lookups (and opens, quit)
+        // go on meanwhile.
+        let (found, looked_up) = std::sync::mpsc::channel();
+        let engine = &engine;
+        scope.spawn(move || {
+            let _ = found.send(
+                engine
+                    .block_on(engine.session(&DashNetwork::Regtest))
+                    .is_some(),
+            );
+        });
+        assert_eq!(
+            looked_up.recv_timeout(Duration::from_secs(1)),
+            Ok(true),
+            "the lookup waited for the close"
+        );
         drop(loading);
         closing.join().unwrap()
     });
     assert!(matches!(closed, Ok(true)), "{closed:?}");
+
+    // A quit during the wait: the close finds nothing left to close.
+    let session = open(&engine);
+    let loading = engine.block_on(session.platform.wallet_loads.read());
+    let closed = std::thread::scope(|scope| {
+        let closing = scope.spawn(close);
+        std::thread::sleep(Duration::from_millis(300));
+        engine.block_on(engine.shutdown()).unwrap();
+        drop(loading);
+        closing.join().unwrap()
+    });
+    assert!(matches!(closed, Ok(false)), "{closed:?}");
 }
 
 /// The quitting half of the next test, run in a child process: the first
@@ -535,9 +567,9 @@ fn quit_with_unresolved_spends_child() {
 /// still names them by hash, the facade lists them pending, and the first
 /// admitted pass hands the library those identical bytes to re-send
 /// (`redrive_pending_spends`, operations.rs:3212-3257, deserializes
-/// `st_bytes` and broadcasts them). The broadcast needs a pass that
-/// fetched Platform's proved anchor set and scanned the notes
-/// (coordinator.rs:1369-1392), which no local transport can answer, so
+/// `st_bytes` and broadcasts them). The re-send (coordinator.rs:1431)
+/// comes after the pass scanned the notes (coordinator.rs:1381-1391),
+/// which no local transport can answer, so
 /// the test stops at the re-send's first step: each record decodes as
 /// operations.rs:3243 does, to the signed transfer or unshield of its
 /// nullifiers, and a real (offline) pass leaves every record, reservation
@@ -595,9 +627,9 @@ fn a_quit_keeps_unresolved_spends_for_the_next_launch() {
         let stored: Vec<PendingRedrive> = stored.into_iter().map(|(_, r)| r).collect();
         assert_eq!(stored, spends());
         stored.iter().for_each(assert_redrivable);
-        // A real pass (offline here: it stops at the anchors' fetch,
-        // coordinator.rs:1369, before the re-send at :1417) leaves them
-        // as they were.
+        // A real pass (offline here: the anchors' prefetch gives none,
+        // coordinator.rs:1369, and the note scan fails, so the pass ends
+        // at :1391, before the re-send at :1431) leaves them as they were.
         assert!(pool::guarded_pass(&s, &m, true).await, "the pass ran");
     });
     assert_eq!(kept(&engine, &session, wallet), expected());

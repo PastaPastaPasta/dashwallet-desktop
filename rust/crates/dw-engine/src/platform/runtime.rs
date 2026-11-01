@@ -735,10 +735,12 @@ impl PlatformRuntime {
 
 impl NetworkSession {
     /// Whether a loaded wallet holds a shielded spend whose result is not
-    /// known, or has a shielded call in flight that may store one before
-    /// the close's gate lets it end: an in-app close of the session is
-    /// refused then (DEC-1046, `Engine::close_network`). `false` once
-    /// closed. Only under [`PlatformRuntime::close_preflight`] held to
+    /// known: an in-app close of the session is refused then (DEC-1046,
+    /// `Engine::close_network`). A signing shielded call in flight, which
+    /// may store one before the close's gate lets it end, holds
+    /// `close_preflight` to read and refuses the close there; an unload in
+    /// flight is no payment, and the close's gate waits for it. `false`
+    /// once closed. Only under [`PlatformRuntime::close_preflight`] held to
     /// write does the answer hold until the close commits.
     pub(crate) async fn holds_shielded_spends(&self) -> bool {
         let Ok(live) = self.live() else {
@@ -746,11 +748,7 @@ impl NetworkSession {
         };
         for id in live.manager.list_wallet_ids_blocking() {
             let id = WalletId(id);
-            if super::shielded_pool::wallet_lock(self, id)
-                .try_lock()
-                .is_err()
-                || super::shielded_pool::holds_stored_spends(&live.manager, id).await
-            {
+            if super::shielded_pool::holds_stored_spends(&live.manager, id).await {
                 return true;
             }
             #[cfg(test)]

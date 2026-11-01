@@ -303,15 +303,17 @@ commands! {
 
 /// The active session's close, as `close_network` returned it: the slot and
 /// the session's handles are dropped once it closed, or failed to. A
-/// refusal (`shielded_spend_unresolved`, DEC-1046) leaves both as they
-/// were: the session stays open and active, its drafts kept.
-fn close_active(
+/// refusal, which leaves the engine's session open
+/// (`shielded_spend_unresolved`, DEC-1046; `wallet` while a wallet is
+/// still opening, E1 r2), leaves both as they were: the session stays
+/// active, its drafts kept.
+pub(crate) fn close_active(
     state: &crate::state::AppState,
     slot: &mut Option<Arc<dw_engine::NetworkSession>>,
     closed: Result<bool, dw_engine::EngineError>,
 ) -> Result<bool, AppError> {
-    if let Err(e @ dw_engine::EngineError::ShieldedSpendUnresolved) = closed {
-        return Err(e.into());
+    if closed.is_err() && slot.as_ref().is_some_and(|s| s.is_open()) {
+        return closed.map_err(Into::into);
     }
     *slot = None;
     state.clear_handles();
