@@ -661,8 +661,10 @@ is never refused: it seals and drains as any close, then leaves that wallet load
 nothing more. Its stores are committed (WAL), not closed: wallet.sqlite writes commit inline (the persister's
 `Immediate` mode), the close flushes the wallet once more (a failed flush is logged, not returned), and the library
 writes a spend's record to the shielded store before the spend returns, best-effort at the pin (`arm_redrive_record`,
-`operations.rs:2983`: a failed write is logged, and that spend then has no stored transition to re-send; the anchor
-prune backstop still releases its notes). The connections stay open until the process exits, so their last WAL
+`operations.rs:2983`: a failed write is logged, and that spend then has no stored transition to re-send and nothing on
+disk; its notes' reservations live in memory only (`file_store.rs:572`, `mark_pending`), so they end with the session,
+an in-app close included, which nothing then refuses, and its notes read unspent until the note scan finds them
+spent). The connections stay open until the process exits, so their last WAL
 checkpoint does not run; the WAL replays at the next open. The next launch rehydrates the spend as pending,
 reservations and all: its stored transition, decodable as the library's re-send decodes it, its `unresolved_spends`
 entry and its journal record (not its history row, above). dw-ffi, frozen in 0.1, reports `shielded_spend_unresolved`

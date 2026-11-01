@@ -921,16 +921,17 @@ impl NetworkSession {
         // library wrote the spend's record to the shielded store before the
         // spend returned, best-effort (`arm_redrive_record`,
         // operations.rs:2983: a failed write is logged, and that spend has
-        // no record to keep). The connections stay open until the process
+        // no record to keep; its reservations live in memory only,
+        // file_store.rs:572, and end with the session). The connections stay open until the process
         // exits, so their last WAL checkpoint does not run; the WAL replays
         // at the next open, and the rows rehydrate as pending. The cost:
         // the Arc cycle above keeps the persister's open-path claim, so the
         // network reopens only in a new process. App quit takes this path
         // (`Engine::shutdown`); an in-app close is refused beforehand
         // (`Engine::close_network`), and from that check to this close no
-        // signing shielded call starts and no wallet loads
-        // (`PlatformRuntime::close_preflight`, `wallet_loads`, E1 r2 R2-3), so an in-app
-        // close keeps no wallet.
+        // signing shielded call starts and no wallet loads (an import or a
+        // create stores no spend), so an in-app close keeps no wallet
+        // (`PlatformRuntime::close_preflight`, `wallet_loads`, E1 r2 R2-3).
         let mut kept = Vec::new();
         for id in manager.list_wallet_ids_blocking() {
             let unloaded = (self.platform).remove_from_manager(

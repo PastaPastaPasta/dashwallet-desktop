@@ -2330,7 +2330,10 @@ fn already_consumed_leaves_a_shield_checking_and_check_again_available() {
 /// falling back to the record's InstantSend proof, or, with nothing better,
 /// to no proof (`Broadcast`: "Check again" then waits for one and applies
 /// nothing). The real tracked rows carry each proof; only the proved apply
-/// at the end settles the lock.
+/// at the end settles the lock. The seam is `ShieldedLib::apply`: each
+/// proof change is simulated on the real row there, as the pin's
+/// derivation would leave it (proof.rs:443-455, tracking.rs:564-620,
+/// fund_from_asset_lock.rs:245-262); that derivation itself does not run.
 #[test]
 fn check_again_keeps_the_outpoint_whatever_proof_the_library_derives() {
     let fx = Fixture::new(0);
