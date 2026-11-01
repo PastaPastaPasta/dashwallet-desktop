@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # GitHub Actions (release.yml, publish job): turn a run's artifacts into GitHub releases.
 #
-#   ci/github/release-publish.sh prepare   decide what this run publishes, stage and copy the files
+#   ci/github/release-publish.sh classify  print main, tag or skip for this trigger (needs only the event and ref)
+#   ci/github/release-publish.sh prepare   check what this run publishes, stage and copy the files
 #   ci/github/release-publish.sh publish   create / update the releases
 #
 # Needs: DIST (the downloaded dist-* artifacts and their SHA256SUMS), VERSION (release-version.sh),
@@ -25,13 +26,29 @@
 # It never moves backwards: if the current `continuous` commit is a descendant of this run's, the run
 # publishes its immutable release and leaves `continuous` alone.
 #
-# A third queued publish cancels the second (GitHub keeps one pending run per concurrency group), so a
-# burst of main pushes can skip the immutable release of a middle commit; `continuous` ends at the last.
+# GitHub keeps one pending job per concurrency group and cancels the older pending one when another
+# arrives. The workflow's group is per ref (main has one, each tag its own), so a tag's release is
+# never dropped for a main push. On main a burst of pushes can cancel the pending publish of a middle
+# commit (no immutable release for it), and builds finish out of order, so `continuous` can end one
+# commit behind main until the next push publishes. It never goes backwards.
 set -euo pipefail
 
-mode=${1:?usage: $0 prepare|publish}
-: "${DIST:?set DIST}" "${VERSION:?set VERSION}" "${GITHUB_REF:?}" "${GITHUB_SHA:?}" "${GITHUB_REPOSITORY:?}"
+mode=${1:?usage: $0 classify|prepare|publish}
 event=${GITHUB_EVENT_NAME:?}
+ref=${GITHUB_REF:?}
+
+# --- what this trigger publishes ----------------------------------------------------------------
+kind=skip
+if [[ "$event" == push ]]; then
+  if [[ "$ref" == refs/heads/main ]]; then
+    kind=main
+  elif [[ "$ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+    kind=tag
+  fi
+fi
+if [[ "$mode" == classify ]]; then echo "$kind"; exit 0; fi
+
+: "${DIST:?set DIST}" "${VERSION:?set VERSION}" "${GITHUB_SHA:?}" "${GITHUB_REPOSITORY:?}"
 repo=$GITHUB_REPOSITORY
 sha=$GITHUB_SHA
 out=${OUT:-$DIST/../publish}
@@ -39,24 +56,34 @@ dry=${DRY_RUN:-}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 die() { echo "release-publish: $*" >&2; exit 1; }
+# A read that distinguishes "not there" from a failure: returns 0 with the output in $PROBE_OUT, 44 on a
+# 404 / "release not found", and ends the script on any other error (a rate limit or a 5xx must not look
+# like "absent" and send the script on to a write).
+PROBE_OUT=
+probe() {
+  local err rc=0
+  err=$(mktemp)
+  PROBE_OUT=$("$@" 2>"$err") || rc=$?
+  if ((rc == 0)); then rm -f "$err"; return 0; fi
+  if grep -qiE 'HTTP 404|release not found' "$err"; then rm -f "$err"; return 44; fi
+  cat "$err" >&2; rm -f "$err"
+  die "failed: $*"
+}
+# A release that exists must be complete: published, with every file.
+complete_release() {
+  local tag=$1 want=$2
+  probe gh release view "$tag" --repo "$repo" --json isDraft,assets --jq '[.isDraft,(.assets|length)]|@tsv' || return 1
+  [[ "$PROBE_OUT" == "false"$'\t'"$want" ]] || die "release $tag exists but is not complete (isDraft/assets: $PROBE_OUT, want false/$want): finish or delete it by hand"
+}
 # A write: printed in a dry run, done otherwise.
 w() { if [[ -n "$dry" ]]; then printf 'DRY-RUN:'; printf ' %q' "$@"; echo; else "$@"; fi; }
 
-# --- what this run publishes -------------------------------------------------------------------
-kind=
-if [[ "$event" == push ]]; then
-  if [[ "$GITHUB_REF" == refs/heads/main ]]; then
-    kind=main
-  elif [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
-    kind=tag
-  fi
-fi
 # A tag that is not a release tag (a dry run such as v0.0.0-rel8) is skipped, not an error: exit 3.
-if [[ -z "$kind" && "$event" == push && "$GITHUB_REF" == refs/tags/* ]]; then
-  echo "release-publish: $GITHUB_REF is not a release tag (vX.Y.Z[-rc.N]); nothing to publish" >&2
+if [[ "$kind" == skip && "$event" == push && "$ref" == refs/tags/* ]]; then
+  echo "release-publish: $ref is not a release tag (vX.Y.Z[-rc.N]); nothing to publish" >&2
   exit 3
 fi
-[[ -n "$kind" ]] || die "nothing to publish for $event on $GITHUB_REF (only a push to main or a tag vX.Y.Z[-rc.N])"
+[[ "$kind" != skip ]] || die "nothing to publish for $event on $ref (only a push to main or a tag vX.Y.Z[-rc.N])"
 git rev-parse --verify -q refs/remotes/origin/main >/dev/null || die "origin/main is not fetched"
 git merge-base --is-ancestor "$sha" refs/remotes/origin/main || die "$sha is not on origin/main: refusing to publish"
 
@@ -71,7 +98,7 @@ if [[ "$kind" == main ]]; then
   [[ "$base" != "$VERSION" ]] || die "VERSION $VERSION is not a -dev version"
   tag="v$base-dev.${GITHUB_RUN_NUMBER:?}+$short"
 else
-  tag=${GITHUB_REF#refs/tags/}
+  tag=${ref#refs/tags/}
 fi
 run_url=${GITHUB_SERVER_URL:-https://github.com}/$repo/actions/runs/${GITHUB_RUN_ID:-0}
 
@@ -102,8 +129,8 @@ publish)
     version=${tag#v}
     notes=(--notes "Release $tag. $verify_note")
     [[ ! -f "$here/../../docs/release/${version%%-*}-notes.md" ]] || notes=(--notes-file "$here/../../docs/release/${version%%-*}-notes.md")
-    if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-      echo "release-publish: release $tag exists; leaving it as it is"
+    if complete_release "$tag" 5; then
+      echo "release-publish: release $tag exists and is complete; leaving it as it is"
     else
       # The tag exists (it triggered this run); a prerelease until 1.0.
       w gh release create "$tag" "${files[@]}" "$DIST/SHA256SUMS" --repo "$repo" --verify-tag \
@@ -113,8 +140,8 @@ publish)
   fi
 
   # main: the immutable per-run prerelease. Never edited once it exists.
-  if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-    echo "release-publish: release $tag exists; immutable, leaving it as it is"
+  if complete_release "$tag" 5; then
+    echo "release-publish: release $tag exists and is complete; immutable, leaving it as it is"
   else
     w gh release create "$tag" "${files[@]}" "$DIST/SHA256SUMS" --repo "$repo" --target "$sha" \
       --prerelease --latest=false --title "Preview build $VERSION" \
@@ -122,7 +149,7 @@ publish)
   fi
 
   # main: the rolling prerelease.
-  cur=$(gh api "repos/$repo/git/ref/tags/continuous" --jq .object.sha 2>/dev/null || true)
+  if probe gh api "repos/$repo/git/ref/tags/continuous" --jq .object.sha; then cur=$PROBE_OUT; else cur=; fi
   if [[ -n "$cur" && "$cur" != "$sha" ]] && git cat-file -e "$cur^{commit}" 2>/dev/null \
     && git merge-base --is-ancestor "$sha" "$cur"; then
     echo "release-publish: continuous is at $cur, newer than $sha; not moving it back"
@@ -130,7 +157,7 @@ publish)
   fi
   cont_notes="Latest build of main: commit $sha ([run ${GITHUB_RUN_NUMBER}]($run_url)), also published as $tag. Ad-hoc signed on macOS, unsigned on Windows and Linux; not for real funds. $verify_note"
   cont_files=("$out/continuous"/"$cont_prefix"-* "$out/continuous/SHA256SUMS")
-  if ! gh release view continuous --repo "$repo" >/dev/null 2>&1; then
+  if ! probe gh release view continuous --repo "$repo"; then
     # No release yet; a tag may still be there from an earlier one.
     [[ -z "$cur" || "$cur" == "$sha" ]] || w gh api -X PATCH "repos/$repo/git/refs/tags/continuous" -f sha="$sha" -F force=true
     w gh release create continuous "${cont_files[@]}" --repo "$repo" --target "$sha" \

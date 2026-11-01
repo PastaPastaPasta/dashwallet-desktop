@@ -255,8 +255,9 @@ The `checksums` job downloads the three `dist-<os>` artifacts, writes `SHA256SUM
 
 **Triggers and publishing (DEC-1058).** The workflow runs on pushes to every branch, on tags `v*`, on pull requests
 and on `workflow_dispatch`; all of them build and upload CI artifacts with `contents: read`. Only the `publish` job
-has write permissions (`contents`, `id-token`, `attestations`), and its `if` admits a push to `main` or to a `v*`
-tag only, so a fork's pull request, a branch, a dispatch and a dry-run tag never reach it. It checks out the full
+has write permissions (`contents`, `id-token`, `attestations`), and its `if` admits a push to `main` or to a release
+tag (as classified by the read-only `decide` job) only, so a fork's pull request, a branch, a dispatch and a dry-run
+tag never reach it. It checks out the full
 history, runs `ci/github/release-publish.sh`, which refuses any commit that is not on `origin/main`, and publishes:
 
 - push to `main`: an immutable prerelease `v<version>-dev.<run>+<short sha>` (never edited; skipped if it exists)
@@ -270,9 +271,19 @@ history, runs `ci/github/release-publish.sh`, which refuses any commit that is n
 - `actions/attest-build-provenance` runs before the release is written, on every file (the four bundles and both
   `SHA256SUMS`); the stable-named copies have the same bytes, so one attestation covers both.
 
-`concurrency: release-publish` (no cancel) serializes publishes; GitHub keeps one pending run per group, so a
-third queued publish cancels the second: a burst of pushes can skip the immutable release of a middle commit,
-never the final `continuous`. The `script-tests` job runs `ci/github/release-publish-test.sh` (a fake `gh` and a
+The publish concurrency group is per ref (`release-publish-main`, and one per tag), never cancelling. GitHub
+keeps one pending job per group and cancels the older pending one when another arrives, and builds finish out of
+order: a burst of pushes can skip the immutable release of a middle commit, and `continuous` can end one commit
+behind main until the next push publishes (it never moves backwards, and its notes name its commit). A tag's
+release cannot be displaced by a main push. Repository setting: "Immutable releases" must stay **off**, since
+`continuous` renames and deletes assets and moves its tag (the per-build releases are immutable by this workflow's
+own rule, not the setting). An interrupted `gh release create` can leave a draft or an incomplete release; the
+script then fails with a message rather than treating it as done, and the leftover is deleted by hand. The `decide` job
+(read-only) runs `release-publish.sh classify`; `publish` needs its verdict as well as a push to `main` or a `v*`
+tag. Dev tags (`v*-dev.*`) do not trigger the workflow. `gh` reads that fail with anything other than a 404 stop the
+script before any write.
+
+The `script-tests` job runs `ci/github/release-publish-test.sh` (a fake `gh` and a
 scratch git repository: which triggers publish, which refuse, the swap order) on every run. For a dry run against
 the real repository: `DRY_RUN=1 ci/github/release-publish.sh publish` after `prepare` runs the reads and prints
 each write. Nothing is signed by hand and no PGP key is involved before 1.0; see `docs/release/verifying.md`.

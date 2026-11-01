@@ -6,7 +6,8 @@
 #
 # The app's version is the one in tauri.conf.json (the version source; Cargo.toml's workspace
 # version is the same, 0.1.0 everywhere). By trigger:
-#   tag vX.Y.Z      X.Y.Z, and it must equal tauri.conf.json: the binaries say what the tag says;
+#   tag vX.Y.Z[-rc.N]  the tag without its `v`; X.Y.Z must equal tauri.conf.json: the binaries say what
+#                   the tag says;
 #   other tag       the tag without its `v` (a dry run such as v0.0.0-rel1);
 #   anything else   <version>-dev.<run number>.g<short sha>, e.g. 0.1.0-dev.57.g1a2b3c4.
 # File names carry no `+`: the immutable per-run release tag does (ci/github/release-publish.sh), the
@@ -18,7 +19,7 @@ conf=$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$(dirname "${BASH_SOURCE[0]}")/
 
 if [[ "${GITHUB_REF_TYPE:-}" == tag ]]; then
   version=${GITHUB_REF_NAME#v}
-  if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$version" != "$conf" ]]; then
+  if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ && "${version%%-rc.*}" != "$conf" ]]; then
     echo "::error::tag $GITHUB_REF_NAME but tauri.conf.json says version $conf" >&2
     exit 1
   fi

@@ -35,12 +35,18 @@ mkdir "$bin"
 cat > "$bin/gh" <<'FAKE'
 #!/usr/bin/env bash
 echo "$*" >> "$LOG"
+notfound() { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
 case "$1 $2" in
-  "release view") [[ " ${FAKE_RELEASES:-} " == *" $3 "* ]]; exit ;;
+  "release view")
+    if [[ " ${FAKE_RELEASES:-} " != *" $3 "* ]]; then echo "release not found" >&2; exit 1; fi
+    case "$*" in *--json*) printf 'false\t%s\n' "${FAKE_ASSET_COUNT:-5}" ;; esac
+    exit 0 ;;
   "release upload") n=${4##*/}; echo "$((100 + $(wc -l < "$ASSETS")))	$n" >> "$ASSETS"; exit 0 ;;
   "api repos/"*)
     case "$*" in
-      *git/ref/tags/continuous*) [[ -n "${FAKE_CONT:-}" ]] && echo "$FAKE_CONT" || exit 1; exit 0 ;;
+      *git/ref/tags/continuous*)
+        [[ -z "${FAKE_API_ERROR:-}" ]] || { echo "gh: Service Unavailable (HTTP 503)" >&2; exit 1; }
+        [[ -n "${FAKE_CONT:-}" ]] && echo "$FAKE_CONT" || notfound; exit 0 ;;
       *releases/tags/continuous*) echo 42; exit 0 ;;
       *releases/42/assets*) cat "$ASSETS"; exit 0 ;;
     esac ;;
@@ -111,6 +117,18 @@ FAKE_RELEASES="continuous" FAKE_CONT="$newer" run push refs/heads/main "$c2" "$v
 check "older run: succeeds, creates its own release, leaves continuous alone" \
   '[[ $status -eq 0 ]] && log_has "release create $tag " && ! log_has "release upload" && ! log_has "git/refs/tags/continuous"'
 
+# --- a failing read is not "absent": no write happens
+FAKE_RELEASES="$tag continuous" FAKE_API_ERROR=1 run push refs/heads/main "$c2" "$ver"
+check "API error on the continuous lookup: fails before any write" \
+  '[[ $status -ne 0 ]] && ! log_has "release upload" && ! log_has "PATCH" && ! log_has "POST" && ! log_has "release create"'
+# --- an incomplete release that exists is an error, not a success
+FAKE_RELEASES="$tag continuous" FAKE_ASSET_COUNT=3 run push refs/heads/main "$c2" "$ver"
+check "release exists with 3 of 5 assets: fails, writes nothing" '[[ $status -ne 0 ]] && ! log_has "release create" && ! log_has "PATCH"'
+# --- classify
+check "classify: main push" '[[ $(GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main "$here/release-publish.sh" classify) == main ]]'
+check "classify: release tag" '[[ $(GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v0.1.0-rc.2 "$here/release-publish.sh" classify) == tag ]]'
+check "classify: dry-run tag, branch, PR, dispatch" '[[ $({ for r in refs/tags/v0.0.0-rel8 refs/heads/dw/x; do GITHUB_EVENT_NAME=push GITHUB_REF=$r "$here/release-publish.sh" classify; done; for e in pull_request workflow_dispatch; do GITHUB_EVENT_NAME=$e GITHUB_REF=refs/heads/main "$here/release-publish.sh" classify; done; } | tr "\n" " ") == "skip skip skip skip " ]]'
+
 # --- tag on main: its own release, nothing rolling
 mkdir -p "$work/tag-dist"
 ver=0.1.0
@@ -129,6 +147,8 @@ v() { env -i PATH="$PATH" GITHUB_ENV="$work/env" "$@" ci/github/release-version.
 check "version: main push" '[[ $(v GITHUB_REF_TYPE=branch GITHUB_SHA=1234567890 GITHUB_RUN_NUMBER=5) == "VERSION=0.1.0-dev.5.g1234567" ]]'
 check "version: tag v0.1.0" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.1.0) == "VERSION=0.1.0" ]]'
 check "version: dry-run tag" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.0.0-rel8) == "VERSION=0.0.0-rel8" ]]'
+check "version: rc tag of the same version" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.1.0-rc.1) == "VERSION=0.1.0-rc.1" ]]'
+check "version: rc tag of another version fails" '! v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.2.0-rc.1 >/dev/null'
 check "version: a tag that differs from tauri.conf.json fails" '! v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v9.9.9 >/dev/null'
 
 exit $fail

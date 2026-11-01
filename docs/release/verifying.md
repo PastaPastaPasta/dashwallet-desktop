@@ -9,11 +9,20 @@ no security review: use small amounts only.
 
 ## Check a file
 
-You need the [GitHub CLI](https://cli.github.com) (`gh`, 2.49 or newer). Nothing else, and no login for a public
-repository:
+You need the [GitHub CLI](https://cli.github.com) (`gh`, 2.49 or newer) and a GitHub login (`gh auth login`, or a
+`GH_TOKEN`): the command asks GitHub for the attestation, even for a public repository, and any ordinary account
+will do.
 
 ```sh
 gh attestation verify dash-wallet-0.1.0-macos-universal.dmg --repo PastaPastaPasta/dashwallet-desktop
+```
+
+To also require that it was built by the release workflow from `main` (or a tag), not by some other workflow or
+branch of the repository:
+
+```sh
+gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop \
+  --signer-workflow PastaPastaPasta/dashwallet-desktop/.github/workflows/release.yml
 ```
 
 It prints the workflow, the commit and the run that built the file, and exits non-zero when the file's digest has
@@ -23,8 +32,8 @@ no attestation from this repository. The same works for every other file (`.exe`
 per-build one.
 
 To see exactly what was attested: `gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop --format json`.
-To pin a release to a commit, add `--source-digest sha1:<full commit sha>` (or `--source-ref refs/tags/v0.1.0`
-for a tagged release).
+To pin a file to a commit, add `--source-digest <full commit sha>` (or `--source-ref refs/tags/v0.1.0` for a
+tagged release, `--source-ref refs/heads/main` for a main build).
 
 ## Check SHA256SUMS
 
@@ -33,7 +42,8 @@ against it:
 
 ```sh
 gh attestation verify SHA256SUMS --repo PastaPastaPasta/dashwallet-desktop
-sha256sum -c --ignore-missing SHA256SUMS        # on macOS: shasum -a 256 -c SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS        # Linux (and Git Bash)
+grep <file name> SHA256SUMS | shasum -a 256 -c  # macOS, one file
 ```
 
 `--ignore-missing` skips the downloads you did not fetch. The `continuous` release has its own `SHA256SUMS`, which
@@ -41,8 +51,10 @@ lists its `DashWallet-continuous-…` names.
 
 ## What you are getting
 
-- **Per-build releases** are named `v<version>-dev.<run>+<short commit>`: one for each push to `main`, never edited.
-- **`continuous`** is replaced by every push to `main`; its files keep the same names.
+- **Per-build releases** are named `v<version>-dev.<run>+<short commit>`: one for each push to `main` (a burst of
+  pushes can skip one), never edited.
+- **`continuous`** is replaced by every push to `main`, never by an older commit; its files keep the same names.
+  After a burst of pushes it can sit one commit behind until the next push; its notes say which commit it holds.
 - **Tagged releases** (`v0.1.0`) are made by the same workflow from the tag.
 - All of them are marked pre-release. macOS builds are ad-hoc signed and not notarized, Windows builds are unsigned
   (see the README for the first-launch warnings).

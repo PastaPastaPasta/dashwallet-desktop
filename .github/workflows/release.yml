@@ -23,7 +23,7 @@
 # ci/github/release-publish-test.sh tests it on every run):
 #   push to main          an immutable prerelease v<version>-dev.<run>+<short sha> and the rolling
 #                         prerelease `continuous` (stable asset names, replaced in place);
-#   push of a tag vX.Y.Z  that tag's prerelease (v0.1.0 is made here, from the tag);
+#   push of a tag vX.Y.Z[-rc.N]  that tag's prerelease (v0.1.0 is made here, from the tag);
 #   anything else         builds and uploads CI artifacts only: other branches, pull requests (forks
 #                         included) and workflow_dispatch. They never reach the publish job.
 # Every published file and both SHA256SUMS are attested with actions/attest-build-provenance
@@ -31,14 +31,18 @@
 # No GPG until 1.0.
 #
 # Permissions: the workflow has `contents: read`. Only the `publish` job has write permissions
-# (contents, id-token, attestations); its `if` admits a push to main or to a `v*` tag, nothing else,
-# and the script checks the commit is on origin/main again. Dry-run tags (v0.0.0-rel<N>) build only.
+# (contents, id-token, attestations). It runs only when a read-only `decide` job says so (a push to
+# main, or a release tag vX.Y.Z[-rc.N], in this repository) and the event is a push; the script
+# checks again that the commit is on origin/main. Dry-run tags (v0.0.0-rel<N>) build only and never
+# start the publish job.
 name: Release
 
 on:
   push:
     branches: ["**"]
-    tags: ["v*"]
+    # A dev tag is made by the publish job itself (with GITHUB_TOKEN, which starts no run); this keeps a
+    # hand-pushed one from starting one either.
+    tags: ["v*", "!v*-dev.*"]
   pull_request:
   workflow_dispatch:
 
@@ -71,6 +75,27 @@ jobs:
         with:
           persist-credentials: false
       - run: ci/github/release-publish-test.sh
+
+  # Read-only: what, if anything, this run publishes. Gates the publish job.
+  decide:
+    name: What this run publishes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      publish: ${{ steps.kind.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: kind
+        run: |
+          kind=$(ci/github/release-publish.sh classify)
+          echo "kind: $kind"
+          if [[ "$kind" != skip && "$GITHUB_REPOSITORY" == PastaPastaPasta/dashwallet-desktop ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
 
   macos:
     name: macOS universal .dmg
@@ -319,18 +344,20 @@ jobs:
   # The only job with write permissions. Reached by a push to main or to a v* tag only.
   publish:
     name: Publish (prerelease, continuous, attestations)
-    needs: [checksums, script-tests]
-    if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+    needs: [decide, checksums, script-tests]
+    # Two independent conditions: the trigger, and the decide job's verdict.
+    if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && needs.decide.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: write
       id-token: write
       attestations: write
-    # One publish at a time, never cancelled by a newer one (GitHub still drops a pending run when a
-    # third arrives; see release-publish.sh).
+    # One publish at a time on main, never cancelled by a newer one (GitHub still drops a pending run
+    # when another arrives; see release-publish.sh). Each tag has its own group, so a main push can
+    # never displace a tag's release.
     concurrency:
-      group: release-publish
+      group: release-publish-${{ github.ref == 'refs/heads/main' && 'main' || github.ref }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -71,11 +71,11 @@ The binaries are not notarized (macOS) or signed (Windows), so each OS warns on 
 
 ## Verify a download
 
-Every published file and every `SHA256SUMS` carries a GitHub build attestation. With the GitHub CLI:
+Every published file and every `SHA256SUMS` carries a GitHub build attestation. With the GitHub CLI (logged in: `gh auth login`):
 
 ```sh
 gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop
-sha256sum -c --ignore-missing SHA256SUMS      # on macOS: shasum -a 256 -c SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS      # Linux; on macOS: grep <file name> SHA256SUMS | shasum -a 256 -c
 ```
 
 Details, what an attestation does and does not prove, and the release names: [`docs/release/verifying.md`](docs/release/verifying.md).
