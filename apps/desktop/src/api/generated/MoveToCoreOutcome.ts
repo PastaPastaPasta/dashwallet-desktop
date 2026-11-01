@@ -3,9 +3,14 @@ import type { PlatformActivityState } from "./PlatformActivityState";
 
 /**
  * A move's outcome: `done` once a proved read shows its inputs' signed
- * nonces, else `pending`.
+ * nonces, else `pending`; `replaced` when another move of its group
+ * carries the outcome.
  */
-export type MoveToCoreOutcome = { id: string, credits: string, expectedDuffs: number, to: string, state: PlatformActivityState,
+export type MoveToCoreOutcome = { id: string, credits: string,
+/**
+ * `null` when a group's outcome cannot attribute the payout.
+ */
+expectedDuffs: number | null, to: string, state: PlatformActivityState,
 /**
  * Done: the fee taken.
  */

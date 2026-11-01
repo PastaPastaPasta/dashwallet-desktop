@@ -117,6 +117,7 @@ fn record(id: &str, at: u64, inputs: &[(&str, u32)]) -> MoveRecord {
         can_land: true,
         seen_at: None,
         fee_taken: None,
+        group: None,
     }
 }
 
@@ -354,6 +355,18 @@ enum Act {
     Lost,
     /// Signed, then refused by the structure check.
     Invalid,
+    /// The process stops before anything is signed.
+    StopsBeforeSigning,
+    /// The process stops once every input is signed, before the broadcast.
+    StopsAfterSigning,
+    /// Executes; the process stops before the call returns.
+    StopsAfterBroadcast,
+    /// Executes and answers; the process stops in the read that follows,
+    /// before the outcome is stored.
+    StopsBeforeOutcome,
+    /// The transition sent `n`-th (from 0) executes instead of this one,
+    /// which is answered with the addresses' snapshot.
+    EarlierExecutes(usize),
 }
 
 struct FakeMoves {
@@ -369,6 +382,13 @@ struct FakeMoves {
     /// Where the moves are stored, to see one recorded before signing.
     store: Mutex<Option<(Arc<dw_appdb::AppDb>, String)>>,
     recorded_before_signing: Mutex<Vec<bool>>,
+    /// Each sent transition's fee source.
+    sources: Mutex<Vec<PlatformAddress>>,
+    /// The next read stops the process.
+    stop_in_read: AtomicBool,
+    /// The next read uses the fallback, setting the latch: the session's
+    /// provenance.
+    sets_latch: Mutex<Option<Arc<super::super::provenance::Provenance>>>,
 }
 
 impl FakeMoves {
@@ -383,6 +403,9 @@ impl FakeMoves {
             unverified: AtomicBool::new(false),
             store: Mutex::default(),
             recorded_before_signing: Mutex::default(),
+            sources: Mutex::default(),
+            stop_in_read: AtomicBool::new(false),
+            sets_latch: Mutex::default(),
         })
     }
 
@@ -426,6 +449,15 @@ impl MoveNet for FakeMoves {
     }
 
     async fn read(&self, addresses: BTreeSet<PlatformAddress>) -> Result<Proved, PlatformError> {
+        if self.stop_in_read.swap(false, Ordering::SeqCst) {
+            panic!("the process stops");
+        }
+        let latch = self.sets_latch.lock().unwrap().take();
+        if let Some(provenance) = latch {
+            // A trusted-service key served this read's proofs.
+            provenance.fallback_in_use().unwrap();
+            self.unverified.store(true, Ordering::SeqCst);
+        }
         trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
         let state = self.state.lock().unwrap();
         let infos = (addresses.into_iter())
@@ -453,27 +485,27 @@ impl MoveNet for FakeMoves {
                 })
             });
         self.recorded_before_signing.lock().unwrap().push(recorded);
+        let act = self.acts.lock().unwrap().pop_front();
+        let act = act.unwrap_or(Act::Executes);
+        if act == Act::StopsBeforeSigning {
+            panic!("the process stops");
+        }
         for address in inputs.keys() {
             signer.sign(address, b"transition").await.unwrap();
         }
-        self.sent.lock().unwrap().push(inputs.clone());
         let [AddressFundsFeeStrategyStep::DeductFromInput(i)] = fee_strategy.as_slice() else {
             panic!("{fee_strategy:?}")
         };
         let source = *inputs.keys().nth(usize::from(*i)).unwrap();
+        self.sent.lock().unwrap().push(inputs.clone());
+        self.sources.lock().unwrap().push(source);
         let lost = || {
             PlatformWalletError::Sdk(dash_sdk::Error::TimeoutReached(
                 Duration::from_secs(1),
                 "wait".into(),
             ))
         };
-        match self
-            .acts
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or(Act::Executes)
-        {
+        match act {
             Act::Executes => {
                 self.execute(&inputs, source);
                 Ok(())
@@ -489,6 +521,22 @@ impl MoveNet for FakeMoves {
                 Err(PlatformWalletError::Sdk(
                     TransitionNoInputsError::new().into(),
                 ))
+            }
+            Act::StopsBeforeSigning | Act::StopsAfterSigning => panic!("the process stops"),
+            Act::StopsAfterBroadcast => {
+                self.execute(&inputs, source);
+                panic!("the process stops")
+            }
+            Act::StopsBeforeOutcome => {
+                self.execute(&inputs, source);
+                self.stop_in_read.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+            Act::EarlierExecutes(n) => {
+                let earlier = self.sent.lock().unwrap()[n].clone();
+                let source = self.sources.lock().unwrap()[n];
+                self.execute(&earlier, source);
+                Ok(())
             }
         }
     }
@@ -778,4 +826,329 @@ fn an_older_proof_records_no_activity() {
     w.net.state.lock().unwrap().get_mut(&a).unwrap().1 = DASH;
     w.net.height.fetch_sub(5, Ordering::SeqCst);
     assert_eq!(w.activity().len(), 1);
+}
+
+// ---- review round 2 ----
+
+/// The app databases whose next outcome write fails (by address).
+static FAILING_OUTCOME_WRITES: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
+
+/// `commit_outcome`'s injected failure: once, for `appdb`.
+pub(crate) fn outcome_write_fails(appdb: &Arc<dw_appdb::AppDb>) -> bool {
+    let key = Arc::as_ptr(appdb) as usize;
+    FAILING_OUTCOME_WRITES.lock().unwrap().remove(&key)
+}
+
+impl World {
+    fn fail_next_outcome_write(&self) {
+        let appdb = self.f.s.live().unwrap().appdb;
+        let key = Arc::as_ptr(&appdb) as usize;
+        FAILING_OUTCOME_WRITES.lock().unwrap().insert(key);
+    }
+
+    fn quote(&self, amount: WithdrawAmount) -> Result<MoveToCoreQuote, CreditsError> {
+        self.call(move |net, s, w, id| async move { quote(&*net, &s, &w, id, amount).await })
+    }
+}
+
+/// Review r2 R2-M1: a move whose process stopped anywhere after its record
+/// (before signing, after signing, after the broadcast, before its outcome
+/// was stored) is settled after the restart by proofs alone, as a live
+/// one: done once its nonces are reached; else pending at the first read,
+/// failed and holding at a higher one, and then the same inputs at the
+/// same nonces move. (At 1c732e2a such a record could never land, so
+/// nothing settled it and every later move was `move_pending`.)
+#[test]
+fn a_move_stopped_anywhere_is_settled_after_a_restart() {
+    let one = WithdrawAmount::Credits { credits: DASH };
+    for (stop, executed) in [
+        (Act::StopsBeforeSigning, false),
+        (Act::StopsAfterSigning, false),
+        (Act::StopsAfterBroadcast, true),
+        (Act::StopsBeforeOutcome, true),
+    ] {
+        let w = World::new();
+        let (a, b) = (w.address(0), w.address(1));
+        w.net.fund(a, 3 * DASH);
+        w.net.then(stop);
+        assert!(
+            w.move_to(one, &w.to, &w.f.grant(2 * DASH)).is_err(),
+            "{stop:?}"
+        );
+        let state = |w: &World| w.moves()[0].state;
+        assert_eq!(state(&w), PlatformActivityState::Pending, "{stop:?}");
+        // The restart: the first read.
+        w.activity();
+        if executed {
+            assert_eq!(state(&w), PlatformActivityState::Done, "{stop:?}");
+            let next = w.move_to(one, &w.to, &w.f.grant(2 * DASH)).unwrap();
+            assert_eq!(next.state, PlatformActivityState::Done, "{stop:?}");
+            continue;
+        }
+        assert_eq!(state(&w), PlatformActivityState::Pending, "{stop:?}");
+        let grant = w.f.grant(2 * DASH);
+        assert_eq!(
+            w.move_to(one, &w.to, &grant).unwrap_err().code(),
+            "credits.move_pending",
+            "{stop:?}"
+        );
+        assert!(w.f.unused(&grant));
+        w.net.fund(b, 9 * DASH);
+        w.activity();
+        assert_eq!(state(&w), PlatformActivityState::Failed, "{stop:?}");
+        let retry = w.move_to(one, &w.to, &grant).unwrap();
+        assert_eq!(retry.state, PlatformActivityState::Done, "{stop:?}");
+        let sent = w.net.sent.lock().unwrap().clone();
+        let last = sent.last().unwrap();
+        assert_eq!(last.keys().collect::<Vec<_>>(), vec![&a], "{stop:?}");
+        assert_eq!(last[&a].0, 1, "the nonce the stopped move recorded");
+    }
+}
+
+/// Review r2 R2-M1: a failed outcome write leaves the record stored before
+/// signing, which the next read settles; the next move then moves.
+#[test]
+fn a_failed_outcome_write_is_settled_by_the_next_read() {
+    let w = World::new();
+    w.net.fund(w.address(0), 3 * DASH);
+    w.fail_next_outcome_write();
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let out = w.move_to(one, &w.to, &w.f.grant(2 * DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    assert_eq!(
+        w.moves()[0].state,
+        PlatformActivityState::Pending,
+        "not stored"
+    );
+    let activity = w.activity();
+    let moved = find(&activity, PlatformActivityKind::MoveToCore);
+    assert_eq!(moved.state, PlatformActivityState::Done);
+    let next = w.move_to(one, &w.to, &w.f.grant(2 * DASH)).unwrap();
+    assert_eq!(next.state, PlatformActivityState::Done);
+}
+
+/// Review r2 R2-m1: a held move and its retry with another amount, the
+/// earlier one executing while the retry is answered with a snapshot. No
+/// proof says which executed: one group `Done` with the proved debit, no
+/// payout or fee attributed, the other `replaced`, no outgoing row. (At
+/// 1c732e2a the answered retry won: its payout, and the earlier one's
+/// extra debit reported as its fee.)
+#[test]
+fn a_retry_with_other_terms_settles_as_one_group() {
+    let w = World::new();
+    let (a, b) = (w.address(0), w.address(1));
+    w.net.fund(a, 3 * DASH);
+    w.net.then(Act::Lost);
+    let first = w
+        .move_to(
+            WithdrawAmount::Credits { credits: DASH },
+            &w.to,
+            &w.f.grant(2 * DASH),
+        )
+        .unwrap();
+    assert_eq!(first.state, PlatformActivityState::Pending);
+    w.net.fund(b, 9 * DASH);
+    w.activity();
+    assert_eq!(w.moves()[0].state, PlatformActivityState::Failed);
+    let before = w.net.credits(a);
+    w.net.then(Act::EarlierExecutes(0));
+    let retry = w
+        .move_to(
+            WithdrawAmount::Credits { credits: DASH / 2 },
+            &w.to,
+            &w.f.grant(2 * DASH),
+        )
+        .unwrap();
+    let debit = before - w.net.credits(a);
+    assert_eq!(debit, DASH + w.net.fee, "the earlier one executed");
+    assert_eq!(retry.state, PlatformActivityState::Done);
+    assert_eq!(
+        (retry.credits, retry.expected_duffs, retry.fee_credits),
+        (debit, None, None)
+    );
+    let activity = w.activity();
+    let moves: Vec<_> = (activity.iter())
+        .filter(|r| r.kind == PlatformActivityKind::MoveToCore)
+        .map(|r| {
+            (
+                r.id.as_str(),
+                r.state,
+                r.credits,
+                r.expected_duffs,
+                r.fee_credits,
+            )
+        })
+        .collect();
+    assert_eq!(
+        moves,
+        vec![
+            (
+                retry.id.as_str(),
+                PlatformActivityState::Done,
+                debit,
+                None,
+                None
+            ),
+            (
+                first.id.as_str(),
+                PlatformActivityState::Replaced,
+                first.credits,
+                first.expected_duffs,
+                None
+            ),
+        ]
+    );
+    assert!(
+        activity
+            .iter()
+            .all(|r| r.kind != PlatformActivityKind::Outgoing),
+        "{activity:?}"
+    );
+}
+
+/// R2-m1, the rule alone: moves of one key with other terms are one group.
+#[test]
+fn differing_terms_settle_as_a_group() {
+    let mut f = record("f", 1, &[("a", 4)]);
+    f.state = PlatformActivityState::Failed;
+    f.seen_at = Some(5);
+    f.inputs[0].before = 1_000;
+    let mut r = record("r", 2, &[("a", 4)]);
+    (
+        r.answered,
+        r.seen_at,
+        r.inputs[0].credits,
+        r.inputs[0].before,
+    ) = (true, Some(15), 9, 900);
+    let mut moves = vec![f, r];
+    let landed = Seen {
+        height: 20,
+        at: [("a".into(), Some((4, 300)))].into(),
+    };
+    assert_eq!(settle(&mut moves, &landed), BTreeSet::from([0, 1]));
+    assert_eq!(
+        (moves[0].state, moves[0].can_land),
+        (PlatformActivityState::Replaced, false)
+    );
+    assert_eq!(moves[1].state, PlatformActivityState::Done);
+    assert_eq!(
+        moves[1].group,
+        Some(GroupOutcome {
+            debit: Some(600),
+            to: Some("y".into())
+        })
+    );
+    assert_eq!((moves[1].fee_taken, moves[1].inputs[0].unseen), (None, 600));
+    let row = moves[1].activity();
+    assert_eq!(
+        (row.credits, row.expected_duffs, row.fee_credits),
+        (600, None, None)
+    );
+}
+
+/// Review r2 R2-m2: in an enforcing mode with the latch clear, the read
+/// that sets it (its proofs used the trusted service) decides nothing: the
+/// quote and the move are refused, no grant redeemed, nothing signed, and
+/// the activity records nothing. (At 1c732e2a the latch was sampled before
+/// the read, so that read went through.)
+#[test]
+fn the_read_that_sets_the_latch_is_gated() {
+    let w = World::new();
+    w.net.fund(w.address(0), 3 * DASH);
+    w.f.s.trust.set_mode(TrustMode::Enforcing);
+    (w.f.s.platform.money_gate).set_waits(super::super::money_gate::Waits {
+        wait: Duration::from_millis(400),
+        retry: Duration::from_millis(50),
+        probe: Duration::from_millis(200),
+    });
+    let provenance = w.f.s.live().unwrap().provenance;
+    assert!(!provenance.fallback_used());
+    let latch = |w: &World| *w.net.sets_latch.lock().unwrap() = Some(Arc::clone(&provenance));
+    latch(&w);
+    assert_eq!(
+        w.quote(WithdrawAmount::All).unwrap_err().code(),
+        "platform.context_unavailable"
+    );
+    assert!(provenance.fallback_used(), "the read set it");
+    let grant = w.f.grant(3 * DASH);
+    assert_eq!(
+        w.move_all(&grant).unwrap_err().code(),
+        "platform.context_unavailable"
+    );
+    assert!(w.f.unused(&grant));
+    assert!(w.net.sent.lock().unwrap().is_empty());
+    assert!(w.activity().is_empty(), "nothing recorded");
+}
+
+/// The nit of review r1 (n6) and r2: only the library's in-flight refusal
+/// waits for the running pass; another `AddressSync` error is the pass's.
+#[test]
+fn only_the_in_flight_refusal_waits_for_the_running_pass() {
+    let pin = "a platform-address sync pass is already in flight; retry once it completes";
+    assert!(pass_in_flight(&PlatformWalletError::AddressSync(
+        pin.into()
+    )));
+    assert!(!pass_in_flight(&PlatformWalletError::AddressSync(
+        "a proof did not verify".into()
+    )));
+}
+
+/// Review r2 R2-m3 on the test-only fund route: a lock only 51 of the
+/// wallet's coins reach is refused before a grant is redeemed or anything
+/// signed.
+#[cfg(all(feature = "test-fund", debug_assertions))]
+#[test]
+fn the_fund_route_refuses_a_lock_of_more_than_fifty_coins() {
+    use dashcore::hashes::Hash;
+    let w = World::new();
+    let duffs = 3_000_000;
+    let wallet = w.f.engine.block_on(w.f.s.wallet(&w.f.wallet)).unwrap();
+    w.f.engine.block_on(async {
+        let address = (wallet.core().next_receive_address_for_account(0).await).unwrap();
+        let mut state = wallet.state_mut().await;
+        let account = (state.core_wallet.accounts.standard_bip44_accounts)
+            .get_mut(&0)
+            .unwrap();
+        for vout in 0..51 {
+            let outpoint =
+                dashcore::OutPoint::new(dashcore::Txid::from_byte_array([0xed; 32]), vout);
+            let mut utxo = key_wallet::Utxo::new(
+                outpoint,
+                dashcore::TxOut {
+                    value: duffs / 51 + 1_000,
+                    script_pubkey: address.script_pubkey(),
+                },
+                address.clone(),
+                1,
+                false,
+            );
+            utxo.is_confirmed = true;
+            account.utxos.insert(outpoint, utxo);
+        }
+    });
+    let address_grant = w.f.grant(DASH);
+    let spend_grant = (w.f.s.vault)
+        .authorize(
+            dw_vault::GrantPurpose::Spend { max_duffs: duffs },
+            Some(&w.f.wallet.0),
+            dw_vault::Credential::None,
+        )
+        .unwrap()
+        .id;
+    let funded = w.f.engine.block_on(w.f.s.fund_platform_addresses_for_test(
+        w.f.wallet,
+        duffs,
+        address_grant.clone(),
+        spend_grant.clone(),
+    ));
+    let e = funded.unwrap_err();
+    assert_eq!(e.code(), "invalid_argument", "{e}");
+    assert!(e.to_string().contains("needs 51"), "{e}");
+    assert!(w.f.unused(&address_grant));
+    let spend = (w.f.s.vault).check_grant(
+        &spend_grant,
+        dw_vault::GrantKind::Spend,
+        Some(&w.f.wallet.0),
+    );
+    assert!(spend.is_ok(), "{spend:?}");
 }

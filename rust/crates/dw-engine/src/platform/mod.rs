@@ -41,6 +41,7 @@ pub(crate) mod journal;
 mod journal_tests;
 pub mod keys_policy;
 pub mod lease;
+mod lock_inputs;
 pub(crate) mod money_gate;
 #[cfg(test)]
 pub(crate) mod money_gate_tests;

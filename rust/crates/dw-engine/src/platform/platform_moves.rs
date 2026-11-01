@@ -39,10 +39,25 @@
 //! one stays `pending` and refuses the next move (`credits.move_pending`).
 //! A move `failed` by height may still execute (its transition stays valid
 //! while its nonces are unused), so a later move must sign exactly its
-//! inputs at its nonces, or is refused the same way. When such a group's
-//! nonces are taken, one proof settles all of it: the newest member the
-//! library answered is `done`, else the oldest; the others `failed`.
-//! 0.1 assumes one device per wallet.
+//! inputs at its nonces, or is refused the same way.
+//!
+//! **Restarts.** The record is stored able to land before anything is
+//! signed, and only a definitive refusal clears that; every `pending`
+//! record read back is treated so (one stored by an earlier build too).
+//! So a move whose process stopped anywhere after the record, or whose
+//! outcome write failed, is settled by the next reads exactly as a live
+//! one: the first records its height, its nonces reached make it `done`,
+//! a higher proof of them unused makes it `failed` and holding.
+//!
+//! **Groups.** When the nonces of moves sharing inputs and nonces are
+//! taken, one proof settles all of them. With equal terms (the amounts,
+//! the fee estimate, the payout and the address) the history is the same
+//! whichever executed: the newest member the library answered is `done`,
+//! else the oldest, the others `failed`. With other terms nothing says
+//! which executed (the library's answer is a snapshot, rs-sdk
+//! `broadcast.rs:70-77`): the newest is `done` for the group, with the
+//! inputs' proved debit and no payout or fee attributed, and the others
+//! `replaced`. 0.1 assumes one device per wallet.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
@@ -126,6 +141,19 @@ pub(crate) struct MoveRecord {
     /// Done: the fee the proved balances show it took.
     #[serde(default)]
     pub(crate) fee_taken: Option<u64>,
+    /// Done for a group of moves with other terms at its inputs and nonces
+    /// (module doc, Moves): what the group took, unattributed.
+    #[serde(default)]
+    pub(crate) group: Option<GroupOutcome>,
+}
+
+/// A group's `Done` (module doc, Moves): the proved debit of its inputs
+/// (`None` when a balance before is not on record) and the destination,
+/// when every member named the same one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct GroupOutcome {
+    pub(crate) debit: Option<u64>,
+    pub(crate) to: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,17 +203,40 @@ impl Seen {
 
 impl MoveRecord {
     fn activity(&self) -> PlatformActivity {
+        let (credits, to, expected_duffs) = match &self.group {
+            Some(g) => (g.debit.unwrap_or(self.credits), g.to.clone(), None),
+            None => (
+                self.credits,
+                Some(self.to.clone()),
+                Some(self.expected_duffs),
+            ),
+        };
         PlatformActivity {
             id: self.id.clone(),
             kind: PlatformActivityKind::MoveToCore,
             state: self.state,
-            credits: self.credits,
+            credits,
             address: None,
-            to: Some(self.to.clone()),
-            expected_duffs: Some(self.expected_duffs),
+            to,
+            expected_duffs,
             fee_credits: self.fee_taken,
             at: self.at,
         }
+    }
+
+    /// What it pays and takes: two moves of one key with equal terms
+    /// leave the same history whichever executed.
+    fn terms(&self) -> (Vec<(&str, u32, u64)>, u64, u64, &str) {
+        let mut inputs: Vec<_> = (self.inputs.iter())
+            .map(|i| (i.address.as_str(), i.nonce, i.credits))
+            .collect();
+        inputs.sort();
+        (
+            inputs,
+            self.fee_credits,
+            self.expected_duffs,
+            self.to.as_str(),
+        )
     }
 
     /// Its inputs at their signed nonces: two moves with one key cannot
@@ -234,6 +285,23 @@ impl MoveRecord {
             input.unseen = input.credits + if input.fee_source { fee } else { 0 };
         }
     }
+
+    /// Done for its group (module doc, Moves): the inputs' proved debit
+    /// since this move's plan, no payout or fee attributed, and each
+    /// input's fall the group's.
+    fn done_for_group(&mut self, seen: &Seen, to: Option<String>) {
+        self.done(seen);
+        self.fee_taken = None;
+        let known = self.inputs.iter().all(|i| i.before > 0);
+        let fall = |i: &MoveInput| (i.before).saturating_sub(seen.credits(&i.address).unwrap_or(0));
+        let debit = known.then(|| self.inputs.iter().map(fall).sum());
+        if known {
+            for input in &mut self.inputs {
+                input.unseen = fall(input);
+            }
+        }
+        self.group = Some(GroupOutcome { debit, to });
+    }
 }
 
 /// Settles the moves that hold their inputs against `seen` (module doc);
@@ -249,18 +317,37 @@ pub(crate) fn settle(moves: &mut [MoveRecord], seen: &Seen) -> BTreeSet<usize> {
             .filter(|&i| moves[i].holds() && moves[i].key() == key)
             .collect();
         let order = |i: usize| (moves[i].at, moves[i].id.clone());
-        let winner = (group.iter().copied().filter(|&i| moves[i].answered))
-            .max_by_key(|&i| order(i))
-            .or_else(|| group.iter().copied().min_by_key(|&i| order(i)));
-        for i in group {
-            if Some(i) == winner {
-                moves[i].done(seen);
-            } else {
-                moves[i].state = PlatformActivityState::Failed;
+        let Some(newest) = group.iter().copied().max_by_key(|&i| order(i)) else {
+            continue;
+        };
+        let alike = (group.iter()).all(|&i| moves[i].terms() == moves[newest].terms());
+        if alike {
+            // Whichever executed, the history is the same.
+            let winner = (group.iter().copied().filter(|&i| moves[i].answered))
+                .max_by_key(|&i| order(i))
+                .or_else(|| group.iter().copied().min_by_key(|&i| order(i)));
+            for &i in &group {
+                if Some(i) == winner {
+                    moves[i].done(seen);
+                } else {
+                    moves[i].state = PlatformActivityState::Failed;
+                    moves[i].can_land = false;
+                }
+            }
+        } else {
+            // One of them executed and no proof says which (an answer is a
+            // snapshot, not evidence of this transition): the newest
+            // carries the group's outcome, the others are replaced by it.
+            let to = (group.iter())
+                .all(|&i| moves[i].to == moves[newest].to)
+                .then(|| moves[newest].to.clone());
+            moves[newest].done_for_group(seen, to);
+            for &i in group.iter().filter(|&&i| i != newest) {
+                moves[i].state = PlatformActivityState::Replaced;
                 moves[i].can_land = false;
             }
-            changed.insert(i);
         }
+        changed.extend(group);
     }
     for (i, m) in moves.iter_mut().enumerate() {
         if !m.holds() {
@@ -620,24 +707,21 @@ async fn read(
     wait: bool,
 ) -> Result<Seen, PlatformError> {
     let network = session.vault.network();
-    let gated =
-        session.trust.rule_5() == Rule5::Enforce && session.live()?.provenance.fallback_used();
+    let provenance = session.live()?.provenance;
     let waits = session.platform.money_gate.waits();
     let deadline = tokio::time::Instant::now() + waits.wait;
-    let (height, infos) = if gated {
-        loop {
-            let (read, tally) = trust::scoped(net.read(addresses.clone())).await;
-            let read = read?;
-            if tally.verified() {
-                break read;
-            }
-            if !wait || tokio::time::Instant::now() + waits.retry >= deadline {
-                return Err(Refusal::Unverified.platform());
-            }
-            tokio::time::sleep(waits.retry).await;
+    let (height, infos) = loop {
+        let (read, tally) = trust::scoped(net.read(addresses.clone())).await;
+        let read = read?;
+        // Sampled after the read: the read itself may set the latch.
+        let gated = session.trust.rule_5() == Rule5::Enforce && provenance.fallback_used();
+        if !gated || tally.verified() {
+            break read;
         }
-    } else {
-        net.read(addresses).await?
+        if !wait || tokio::time::Instant::now() + waits.retry >= deadline {
+            return Err(Refusal::Unverified.platform());
+        }
+        tokio::time::sleep(waits.retry).await;
     };
     Ok(Seen {
         height,
@@ -751,10 +835,18 @@ impl Store {
         )
     }
 
+    /// The recorded moves, oldest first. A `pending` one may have been
+    /// signed and may execute, whatever the process got to record before
+    /// it stopped (module doc, Moves): it holds its inputs' nonces.
     async fn moves(&self) -> Result<Vec<MoveRecord>, PlatformError> {
         let mut moves: Vec<MoveRecord> = (self.all(MOVE_PREFIX).await?.into_iter())
             .map(|(_, m)| m)
             .collect();
+        for m in &mut moves {
+            if m.state == PlatformActivityState::Pending {
+                m.can_land = true;
+            }
+        }
         moves.sort_by(|a, b| (a.at, &a.id).cmp(&(b.at, &b.id)));
         Ok(moves)
     }
@@ -839,6 +931,15 @@ pub(crate) async fn balance(
     }
 }
 
+/// The library's refusal of a pass while one is in flight
+/// (`platform_address_sync.rs:436-439` at the pin); any other `AddressSync`
+/// error is the pass's own failure.
+const PASS_IN_FLIGHT: &str = "a platform-address sync pass is already in flight";
+
+fn pass_in_flight(e: &PlatformWalletError) -> bool {
+    matches!(e, PlatformWalletError::AddressSync(m) if m.starts_with(PASS_IN_FLIGHT))
+}
+
 /// `DashPay::sync_platform_addresses`: one pass for the wallet, or the end
 /// of the one already running.
 pub(crate) async fn sync(
@@ -866,7 +967,7 @@ pub(crate) async fn sync(
     .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?;
     match ran {
         Ok(()) => {}
-        Err(e) if matches!(*e, PlatformWalletError::AddressSync(_)) && sync.is_syncing() => {
+        Err(e) if pass_in_flight(&e) && sync.is_syncing() => {
             let until = tokio::time::Instant::now() + PASS_WAIT;
             while sync.is_syncing() {
                 if tokio::time::Instant::now() >= until {
@@ -1112,9 +1213,12 @@ pub(crate) async fn move_to_core(
         state: PlatformActivityState::Pending,
         signed: false,
         answered: false,
-        can_land: false,
+        // Until a definitive refusal says otherwise, it may be signed and
+        // may execute: so it is recorded, and so a restart reads it.
+        can_land: true,
         seen_at: None,
         fee_taken: None,
+        group: None,
     };
     // A move `failed` by height may still execute: only one at its very
     // inputs and nonces may follow it.
@@ -1189,6 +1293,13 @@ pub(crate) async fn move_to_core(
         net.withdraw(inputs, script, planned.fee_strategy(), &signer),
     )
     .await;
+    // The testnet smoke's restart (release 0.1, review r2): the process
+    // ends between the call and its outcome, as a crash would there.
+    #[cfg(all(feature = "test-fund", debug_assertions))]
+    if std::env::var_os("DW_TEST_EXIT_AFTER_MOVE_CALL").is_some() {
+        tracing::warn!(id = %record.id, "DW_TEST_EXIT_AFTER_MOVE_CALL: exiting");
+        std::process::exit(86);
+    }
     let released = permit.signatures().released();
     drop(signer);
     permit.finish(call.is_ok());
@@ -1203,8 +1314,8 @@ pub(crate) async fn move_to_core(
     let at = moves.len() - 1;
     if cannot_land {
         moves[at].state = PlatformActivityState::Failed;
+        moves[at].can_land = false;
     } else {
-        moves[at].can_land = true;
         // Done only on its proved nonces, whatever the call answered.
         let signed = moves[at].inputs.iter().filter_map(|i| parse(&i.address));
         match read(session, net, signed.collect(), false).await {
@@ -1215,8 +1326,9 @@ pub(crate) async fn move_to_core(
         }
     }
     let writes: Vec<_> = moves.iter().map(move_write).collect::<Result<_, _>>()?;
-    if let Err(e) = store.commit(writes).await {
-        // The pending record stands and settles on a later read.
+    if let Err(e) = commit_outcome(&store, writes).await {
+        // The record stored before signing stands, `pending` and able to
+        // land: the next read settles it by its nonces.
         tracing::warn!(id = %moves[at].id, "storing a move's outcome: {e}");
     }
     session
@@ -1227,14 +1339,29 @@ pub(crate) async fn move_to_core(
     if cannot_land && let Err(e) = call {
         return Err(PlatformError::from(e).into());
     }
+    let row = record.activity();
     Ok(MoveToCoreOutcome {
         id: record.id.clone(),
-        credits: record.credits,
-        expected_duffs: record.expected_duffs,
+        credits: row.credits,
+        expected_duffs: row.expected_duffs,
         to: record.to.clone(),
         state: record.state,
-        fee_credits: record.fee_taken,
+        fee_credits: row.fee_credits,
     })
+}
+
+/// The outcome's write; tests make it fail.
+async fn commit_outcome(
+    store: &Store,
+    writes: Vec<(String, Option<String>)>,
+) -> Result<(), PlatformError> {
+    #[cfg(test)]
+    if tests::outcome_write_fails(&store.appdb) {
+        return Err(PlatformError::Storage {
+            detail: "injected".into(),
+        });
+    }
+    store.commit(writes).await
 }
 
 #[cfg(all(feature = "test-fund", debug_assertions))]
@@ -1257,6 +1384,8 @@ impl NetworkSession {
     ) -> Result<PlatformAddressBalance, CreditsError> {
         self.dashpay(wallet_id)
             .on_wallet(move |session, manager, wallet| async move {
+                // The input bound (`lock_inputs`), before a grant is redeemed.
+                super::lock_inputs::check(&wallet, duffs).await?;
                 let vault = session.vault.clone();
                 let w = wallet_id.0;
                 let (address_signer, lock_signer) = tokio::task::spawn_blocking(move || {
@@ -1272,7 +1401,8 @@ impl NetworkSession {
                     )?;
                     let token =
                         vault.redeem_grant(&spend_grant, dw_vault::GrantKind::Spend, Some(&w))?;
-                    Ok::<_, dw_vault::VaultError>((address, vault.signer(&w, &token)?))
+                    let lock = super::lock_inputs::Capped::new(vault.signer(&w, &token)?);
+                    Ok::<_, dw_vault::VaultError>((address, lock))
                 })
                 .await
                 .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
@@ -1300,7 +1430,7 @@ impl NetworkSession {
                     Arc::new(super::lease::SignatureCount::default()),
                 )
                 .map_err(PlatformError::from)?;
-                wallet
+                let funded = wallet
                     .platform()
                     .fund_from_asset_lock(
                         platform_wallet::AssetLockFunding::FromWalletBalance {
@@ -1314,8 +1444,14 @@ impl NetworkSession {
                         &lock_signer,
                         None,
                     )
-                    .await
-                    .map_err(PlatformError::from)?;
+                    .await;
+                match funded {
+                    Ok(_) => {}
+                    Err(_) if lock_signer.refused() => {
+                        return Err(super::lock_inputs::too_many(None).into());
+                    }
+                    Err(e) => return Err(PlatformError::from(e).into()),
+                }
                 session
                     .hub
                     .pump

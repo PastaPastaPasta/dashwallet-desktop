@@ -1,0 +1,153 @@
+//! The asset-lock input bound (release 0.1, review r2 R2-m3): a lock the
+//! engine funds spends at most [`MAX_INPUTS`] coins, on every route that
+//! funds one (registration and top-up, `registration_flow.rs`'s
+//! `PwLib::fund_lock`; the test-only `platform-addr fund`). The pinned
+//! builder bounds a transaction at 500 inputs (key-wallet
+//! `transaction_builder.rs:29`) and takes no tighter bound, so the engine
+//! applies it twice:
+//!
+//! - **Before anything is signed** ([`check`]): the fewest of the wallet's
+//!   coins, largest first, that reach the lock. No selection takes fewer
+//!   (the library's sources are among the wallet's funding accounts), so
+//!   past the bound the lock is refused with nothing selected or signed.
+//! - **Before the broadcast** ([`Capped`]): the lock's signer signs at
+//!   most [`MAX_INPUTS`] distinct sighashes (one per input). A selection
+//!   past the bound fails at its next signature, before the transaction is
+//!   complete; the builder then releases its reservation (key-wallet
+//!   `transaction_builder.rs:822-826`) and nothing reaches the wire.
+//!
+//! Either refusal is `invalid_argument` (no code names an input bound on
+//! these routes).
+
+use std::collections::BTreeSet;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use async_trait::async_trait;
+use dashcore::secp256k1::{PublicKey, ecdsa};
+use dw_vault::SignerError;
+use key_wallet::bip32::{DerivationPath, ExtendedPubKey};
+use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+use key_wallet::{ExtendedPubKeySigner, Signer, SignerMethod};
+use platform_wallet::PlatformWallet;
+
+use super::errors::PlatformError;
+
+/// The most coins one asset lock spends.
+pub(crate) const MAX_INPUTS: usize = 50;
+
+/// The refusal: `needs` coins, or more than the bound when unknown.
+pub(crate) fn too_many(needs: Option<usize>) -> PlatformError {
+    let needs = needs.map_or_else(|| format!("more than {MAX_INPUTS}"), |n| n.to_string());
+    PlatformError::InvalidArgument {
+        detail: format!(
+            "an asset lock spends at most {MAX_INPUTS} coins and this one needs {needs}: \
+             consolidate the wallet's coins with a send to itself first"
+        ),
+    }
+}
+
+/// Refuses, before anything is selected or signed, a lock of `duffs` that
+/// no selection of the wallet's coins funds within the bound.
+pub(crate) async fn check(wallet: &PlatformWallet, duffs: u64) -> Result<(), PlatformError> {
+    let values: Vec<u64> = {
+        let state = wallet.state().await;
+        state
+            .core_wallet
+            .utxos()
+            .iter()
+            .map(|u| u.value())
+            .collect()
+    };
+    match least(&values, duffs) {
+        Some(n) if n > MAX_INPUTS => Err(too_many(Some(n))),
+        // Short or within the bound: the library's own answer stands.
+        _ => Ok(()),
+    }
+}
+
+/// The fewest of `values` that reach `duffs`, largest first; `None` when
+/// all of them do not.
+pub(crate) fn least(values: &[u64], duffs: u64) -> Option<usize> {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    let mut sum = 0u64;
+    for (n, v) in sorted.into_iter().enumerate() {
+        sum = sum.saturating_add(v);
+        if sum >= duffs {
+            return Some(n + 1);
+        }
+    }
+    None
+}
+
+/// A lock's signer that signs at most [`MAX_INPUTS`] distinct sighashes
+/// (module doc); a sighash it signed already may be signed again.
+#[derive(Debug)]
+pub(crate) struct Capped<S> {
+    inner: S,
+    signed: Mutex<BTreeSet<[u8; 32]>>,
+    refused: AtomicBool,
+}
+
+impl<S> Capped<S> {
+    pub(crate) fn new(inner: S) -> Self {
+        Self {
+            inner,
+            signed: Mutex::default(),
+            refused: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether it refused a signature past the bound.
+    pub(crate) fn refused(&self) -> bool {
+        self.refused.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl<S: Signer<Error = SignerError>> Signer for Capped<S> {
+    type Error = SignerError;
+
+    fn supported_methods(&self) -> &[SignerMethod] {
+        self.inner.supported_methods()
+    }
+
+    async fn sign_ecdsa(
+        &self,
+        path: &DerivationPath,
+        sighash: [u8; 32],
+    ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+        {
+            let mut signed = self.signed.lock().unwrap_or_else(|p| p.into_inner());
+            if !signed.contains(&sighash) {
+                if signed.len() >= MAX_INPUTS {
+                    self.refused.store(true, Ordering::SeqCst);
+                    return Err(SignerError::PathNotAllowed(format!(
+                        "{path}: an asset lock spends at most {MAX_INPUTS} coins"
+                    )));
+                }
+                signed.insert(sighash);
+            }
+        }
+        self.inner.sign_ecdsa(path, sighash).await
+    }
+
+    async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, SignerError> {
+        self.inner.public_key(path).await
+    }
+}
+
+#[async_trait]
+impl<S: ExtendedPubKeySigner + Signer<Error = SignerError>> ExtendedPubKeySigner for Capped<S> {
+    async fn extended_public_key(
+        &self,
+        path: &DerivationPath,
+    ) -> Result<ExtendedPubKey, SignerError> {
+        self.inner.extended_public_key(path).await
+    }
+}
+
+#[cfg(test)]
+#[path = "lock_inputs_tests.rs"]
+mod tests;

@@ -4155,3 +4155,73 @@ mod invitation;
 mod ledger;
 mod rules;
 mod step2;
+
+/// Review r2 R2-m3: the funding of a registration or top-up (one
+/// `PwLib::fund_lock`, `topup.rs`'s `fund` too) spends at most 50 coins. A
+/// lock only 51 of the wallet's coins reach is refused before anything is
+/// selected or signed: no signature released, no coin reserved.
+#[test]
+fn a_lock_needing_more_than_fifty_coins_is_refused_before_signing() {
+    let f = fixture(false);
+    let wallet = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
+    // 50 of them fall short of the lock; all 51 cover it and the fee.
+    let value = flow::LOCK_DUFFS / 51 + 1_000;
+    let coins: Vec<OutPoint> = f.engine.block_on(async {
+        let address = wallet
+            .core()
+            .next_receive_address_for_account(0)
+            .await
+            .unwrap();
+        let mut state = wallet.state_mut().await;
+        let account = (state.core_wallet.accounts.standard_bip44_accounts)
+            .get_mut(&0)
+            .unwrap();
+        (0..51)
+            .map(|vout| {
+                let outpoint = OutPoint::new(Txid::from_byte_array([0xed; 32]), vout);
+                let mut utxo = key_wallet::Utxo::new(
+                    outpoint,
+                    dashcore::TxOut {
+                        value,
+                        script_pubkey: address.script_pubkey(),
+                    },
+                    address.clone(),
+                    1,
+                    false,
+                );
+                utxo.is_confirmed = true;
+                account.utxos.insert(outpoint, utxo);
+                outpoint
+            })
+            .collect()
+    });
+    let lib = f.pw_lib(&wallet);
+    let lease = f.lease();
+    let draft = prepared(&f, 1);
+    let (funded, released) = f.engine.block_on(async {
+        let call = permit(&lib, &lease, draft, 1).await.unwrap();
+        let funded = lib
+            .fund_lock(
+                platform_wallet::AssetLockFundingType::IdentityRegistration,
+                flow::LOCK_DUFFS,
+                1,
+                &call,
+            )
+            .await;
+        let released = call.signatures().released();
+        call.finish(false);
+        (funded, released)
+    });
+    let Err(FundError::Refused(PlatformError::InvalidArgument { detail })) = funded else {
+        panic!("{funded:?}")
+    };
+    assert!(
+        detail.contains("at most 50 coins and this one needs 51"),
+        "{detail}"
+    );
+    assert_eq!(released, 0, "nothing signed");
+    assert!(
+        coins.iter().all(|c| !reads_reserved(&f, *c)),
+        "nothing selected"
+    );
+}

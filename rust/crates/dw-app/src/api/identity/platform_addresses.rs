@@ -83,17 +83,20 @@ mirror_enum!(engine::PlatformActivityKind => PlatformActivityKind {
     Incoming, Outgoing, MoveToCore
 });
 
-/// `pending`: a move whose outcome is not known yet (never retried).
+/// `pending`: a move whose outcome is not known yet (never retried);
+/// `replaced`: another move at the same inputs and nonces carries the
+/// outcome (its row is `done`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum PlatformActivityState {
     Done,
     Pending,
     Failed,
+    Replaced,
 }
 
 mirror_enum!(engine::PlatformActivityState => PlatformActivityState {
-    Done, Pending, Failed
+    Done, Pending, Failed, Replaced
 });
 
 /// One Platform-address activity row, for Activity.
@@ -180,7 +183,8 @@ impl From<engine::MoveToCoreQuote> for MoveToCoreQuote {
 }
 
 /// A move's outcome: `done` once a proved read shows its inputs' signed
-/// nonces, else `pending`.
+/// nonces, else `pending`; `replaced` when another move of its group
+/// carries the outcome.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct MoveToCoreOutcome {
@@ -188,7 +192,8 @@ pub struct MoveToCoreOutcome {
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub credits: u64,
-    pub expected_duffs: u64,
+    /// `null` when a group's outcome cannot attribute the payout.
+    pub expected_duffs: Option<u64>,
     pub to: String,
     pub state: PlatformActivityState,
     /// Done: the fee taken.

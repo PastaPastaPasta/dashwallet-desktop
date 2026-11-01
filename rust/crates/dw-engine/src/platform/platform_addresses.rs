@@ -74,6 +74,12 @@ pub enum PlatformActivityState {
     /// call shows unexecuted: the latter may still execute, so a next move
     /// signs the same inputs at the same nonces (m4 §2.12).
     Failed,
+    /// A move whose inputs, at the nonces it signed, another move of this
+    /// wallet with other terms also signed, and Platform took: one of them
+    /// executed and no proof says which, so the newest carries the group's
+    /// outcome (`Done`, the proved debit, payout and fee unattributed) and
+    /// the others read as replaced by it (m4 §7 item 69).
+    Replaced,
 }
 
 /// One row of the Platform addresses' activity.
@@ -125,11 +131,14 @@ pub struct MoveToCoreQuote {
 pub struct MoveToCoreOutcome {
     /// The move's activity row id.
     pub id: String,
+    /// What the move may take; for a group's `Done`, the proved debit.
     pub credits: u64,
-    pub expected_duffs: u64,
+    /// The payout; `None` when a group's `Done` cannot attribute it.
+    pub expected_duffs: Option<u64>,
     pub to: String,
     /// `Done` once a proved read shows every input at its signed nonce;
-    /// `Pending` until then (the library's answer is no such proof).
+    /// `Pending` until then (the library's answer is no such proof);
+    /// `Replaced` when another move of the group carries the outcome.
     pub state: PlatformActivityState,
     /// Done: the fee taken, as [`PlatformActivity::fee_credits`].
     pub fee_credits: Option<u64>,

@@ -3260,15 +3260,29 @@ impl PwLib {
         identity_index: u32,
         permit: &CallPermit,
     ) -> Result<OutPoint, FundError> {
-        let signer = permit
-            .funding_signer()
-            .map_err(|e| FundError::Refused(e.into()))?;
-        self.wallet
+        // The input bound (`lock_inputs`): refused with nothing selected,
+        // or past it at the signer, before the transaction is complete.
+        super::lock_inputs::check(&self.wallet, duffs)
+            .await
+            .map_err(FundError::Refused)?;
+        let signer = super::lock_inputs::Capped::new(
+            permit
+                .funding_signer()
+                .map_err(|e| FundError::Refused(e.into()))?,
+        );
+        let funded = self
+            .wallet
             .asset_locks()
             .create_funded_asset_lock_proof(duffs, 0, funding_type, identity_index, &signer)
-            .await
-            .map(|(_, _, outpoint)| outpoint)
-            .map_err(fund_error)
+            .await;
+        match funded {
+            Ok((_, _, outpoint)) => Ok(outpoint),
+            // The builder released its selection; nothing was broadcast.
+            Err(_) if signer.refused() => {
+                Err(FundError::NotSent(super::lock_inputs::too_many(None)))
+            }
+            Err(e) => Err(fund_error(e)),
+        }
     }
 }
 
