@@ -15,7 +15,7 @@ import { NetworkPicker, useNetworkPicker } from "../../components/networkPicker"
 import { CopyValue, DetailRow } from "../../components/detail";
 import { QuestionSheet, Sheet } from "../../components/sheet";
 import { failureText } from "../../onboarding/model";
-import { DEFAULT_DUST, DIGIT_CHOICES, dustThreshold, OptionsText, UNIT_CHOICES } from "../../settings/options";
+import { DEFAULT_DUST, dustThreshold, OptionsText, UNIT_CHOICES } from "../../settings/options";
 import { savePrefs, settledPending } from "../../settings/prefs";
 import { SettingsDashPayCard } from "../dashpay/MyProfile";
 import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./parts";
@@ -103,24 +103,6 @@ export function GeneralTab() {
               </button>
             ))}
           </div>
-        </div>
-        <div className="settings-row">
-          <label className="settings-row-title" htmlFor={`${id}-digits`}>
-            Decimal digits on Home
-          </label>
-          <select
-            id={`${id}-digits`}
-            className="settings-select"
-            data-testid="settings-digits"
-            value={prefs.decimalDigits}
-            onChange={(e) => void save({ decimalDigits: Number(e.target.value) })}
-          >
-            {DIGIT_CHOICES.map((d) => (
-              <option key={d} value={d}>
-                {d}
-              </option>
-            ))}
-          </select>
         </div>
         <label className="checkbox-row">
           <input

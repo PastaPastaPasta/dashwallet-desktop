@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IpcBackend } from "../api/tauri";
 import { DEFAULT_PREFS, ui } from "../app/ui";
 import { installFixture, type FixtureHandle } from "../fixture";
-import { DIGIT_CHOICES, dustThreshold, OptionsText, UNIT_CHOICES } from "./options";
+import { dustThreshold, OptionsText, UNIT_CHOICES } from "./options";
 import { loadPrefs, savePrefs, settledPending } from "./prefs";
 
 let fixture: FixtureHandle;
@@ -27,7 +27,6 @@ const launch = (theme: "light" | "dark" | null = null) => ({ ...fixture.world.la
 
 describe("display settings", () => {
   it("QT020_QT036_QT039_displaySettingsPersistAndClamp", async () => {
-    expect(DIGIT_CHOICES).toEqual([2, 3, 4, 5, 6, 7, 8]);
     await savePrefs(b, launch(), { decimalDigits: 8, unit: "milliDash" });
     expect(ui.get().prefs).toMatchObject({ decimalDigits: 8, unit: "milliDash" });
     expect(fixture.world.settings.ui).toMatchObject({ decimalDigits: 8, unit: "milliDash" });

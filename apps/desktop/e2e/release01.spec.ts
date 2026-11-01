@@ -515,8 +515,8 @@ test.describe("Home balance", () => {
       await expect(page.getByTestId("breakdown-core")).toContainText("Core");
       await expect(page.getByTestId("breakdown-shielded")).toContainText("Shielded");
       await expect(page.getByTestId("breakdown-platform")).toContainText("Platform");
-      // Core 30.39698287 + Shielded 1.25 + Platform 0.4 (the fixture's), two decimals floored.
-      await expect(page.getByTestId("hero-amount")).toContainText("32.04");
+      // Core 30.39698287 + Shielded 1.25 + Platform 0.4 (the fixture's), the exact sum.
+      await expect(page.getByTestId("hero-amount")).toContainText("32.04698287");
       await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
       await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
       await shot(page, `${theme}-home-pools`);
@@ -530,7 +530,7 @@ test.describe("Home balance", () => {
     await expect(page.getByTestId("breakdown-shielded")).toContainText("—");
     await expect(page.getByTestId("breakdown-platform")).toContainText("—");
     await expect(page.getByTestId("breakdown-platform")).toBeVisible();
-    await expect(page.getByTestId("hero-amount")).toContainText("30.39");
+    await expect(page.getByTestId("hero-amount")).toContainText("30.39698287");
     await shot(page, "light-home-pools-absent");
   });
 

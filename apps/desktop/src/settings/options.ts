@@ -29,8 +29,6 @@ export const UNIT_CHOICES: { unit: DisplayUnit; label: string }[] = (["dash", "m
   label: UNIT_LABEL[unit],
 }));
 
-export const DIGIT_CHOICES = [2, 3, 4, 5, 6, 7, 8];
-
 const MAX_DUST = 1_000_000;
 /** The threshold General offers when protection is turned on without one typed. */
 export const DEFAULT_DUST = 1000;

@@ -1,5 +1,5 @@
-// The display settings applied to amounts (U-04 D4): dash-qt's unit everywhere at once, the
-// decimal digits on Home's hero and breakdown. The engine's `NetworkInfo.unitName` names DASH
+// The display settings applied to amounts (U-04 D4): dash-qt's unit everywhere at once. A balance
+// is never cut short: Home shows the exact amount, trailing zeros trimmed to two (`compact`). The engine's `NetworkInfo.unitName` names DASH
 // only; the other units' names come from `unitName` here, as dash-qt's `BitcoinUnits::name`.
 
 import { useMemo } from "react";
@@ -7,7 +7,7 @@ import type { DisplayUnit } from "../api/generated/DisplayUnit";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { UiSettings } from "../api/generated/UiSettings";
 import { useUi } from "../app/ui";
-import { compact, floored, formatWithUnit, full, masked, unitName, type Chain, type Unit } from "./amount";
+import { compact, formatWithUnit, full, masked, unitName, type Chain, type Unit } from "./amount";
 
 export const UNIT_OF: Record<DisplayUnit, Unit> = { dash: "DASH", milliDash: "mDASH", microDash: "uDASH", duffs: "duffs" };
 
@@ -28,8 +28,6 @@ export interface Display {
   name: string;
   full(duffs: number, signed?: boolean): string;
   compact(duffs: number, signed?: boolean): string;
-  /** Hero and breakdown: floored to the decimal digits setting. */
-  floored(duffs: number): string;
   masked(): string;
   withUnit(duffs: number): string;
   /** An amount field's placeholder and its refusal of text that is not an amount. */
@@ -49,7 +47,6 @@ export function display(prefs: Pick<UiSettings, "unit" | "decimalDigits">, netwo
     name: unitName(unit, chain),
     full: (amount, signed = false) => full(amount, signed, unit),
     compact: (amount, signed = false) => compact(amount, signed, unit),
-    floored: (amount) => floored(amount, digits, unit),
     masked: () => masked(digits, unit),
     withUnit: (amount) => formatWithUnit(unit, amount, false, "standard", chain),
     placeholder: duffs ? "0" : "0.00",

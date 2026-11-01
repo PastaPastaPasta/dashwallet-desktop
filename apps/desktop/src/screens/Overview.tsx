@@ -53,7 +53,7 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId }: { title: s
 function BalanceHero({ balances, shielded, platform, network, syncing }: { balances: Balances | null; shielded: number | null | undefined; platform: number | null | undefined; network: NetworkInfo; syncing: boolean }) {
   const discreet = useUi((s) => s.discreet);
   const shown = useDisplay(network);
-  const fmt = (duffs: number) => (discreet ? shown.masked() : shown.floored(duffs));
+  const fmt = (duffs: number) => (discreet ? shown.masked() : shown.compact(duffs));
   // dash-qt's `.withUnit` tooltip on amounts (UX-SPEC §5.1); none while masked.
   const full = (duffs: number) => (discreet ? undefined : shown.withUnit(duffs));
   const unit = shown.name;
