@@ -1,5 +1,5 @@
 //! E0-09 DashPay commands: `dashpay`, `identity`, `name`, `contact`,
-//! `pay-contact`, `profile` and `invite`. They call the facade only
+//! `pay-contact`, `profile` and `invite`, and 0.1's `shielded`. They call the facade only
 //! (`NetworkSession::dashpay`, `docs/contracts/m4-dashpay-engine.md`), never
 //! platform-wallet, so the T2/T3 suites drive DashPay the way a UI host does.
 //!
@@ -43,8 +43,8 @@ use dw_engine::platform::{
     ContactError, ContactQuery, ContactSection, ContactSort, CreditsError, DashPay, FlowKind,
     GrantAction, GrantRequest, IdentityError, InitialProfile, InvitationError, NameError,
     PlatformError, PrivateDetails, ProfileBaseline, ProfileEdit, ProfileError, RegistrationError,
-    RegistrationFunding, RegistrationRequest, RegistrationWait, ScannedCode, WithdrawAmount,
-    check_username,
+    RegistrationFunding, RegistrationRequest, RegistrationWait, ScannedCode, ShieldedError,
+    WithdrawAmount, check_username,
 };
 use dw_engine::{
     ContactRecipient, Engine, EngineError, NetworkSession, PreparedTx, SendFailure, TASK_PANICKED,
@@ -132,6 +132,64 @@ pub enum DashPayCommand {
         common: Common,
         #[command(subcommand)]
         cmd: PlatformAddrCmd,
+    },
+    /// Shielded funds (0.1): the wallet's account in Platform's shielded
+    /// pool. Core amounts in duffs, pool amounts in credits.
+    Shielded {
+        #[command(flatten)]
+        common: Common,
+        #[command(subcommand)]
+        cmd: ShieldedCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ShieldedCmd {
+    /// The account's status: active, balance, pending, sync.
+    Status,
+    /// Run a sync pass now, then the status.
+    Sync,
+    /// The shielded receive address.
+    Address,
+    /// Core -> Shielded: an asset lock of `--duffs` from the Core balance
+    /// into the pool.
+    Shield {
+        #[arg(long)]
+        duffs: u64,
+        /// Print the quote only.
+        #[arg(long)]
+        quote_only: bool,
+    },
+    /// Apply a pending Core -> Shielded lock.
+    ShieldResume { txid: String },
+    /// Shielded -> Shielded: send `--credits` to a shielded address.
+    Send {
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        credits: u64,
+        /// At most 36 bytes.
+        #[arg(long)]
+        memo: Option<String>,
+        #[arg(long)]
+        quote_only: bool,
+    },
+    /// Shielded -> Core: withdraw `--credits` to a Core address, or to a
+    /// fresh receive address of the wallet.
+    Unshield {
+        #[arg(long)]
+        credits: u64,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        quote_only: bool,
+    },
+    /// The shielded history, pending rows first, then newest first.
+    History {
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
     },
 }
 
@@ -854,6 +912,29 @@ fn credits_params(e: &CreditsError) -> Value {
     }
 }
 
+fn shielded_params(e: &ShieldedError) -> Value {
+    match e {
+        ShieldedError::NotActive {
+            protocol_version,
+            activation_version,
+        } => {
+            json!({"protocol_version": protocol_version, "activation_version": activation_version})
+        }
+        ShieldedError::NotSynced | ShieldedError::CoinsLocked => json!({}),
+        ShieldedError::InvalidAddress { detail } => json!({"detail": detail}),
+        ShieldedError::InsufficientFunds { needed, available }
+        | ShieldedError::FundingInsufficient { needed, available } => {
+            json!({"needed": needed, "available": available})
+        }
+        ShieldedError::BelowMinimum { min } => json!({"min": min}),
+        ShieldedError::ShieldPending { txid } => json!({"txid": txid}),
+        ShieldedError::PoolTooSmall { notes, required } => {
+            json!({"notes": notes, "required": required})
+        }
+        ShieldedError::Platform(p) => platform_params(p),
+    }
+}
+
 macro_rules! facade_error {
     ($($ty:ty => $params:ident),* $(,)?) => {$(
         impl From<$ty> for CliError {
@@ -876,6 +957,7 @@ facade_error!(
     ContactError => contact_params,
     AvatarError => avatar_params,
     CreditsError => credits_params,
+    ShieldedError => shielded_params,
 );
 
 impl From<VaultError> for CliError {
@@ -1297,6 +1379,7 @@ fn common(cmd: &mut DashPayCommand) -> &mut Common {
         | DashPayCommand::Profile { common, .. }
         | DashPayCommand::Invite { common, .. }
         | DashPayCommand::PlatformAddr { common, .. } => common,
+        | DashPayCommand::Shielded { common, .. } => common,
     }
 }
 
@@ -1498,6 +1581,7 @@ fn dispatch(ctx: &Ctx, cmd: DashPayCommand, stdin: &mut dyn Read) -> Result<Valu
         DashPayCommand::Profile { cmd, .. } => profile_cmd(ctx, cmd),
         DashPayCommand::Invite { cmd, .. } => invite_cmd(ctx, cmd, stdin),
         DashPayCommand::PlatformAddr { cmd, .. } => platform_addr_cmd(ctx, cmd),
+        DashPayCommand::Shielded { cmd, .. } => shielded_cmd(ctx, cmd),
     }
 }
 
@@ -1542,6 +1626,66 @@ fn platform_addr_cmd(ctx: &Ctx, cmd: PlatformAddrCmd) -> Result<Value, CliError>
                 ctx.session
                     .fund_platform_addresses_for_test(dp.wallet_id(), duffs, address, spend);
             out(ctx.block_on(funded)?)
+        }
+    }
+}
+
+fn shielded_cmd(ctx: &Ctx, cmd: ShieldedCmd) -> Result<Value, CliError> {
+    let dp = ctx.dashpay()?;
+    match cmd {
+        ShieldedCmd::Status => out(ctx.block_on(dp.shielded_status())?),
+        ShieldedCmd::Sync => out(ctx.block_on(dp.shielded_sync())?),
+        ShieldedCmd::Address => out(ctx.block_on(dp.shielded_receive_address())?),
+        ShieldedCmd::Shield { duffs, quote_only } => {
+            let quote = ctx.block_on(dp.shield_quote(duffs))?;
+            if quote_only {
+                return Ok(json!({"quote": quote}));
+            }
+            let grant = ctx.platform_op(&dp, quote.grant)?;
+            let outcome = ctx.block_on(dp.shield_from_core(duffs, grant))?;
+            Ok(json!({"quote": quote, "outcome": outcome}))
+        }
+        ShieldedCmd::ShieldResume { txid } => {
+            // As `identity top-up-resume`: the apply signs with the lock's
+            // funding key, which a funding budget unlocks; it spends none.
+            let grant = ctx.platform_op(
+                &dp,
+                GrantRequest {
+                    max_duffs: 1,
+                    max_credits: 0,
+                },
+            )?;
+            out(ctx.block_on(dp.resume_shield(txid, grant))?)
+        }
+        ShieldedCmd::Send {
+            to,
+            credits,
+            memo,
+            quote_only,
+        } => {
+            let quote = ctx.block_on(dp.shielded_send_quote(to.clone(), credits))?;
+            if quote_only {
+                return Ok(json!({"quote": quote}));
+            }
+            let grant = ctx.platform_op(&dp, quote.grant)?;
+            let outcome = ctx.block_on(dp.shielded_send(to, credits, memo, grant))?;
+            Ok(json!({"quote": quote, "outcome": outcome}))
+        }
+        ShieldedCmd::Unshield {
+            credits,
+            to,
+            quote_only,
+        } => {
+            let quote = ctx.block_on(dp.unshield_quote(credits, to.clone()))?;
+            if quote_only {
+                return Ok(json!({"quote": quote}));
+            }
+            let grant = ctx.platform_op(&dp, quote.grant)?;
+            let outcome = ctx.block_on(dp.unshield_to_core(credits, to, grant))?;
+            Ok(json!({"quote": quote, "outcome": outcome}))
+        }
+        ShieldedCmd::History { offset, limit } => {
+            out(ctx.block_on(dp.shielded_history(offset, limit))?)
         }
     }
 }
@@ -2287,10 +2431,11 @@ mod tests {
         "profile",
         "invite",
         "platform-addr",
+        "shielded",
     ];
 
     /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04, DP2-01,
-    /// DP2-03, DP1-02, DP2-02, DP1-06, DP3-01, DP4-01, DP6-01, DP5-02), with the
+    /// DP2-03, DP1-02, DP2-02, DP1-06, DP3-01, DP4-01, DP6-01, DP5-02, 0.1 E1), with the
     /// line each prints on the tests' wallet, which has no identity and no
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
@@ -2456,6 +2601,38 @@ mod tests {
         ("invite forget L", NOT_STASHED),
         // DP5-02.
         ("invite status L", NOT_STASHED),
+        // 0.1 E1: regtest's floor (13) is past the activation; the new
+        // wallet's account binds from the vault with nothing scanned. The
+        // address is the random wallet's (see the run below).
+        (
+            "shielded status",
+            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":true,"balance":0,"pending":0,"pending_shields":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false}}"#,
+        ),
+        ("shielded sync", NO_PLATFORM),
+        (
+            "shielded address",
+            r#"{"ok":true,"result":{"address":"tdash1z…","account":0}}"#,
+        ),
+        (
+            "shielded shield --duffs 100000",
+            r#"{"ok":false,"error":{"code":"shielded.below_minimum","message":"below the minimum of 212852","params":{"min":212852}}}"#,
+        ),
+        (
+            "shielded shield-resume ab12",
+            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: txid is not a hex txid","params":{"detail":"txid is not a hex txid"}}}"#,
+        ),
+        (
+            "shielded send --to tZ --credits 5 --memo hi",
+            r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a shielded address of this network","params":{"detail":"not a shielded address of this network"}}}"#,
+        ),
+        (
+            "shielded unshield --credits 5 --to yA",
+            r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a Dash address","params":{"detail":"not a Dash address"}}}"#,
+        ),
+        (
+            "shielded history --offset 1 --limit 5",
+            r#"{"ok":true,"result":[]}"#,
+        ),
     ];
 
     const NOT_STASHED: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a stashed link id","params":{"detail":"not a stashed link id"}}}"#;
@@ -2670,6 +2847,23 @@ mod tests {
         ("invite status L", "NetworkSession.invitation_status"),
         ("invite pending", "NetworkSession.pending_invitations"),
         ("invite forget L", "NetworkSession.forget_invitation"),
+        ("shielded status", "DashPay.shielded_status"),
+        ("shielded sync", "DashPay.shielded_sync"),
+        ("shielded address", "DashPay.shielded_receive_address"),
+        ("shielded shield --duffs 100000", "DashPay.shield_quote"),
+        ("shielded shield-resume ab12", "DashPay.resume_shield"),
+        (
+            "shielded send --to tZ --credits 5 --memo hi",
+            "DashPay.shielded_send_quote",
+        ),
+        (
+            "shielded unshield --credits 5 --to yA",
+            "DashPay.unshield_quote",
+        ),
+        (
+            "shielded history --offset 1 --limit 5",
+            "DashPay.shielded_history",
+        ),
     ];
 
     /// Parses a command line (no argument holds a space).
@@ -2747,6 +2941,7 @@ mod tests {
                     "C" => ID2,
                     "L" | "D" => "d1",
                     "yA" => "yTw4tvqFpDXagzVgq6v2WShbBBUYoMnCXp",
+                    "tZ" => "tdash1zqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
                     "ab12" => &hex,
                     t => t,
                 })
@@ -3158,7 +3353,12 @@ mod tests {
             assert!(TABLE.iter().any(|(args, _)| args == row), "{row:?}");
         }
         for (args, call) in TABLE {
-            let line = envelope(&run(&engine, &session, args));
+            let mut line = envelope(&run(&engine, &session, args));
+            if *args == "shielded address" {
+                let address = &mut line["result"]["address"];
+                assert!(address.as_str().unwrap().starts_with("tdash1z"), "{line}");
+                *address = json!("tdash1z…");
+            }
             assert!(!line.to_string().contains("SECRET"), "{args:?}");
             if let Some((_, want)) = IMPLEMENTED.iter().find(|(row, _)| row == args) {
                 let want: Value = serde_json::from_str(want).unwrap();

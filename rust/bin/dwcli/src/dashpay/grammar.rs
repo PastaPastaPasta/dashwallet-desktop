@@ -45,6 +45,8 @@ pub(super) enum Ty {
     Blocker,
     /// A Dash address: 26–35 Base58 characters.
     Address,
+    /// A shielded address: bech32m of `dash` or `tdash`, lower case.
+    ShieldedAddress,
     /// A decimal integer that fits a `u64`, without a leading zero.
     U64,
     /// The same, for a `u32`.
@@ -86,11 +88,12 @@ fn value_type(cmd: &str, arg: &str) -> Option<Ty> {
         (_, "artifact") => Ty::Artifact,
         (_, "txid") => Ty::Txid,
         (_, "past_unknown_funding") => Ty::Blocker,
+        ("send", "to") => Ty::ShieldedAddress,
         (_, "to") => Ty::Address,
         (_, "cursor" | "up_to" | "max_duffs" | "max_credits" | "duffs" | "credits" | "amount") => {
             Ty::U64
         }
-        (_, "limit") => Ty::U32,
+        (_, "limit" | "offset") => Ty::U32,
         (_, "sections") => Ty::Enum(SECTIONS),
         (_, "sort") => Ty::Enum(SORTS),
         (_, "filter") => Ty::Enum(FILTERS),
@@ -110,6 +113,8 @@ fn value_type(cmd: &str, arg: &str) -> Option<Ty> {
         // DP5-02 T2's test-only `invite create`.
         ("create", "phrase_file" | "out") => Ty::Path,
         (_, "display_name" | "alias" | "text") => Ty::Text(256),
+        // Orchard's memo field.
+        ("send", "memo") => Ty::Text(36),
         (_, "public_message" | "note") => Ty::Text(1024),
         // `profile show`'s JSON: texts, an avatar URL (2048) and its hashes.
         ("set", "baseline") => Ty::Text(4096),
@@ -128,6 +133,7 @@ impl Ty {
             Ty::Txid => "a txid (64 lower-case hex characters)",
             Ty::Blocker => "a draft id or a registration's funding step id",
             Ty::Address => "a Dash address",
+            Ty::ShieldedAddress => "a shielded address (bech32m)",
             Ty::U64 | Ty::U32 => "a decimal number",
             Ty::Enum(_) => "one of the listed names",
             Ty::Label => "a DPNS label (3-63 of [A-Za-z0-9-], no edge hyphen)",
@@ -164,6 +170,12 @@ impl Ty {
                         .is_some_and(|id| is_engine_id(id.as_bytes()))
             }
             Ty::Address => (26..=35).contains(&b.len()) && b.iter().all(|c| BASE58.contains(c)),
+            Ty::ShieldedAddress => {
+                let data = (v.strip_prefix("dash1")).or_else(|| v.strip_prefix("tdash1"));
+                data.is_some_and(|d| {
+                    (6..=120).contains(&d.len()) && d.bytes().all(|c| BECH32.contains(&c))
+                })
+            }
             Ty::U64 => is_decimal(b) && v.parse::<u64>().is_ok(),
             Ty::U32 => is_decimal(b) && v.parse::<u32>().is_ok(),
             Ty::Enum(names) => names.contains(&v),
@@ -195,6 +207,8 @@ impl Ty {
         }
     }
 }
+
+const BECH32: &[u8] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 
 const BASE58: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -521,6 +535,20 @@ mod tests {
                 Ty::Address,
                 &["yTw4tvqFpDXagzVgq6v2WShbBBUYoMnCXp"],
                 &["yA", "0Tw4tvqFpDXagzVgq6v2WShbBBUYoMnCXp"],
+            ),
+            (
+                Ty::ShieldedAddress,
+                &[
+                    "dash1zrlpvqcgyx2rag5d5rkhq0wy69hz3q37xe54xlrreqgp8htpv3gmm2l52gznxha0fd3kq9s4l67rj",
+                    "tdash1zqqqqq",
+                ],
+                &[
+                    "dash1zRLPV",
+                    "tdash1zqqqqb",
+                    "tdash1zqqqq",
+                    "xdash1zqqqqqq",
+                    "yTw4tvqFpDXagzVgq6v2WShbBBUYoMnCXp",
+                ],
             ),
             (
                 Ty::U64,
