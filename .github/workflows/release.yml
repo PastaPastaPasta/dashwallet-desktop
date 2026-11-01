@@ -32,9 +32,15 @@
 #
 # Permissions: the workflow has `contents: read`. Only the `publish` job has write permissions
 # (contents, id-token, attestations). It runs only when a read-only `decide` job says so (a push to
-# main, or a release tag vX.Y.Z[-rc.N], in this repository) and the event is a push; the script
-# checks again that the commit is on origin/main. Dry-run tags (v0.0.0-rel<N>) build only and never
-# start the publish job.
+# main, or a release tag vX.Y.Z[-rc.N], in this repository, on a commit that is an ancestor of a
+# freshly fetched origin/main) and the event is a push; the script checks again. A release tag on a
+# commit outside main therefore never starts the job that holds write tokens. (The check is code of
+# the pushed commit, so it cannot stop a tag whose workflow file was itself edited; that needs an
+# environment deployment policy or a tag ruleset in the repository settings.) Dry-run tags
+# (v0.0.0-rel<N>) build only and never start the publish job.
+# `decide` also skips the three build jobs for a branch push or pull request that changes only docs
+# and files no bundle is built from; a new push cancels that ref's running build (never main or tags).
+# Repository setting: "Immutable releases" must stay off (`continuous` renames assets, moves its tag).
 name: Release
 
 on:
@@ -76,30 +82,30 @@ jobs:
           persist-credentials: false
       - run: ci/github/release-publish-test.sh
 
-  # Read-only: what, if anything, this run publishes. Gates the publish job.
+  # Read-only: what this run builds and whether it may publish. Gates the builds (docs-only branch and
+  # pull-request changes skip them) and the publish job (a release tag outside main never starts it).
   decide:
-    name: What this run publishes
+    name: What this run builds and publishes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
+      build: ${{ steps.kind.outputs.build }}
       publish: ${{ steps.kind.outputs.publish }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - id: kind
-        run: |
-          kind=$(ci/github/release-publish.sh classify)
-          echo "kind: $kind"
-          if [[ "$kind" != skip && "$GITHUB_REPOSITORY" == PastaPastaPasta/dashwallet-desktop ]]; then
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-          fi
+        env:
+          DECIDE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: ci/github/release-decide.sh
 
   macos:
     name: macOS universal .dmg
     runs-on: macos-latest
+    needs: decide
+    if: ${{ needs.decide.outputs.build == 'true' }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -172,6 +178,8 @@ jobs:
   windows:
     name: Windows NSIS .exe
     runs-on: windows-latest
+    needs: decide
+    if: ${{ needs.decide.outputs.build == 'true' }}
     timeout-minutes: 120
     env:
       # rs-x11-hash includes <unistd.h>, which MSVC lacks (ci/windows/unistd-shim/unistd.h).
@@ -252,6 +260,8 @@ jobs:
   linux:
     name: Linux AppImage and .deb
     runs-on: ubuntu-24.04
+    needs: decide
+    if: ${{ needs.decide.outputs.build == 'true' }}
     timeout-minutes: 90
     env:
       # The runner has no FUSE: the AppImage tools (linuxdeploy) run extracted.
