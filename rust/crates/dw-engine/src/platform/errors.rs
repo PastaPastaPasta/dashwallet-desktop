@@ -581,6 +581,16 @@ pub enum ShieldedError {
     /// activity. Try again later." Shielding and shielded sends are exempt.
     #[error("the shielded pool holds {notes} notes; withdrawals need {required}")]
     PoolTooSmall { notes: u64, required: u64 },
+    /// The wallet has a shielded payment of unknown result whose record
+    /// was lost (`ShieldedStatus::unrecorded_spends`, DEC-1057): it may
+    /// still go through, and its notes read unspent. A send or unshield
+    /// runs only when confirmed (`confirm_unrecorded`): "A shielded
+    /// payment from before the restart may still go through; confirm to
+    /// send anyway." Nothing was selected or signed.
+    #[error(
+        "a shielded payment from before the restart may still go through; confirm to send anyway"
+    )]
+    UnrecordedSpend,
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -598,6 +608,7 @@ impl ShieldedError {
             Self::ShieldPending { .. } => "shielded.shield_pending",
             Self::PoolTooSmall { .. } => "shielded.pool_too_small",
             Self::TooManyInputs { .. } => "shielded.too_many_inputs",
+            Self::UnrecordedSpend => "shielded.unrecorded_spend",
             Self::Platform(e) => e.code(),
         }
     }

@@ -675,10 +675,14 @@ commands! {
         credits: String,
         memo: Option<String>,
         grant: String,
+        confirm_unrecorded: bool,
     ) -> ShieldedSpendOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         let credits = shielded::parse_credits(&credits)?;
-        Ok(dashpay.shielded_send(to, credits, memo, grant).await?.into())
+        Ok(dashpay
+            .shielded_send(to, credits, memo, grant, confirm_unrecorded)
+            .await?
+            .into())
     }
 
     /// What moving `credits` back to Core costs (`to`: a Core address of the
@@ -703,10 +707,14 @@ commands! {
         credits: String,
         to: Option<String>,
         grant: String,
+        confirm_unrecorded: bool,
     ) -> ShieldedSpendOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         let credits = shielded::parse_credits(&credits)?;
-        Ok(dashpay.unshield_to_core(credits, to, grant).await?.into())
+        Ok(dashpay
+            .unshield_to_core(credits, to, grant, confirm_unrecorded)
+            .await?
+            .into())
     }
 
     /// The wallet's shielded history for Activity, pending first, then

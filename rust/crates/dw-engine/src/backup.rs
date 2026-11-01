@@ -696,9 +696,11 @@ impl NetworkSession {
             if created {
                 let removed = async {
                     let live = self.live()?;
-                    // A wallet holding a stored shielded spend stays (DEC-1046).
+                    // A wallet holding a stored shielded spend stays (DEC-1046),
+                    // as does one with a marked spend (DEC-1057).
                     let removal = (self.platform)
                         .remove_from_manager(
+                            &self.leases,
                             &live.manager,
                             id,
                             crate::platform::runtime::StoredSpends::Refuse,

@@ -36,7 +36,7 @@ use crate::platform::flows::{BudgetPurpose, DispatchResolution, DispatchResolved
 use crate::{EngineEvent, NoticeCode, WalletId};
 use dw_appdb::dispatch::{
     CallRows, Resolution, SelfSpendConflict, SelfSpendProvenance, StoredFundingKey, StoredOutPoint,
-    TopUpSettled,
+    TopUpSettled, UnrecordedSpend,
 };
 
 /// A shielded spend on record: `(activity, transition)`, the library's
@@ -166,6 +166,37 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     #[cfg(test)]
     fn shielded_redrives(&self, _wallet: &[u8; 32]) -> Result<Vec<ShieldedRedrive>, String> {
         Err("this journal keeps no shielded redrives".into())
+    }
+    /// Marks the shielded spend `activity` of `wallet` of unknown result
+    /// the library kept no record of (schema 10, DEC-1057); the first
+    /// marker stands.
+    fn record_unrecorded_spend(
+        &self,
+        _wallet: &[u8; 32],
+        _activity: &[u8; 32],
+        _anchor: &[u8; 32],
+        _nullifiers: &[[u8; 32]],
+    ) -> Result<(), String> {
+        Err("this journal keeps no shielded spend markers".into())
+    }
+    /// The marked shielded spends of `wallet`; none in a journal that keeps
+    /// none.
+    fn unrecorded_spends(&self, _wallet: &[u8; 32]) -> Result<Vec<UnrecordedSpend>, String> {
+        Ok(Vec::new())
+    }
+    /// Flags `nullifiers` of `wallet` spent and clears each marker all of
+    /// whose are; returns their activities.
+    fn note_spent_nullifiers(
+        &self,
+        _wallet: &[u8; 32],
+        _nullifiers: &[[u8; 32]],
+    ) -> Result<Vec<[u8; 32]>, String> {
+        Ok(Vec::new())
+    }
+    /// The journal connection's `synchronous` pragma (2 = FULL).
+    #[cfg(test)]
+    fn synchronous(&self) -> Option<i64> {
+        None
     }
 }
 
@@ -345,6 +376,36 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
     #[cfg(test)]
     fn shielded_redrives(&self, wallet: &[u8; 32]) -> Result<Vec<ShieldedRedrive>, String> {
         self.shielded_redrives(wallet).map_err(|e| e.to_string())
+    }
+
+    fn record_unrecorded_spend(
+        &self,
+        wallet: &[u8; 32],
+        activity: &[u8; 32],
+        anchor: &[u8; 32],
+        nullifiers: &[[u8; 32]],
+    ) -> Result<(), String> {
+        let now = crate::events::unix_now();
+        (self.record_unrecorded_spend(wallet, activity, anchor, nullifiers, now))
+            .map(drop)
+            .map_err(|e| e.to_string())
+    }
+
+    fn unrecorded_spends(&self, wallet: &[u8; 32]) -> Result<Vec<UnrecordedSpend>, String> {
+        self.unrecorded_spends(wallet).map_err(|e| e.to_string())
+    }
+
+    fn note_spent_nullifiers(
+        &self,
+        wallet: &[u8; 32],
+        nullifiers: &[[u8; 32]],
+    ) -> Result<Vec<[u8; 32]>, String> {
+        (self.note_spent_nullifiers(wallet, nullifiers)).map_err(|e| e.to_string())
+    }
+
+    #[cfg(test)]
+    fn synchronous(&self) -> Option<i64> {
+        self.pragmas().ok().map(|p| p.synchronous)
     }
 }
 

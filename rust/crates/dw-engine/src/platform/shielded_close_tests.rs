@@ -320,7 +320,7 @@ fn close_wallet_and_the_network_close_are_refused_while_a_spend_is_unresolved() 
     let s = Arc::clone(&session);
     let removed = engine.block_on(async move {
         (s.platform
-            .remove_from_manager(&manager, wallet, StoredSpends::Refuse))
+            .remove_from_manager(&s.leases, &manager, wallet, StoredSpends::Refuse))
         .await
     });
     assert!(matches!(removed, Err(EngineError::ShieldedSpendUnresolved)));
@@ -694,4 +694,229 @@ fn a_quit_keeps_unresolved_spends_for_the_next_launch() {
         assert!(pool::guarded_pass(&s, &m, true).await, "the pass ran");
     });
     assert_eq!(kept(&engine, &session, wallet), expected());
+}
+
+/// DEC-1057: the marker of a spend whose record the library lost: its
+/// activity, anchor and two nullifiers.
+const MARKED: [u8; 32] = [9; 32];
+const MARKED_NULLIFIERS: [[u8; 32]; 2] = [[41; 32], [42; 32]];
+
+/// Writes [`MARKED`] for `wallet` as a spend whose library record failed
+/// does (`shielded_pool::mark_unrecorded`).
+fn mark(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) {
+    engine
+        .block_on(session.leases.record_unrecorded_spend(
+            wallet,
+            MARKED,
+            [7; 32],
+            MARKED_NULLIFIERS.to_vec(),
+        ))
+        .unwrap();
+}
+
+fn markers(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> Vec<[u8; 32]> {
+    (engine
+        .block_on(session.leases.unrecorded_spends(wallet))
+        .unwrap())
+    .into_iter()
+    .map(|m| m.activity)
+    .collect()
+}
+
+/// What the library's persister receives from a proved scan (sync.rs:761-777)
+/// or a spend's proved result (operations.rs:2847-2854): `nullifiers` of
+/// `wallet`'s account seen spent, through the session's store, the tap.
+fn spent_seen(session: &Arc<NetworkSession>, wallet: WalletId, nullifiers: &[[u8; 32]]) {
+    use platform_wallet::changeset::{
+        PlatformWalletChangeSet, PlatformWalletPersistence, ShieldedChangeSet,
+    };
+    let mut shielded = ShieldedChangeSet::default();
+    shielded
+        .nullifiers_spent
+        .insert(subwallet(wallet), nullifiers.to_vec());
+    let changeset = PlatformWalletChangeSet {
+        shielded: Some(shielded),
+        ..Default::default()
+    };
+    (session.live().unwrap().store)
+        .store(wallet.0, changeset)
+        .unwrap();
+}
+
+/// DEC-1057: a marked spend refuses Close Wallet, the network close and
+/// the restore's rollback as a stored one does. Its nullifiers seen spent
+/// one at a time through the store's tap: the first leaves it (a partial
+/// set clears nothing), and so does another wallet's report of both; the
+/// last clears it, and the wallet closes.
+#[test]
+fn a_marked_spend_refuses_the_close_until_a_scan_finds_all_its_notes_spent() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    mark(&engine, &session, wallet);
+    assert_eq!(markers(&engine, &session, wallet), [MARKED]);
+
+    let unloaded = engine.block_on(session.unload_wallet(wallet));
+    assert!(
+        matches!(unloaded, Err(EngineError::ShieldedSpendUnresolved)),
+        "{unloaded:?}"
+    );
+    assert!(session.require_wallet(&wallet).is_ok(), "still loaded");
+    let closed = engine.block_on(engine.close_network(DashNetwork::Regtest));
+    assert!(
+        matches!(closed, Err(EngineError::ShieldedSpendUnresolved)),
+        "{closed:?}"
+    );
+    assert!(session.live().is_ok(), "the session stays open");
+    let manager = session.manager().unwrap();
+    let s = Arc::clone(&session);
+    let removed = engine.block_on(async move {
+        (s.platform
+            .remove_from_manager(&s.leases, &manager, wallet, StoredSpends::Refuse))
+        .await
+    });
+    assert!(
+        matches!(removed, Err(EngineError::ShieldedSpendUnresolved)),
+        "{removed:?}"
+    );
+
+    spent_seen(&session, wallet, &MARKED_NULLIFIERS[..1]);
+    assert_eq!(markers(&engine, &session, wallet), [MARKED], "partial");
+    let other = WalletId([3; 32]);
+    let mut changeset_of_other = MARKED_NULLIFIERS.to_vec();
+    changeset_of_other.push([43; 32]);
+    {
+        use platform_wallet::changeset::{
+            PlatformWalletChangeSet, PlatformWalletPersistence, ShieldedChangeSet,
+        };
+        // Keyed by the other wallet's account: not this wallet's notes.
+        let mut shielded = ShieldedChangeSet::default();
+        shielded
+            .nullifiers_spent
+            .insert(subwallet(other), changeset_of_other);
+        let changeset = PlatformWalletChangeSet {
+            shielded: Some(shielded),
+            ..Default::default()
+        };
+        let _ = (session.live().unwrap().store).store(wallet.0, changeset);
+    }
+    assert_eq!(markers(&engine, &session, wallet), [MARKED], "another's");
+    spent_seen(&session, wallet, &MARKED_NULLIFIERS[1..]);
+    assert!(markers(&engine, &session, wallet).is_empty(), "all spent");
+
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
+    assert!(
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+}
+
+/// DEC-1057: the user's removal (under its wipe grant) deletes the
+/// wallet's markers with the wallet.
+#[test]
+fn the_users_removal_purges_a_marked_spend() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    mark(&engine, &session, wallet);
+    let wipe = (session.vault).authorize(
+        dw_vault::GrantPurpose::Wipe,
+        Some(&wallet.0),
+        dw_vault::Credential::Passphrase(PASS),
+    );
+    let wipe = wipe.unwrap().id;
+    engine
+        .block_on(session.remove_wallet(wallet, wipe))
+        .unwrap();
+    assert!(markers(&engine, &session, wallet).is_empty());
+}
+
+/// The quitting half of the next test, run in a child process: the first
+/// launch marks a spend (DEC-1057), then quits and exits at once.
+#[test]
+#[ignore = "the child process of a_marked_spend_needs_a_confirmation_after_a_relaunch"]
+fn quit_with_a_marked_spend_child() {
+    let Some(root) = std::env::var_os(QUIT_ROOT) else {
+        return;
+    };
+    let engine = engine_at(Path::new(&root));
+    let (session, wallet) = first_launch(&engine);
+    mark(&engine, &session, wallet);
+    std::fs::write(Path::new(&root).join("wallet"), wallet.to_string()).unwrap();
+    engine.block_on(engine.shutdown()).unwrap();
+    std::process::exit(0);
+}
+
+/// DEC-1057 after a relaunch: the marker outlived the quitting process.
+/// The status names it; Close Wallet is refused; a send and an unshield
+/// are refused with `shielded.unrecorded_spend` unless confirmed, before
+/// any quote (here the quotes' own refusals, an unsynced account's and an
+/// amount below the withdrawal minimum, show the confirmed calls got past
+/// it); a shield is not gated.
+#[test]
+fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
+    let dir = dw_testutil::private_tempdir();
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "platform::shielded_close_tests::quit_with_a_marked_spend_child",
+            "--exact",
+            "--ignored",
+            "--test-threads=1",
+        ])
+        .env(QUIT_ROOT, dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        child.status.success(),
+        "the quitting process failed: {}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+    let engine = engine_at(dir.path());
+    let session = open(&engine);
+    let wallet: WalletId = (std::fs::read_to_string(dir.path().join("wallet")).unwrap())
+        .parse()
+        .unwrap();
+    engine
+        .block_on(session.vault_op(|v| v.unlock(PASS, UnlockScope::Full)))
+        .unwrap();
+    assert!(bind(&engine, &session, wallet));
+    let dp = session.dashpay(wallet);
+
+    let status = engine.block_on(dp.shielded_status()).unwrap();
+    assert_eq!(
+        status.unrecorded_spends,
+        [super::shielded::UnrecordedSpend {
+            activity_id: hex::encode(MARKED),
+            since: status.unrecorded_spends[0].since,
+        }]
+    );
+    assert!(status.unrecorded_spends[0].since > 0);
+    let unloaded = engine.block_on(session.unload_wallet(wallet));
+    assert!(
+        matches!(unloaded, Err(EngineError::ShieldedSpendUnresolved)),
+        "{unloaded:?}"
+    );
+
+    let to = engine
+        .block_on(dp.shielded_receive_address())
+        .unwrap()
+        .address;
+    let code = |r: Result<super::shielded::ShieldedSpendOutcome, super::ShieldedError>| {
+        r.unwrap_err().code()
+    };
+    for confirmed in [false, true] {
+        let sent =
+            engine.block_on(dp.shielded_send(to.clone(), 1_000, None, "g".into(), confirmed));
+        let unshielded = engine.block_on(dp.unshield_to_core(1_000, None, "g".into(), confirmed));
+        let want = if confirmed {
+            // The quotes' own refusals.
+            ("shielded.not_synced", "shielded.below_minimum")
+        } else {
+            ("shielded.unrecorded_spend", "shielded.unrecorded_spend")
+        };
+        assert_eq!((code(sent), code(unshielded)), want);
+    }
+    let shield = engine.block_on(dp.shield_quote(100_000)).unwrap_err();
+    assert_ne!(shield.code(), "shielded.unrecorded_spend", "{shield:?}");
 }

@@ -1093,6 +1093,7 @@ fn error_codes_match_the_contract() {
                 notes: 0,
                 required: 0,
             },
+            ShieldedError::UnrecordedSpend,
         ],
         ShieldedError::code,
     );
@@ -1537,9 +1538,9 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.shield_from_core(1, s()).await.map(drop),
             dp.resume_shield(s(), s()).await.map(drop),
             dp.shielded_send_quote(s(), 1).await.map(drop),
-            dp.shielded_send(s(), 1, None, s()).await.map(drop),
+            dp.shielded_send(s(), 1, None, s(), false).await.map(drop),
             dp.unshield_quote(1, None).await.map(drop),
-            dp.unshield_to_core(1, None, s()).await.map(drop),
+            dp.unshield_to_core(1, None, s(), false).await.map(drop),
             dp.shielded_history(0, 10).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");

@@ -46,6 +46,11 @@ pub struct ShieldedStatus {
     /// Spends whose result is not confirmed yet (`pending`), until a sync
     /// pass resolves each. Offer no retry.
     pub unresolved_spends: Vec<UnresolvedSpend>,
+    /// Spends from before a restart whose result is not known and whose
+    /// record was lost: one may still go through, so every send and
+    /// unshield needs `confirmUnrecorded` until a sync shows all its notes
+    /// spent (`shielded.unrecorded_spend`).
+    pub unrecorded_spends: Vec<UnrecordedSpend>,
     /// The note-tree position scanned to; `null` before a completed scan.
     pub synced_index: Option<u64>,
     /// Unix seconds of the last completed sync pass.
@@ -66,6 +71,7 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             pending,
             pending_shields,
             unresolved_spends,
+            unrecorded_spends,
             synced_index,
             last_sync_at,
             syncing,
@@ -80,6 +86,7 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             pending,
             pending_shields: pending_shields.into_iter().map(Into::into).collect(),
             unresolved_spends: unresolved_spends.into_iter().map(Into::into).collect(),
+            unrecorded_spends: unrecorded_spends.into_iter().map(Into::into).collect(),
             synced_index,
             last_sync_at,
             syncing,
@@ -340,6 +347,23 @@ impl From<engine::UnresolvedSpend> for UnresolvedSpend {
             transition,
             attempts,
         }
+    }
+}
+
+/// A spend of unknown result whose record was lost (DEC-1057).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UnrecordedSpend {
+    /// Its history row's id.
+    pub activity_id: String,
+    /// Unix seconds of the spend.
+    pub since: u64,
+}
+
+impl From<engine::UnrecordedSpend> for UnrecordedSpend {
+    fn from(u: engine::UnrecordedSpend) -> Self {
+        let engine::UnrecordedSpend { activity_id, since } = u;
+        UnrecordedSpend { activity_id, since }
     }
 }
 

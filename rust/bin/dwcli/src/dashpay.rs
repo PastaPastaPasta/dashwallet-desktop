@@ -174,6 +174,10 @@ pub enum ShieldedCmd {
         memo: Option<String>,
         #[arg(long)]
         quote_only: bool,
+        /// Send even though a payment from before a restart may still go
+        /// through (`shielded.unrecorded_spend`).
+        #[arg(long)]
+        confirm_unrecorded: bool,
     },
     /// Shielded -> Core: withdraw `--credits` to a Core address, or to a
     /// fresh receive address of the wallet.
@@ -184,6 +188,10 @@ pub enum ShieldedCmd {
         to: Option<String>,
         #[arg(long)]
         quote_only: bool,
+        /// Withdraw even though a payment from before a restart may still
+        /// go through (`shielded.unrecorded_spend`).
+        #[arg(long)]
+        confirm_unrecorded: bool,
     },
     /// The shielded history, pending rows first, then newest first.
     History {
@@ -921,7 +929,9 @@ fn shielded_params(e: &ShieldedError) -> Value {
         } => {
             json!({"protocol_version": protocol_version, "activation_version": activation_version})
         }
-        ShieldedError::NotSynced | ShieldedError::CoinsLocked => json!({}),
+        ShieldedError::NotSynced | ShieldedError::CoinsLocked | ShieldedError::UnrecordedSpend => {
+            json!({})
+        }
         ShieldedError::InvalidAddress { detail } => json!({"detail": detail}),
         ShieldedError::InsufficientFunds { needed, available }
         | ShieldedError::FundingInsufficient { needed, available } => {
@@ -1664,26 +1674,30 @@ fn shielded_cmd(ctx: &Ctx, cmd: ShieldedCmd) -> Result<Value, CliError> {
             credits,
             memo,
             quote_only,
+            confirm_unrecorded,
         } => {
             let quote = ctx.block_on(dp.shielded_send_quote(to.clone(), credits))?;
             if quote_only {
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
-            let outcome = ctx.block_on(dp.shielded_send(to, credits, memo, grant))?;
+            let outcome =
+                ctx.block_on(dp.shielded_send(to, credits, memo, grant, confirm_unrecorded))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         ShieldedCmd::Unshield {
             credits,
             to,
             quote_only,
+            confirm_unrecorded,
         } => {
             let quote = ctx.block_on(dp.unshield_quote(credits, to.clone()))?;
             if quote_only {
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
-            let outcome = ctx.block_on(dp.unshield_to_core(credits, to, grant))?;
+            let outcome =
+                ctx.block_on(dp.unshield_to_core(credits, to, grant, confirm_unrecorded))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         ShieldedCmd::History { offset, limit } => {
@@ -2609,7 +2623,7 @@ mod tests {
         // address is the random wallet's (see the run below).
         (
             "shielded status",
-            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false}}"#,
+            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false}}"#,
         ),
         ("shielded sync", NO_PLATFORM),
         (

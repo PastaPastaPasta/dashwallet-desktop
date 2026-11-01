@@ -77,7 +77,7 @@
 //!   aborts, under no engine timeout; the library's own waits are bounded
 //!   by its arguments.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::future::Future;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -96,6 +96,7 @@ use platform_wallet::changeset::{
 };
 use platform_wallet::wallet::asset_lock::AssetLockFunding;
 use platform_wallet::wallet::shielded::note_selection::{ShieldedFeeKind, select_notes_with_fee};
+use platform_wallet::wallet::shielded::store::StalePendingSpend;
 use platform_wallet::wallet::shielded::{
     CachedOrchardProver, NetworkShieldedCoordinator, ShieldedActivityEntry,
     ShieldedActivityKind as Kind, ShieldedActivityStatus as Status, ShieldedDirection as Direction,
@@ -116,7 +117,7 @@ use super::shielded::{
     PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote, ShieldState,
     ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus, ShieldedAddress,
     ShieldedDirection, ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedSpendState,
-    ShieldedStatus, UnresolvedSpend,
+    ShieldedStatus, UnrecordedSpend, UnresolvedSpend,
 };
 use super::withdrawal::{Rules, expected_duffs};
 use crate::session::Manager;
@@ -239,6 +240,14 @@ pub(crate) trait ShieldedLib: Send + Sync {
     fn unresolved(
         &self,
     ) -> impl Future<Output = Result<Vec<UnresolvedSpend>, PlatformError>> + Send;
+    /// The account's notes reserved by a spend built on a recorded anchor,
+    /// as the library holds them in memory: `(nullifier, anchor,
+    /// activity_id)` (`stale_pending_spends`, store.rs:286-293). A spend
+    /// reserves them before its broadcast (operations.rs:1840, :2009,
+    /// :1661 → :2890-2910) and keeps them on an unknown result.
+    fn reservations(
+        &self,
+    ) -> impl Future<Output = Result<Vec<StalePendingSpend>, PlatformError>> + Send;
     /// The values of the coins a funding may select (those
     /// [`Spendable::duffs`] counts).
     fn coin_values(&self) -> impl Future<Output = Result<Vec<u64>, PlatformError>> + Send;
@@ -382,6 +391,7 @@ pub(crate) async fn status(lib: &impl ShieldedLib) -> Result<ShieldedStatus, Shi
         pending: 0,
         pending_shields: Vec::new(),
         unresolved_spends: Vec::new(),
+        unrecorded_spends: Vec::new(),
         synced_index: None,
         last_sync_at: None,
         syncing: false,
@@ -423,6 +433,51 @@ pub(crate) async fn sync(
     lib.bind().await?;
     lib.sync_now().await;
     status(lib).await
+}
+
+/// `status` with the wallet's marked spends (DEC-1057), active network or
+/// not: they gate its sends either way.
+pub(crate) async fn marked_status(
+    session: &NetworkSession,
+    wallet: WalletId,
+    mut status: ShieldedStatus,
+) -> Result<ShieldedStatus, ShieldedError> {
+    let markers = (session.leases.unrecorded_spends(wallet).await)
+        .map_err(|detail| PlatformError::Storage { detail })?;
+    status.unrecorded_spends = (markers.into_iter())
+        .map(|m| UnrecordedSpend {
+            activity_id: hex::encode(m.activity),
+            since: m.at,
+        })
+        .collect();
+    Ok(status)
+}
+
+/// DEC-1057: while `wallet` has a marked spend (one of unknown result whose
+/// record the library lost, so its notes read unspent), a send or unshield
+/// runs only when the user confirmed it may still go through. Refused here,
+/// before any note is selected or a key leaves the vault. Until the
+/// dispatch journal is read no marker can be (a relaunch's), so every
+/// spend is `platform.unavailable` then, as a shield is; read failures
+/// refuse too.
+async fn confirm_unrecorded(
+    session: &NetworkSession,
+    wallet: WalletId,
+    confirmed: bool,
+) -> Result<(), ShieldedError> {
+    if !session.leases.journal_ready() {
+        return Err(PlatformError::Unavailable.into());
+    }
+    if confirmed {
+        return Ok(());
+    }
+    let markers = (session.leases.unrecorded_spends(wallet).await)
+        .map_err(|detail| PlatformError::Storage { detail })?;
+    if markers.is_empty() {
+        Ok(())
+    } else {
+        Err(ShieldedError::UnrecordedSpend)
+    }
 }
 
 pub(crate) async fn receive_address(
@@ -720,6 +775,41 @@ async fn balance(lib: &impl ShieldedLib) -> u64 {
     (lib.ledger().await.ok().flatten()).map_or(0, |l| l.spendable)
 }
 
+/// Writes the engine's marker of the spend the library just could not
+/// confirm and kept no record of (DEC-1057): the reservations it made for
+/// it before its broadcast, those of an activity not reserved before, give
+/// its activity id, anchor and nullifiers (one spend's by construction:
+/// one `pending_entry`, operations.rs:1822-1840). Exactly one such spend,
+/// or an error.
+async fn mark_unrecorded(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+    reserved_before: &HashSet<[u8; 32]>,
+) -> Result<(), String> {
+    let reserved = lib.reservations().await.map_err(|e| e.to_string())?;
+    // Activity → (anchor, nullifiers).
+    type Reserved = ([u8; 32], Vec<[u8; 32]>);
+    let mut spends: BTreeMap<[u8; 32], Reserved> = BTreeMap::new();
+    for (nullifier, anchor, activity) in reserved {
+        let Some(activity) = activity.filter(|a| !reserved_before.contains(a)) else {
+            continue;
+        };
+        spends
+            .entry(activity)
+            .or_insert((anchor, Vec::new()))
+            .1
+            .push(nullifier);
+    }
+    let mut spends = spends.into_iter();
+    let (Some((activity, (anchor, nullifiers))), None) = (spends.next(), spends.next()) else {
+        return Err("the library holds no single new reservation of the spend".into());
+    };
+    (session.leases)
+        .record_unrecorded_spend(wallet, activity, anchor, nullifiers)
+        .await
+}
+
 /// A spend of `credits` under a `ShieldedSpend` lease from `grant`,
 /// charged the total of its quote under the hold, so what the lease is
 /// charged is what the library builds (Opus r1 m1). One the library could
@@ -763,10 +853,14 @@ async fn spend(
     }
     let lease = authority(session, wallet, grant, FlowKind::ShieldedSpend).await?;
     let permit = write_permit(&lease, operation, quote.total_credits)?;
-    // The records before, to tell this spend's (spends of the wallet run
-    // one at a time, under its lock).
+    // The records and reservations before, to tell this spend's (spends of
+    // the wallet run one at a time, under its lock, and no pass runs
+    // under the hold).
     let before: HashSet<String> = (lib.unresolved().await?.into_iter())
         .map(|u| u.activity_id)
+        .collect();
+    let reserved_before: HashSet<[u8; 32]> = (lib.reservations().await?.into_iter())
+        .filter_map(|(_, _, activity)| activity)
         .collect();
     let sent = leased(&lease, async {
         match to {
@@ -813,13 +907,33 @@ async fn spend(
                     }
                     drop(hold);
                 }
-                None => tracing::warn!(
-                    operation,
-                    error = %e,
-                    "a shielded spend's result is unconfirmed and the library kept no \
-                     transition to re-send; it stays pending until a scan or the prune \
-                     backstop resolves it"
-                ),
+                None => {
+                    // The library's record write failed (best-effort at the
+                    // pin, operations.rs:2983-3029): nothing of its keeps the
+                    // spend past the session. The engine's own marker does
+                    // (DEC-1057), before the send returns; without it the
+                    // send is an error saying the payment may still go
+                    // through, never a silent success.
+                    tracing::warn!(
+                        operation,
+                        error = %e,
+                        "a shielded spend's result is unconfirmed and the library kept no \
+                         transition to re-send; it is marked until a scan finds its notes spent"
+                    );
+                    if let Err(detail) =
+                        mark_unrecorded(session, wallet, lib, &reserved_before).await
+                    {
+                        tracing::error!(
+                            operation,
+                            %detail,
+                            "an unrecorded shielded spend could not be marked"
+                        );
+                        return Err(PlatformError::BroadcastUnknown {
+                            artifact: format!("shielded {operation}"),
+                        }
+                        .into());
+                    }
+                }
             }
             Ok(Spent {
                 balance: balance(lib).await,
@@ -839,11 +953,13 @@ pub(crate) async fn send(
     (to, credits): (&str, u64),
     memo: Option<&str>,
     grant: &str,
+    confirmed: bool,
 ) -> Result<ShieldedSpendOutcome, ShieldedError> {
     let memo = memo_field(memo)?;
     let address = shielded_address(lib.network(), to)?;
     let lock = wallet_lock(session, wallet);
     let _spending = lock.lock().await;
+    confirm_unrecorded(session, wallet, confirmed).await?;
     // Before the grant, so a refusal keeps it; `spend` quotes again under
     // the hold.
     send_quote(lib, to, credits).await?;
@@ -862,9 +978,11 @@ pub(crate) async fn unshield(
     credits: u64,
     to: Option<&str>,
     grant: &str,
+    confirmed: bool,
 ) -> Result<ShieldedSpendOutcome, ShieldedError> {
     let lock = wallet_lock(session, wallet);
     let _spending = lock.lock().await;
+    confirm_unrecorded(session, wallet, confirmed).await?;
     unshield_quote(lib, credits, to).await?;
     let to = match to {
         Some(to) => to.to_owned(),
@@ -1739,6 +1857,11 @@ impl ShieldedLib for PwShielded {
             .collect())
     }
 
+    async fn reservations(&self) -> Result<Vec<StalePendingSpend>, PlatformError> {
+        let store = self.coordinator.store().read().await;
+        (store.stale_pending_spends(self.subwallet())).map_err(store_error)
+    }
+
     async fn coin_values(&self) -> Result<Vec<u64>, PlatformError> {
         let session = &self.pw.session;
         let fence = session.coin_fence(self.pw.wallet_id).await?;
@@ -2043,6 +2166,19 @@ pub(crate) async fn holds_stored_spends(manager: &Manager, id: WalletId) -> bool
     };
     let stored = (coordinator.store().read().await).pending_redrives_for_wallet(id.0);
     stored.map_or(true, |stored| !stored.is_empty())
+}
+
+/// Whether wallet `id` holds a spend whose result is not known: one the
+/// library stored ([`holds_stored_spends`]) or one the engine marked
+/// because the library kept no record of it (DEC-1057, read fail closed).
+/// Close Wallet, an in-app network close and a restore's rollback refuse
+/// such a wallet (`shielded_spend_unresolved`).
+pub(crate) async fn holds_unresolved(
+    leases: &super::lease::LeaseTable,
+    manager: &Manager,
+    id: WalletId,
+) -> bool {
+    holds_stored_spends(manager, id).await || leases.marks_unrecorded(id).await
 }
 
 /// After this long a drain logs that a shielded pass in flight is still

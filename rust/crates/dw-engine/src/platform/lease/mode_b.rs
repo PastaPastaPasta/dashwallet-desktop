@@ -1450,6 +1450,85 @@ impl LeaseTable {
             .map_err(|e| e.to_string())?
     }
 
+    /// Marks the shielded spend `activity` of `wallet`, of unknown result
+    /// and with no record of the library's, built on `anchor` and spending
+    /// `nullifiers` (schema 10, DEC-1057), in dispatch.sqlite
+    /// (`synchronous=FULL`). On the blocking pool.
+    pub(crate) async fn record_unrecorded_spend(
+        &self,
+        wallet: WalletId,
+        activity: [u8; 32],
+        anchor: [u8; 32],
+        nullifiers: Vec<[u8; 32]>,
+    ) -> Result<(), String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || {
+                backend.record_unrecorded_spend(&wallet.0, &activity, &anchor, &nullifiers)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// The marked shielded spends of `wallet` (schema 10); none while the
+    /// journal is not open (nothing can be marked then). On the blocking
+    /// pool.
+    pub(crate) async fn unrecorded_spends(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<dw_appdb::dispatch::UnrecordedSpend>, String> {
+        let Some(backend) = self.journal.get() else {
+            return Ok(Vec::new());
+        };
+        (self.rt)
+            .spawn_blocking(move || backend.unrecorded_spends(&wallet.0))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Whether `wallet` has a marked shielded spend; `true` when the
+    /// markers cannot be read (fail closed).
+    pub(crate) async fn marks_unrecorded(&self, wallet: WalletId) -> bool {
+        match self.unrecorded_spends(wallet).await {
+            Ok(markers) => !markers.is_empty(),
+            Err(e) => {
+                tracing::warn!(wallet_id = %wallet, error = %e, "the shielded spend markers could not be read");
+                true
+            }
+        }
+    }
+
+    /// Flags `nullifiers` of `wallet` seen spent, from a proved scan or a
+    /// proved result as the persister accepted it, and clears each marker
+    /// all of whose are (DEC-1057). Synchronous: the persister's tap calls
+    /// it inline.
+    pub(crate) fn note_spent_nullifiers(&self, wallet: WalletId, nullifiers: &[[u8; 32]]) {
+        let Some(backend) = self.journal.get() else {
+            return;
+        };
+        match backend.note_spent_nullifiers(&wallet.0, nullifiers) {
+            Ok(cleared) => {
+                for activity in cleared {
+                    tracing::info!(
+                        wallet_id = %wallet,
+                        activity = %hex::encode(activity),
+                        "a marked shielded spend's notes are all spent"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(wallet_id = %wallet, error = %e, "the shielded spend markers were not updated");
+            }
+        }
+    }
+
+    /// The open journal's `synchronous` pragma (2 = FULL), which the
+    /// markers are written under.
+    #[cfg(test)]
+    pub(crate) fn journal_synchronous(&self) -> Option<i64> {
+        self.journal.get().and_then(|j| j.synchronous())
+    }
+
     /// The shielded spends of `wallet` on record (schema 9),
     /// `(activity, transition)`. On the blocking pool.
     #[cfg(test)]

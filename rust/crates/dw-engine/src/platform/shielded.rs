@@ -52,6 +52,13 @@ pub struct ShieldedStatus {
     /// Spends whose broadcast the library could not confirm
     /// ([`ShieldedSpendState::Pending`]), until a sync pass resolves each.
     pub unresolved_spends: Vec<UnresolvedSpend>,
+    /// Spends whose result is not known and whose record the library lost
+    /// (DEC-1057): one may still go through, and its notes read unspent.
+    /// Each stays until a proved scan shows all its notes spent, or the
+    /// wallet is removed; while one does, Close Wallet and a network close
+    /// or switch are refused (`shielded_spend_unresolved`), and a send or
+    /// unshield needs `confirm_unrecorded` (`shielded.unrecorded_spend`).
+    pub unrecorded_spends: Vec<UnrecordedSpend>,
     /// Position in the pool's note tree the account is scanned up to
     /// (exclusive); `None` before a completed scan.
     pub synced_index: Option<u64>,
@@ -185,6 +192,16 @@ pub struct UnresolvedSpend {
     pub attempts: u32,
 }
 
+/// A spend of unknown result whose record the library lost (DEC-1057),
+/// as the engine's marker keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnrecordedSpend {
+    /// The spend's history row ([`ShieldedActivity::id`]), hex.
+    pub activity_id: String,
+    /// Unix seconds of the spend.
+    pub since: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedSpendOutcome {
     pub credits: u64,
@@ -274,8 +291,9 @@ impl DashPay {
     /// SDK's proved protocol version; an inactive network is a status
     /// (`active` false), not an error.
     pub async fn shielded_status(&self) -> Result<ShieldedStatus, ShieldedError> {
-        on_pool(&self.session, self.wallet_id, |_, lib| async move {
-            pool::status(&lib).await
+        let wallet = self.wallet_id;
+        on_pool(&self.session, wallet, move |session, lib| async move {
+            pool::marked_status(&session, wallet, pool::status(&lib).await?).await
         })
         .await
     }
@@ -283,8 +301,10 @@ impl DashPay {
     /// Runs a sync pass of the wallet's shielded notes now and returns the
     /// status after.
     pub async fn shielded_sync(&self) -> Result<ShieldedStatus, ShieldedError> {
-        on_pool(&self.session, self.wallet_id, |session, lib| async move {
-            pool::sync(&session, &lib).await
+        let wallet = self.wallet_id;
+        on_pool(&self.session, wallet, move |session, lib| async move {
+            let status = pool::sync(&session, &lib).await?;
+            pool::marked_status(&session, wallet, status).await
         })
         .await
     }
@@ -354,18 +374,23 @@ impl DashPay {
 
     /// Shielded → Shielded: sends `credits` from the wallet's notes to the
     /// shielded address `to`, with an optional memo of at most 36 bytes,
-    /// under a `ShieldedSpend` lease begun from `grant`.
+    /// under a `ShieldedSpend` lease begun from `grant`. While the wallet
+    /// has an [`UnrecordedSpend`] it runs only with `confirm_unrecorded`
+    /// (the user confirmed that payment may still go through), else
+    /// `shielded.unrecorded_spend` before anything is selected or signed.
     pub async fn shielded_send(
         &self,
         to: String,
         credits: u64,
         memo: Option<String>,
         grant: String,
+        confirm_unrecorded: bool,
     ) -> Result<ShieldedSpendOutcome, ShieldedError> {
         let wallet = self.wallet_id;
         on_pool_signing(&self.session, wallet, move |session, lib| async move {
             let what = (to.as_str(), credits);
-            pool::send(&session, wallet, &lib, what, memo.as_deref(), &grant).await
+            let (memo, confirmed) = (memo.as_deref(), confirm_unrecorded);
+            pool::send(&session, wallet, &lib, what, memo, &grant, confirmed).await
         })
         .await
     }
@@ -385,16 +410,19 @@ impl DashPay {
 
     /// Shielded → Core: withdraws `credits` from the wallet's notes to the
     /// Core address `to`, or to the wallet's next receive address when
-    /// `None`, under a `ShieldedSpend` lease begun from `grant`.
+    /// `None`, under a `ShieldedSpend` lease begun from `grant`;
+    /// `confirm_unrecorded` as for [`Self::shielded_send`].
     pub async fn unshield_to_core(
         &self,
         credits: u64,
         to: Option<String>,
         grant: String,
+        confirm_unrecorded: bool,
     ) -> Result<ShieldedSpendOutcome, ShieldedError> {
         let wallet = self.wallet_id;
         on_pool_signing(&self.session, wallet, move |session, lib| async move {
-            pool::unshield(&session, wallet, &lib, credits, to.as_deref(), &grant).await
+            let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
+            pool::unshield(&session, wallet, &lib, credits, to, &grant, confirmed).await
         })
         .await
     }

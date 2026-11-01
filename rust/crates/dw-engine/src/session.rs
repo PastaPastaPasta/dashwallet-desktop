@@ -575,6 +575,10 @@ impl NetworkSession {
             session: Arc::downgrade(&session),
         });
         session.leases.install_tracked(tracked.clone());
+        // The persister's tap clears the shielded spend markers (DEC-1057).
+        if let Ok(live) = session.live() {
+            live.store.install_leases(&session.leases);
+        }
         session.leases.install_resumer(tracked);
         session.hub.attach_leases(&session.leases);
         if let Ok(live) = session.live() {
@@ -937,6 +941,7 @@ impl NetworkSession {
         let mut kept = Vec::new();
         for id in manager.list_wallet_ids_blocking() {
             let unloaded = (self.platform).remove_from_manager(
+                &self.leases,
                 &manager,
                 WalletId(id),
                 crate::platform::runtime::StoredSpends::Refuse,

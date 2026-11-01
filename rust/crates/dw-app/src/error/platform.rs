@@ -131,6 +131,7 @@ codes! {
         ShieldPending = "shielded.shield_pending",
         PoolTooSmall = "shielded.pool_too_small",
         TooManyInputs = "shielded.too_many_inputs",
+        UnrecordedSpend = "shielded.unrecorded_spend",
     }
 }
 
@@ -181,6 +182,7 @@ impl From<ShieldedError> for AppError {
                 ShieldedCode::TooManyInputs,
                 Some(ErrorData::Number { value: inputs }),
             ),
+            S::UnrecordedSpend => (ShieldedCode::UnrecordedSpend, None),
             S::Platform(e) => return e.into(),
         };
         AppError {
@@ -649,6 +651,7 @@ mod tests {
                 inputs: 51,
                 max: 50,
             },
+            ShieldedError::UnrecordedSpend,
             ShieldedError::Platform(PlatformError::Unavailable),
         ];
         for e in shielded {

@@ -27,6 +27,7 @@ use platform_wallet::changeset::{
     AssetLockChangeSet, AssetLockEntry, PlatformWalletChangeSet, PlatformWalletPersistence,
 };
 use platform_wallet::wallet::shielded::note_selection::{ShieldedFeeKind, select_notes_with_fee};
+use platform_wallet::wallet::shielded::store::StalePendingSpend;
 use platform_wallet::wallet::shielded::{
     OrchardKeySet, ShieldedActivityEntry, ShieldedActivityKind as Kind,
     ShieldedActivityStatus as Status, ShieldedDirection as Direction, ShieldedNote,
@@ -206,6 +207,12 @@ struct FakeShielded {
     unresolved: Mutex<Vec<UnresolvedSpend>>,
     /// What the engine recorded in the journal.
     recorded: Mutex<Vec<UnresolvedSpend>>,
+    /// The anchored reservations, as the library holds them in memory: an
+    /// unconfirmed spend adds its notes' (`reserved(n)`).
+    reserved: Mutex<Vec<StalePendingSpend>>,
+    /// An unconfirmed spend's record write fails (`arm_redrive_record`):
+    /// the library keeps its reservations but no record.
+    loses_record: AtomicBool,
     rows: Mutex<Vec<ShieldedActivityEntry>>,
     /// What the next pass finds of the unconfirmed spends: `Confirmed`
     /// (their notes spent) or `Failed` (the prune backstop released them).
@@ -283,6 +290,8 @@ impl Default for FakeShielded {
             spent: Mutex::new(Vec::new()),
             unresolved: Mutex::default(),
             recorded: Mutex::default(),
+            reserved: Mutex::default(),
+            loses_record: AtomicBool::new(false),
             rows: Mutex::default(),
             scan_finds: Mutex::new(None),
             unknown: Mutex::default(),
@@ -408,7 +417,10 @@ impl FakeShielded {
                 // The library arms its re-drive record and keeps the row
                 // pending (`arm_redrive_record`).
                 if matches!(e, PlatformWalletError::ShieldedSpendUnconfirmed { .. }) {
-                    self.unresolved.lock().unwrap().push(unresolved(n));
+                    self.reserved.lock().unwrap().extend(reserved(n));
+                    if !self.loses_record.load(Ordering::SeqCst) {
+                        self.unresolved.lock().unwrap().push(unresolved(n));
+                    }
                     let mut row = entry(Kind::Sent, credits, Status::Pending);
                     row.id = [n; 32];
                     self.rows.lock().unwrap().push(row);
@@ -418,6 +430,15 @@ impl FakeShielded {
             None => Ok(()),
         }
     }
+}
+
+/// The reservations of the `n`th spend, unconfirmed: two notes, its
+/// anchor, its activity row.
+fn reserved(n: u8) -> [StalePendingSpend; 2] {
+    [
+        ([n.wrapping_add(100); 32], [7; 32], Some([n; 32])),
+        ([n.wrapping_add(200); 32], [7; 32], Some([n; 32])),
+    ]
 }
 
 /// The library's record of the `n`th spend, unconfirmed.
@@ -572,6 +593,10 @@ impl ShieldedLib for FakeShielded {
 
     async fn unresolved(&self) -> Result<Vec<UnresolvedSpend>, PlatformError> {
         Ok(self.unresolved.lock().unwrap().clone())
+    }
+
+    async fn reservations(&self) -> Result<Vec<StalePendingSpend>, PlatformError> {
+        Ok(self.reserved.lock().unwrap().clone())
     }
 
     async fn coin_values(&self) -> Result<Vec<u64>, PlatformError> {
@@ -956,7 +981,16 @@ fn a_send_charges_its_quote_and_a_refusal_keeps_the_grant() {
     ] {
         let g = grant.clone();
         let refused = run(&fx, &lib, move |s, lib| async move {
-            pool::send(&s, wallet, &*lib, (&to, credits), memo.as_deref(), &g).await
+            pool::send(
+                &s,
+                wallet,
+                &*lib,
+                (&to, credits),
+                memo.as_deref(),
+                &g,
+                false,
+            )
+            .await
         });
         assert!(refused.is_err());
         assert!(fx.unused(&grant));
@@ -967,7 +1001,7 @@ fn a_send_charges_its_quote_and_a_refusal_keeps_the_grant() {
     let l = lease.clone();
     let sent = run(&fx, &lib, move |s, lib| async move {
         let to = format!("{} ", payee_text());
-        pool::send(&s, wallet, &*lib, (&to, NOTE), Some("thanks"), &l).await
+        pool::send(&s, wallet, &*lib, (&to, NOTE), Some("thanks"), &l, false).await
     })
     .unwrap();
     assert_eq!((sent.credits, sent.balance), (NOTE, 2 * NOTE));
@@ -997,7 +1031,7 @@ fn a_send_charges_its_quote_and_a_refusal_keeps_the_grant() {
     // Another flow's lease is not a shielded spend's.
     let other = fx.flow(FlowKind::Withdraw, vec![fx.grant(NOTE)]);
     let refused = run(&fx, &lib, move |s, lib| async move {
-        code(pool::send(&s, wallet, &*lib, (&payee_text(), 1), None, &other).await)
+        code(pool::send(&s, wallet, &*lib, (&payee_text(), 1), None, &other, false).await)
     });
     assert_eq!(refused, "platform.grant_invalid");
 }
@@ -1029,7 +1063,7 @@ fn a_spend_quotes_again_under_the_hold_and_refuses_a_fee_above_its_grant() {
         let send = {
             let (s, lib) = (Arc::clone(&s), Arc::clone(&lib2));
             tokio::spawn(async move {
-                pool::send(&s, wallet, &*lib, (&payee_text(), NOTE), None, &l).await
+                pool::send(&s, wallet, &*lib, (&payee_text(), NOTE), None, &l, false).await
             })
         };
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1085,10 +1119,10 @@ fn a_failed_spend_keeps_its_quote_and_maps_the_librarys_error() {
         let l = lease.clone();
         let got = run(&fx, &lib, move |s, lib| async move {
             match unshield {
-                true => pool::unshield(&s, wallet, &*lib, credits, None, &l)
+                true => pool::unshield(&s, wallet, &*lib, credits, None, &l, false)
                     .await
                     .map(drop),
-                false => pool::send(&s, wallet, &*lib, (&payee_text(), credits), None, &l)
+                false => pool::send(&s, wallet, &*lib, (&payee_text(), credits), None, &l, false)
                     .await
                     .map(drop),
             }
@@ -1123,7 +1157,7 @@ fn an_unshield_pays_the_address_given_or_a_fresh_receive_address() {
         let lease = fx.flow(FlowKind::ShieldedSpend, vec![fx.grant(10 * NOTE)]);
         let t = to.clone();
         let out = run(&fx, &lib, move |s, lib| async move {
-            pool::unshield(&s, wallet, &*lib, credits, t.as_deref(), &lease).await
+            pool::unshield(&s, wallet, &*lib, credits, t.as_deref(), &lease, false).await
         })
         .unwrap();
         let want = to.unwrap_or_else(|| lib.receive.clone());
@@ -1351,9 +1385,9 @@ fn an_unconfirmed_spend_stays_pending_until_a_scan_resolves_it() {
         let syncs = lib.syncs.load(Ordering::SeqCst);
         let out = run(&fx, &lib, move |s, lib| async move {
             if unshield {
-                pool::unshield(&s, wallet, &*lib, credits, None, &l).await
+                pool::unshield(&s, wallet, &*lib, credits, None, &l, false).await
             } else {
-                pool::send(&s, wallet, &*lib, (&payee_text(), credits), None, &l).await
+                pool::send(&s, wallet, &*lib, (&payee_text(), credits), None, &l, false).await
             }
         })
         .unwrap();
@@ -1396,6 +1430,97 @@ fn an_unconfirmed_spend_stays_pending_until_a_scan_resolves_it() {
             "no second transition"
         );
     }
+}
+
+/// DEC-1057: a spend of unknown result whose record the library could not
+/// write (`arm_redrive_record` failed: no `unresolved`) is marked by the
+/// engine before the send returns, from the reservations the library made
+/// for it (its activity, anchor and nullifiers), in the dispatch journal.
+/// The next send and unshield of the wallet are refused with
+/// `shielded.unrecorded_spend` until confirmed, before any key leaves the
+/// vault, then run. A marker that cannot be written (here: no reservation
+/// of a new activity to mark) makes the spend `platform.broadcast_unknown`,
+/// never a quiet pending.
+#[test]
+fn a_spend_the_library_kept_no_record_of_is_marked_and_gates_the_next_spends() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let wallet = fx.wallet;
+    let credits = Rules::at(version(LATEST)).unwrap().min.max(NOTE / 4);
+    let unconfirmed = || PlatformWalletError::ShieldedSpendUnconfirmed {
+        operation: "transfer",
+        reason: "proof fetch failed".into(),
+    };
+    let lease = |fx: &Fixture| fx.flow(FlowKind::ShieldedSpend, vec![fx.grant(10 * NOTE)]);
+    lib.loses_record.store(true, Ordering::SeqCst);
+    assert!(fx.s.leases.journal_ready());
+
+    lib.fail_with(unconfirmed());
+    let l = lease(&fx);
+    let out = run(&fx, &lib, move |s, lib| async move {
+        pool::send(&s, wallet, &*lib, (&payee_text(), credits), None, &l, false).await
+    })
+    .unwrap();
+    assert_eq!(
+        (out.state, out.unresolved),
+        (ShieldedSpendState::Pending, None)
+    );
+    let markers = fx
+        .engine
+        .block_on(fx.s.leases.unrecorded_spends(wallet))
+        .unwrap();
+    assert_eq!(markers.len(), 1);
+    assert_eq!((markers[0].activity, markers[0].anchor), ([0; 32], [7; 32]));
+    let mut want: Vec<_> = reserved(0).iter().map(|r| (r.0, false)).collect();
+    want.sort();
+    assert_eq!(markers[0].nullifiers, want);
+    assert_eq!(fx.s.leases.journal_synchronous(), Some(2), "written FULL");
+
+    // Gated: refused before any key leaves the vault, the grant unused.
+    let spent = lib.spent().len();
+    for unshield in [false, true] {
+        let grant = fx.grant(10 * NOTE);
+        let g = grant.clone();
+        let refused = run(&fx, &lib, move |s, lib| async move {
+            code(if unshield {
+                pool::unshield(&s, wallet, &*lib, credits, None, &g, false).await
+            } else {
+                pool::send(&s, wallet, &*lib, (&payee_text(), credits), None, &g, false).await
+            })
+        });
+        assert_eq!(refused, "shielded.unrecorded_spend");
+        assert!(fx.unused(&grant));
+    }
+    assert_eq!(lib.spent().len(), spent);
+    // Confirmed, both run.
+    for unshield in [false, true] {
+        let l = lease(&fx);
+        let out = run(&fx, &lib, move |s, lib| async move {
+            if unshield {
+                pool::unshield(&s, wallet, &*lib, credits, None, &l, true).await
+            } else {
+                pool::send(&s, wallet, &*lib, (&payee_text(), credits), None, &l, true).await
+            }
+        })
+        .unwrap();
+        assert_eq!(out.state, ShieldedSpendState::Done);
+    }
+    assert_eq!(lib.spent().len(), spent + 2);
+
+    // The fourth spend (index 3) finds its reservations there already:
+    // nothing new to mark.
+    lib.reserved.lock().unwrap().extend(reserved(3));
+    lib.fail_with(unconfirmed());
+    let l = lease(&fx);
+    let failed = run(&fx, &lib, move |s, lib| async move {
+        code(pool::send(&s, wallet, &*lib, (&payee_text(), credits), None, &l, true).await)
+    });
+    assert_eq!(failed, "platform.broadcast_unknown");
+    let markers = fx
+        .engine
+        .block_on(fx.s.leases.unrecorded_spends(wallet))
+        .unwrap();
+    assert_eq!(markers.len(), 1, "only the first spend's");
 }
 
 /// Q15's lease confinement for the facade's own passes: a shielded call

@@ -701,7 +701,8 @@ impl PlatformRuntime {
     /// spends included (`wallet_lifecycle.rs:847-850` →
     /// `coordinator.rs:878-902` → `file_store.rs:880-901`). So with
     /// [`StoredSpends::Refuse`] a wallet holding a spend whose result is
-    /// not known stays (`ShieldedSpendUnresolved`, DEC-1046); only the
+    /// not known stays (`ShieldedSpendUnresolved`, DEC-1046), as does one
+    /// with a marked spend (`leases`' journal, DEC-1057); only the
     /// user's removal of the wallet passes [`StoredSpends::Purge`]. The
     /// removal runs with no shielded pass in flight (`shielded_passes`,
     /// R1-3): the coordinator's set of wallets changes only between passes.
@@ -709,6 +710,7 @@ impl PlatformRuntime {
     /// close's), so no spend of it stores a transition after the check.
     pub(crate) async fn remove_from_manager(
         &self,
+        leases: &super::lease::LeaseTable,
         manager: &Manager,
         id: WalletId,
         spends: StoredSpends,
@@ -716,7 +718,7 @@ impl PlatformRuntime {
         let _fence = self.contacts.fences.removal(id).await;
         let _passes = self.shielded_passes.write().await;
         if spends == StoredSpends::Refuse
-            && super::shielded_pool::holds_stored_spends(manager, id).await
+            && super::shielded_pool::holds_unresolved(leases, manager, id).await
         {
             return Err(EngineError::ShieldedSpendUnresolved);
         }
@@ -748,7 +750,7 @@ impl NetworkSession {
         };
         for id in live.manager.list_wallet_ids_blocking() {
             let id = WalletId(id);
-            if super::shielded_pool::holds_stored_spends(&live.manager, id).await {
+            if super::shielded_pool::holds_unresolved(&self.leases, &live.manager, id).await {
                 return true;
             }
             #[cfg(test)]

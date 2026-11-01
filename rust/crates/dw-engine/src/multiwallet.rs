@@ -281,7 +281,9 @@ impl NetworkSession {
             // unknown result would delete its stored transition (no detach
             // at the pin); refused before anything of it changes, and again
             // at the removal (fail closed).
-            if crate::platform::shielded_pool::holds_stored_spends(&live.manager, id).await {
+            if crate::platform::shielded_pool::holds_unresolved(&this.leases, &live.manager, id)
+                .await
+            {
                 return Err(EngineError::ShieldedSpendUnresolved);
             }
             // E0-04 §8.6: the wallet's leases end and its permits drain.
@@ -295,6 +297,7 @@ impl NetworkSession {
             let _discoveries = this.platform.recovery.end_discoveries(id).await;
             if let Err(e) = (this.platform)
                 .remove_from_manager(
+                    &this.leases,
                     &live.manager,
                     id,
                     crate::platform::runtime::StoredSpends::Refuse,

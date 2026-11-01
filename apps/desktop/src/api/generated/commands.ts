@@ -1907,8 +1907,8 @@ export function shieldedSendQuote(walletId: string, to: string, credits: string)
 /**
  * Shielded → Shielded: sends `credits` to `to` under `grant`.
  */
-export function shieldedSend(walletId: string, to: string, credits: string, memo: string | null, grant: string): Promise<ShieldedSpendOutcome> {
-  return invoke<ShieldedSpendOutcome>("shielded_send", { walletId, to, credits, memo, grant });
+export function shieldedSend(walletId: string, to: string, credits: string, memo: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome> {
+  return invoke<ShieldedSpendOutcome>("shielded_send", { walletId, to, credits, memo, grant, confirmUnrecorded });
 }
 
 /**
@@ -1922,8 +1922,8 @@ export function unshieldQuote(walletId: string, credits: string, to: string | nu
 /**
  * Shielded → Core: withdraws `credits` to `to` under `grant`.
  */
-export function unshieldToCore(walletId: string, credits: string, to: string | null, grant: string): Promise<ShieldedSpendOutcome> {
-  return invoke<ShieldedSpendOutcome>("unshield_to_core", { walletId, credits, to, grant });
+export function unshieldToCore(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome> {
+  return invoke<ShieldedSpendOutcome>("unshield_to_core", { walletId, credits, to, grant, confirmUnrecorded });
 }
 
 /**
@@ -2757,9 +2757,9 @@ export type CommandArgs = {
   shield_from_core: { walletId: string; duffs: number; grant: string };
   resume_shield: { walletId: string; txid: string; grant: string };
   shielded_send_quote: { walletId: string; to: string; credits: string };
-  shielded_send: { walletId: string; to: string; credits: string; memo: string | null; grant: string };
+  shielded_send: { walletId: string; to: string; credits: string; memo: string | null; grant: string; confirmUnrecorded: boolean };
   unshield_quote: { walletId: string; credits: string; to: string | null };
-  unshield_to_core: { walletId: string; credits: string; to: string | null; grant: string };
+  unshield_to_core: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
   shielded_history: { walletId: string; offset: number; limit: number };
   dashpay_contacts: { walletId: string; identity: string; query: ContactQueryArgs };
   dashpay_contact: { walletId: string; identity: string; contact: string };
@@ -3655,6 +3655,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "shielded.shield_pending",
   "shielded.pool_too_small",
   "shielded.too_many_inputs",
+  "shielded.unrecorded_spend",
   "governance.sync_disabled",
   "governance.not_synced",
   "governance.proposal_not_found",
