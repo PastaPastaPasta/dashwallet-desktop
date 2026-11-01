@@ -270,17 +270,22 @@ out the full history, runs `ci/github/release-publish.sh` and publishes:
 
 - push to `main`: an immutable prerelease `v<version>-dev.<run>+<short sha>` (never edited; skipped if it exists)
   and the rolling prerelease `continuous` with stable names `DashWallet-continuous-<os-arch>.<ext>` and its own
-  `SHA256SUMS`. `continuous` is replaced as one generation: recover from an interrupted earlier run, upload every
-  new file as `<name>.new`, then per name rename the old asset `<name>.old` and the new one `<name>` (`SHA256SUMS`
-  last), move the tag, rewrite the notes, and only then delete the `.old` assets. Any failure after the first rename,
-  and a cancel (SIGINT/SIGTERM), rolls back: every name is restored from its `.old`, the tag goes back. The API is
-  not atomic, so for tens of seconds during the renames a file can be missing for the two calls between its renames,
-  or newer than the `SHA256SUMS` next to it (downloaders retry; see `verifying.md`). A hard kill or an API outage can
-  leave canonical names missing, `.new`/`.old` leftovers or mismatched checksums until the next publish, whose
-  first step repairs it (leftover `.new` deleted; a missing name restored from its `.old`; if the binaries do not
-  match `SHA256SUMS` the whole old generation is restored, else the `.old` copies are dropped). By hand: rename each
-  `<name>.old` over the missing or new `<name>`, delete stray `<name>.new`, or re-run the publish job. The tag moves
-  after the assets and never backwards (an older run finishing late leaves `continuous` alone).
+  `SHA256SUMS`. `continuous` is replaced as one generation, with a transaction record (the asset `txn.json`: old and
+  new commit, old and new notes, the hash of the new `SHA256SUMS`): recover from an interrupted earlier run (in every
+  run, an older one too, which then leaves `continuous` alone), upload the record and every new file as `<name>.new`,
+  then per name rename the old asset `<name>.old` and the new one `<name>` (`SHA256SUMS` last), move the tag, rewrite
+  the notes, and only then delete the `.old` assets and the record. Any failure after the first rename, and a cancel
+  (SIGINT/SIGTERM), rolls back: every name is restored from its `.old`, the tag and the notes go back (also when the
+  failing API call had in fact taken effect). The API is not atomic, so for tens of seconds during the renames a file
+  can be missing for the two calls between its renames, or newer than the `SHA256SUMS` next to it (downloaders retry;
+  see `verifying.md`). A hard kill or an API outage can leave canonical names missing, `.new`/`.old` leftovers,
+  mismatched checksums, or a tag and notes that describe the other generation, until the next publish, whose first
+  step repairs all of it: leftover `.new` deleted; a missing name restored from its `.old`; if the binaries do not match
+  `SHA256SUMS` the whole old generation is restored, else the `.old` copies are dropped; then the record says which
+  generation the assets are, and the tag and notes are set to match it. By hand: rename each `<name>.old` over the
+  missing or new `<name>`, delete stray `<name>.new` and `txn.json`, set the tag and notes to the commit of the assets,
+  or re-run the publish job. The tag moves after the assets and never backwards (an older run finishing late leaves
+  `continuous` alone, after repairing).
 - push of a tag `vX.Y.Z[-rc.N]` (on `main`): a prerelease with the run's files (notes from
   `docs/release/X.Y.Z-notes.md`), nothing rolling. `v0.0.0-rel<N>` dry-run tags only build.
 - `actions/attest-build-provenance` runs before the release is written, on every file (the four bundles and both
@@ -295,8 +300,10 @@ release cannot be displaced by a main push. Repository setting: "Immutable relea
 own rule, not the setting). An interrupted `gh release create` can leave a draft or an incomplete release; the
 script then fails with a message rather than treating it as done, and the leftover is deleted by hand. The `decide` job
 (read-only) runs `release-publish.sh classify`; `publish` needs its verdict as well as a push to `main` or a `v*`
-tag. Dev tags (`v*-dev.*`) do not trigger the workflow. `gh` reads that fail with anything other than a 404 stop the
-script before any write.
+tag. Dev tags (`v*-dev.*`) do not trigger the workflow. `gh` reads that fail with anything other than a 404 are never read as "absent". The publish script does all the
+reads that decide what to write (the immutable release, the `continuous` tag, release and asset list) before its first
+write, so a failure there stops it with nothing written; the reads of a recovery or rollback come later, and a failure
+there stops that step (the immutable release may already exist by then).
 
 The `script-tests` job runs `ci/github/release-publish-test.sh` (a fake `gh` and a
 scratch git repository: which triggers publish and which refuse, the decide verdicts including an off-main tag, and
