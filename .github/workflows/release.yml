@@ -76,8 +76,16 @@ jobs:
         run: |
           dmg=$(ci/github/release-stage.sh "$RUNNER_TEMP/dist" "$VERSION" macos-universal.dmg 'universal-apple-darwin/release/bundle/dmg/*.dmg')
           echo "DMG=$dmg" >> "$GITHUB_ENV"
-          app=$(cd rust/target/universal-apple-darwin/release/bundle/macos && pwd)/"Dash Wallet.app"
-          [[ -d "$app" ]] || { echo "::error::no $app"; exit 1; }
+      # Tauri deletes the .app once the dmg is made, so the launch check uses the app out of the
+      # staged dmg, as a user gets it.
+      - name: Open the staged dmg
+        run: |
+          mnt="$RUNNER_TEMP/dmg-mnt"
+          mkdir -p "$mnt" "$RUNNER_TEMP/app"
+          hdiutil attach "$DMG" -mountpoint "$mnt" -nobrowse -readonly
+          cp -R "$mnt/Dash Wallet.app" "$RUNNER_TEMP/app/"
+          hdiutil detach "$mnt"
+          app="$RUNNER_TEMP/app/Dash Wallet.app"
           echo "APP=$app" >> "$GITHUB_ENV"
           lipo -archs "$app/Contents/MacOS/dash-wallet"
           codesign -dv "$app" 2>&1 | grep -E "Signature|Identifier"
@@ -150,7 +158,8 @@ jobs:
         run: |
           dest="$RUNNER_TEMP\\dw-install"
           exe="$(cygpath -u "$dest")/dash-wallet.exe"
-          "$SETUP" /S "/D=$dest" >/dev/null 2>&1 </dev/null &
+          # Git Bash would rewrite /S and /D=... as paths.
+          MSYS2_ARG_CONV_EXCL='*' "$SETUP" /S "/D=$dest" >/dev/null 2>&1 </dev/null &
           for _ in $(seq 120); do [[ -f "$exe" ]] && break; sleep 1; done
           [[ -f "$exe" ]] || { echo "::error::the installer left no dash-wallet.exe in $dest"; ls -la "$(cygpath -u "$dest")" || true; exit 1; }
           # Let the installer finish and its app start, then stop that app.
