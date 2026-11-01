@@ -69,6 +69,8 @@ elif [[ -z "$window" ]]; then
   echo "::error::$name shows no window after ${seconds}s (screen: $out/$name-screen.png)"
   status=1
 else
+  osascript -e 'tell application "Dash Wallet" to activate' || true
+  sleep 2
   # A display that went to sleep captures black: assert user activity first.
   caffeinate -u -t 2 || true
   sleep 1

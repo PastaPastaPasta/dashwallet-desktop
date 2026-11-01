@@ -48,6 +48,8 @@ if ($process.HasExited) {
     Write-Host "::error::$Name exited while the screen was prepared (code $($process.ExitCode))"
     exit 1
 }
+(New-Object -ComObject Shell.Application).MinimizeAll()
+Start-Sleep -Seconds 1
 $handle = $process.MainWindowHandle
 Write-Host "${Name}: main window handle $handle, title '$($process.MainWindowTitle)'"
 if ($handle -eq [System.IntPtr]::Zero) {

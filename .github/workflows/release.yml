@@ -33,7 +33,7 @@ env:
   CARGO_INCREMENTAL: "0"
   PROTOC_VERSION: "29.3"
   # The launch check's arguments: no sync, no network (see the header).
-  LAUNCH_ARGS: --network regtest --no-platform --dapi https://127.0.0.1:1
+  LAUNCH_ARGS: --network regtest --no-platform --dapi https://127.0.0.1:1 --window-size 960x640
 
 jobs:
   macos:
