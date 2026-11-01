@@ -51,6 +51,7 @@ use std::sync::{Arc, Mutex};
 use dw_appdb::dispatch::StoredFundingKey;
 use dw_vault::SignerError;
 use platform_wallet::AssetLockFundingType;
+use platform_wallet::wallet::shielded::OrchardKeySet;
 use tokio::time::Instant;
 
 use super::budget::Charge;
@@ -815,6 +816,30 @@ impl CallPermit {
         let signer = self.lease.call_platform_address_signer()?;
         VaultPlatformAddressSigner::new(signer, paths, self.signatures())
             .map_err(|_| LeaseError::Vault("platform address signer scope"))
+    }
+
+    /// The Orchard key set of the lease's shielded spend key (0.1 E1),
+    /// counted into this permit as one released signature: the library's
+    /// spend proves and signs with the key set itself, so once it is out
+    /// the spend may be, and the permit keeps its quote. None once the
+    /// permit ended.
+    pub(crate) fn shielded_keys(&self) -> Result<OrchardKeySet, LeaseError> {
+        let key = self.lease.call_shielded_spend_key()?;
+        let count = self.signatures();
+        let Some(signing) = count.begin() else {
+            return Err(LeaseError::Locked);
+        };
+        match key.keys() {
+            Ok(keys) => {
+                signing.released();
+                Ok(keys)
+            }
+            Err(SignerError::Locked) => {
+                count.note_locked();
+                Err(LeaseError::Locked)
+            }
+            Err(_) => Err(LeaseError::Vault("shielded spend key")),
+        }
     }
 
     /// The lease's funding signer for `create_funded_asset_lock_proof`,

@@ -63,7 +63,7 @@ mod profile;
 #[cfg(test)]
 mod profile_tests;
 mod profiles;
-mod protocol;
+pub(crate) mod protocol;
 pub(crate) mod provenance;
 mod recovery;
 #[cfg(test)]
@@ -80,6 +80,9 @@ pub(crate) mod runtime;
 #[cfg(test)]
 mod runtime_tests;
 mod shielded;
+pub(crate) mod shielded_pool;
+#[cfg(test)]
+mod shielded_tests;
 pub mod signers;
 mod startup;
 mod startup_status;

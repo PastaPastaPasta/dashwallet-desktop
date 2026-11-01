@@ -15,9 +15,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::dashpay::{DashPay, stub};
+use super::dashpay::DashPay;
 use super::errors::ShieldedError;
 use super::flows::GrantRequest;
+use super::shielded_pool::{self as pool, on_pool};
 
 /// The protocol version from which Platform takes shielded-pool
 /// transitions (`SHIELDED_POOL_INITIAL_PROTOCOL_VERSION`).
@@ -220,25 +221,38 @@ impl DashPay {
     /// SDK's proved protocol version; an inactive network is a status
     /// (`active` false), not an error.
     pub async fn shielded_status(&self) -> Result<ShieldedStatus, ShieldedError> {
-        stub("DashPay.shielded_status")
+        on_pool(&self.session, self.wallet_id, |_, lib| async move {
+            pool::status(&lib).await
+        })
+        .await
     }
 
     /// Runs a sync pass of the wallet's shielded notes now and returns the
     /// status after.
     pub async fn shielded_sync(&self) -> Result<ShieldedStatus, ShieldedError> {
-        stub("DashPay.shielded_sync")
+        on_pool(&self.session, self.wallet_id, |session, lib| async move {
+            pool::sync(&session, &lib).await
+        })
+        .await
     }
 
     /// The wallet's shielded receive address.
     pub async fn shielded_receive_address(&self) -> Result<ShieldedAddress, ShieldedError> {
-        stub("DashPay.shielded_receive_address")
+        on_pool(&self.session, self.wallet_id, |_, lib| async move {
+            pool::receive_address(&lib).await
+        })
+        .await
     }
 
     /// What moving `duffs` of the Core balance into the pool costs and
     /// buys, with the refusals of [`Self::shield_from_core`].
     pub async fn shield_quote(&self, duffs: u64) -> Result<ShieldQuote, ShieldedError> {
-        let _ = duffs;
-        stub("DashPay.shield_quote")
+        on_pool(
+            &self.session,
+            self.wallet_id,
+            move |session, lib| async move { pool::shield_quote(&session, &lib, duffs).await },
+        )
+        .await
     }
 
     /// Core → Shielded: an asset lock of `duffs` from the Core balance under
@@ -249,8 +263,11 @@ impl DashPay {
         duffs: u64,
         grant: String,
     ) -> Result<ShieldOutcome, ShieldedError> {
-        let _ = (duffs, grant);
-        stub("DashPay.shield_from_core")
+        let wallet = self.wallet_id;
+        on_pool(&self.session, wallet, move |session, lib| async move {
+            pool::shield(&session, wallet, &lib, duffs, &grant).await
+        })
+        .await
     }
 
     /// Applies the pending Core → Shielded lock `txid` (`pending_shields`).
@@ -259,8 +276,11 @@ impl DashPay {
         txid: String,
         grant: String,
     ) -> Result<ShieldOutcome, ShieldedError> {
-        let _ = (txid, grant);
-        stub("DashPay.resume_shield")
+        let wallet = self.wallet_id;
+        on_pool(&self.session, wallet, move |session, lib| async move {
+            pool::resume(&session, wallet, &lib, &txid, &grant).await
+        })
+        .await
     }
 
     /// What sending `credits` to `to` costs, with the refusals of
@@ -270,8 +290,10 @@ impl DashPay {
         to: String,
         credits: u64,
     ) -> Result<ShieldedSpendQuote, ShieldedError> {
-        let _ = (to, credits);
-        stub("DashPay.shielded_send_quote")
+        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
+            pool::send_quote(&lib, &to, credits).await
+        })
+        .await
     }
 
     /// Shielded → Shielded: sends `credits` from the wallet's notes to the
@@ -284,8 +306,12 @@ impl DashPay {
         memo: Option<String>,
         grant: String,
     ) -> Result<ShieldedSpendOutcome, ShieldedError> {
-        let _ = (to, credits, memo, grant);
-        stub("DashPay.shielded_send")
+        let wallet = self.wallet_id;
+        on_pool(&self.session, wallet, move |session, lib| async move {
+            let what = (to.as_str(), credits);
+            pool::send(&session, wallet, &lib, what, memo.as_deref(), &grant).await
+        })
+        .await
     }
 
     /// What moving `credits` back to Core costs, with the refusals of
@@ -295,8 +321,10 @@ impl DashPay {
         credits: u64,
         to: Option<String>,
     ) -> Result<ShieldedSpendQuote, ShieldedError> {
-        let _ = (credits, to);
-        stub("DashPay.unshield_quote")
+        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
+            pool::unshield_quote(&lib, credits, to.as_deref()).await
+        })
+        .await
     }
 
     /// Shielded → Core: withdraws `credits` from the wallet's notes to the
@@ -308,8 +336,11 @@ impl DashPay {
         to: Option<String>,
         grant: String,
     ) -> Result<ShieldedSpendOutcome, ShieldedError> {
-        let _ = (credits, to, grant);
-        stub("DashPay.unshield_to_core")
+        let wallet = self.wallet_id;
+        on_pool(&self.session, wallet, move |session, lib| async move {
+            pool::unshield(&session, wallet, &lib, credits, to.as_deref(), &grant).await
+        })
+        .await
     }
 
     /// The wallet's shielded history for Activity, pending rows first, then
@@ -319,7 +350,9 @@ impl DashPay {
         offset: u32,
         limit: u32,
     ) -> Result<Vec<ShieldedActivity>, ShieldedError> {
-        let _ = (offset, limit);
-        stub("DashPay.shielded_history")
+        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
+            pool::history(&lib, offset, limit).await
+        })
+        .await
     }
 }

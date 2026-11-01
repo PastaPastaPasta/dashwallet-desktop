@@ -598,9 +598,10 @@ The wallet's Orchard account 0 in Platform's shielded pool, over platform-wallet
 coordinator's sync and balance, `fund_from_asset_lock.rs` (Core → Shielded), `operations.rs` `transfer` (Shielded →
 Shielded) and `withdraw` (Shielded → Core). Keys are platform-wallet's own ZIP-32 derivation, `OrchardKeySet::from_seed`
 (seed, network, account 0): the spending key at `m_orchard/32'/coin'/0'` (coin 5 on mainnet, 1 elsewhere), as iOS
-derives it through the FFI. The viewing keys are bound to the library at the session's Platform start (persisted, so a
-restart rebinds without the seed); the spend authority is derived in the vault for one spend and dropped when it returns
-(§7 item 69).
+derives it through the FFI. The viewing keys are bound to the library at the session's Platform start, or by the first
+shielded call that finds the account unbound, and persisted through the session's store (`shielded.sqlite` holds the
+network's note tree), so a restart rebinds without the seed; the spend authority is derived in the vault for one spend
+and dropped when it returns (§7 item 69).
 
 **The gate.** Every call except `shielded_status` first reads the network's protocol version (the SDK's proved version,
 refreshed by one proved read while it is below the activation) and refuses below `SHIELDED_ACTIVATION_VERSION` (12, the
@@ -3559,4 +3560,5 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     Like the identity-scan key (`ScanKey`), that key leaves the vault once issued (platform-wallet's spend functions
     take the `OrchardKeySet` by reference), so the engine checks the grant's cap before deriving it. The viewing key
     needs no grant: the vault derives it for the session's bind while unlocked or unencrypted, as the DashPay crypto
-    signer works, and platform-wallet persists it so a restart binds without the vault.
+    signer works, and the engine persists it through the session's store (platform-wallet's shielded changeset) so a
+    restart binds without the vault.

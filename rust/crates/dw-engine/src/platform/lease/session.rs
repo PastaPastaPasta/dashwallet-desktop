@@ -152,7 +152,14 @@ pub(crate) fn issue(
                     out.signers.funding =
                         Some(scoped(SignerScope::PlatformFunding { max_duffs }).map_err(issuing)?);
                 }
-                if max_credits > 0 {
+                if max_credits > 0 && flow == FlowKind::ShieldedSpend {
+                    // The shielded spend key, and no identity key (§7 item 69).
+                    let spend_key = match &key {
+                        Some(hold) => vault.shielded_spend_key_held(&wallet.0, hold, token),
+                        None => vault.shielded_spend_key(&wallet.0, token),
+                    };
+                    out.signers.shielded = Some(spend_key.map_err(issuing)?);
+                } else if max_credits > 0 {
                     out.signers.identity =
                         Some(scoped(SignerScope::PlatformIdentity).map_err(issuing)?);
                 }

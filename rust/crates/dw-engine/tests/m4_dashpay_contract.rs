@@ -139,6 +139,18 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.sync_platform_addresses",
     "DashPay.move_to_core_quote",
     "DashPay.move_to_core",
+    // 0.1 E1: shielded funds.
+    "DashPay.shielded_status",
+    "DashPay.shielded_sync",
+    "DashPay.shielded_receive_address",
+    "DashPay.shield_quote",
+    "DashPay.shield_from_core",
+    "DashPay.resume_shield",
+    "DashPay.shielded_send_quote",
+    "DashPay.shielded_send",
+    "DashPay.unshield_quote",
+    "DashPay.unshield_to_core",
+    "DashPay.shielded_history",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -181,8 +193,9 @@ const FACADE: &[&str] = &[
 /// pipeline's guard, decoder, cache and tests (DP4-02), the mobile
 /// wallets' dHash (DP4-03 D27), the Identities page's reads with their
 /// tests (DP6-01), the withdrawal with its network seam and tests (DP6-02),
-/// and the invitation checks with their tests (DP5-02), and the network's
-/// protocol version (release 0.1).
+/// the invitation checks with their tests (DP5-02), the network's
+/// protocol version (release 0.1), and the shielded funds' library side
+/// with its tests (0.1 E1).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -242,6 +255,8 @@ const NOT_FACADE: &[&str] = &[
     "registration_tests.rs",
     "runtime.rs",
     "runtime_tests.rs",
+    "shielded_pool.rs",
+    "shielded_tests.rs",
     "signers.rs",
     "startup_status.rs",
     "status.rs",
@@ -1511,18 +1526,22 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }
-        // 0.1 E1: shielded funds, stubs until S2.
-        c.stub(dp.shielded_status().await);
-        c.stub(dp.shielded_sync().await);
-        c.stub(dp.shielded_receive_address().await);
-        c.stub(dp.shield_quote(1).await);
-        c.stub(dp.shield_from_core(1, s()).await);
-        c.stub(dp.resume_shield(s(), s()).await);
-        c.stub(dp.shielded_send_quote(s(), 1).await);
-        c.stub(dp.shielded_send(s(), 1, None, s()).await);
-        c.stub(dp.unshield_quote(1, None).await);
-        c.stub(dp.unshield_to_core(1, None, s()).await);
-        c.stub(dp.shielded_history(0, 10).await);
+        // 0.1 E1: shielded funds refuse an unknown wallet.
+        for refused in [
+            dp.shielded_status().await.map(drop),
+            dp.shielded_sync().await.map(drop),
+            dp.shielded_receive_address().await.map(drop),
+            dp.shield_quote(1).await.map(drop),
+            dp.shield_from_core(1, s()).await.map(drop),
+            dp.resume_shield(s(), s()).await.map(drop),
+            dp.shielded_send_quote(s(), 1).await.map(drop),
+            dp.shielded_send(s(), 1, None, s()).await.map(drop),
+            dp.unshield_quote(1, None).await.map(drop),
+            dp.unshield_to_core(1, None, s()).await.map(drop),
+            dp.shielded_history(0, 10).await.map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
     });
 
     let mut want: BTreeSet<String> = facade_calls().into_keys().collect();
