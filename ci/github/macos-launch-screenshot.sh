@@ -57,7 +57,7 @@ if [[ -z "$window" && "$target" == *.app ]] && kill -0 "$pid" 2>/dev/null; then
   wait_for_window
 fi
 # Let the first frame settle.
-[[ -n "$window" ]] && sleep 3
+[[ -n "$window" ]] && sleep "${DWD_SHOT_SETTLE:-3}"
 
 status=0
 if ! kill -0 "$pid" 2>/dev/null; then
@@ -69,7 +69,14 @@ elif [[ -z "$window" ]]; then
   echo "::error::$name shows no window after ${seconds}s (screen: $out/$name-screen.png)"
   status=1
 else
-  screencapture -x -o -l "$window" "$out/$name.png"
+  osascript -e 'tell application "Dash Wallet" to activate' || true
+  sleep 2
+  # A display that went to sleep captures black: assert user activity first.
+  caffeinate -u -t 2 || true
+  sleep 1
+  # A window capture can fail on a runner (a web view not yet composited): the whole screen still
+  # proves the app is up, so that failure is a warning.
+  screencapture -x -o -l "$window" "$out/$name.png" || { echo "::warning::$name: no window capture of window $window; windows it owns:"; "$window_id" --list "$pid" || true; }
   screencapture -x "$out/$name-screen.png"
   echo "$name: screenshot of window $window: $out/$name.png; rss $(ps -o rss= -p "$pid" | tr -d ' ') KB"
 fi

@@ -450,12 +450,11 @@ The "Release" column of §2's tables and the waves of §3 are superseded by this
 | 2026-11-01 | MG-08 (owner dwcli commands + nightly regtest suites) is in 0.3 with MG-10/10b/12/13; it had no version. | Manager, 11-01. |
 | 2026-11-01 | Added cut: if the shielded build lands late on Monday, the shielded screens ship as minimal forms (receive address + QR; amount + address send) and shielded Activity rows move to 0.1.1. The never-cut list is unchanged. | Manager, 11-01. |
 
-### 7.4 Signing key (temporary)
+### 7.4 Attestations (no PGP until 1.0)
 
-0.1 artifacts and the tag are signed with a temporary ed25519 key, fingerprint
-`2D4C 7707 6415 17DA 8206  18D4 5EDC A90D C841 BC3B` (expires 2027-11-01; public key in
-[`../release/signing-key-temporary.asc`](../release/signing-key-temporary.asc)). It will be replaced by a real release
-key before 1.0 (0.9 row above).
+DEC-1058 replaced the temporary GPG key: every release artifact and `SHA256SUMS` carries a GitHub build attestation
+(`actions/attest-build-provenance`), checked with `gh attestation verify`
+([`../release/verifying.md`](../release/verifying.md)). A real release key is a 1.0 task (0.9 row above).
 
 ### 7.5 Rows to triage after 0.1
 

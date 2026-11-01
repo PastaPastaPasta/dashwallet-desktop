@@ -1,0 +1,400 @@
+# Release artifacts and continuous delivery (0.1: RELEASE-PLAN §1, PK-01/PK-02, DEC-1058).
+#
+# Every trigger builds the Tauri app in release mode, without the `selftest` feature, one job per OS:
+#   macos    a universal .dmg (aarch64 + x86_64), ad-hoc signed, not notarized;
+#   windows  an unsigned NSIS .exe installer;
+#   linux    an x86_64 AppImage and .deb.
+# Each job then launches the built app for 30 s and uploads a screenshot (`launch-<os>`). The
+# launch uses an empty private data dir and `--network regtest --no-platform` with an unreachable
+# DAPI address, so the app starts no mainnet or testnet sync and touches no network. It fails the
+# job if the process dies before the screenshot (test bar 7). Windows launches the installed app,
+# so the installer is exercised too; macOS launches the app out of the staged dmg.
+# Only the Linux screenshot shows the app. On the hosted macOS and Windows runners the capture
+# APIs return a black screen or the runner console even though the window exists (checked on a
+# real Windows 11 VM: the same build renders), so there the check is "the process is alive after
+# 30 s" with the window title logged; real screenshots of those two come from a person at release
+# time.
+#
+# Bundles are staged under stable names, dash-wallet-<version>-<os-arch>.<ext>, and uploaded as
+# `dist-<os>`. The `checksums` job gathers them, writes SHA256SUMS (sha256sum format, file names
+# only) and uploads one artifact, `release-v<version>`.
+#
+# What publishes, by trigger (ci/github/release-publish.sh has the logic and refuses anything else;
+# ci/github/release-publish-test.sh tests it on every run):
+#   push to main          an immutable prerelease v<version>-dev.<run>+<short sha> and the rolling
+#                         prerelease `continuous` (stable asset names, replaced in place);
+#   push of a tag vX.Y.Z[-rc.N]  that tag's prerelease (v0.1.0 is made here, from the tag);
+#   anything else         builds and uploads CI artifacts only: other branches, pull requests (forks
+#                         included) and workflow_dispatch. They never reach the publish job.
+# Every published file and both SHA256SUMS are attested with actions/attest-build-provenance
+# (`gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop`, docs/release/verifying.md).
+# No GPG until 1.0.
+#
+# Permissions: the workflow has `contents: read`. Only the `publish` job has write permissions
+# (contents, id-token, attestations). It runs only when a read-only `decide` job says so (a push to
+# main, or a release tag vX.Y.Z[-rc.N], in this repository, on a commit that is an ancestor of a
+# freshly fetched origin/main) and the event is a push; the script checks again. A release tag on a
+# commit outside main therefore never starts the job that holds write tokens. (The check is code of
+# the pushed commit, so it cannot stop a tag whose workflow file was itself edited; that needs an
+# environment deployment policy or a tag ruleset in the repository settings.) Dry-run tags
+# (v0.0.0-rel<N>) build only and never start the publish job.
+# `decide` also skips the three build jobs for a branch push or pull request that changes only docs
+# and files no bundle is built from; a new push cancels that ref's running build (never main or tags).
+# Repository setting: "Immutable releases" must stay off (`continuous` renames assets, moves its tag).
+name: Release
+
+on:
+  push:
+    branches: ["**"]
+    # A dev tag is made by the publish job itself (with GITHUB_TOKEN, which starts no run); this keeps a
+    # hand-pushed one from starting one either.
+    tags: ["v*", "!v*-dev.*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+# A new push cancels its branch's running build; main and tags are never cancelled.
+concurrency:
+  group: release-build-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  PROTOC_VERSION: "29.3"
+  # The launch check's arguments: no sync, no network (see the header).
+  LAUNCH_ARGS: --network regtest --no-platform --dapi https://127.0.0.1:1 --window-size 960x640
+
+jobs:
+  script-tests:
+    name: Release scripts (publish logic, versions)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ci/github/release-publish-test.sh
+
+  # Read-only: what this run builds and whether it may publish. Gates the builds (docs-only branch and
+  # pull-request changes skip them) and the publish job (a release tag outside main never starts it).
+  decide:
+    name: What this run builds and publishes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.kind.outputs.build }}
+      publish: ${{ steps.kind.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: kind
+        env:
+          DECIDE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: ci/github/release-decide.sh
+
+  macos:
+    name: macOS universal .dmg
+    runs-on: macos-latest
+    needs: decide
+    if: ${{ needs.decide.outputs.build == 'true' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ci/github/release-version.sh
+      - name: protoc
+        run: ci/github/install-protoc.sh
+      - name: Rust toolchain (rust-toolchain.toml) and both macOS targets
+        working-directory: rust
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+          key: release-macos
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: apps/desktop/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - name: pnpm install
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+      # signingIdentity "-" in tauri.conf.json: ad-hoc signed, no notarization.
+      - name: pnpm tauri build (universal-apple-darwin, dmg)
+        working-directory: apps/desktop
+        run: pnpm tauri build --target universal-apple-darwin --bundles dmg
+      - name: Stage the dmg
+        run: |
+          dmg=$(ci/github/release-stage.sh "$RUNNER_TEMP/dist" "$VERSION" macos-universal.dmg 'universal-apple-darwin/release/bundle/dmg/*.dmg')
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
+      # Tauri deletes the .app once the dmg is made, so the launch check uses the app out of the
+      # staged dmg, as a user gets it.
+      - name: Open the staged dmg
+        run: |
+          mnt="$RUNNER_TEMP/dmg-mnt"
+          mkdir -p "$mnt" "$RUNNER_TEMP/app"
+          hdiutil attach "$DMG" -mountpoint "$mnt" -nobrowse -readonly
+          cp -R "$mnt/Dash Wallet.app" "$RUNNER_TEMP/app/"
+          hdiutil detach "$mnt"
+          app="$RUNNER_TEMP/app/Dash Wallet.app"
+          echo "APP=$app" >> "$GITHUB_ENV"
+          lipo -archs "$app/Contents/MacOS/dash-wallet"
+          codesign -dv "$app" 2>&1 | grep -E "Signature|Identifier"
+      - name: Launch the built app and take a screenshot
+        env:
+          DWD_SHOT_SETTLE: "15"
+        run: |
+          data=$(mktemp -d)
+          read -ra args <<<"$LAUNCH_ARGS"
+          ci/github/macos-launch-screenshot.sh launch-macos "$RUNNER_TEMP/launch" 30 "$APP" --datadir "$data" "${args[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-macos
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: launch-macos
+          path: ${{ runner.temp }}/launch/
+          if-no-files-found: warn
+
+  windows:
+    name: Windows NSIS .exe
+    runs-on: windows-latest
+    needs: decide
+    if: ${{ needs.decide.outputs.build == 'true' }}
+    timeout-minutes: 120
+    env:
+      # rs-x11-hash includes <unistd.h>, which MSVC lacks (ci/windows/unistd-shim/unistd.h).
+      CFLAGS_x86_64_pc_windows_msvc: -I${{ github.workspace }}/ci/windows/unistd-shim
+    steps:
+      - name: Git for Windows settings (long paths, LF checkouts)
+        run: |
+          git config --system core.longpaths true
+          git config --system core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ci/github/release-version.sh
+      - name: protoc
+        run: ci/github/install-protoc.sh
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+          key: release-windows
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: apps/desktop/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - name: pnpm install
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+      - name: pnpm tauri build (nsis)
+        working-directory: apps/desktop
+        run: pnpm tauri build --bundles nsis
+      - name: Stage the installer
+        run: |
+          setup=$(ci/github/release-stage.sh "$RUNNER_TEMP/dist" "$VERSION" windows-x64-setup.exe 'release/bundle/nsis/*-setup.exe')
+          echo "SETUP=$setup" >> "$GITHUB_ENV"
+      # The NSIS installer, per user and silent, into a private directory (/D= must come last and
+      # unquoted); the launch is of the installed app, not of the build output. Tauri's installer
+      # starts the app when it finishes, even when silent, and that child holds the step's output
+      # open: so the installer runs detached, the step waits for the file, and the app the
+      # installer started is stopped before the launch check begins.
+      - name: Install the built installer
+        run: |
+          dest="$RUNNER_TEMP\\dw-install"
+          exe="$(cygpath -u "$dest")/dash-wallet.exe"
+          # Git Bash would rewrite /S and /D=... as paths.
+          MSYS2_ARG_CONV_EXCL='*' "$SETUP" /S "/D=$dest" >/dev/null 2>&1 </dev/null &
+          for _ in $(seq 120); do [[ -f "$exe" ]] && break; sleep 1; done
+          [[ -f "$exe" ]] || { echo "::error::the installer left no dash-wallet.exe in $dest"; ls -la "$(cygpath -u "$dest")" || true; exit 1; }
+          # Let the installer finish and its app start, then stop that app.
+          sleep 15
+          taskkill //IM dash-wallet.exe //F || true
+          sleep 3
+          echo "INSTALLED_EXE=$dest\\dash-wallet.exe" >> "$GITHUB_ENV"
+          echo "LAUNCH_DATA=$RUNNER_TEMP\\dw-launch-data" >> "$GITHUB_ENV"
+      - name: Launch the installed app and take a screenshot
+        shell: pwsh
+        run: |
+          $appArgs = @('--datadir', $env:LAUNCH_DATA) + @(-split $env:LAUNCH_ARGS)
+          ci/github/windows-launch-screenshot.ps1 -Name launch-windows -OutDir "$env:RUNNER_TEMP\launch" -Seconds 30 `
+            -Exe $env:INSTALLED_EXE -ArgumentList $appArgs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-windows
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: launch-windows
+          path: ${{ runner.temp }}/launch/
+          if-no-files-found: warn
+
+  linux:
+    name: Linux AppImage and .deb
+    runs-on: ubuntu-24.04
+    needs: decide
+    if: ${{ needs.decide.outputs.build == 'true' }}
+    timeout-minutes: 90
+    env:
+      # The runner has no FUSE: the AppImage tools (linuxdeploy) run extracted.
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ci/github/release-version.sh
+      - name: Free disk space
+        run: ci/github/linux-free-disk.sh
+      - name: protoc
+        run: ci/github/install-protoc.sh
+      - name: Linux packages (WebKitGTK, Xvfb, ImageMagick)
+        run: ci/github/linux-host-deps.sh tauri
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+          key: release-linux
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: apps/desktop/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - name: pnpm install
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+      - name: pnpm tauri build (appimage, deb)
+        working-directory: apps/desktop
+        run: pnpm tauri build --bundles appimage,deb
+      - name: Stage the bundles
+        run: |
+          appimage=$(ci/github/release-stage.sh "$RUNNER_TEMP/dist" "$VERSION" linux-x86_64.AppImage 'release/bundle/appimage/*.AppImage')
+          ci/github/release-stage.sh "$RUNNER_TEMP/dist" "$VERSION" linux-amd64.deb 'release/bundle/deb/*.deb'
+          chmod +x "$appimage"
+          echo "APPIMAGE=$appimage" >> "$GITHUB_ENV"
+      - name: Launch the AppImage under Xvfb and take a screenshot
+        run: |
+          read -ra args <<<"$LAUNCH_ARGS"
+          ci/github/linux-release-launch.sh "$APPIMAGE" "$RUNNER_TEMP/launch" 30 --datadir "$RUNNER_TEMP/launch-data" "${args[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-linux
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: launch-linux
+          path: ${{ runner.temp }}/launch/
+          if-no-files-found: warn
+
+  checksums:
+    name: SHA256SUMS
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ci/github/release-version.sh
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: ${{ runner.temp }}/release
+          merge-multiple: true
+      - name: SHA256SUMS (file names only)
+        working-directory: ${{ runner.temp }}/release
+        run: |
+          ls -l
+          [[ $(ls | wc -l) -eq 4 ]] || { echo "::error::expected 4 bundles (dmg, exe, AppImage, deb)"; exit 1; }
+          # The list is taken before the redirect creates SHA256SUMS.
+          files=$(LC_ALL=C ls)
+          sha256sum $files > SHA256SUMS
+          cat SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-v${{ env.VERSION }}
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+
+  # The only job with write permissions. Reached by a push to main or to a v* tag only.
+  publish:
+    name: Publish (prerelease, continuous, attestations)
+    needs: [decide, checksums, script-tests]
+    # Two independent conditions: the trigger, and the decide job's verdict.
+    if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && needs.decide.outputs.publish == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    # One publish at a time on main, never cancelled by a newer one (GitHub still drops a pending run
+    # when another arrives; see release-publish.sh). Each tag has its own group, so a main push can
+    # never displace a tag's release.
+    concurrency:
+      group: release-publish-${{ github.ref == 'refs/heads/main' && 'main' || github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: ci/github/release-version.sh
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-v${{ env.VERSION }}
+          path: ${{ runner.temp }}/release
+      # Exit 3: a tag that is not a release tag (a dry run); the rest of the job is skipped.
+      - name: Decide and stage what is published
+        env:
+          DIST: ${{ runner.temp }}/release
+        run: |
+          rc=0
+          ci/github/release-publish.sh prepare || rc=$?
+          if [[ $rc -eq 3 ]]; then echo "SKIP=1" >> "$GITHUB_ENV"; elif [[ $rc -ne 0 ]]; then exit "$rc"; fi
+      - name: Attest every published file and both SHA256SUMS
+        if: ${{ env.SKIP != '1' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/publish/attest/*
+      - name: Create and update the releases
+        if: ${{ env.SKIP != '1' }}
+        env:
+          DIST: ${{ runner.temp }}/release
+          GH_TOKEN: ${{ github.token }}
+        run: ci/github/release-publish.sh publish

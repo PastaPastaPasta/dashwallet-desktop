@@ -1,10 +1,16 @@
 # Release plan: 0.1 (Tue 2026-11-03) to 1.0
 
+> **Superseded in part by DEC-1058 (2026-11-01): no PGP until 1.0.** Every GPG, `SHA256SUMS.asc`, fingerprint and
+> temporary-key instruction below is replaced by GitHub build attestations (`actions/attest-build-provenance`,
+> checked with `gh attestation verify`) and continuous delivery from `main`: see
+> [`docs/release/verifying.md`](../../release/verifying.md) and `.github/workflows/release.yml`. "Signed checksums" in
+> the never-cut list reads "attested artifacts". The struck-through text is kept for history.
+
 Owner's direction, 2026-10-31 (pasta). Decisions below are made on his behalf; the manager may adjust details with
 evidence but not the intent. Gap evidence: [REPORT.md](REPORT.md), [ios.md](ios.md), [android.md](android.md),
 [core.md](core.md).
 
-**Intent.** Ship small, usable, signed-by-a-local-key releases on GitHub early and often, starting with 0.1 this
+**Intent.** Ship small, usable, attested releases on GitHub early and often, starting with 0.1 this
 Tuesday. 0.1 is what people think the app *is* (a DashPay wallet with usernames, contacts and shielded funds), not
 the long tail. 1.0 means full user-story parity with the mobile wallets, interactive QA done on all three OSes,
 and the important Dash Core stories (masternode registration, shared masternodes, governance, proposal creation,
@@ -68,17 +74,15 @@ mixed→Shielded (all 0.2); auto-update; notarization; Windows code signing; har
     `xattr -dr com.apple.quarantine "/Applications/Dash Wallet.app"`.
   - Windows: unsigned NSIS `.exe` (and/or `.msi`). Notes: SmartScreen ▸ More info ▸ Run anyway.
   - Linux: AppImage + `.deb` (x86_64; arm64 if free).
-- **Signing with a new local GPG key (temporary):**
-  - Generate on agentbox: ed25519, **no passphrase**, uid `Dash Wallet Desktop pre-release signing key
-    (TEMPORARY - will be replaced)`, expiry 1 year. Keep the private key in the agent-secrets store (`secret`),
-    never in the repo or CI logs. Commit only the public key (`docs/release/signing-key-temporary.asc`) and its
-    fingerprint in README and release notes.
-  - Sign: `SHA256SUMS` over every artifact → `SHA256SUMS.asc` (detached, armored), and the tag (`git tag -s`).
-    Signing happens on agentbox after downloading the CI artifacts (no private key in GitHub secrets).
-  - Release notes say plainly that the key is temporary and will be replaced by a real release key.
+- ~~**Signing with a new local GPG key (temporary):** generate on agentbox, commit the public key and its fingerprint,
+  sign `SHA256SUMS` (`SHA256SUMS.asc`) and the tag.~~ **Superseded (DEC-1058):** no PGP. The workflow attests every
+  artifact and `SHA256SUMS` with GitHub build provenance; nothing is signed by hand, no key is in the repo or the
+  README, and `docs/release/signing-key-temporary.asc` is replaced by `docs/release/verifying.md`. The temporary
+  key stays unused in the secret store.
 - **Release** as a normal GitHub release marked *pre-release*, with notes: scope, known limitations
   (no security review, shielded availability depends on the network's protocol version, mixing experimental,
-  English only), how to verify (`gpg --verify SHA256SUMS.asc && sha256sum -c SHA256SUMS`).
+  English only), how to verify (`gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop`, DEC-1058; was
+  `gpg --verify SHA256SUMS.asc`).
 
 ### Minimal test bar for 0.1
 
@@ -99,18 +103,18 @@ Bugs found that block 1–7 are fixed; everything else becomes a 0.1.x/0.2 issue
 
 | Day | E1 engine | E2 engine | UI | L4 infra |
 |---|---|---|---|---|
-| Sun 11-01 | shielded facade: sync, balance, receive address, Core→Shielded, send to shielded, withdraw to Core; protocol-version gate | Platform-address sync loop + balance + withdraw to Core; contested-cost fix; sync-on default + network setting | Home breakdown + network picker + CSV button | GPG key; release workflow (dmg/exe/AppImage/deb) on a test tag; README; default branch |
+| Sun 11-01 | shielded facade: sync, balance, receive address, Core→Shielded, send to shielded, withdraw to Core; protocol-version gate | Platform-address sync loop + balance + withdraw to Core; contested-cost fix; sync-on default + network setting | Home breakdown + network picker + CSV button | ~~GPG key~~ (DEC-1058: attestations); release workflow (dmg/exe/AppImage/deb) on a test tag; README; default branch |
 | Mon 11-02 | finish + dwcli smoke | finish + dwcli smoke | Shielded screens (receive, send, withdraw), Activity rows, Masternodes toggle | first full CI artifact set; version bump |
-| Tue 11-03 | fixes | fixes | fixes | test bar run → sign → release `v0.1.0` |
+| Tue 11-03 | fixes | fixes | fixes | test bar run → release `v0.1.0` (attested by the workflow on the tag) |
 
 Cut order if Tuesday is at risk (last first): fiat stretch → Shielded→Core withdraw (keep send-to-shielded) →
 Platform withdraw (keep balance + notice) → Windows artifact. Never cut: shielded balance + Core→Shielded +
-shielded send, usernames, contacts, signed checksums.
+shielded send, usernames, contacts, ~~signed checksums~~ attested artifacts (DEC-1058).
 
 ## 2. Versions after 0.1
 
-Dates are targets for four agent lanes; the manager re-plans with evidence. Each version: a signed GitHub
-pre-release with the temporary key, a short test bar, parity.md updated.
+Dates are targets for four agent lanes; the manager re-plans with evidence. Each version: an attested GitHub
+pre-release (DEC-1058; no PGP until 1.0), a short test bar, parity.md updated.
 
 ### 0.2 — Platform & shielded complete, privacy bridge (target ~2026-11-14)
 
@@ -177,8 +181,9 @@ pre-release with the temporary key, a short test bar, parity.md updated.
 - **Interactive QA** (`agentic-qa`) of every user story on macOS, Windows and Linux (real GUI, evidence published);
   accessibility pass (H-05); mainnet canary with an iOS user (H-07: name, contact round trip, payments both ways,
   invitation claim, shielded round trip).
-- Real signing: replace the temporary GPG key with the real release key; notarization and Windows signing if B2
-  certificates exist (otherwise 1.0 ships unsigned with GPG-signed checksums and says so).
+- Real signing: a real release key (PGP or Sigstore identity, decided then) replaces attestation-only releases;
+  notarization and Windows signing if B2 certificates exist (otherwise 1.0 ships unsigned with signed checksums and
+  says so).
 
 ### 1.0 (target ~late January 2027)
 
