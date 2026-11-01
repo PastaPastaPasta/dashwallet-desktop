@@ -18,9 +18,12 @@ export const PENDING_COMMANDS = {
 /** The network a start opens when no `--network` is given (mainnet by default). */
 export type NetworkChoice = "mainnet" | "testnet";
 
-/** Whether `e` says the command does not exist in this dw-app. */
+/** Whether `e` says the command does not exist in this dw-app. dw-app's ACL manifest lists every
+ * command it has, so Tauri answers an unknown one from the ACL check: "Command x not allowed by
+ * ACL" in a release build, "x not allowed. Command not found" in a debug build; "Command x not
+ * found" is the handler lookup's. A command that exists but has no capability is absent the same. */
 export function commandAbsent(e: unknown): boolean {
-  if (typeof e === "string") return /^command .* not found/i.test(e);
+  if (typeof e === "string") return /^command .* (not found|not allowed by acl)/i.test(e) || /not allowed\. command not found/i.test(e);
   return typeof e === "object" && e !== null && "code" in e && (e as { code: unknown }).code === "platform.not_implemented";
 }
 

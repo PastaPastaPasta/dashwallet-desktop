@@ -43,6 +43,24 @@ test.describe("first-run notice", () => {
     });
   }
 
+  test("covers the Welcome screen: it keeps focus, and Welcome is inert until dismissed", async ({ page }) => {
+    await open(page, "no-wallet-first-run");
+    await expect(page.getByTestId("pre-release-notice")).toBeVisible();
+    await expect(page.getByTestId("pre-release-dismiss")).toBeFocused();
+    await expect(page.getByTestId("onboarding")).toHaveAttribute("inert", "");
+    await page.getByTestId("pre-release-dismiss").click();
+    await expect(page.getByTestId("onboarding")).not.toHaveAttribute("inert", "");
+    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
+  });
+
+  test("covers the lock screen: the passphrase field takes no focus", async ({ page }) => {
+    await open(page, "locked-first-run");
+    await expect(page.getByTestId("pre-release-notice")).toBeVisible();
+    await expect(page.getByTestId("lock-screen")).toHaveAttribute("inert", "");
+    await expect(page.getByTestId("lock-field")).not.toBeFocused();
+    await expect(page.getByTestId("pre-release-dismiss")).toBeFocused();
+  });
+
   test("is not shown once it was dismissed", async ({ page }) => {
     await open(page, "funded");
     await expect(page.getByTestId("hero")).toBeVisible();

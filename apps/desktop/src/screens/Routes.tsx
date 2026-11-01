@@ -39,6 +39,7 @@ export function Page({ route, wide = false, badge, children }: { route: Route; w
         <header className="top-intro">
           <h1 className="top-intro-title">
             {TITLES[route]}
+            {badge && " "}
             {badge}
           </h1>
         </header>

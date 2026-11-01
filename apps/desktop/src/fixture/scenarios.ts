@@ -557,6 +557,21 @@ const SCENARIOS = {
     w.settings.ui = { ...w.settings.ui, preReleaseNoticeDismissed: false };
     return w;
   },
+  /** The first run on a new install: no wallet, and the notice is up. */
+  "no-wallet-first-run": (t) => {
+    const w = base(t);
+    w.wallets = [];
+    w.phrases = {};
+    w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+    w.settings.ui = { ...w.settings.ui, preReleaseNoticeDismissed: false };
+    return w;
+  },
+  /** The first run after the vault exists but settings.json does not: locked, the notice is up. */
+  "locked-first-run": (t) => {
+    const w = buildWorld("locked", t);
+    w.settings.ui = { ...w.settings.ui, preReleaseNoticeDismissed: false };
+    return w;
+  },
   /** No wallet yet, and Mainnet chosen while this window is on testnet: Welcome asks for a restart. */
   "no-wallet-network-restart": (t) => {
     const w = base(t);

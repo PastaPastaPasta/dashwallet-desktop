@@ -91,6 +91,7 @@ export function Sidebar({ joined, requests, masternodes }: { joined: boolean; re
                 </svg>
                 <span className="sidebar-title">
                   {item.title}
+                  {item.route === "coinJoin" && " "}
                   {item.route === "coinJoin" && <ExperimentalBadge testId="sidebar-coinJoin-experimental" />}
                 </span>
                 {badge !== null && (

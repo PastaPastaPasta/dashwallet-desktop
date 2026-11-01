@@ -28,10 +28,13 @@ const BACK_STEPS: ReadonlySet<OnboardingStep> = new Set([
 
 export function Onboarding({
   network,
+  inert = false,
   onCancel,
   onDone,
 }: {
   network: NetworkInfo;
+  /** Another screen (the first-run notice) is over it: no focus, hidden from assistive tech. */
+  inert?: boolean;
   /** Closes Add Wallet; `null` for the first wallet, which cannot be skipped. */
   onCancel: (() => void) | null;
   onDone: (walletId: string | null) => void;
@@ -60,7 +63,7 @@ export function Onboarding({
   }, [step, ready]);
 
   return (
-    <div className="onboarding" data-testid="onboarding">
+    <div className="onboarding" data-testid="onboarding" inert={inert}>
       <div className="onboarding-panel">
         <header className="onboarding-header">
           <span className="onboarding-header-side">
@@ -210,7 +213,8 @@ function Welcome({ model, network, onCancel }: { model: OnboardingModel; network
     <>
       <Title>{onCancel ? "Add a wallet" : "Welcome to Dash Wallet"}</Title>
       <p className="onboarding-text">Create a new wallet, or restore one with its recovery phrase.</p>
-      <NetworkPicker state={picker} testId="onboarding-network" />
+      {/* Without the command (a build before it) the first screen shows no picker. */}
+      {(picker.available || picker.loading) && <NetworkPicker state={picker} testId="onboarding-network" />}
       <div className="onboarding-actions">
         <DashButton variant="filledBlue" size="large" fill disabled={model.busy || wait} data-testid="onboarding-create" onClick={() => void model.startCreate()}>
           Create a new wallet

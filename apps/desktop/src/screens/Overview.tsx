@@ -9,7 +9,7 @@ import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
 import { useBackend, useBalance, useHistory, usePoolBalances, useSyncStatus, type HistoryFilter } from "../api/queries";
-import { AmountText, DashButton, Icon, NetworkCapsule } from "../components/basics";
+import { AmountText, DashButton, Icon, NetworkCapsule, VisuallyHidden } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
 import { useContactsOwner } from "../contacts/queries";
@@ -28,17 +28,18 @@ import { FrequentStrip } from "./pay/FrequentStrip";
 const RECENT_COUNT = 5;
 const RECENT_FILTER: HistoryFilter = { categories: [], text: null, sort: "newestFirst" };
 
-/** `amount` null: not known, shown as "—" with no unit. */
-function BreakdownCell({ title, subtitle, amount, unitName, testId }: { title: string; subtitle: string; amount: string | null; unitName: string; testId: string }) {
+/** `amount` null: not known, shown as "—" with no unit; `undefined`: still being read. */
+function BreakdownCell({ title, subtitle, amount, unitName, testId }: { title: string; subtitle: string; amount: string | null | undefined; unitName: string; testId: string }) {
   return (
     <div className="breakdown-cell" data-testid={testId}>
       <span className="breakdown-text">
         <span className="breakdown-title">{title}</span>
         <span className="breakdown-subtitle">{subtitle}</span>
       </span>
-      {amount === null ? (
-        <span className="breakdown-amount" aria-label="not available">
-          —
+      {amount === null || amount === undefined ? (
+        <span className="breakdown-amount">
+          <span aria-hidden="true">{amount === null ? "—" : "…"}</span>
+          <VisuallyHidden>{amount === null ? "not available" : "loading"}</VisuallyHidden>
         </span>
       ) : (
         <AmountText className="breakdown-amount" text={amount} unitName={unitName} />
@@ -55,6 +56,8 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
   const full = (duffs: number) => (discreet ? undefined : shown.withUnit(duffs));
   const unit = shown.name;
   const home = balances && homeBalance(balances, shielded, platform);
+  // Still being read, as against not known: the row waits instead of saying "—".
+  const reading = { core: false, shielded: shielded === undefined, platform: platform === undefined };
   return (
     <section className="hero" data-testid="hero" aria-label="Balance">
       {network.kind === "mainnet" ? <span className="network-capsule-slot" /> : <NetworkCapsule network={network} testId="hero-capsule" />}
@@ -89,7 +92,7 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
                 <BreakdownCell
                   title={row.title}
                   subtitle={subtitle}
-                  amount={duffs === null ? null : fmt(duffs)}
+                  amount={duffs !== null ? fmt(duffs) : reading[row.pool] ? undefined : null}
                   unitName={unit}
                   testId={`breakdown-${row.pool}`}
                 />

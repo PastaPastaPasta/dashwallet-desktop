@@ -86,6 +86,7 @@ export function CoinJoinCard({ walletId, network }: { walletId: string; network:
             <button type="button" className="coinjoin-card-open" data-testid="coinjoin-card-open" onClick={() => navigate("coinJoin")}>
               {view.title}
             </button>
+            {" "}
             <ExperimentalBadge testId="coinjoin-card-experimental" />
             {view.busy && <span className="spinner coinjoin-spinner" aria-hidden="true" />}
           </h2>

@@ -4,6 +4,8 @@ import { commandAbsent } from "./pending";
 describe("commands dw-app does not have yet", () => {
   it("recognises Tauri's unknown command and the fixture's", () => {
     expect(commandAbsent("Command get_network_choice not found")).toBe(true);
+    expect(commandAbsent("Command get_network_choice not allowed by ACL")).toBe(true);
+    expect(commandAbsent("get_network_choice not allowed. Command not found")).toBe(true);
     expect(commandAbsent({ code: "platform.not_implemented", message: "x", data: null })).toBe(true);
   });
 

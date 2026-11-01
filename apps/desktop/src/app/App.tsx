@@ -180,6 +180,10 @@ function Shell() {
   };
 
   const masternodesItem = useMasternodesItem(wallet?.walletId ?? null);
+  useEffect(() => {
+    if (route === "masternodes" && !masternodesItem.shown) navigate("home");
+  }, [route, masternodesItem.shown]);
+
   let content;
   if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts" || route === "notifications" || route === "joinDashPay" || route === "profile" || route === "coinJoin" || route === "masternodes") {
     if (wallets.isPending) content = <LoadingState testId="wallets-loading" text="Loading wallet…" />;
@@ -209,7 +213,8 @@ function Shell() {
     else if (route === "joinDashPay") content = <JoinDashPayPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "profile") content = <MyProfilePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "coinJoin") content = <CoinJoinPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
-    // Hidden until Show Masternodes is on (the 0.1 release plan): a link or a menu to it lands on Home.
+    // Hidden until Show Masternodes is on (the 0.1 release plan): the effect below sends a link
+    // or a menu that opened it home; Home shows meanwhile.
     else if (route === "masternodes" && masternodesItem.shown) content = <MasternodesPage key={wallet.walletId} wallet={wallet} network={network} />;
     else if (route === "masternodes") content = <Overview key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
@@ -236,7 +241,7 @@ function Shell() {
   const [layer, setLayer] = useState<HTMLDivElement | null>(null);
   const pictures = usePictureScopeValue(wallet?.walletId);
   // A dialog asked for while locked, onboarding, or behind a sheet is dropped, not kept for later.
-  const shown = locked || onboarding || sheet || layered ? null : dialog;
+  const shown = notice || locked || onboarding || sheet || layered ? null : dialog;
   useEffect(() => {
     if (dialog !== shown) closeDialog();
   }, [dialog, shown]);
@@ -273,17 +278,17 @@ function Shell() {
       </div>
       {/* Sheets opened inside the shell (Pay, Receive): above it, below onboarding and the lock
           screen, which cover it (U-02 D31). */}
-      <div className="sheet-layer" ref={setLayer} inert={locked || onboarding} />
+      <div className="sheet-layer" ref={setLayer} inert={notice || locked || onboarding} />
       {sheet && <TxDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />}
       {shown === "openUri" && <OpenUriSheet network={network.dirName} />}
       {shown === "about" && <AboutSheet launch={launch} />}
       {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={recoveryWallet ?? wallet?.walletId ?? null} onClose={closeDialog} />}
       {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
       {shown === "savedLinks" && <SavedLinksSheet onClose={closeDialog} />}
-      {onboarding && <Onboarding network={network} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
-      {locked && <LockScreen network={network} covered={forgot} onForgot={() => ui.set({ forgotPassphrase: true })} />}
+      {onboarding && <Onboarding network={network} inert={notice} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
+      {locked && <LockScreen network={network} covered={forgot || notice} onForgot={() => ui.set({ forgotPassphrase: true })} />}
       {/* Over the lock screen, and still open once the recovery unlocked the vault (U-02 D11). */}
-      {forgot && !onboarding && <ForgotPassphraseSheet onClose={closeForgot} />}
+      {forgot && !onboarding && !notice && <ForgotPassphraseSheet onClose={closeForgot} />}
       {/* Over everything, the lock screen too: the first thing a new install shows. */}
       {notice && (
         <PreReleaseNotice
