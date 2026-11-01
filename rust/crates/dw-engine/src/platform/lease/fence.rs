@@ -1293,7 +1293,9 @@ impl FenceState {
         for (s, _) in &gone {
             if id == ArtifactId::of_step(&wallet, s) {
                 let key = (wallet, s.clone());
-                // Only a call that released no signature writes a step's
+                // Only a call that released no signature, or whose build
+                // its signer abandoned (no complete transaction, no stored
+                // lock: `SignatureCount::abandon`), writes a step's
                 // `NotSent` row (`call.rs`), and a signed lock or a
                 // self-spend needs one: none is ever dropped here (review
                 // Opus O-9).

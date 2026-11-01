@@ -289,10 +289,12 @@ impl NetworkSession {
         self.manager()?;
         self.cancel_relock();
         let this = Arc::clone(self);
+        let passes = Arc::clone(&self.platform.shielded_passes);
         let report = (self.leases)
-            .lock(RevokeCause::Lock, move || this.vault_gate())
+            .lock_then(RevokeCause::Lock, move || this.vault_gate(), async move {
+                drain_passes(&passes).await
+            })
             .await;
-        self.drain_shielded_pass().await;
         Ok(report)
     }
 
@@ -414,6 +416,9 @@ impl NetworkSession {
                 .await;
             freeze.gate_done();
             freeze.drain().await;
+            // The background leases went with the freeze: a shielded pass
+            // admitted under them ends first (DEC-1032).
+            this.drain_shielded_pass().await;
             freeze.finish(this.vault.status());
             this.ensure_background().await;
             out
@@ -429,6 +434,9 @@ impl NetworkSession {
     pub(crate) async fn revoke_wallet(&self, wallet: WalletId, cause: RevokeCause) -> Freeze {
         let mut freeze = self.leases.freeze(cause, Scope::Wallet(wallet), false);
         freeze.drained().await;
+        // The wallet's background lease went with the freeze: a shielded
+        // pass admitted under it ends first (DEC-1032).
+        self.drain_shielded_pass().await;
         freeze
     }
 

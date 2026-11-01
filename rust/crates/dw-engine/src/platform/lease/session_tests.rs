@@ -693,8 +693,8 @@ fn a_txdraft_under_a_lease_is_charged_fenced_and_refunded() {
 
 /// DEC-1032 check 2: a shielded pass admitted before a lock (held here as
 /// its read of the session's pass lock) ends before the lock completes:
-/// the synchronous lock's `Done` and the async lock's return wait for it,
-/// past the 10 s the drain logs at.
+/// the synchronous lock's `Done`, and the async lock's `Done` and return,
+/// wait for it. A spend's network call is not waited for.
 #[test]
 fn a_lock_completes_only_after_a_shielded_pass_in_flight_ends() {
     let f = fixture(true);
@@ -717,8 +717,17 @@ fn a_lock_completes_only_after_a_shielded_pass_in_flight_ends() {
         rx.recv_timeout(Duration::from_millis(300)).is_err(),
         "the async lock returned before the pass ended"
     );
+    assert_eq!(f.rec.done().len(), 1, "its Done before the pass ended");
     drop(pass);
     rx.recv_timeout(Duration::from_secs(30)).unwrap().unwrap();
+    assert_eq!(f.rec.done().len(), 2);
+
+    // A spend's hold (its library call, on the network) is not waited for.
+    let spend = f
+        .engine
+        .block_on(f.session.platform.shielded_spends.write());
+    f.engine.block_on(f.session.lock_vault()).unwrap();
+    drop(spend);
 }
 
 #[test]

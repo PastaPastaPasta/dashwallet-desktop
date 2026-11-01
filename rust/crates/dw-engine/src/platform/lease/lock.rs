@@ -161,10 +161,22 @@ impl LeaseTable {
     /// The async lock (§8.1): freeze now, then a spawned coordinator runs
     /// `gate` on the blocking pool and the drain, so a dropped caller
     /// cannot leave the barrier set. Returns once both are done.
+    #[cfg(test)]
     pub(crate) async fn lock(
         self: &Arc<Self>,
         cause: RevokeCause,
         gate: impl FnOnce() -> VaultStatus + Send + 'static,
+    ) -> LockReport {
+        self.lock_then(cause, gate, std::future::ready(())).await
+    }
+
+    /// [`Self::lock`], whose drain also awaits `then` before the lock
+    /// reports `Done` and returns (the session's shielded pass drain).
+    pub(crate) async fn lock_then(
+        self: &Arc<Self>,
+        cause: RevokeCause,
+        gate: impl FnOnce() -> VaultStatus + Send + 'static,
+        then: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> LockReport {
         let mut freeze = self.freeze(cause, Scope::All, true);
         let table = Arc::clone(self);
@@ -172,6 +184,7 @@ impl LeaseTable {
             let status = table.rt.spawn_blocking(gate).await;
             freeze.gate_done();
             freeze.drain().await;
+            then.await;
             freeze.finish(status.unwrap_or_else(|_| gate_panicked()))
         });
         coordinator.await.unwrap_or_else(|_| LockReport {

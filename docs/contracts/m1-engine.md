@@ -64,7 +64,9 @@ Status: **works** = implemented and tested through the FFI; **M0** = earlier wor
 **E0-04** (design `docs/design/E0-04-grants-leases.md`, approved, DEC-73; lands in its phase P2a). The engine's
 `NetworkSession::lock_vault()` becomes the lock every path runs: it revokes every flow lease, runs its own vault
 gate, drains the hand-offs already admitted (each to its deadline, H = 10 s) and returns a `LockReport`, within
-`max(H, T_gate)` of its call. It is engine-side (dwcli, tests); the chosen stack binds it in E0-13. dw-ffi keeps the
+`max(H, T_gate)` of its call; then, on an active shielded network, it also waits for a shielded sync pass in flight to
+end (0.1 E1, DEC-1032: its redrives must end before the lock completes), which the SDK's request settings bound
+(m4 §2.13; seconds on a reachable network). It is engine-side (dwcli, tests); the chosen stack binds it in E0-13. dw-ffi keeps the
 synchronous `Vault.lock()` (§2.2). The new events `LockProgress{Draining | Done(LockReport)}`, `LeaseChanged` and
 `DispatchResolved`, and the notices `DispatchRecordMissing`, `UnscopedDispatch` and `DispatchJournalUnavailable`,
 stay engine-side until E0-13, so §3 does not list them.

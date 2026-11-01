@@ -39,10 +39,12 @@
 //!   own loop never runs. A pass admitted before a lock or a close may
 //!   still run when the leases drop, as a leased call admitted before a
 //!   freeze finishes in its drain: the lock, async or synchronous (the
-//!   relock timer's, the console's), and the close wait for its end
-//!   ([`drain_passes`]: the SDK's request settings bound every call of a
-//!   pass), so no redrive ends after a lock completes (`LockProgress::Done`)
-//!   or a close; the close then seals the coordinator (`Manager::shutdown`).
+//!   relock timer's, the console's), a revocation that drops background
+//!   leases (a vault operation's, a wallet's removal or unload) and the
+//!   close wait for its end ([`drain_passes`], which states the bound), so
+//!   no redrive ends after a lock completes (`LockProgress::Done` and the
+//!   async lock's return) or a close; the close then seals the coordinator
+//!   (`Manager::shutdown`).
 //!   0.2: the library admits each send (`q15-hook`).
 //! - **Shields.** Core → Shielded is a top-up's two steps (`topup.rs`): an
 //!   asset lock of the Core balance (funding type
@@ -1738,32 +1740,37 @@ pub(crate) async fn admit_pass(
 /// running ([`drain_passes`]), and keeps waiting.
 pub(crate) const SHIELDED_PASS_DRAIN: Duration = Duration::from_secs(10);
 
-/// Waits until no shielded pass is in flight (the lock's, the relock
-/// timer's and the close's drain, `drain_shielded_pass`). A pass ends on
-/// its own: each of its SDK calls (the anchors' fetch, the note sync's
-/// chunk fetches, a redrive's `st.broadcast(sdk, None)`) runs under the
-/// SDK's default request settings, every attempt cut at `timeout` (10 s,
-/// rs-dapi-client `request_settings.rs:9`, enforced on the whole attempt at
-/// `dapi_client.rs:1198`), at most `retries` + 1 = 6 attempts
-/// (`request_settings.rs:10`, `dapi_client.rs:1086`), and a trusted quorum
-/// lookup at 30 s (rs-sdk-trusted-context-provider `provider.rs:211`). The
-/// calls of one pass are bounded in number by the pool's size and the
-/// stored spends (at most 3 attempts each).
+/// Waits until no shielded pass is in flight (the drain of a lock, of a
+/// revocation and of the close, `drain_shielded_pass`); a spend's network
+/// call is not waited for (`shielded_spends`). A pass ends on its own,
+/// every wait in it bounded at the pin:
+/// - each SDK call (the anchors' fetch, the note sync's chunk fetches, a
+///   redrive's `st.broadcast(sdk, None)`) under the SDK's default request
+///   settings: every attempt cut at 10 s over the whole attempt
+///   (rs-dapi-client `request_settings.rs:9`, `dapi_client.rs:1198`), at
+///   most `retries` + 1 = 4 attempts (rs-sdk `sdk.rs:89`,
+///   `dapi_client.rs:1086`);
+/// - a proof's unknown quorum: the engine's context provider waits for SPV
+///   up to `UNKNOWN_QUORUM_WAIT` (120 s, `trust.rs`), and the trusted
+///   provider's HTTP lookup is cut at 30 s
+///   (rs-sdk-trusted-context-provider `provider.rs:230`);
+/// - the number of calls: the note sync's chunks (the pool's size), and
+///   at most 3 broadcasts per stored spend.
+///
+/// The worst case is therefore a pass's call count times about 160 s; on
+/// a reachable network a pass takes seconds (testnet, 6,430 notes: about 1
+/// s).
 pub(crate) async fn drain_passes(passes: &tokio::sync::RwLock<()>) {
-    if tokio::time::timeout(SHIELDED_PASS_DRAIN, passes.write())
-        .await
-        .is_ok()
-    {
-        return;
+    // One acquire, kept across the log: its place in the lock's queue too.
+    let write = passes.write();
+    tokio::pin!(write);
+    tokio::select! {
+        _ = &mut write => return,
+        () = tokio::time::sleep(SHIELDED_PASS_DRAIN) => {}
     }
-    let started = std::time::Instant::now();
     tracing::warn!("a shielded sync pass is still running; the drain waits for its end");
-    drop(passes.write().await);
-    let waited = started.elapsed() + SHIELDED_PASS_DRAIN;
-    tracing::info!(
-        waited_ms = waited.as_millis() as u64,
-        "the shielded sync pass ended"
-    );
+    drop(write.await);
+    tracing::info!("the shielded sync pass ended; the drain is done");
 }
 
 /// How long a spend waits for a pass in flight before it holds the passes
@@ -1776,8 +1783,8 @@ const SPEND_PASS_WAIT: Duration = Duration::from_secs(60);
 async fn hold_passes(
     session: &NetworkSession,
 ) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, ShieldedError> {
-    let passes = session.platform.shielded_passes.write();
-    (tokio::time::timeout(SPEND_PASS_WAIT, passes).await)
+    let spends = session.platform.shielded_spends.write();
+    (tokio::time::timeout(SPEND_PASS_WAIT, spends).await)
         .map_err(|_| PlatformError::Unavailable.into())
 }
 
@@ -1788,6 +1795,8 @@ async fn hold_passes(
 /// lock's drain (`drain_shielded_pass`) waits for it and no pass admitted
 /// before the lock outlives it. `false` when it was held back.
 pub(crate) async fn guarded_pass(session: &NetworkSession, manager: &Manager, force: bool) -> bool {
+    // A spend's hold first, then the drain's lock (always in this order).
+    let _spends = session.platform.shielded_spends.read().await;
     let _pass = session.platform.shielded_passes.read().await;
     if let Err(held) = admit_pass(session, manager).await {
         tracing::info!(?held, "a shielded sync pass is held back");

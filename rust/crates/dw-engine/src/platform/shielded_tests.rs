@@ -1050,7 +1050,7 @@ fn an_unconfirmed_spend_stays_pending_until_a_scan_resolves_it() {
     // re-send what the library stores on an unknown result unchecked).
     let s = Arc::clone(&fx.s);
     *lib.probe.lock().unwrap() = Some(Box::new(move || {
-        s.platform.shielded_passes.try_read().is_err()
+        s.platform.shielded_spends.try_read().is_err()
     }));
 
     for (n, unshield, found, want) in [
@@ -1082,7 +1082,7 @@ fn an_unconfirmed_spend_stays_pending_until_a_scan_resolves_it() {
             "passes held"
         );
         assert!(
-            fx.s.platform.shielded_passes.try_read().is_ok(),
+            fx.s.platform.shielded_spends.try_read().is_ok(),
             "and let go"
         );
         // On record in the journal against its activity.
