@@ -5,7 +5,7 @@ decisions DEC-01, DEC-09, DEC-12, DEC-13 and DEC-15 (listed in DASHPAY.md). Exte
 [`DECISIONS-PENDING.md`](DECISIONS-PENDING.md).
 
 **Releases (DEC-1026, 2026-11-01):** versions replace the W/H waves as the delivery unit. §7 maps tasks to versions
-0.1 (Tue 2026-11-03) to 1.0; the plan is [`../research/gap-2026-10-31/RELEASE-PLAN.md`](../research/gap-2026-10-31/RELEASE-PLAN.md).
+0.1 to 1.0, each released as soon as it is done (every date is a deadline, DEC-1029); the plan is [`../research/gap-2026-10-31/RELEASE-PLAN.md`](../research/gap-2026-10-31/RELEASE-PLAN.md).
 
 It replaces the M4–M7 plans in `DASHPAY-fable.md` §6 and `DASHPAY-opus.md` §5 (on branches `dw/dashpay-design-fable`
 and `dw/dashpay-design-opus`), and the M4 "Platform parity" workstream in DESIGN-opus.
@@ -402,25 +402,31 @@ The sums use S = 0.5–1, M = 2–3 and L = 4–5 agent-days.
 ## 7. Releases (DEC-1026)
 
 pasta's direction of 2026-10-31: ship small, usable GitHub pre-releases signed with a temporary local key, starting
-with **0.1 on Tue 2026-11-03**; 1.0 is full user-story parity with the mobile wallets, interactive QA on all three
+with **0.1 by Tue 2026-11-03**; 1.0 is full user-story parity with the mobile wallets, interactive QA on all three
 OSes, and the Dash Core stories (masternode registration, shared masternodes, governance, proposal creation, mixing).
 The plan, its scope, exclusions, release mechanics, test bars and cut order are
 [`RELEASE-PLAN.md`](../research/gap-2026-10-31/RELEASE-PLAN.md) (adopted); the gap evidence is in the same directory.
 This section records the task → version mapping and every change to the plan, with its evidence.
 
+**Dates are latest-allowable; release as done (DEC-1029, pasta 2026-11-01).** Every date below is a deadline, not a
+target. A version ships the moment its scope and test bar are done and its artifacts are signed; 0.1.x patches ship
+as their fixes land. Nothing waits for a date: when a lane frees up it starts the next version's work, and items move
+earlier without a decision. The cut order applies only when a deadline is at risk.
+
 **Owner:** the release owner (MG desktop thread, DEC-1026). MG-13 and the remaining MG-04b UI are paused until 0.3.
 
 ### 7.1 Versions
 
-| Version | Target | Theme | Tasks (this file's IDs) |
+| Version | Latest | Theme | Tasks (this file's IDs) |
 |---|---|---|---|
 | 0.1 | Tue 2026-11-03 | Usable DashPay desktop wallet: Core, usernames, contacts, shielded funds | U-02..U-06, DP1–DP6, MG-09, MG-11 (built; masternode tabs behind Settings ▸ Show Masternodes); X1a (Platform-address balance + "Move to Dash wallet"); X2 core slice (shielded balance, receive, Core→Shielded, send to shielded, Shielded→Core); MP-02 Home breakdown; network choice + SPV on by default; CSV export; contested cost by protocol version; PK-01/PK-02 minimal (dmg ad-hoc, NSIS, AppImage + deb); PK-04 checksums signed with the temporary key; fiat is a stretch only |
-| 0.2 | ~2026-11-14 | Platform and shielded complete; privacy bridge | X1b per route; X2 rest (shielded-funded registration, Platform↔Shielded, Max drains, move mixed coins); MP-01 fiat; recovery cards; parity.md re-baselined on Tauri |
-| 0.3 | ~2026-11-25 | Masternodes and governance for owners | MG-10, MG-10b, MG-13 (engine done on `dw/mg-13-withdrawal`), MG-12; registration wizard; CoinJoin at Core parity; wallet.dat import |
-| 0.4 | ~2026-12-09 | Mobile parity, remaining DashPay | X4 marketplace; X3 invitation creation; DashConnect; MP-04, MP-06, MP-07, MP-14 |
-| 0.5 | ~2026-12-19 | Commerce | MP-09..MP-12; CrowdNode withdraw-only (needs B1 partner credentials) |
-| 0.6 | ~2026-12-31 | Hardening | H-01, H-02, H-03, H-06, H-09, H-10; PK-03 auto-update |
-| 0.9 | ~2027-01-12 | Release candidate | interactive QA on three OSes, H-05, H-07 mainnet canary; the real release key |
+| 0.1.x | as fixes land | Patches | BL-614 (Core-mixed coins counted as mixed; 0.1 notes tell users not to mix such a wallet), BL-615 |
+| 0.2 | 2026-11-14 | Platform and shielded complete; privacy bridge | X1b per route; X2 rest (shielded-funded registration, Platform↔Shielded, Max drains, move mixed coins); MP-01 fiat; recovery cards; parity.md re-baselined on Tauri |
+| 0.3 | 2026-11-25 | Masternodes and governance for owners | MG-10, MG-10b, MG-13 (engine done on `dw/mg-13-withdrawal`), MG-08, MG-12; registration wizard; CoinJoin at Core parity; wallet.dat import |
+| 0.4 | 2026-12-09 | Mobile parity, remaining DashPay | X4 marketplace; X3 invitation creation; DashConnect; MP-04, MP-06, MP-07, MP-14 |
+| 0.5 | 2026-12-19 | Commerce | MP-09..MP-12; CrowdNode withdraw-only (needs B1 partner credentials) |
+| 0.6 | 2026-12-31 | Hardening | H-01, H-02, H-03, H-06, H-09, H-10; PK-03 auto-update |
+| 0.9 | 2027-01-12 | Release candidate | interactive QA on three OSes, H-05, H-07 mainnet canary; the real release key |
 | 1.0 | late January 2027 | Parity and Core stories | exit criteria in RELEASE-PLAN §2 |
 
 The "Release" column of §2's tables and the waves of §3 are superseded by this table where they differ.
@@ -440,6 +446,8 @@ The "Release" column of §2's tables and the waves of §3 are superseded by this
 | Date | Change | Evidence |
 |---|---|---|
 | 2026-11-01 | Mainnet shielded: the pool is expected active (no "not active" notice on mainnet). The per-action protocol-version gate stays (ShieldFromIdentity and top-up from shielded need PV14). | Platform Explorer latest block appVersion 13 (mainnet) and 14 (testnet) on 11-01; the pin activates the pool at PV12 (`rs-platform-version/src/version/feature_initial_protocol_versions.rs`). |
+| 2026-11-01 | Every date is a deadline; each version and patch ships as soon as it is done (DEC-1029). | pasta, 11-01. |
+| 2026-11-01 | MG-08 (owner dwcli commands + nightly regtest suites) is in 0.3 with MG-10/10b/12/13; it had no version. | Manager, 11-01. |
 | 2026-11-01 | Added cut: if the shielded build lands late on Monday, the shielded screens ship as minimal forms (receive address + QR; amount + address send) and shielded Activity rows move to 0.1.1. The never-cut list is unchanged. | Manager, 11-01. |
 
 ### 7.4 Signing key (temporary)
