@@ -698,8 +698,15 @@ fn a_start_during_an_uncommitted_restore_skips_its_wallet() {
             engine.block_on(s.restore_backup(path, Some(Zeroizing::new(b"bk".to_vec()))))
         })
     };
+    // Admitted: a bring-up status recorded for it, or the catch-up mark its
+    // first bring-up writes (`note_first_bring_up`). A task alone is not:
+    // the contest watch runs one for every wallet of the manager, a held
+    // restore's included, and that pass does nothing for a wallet with no
+    // catch-up (`contest_watch.rs` `watch_contests`). Counting it failed
+    // this test whenever the start's first contest pass was in flight at an
+    // assertion (CI 41289102488).
     let admitted = |s: &NetworkSession| {
-        s.platform.startup_of(&a).is_some() || guard(&s.platform.tasks).contains_key(&a)
+        s.platform.startup_of(&a).is_some() || engine.block_on(s.has_catch_up(a))
     };
 
     // A failing restore, held after registering `a`; SPV starts meanwhile.
@@ -1086,5 +1093,62 @@ fn the_supervisor_runs_the_contest_watch() {
         kinds()[1],
         ("contest_locked".to_string(), "bob@5".to_string())
     );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// CI 41289102488 (macOS): a reopen right after a close was refused with
+/// `StorageInUse`. The persister's in-process claim goes with its last
+/// reference, and the close returned while another was still held
+/// (platform-wallet's drop names a drain, a wallet handle or an in-flight
+/// read). The close now waits for it, within `PERSISTER_RELEASE`; a holder
+/// that never lets go still keeps the database.
+#[test]
+fn a_close_returns_once_the_wallet_database_is_released() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s) = session(dir.path());
+    let open = || {
+        engine.block_on(engine.open_network(
+            DashNetwork::Regtest,
+            SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+                ..Default::default()
+            },
+        ))
+    };
+    let close = || {
+        assert!(
+            engine
+                .block_on(engine.close_network(DashNetwork::Regtest))
+                .unwrap()
+        )
+    };
+
+    // A reference held a moment past the close, as an in-flight read's.
+    let held = s.live().unwrap().persister;
+    drop(s);
+    let reader = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(1));
+        drop(held);
+    });
+    close();
+    let s = open().expect("the close waited for the database");
+    reader.join().unwrap();
+
+    // One held for good: the close returns within its bound, and the
+    // database stays in use until it goes.
+    let held = s.live().unwrap().persister;
+    drop(s);
+    let started = Instant::now();
+    close();
+    assert!(
+        started.elapsed() < crate::session::PERSISTER_RELEASE + Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(matches!(open(), Err(EngineError::StorageInUse(_))));
+    drop(held);
+    open().unwrap();
     engine.block_on(engine.shutdown()).unwrap();
 }
