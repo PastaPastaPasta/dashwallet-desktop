@@ -116,13 +116,14 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
     return () => io.disconnect();
   }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage]);
 
+  const exportWhy = exporting ? "Exporting…" : !coreTotal ? "There are no transactions to export yet." : null;
   return (
     <main className={`page page-transactions ${mode === "table" ? "is-table" : ""}`} data-testid="page-activity">
       <div className="page-column">
         <header className="top-intro top-intro-row" data-testid="tx-intro">
           <h1 className="top-intro-title">Activity</h1>
           <div className="tx-intro-actions">
-            <DashButton variant="tintedGray" size="small" data-testid="tx-export-csv" disabled={exporting || !coreTotal} why={exporting ? "Exporting…" : "There are no transactions to export yet."} onClick={() => void exportCsv()}>
+            <DashButton variant="tintedGray" size="small" data-testid="tx-export-csv" disabled={exporting || !coreTotal} why={exportWhy} whyId="tx-export-why" onClick={() => void exportCsv()}>
               Export CSV
             </DashButton>
             <div className="segmented" role="group" aria-label="View" data-testid="tx-mode">
@@ -134,6 +135,11 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
             </div>
           </div>
         </header>
+        {exportWhy && (
+          <p className="field-hint" id="tx-export-why" data-testid="tx-export-why">
+            {exportWhy}
+          </p>
+        )}
         {exported && (
           <p className={exported.ok ? "settings-done" : "form-problem"} role={exported.ok ? "status" : "alert"} data-testid="tx-export-result">
             {exported.text}

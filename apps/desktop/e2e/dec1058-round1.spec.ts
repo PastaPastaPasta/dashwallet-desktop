@@ -230,6 +230,33 @@ test.describe("disabled reasons are visible and described", () => {
     expect(await reasonOf(page, "shielded-next")).toContain("Shielded is still syncing; try again when it finishes.");
   });
 
+  test("an inactive Shielded card has no reason lines for actions it does not show", async ({ page }) => {
+    await page.goto(fixtureUrl("shielded-inactive", "light"));
+    await page.getByTestId("shielded-card").waitFor();
+    await expect(page.getByTestId("shielded-send")).toHaveCount(0);
+    await expect(page.getByTestId("shielded-card-why")).toHaveCount(0);
+  });
+
+  test("Pay keeps the fee line while it re-estimates, and does not ask for what is entered", async ({ page }) => {
+    await open(page);
+    await page.getByTestId("sidebar-pay").click();
+    await page.getByTestId("pay-tabs-address").click();
+    await page.getByTestId("pay-address").fill(PAYEE);
+    await page.evaluate(`window.__dwFixture.hold("draft_estimate")`);
+    await page.getByTestId("pay-amount").fill("0.5");
+    await expect(page.getByTestId("pay-continue")).toBeDisabled();
+    await expect(page.getByTestId("pay-incomplete")).toHaveText("Checking the payment…");
+  });
+
+  test("Activity's Export CSV reason sits under the header, not inside its action row", async ({ page }) => {
+    await page.goto(fixtureUrl("empty", "light"));
+    await page.getByTestId("toolbar").waitFor();
+    await page.getByTestId("sidebar-activity").click();
+    await expect(page.getByTestId("tx-export-why")).toBeVisible();
+    await expect(page.locator('.tx-intro-actions [data-testid="tx-export-why"]')).toHaveCount(0);
+    await expect(page.locator('.tx-intro-actions .dash-button-why')).toHaveCount(0);
+  });
+
   test("Export CSV and Pay's Review say why, beside the control", async ({ page }) => {
     await page.goto(fixtureUrl("empty", "light"));
     await page.getByTestId("toolbar").waitFor();

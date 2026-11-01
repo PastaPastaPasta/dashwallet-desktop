@@ -321,7 +321,7 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
     out: why(!balance),
     finish: syncing ? SHIELDED_SYNCING_TEXT : busy ? C.card.why.busy : null,
   };
-  const lines = [...new Set(Object.values(reasons).filter((r): r is string => !!r))];
+  const lines = s.active ? [...new Set(Object.values(reasons).filter((r): r is string => !!r))] : [];
   const lineId = (r: string | null) => (r ? `shielded-card-why-${lines.indexOf(r)}` : undefined);
   return (
     <>

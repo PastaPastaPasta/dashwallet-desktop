@@ -161,13 +161,18 @@ export function PlatformMoveCard({ walletId, network, platform }: { walletId: st
             {funded && <span data-testid="platform-card-amount">{discreet ? shown.masked() : shown.withUnit(platform)}. </span>}
             {waiting ? C.waiting.text : flow.unseen ? C.unseen : C.card.text}
           </p>
+          {flow.running && (
+            <p className="field-hint" id="platform-move-why" data-testid="platform-move-why">
+              {C.running.text}
+            </p>
+          )}
         </div>
         {waiting && !flow.running ? (
           <DashButton variant="tintedBlue" data-testid="platform-move-view" onClick={() => navigate("activity")}>
             {C.waiting.action}
           </DashButton>
         ) : (
-          <DashButton variant="tintedBlue" data-testid="platform-move" disabled={flow.running} why={C.running.text} onClick={() => flow.begin()}>
+          <DashButton variant="tintedBlue" data-testid="platform-move" disabled={flow.running} why={C.running.text} whyId="platform-move-why" onClick={() => flow.begin()}>
             {flow.running ? C.running.title : flow.unseen ? C.show : C.action}
           </DashButton>
         )}

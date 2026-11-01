@@ -173,6 +173,7 @@ export function AmountFields({
 }
 
 const PAY_INCOMPLETE = "Enter an address and an amount first.";
+const PAY_CHECKING = "Checking the payment…";
 
 /** The fee line, or what holds the payment back; then Review. */
 export function PayFooter({
@@ -180,15 +181,19 @@ export function PayFooter({
   fee,
   shown,
   ready,
+  incomplete,
   reviewRef,
 }: {
   problem: string | null;
+  /** The form has no address or amount to estimate yet (as against an estimate still being worked out). */
+  incomplete: boolean;
   /** The estimate's fee, when there is one for the current form. */
   fee: number | null;
   shown: Shown;
   ready: boolean;
   reviewRef: Ref<HTMLButtonElement>;
 }) {
+  const waiting = incomplete ? PAY_INCOMPLETE : PAY_CHECKING;
   return (
     <div className="pay-footer" data-testid="pay-footer">
       <div className="pay-footer-text" aria-live="polite">
@@ -196,17 +201,17 @@ export function PayFooter({
           <span className="form-problem" id="pay-reason" data-testid="pay-problem">
             {problem}
           </span>
+        ) : fee !== null ? (
+          <span className="pay-fee-line" id="pay-reason" data-testid="pay-fee-line">
+            Network fee <AmountText text={shown.full(fee)} unitName={shown.name} glyph={false} />
+          </span>
         ) : !ready ? (
           <span className="field-hint" id="pay-reason" data-testid="pay-incomplete">
-            {PAY_INCOMPLETE}
-          </span>
-        ) : fee !== null ? (
-          <span className="pay-fee-line" data-testid="pay-fee-line">
-            Network fee <AmountText text={shown.full(fee)} unitName={shown.name} glyph={false} />
+            {waiting}
           </span>
         ) : null}
       </div>
-      <DashButton ref={reviewRef} type="submit" variant="filledBlue" size="large" data-testid="pay-continue" disabled={!ready} why={problem ?? PAY_INCOMPLETE} whyId="pay-reason">
+      <DashButton ref={reviewRef} type="submit" variant="filledBlue" size="large" data-testid="pay-continue" disabled={!ready} why={problem ?? waiting} whyId="pay-reason">
         Review
       </DashButton>
     </div>
