@@ -629,7 +629,8 @@ inline.
 
 **Unconfirmed spends (E0-04 Q15, ruling (c) for 0.1).** A send or an unshield whose broadcast the library could not
 confirm returns `ShieldedSpendOutcome{state: pending, unresolved}`, never an error and never failed. The library keeps
-its notes reserved, its history row pending and its signed transition, which the sync pass re-sends byte for byte, at
+its notes reserved, its history row pending (for the session: the shielded store keeps activity in memory,
+`file_store.rs:749-769`, so after a restart the row returns only when the scan re-derives it) and its signed transition, which the sync pass re-sends byte for byte, at
 most 3 times. The scan resolves it: the row turns `confirmed` when the notes are seen spent (done), or `failed` when the
 prune backstop releases them (not executed). A sync pass resolves it the same way when Platform answers a re-send with
 a definitive rejection: the library releases the notes and marks the row `failed` (platform-wallet
@@ -658,7 +659,8 @@ went ahead; a signing call already running refuses the close, while a wallet loa
 close or switch that succeeds leaves no spend unresolved. App quit (`shutdown`)
 is never refused: it seals and drains as any close, then leaves that wallet loaded in the sealed manager, which runs
 nothing more, with its stores committed (wallet.sqlite writes commit inline, the shielded store committed the spend
-before it returned), and the next launch rehydrates the spend as pending, reservations and all. Removing the wallet (the
+before it returned), and the next launch rehydrates the spend as pending, reservations and all: its stored transition, decodable as the
+library's re-send decodes it, its `unresolved_spends` entry and its journal record (not its history row, above). Removing the wallet (the
 user's `remove_wallet`, under its wipe grant) deletes its spends with it. 0.2 replaces this with an upstream detach.
 
 **Shield locks.** A shield's asset lock spends at most 50 coins: an InstantSend proof carries the whole transaction and

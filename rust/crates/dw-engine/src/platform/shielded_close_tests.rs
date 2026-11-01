@@ -92,24 +92,101 @@ fn bind(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> boo
 }
 
 /// Two spends of unknown result as the library stores them (operations.rs
-/// `arm_redrive_record`): a transfer's and an unshield's signed bytes, their
-/// nullifiers reserved against the anchor they were built on.
+/// `arm_redrive_record`): a transfer's and an unshield's serialized
+/// transitions (dpp `ShieldedTransfer` and `ShieldedWithdrawal`, the
+/// library's `transfer` and `withdraw`), their nullifiers reserved against
+/// the anchor they were built on.
 fn spends() -> Vec<PendingRedrive> {
-    [
-        (1u8, b"a signed shielded transfer".as_slice()),
-        (2, b"a signed unshield".as_slice()),
-    ]
-    .into_iter()
-    .map(|(n, st)| PendingRedrive {
-        activity_id: [n; 32],
-        anchor: [0xa0 + n; 32],
-        nullifiers: vec![[0x10 + n; 32], [0x20 + n; 32]],
-        st_bytes: st.to_vec(),
-        attempts: 0,
-        identity_nonce_finalized: false,
-        identity_user_abandoned: false,
-    })
-    .collect()
+    (1u8..=2)
+        .map(|n| {
+            let (anchor, nullifiers) = ([0xa0 + n; 32], vec![[0x10 + n; 32], [0x20 + n; 32]]);
+            PendingRedrive {
+                activity_id: [n; 32],
+                st_bytes: transition(n, anchor, &nullifiers),
+                anchor,
+                nullifiers,
+                attempts: 0,
+                identity_nonce_finalized: false,
+                identity_user_abandoned: false,
+            }
+        })
+        .collect()
+}
+
+/// The serialized transition of spend `n`: 1 a shielded transfer, 2 an
+/// unshield to a Core script, one action per nullifier.
+fn transition(n: u8, anchor: [u8; 32], nullifiers: &[[u8; 32]]) -> Vec<u8> {
+    use dpp::identity::core_script::CoreScript;
+    use dpp::serialization::PlatformSerializable;
+    use dpp::shielded::SerializedAction;
+    use dpp::state_transition::StateTransition;
+    use dpp::state_transition::shielded_transfer_transition::ShieldedTransferTransition;
+    use dpp::state_transition::shielded_transfer_transition::v0::ShieldedTransferTransitionV0;
+    use dpp::state_transition::shielded_withdrawal_transition::ShieldedWithdrawalTransition;
+    use dpp::state_transition::shielded_withdrawal_transition::v0::ShieldedWithdrawalTransitionV0;
+    let actions = (nullifiers.iter())
+        .map(|nullifier| SerializedAction {
+            nullifier: *nullifier,
+            rk: [n; 32],
+            cmx: [0x30 + n; 32],
+            encrypted_note: vec![0x40 + n; 216],
+            cv_net: [0x50 + n; 32],
+            spend_auth_sig: [0x60 + n; 64],
+        })
+        .collect();
+    let st = match n {
+        1 => StateTransition::ShieldedTransfer(ShieldedTransferTransition::V0(
+            ShieldedTransferTransitionV0 {
+                actions,
+                value_balance: 1_000,
+                anchor,
+                proof: vec![0x70; 512],
+                binding_signature: [0x71; 64],
+            },
+        )),
+        _ => StateTransition::ShieldedWithdrawal(ShieldedWithdrawalTransition::V0(
+            ShieldedWithdrawalTransitionV0 {
+                actions,
+                unshielding_amount: 100_000_000,
+                anchor,
+                proof: vec![0x72; 512],
+                binding_signature: [0x73; 64],
+                core_fee_per_byte: 1,
+                pooling: dpp::withdrawal::Pooling::Never,
+                output_script: CoreScript::from_bytes(vec![0x76, 0xa9, 0x14]),
+            },
+        )),
+    };
+    st.serialize_to_bytes().unwrap()
+}
+
+/// What the library's re-send does first with a stored transition
+/// (operations.rs:3243, `StateTransition::deserialize_from_bytes_trusted`;
+/// a failure there clears the record as undecodable): it decodes, to a
+/// transfer or an unshield spending the record's nullifiers against its
+/// anchor, and encodes back to the same bytes.
+fn assert_redrivable(redrive: &PendingRedrive) {
+    use dpp::serialization::{PlatformDeserializableTrusted, PlatformSerializable};
+    use dpp::state_transition::StateTransition;
+    let st = StateTransition::deserialize_from_bytes_trusted(&redrive.st_bytes)
+        .expect("the library would clear an undecodable record");
+    let (actions, anchor) = match &st {
+        StateTransition::ShieldedTransfer(t) => {
+            let dpp::state_transition::shielded_transfer_transition::ShieldedTransferTransition::V0(
+                v,
+            ) = t;
+            (&v.actions, v.anchor)
+        }
+        StateTransition::ShieldedWithdrawal(t) => {
+            let dpp::state_transition::shielded_withdrawal_transition::ShieldedWithdrawalTransition::V0(v) = t;
+            (&v.actions, v.anchor)
+        }
+        other => panic!("not a spend: {}", other.name()),
+    };
+    let spent: Vec<[u8; 32]> = actions.iter().map(|a| a.nullifier).collect();
+    assert_eq!(spent, redrive.nullifiers);
+    assert_eq!(anchor, redrive.anchor);
+    assert_eq!(st.serialize_to_bytes().unwrap(), redrive.st_bytes);
 }
 
 fn subwallet(wallet: WalletId) -> SubwalletId {
@@ -458,8 +535,13 @@ fn quit_with_unresolved_spends_child() {
 /// still names them by hash, the facade lists them pending, and the first
 /// admitted pass hands the library those identical bytes to re-send
 /// (`redrive_pending_spends`, operations.rs:3212-3257, deserializes
-/// `st_bytes` and broadcasts them; this offline network never reaches
-/// that call). What the quit left is durable in every store, though the
+/// `st_bytes` and broadcasts them). The broadcast needs a pass that
+/// fetched Platform's proved anchor set and scanned the notes
+/// (coordinator.rs:1369-1392), which no local transport can answer, so
+/// the test stops at the re-send's first step: each record decodes as
+/// operations.rs:3243 does, to the signed transfer or unshield of its
+/// nullifiers, and a real (offline) pass leaves every record, reservation
+/// and attempt count as it was; nothing is signed or selected again. What the quit left is durable in every store, though the
 /// quitting process exited without dropping anything: the viewing key in
 /// wallet.sqlite (bound again with the vault locked), the address book in
 /// app.sqlite, the spends in the shielded store and their records in the
@@ -511,6 +593,11 @@ fn a_quit_keeps_unresolved_spends_for_the_next_launch() {
         stored.sort_by_key(|(_, r)| r.activity_id);
         let stored: Vec<PendingRedrive> = stored.into_iter().map(|(_, r)| r).collect();
         assert_eq!(stored, spends());
+        stored.iter().for_each(assert_redrivable);
+        // A real pass (offline here: it stops at the anchors' fetch,
+        // coordinator.rs:1369, before the re-send at :1417) leaves them
+        // as they were.
+        assert!(pool::guarded_pass(&s, &m, true).await, "the pass ran");
     });
     assert_eq!(kept(&engine, &session, wallet), expected());
 }
