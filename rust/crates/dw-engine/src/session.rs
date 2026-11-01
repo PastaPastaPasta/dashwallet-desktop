@@ -925,7 +925,7 @@ impl NetworkSession {
         // (`Engine::shutdown`); an in-app close is refused beforehand
         // (`Engine::close_network`), and from that check to this close no
         // signing shielded call starts and no wallet loads
-        // (`PlatformRuntime::close_preflight`, E1 r2 R2-3), so an in-app
+        // (`PlatformRuntime::close_preflight`, `wallet_loads`, E1 r2 R2-3), so an in-app
         // close keeps no wallet.
         let mut kept = Vec::new();
         for id in manager.list_wallet_ids_blocking() {

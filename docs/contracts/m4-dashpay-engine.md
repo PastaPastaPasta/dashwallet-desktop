@@ -653,7 +653,9 @@ Close Wallet (`unload_wallet`) and an in-app network close or switch (`close_net
 nothing (dw-app keeps the network active and its drafts); a restore's rollback keeps the wallet. The close's check and
 its commit are one step: a signing shielded call (`shielded_send`, `unshield_to_core`, `shield_from_core`,
 `resume_shield`) or a wallet load that arrives meanwhile waits for it, then fails with the session closed if the close
-went ahead, and one already running refuses the close; so a close or switch that succeeds leaves no spend unresolved. App quit (`shutdown`)
+went ahead; a signing call already running refuses the close, while a wallet load already running is waited for (up to
+30 s, then the close is refused with `wallet`, "a wallet is still opening; close the network once it is open"). So a
+close or switch that succeeds leaves no spend unresolved. App quit (`shutdown`)
 is never refused: it seals and drains as any close, then leaves that wallet loaded in the sealed manager, which runs
 nothing more, with its stores committed (wallet.sqlite writes commit inline, the shielded store committed the spend
 before it returned), and the next launch rehydrates the spend as pending, reservations and all. Removing the wallet (the

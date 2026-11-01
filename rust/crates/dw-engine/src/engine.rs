@@ -37,6 +37,13 @@ fn install_poison_hook() {
     });
 }
 
+/// How long an in-app close waits for a wallet load in flight
+/// (`Engine::close_network`): a load reads local storage only.
+#[cfg(not(test))]
+const CLOSE_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(test)]
+pub(crate) const CLOSE_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Root data directory; each network lives in `<data_root>/<network>/`.
@@ -146,6 +153,8 @@ impl Engine {
     }
 
     /// Closes the session for `network`. Returns `false` when none was open.
+    /// It waits up to [`CLOSE_LOAD_WAIT`] for a wallet load in flight, then
+    /// is refused with `wallet` ("a wallet is still opening").
     /// `ShieldedSpendUnresolved`, the session left open, while one of its
     /// wallets holds a shielded spend whose result is not known (DEC-1046):
     /// the close would have to keep that wallet loaded, and the network
@@ -159,9 +168,16 @@ impl Engine {
                 let Some(session) = sessions.get(&network).cloned() else {
                     return Ok(false);
                 };
-                // From the check to the commit no signing shielded call
-                // starts and no wallet loads (E1 r2 R2-3); one running now
-                // refuses the close.
+                // From the check to the commit no wallet loads and no
+                // signing shielded call starts (E1 r2 R2-3). A load in
+                // flight is waited for, briefly; a call running refuses the
+                // close.
+                let loads = session.platform.wallet_loads.write();
+                let Ok(_loads) = tokio::time::timeout(CLOSE_LOAD_WAIT, loads).await else {
+                    return Err(EngineError::Wallet(
+                        "a wallet is still opening; close the network once it is open".into(),
+                    ));
+                };
                 let Ok(_preflight) = session.platform.close_preflight.try_write() else {
                     return Err(EngineError::ShieldedSpendUnresolved);
                 };

@@ -134,11 +134,17 @@ pub(crate) struct PlatformRuntime {
     pub(crate) shielded_spends: tokio::sync::RwLock<()>,
     /// Held to read by each shielded call that signs (a send, an unshield,
     /// a shield, its "Check again") from before it enters the session to
-    /// its end, and by a wallet's load; to write by an in-app close from
-    /// its check of the wallets to its commit (`Engine::close_network`,
-    /// E1 r2 R2-3). So no spend starts, and no wallet holding one loads,
-    /// between that check and the close.
+    /// its end; to write by an in-app close from its check of the wallets
+    /// to its commit (`Engine::close_network`, E1 r2 R2-3), which a call
+    /// running refuses. So no spend starts between that check and the
+    /// close.
     pub(crate) close_preflight: tokio::sync::RwLock<()>,
+    /// Held to read by a wallet's load from before it enters the session
+    /// to its end; to write by an in-app close, which waits (bounded) for
+    /// the loads in flight rather than refusing, then holds it to its
+    /// commit. So no wallet holding a stored spend loads between the
+    /// close's check and the close.
+    pub(crate) wallet_loads: tokio::sync::RwLock<()>,
     /// A test's pause of the close's check after its first wallet, with
     /// that wallet (`NetworkSession::holds_shielded_spends`).
     #[cfg(test)]
@@ -418,6 +424,7 @@ impl PlatformRuntime {
             pass_pause: Mutex::new(None),
             shielded_spends: tokio::sync::RwLock::new(()),
             close_preflight: tokio::sync::RwLock::new(()),
+            wallet_loads: tokio::sync::RwLock::new(()),
             #[cfg(test)]
             close_check_pause: Mutex::new(None),
             shielded_calls: std::sync::Mutex::default(),

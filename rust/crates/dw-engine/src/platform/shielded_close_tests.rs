@@ -393,6 +393,43 @@ fn a_spend_started_during_the_close_check_waits_and_finds_the_session_closed() {
     assert!(stored.is_empty(), "{stored:?}");
 }
 
+/// E1 r2, the owner on checkpoint 2: a wallet load in flight is no
+/// shielded payment. An in-app close waits for it (here its admission,
+/// held as a load holds it) up to `CLOSE_LOAD_WAIT`, then goes ahead once
+/// it ends; past the bound it is refused as `wallet`, "a wallet is still
+/// opening", the session left open, never `shielded_spend_unresolved`.
+#[test]
+fn a_close_waits_for_a_wallet_load_and_never_calls_it_a_payment() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, _) = first_launch(&engine);
+    let close = || engine.block_on(engine.close_network(DashNetwork::Regtest));
+
+    // A load longer than the bound.
+    let loading = engine.block_on(session.platform.wallet_loads.read());
+    let closed = close();
+    drop(loading);
+    match &closed {
+        Err(e @ EngineError::Wallet(_)) => {
+            assert_eq!(e.code(), "wallet");
+            assert!(e.to_string().contains("a wallet is still opening"), "{e}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(session.live().is_ok(), "the session stays open");
+
+    // A load that ends within it: the close waits, then goes ahead.
+    let loading = engine.block_on(session.platform.wallet_loads.read());
+    let closed = std::thread::scope(|scope| {
+        let closing = scope.spawn(close);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!closing.is_finished(), "the close waits for the load");
+        drop(loading);
+        closing.join().unwrap()
+    });
+    assert!(matches!(closed, Ok(true)), "{closed:?}");
+}
+
 /// The quitting half of the next test, run in a child process: the first
 /// launch stores the spends and issues a receive address, then quits
 /// (`Engine::shutdown`, the app's quit) and exits at once, so nothing is
