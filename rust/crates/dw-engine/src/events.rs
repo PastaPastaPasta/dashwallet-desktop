@@ -203,6 +203,10 @@ pub enum PlatformChange {
     /// The wallet's Platform-address balances or their activity (a sync
     /// pass changed them, or a move to Core was recorded or settled).
     PlatformAddresses,
+    /// The wallet's shielded account: a sync pass, its balance or its
+    /// activity (m4 §2.13); hosts re-query `shielded_status` and
+    /// `shielded_history`.
+    Shielded,
 }
 
 /// Non-fatal conditions the UI may surface.

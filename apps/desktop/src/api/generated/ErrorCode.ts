@@ -19,6 +19,7 @@ import type { ProfileCode } from "./ProfileCode";
 import type { PsbtCode } from "./PsbtCode";
 import type { RegistrationCode } from "./RegistrationCode";
 import type { SendCode } from "./SendCode";
+import type { ShieldedCode } from "./ShieldedCode";
 import type { SignerCode } from "./SignerCode";
 import type { UriCode } from "./UriCode";
 import type { VaultCode } from "./VaultCode";
@@ -27,4 +28,4 @@ import type { VaultCode } from "./VaultCode";
  * Every code a command can reject with, by domain. Serialised as the bare
  * code string.
  */
-export type ErrorCode = AppCode | EngineCode | VaultCode | SignerCode | SendCode | LabelsCode | CompatCode | BackupCode | PsbtCode | CoinJoinCode | MasternodeCode | UriCode | ConsoleCode | PlatformCode | IdentityCode | ProfileCode | RegistrationCode | NameCode | ContactCode | InvitationCode | AvatarCode | CreditsCode | GovernanceCode;
+export type ErrorCode = AppCode | EngineCode | VaultCode | SignerCode | SendCode | LabelsCode | CompatCode | BackupCode | PsbtCode | CoinJoinCode | MasternodeCode | UriCode | ConsoleCode | PlatformCode | IdentityCode | ProfileCode | RegistrationCode | NameCode | ContactCode | InvitationCode | AvatarCode | CreditsCode | ShieldedCode | GovernanceCode;

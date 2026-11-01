@@ -79,6 +79,7 @@ mod reverify;
 pub(crate) mod runtime;
 #[cfg(test)]
 mod runtime_tests;
+mod shielded;
 pub mod signers;
 mod startup;
 mod startup_status;
@@ -107,7 +108,7 @@ pub use credits::{
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{
     AvatarError, ContactError, CreditsError, IdentityError, InvitationError, NameError,
-    PlatformError, ProfileError, RegistrationError,
+    PlatformError, ProfileError, RegistrationError, ShieldedError,
 };
 pub use flows::{
     BudgetPurpose, BudgetView, DispatchResolution, DispatchResolved, DispatchState, FlowKind,
@@ -142,6 +143,11 @@ pub use registration::{
     FaucetLockKey, FinishReport, InitialProfile, RegistrationFailure, RegistrationFunding,
     RegistrationInvitation, RegistrationPhase, RegistrationQuote, RegistrationRequest,
     RegistrationStatus, RegistrationWait,
+};
+pub use shielded::{
+    PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote, ShieldState,
+    ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus, ShieldedAddress,
+    ShieldedDirection, ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedStatus,
 };
 pub use signers::{
     CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultPlatformAddressSigner,

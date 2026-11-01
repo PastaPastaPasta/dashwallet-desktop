@@ -36,7 +36,7 @@ pub use nested::{
 };
 pub use platform::{
     AvatarCode, ContactCode, CreditsCode, IdentityCode, InvitationCode, NameCode, PlatformCode,
-    ProfileCode, RegistrationCode,
+    ProfileCode, RegistrationCode, ShieldedCode,
 };
 
 /// Error returned by every command.
@@ -77,6 +77,7 @@ pub enum ErrorCode {
     Invitation(InvitationCode),
     Avatar(AvatarCode),
     Credits(CreditsCode),
+    Shielded(ShieldedCode),
     Governance(GovernanceCode),
 }
 
@@ -308,6 +309,15 @@ pub enum ErrorData {
     KeysNetwork { mainnet: bool },
     /// `psbt.fee_rate_too_high`: the offending fee rate in duffs per kB.
     FeeRate { duffs_per_kb: u64 },
+    /// `shielded.not_active`: the network's protocol version and the one
+    /// the shielded pool needs.
+    Protocol {
+        protocol_version: u32,
+        activation_version: u32,
+    },
+    /// `shielded.pool_too_small`: the notes the network's shielded pool
+    /// holds and the number withdrawals need.
+    PoolNotes { notes: u64, required: u64 },
     /// `stuck_funding`: why Repair refused (E0-04 §6.5), and whether the
     /// same Repair may succeed later with nothing done by the user.
     StuckFunding {
@@ -473,6 +483,7 @@ into_code!(
     Invitation(InvitationCode),
     Avatar(AvatarCode),
     Credits(CreditsCode),
+    Shielded(ShieldedCode),
     Governance(GovernanceCode),
 );
 

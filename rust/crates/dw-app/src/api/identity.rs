@@ -14,6 +14,7 @@ mod keys;
 mod names;
 mod platform_addresses;
 mod registration;
+mod shielded;
 mod startup;
 
 use dw_engine::platform::{BearerSecret, FlowKind};
@@ -31,6 +32,10 @@ use self::platform_addresses::{
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
 use self::registration::{
     FaucetLockKey, FinishReport, RegistrationQuote, RegistrationRequest, RegistrationStatus,
+};
+use self::shielded::{
+    ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome,
+    ShieldedSpendQuote, ShieldedStatus,
 };
 use self::startup::{DashPayStatus, DashPaySyncStatus, QuorumSource, SyncPassReport};
 use crate::api::send::BroadcastOutcome;
@@ -601,5 +606,119 @@ commands! {
     fn set_trusted_quorums_only(state, on: bool) -> () {
         state.developer_build()?;
         Ok(state.session().await?.set_trusted_quorums_only(on).await?)
+    }
+
+    // Shielded funds (m4 §2.13).
+
+    /// The wallet's shielded account: whether the network takes shielded
+    /// transitions, the balance, pending moves and sync.
+    #[facade("DashPay::shielded_status")]
+    fn shielded_status(state, wallet_id: String) -> ShieldedStatus {
+        Ok(state.dashpay(&wallet_id).await?.shielded_status().await?.into())
+    }
+
+    /// Runs a shielded sync pass now; returns the status after.
+    #[facade("DashPay::shielded_sync")]
+    fn shielded_sync(state, wallet_id: String) -> ShieldedStatus {
+        Ok(state.dashpay(&wallet_id).await?.shielded_sync().await?.into())
+    }
+
+    /// The wallet's shielded receive address, for Receive and its QR.
+    #[facade("DashPay::shielded_receive_address")]
+    fn shielded_receive_address(state, wallet_id: String) -> ShieldedAddress {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.shielded_receive_address().await?.into())
+    }
+
+    /// What moving `duffs` of the Core balance into the pool costs and buys.
+    #[facade("DashPay::shield_quote")]
+    fn shield_quote(state, wallet_id: String, duffs: u64) -> ShieldQuote {
+        Ok(state.dashpay(&wallet_id).await?.shield_quote(duffs).await?.into())
+    }
+
+    /// Core → Shielded: moves `duffs` of the Core balance into the pool
+    /// under `grant`.
+    #[facade("DashPay::shield_from_core")]
+    fn shield_from_core(state, wallet_id: String, duffs: u64, grant: String) -> ShieldOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.shield_from_core(duffs, grant).await?.into())
+    }
+
+    /// Applies the pending Core → Shielded lock `txid` under `grant`.
+    #[facade("DashPay::resume_shield")]
+    fn resume_shield(state, wallet_id: String, txid: String, grant: String) -> ShieldOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.resume_shield(txid, grant).await?.into())
+    }
+
+    /// What sending `credits` (a decimal string) to the shielded address
+    /// `to` costs.
+    #[facade("DashPay::shielded_send_quote")]
+    fn shielded_send_quote(
+        state,
+        wallet_id: String,
+        to: String,
+        credits: String,
+    ) -> ShieldedSpendQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let credits = shielded::parse_credits(&credits)?;
+        Ok(dashpay.shielded_send_quote(to, credits).await?.into())
+    }
+
+    /// Shielded → Shielded: sends `credits` to `to` under `grant`.
+    #[facade("DashPay::shielded_send")]
+    fn shielded_send(
+        state,
+        wallet_id: String,
+        to: String,
+        credits: String,
+        memo: Option<String>,
+        grant: String,
+    ) -> ShieldedSpendOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let credits = shielded::parse_credits(&credits)?;
+        Ok(dashpay.shielded_send(to, credits, memo, grant).await?.into())
+    }
+
+    /// What moving `credits` back to Core costs (`to`: a Core address of the
+    /// network, `null` for the wallet's next receive address).
+    #[facade("DashPay::unshield_quote")]
+    fn unshield_quote(
+        state,
+        wallet_id: String,
+        credits: String,
+        to: Option<String>,
+    ) -> ShieldedSpendQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let credits = shielded::parse_credits(&credits)?;
+        Ok(dashpay.unshield_quote(credits, to).await?.into())
+    }
+
+    /// Shielded → Core: withdraws `credits` to `to` under `grant`.
+    #[facade("DashPay::unshield_to_core")]
+    fn unshield_to_core(
+        state,
+        wallet_id: String,
+        credits: String,
+        to: Option<String>,
+        grant: String,
+    ) -> ShieldedSpendOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let credits = shielded::parse_credits(&credits)?;
+        Ok(dashpay.unshield_to_core(credits, to, grant).await?.into())
+    }
+
+    /// The wallet's shielded history for Activity, pending first, then
+    /// newest first (`limit` at most 500).
+    #[facade("DashPay::shielded_history")]
+    fn shielded_history(
+        state,
+        wallet_id: String,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<ShieldedActivity> {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let rows = dashpay.shielded_history(offset, limit).await?;
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 }

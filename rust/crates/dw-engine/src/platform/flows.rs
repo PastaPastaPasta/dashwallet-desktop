@@ -57,6 +57,13 @@ pub enum FlowKind {
     /// addresses to its Core receive address under a `PlatformOp` grant
     /// (m4 §7 item 67), signed with the payment-address keys alone.
     PlatformAddressMove,
+    /// Core → Shielded (m4 §2.13): the asset lock under a `PlatformOp`
+    /// grant's `max_duffs`, then its ShieldFromAssetLock.
+    Shield,
+    /// A shielded send or an unshield to Core (m4 §2.13) under a
+    /// `PlatformOp` grant's `max_credits`: the vault's Orchard spend key
+    /// for the wallet's shielded account, and nothing else.
+    ShieldedSpend,
 }
 
 /// A lease's budgets (E0-04 §4.2).

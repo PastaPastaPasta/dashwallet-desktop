@@ -157,6 +157,7 @@ const FACADE: &[&str] = &[
     "platform_addresses.rs",
     "profile.rs",
     "registration.rs",
+    "shielded.rs",
     "startup.rs",
 ];
 
@@ -1050,6 +1051,34 @@ fn error_codes_match_the_contract() {
         ],
         CreditsError::code,
     );
+    check_domain(
+        &enums,
+        "ShieldedError",
+        &[
+            ShieldedError::NotActive {
+                protocol_version: 0,
+                activation_version: 0,
+            },
+            ShieldedError::NotSynced,
+            ShieldedError::InvalidAddress { detail: s() },
+            ShieldedError::InsufficientFunds {
+                needed: 0,
+                available: 0,
+            },
+            ShieldedError::FundingInsufficient {
+                needed: 0,
+                available: 0,
+            },
+            ShieldedError::BelowMinimum { min: 0 },
+            ShieldedError::CoinsLocked,
+            ShieldedError::ShieldPending { txid: s() },
+            ShieldedError::PoolTooSmall {
+                notes: 0,
+                required: 0,
+            },
+        ],
+        ShieldedError::code,
+    );
 
     let mut checked = [
         "AvatarError",
@@ -1061,6 +1090,7 @@ fn error_codes_match_the_contract() {
         "PlatformError",
         "ProfileError",
         "RegistrationError",
+        "ShieldedError",
     ]
     .to_vec();
     checked.sort_unstable();
@@ -1188,7 +1218,8 @@ as_platform_via_accessor!(
     ContactError,
     InvitationError,
     AvatarError,
-    CreditsError
+    CreditsError,
+    ShieldedError
 );
 
 #[derive(Default)]
@@ -1480,6 +1511,18 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }
+        // 0.1 E1: shielded funds, stubs until S2.
+        c.stub(dp.shielded_status().await);
+        c.stub(dp.shielded_sync().await);
+        c.stub(dp.shielded_receive_address().await);
+        c.stub(dp.shield_quote(1).await);
+        c.stub(dp.shield_from_core(1, s()).await);
+        c.stub(dp.resume_shield(s(), s()).await);
+        c.stub(dp.shielded_send_quote(s(), 1).await);
+        c.stub(dp.shielded_send(s(), 1, None, s()).await);
+        c.stub(dp.unshield_quote(1, None).await);
+        c.stub(dp.unshield_to_core(1, None, s()).await);
+        c.stub(dp.shielded_history(0, 10).await);
     });
 
     let mut want: BTreeSet<String> = facade_calls().into_keys().collect();
