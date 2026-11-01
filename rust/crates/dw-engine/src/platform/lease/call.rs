@@ -62,7 +62,9 @@ use super::table::{Effects, Inner, Lease, LeaseTable};
 use super::{FlowOutcome, LeaseError, LeaseId};
 use crate::WalletId;
 use crate::platform::flows::BudgetPurpose;
-use crate::platform::signers::{CountingFundingSigner, VaultIdentitySigner};
+use crate::platform::signers::{
+    CountingFundingSigner, VaultIdentitySigner, VaultPlatformAddressSigner,
+};
 
 /// A funding step's key (§2a.3, §2a.5): what platform-wallet's tracked
 /// asset-lock rows carry (`TrackedAssetLock`'s `funding_type`,
@@ -473,6 +475,9 @@ pub struct CallPermit {
     step: Option<CallStep>,
     /// Handed back to the caller: the library call may have started.
     started: bool,
+    /// Positive evidence that nothing the call signed can reach the wire
+    /// ([`Self::abort_unsent`]).
+    unsent: AtomicBool,
     deadline: Instant,
     done: bool,
 }
@@ -752,6 +757,7 @@ impl Lease {
             signatures: Arc::default(),
             prior_marker,
             started: step.is_none(),
+            unsent: AtomicBool::new(false),
             step,
             deadline: took.deadline,
             done: false,
@@ -760,6 +766,17 @@ impl Lease {
 }
 
 impl CallPermit {
+    /// Positive evidence that nothing this call signed can reach the wire:
+    /// its signer refused a signature before the transaction was complete
+    /// (the asset-lock input bound, `lock_inputs`: the builder returns the
+    /// signer's error before a complete transaction exists, key-wallet
+    /// `transaction_builder.rs:939-940`). Its end then reads `Cancelled`, the
+    /// step resolved `NotSent`, though signatures were released; unless an
+    /// earlier call of the step may be out (`prior_marker`).
+    pub(crate) fn abort_unsent(&self) {
+        self.unsent.store(true, Ordering::SeqCst);
+    }
+
     /// The count the call's signers report to.
     pub fn signatures(&self) -> Arc<SignatureCount> {
         Arc::clone(&self.signatures)
@@ -786,6 +803,18 @@ impl CallPermit {
             .lease
             .call_identity_signer(identity_indices)?
             .counting(self.signatures()))
+    }
+
+    /// The lease's Platform-address signer for the addresses of `paths`
+    /// (HASH160 → DIP-17 path), counting into this permit as
+    /// [`Self::identity_signer`]'s does: a `PlatformAddressMove` lease's.
+    pub(crate) fn platform_address_signer(
+        &self,
+        paths: std::collections::BTreeMap<[u8; 20], key_wallet::bip32::DerivationPath>,
+    ) -> Result<VaultPlatformAddressSigner, LeaseError> {
+        let signer = self.lease.call_platform_address_signer()?;
+        VaultPlatformAddressSigner::new(signer, paths, self.signatures())
+            .map_err(|_| LeaseError::Vault("platform address signer scope"))
     }
 
     /// The lease's funding signer for `create_funded_asset_lock_proof`,
@@ -871,7 +900,9 @@ impl CallPermit {
         // A call never handed out never started: nothing of it was sent.
         let outcome = if ok {
             FlowOutcome::Sent
-        } else if !self.started || (released == 0 && !self.prior_marker) {
+        } else if !self.started
+            || ((released == 0 || self.unsent.load(Ordering::SeqCst)) && !self.prior_marker)
+        {
             FlowOutcome::Cancelled
         } else {
             FlowOutcome::MaybeSent

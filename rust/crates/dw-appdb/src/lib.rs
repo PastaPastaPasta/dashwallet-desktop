@@ -1124,6 +1124,20 @@ impl AppDb {
         self.durably(|conn| Self::put_setting(conn, scope, key, value))
     }
 
+    /// Several settings of `scope` (a `None` value deletes its key) in one
+    /// transaction, durable as [`Self::set_setting_durable`] when it returns
+    /// `Ok`: all of them or none.
+    pub fn set_settings_durable(&self, scope: &str, writes: &[(&str, Option<&str>)]) -> Result<()> {
+        self.durably(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            for (key, value) in writes {
+                Self::put_setting(&tx, scope, key, *value)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
     fn put_setting(conn: &Connection, scope: &str, key: &str, value: Option<&str>) -> Result<()> {
         match value {
             Some(v) => conn.execute(
@@ -1646,6 +1660,39 @@ mod tests {
         drop(db);
         durability_sim::power_loss(&path);
         assert_eq!(value("durable").as_deref(), Some("2"), "the delete is lost");
+    }
+
+    /// Several settings commit together or not at all, durably.
+    #[test]
+    fn settings_in_one_batch_commit_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(APP_DB_FILE);
+        drop(AppDb::open(&path).unwrap());
+        let value = |key: &str| AppDb::open(&path).unwrap().setting("g", key).unwrap();
+
+        durability_sim::arm(&path, false);
+        let db = AppDb::open(&path).unwrap();
+        db.set_setting("g", "gone", Some("0")).unwrap();
+        db.set_settings_durable("g", &[("a", Some("1")), ("b", Some("2")), ("gone", None)])
+            .unwrap();
+        drop(db);
+        durability_sim::power_loss(&path);
+        assert_eq!(value("a").as_deref(), Some("1"));
+        assert_eq!(value("b").as_deref(), Some("2"));
+        assert_eq!(value("gone"), None);
+
+        // A refused write in the batch leaves every one of them unwritten.
+        let db = AppDb::open(&path).unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER no_bad BEFORE INSERT ON settings_kv WHEN NEW.key = 'bad'
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )
+            .unwrap();
+        let refused = db.set_settings_durable("g", &[("a", Some("9")), ("bad", Some("x"))]);
+        assert!(refused.is_err());
+        assert_eq!(db.setting("g", "a").unwrap().as_deref(), Some("1"));
+        assert_eq!(db.setting("g", "bad").unwrap(), None);
     }
 
     /// D27: the durable write commits under `synchronous=FULL` (a trigger

@@ -437,7 +437,7 @@ async fn plan<L: RegistrationLib>(
         RegistrationFunding::CoreBalance => {
             let credits = credits.saturating_add(flow::IDENTITY_CREATE_CREDITS);
             let floor = if check.contested {
-                flow::CONTESTED_LOCK_DUFFS
+                flow::contested_lock_duffs(lib.platform_version().await)
             } else {
                 flow::LOCK_DUFFS
             };

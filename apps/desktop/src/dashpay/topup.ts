@@ -127,6 +127,13 @@ export function topUpErrorText(e: unknown, amount: (duffs: number) => string, di
       return "Unlock the wallet fully and try again.";
     case "platform.grant_exceeded":
       return "The cost went above what you approved.";
+    case "invalid_argument": {
+      // The engine's detail, when there is one, is the advice (the 50-coin bound of a payment).
+      const detail = e.message.replace(/^invalid argument:\s*/, "").trim();
+      if (detail === "" || detail === e.code) return `It stopped with ${e.code}.`;
+      const text = detail[0].toUpperCase() + detail.slice(1);
+      return /[.!?]$/.test(text) ? text : `${text}.`;
+    }
     default:
       return `It stopped with ${e.code}.`;
   }

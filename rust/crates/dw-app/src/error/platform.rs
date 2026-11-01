@@ -115,6 +115,7 @@ codes! {
         TopUpPending = "credits.top_up_pending",
         WithdrawalOutOfRange = "credits.withdrawal_out_of_range",
         WithdrawalLanded = "credits.withdrawal_landed",
+        MovePending = "credits.move_pending",
     }
 }
 
@@ -376,6 +377,10 @@ impl From<CreditsError> for AppError {
                 CreditsCode::WithdrawalLanded,
                 Some(ErrorData::Artifact { artifact }),
             ),
+            C::MovePending { id } => (
+                CreditsCode::MovePending,
+                Some(ErrorData::Artifact { artifact: id }),
+            ),
             C::Platform(e) => return e.into(),
         };
         AppError {
@@ -540,6 +545,7 @@ mod tests {
             CreditsError::TopUpPending { txid: s() },
             CreditsError::WithdrawalOutOfRange { min: 1, max: 2 },
             CreditsError::WithdrawalLanded { artifact: s() },
+            CreditsError::MovePending { id: s() },
             CreditsError::Platform(PlatformError::Unavailable),
         ];
         for e in credits {

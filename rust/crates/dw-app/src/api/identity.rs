@@ -12,6 +12,7 @@ mod flows;
 mod invitations;
 mod keys;
 mod names;
+mod platform_addresses;
 mod registration;
 mod startup;
 
@@ -24,6 +25,9 @@ use self::credits::{
 use self::flows::{GrantAction, GrantRequest};
 use self::invitations::InvitationStatus;
 use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary};
+use self::platform_addresses::{
+    MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformAddressBalance,
+};
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
 use self::registration::{
     FaucetLockKey, FinishReport, RegistrationQuote, RegistrationRequest, RegistrationStatus,
@@ -35,6 +39,10 @@ use crate::ipc::commands;
 use crate::state::parse_wallet_id;
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[
+    (
+        "NetworkSession::fund_platform_addresses_for_test",
+        "test only: dwcli's testnet smoke funds a Platform address; the 0.1 app has no receive or fund path",
+    ),
     (
         "NetworkSession::dashpay",
         "internal: every DashPay command obtains it via state.dashpay",
@@ -399,6 +407,54 @@ commands! {
         let dashpay = state.dashpay(&wallet_id).await?;
         let list = dashpay.withdrawals(identity).await?;
         Ok(list.into_iter().map(Into::into).collect())
+    }
+
+    // Platform addresses (m4 §2.12).
+
+    /// The Platform addresses' balance as the last sync pass left them.
+    #[facade("DashPay::platform_addresses")]
+    fn platform_addresses(state, wallet_id: String) -> PlatformAddressBalance {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_addresses().await?.into())
+    }
+
+    /// The Platform addresses' activity, the newest first.
+    #[facade("DashPay::platform_activity")]
+    fn platform_activity(state, wallet_id: String) -> Vec<PlatformActivity> {
+        let rows = state.dashpay(&wallet_id).await?.platform_activity().await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Runs a Platform-address sync pass now and returns the balance after.
+    #[facade("DashPay::sync_platform_addresses")]
+    fn platform_addresses_sync(state, wallet_id: String) -> PlatformAddressBalance {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.sync_platform_addresses().await?.into())
+    }
+
+    /// What "Move to Dash wallet" of `amount` takes and pays out.
+    #[facade("DashPay::move_to_core_quote")]
+    fn platform_move_to_core_quote(
+        state,
+        wallet_id: String,
+        amount: WithdrawAmount,
+    ) -> MoveToCoreQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.move_to_core_quote(amount.into()).await?.into())
+    }
+
+    /// Moves `amount` of the Platform addresses' credits to `to` (the
+    /// quote's: one of the wallet's Core receiving addresses) under `grant`.
+    #[facade("DashPay::move_to_core")]
+    fn platform_move_to_core(
+        state,
+        wallet_id: String,
+        amount: WithdrawAmount,
+        to: String,
+        grant: String,
+    ) -> MoveToCoreOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.move_to_core(amount.into(), to, grant).await?.into())
     }
 
     // Grants, flows and leases.

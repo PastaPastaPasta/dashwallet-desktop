@@ -87,6 +87,11 @@ pub(crate) enum Point {
 }
 
 impl MoneyGate {
+    /// The gate's waits (the defaults, or a test's).
+    pub(crate) fn waits(&self) -> Waits {
+        *guard(&self.waits)
+    }
+
     #[cfg(test)]
     pub(crate) fn set_waits(&self, waits: Waits) {
         *guard(&self.waits) = waits;
