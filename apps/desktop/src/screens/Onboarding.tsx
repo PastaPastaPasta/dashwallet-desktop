@@ -204,9 +204,10 @@ function Step({
 
 function Welcome({ model, onCancel }: { model: OnboardingModel; onCancel: (() => void) | null }) {
   // A wallet is made on the network this window runs on: with another one chosen, it waits for
-  // the restart that opens it.
+  // the restart that opens it. While a choice is being saved the view still shows the previous
+  // one, so it waits for the saved view too.
   const picker = useNetworkPicker();
-  const wait = picker.restart || picker.loading;
+  const wait = picker.restart || picker.loading || picker.saving;
   return (
     <>
       <Title>{onCancel ? "Add a wallet" : "Welcome to Dash Wallet"}</Title>

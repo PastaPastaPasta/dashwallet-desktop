@@ -132,8 +132,9 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
           {q.kind === "add" ? (
             <>
               <Row label={C.confirm.lock} value={duffs(q.quote.duffs)} testId="shielded-quote-amount" />
-              <Row label={C.confirm.fee} value={duffs(q.quote.feeDuffs)} testId="shielded-quote-fee" />
-              <Row label={C.confirm.total} value={duffs(q.quote.totalDuffs)} testId="shielded-quote-total" total />
+              <Row label={C.confirm.coreFee} value={duffs(q.quote.feeDuffs)} testId="shielded-quote-fee" />
+              <Row label={C.confirm.totalFromWallet} value={duffs(q.quote.totalDuffs)} testId="shielded-quote-total" total />
+              <Row label={C.confirm.poolFee} value={credits(q.quote.poolFeeCredits)} testId="shielded-quote-pool-fee" />
               <Row label={C.confirm.gain} value={credits(q.quote.credits)} testId="shielded-quote-gain" />
             </>
           ) : (

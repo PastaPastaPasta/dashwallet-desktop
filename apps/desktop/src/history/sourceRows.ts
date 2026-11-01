@@ -17,6 +17,8 @@ export const SourceRowText = {
   platformOutgoing: "Sent from Platform",
   moveToCore: "Moved to Dash wallet",
   shieldedAdd: "Added to Shielded",
+  shieldedToPlatform: "Moved to Platform",
+  shieldedSentToPlatform: "Sent to Platform",
   shieldedReceived: "Received in Shielded",
   shieldedSent: "Sent from Shielded",
   shieldedPaid: "Paid from Shielded",
@@ -58,10 +60,11 @@ export function platformRow(a: PlatformActivity): TxRow {
   };
 }
 
-/** A shielded activity row as a history row. Moving funds in or out of the pool is an internal
- * move (no sign); the rest are received or paid. */
+/** A shielded activity row as a history row. Adding to the pool and a withdrawal to the Dash wallet
+ * are internal moves (no sign); an `unshield` pays a Platform address (E1's contract), so it is
+ * a payment out unless the engine says it is a self-transfer; the rest are received or paid. */
 export function shieldedRow(a: ShieldedActivity): TxRow {
-  const internal = a.kind === "shield" || a.kind === "shieldFromCore" || a.kind === "unshield" || a.kind === "withdrawal" || a.direction === "selfTransfer";
+  const internal = a.kind === "shield" || a.kind === "shieldFromCore" || a.kind === "withdrawal" || a.direction === "selfTransfer";
   const amount = creditsToDuffs(a.credits);
   const received = a.direction === "in";
   return {
@@ -82,6 +85,7 @@ export function sourceRowTitle(row: TxRow): string {
     case "shieldFromCore":
       return SourceRowText.shieldedAdd;
     case "unshield":
+      return row.category === "platform" ? SourceRowText.shieldedToPlatform : SourceRowText.shieldedSentToPlatform;
     case "withdrawal":
       return SourceRowText.moveToCore;
     case "received":

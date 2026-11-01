@@ -2,10 +2,10 @@
 // can close while the call runs and reopens to its result; refusals say what to do.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MoveToCoreOutcome } from "../api/pending";
+import type { MoveToCoreOutcome, PlatformActivity } from "../api/pending";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { moveCanRetry, moveErrorText, moveFor, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
+import { hasPendingMove, moveCanRetry, moveErrorText, moveFor, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
 
 const TO = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
 const OUTCOME: MoveToCoreOutcome = { id: "pm-1", credits: "40000000000", expectedDuffs: 39_998_000, to: TO, state: "done" };
@@ -58,6 +58,35 @@ describe("Move to Dash wallet", () => {
     flow.begin();
     expect([flow.step, flow.outcome]).toEqual(["confirm", null]);
     stop();
+  });
+
+  it("keeps a pending result, and its warning, after the sheet is dismissed, until Activity shows the move settled", async () => {
+    const { flow, answer } = setup();
+    const row = (state: PlatformActivity["state"]): PlatformActivity => ({ id: OUTCOME.id, kind: "moveToCore", state, credits: OUTCOME.credits, address: null, to: TO, expectedDuffs: OUTCOME.expectedDuffs, at: 1 });
+    flow.begin();
+    const going = flow.move(GRANT);
+    await vi.waitFor(() => expect(flow.step).toBe("running"));
+    answer({ ...OUTCOME, state: "pending" });
+    await going;
+    flow.close();
+    flow.begin();
+    flow.close();
+    // Dismissed twice: it is still the pending result, not a fresh quote, and nothing to "show".
+    expect([flow.step, flow.outcome?.state, flow.pending, flow.unseen]).toEqual(["done", "pending", true, false]);
+    // Activity still has it pending, or does not list it yet: it stays.
+    flow.settle([row("pending")]);
+    flow.settle([]);
+    flow.settle(null);
+    expect(flow.pending).toBe(true);
+    flow.settle([row("done")]);
+    expect([flow.step, flow.outcome, flow.pending]).toEqual(["confirm", null, false]);
+  });
+
+  it("reads a pending move off Activity's rows", () => {
+    const base = { id: "pm-1", credits: "1", address: null, to: null, expectedDuffs: null, at: 1 } as const;
+    expect(hasPendingMove([{ ...base, kind: "moveToCore", state: "pending" }])).toBe(true);
+    expect(hasPendingMove([{ ...base, kind: "moveToCore", state: "done" }, { ...base, kind: "incoming", state: "pending" }])).toBe(false);
+    expect(hasPendingMove(null)).toBe(false);
   });
 
   it("a cancelled passphrase ran nothing: back at the quote, nothing read again", async () => {

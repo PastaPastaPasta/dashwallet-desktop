@@ -9,7 +9,7 @@ import type { Backend } from "../api/backend";
 import { hasCode, isAppError } from "../api/backend";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { GrantRequest } from "../api/generated/GrantRequest";
-import type { MoveToCoreOutcome } from "../api/pending";
+import type { MoveToCoreOutcome, PlatformActivity } from "../api/pending";
 import { platformOp } from "../dashpay/topup";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel } from "../tools/grant";
@@ -39,6 +39,10 @@ export const MOVE_COPY = {
     text: (amount: string) => `Dash Platform has not said whether the move of about ${amount} went through. Activity shows it when it does. Do not move again until it does.`,
   },
   unseen: "Your move has an update.",
+  waiting: {
+    text: "A move to your Dash wallet is not confirmed yet. Do not move again until Activity shows that it went through.",
+    action: "View in Activity",
+  },
   show: "Show",
   close: "Close",
 } as const;
@@ -76,6 +80,11 @@ export function moveErrorText(e: unknown, credits: (c: string) => string): strin
 /** Back is offered when a new quote may pass. */
 export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "platform.insufficient_credits");
 
+/** Whether a move of this wallet is recorded `pending` in the Platform activity (it settles to
+ * `done` or `failed` within minutes: the engine's `platform_activity` settles it). */
+export const hasPendingMove = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
+  !!activity?.some((a) => a.kind === "moveToCore" && a.state === "pending");
+
 const settledListeners = new Set<() => void>();
 
 /** Called whenever a move that ran has ended (events.ts re-reads `["dashpay"]` from it, so the
@@ -105,7 +114,25 @@ export class PlatformMoveFlow extends Model {
 
   /** A result that came while the sheet was hidden, not yet seen. */
   get unseen(): boolean {
-    return !this.open && !this.running && (this.step === "done" || this.step === "refused");
+    return !this.open && !this.running && !this.pending && (this.step === "done" || this.step === "refused");
+  }
+
+  /** The last move's result is `pending`: Platform has not said whether it went through. It stays
+   * (closing the sheet does not drop it) until Activity shows the move settled (`settle`). */
+  get pending(): boolean {
+    return this.step === "done" && this.outcome?.state === "pending";
+  }
+
+  /** Drops a retained `pending` result once `activity` has its move as `done` or `failed`. */
+  settle(activity: readonly PlatformActivity[] | null | undefined) {
+    const id = this.outcome?.id;
+    if (!this.pending || !activity || this.running) return;
+    const row = activity.find((a) => a.id === id);
+    if (row && row.state !== "pending") {
+      this.step = "confirm";
+      this.outcome = null;
+      this.changed();
+    }
   }
 
   /** Opens the sheet: at the quote, or where a running or unseen call is. */
@@ -128,11 +155,12 @@ export class PlatformMoveFlow extends Model {
     this.changed();
   }
 
-  /** Hides the sheet; a running call goes on and its result waits. A result seen is dropped. */
+  /** Hides the sheet; a running call goes on and its result waits. A result seen is dropped,
+   * except a `pending` one, which stays until Activity shows the move settled. */
   close() {
     this.open = false;
     if (!this.running) {
-      if (this.step === "done" || this.step === "refused") this.step = "confirm";
+      if ((this.step === "done" && !this.pending) || this.step === "refused") this.step = "confirm";
       this.grants.cancel();
     }
     this.changed();

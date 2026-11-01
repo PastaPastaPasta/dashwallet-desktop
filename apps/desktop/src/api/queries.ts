@@ -130,10 +130,18 @@ export function usePlatformAddresses(walletId: string) {
   return useQuery({ queryKey: keys.platformAddresses(walletId), queryFn: () => b.platformAddresses(walletId), retry: false });
 }
 
+const PENDING_MOVE_REFETCH_MS = 30_000;
+
 /** The Platform-address activity rows, newest first; `null` while dw-app has no such command. */
 export function usePlatformActivity(walletId: string) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.platformActivity(walletId), queryFn: () => b.platformActivity(walletId), retry: false });
+  return useQuery({
+    queryKey: keys.platformActivity(walletId),
+    queryFn: () => b.platformActivity(walletId),
+    retry: false,
+    // A move Platform has not confirmed settles in the engine within minutes: look again.
+    refetchInterval: (q) => (q.state.data?.some((a) => a.kind === "moveToCore" && a.state === "pending") ? PENDING_MOVE_REFETCH_MS : false),
+  });
 }
 
 /** What "Move to Dash wallet" would take and pay out, read while its sheet asks to confirm. */

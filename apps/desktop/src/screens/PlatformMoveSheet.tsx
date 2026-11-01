@@ -1,15 +1,16 @@
 // "Move to Dash wallet" (platform/move.ts): the Home card that offers it while the Platform
 // addresses hold something, and the sheet with the quote, Confirm & move, progress and outcome.
 
+import { useEffect } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { creditsToDuffs } from "../api/pending";
-import { useBackend, usePlatformMoveQuote } from "../api/queries";
-import { useUi } from "../app/ui";
+import { useBackend, usePlatformActivity, usePlatformMoveQuote } from "../api/queries";
+import { navigate, useUi } from "../app/ui";
 import { DashButton } from "../components/basics";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { useModel } from "../onboarding/model";
-import { moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type PlatformMoveFlow } from "../platform/move";
+import { hasPendingMove, moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type PlatformMoveFlow } from "../platform/move";
 import { GrantSheet } from "./tools/common";
 
 function ConfirmStep({ flow, walletId, credits, amount }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string }) {
@@ -135,9 +136,14 @@ export function PlatformMoveCard({ walletId, network, platform }: { walletId: st
   useModel(flow);
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
+  const activity = usePlatformActivity(walletId);
+  // Activity settles a retained `pending` result.
+  useEffect(() => flow.settle(activity.data), [flow, activity.data]);
   const sheet = <PlatformMoveSheet flow={flow} walletId={walletId} network={network} />;
   const funded = platform != null && platform > 0;
-  if (!flow.open && !flow.running && !flow.unseen && !funded) return sheet;
+  // A move Platform has not confirmed: this session's result, or (after a restart) Activity's record.
+  const waiting = flow.pending || hasPendingMove(activity.data);
+  if (!flow.open && !flow.running && !flow.unseen && !funded && !waiting) return sheet;
   return (
     <>
       <section className="platform-card card-l1" data-testid="platform-card" aria-label={C.card.title}>
@@ -145,12 +151,18 @@ export function PlatformMoveCard({ walletId, network, platform }: { walletId: st
           <h2 className="platform-card-title">{C.card.title}</h2>
           <p className="platform-card-text">
             {funded && <span data-testid="platform-card-amount">{discreet ? shown.masked() : shown.withUnit(platform)}. </span>}
-            {flow.unseen ? C.unseen : C.card.text}
+            {waiting ? C.waiting.text : flow.unseen ? C.unseen : C.card.text}
           </p>
         </div>
-        <DashButton variant="tintedBlue" data-testid="platform-move" disabled={flow.running} onClick={() => flow.begin()}>
-          {flow.running ? C.running.title : flow.unseen ? C.show : C.action}
-        </DashButton>
+        {waiting && !flow.running ? (
+          <DashButton variant="tintedBlue" data-testid="platform-move-view" onClick={() => navigate("activity")}>
+            {C.waiting.action}
+          </DashButton>
+        ) : (
+          <DashButton variant="tintedBlue" data-testid="platform-move" disabled={flow.running} onClick={() => flow.begin()}>
+            {flow.running ? C.running.title : flow.unseen ? C.show : C.action}
+          </DashButton>
+        )}
       </section>
       {sheet}
     </>

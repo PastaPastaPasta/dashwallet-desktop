@@ -78,7 +78,14 @@ describe("shielded activity rows", () => {
     const add = shieldedRow(shield("c", { kind: "shieldFromCore", direction: "selfTransfer" }));
     expect(add).toMatchObject({ txType: "platformTransfer", category: "platform" });
     expect(sourceRowTitle(add)).toBe("Added to Shielded");
-    expect(sourceRowTitle(shieldedRow(shield("d", { kind: "unshield", direction: "out" })))).toBe("Moved to Dash wallet");
+    // E1's contract: `unshield` pays a Platform address, `withdrawal` a Core address.
+    const unshield = shieldedRow(shield("d", { kind: "unshield", direction: "out", credits: "10000000000", counterparty: "tdash1platformaddress" }));
+    expect(unshield).toMatchObject({ txType: "sendToAddress", category: "sent", amount: -10_000_000, address: "tdash1platformaddress" });
+    expect(sourceRowTitle(unshield)).toBe("Sent to Platform");
+    const unshieldSelf = shieldedRow(shield("d2", { kind: "unshield", direction: "selfTransfer" }));
+    expect([unshieldSelf.category, sourceRowTitle(unshieldSelf)]).toEqual(["platform", "Moved to Platform"]);
+    const withdrawal = shieldedRow(shield("w", { kind: "withdrawal", direction: "out", counterparty: "yCoreAddress" }));
+    expect([withdrawal.category, sourceRowTitle(withdrawal)]).toEqual(["platform", "Moved to Dash wallet"]);
     // Whatever its kind, a move between the account's own notes is internal: no sign.
     expect(shieldedRow(shield("s", { kind: "spend", direction: "selfTransfer" })).txType).toBe("platformTransfer");
     expect(sourceRowTitle(shieldedRow(shield("e", { kind: "identityTopUp", direction: "out" })))).toBe("Paid from Shielded");

@@ -14,6 +14,7 @@ import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { ThemeName } from "../api/generated/ThemeName";
 import { isErrorClass, sampleError, type ErrorClass } from "./errors";
+import { PENDING_COMMANDS } from "../api/pending";
 import { PENDING_HANDLERS } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
 import { restarted } from "./registration";
@@ -48,7 +49,7 @@ export interface FixtureHandle {
   fail(command: CommandName, cls: ErrorClass | null): void;
   /** Holds the next call of `command`: it answers from the world as it is when called, but only
    * once the returned function is called (a reply that arrives late). */
-  hold(command: CommandName): () => void;
+  hold(command: CommandName | PendingCommand): () => void;
   /** Every command called so far, in order. */
   readonly calls: string[];
   /** One step of `draft`'s registration run, where the network would answer (DP1-09);
@@ -64,6 +65,9 @@ export interface FixtureHandle {
   now: Date;
   readonly locale: string;
 }
+
+/** The wire name of a command dw-app does not generate yet (api/pending.ts). */
+type PendingCommand = (typeof PENDING_COMMANDS)[keyof typeof PENDING_COMMANDS];
 
 const notImplemented = (call: string): AppError => ({
   code: "platform.not_implemented",
@@ -122,7 +126,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
     },
     shellCommand: (command) => void emit(SHELL_EVENT, { kind: "command", command } satisfies ShellEvent),
     fail: (command, cls) => (cls ? failures.set(command, cls) : failures.delete(command)),
-    hold: (command) => {
+    hold: (command: string) => {
       let release = () => {};
       held.set(command, new Promise<void>((r) => (release = r)));
       return () => release();

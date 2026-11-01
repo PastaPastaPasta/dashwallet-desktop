@@ -82,6 +82,30 @@ test.describe("network choice", () => {
     expect(await world(page, (w) => w.pending.networkChoice?.chosen)).toBe("testnet");
   });
 
+  test("Welcome waits while a choice is being saved, then for the saved view", async ({ page }) => {
+    await open(page, "no-wallet");
+    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
+    // The save's reply is late: the picker still shows the old choice, so neither action may go on.
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("set_network_choice"));
+    await page.getByTestId("onboarding-network-mainnet").click();
+    await expect(page.getByTestId("onboarding-create")).toBeDisabled();
+    await expect(page.getByTestId("onboarding-restore")).toBeDisabled();
+    await expect(page.getByTestId("onboarding-network-restart")).toHaveCount(0);
+    await release.evaluate((r) => (r as () => void)());
+    // The saved view says this window is on the wrong network: still not.
+    await expect(page.getByTestId("onboarding-network-restart")).toContainText("Restart Dash Wallet to use Mainnet.");
+    await expect(page.getByTestId("onboarding-create")).toBeDisabled();
+    await expect(page.getByTestId("onboarding-restore")).toBeDisabled();
+    // Back to this window's network (a held save again): it goes on once the saved view allows it.
+    const release2 = await page.evaluateHandle(() => window.__dwFixture!.hold("set_network_choice"));
+    await page.getByTestId("onboarding-network-testnet").click();
+    await expect(page.getByTestId("onboarding-create")).toBeDisabled();
+    await release2.evaluate((r) => (r as () => void)());
+    await expect(page.getByTestId("onboarding-network-restart")).toHaveCount(0);
+    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
+    await expect(page.getByTestId("onboarding-restore")).toBeEnabled();
+  });
+
   test("Welcome offers the choice, mainnet or testnet", async ({ page }) => {
     await open(page, "no-wallet");
     await expect(page.getByTestId("onboarding-network-testnet")).toHaveAttribute("aria-pressed", "true");
@@ -226,6 +250,31 @@ test.describe("Move to Dash wallet", () => {
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
     await expect(page.getByTestId("platform-move-outcome-text")).toContainText("Do not move again");
+    // Dismissed, it stays: the warning, and "View in Activity" in place of "Move".
+    await page.getByTestId("platform-move-done").click();
+    await expect(page.getByTestId("platform-move-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("platform-card")).toContainText("Do not move again");
+    await expect(page.getByTestId("platform-move")).toHaveCount(0);
+    await shot(page, "light-platform-move-pending-card");
+    // After a restart the card follows Activity's record.
+    await page.evaluate(() => window.__dwFixture!.relaunch());
+    await page.getByTestId("lock-field").fill("demo");
+    await page.keyboard.press("Enter");
+    await page.getByTestId("hero").waitFor();
+    await expect(page.getByTestId("platform-card")).toContainText("Do not move again");
+    await expect(page.getByTestId("platform-move")).toHaveCount(0);
+    await page.getByTestId("platform-move-view").click();
+    await page.getByTestId("tx-list").waitFor();
+    // The move settles; Home no longer holds anything back.
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      const p = f.world.pending.platform!;
+      p.activity = p.activity.map((a) => (a.kind === "moveToCore" ? { ...a, state: "done" as const } : a));
+      p.addresses = [];
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "identities" } });
+    });
+    await page.getByTestId("sidebar-home").click();
+    await expect(page.getByTestId("platform-card")).toHaveCount(0);
   });
 
   test("shows a refusal and can be closed", async ({ page }) => {
@@ -309,6 +358,13 @@ test.describe("Shielded", () => {
     await page.getByTestId("shielded-next").click();
     await expect(page.getByTestId("shielded-quote-total")).toContainText("0.00101");
     await expect(page.getByTestId("shielded-quote-gain")).toContainText("0.0009 ");
+    // Every fee the quote reports is shown, and the debit reconciles with the credit.
+    await expect(page.getByTestId("shielded-quote-fee")).toContainText("0.00001 ");
+    await expect(page.getByTestId("shielded-quote-pool-fee")).toContainText("0.0001 ");
+    const amountOf = async (id: string) => Math.round(parseFloat(((await page.getByTestId(id).textContent()) ?? "").replace(/[^0-9.]/g, "")) * 1e8);
+    expect(await amountOf("shielded-quote-total")).toBe(
+      (await amountOf("shielded-quote-fee")) + (await amountOf("shielded-quote-pool-fee")) + (await amountOf("shielded-quote-gain")),
+    );
     await shot(page, "light-shielded-add-quote");
     await page.getByTestId("shielded-go").click();
     await authorize(page);
@@ -376,8 +432,8 @@ test.describe("Shielded", () => {
     await page.getByTestId("shielded-done").click();
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
-    await expect(page.locator('[data-txid^="shielded:unshield:"]')).toContainText("Moved to Dash wallet");
-    await expect(page.locator('[data-txid^="shielded:unshield:"]')).toContainText("Shielded");
+    await expect(page.locator('[data-txid^="shielded:withdrawal:"]')).toContainText("Moved to Dash wallet");
+    await expect(page.locator('[data-txid^="shielded:withdrawal:"]')).toContainText("Shielded");
   });
 
   test("Move to Dash wallet says when the pool is too small", async ({ page }) => {

@@ -24,11 +24,12 @@ export function useNetworkPicker() {
     choice,
     available: view !== null,
     loading: query.isPending,
+    /** A choice is being saved: the view above is still the previous one. */
+    saving: save.isPending,
     /** The saved choice is not the network this window runs on. */
     restart: view?.restartNeeded ?? false,
     /** The network this window was started on by `--network` (it wins over the choice). */
     pinned: view?.forcedByFlag ? view.launched.kind : null,
-    saving: save.isPending,
     problem: save.isError ? `${NetworkText.notSaved} ${errorMessage(save.error)}` : null,
     choose: (c: NetworkChoice) => save.mutate(c),
   };

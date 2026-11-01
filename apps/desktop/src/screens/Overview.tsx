@@ -16,7 +16,7 @@ import { useContactsOwner } from "../contacts/queries";
 import { useStatusInputs } from "../dashpay/queries";
 import { homeCard, type CardActionKind } from "../dashpay/status";
 import { useDisplay } from "../format/display";
-import { homeBalance, POOL_ROWS } from "../format/homeBalance";
+import { coreSubtitle, homeBalance, POOL_ROWS } from "../format/homeBalance";
 import { isSyncing, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
@@ -87,7 +87,7 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
           {POOL_ROWS.map((row, i) => {
             const duffs = home.pools[row.pool];
             // Core: what is still arriving shows under it; the others say when they are not known.
-            const subtitle = row.pool === "core" && balances.unconfirmed > 0 ? `${fmt(balances.unconfirmed)} pending` : row.subtitle;
+            const subtitle = row.pool === "core" ? coreSubtitle(balances, fmt, row.subtitle) : row.subtitle;
             return (
               <Fragment key={row.pool}>
                 {i > 0 && <span className="breakdown-divider" aria-hidden="true" />}
