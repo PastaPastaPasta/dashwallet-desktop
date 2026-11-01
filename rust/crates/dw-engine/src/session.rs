@@ -3,7 +3,8 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::time::Duration;
 
 use dash_sdk::SdkBuilder;
 use dash_sdk::dapi_grpc::tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
@@ -153,6 +154,26 @@ impl std::fmt::Debug for SessionOptions {
             )
             .finish()
     }
+}
+
+/// How long a close waits for references to the wallet database that others
+/// still hold once it dropped its own (a drain, a wallet handle, an in-flight
+/// read: platform-wallet `manager/mod.rs:1077-1082` at the pin). The
+/// persister's in-process claim on its path goes with the last one, and a
+/// reopen in this process is refused until then.
+pub(crate) const PERSISTER_RELEASE: Duration = Duration::from_secs(3);
+
+/// Waits, within [`PERSISTER_RELEASE`], for the persister's last reference
+/// to go; `false` when one is still held.
+async fn persister_released(persister: &Weak<SqlitePersister>) -> bool {
+    let deadline = tokio::time::Instant::now() + PERSISTER_RELEASE;
+    while persister.strong_count() > 0 {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    true
 }
 
 /// What a session holds while it is open. Taken out on close so the
@@ -807,7 +828,8 @@ impl NetworkSession {
     /// Closes the session: cancels a running bring-up, waits for admitted
     /// operations (review M1), stops the event pump, shuts the manager down
     /// (SPV, coordinators, persistence adapter drain) and releases the
-    /// databases. Must run on the engine runtime.
+    /// databases: it returns once the last reference to the wallet database
+    /// is gone, within [`PERSISTER_RELEASE`]. Must run on the engine runtime.
     pub(crate) async fn close(&self) {
         // A running bring-up ends first (DASHPAY §3.2). It holds no
         // operation guard, so it is cancelled before waiting for the guards,
@@ -886,12 +908,23 @@ impl NetworkSession {
                 tracing::warn!(wallet_id = %hex::encode(id), error = %e, "unload on close failed");
             }
         }
+        let persister = Arc::downgrade(&live.persister);
         drop(manager);
         drop(live.store);
         drop(live.persister);
         drop(live.appdb);
         drop(live.tap);
         drop(live.provenance);
+        // The close returns once the database is released, so the network
+        // reopens in this process (CI 41289102488: `StorageInUse` on a
+        // reopen right after a close). Bounded: a holder that never lets go
+        // keeps the database, and its reopen is refused as before.
+        if !persister_released(&persister).await {
+            tracing::warn!(
+                network = %self.network,
+                "the wallet database is still held after the close; reopening it in this process is refused until it is released"
+            );
+        }
         // Per network, so the last to close (§8.5).
         self.leases.close_journal().await;
         self.sink.emit(EngineEvent::SessionClosed {
