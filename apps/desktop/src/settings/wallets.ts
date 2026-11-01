@@ -15,11 +15,11 @@ export const WalletsText = {
   openAnotherToCloseOrRemove: "Open another wallet first to close or remove this one.",
   noLoadStates: "Closed wallets are not shown: this engine does not list them yet.",
   nameRule: "A wallet name is 1 to 64 characters.",
-  /** IOS-110. */
+  /** IOS-110; the shielded line is E1 r2 R2-4 (removal purges unresolved shielded spends, m4 §2.13). */
   removeQuestion: (name: string, watchOnly: boolean) =>
     watchOnly
       ? `Remove the watch-only wallet ${name} from this computer? Its history and settings are deleted. Its extended public key adds it again.`
-      : `Remove the wallet ${name} from this computer? Its keys, history and settings are deleted. Its recovery phrase, or a backup or export you kept, brings it back.`,
+      : `Remove the wallet ${name} from this computer? Its keys, history and settings are deleted. Its recovery phrase, or a backup or export you kept, brings it back. A shielded payment it already sent may still go through, and its pending record is deleted with the wallet.`,
   removed: (name: string) => `${name} was removed.`,
   watchOnlyHint: "Paste the account's extended public key (tpub or xpub). The wallet shows its balance and history; it cannot spend.",
   watchOnlyAdded: (name: string) => `${name} was added as a watch-only wallet.`,

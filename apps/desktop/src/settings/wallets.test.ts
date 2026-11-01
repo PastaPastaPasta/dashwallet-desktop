@@ -142,6 +142,13 @@ describe("remove wallet", () => {
     expect(WalletsText.removeQuestion("Watcher", true)).not.toMatch(/recovery phrase/);
   });
 
+  it("E1_removalWarnsThatASentShieldedPaymentMayStillGoThroughAndItsRecordIsDeleted", () => {
+    const question = WalletsText.removeQuestion("Main", false);
+    expect(question).toMatch(/shielded payment it already sent may still go through/);
+    expect(question).toMatch(/its pending record is deleted with the wallet/);
+    expect(WalletsText.removeQuestion("Watcher", true)).not.toMatch(/shielded/);
+  });
+
   it("IOS110_anUnencryptedVaultRemovesWithoutAPassphrase", async () => {
     install("unencrypted");
     const model = new RemoveWalletModel(b, A);
