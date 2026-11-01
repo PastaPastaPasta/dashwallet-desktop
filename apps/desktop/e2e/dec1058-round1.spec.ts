@@ -138,6 +138,23 @@ test.describe("read marking", () => {
     await expect(page.getByTestId("bell-payment")).toHaveCount(1);
     await expect(page.getByTestId("toolbar-bell-badge")).toHaveCount(0);
   });
+
+  test("a payment that arrives behind a transaction's details stays unread until they close", async ({ page }) => {
+    await open(page);
+    await pay(page, 150_000_000);
+    await page.getByTestId("toolbar-bell").click();
+    await expect(page.getByTestId("bell-payment")).toHaveCount(1);
+    await expect(page.getByTestId("toolbar-bell-badge")).toHaveCount(0);
+    await page.getByTestId("bell-payment").locator(".bell-row-open").click();
+    await expect(page.locator(".sheet")).toBeVisible();
+    await pay(page, 250_000_000);
+    await page.waitForTimeout(500);
+    // The badge is in the inert toolbar: read now, not retried.
+    expect(await page.getByTestId("toolbar-bell-badge").evaluate((e) => e.textContent)).toBe("1");
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".sheet")).toHaveCount(0);
+    await expect(page.getByTestId("toolbar-bell-badge")).toHaveCount(0);
+  });
 });
 
 test.describe("Receive waits for the notice lookup", () => {

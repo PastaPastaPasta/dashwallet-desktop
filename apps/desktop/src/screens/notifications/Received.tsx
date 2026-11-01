@@ -33,6 +33,24 @@ export function ReceivedToaster({ network }: { network: NetworkInfo }) {
   return null;
 }
 
+/** Whether `el` is on screen for someone: connected, and with no `inert` ancestor (the shell is inert
+ * behind a sheet, a dialog, the lock screen, onboarding). It follows the attribute as it changes. */
+function useExposed(el: HTMLElement | null): boolean {
+  const [exposed, setExposed] = useState(false);
+  useEffect(() => {
+    if (!el) {
+      setExposed(false);
+      return;
+    }
+    const check = () => setExposed(el.isConnected && el.closest("[inert]") === null);
+    check();
+    const watch = new MutationObserver(check);
+    watch.observe(document.documentElement, { attributes: true, attributeFilter: ["inert"], subtree: true });
+    return () => watch.disconnect();
+  }, [el]);
+  return exposed;
+}
+
 /** The bell's "Payments": what arrived since the app opened, the ones not seen before marked new.
  * Opening it marks them seen. Nothing shows while none came. */
 export function ReceivedSection({ walletId, network, limit, onOpen }: { walletId: string; network: NetworkInfo; limit?: number; onOpen: (txid: string) => void }) {
@@ -44,16 +62,18 @@ export function ReceivedSection({ walletId, network, limit, onOpen }: { walletId
   // open, is marked new until the view closes.
   const [seen] = useState<ReadonlySet<string>>(() => new Set(payments.filter((p) => p.read).map((p) => p.id)));
   const rows: readonly ReceivedPayment[] = limit ? payments.slice(0, limit) : payments;
-  // Seen means shown, to someone: the rows on screen, with the wallet unlocked (a page can stay mounted
-  // behind the lock screen).
+  // Seen means shown, to someone: the rows on screen, with the wallet unlocked and nothing over the
+  // view (a page can stay mounted behind the lock screen or a transaction's sheet).
   const locked = useLockStatus().data?.state === "locked";
+  const [section, setSection] = useState<HTMLElement | null>(null);
+  const exposed = useExposed(section);
   const shownIds = rows.map((p) => p.id).join(",");
   useEffect(() => {
-    if (!locked && shownIds !== "") markReceivedRead(walletId, shownIds.split(","));
-  }, [walletId, locked, shownIds]);
+    if (!locked && exposed && shownIds !== "") markReceivedRead(walletId, shownIds.split(","));
+  }, [walletId, locked, exposed, shownIds]);
   if (payments.length === 0) return null;
   return (
-    <section className="bell-section" aria-labelledby={titleId} data-testid="bell-payments">
+    <section ref={setSection} className="bell-section" aria-labelledby={titleId} data-testid="bell-payments">
       <h3 className="bell-section-title" id={titleId}>
         Payments
       </h3>
