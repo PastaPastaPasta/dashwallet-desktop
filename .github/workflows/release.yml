@@ -332,9 +332,6 @@ jobs:
     concurrency:
       group: release-publish
       cancel-in-progress: false
-    env:
-      DIST: ${{ runner.temp }}/release
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -347,6 +344,8 @@ jobs:
           path: ${{ runner.temp }}/release
       # Exit 3: a tag that is not a release tag (a dry run); the rest of the job is skipped.
       - name: Decide and stage what is published
+        env:
+          DIST: ${{ runner.temp }}/release
         run: |
           rc=0
           ci/github/release-publish.sh prepare || rc=$?
@@ -358,4 +357,7 @@ jobs:
           subject-path: ${{ runner.temp }}/publish/attest/*
       - name: Create and update the releases
         if: ${{ env.SKIP != '1' }}
+        env:
+          DIST: ${{ runner.temp }}/release
+          GH_TOKEN: ${{ github.token }}
         run: ci/github/release-publish.sh publish
