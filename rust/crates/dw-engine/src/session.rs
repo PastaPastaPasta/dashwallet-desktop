@@ -940,6 +940,7 @@ impl NetworkSession {
                 }
             }
         }
+        let holds_database = !kept.is_empty();
         for id in kept {
             tracing::info!(
                 wallet_id = %hex::encode(id),
@@ -964,8 +965,15 @@ impl NetworkSession {
         // The close returns once the database is released, so the network
         // reopens in this process (CI 41289102488: `StorageInUse` on a
         // reopen right after a close). Bounded: a holder that never lets go
-        // keeps the database, and its reopen is refused as before.
-        if !persister_released(&persister).await {
+        // keeps the database, and its reopen is refused as before. A kept
+        // wallet holds it until the process exits (DEC-1046: only a quit
+        // keeps one), so nothing is waited for then.
+        if holds_database {
+            tracing::info!(
+                network = %self.network,
+                "the wallet database stays held by the wallets kept for their shielded payments"
+            );
+        } else if !persister_released(&persister).await {
             tracing::warn!(
                 network = %self.network,
                 "the wallet database is still held after the close; reopening it in this process is refused until it is released"
