@@ -209,16 +209,12 @@ test.describe("incoming payment", () => {
     await expect(page.getByTestId("receive-received")).toHaveCount(0);
   });
 
-  test("a catch-up batch and discreet mode say nothing about the amount", async ({ page }) => {
+  test("Discreet mode says nothing about the amount", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("hero").waitFor();
     await page.getByTestId("toolbar-discreet").click();
     await pay(page, 150_000_000);
     await expect(page.locator(".toast")).toHaveText("Received a payment");
-    // A batch found while catching up is not announced.
-    await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [f.world.wallets[0].rows[0].txid], count: 1, catchUp: true }); })()`);
-    await page.waitForTimeout(300);
-    await expect(page.getByTestId("toolbar-bell-badge")).toHaveText("1");
   });
 });
 

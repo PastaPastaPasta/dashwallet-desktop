@@ -5,7 +5,7 @@ import { createContext, useContext } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
 import { creditsToDuffs, type ShieldedSpendQuote, type ShieldedStatus, type ShieldQuote } from "./pending";
-import { NOT_SETTLED, settleSync, type Settled } from "../format/sync";
+import { feedSync, useShownSync } from "./syncDisplay";
 import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRequest } from "./generated/HistoryRequest";
@@ -221,19 +221,21 @@ export function useNetworkChoice() {
   return useQuery({ queryKey: keys.networkChoice, queryFn: () => b.networkChoice(), retry: false });
 }
 
-/** What `settleSync` remembers of each backend's last sync reading. */
-const settledSync = new WeakMap<object, Settled>();
-
+/** The sync as the status bar and the screens show it: the engine's reading, with a new block's
+ * one-block flap smoothed away (api/syncDisplay.ts). The query itself holds the raw reading. */
 export function useSyncStatus() {
   const b = useBackend();
-  return useQuery({
+  const query = useQuery({
     queryKey: keys.sync,
     queryFn: async () => {
-      const { status, settled } = settleSync(settledSync.get(b) ?? NOT_SETTLED, await b.syncStatus(), Date.now());
-      settledSync.set(b, settled);
-      return status;
+      const raw = await b.syncStatus();
+      feedSync(b, raw);
+      return raw;
     },
   });
+  const shown = useShownSync(b);
+  // The query's own state, with `data` the shown status once there is one.
+  return query.data === undefined ? query : { ...query, data: shown ?? query.data };
 }
 
 /** Pages of `limit` records; `fetchNextPage` follows the engine's keyset cursor. */

@@ -14,10 +14,12 @@ import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
 import { onTopUpSettled } from "../dashpay/topup";
 import { onWithdrawSettled } from "../dashpay/withdraw";
+import { isNewBlock } from "../format/sync";
 import { announceReceived } from "../payments/received";
 import { onMoveSettled } from "../platform/move";
 import { onShieldedSettled } from "../shielded/flow";
 import { keys } from "./queries";
+import { feedSync, rawSync } from "./syncDisplay";
 
 /** DP1-09 D28: a status read while a sync pass held the wallet's state is `startupIncomplete` (the
  * engine's identity read was not live, so it proves nothing), and no Platform signal follows when
@@ -133,13 +135,16 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
   };
   const unsubscribe = await backend.onEvent((event) => {
     if (event.kind === "notice") console.warn("engine notice", event.code, event.detail);
+    // The engine's own reading, as it arrives: the display's (api/syncDisplay.ts) and what decides
+    // below. Not the query's, which only follows once its refetch is back.
+    if (event.kind === "sync") feedSync(backend, event.status);
     // A payment that arrives while the app is open is announced (toast, bell, Receive); a batch the
     // sync found on catching up is not news. The engine's `catchUp` is "SPV is not idle" at that
-    // moment, which a payment found in a new block can be too: while the sync reading says the wallet
-    // was caught up (`settleSync`: at most a few blocks behind), it is a new block, not a catch-up.
-    if (event.kind === "newTransactions") {
-      const sync = client.getQueryData<SyncStatus>(keys.sync);
-      if (!event.catchUp || (sync?.running && sync.caughtUp)) void announceReceived(backend, event.walletId, event.txids);
+    // moment, which a payment found in a new block can be too: so it is news when the engine's own
+    // latest reading says caught up, or at most a few blocks short of it (`withinBlocks`). The
+    // smoothed display never decides this.
+    if (event.kind === "newTransactions" && (!event.catchUp || isNewBlock(rawSync(backend) ?? client.getQueryData<SyncStatus>(keys.sync)))) {
+      void announceReceived(backend, event.walletId, event.txids);
     }
     if (event.kind === "historyChanged" || (event.kind === "platform" && rereadsHistory(event.change.domain))) {
       // Refetch only the first page of each list: every history_page call re-reads the whole

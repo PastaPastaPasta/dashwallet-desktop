@@ -50,6 +50,63 @@ test.describe("payment toast privacy", () => {
   });
 });
 
+/** An engine `sync` event that says `behind` blocks short of the tip (0: caught up). */
+const syncEvent = (page: Page, behind: number, caughtUp = behind === 0) =>
+  page.evaluate(`(() => {
+    const f = window.__dwFixture;
+    const s = f.world.sync;
+    const tip = s.tipHeight;
+    f.world.sync = { ...s, caughtUp: ${caughtUp}, activePhase: ${caughtUp} ? null : "filters", phases: s.phases.map((p) => ({ ...p, currentHeight: tip - ${behind}, targetHeight: tip, done: ${behind} === 0 })) };
+    f.emit({ kind: "sync", network: f.world.launch.network.dirName, status: f.world.sync });
+  })()`);
+
+test.describe("sync hold", () => {
+  test("Synced does not outlive 60 s with no further engine signal", async ({ page }) => {
+    await page.clock.install();
+    await open(page);
+    const bar = page.getByTestId("status-bar");
+    await expect(bar).toContainText("Synced");
+    // One block behind: held at Synced.
+    await syncEvent(page, 1);
+    await page.clock.runFor(2000);
+    await expect(bar).toContainText("Synced");
+    // Nothing else happens for 61 s: the hold expires on its own.
+    await page.clock.runFor(61_000);
+    await expect(bar).toContainText("Syncing");
+    await expect(bar).not.toContainText("Synced");
+  });
+});
+
+test.describe("catch-up is not news", () => {
+  /** An incoming row of the fixture's history, not yet announced. */
+  const unseen = (page: Page) =>
+    page.evaluate(`(() => { const w = window.__dwFixture.world.wallets[0]; const r = w.rows.find((x) => x.txType === "recvWithAddress" && x.amount > 0); return r.txid; })()`) as Promise<string>;
+  const catchUp = (page: Page, txid: string) =>
+    page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [${JSON.stringify(txid)}], count: 1, catchUp: true }); })()`);
+  const noticeCalls = (page: Page) => page.evaluate(`window.__dwFixture.calls.filter((c) => c === "tx_notices").length`) as Promise<number>;
+
+  test("a far-behind sync event, its read still pending, and a catch-up batch announce nothing", async ({ page }) => {
+    await open(page);
+    const txid = await unseen(page);
+    // The sync read the event triggers is held: the display cache still says synced.
+    await page.evaluate(`window.__dwFixture.hold("sync_status")`);
+    await syncEvent(page, 5000);
+    await catchUp(page, txid);
+    await page.waitForTimeout(500);
+    expect(await noticeCalls(page)).toBe(0);
+    await expect(page.locator(".toast")).toHaveCount(0);
+    await expect(page.getByTestId("toolbar-bell-badge")).toHaveCount(0);
+  });
+
+  test("a catch-up batch while caught up is a new block: announced", async ({ page }) => {
+    await open(page);
+    const txid = await unseen(page);
+    await catchUp(page, txid);
+    await expect(page.locator(".toast")).toHaveText("Received 0.20 tDASH");
+    expect(await noticeCalls(page)).toBe(1);
+  });
+});
+
 async function authorizeUnlock(page: Page) {
   await page.getByTestId("lock-field").fill("demo");
   await page.keyboard.press("Enter");
