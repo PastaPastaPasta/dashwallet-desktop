@@ -5355,3 +5355,14 @@ button.bell-row-open:focus-visible {
 .mg-create-credential {
   max-width: 320px;
 }
+
+/* "Copied" on the copy button itself (DEC-1058 #3). */
+.copied-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  white-space: nowrap;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  color: var(--dw-role-text-link);
+}

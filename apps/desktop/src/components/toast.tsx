@@ -20,12 +20,14 @@ export function showToast(text: string, seconds: number = motion.toastDuration) 
 }
 
 /** iOS "Copied" toast after every copy (UX-SPEC §3.2). */
-export async function copyWithToast(text: string) {
+export async function copyWithToast(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);
     showToast("Copied", motion.toastCopiedDuration);
+    return true;
   } catch {
     showToast("Could not copy");
+    return false;
   }
 }
 

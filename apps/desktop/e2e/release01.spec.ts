@@ -54,6 +54,39 @@ async function open(page: Page, scenario: string, theme: Theme = "light") {
   return errors;
 }
 
+test.describe("copy feedback", () => {
+  const clipboard = (page: Page) =>
+    page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", { value: { writeText: async (t: string) => void ((window as unknown as { __copied: string }).__copied = t) } });
+    });
+  for (const theme of THEMES) {
+    test(`the button says Copied for a moment, and the toast stays (${theme})`, async ({ page }) => {
+      await clipboard(page);
+      await open(page, "funded", theme);
+      await page.getByTestId("sidebar-receive").click();
+      const button = page.getByTestId("receive-copy-address");
+      await expect(button).toHaveText("Copy address");
+      await button.click();
+      await expect(button).toHaveText("✓ Copied");
+      await expect(page.locator(".toast")).toHaveText("Copied");
+      await shot(page, `${theme}-copy-button-copied`);
+      expect(await contrast(button.locator(".copied-label"))).toBeGreaterThanOrEqual(3);
+      // About 1.5 s later it is the label again.
+      await expect(button).toHaveText("Copy address", { timeout: 4000 });
+    });
+  }
+
+  test("an icon copy button swaps to Copied and back", async ({ page }) => {
+    await clipboard(page);
+    await open(page, "funded");
+    await page.getByTestId("shielded-receive-open").click();
+    const button = page.getByRole("button", { name: "Copy Shielded address" });
+    await button.click();
+    await expect(page.getByRole("button", { name: "Copied" })).toHaveText("✓ Copied");
+    await expect(page.getByRole("button", { name: "Copy Shielded address" })).toBeVisible({ timeout: 4000 });
+  });
+});
+
 test.describe("first-run notice", () => {
   for (const theme of THEMES) {
     test(`is shown once, then stays dismissed (${theme})`, async ({ page }) => {

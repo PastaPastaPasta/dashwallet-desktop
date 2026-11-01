@@ -16,7 +16,7 @@ import { CopyValue, DetailRow } from "../components/detail";
 import { LoadingState } from "../components/history";
 import { QrCode } from "../components/qr";
 import { Sheet } from "../components/sheet";
-import { copyWithToast } from "../components/toast";
+import { CopyDashButton } from "../components/copy";
 import { useDisplay } from "../format/display";
 import { shortAddress } from "../format/tx";
 import { Page } from "./Routes";
@@ -103,12 +103,12 @@ function AddressCard({ walletId }: { walletId: string }) {
             {shown.address}
           </p>
           <div className="card-actions">
-            <DashButton variant="tintedBlue" data-testid="receive-copy-address" onClick={() => void copyWithToast(shown.address)}>
+            <CopyDashButton variant="tintedBlue" data-testid="receive-copy-address" text={shown.address}>
               Copy address
-            </DashButton>
-            <DashButton variant="tintedBlue" data-testid="receive-copy-uri" disabled={!uri.data} why="The address is still loading." onClick={() => uri.data && void copyWithToast(uri.data)}>
+            </CopyDashButton>
+            <CopyDashButton variant="tintedBlue" data-testid="receive-copy-uri" disabled={!uri.data} why="The address is still loading." text={uri.data ?? null}>
               Copy link
-            </DashButton>
+            </CopyDashButton>
             <DashButton variant="plainBlue" data-testid="receive-new-address" onClick={() => void newAddress()}>
               New address
             </DashButton>
