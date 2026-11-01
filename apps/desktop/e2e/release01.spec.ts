@@ -87,6 +87,30 @@ test.describe("copy feedback", () => {
   });
 });
 
+test.describe("status bar", () => {
+  for (const theme of THEMES) {
+    test(`a new block while synced stays Synced, never Syncing 100% (${theme})`, async ({ page }) => {
+      await open(page, "funded", theme);
+      const bar = page.getByTestId("status-bar");
+      await expect(bar).toContainText("Up to date");
+      // The engine's reading for a new block: not caught up, every phase one block behind.
+      await page.evaluate(`(() => {
+        const f = window.__dwFixture;
+        const s = f.world.sync;
+        const tip = s.tipHeight + 1;
+        f.world.sync = { ...s, caughtUp: false, activePhase: "headers", phases: s.phases.map((p) => ({ ...p, targetHeight: tip, done: false })) };
+        f.emit({ kind: "sync", network: f.world.launch.network.dirName, status: f.world.sync });
+      })()`);
+      await page.waitForTimeout(600);
+      await expect(bar).toContainText("Up to date");
+      await expect(bar).toContainText("Synced");
+      await expect(bar).not.toContainText("Syncing");
+      await expect(bar.locator("progress")).toHaveCount(0);
+      await shot(page, `${theme}-status-bar-synced-after-block`);
+    });
+  }
+});
+
 test.describe("first-run notice", () => {
   for (const theme of THEMES) {
     test(`is shown once, then stays dismissed (${theme})`, async ({ page }) => {
