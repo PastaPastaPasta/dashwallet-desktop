@@ -22,6 +22,7 @@ use super::dashpay::BearerSecret;
 use super::errors::{InvitationError, PlatformError};
 use super::invitation_check::{Checked, Fetched, InvitationNet, check};
 use super::payments::Counterparty;
+use super::protocol::platform_version;
 use super::registration_flow::identity_for;
 use super::trust::BoxFuture;
 use crate::NetworkSession;
@@ -271,6 +272,13 @@ impl NetworkSession {
             })
             .await
             .map_err(|e| PlatformError::from(crate::EngineError::from(e)))??;
+        // The contested lock follows the network's protocol version.
+        let version = match &checked {
+            Checked::Valid { .. } => {
+                Some(platform_version(self.refresh_protocol_version().await?)?)
+            }
+            _ => None,
+        };
         Ok(match checked {
             Checked::Valid {
                 inviter,
@@ -280,7 +288,8 @@ impl NetworkSession {
                 InvitationStatus::Valid {
                     inviter,
                     funding_duffs,
-                    contested_allowed: Checked::contested_allowed(funding_duffs),
+                    contested_allowed: version
+                        .is_some_and(|v| Checked::contested_allowed(funding_duffs, v)),
                     expires_at: Some(expires_at),
                 },
                 Some(identity_for(outpoint)),

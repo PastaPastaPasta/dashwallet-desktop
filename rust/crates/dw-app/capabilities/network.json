@@ -10,6 +10,8 @@
     "allow-open-network",
     "allow-close-network",
     "allow-active-network",
-    "allow-existing-networks"
+    "allow-existing-networks",
+    "allow-get-network-choice",
+    "allow-set-network-choice"
   ]
 }

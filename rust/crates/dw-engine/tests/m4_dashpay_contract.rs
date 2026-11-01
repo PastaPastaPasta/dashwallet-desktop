@@ -148,6 +148,7 @@ const FACADE: &[&str] = &[
     "names.rs",
     "notifications.rs",
     "payments.rs",
+    "platform_addresses.rs",
     "profile.rs",
     "registration.rs",
     "startup.rs",
@@ -173,7 +174,8 @@ const FACADE: &[&str] = &[
 /// pipeline's guard, decoder, cache and tests (DP4-02), the mobile
 /// wallets' dHash (DP4-03 D27), the Identities page's reads with their
 /// tests (DP6-01), the withdrawal with its network seam and tests (DP6-02),
-/// and the invitation checks with their tests (DP5-02).
+/// and the invitation checks with their tests (DP5-02), and the network's
+/// protocol version (release 0.1).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -213,6 +215,7 @@ const NOT_FACADE: &[&str] = &[
     "private_details_tests.rs",
     "profile_tests.rs",
     "profiles.rs",
+    "protocol.rs",
     "provenance.rs",
     "recovery.rs",
     "recovery_tests.rs",
@@ -1452,6 +1455,13 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }
+
+        // Release 0.1 (lane E2): the Platform addresses.
+        c.stub(dp.platform_addresses().await);
+        c.stub(dp.platform_activity().await);
+        c.stub(dp.sync_platform_addresses().await);
+        c.stub(dp.move_to_core_quote(WithdrawAmount::All).await);
+        c.stub(dp.move_to_core(WithdrawAmount::All, s()).await);
     });
 
     let mut want: BTreeSet<String> = facade_calls().into_keys().collect();

@@ -48,6 +48,7 @@ use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProo
 use dpp::identity::{Identity, IdentityPublicKey, KeyID};
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
+use dpp::version::PlatformVersion;
 use dw_appdb::{
     Adoption, AppDb, AppDbError, LockOutpoint, NewRegistration, RegistrationChange,
     RegistrationRow, RegistrationUpdate,
@@ -76,8 +77,25 @@ use crate::{NetworkSession, WalletId};
 /// The asset lock of a registration with a plain name: 0.03 DASH, as the
 /// iOS wallet locks (`DWDashPayConstants.m`).
 pub(crate) const LOCK_DUFFS: u64 = 3_000_000;
-/// With a contested name: 0.25 DASH (iOS), which covers the contest fund.
-pub(crate) const CONTESTED_LOCK_DUFFS: u64 = 25_000_000;
+/// What a contested name's lock holds past the contest fund: iOS's 0.25
+/// DASH (`DWDashPayConstants.m`) less the 0.2 DASH fund it was set for,
+/// which pays the identity, the name's fees and leaves some credits.
+const CONTESTED_LOCK_MARGIN_DUFFS: u64 = 5_000_000;
+
+/// The least a registration with a contested name locks at the network's
+/// protocol version: the contest's fund (rs-platform-version's
+/// `contested_document_vote_resolution_fund_required_amount`, the fund to
+/// join a contest under 250 contenders) and [`CONTESTED_LOCK_MARGIN_DUFFS`].
+/// 0.25 DASH before protocol version 14, 0.15 DASH from it (its fund fell
+/// from 0.2 to 0.1 DASH). A contest past 250 contenders asks more, and the
+/// plan's credits (the name's own cost) then raise the lock above this.
+pub(crate) fn contested_lock_duffs(version: &PlatformVersion) -> u64 {
+    let fund = version
+        .fee_version
+        .vote_resolution_fund_fees
+        .contested_document_vote_resolution_fund_required_amount;
+    fund.div_ceil(CREDITS_PER_DUFF) + CONTESTED_LOCK_MARGIN_DUFFS
+}
 /// One duff locked is this many credits on Platform.
 pub(crate) const CREDITS_PER_DUFF: u64 = 1_000;
 /// What a Core-funded registration's grant asks past the lock and its fee:
@@ -336,6 +354,9 @@ pub(crate) trait RegistrationLib: Send + Sync {
     ) -> impl Future<Output = Result<(), PlatformError>> + Send;
     /// What `register_name`'s grant asks for `label`, in credits.
     fn name_credits(&self, label: &str) -> impl Future<Output = Result<u64, NameError>> + Send;
+    /// The network's rules, after one proven read of its protocol version
+    /// (`protocol.rs`): the contested lock follows them.
+    fn platform_version(&self) -> impl Future<Output = &'static PlatformVersion> + Send;
     /// The identity's credits; `None` when Platform does not know it.
     fn credit_balance(
         &self,
@@ -3582,6 +3603,11 @@ impl RegistrationLib for PwLib {
 
     async fn name_credits(&self, label: &str) -> Result<u64, NameError> {
         super::dashpay::DashPay::name_credits_for_flow(Arc::clone(&self.sdk), label).await
+    }
+
+    async fn platform_version(&self) -> &'static PlatformVersion {
+        super::protocol::refreshed(&self.sdk).await;
+        self.sdk.version()
     }
 
     async fn credit_balance(&self, identity: &str) -> Result<Option<u64>, PlatformError> {

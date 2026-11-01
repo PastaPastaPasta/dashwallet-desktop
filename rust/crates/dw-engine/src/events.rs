@@ -200,6 +200,9 @@ pub enum PlatformChange {
     /// The wallet's DashPay bring-up outcome, or the identity it named
     /// (`dashpay_startup`, and with it `DashPay::status`; BL-153).
     Startup,
+    /// The wallet's Platform-address balances or their activity (a sync
+    /// pass changed them, or a move to Core was recorded or settled).
+    PlatformAddresses,
 }
 
 /// Non-fatal conditions the UI may surface.

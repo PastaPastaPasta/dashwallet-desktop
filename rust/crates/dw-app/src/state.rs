@@ -176,7 +176,7 @@ impl AppState {
     /// (an in-memory OS store, cheap KDF parameters).
     pub fn new<R: Runtime>(
         app: &AppHandle<R>,
-        launch: LaunchOptions,
+        mut launch: LaunchOptions,
         started: Instant,
         vault: VaultConfig,
         default_data_dir: impl FnOnce() -> Result<PathBuf, AppError>,
@@ -186,6 +186,9 @@ impl AppState {
             Some(dir) => dir.clone(),
             None => default_data_dir()?,
         };
+        // The network onboarding or Settings chose, unless `--network`
+        // named one (release 0.1).
+        launch.apply_network_choice(&data_root);
         // The lock before the engine: a second process on this root stops
         // here, before it opens any wallet database.
         let instance = match app.try_state::<InstanceLock>() {

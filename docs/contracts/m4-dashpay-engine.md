@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 39
+Contract-Version: 40
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -55,7 +55,7 @@ state that outlives a call (avatar candidates, `dapk` scan proofs, read caches) 
 The facade is the files of `src/platform/` listed in the table below, one per domain (DASHPAY §3.1), and the
 contract test's `FACADE` list names exactly these. The other files there (`mod.rs`, `signers.rs`, `status.rs`,
 DP1-01's `keys_policy.rs`, E0-05's `bringup.rs`, `runtime.rs`, `runtime_tests.rs` and `startup_status.rs`, which
-run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, DP2-04's private details `private_details.rs` with `private_details_tests.rs`, DP2-05's bell session tests `notifications_tests.rs`, DP1-06's cost table `credit_costs.rs`, balance refreshes `balances.rs` and top-up flow `topup.rs` with `topup_tests.rs`, DP1-04's contest watch `contest_watch.rs` with `contest_watch_tests.rs`, and DP3-02's contact payment attribution `attribution.rs` with `payments_tests.rs`, DP1-08's names checks `names_check.rs`, and DP3-04's money-move trust gate `money_gate.rs` with `money_gate_tests.rs`, and DP6-01's identity reads `identity_reads.rs` with `identity_tests.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
+run the bring-up and the loops that `startup.rs` reads, DP1-03's `names_net.rs` and `names_tests.rs`, E0-06's changeset tap `journal.rs` with `journal_tests.rs` and its trust records `provenance.rs`, DP2-01's contacts read model `contacts_model.rs` with its usernames `contact_names.rs` and `contacts_tests.rs`, DP2-03's user search, links and scans `users.rs` with `users_tests.rs`, DP2-04's private details `private_details.rs` with `private_details_tests.rs`, DP2-05's bell session tests `notifications_tests.rs`, DP1-06's cost table `credit_costs.rs`, balance refreshes `balances.rs` and top-up flow `topup.rs` with `topup_tests.rs`, DP1-04's contest watch `contest_watch.rs` with `contest_watch_tests.rs`, and DP3-02's contact payment attribution `attribution.rs` with `payments_tests.rs`, DP1-08's names checks `names_check.rs`, and DP3-04's money-move trust gate `money_gate.rs` with `money_gate_tests.rs`, and DP6-01's identity reads `identity_reads.rs` with `identity_tests.rs`, and release 0.1's protocol-version helper `protocol.rs`) are in its `NOT_FACADE` list; a new file must join one of the two lists. Each domain file
 holds its records and its own `impl DashPay` block, so parallel DP tasks edit different files, and no `impl DashPay`
 lives anywhere else in the crate. A record the facade returns is `pub` and re-exported by name from `mod.rs`; a helper
 type is `pub(crate)`.
@@ -72,6 +72,7 @@ type is `pub(crate)`.
 | `notifications.rs` | DP2-05 | `events`, `unread_count`, `mark_read` |
 | `profile.rs` | DP4-01, DP4-02 | `profile`, `profile_limits`, `prepare_avatar`, `avatar_upload_available`, `upload_avatar`, `update_profile`, `avatar`, `NetworkSession.load_contact_pictures`, `set_load_contact_pictures` |
 | `credits.rs` | DP1-06, DP6-02 | `cost_table`, `top_up_quote`, `top_up`, `pending_top_ups`, `stuck_top_up_fundings`, `resume_top_up`, `resolve_top_up`, `withdraw_quote`, `withdraw`, `withdrawals` |
+| `platform_addresses.rs` | release 0.1, lane E2 | `platform_addresses`, `platform_activity`, `sync_platform_addresses`, `move_to_core_quote`, `move_to_core` |
 | `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_link`, `stashed_links`, `take_stashed_link`, `forget_stashed_link`, `stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
 | `errors.rs` | E0-05 (the mapping, §6) and each domain's owner | the error enums of §4 |
@@ -228,8 +229,9 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 `registration.funding_unknown_recent` (DEC-197), and `RegistrationWait::NeedsFinish` (DEC-198 am.1)).** What the
 bodies decided where the rows leave room:
 
-- **Costs.** The lock is 0.03 DASH (3 000 000 duffs) for a plain name and 0.25 DASH for a contested one, as the iOS
-  wallet locks, raised when the credits below need more. The fee is the funding permit's own bound,
+- **Costs.** The lock is 0.03 DASH (3 000 000 duffs) for a plain name, as the iOS wallet locks, and for a contested
+  one the contest fund at the network's protocol version plus 0.05 DASH: 0.25 DASH (iOS's figure) before protocol
+  version 14, 0.15 DASH from it (§7 item 68); either is raised when the credits below need more. The fee is the funding permit's own bound,
   `fees::asset_lock_fee_bound`, over every spendable coin of the funding sources (200 + n × 149 bytes at 1 duff/byte
   plus a dust remainder), a true upper bound on the library's selection (D29 of DP1-09). `grant.max_duffs` is the
   total plus one duff for a Core-funded lock: the funding call charges the total, and the identity step's proof
@@ -539,7 +541,7 @@ and a stash full of held entries refuses a new link (`invalid_argument`). A held
 | `NetworkSession.take_stashed_link(link_id)` | async | A payment or contact link's text, once, as `TakenLink::Link`: the entry is deleted before it returns; `None` when it is gone (taken, expired, unreadable). An invitation is `TakenLink::Invitation` in every lock state: never handed back nor opened, and it stays. Otherwise a locked vault is `platform.signer_unavailable` and keeps the link; a malformed id is `invalid_argument`. | `PlatformError` |
 | `NetworkSession.forget_stashed_link(link_id)` | async | Deletes a stashed link of any kind without opening it: the user dismissed it. Works locked; an id the stash no longer has is `Ok`; a malformed id is `invalid_argument`. | `PlatformError` |
 | `NetworkSession.stash_invitation(link)` | async | `stash_link` for an invitation link only; returns the id. Anything else is `invitation.invalid`, and the error never quotes it. | `InvitationError` |
-| `NetworkSession.invitation_status(link_id)` | async | `Valid{inviter, funding_duffs, contested_allowed, expires_at}`, `Claimed`, `Invalid{reason}` or `Expired`, from the stashed link, which stays stashed. Works before any wallet exists. `Invalid`: `Malformed` (the link does not parse, or its funding transaction is not an asset lock paying the voucher key, or its islock does not lock it), `WrongNetwork`, `AssetLockNotFound` (DAPI has the transaction in neither byte order after five tries 3 s apart). `Claimed`: an identity exists at the claim's id; one-way, so a lock spent another way still reads `Valid` and the claim reports it. `Expired`: the stash no longer has the id (the link itself never expires). `funding_duffs` is the voucher's credit output; `contested_allowed` is `funding_duffs ≥` 0.25 DASH. `inviter` is the identity DPNS holds the link's `du` for, with its DashPay profile, never the link's own display name or avatar; `None` without a `du` or a DPNS name. A DPNS or transport failure is the call's `platform.*` error. A sealed entry while locked is `platform.signer_unavailable`; another kind of link `invitation.invalid`; a malformed id `invalid_argument`. | `InvitationError` |
+| `NetworkSession.invitation_status(link_id)` | async | `Valid{inviter, funding_duffs, contested_allowed, expires_at}`, `Claimed`, `Invalid{reason}` or `Expired`, from the stashed link, which stays stashed. Works before any wallet exists. `Invalid`: `Malformed` (the link does not parse, or its funding transaction is not an asset lock paying the voucher key, or its islock does not lock it), `WrongNetwork`, `AssetLockNotFound` (DAPI has the transaction in neither byte order after five tries 3 s apart). `Claimed`: an identity exists at the claim's id; one-way, so a lock spent another way still reads `Valid` and the claim reports it. `Expired`: the stash no longer has the id (the link itself never expires). `funding_duffs` is the voucher's credit output; `contested_allowed` is `funding_duffs ≥` the contested lock at the network's protocol version (0.25 DASH before 14, 0.15 DASH from it; §7 item 68), read with one proven refresh. `inviter` is the identity DPNS holds the link's `du` for, with its DashPay profile, never the link's own display name or avatar; `None` without a `du` or a DPNS name. A DPNS or transport failure is the call's `platform.*` error. A sealed entry while locked is `platform.signer_unavailable`; another kind of link `invitation.invalid`; a malformed id `invalid_argument`. | `InvitationError` |
 | `NetworkSession.pending_invitations()` | async | The ids of the stashed invitation links, oldest first: the replay after a restart or after onboarding (DP5-01). | `InvitationError` |
 | `NetworkSession.forget_invitation(link_id)` | async | Deletes a stashed invitation: the user dismissed it, or the claim finished. An id the stash no longer has is `Ok`; one of another kind of link is `invitation.invalid`; a malformed id is `invalid_argument`. | `InvitationError` |
 
@@ -566,6 +568,29 @@ request's opt-out, the row's `invitation`, and the stash's holds; decisions in `
 | `grant_request(identity, action)` | async | The `GrantRequest` for one write that has no quote of its own: `send_request`, `accept_request`, `register_name`, `update_profile`, `set_private_details` (publishing) and `enable_dashpay_keys`. `GrantAction` carries no payload except the label, so the request is a worst-case bound for the action, which the engine budgets against (E0-04 owns enforcing it). The other actions get E0-04's per-action credit bound (`flows.rs`, no duffs) until DP1-06's cost table. `RegisterName` is DP1-03's quote: no duffs, credits for the estimated fee bound plus the label's fund to join at the contest's current size; until DP1-06 and E0-04's accounting the fee part is an estimate, not a ceiling the engine enforces. | `PlatformError` |
 | `dispatch_status(artifact)` | async | What the engine knows about a handed-off artifact: a txid, a state-transition hash, or a funding step id (`registration/<draft>/funding`, `topup/<id>/funding`), as `broadcast_unknown{artifact}` and `will_be_sent{artifact}` carry. `WillBeSent`, `MaybeSent`, `Sent` or `NotSent`; `None` means the engine has no entry. Answered by E0-04 §16.6's table (§4.1). The host reads every `None` as unknown, and only `Some(NotSent)` allows a retry it offers; it calls this before it offers any retry. | `PlatformError` |
 
+### 2.12 Platform addresses (`platform_addresses.rs`; release 0.1, lane E2)
+
+The wallet's DIP-17 Platform payment addresses (account 0, key class 0, which every wallet the engine creates has).
+The library's sync loop (`PlatformAddressSyncManager`) runs with the other Platform loops: it starts after the
+bring-up when SPV starts and the network has Platform, and is quiesced when SPV stops and drained, sealed and joined
+by the manager's shutdown at close. Each completed pass that changed a wallet's balances sends
+`Platform{PlatformAddresses}` (§6). 0.1 has **no Platform receive address**: the wallet shows and empties what it
+finds there (RELEASE-PLAN §1). Every call refuses an unknown wallet (`wallet_not_found`) and a closed session
+(`network_not_open`).
+
+| Call | Kind | Semantics | Errors |
+|---|---|---|---|
+| `platform_addresses()` | async | `PlatformAddressBalance`: the funded addresses (bech32m, the largest first) with their credits, the total in credits and in whole duffs (rounded down; Home adds `duffs` to the spendable total), this session's last completed pass (`synced_at`, unix seconds; `None` before one, when the balances are the ones stored at the last run) and whether a pass runs now. Reads the library's memory; no network. **Stub (P1).** | `CreditsError` |
+| `platform_activity()` | async | The addresses' activity, the newest first, at most 200 rows: `Incoming` (an address's balance rose) and `Outgoing` (it fell, by no move of this wallet) as the engine saw them between two reads of the synced balances (the library keeps balances, not transfers: a first read after a restore lists each funded address once as `Incoming`), and `MoveToCore` rows, one per `move_to_core`. Rows are kept in app.sqlite (the wallet's local scope, `platform_address/…` settings). A `Pending` move is settled first: `Done` once Platform's proved nonces show every input spent at or past the move's nonce; `Failed` when they are still below it 10 minutes after it was recorded (it may still land, paying the same Core address of this wallet; nothing else can be lost). **Stub (P1).** | `CreditsError` |
+| `sync_platform_addresses()` | async | Runs one pass of the library's sync now and returns `platform_addresses()` after it; a pass already running is waited for, not repeated. A session without Platform (`no_platform`) is `platform.feature_off{feature: "platform"}`. **Stub (P1).** | `CreditsError` |
+| `move_to_core_quote(amount)` | async | What "Move to Dash wallet" takes and pays out at the network's protocol version (read with one proven refresh, `protocol.rs`): `credits` taken from the addresses (the fee included), `fee_credits` (the library's estimate for the inputs chosen, reserved on the largest), `expected_duffs` (the payout on Core: the credits less the fee, converted as Platform converts a withdrawal), `to` (the wallet's own next unused BIP44 receive address; not marked used by a quote) and the `grant` (`max_credits` = `credits`, no duffs). `All` is the library's own plan (`preflight_withdrawal`): every input at or above the minimum input, the fee on the largest; `Credits{credits}` takes that many credits from the addresses, the largest first. Refuses nothing funded or `All` below the least withdrawal (`platform.insufficient_credits{needed, available}`), an amount outside Platform's withdrawal range (`credits.withdrawal_out_of_range{min, max}`), an amount above the funded total (`platform.insufficient_credits`), and a move recorded `Pending` less than 10 minutes ago (`platform.broadcast_unknown{artifact}` naming it). **Stub (P1).** | `CreditsError` |
+| `move_to_core(amount, grant)` | async | Moves `amount` to `to` (the quote's address), at Core fee rate 1 with pooling `Never`. Under the wallet's move lock, the quote's refusals again, against balances read again with proof; then the grant or a `PlatformAddressMove` lease (`platform.grant_exceeded` below `credits`, `platform.grant_invalid` for another flow's lease) and its permit charged `credits`. Before anything is signed the move is **recorded durably** (app.sqlite, a full checkpoint) with its inputs, their proved nonces, the amounts, the address and the payout, and read back; a failed write or read-back is `storage` with nothing signed. The payment-address keys sign (vault scope `PlatformAddress`, §7 item 67) and the library broadcasts (`withdraw`, explicit inputs at the recorded nonces). Platform's proved answer: `MoveToCoreOutcome{state: Done}`, the library having applied the proved balances; a refusal Platform answered: the record `Failed` and that refusal; any other answer: `MoveToCoreOutcome{state: Pending}`, never retried (`platform_activity` settles it). **Stub (P1).** | `CreditsError` |
+
+**0.1 rulings.** The move pays only the wallet's own Core address, so a move that lands after it was marked `Failed`
+moves the user's credits to the user's wallet: the engine refuses a second move only while the first is `Pending`
+and younger than 10 minutes. No external Platform send, no Platform receive address, no Max drain of the shielded
+pool (0.2).
+
 ## 3. Surface (generated)
 
 The exact public surface: records, enums, error enums, signatures and the headers of every trait impl, with the
@@ -573,7 +598,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: f1bb680835f53eab9760e6a634e00f6e7da0bb182b49d857a79875fa504ab3bf version: 39 -->
+<!-- surface-sha256: 876bb99bed724cfc430c451089bcead7012e4ea217168b30148d41e38fc04f17 version: 40 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1012,6 +1037,7 @@ pub enum FlowKind {
     SharedMasternode,
     Dissolution,
     Proposal,
+    PlatformAddressMove,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1428,6 +1454,68 @@ impl DashPay {
     pub async fn resolve_payment_lock(&self, identity: String, contact: String) -> Result<LockResolution, ContactError>;
     pub async fn contact_activity(&self, identity: String, contact: String, cursor: Option<String>, f: ActivityFilter) -> Result<ActivityPage, ContactError>;
     pub fn frequent_contacts(&self, identity: String, limit: u32) -> Result<Vec<ContactSummary>, ContactError>;
+}
+// src/platform/platform_addresses.rs
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformAddressBalance {
+    pub credits: u64,
+    pub duffs: u64,
+    pub addresses: Vec<PlatformAddressRow>,
+    pub synced_at: Option<u64>,
+    pub syncing: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformAddressRow {
+    pub address: String,
+    pub credits: u64,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlatformActivityKind {
+    Incoming,
+    Outgoing,
+    MoveToCore,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlatformActivityState {
+    Done,
+    Pending,
+    Failed,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformActivity {
+    pub id: String,
+    pub kind: PlatformActivityKind,
+    pub state: PlatformActivityState,
+    pub credits: u64,
+    pub address: Option<String>,
+    pub to: Option<String>,
+    pub expected_duffs: Option<u64>,
+    pub at: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveToCoreQuote {
+    pub credits: u64,
+    pub fee_credits: u64,
+    pub expected_duffs: u64,
+    pub to: String,
+    pub grant: GrantRequest,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveToCoreOutcome {
+    pub id: String,
+    pub credits: u64,
+    pub expected_duffs: u64,
+    pub to: String,
+    pub state: PlatformActivityState,
+}
+impl DashPay {
+    pub async fn platform_addresses(&self) -> Result<PlatformAddressBalance, CreditsError>;
+    pub async fn platform_activity(&self) -> Result<Vec<PlatformActivity>, CreditsError>;
+    pub async fn sync_platform_addresses(&self) -> Result<PlatformAddressBalance, CreditsError>;
+    pub async fn move_to_core_quote(&self, amount: WithdrawAmount) -> Result<MoveToCoreQuote, CreditsError>;
+    pub async fn move_to_core(&self, amount: WithdrawAmount, grant: String) -> Result<MoveToCoreOutcome, CreditsError>;
 }
 // src/platform/profile.rs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2128,7 +2216,7 @@ changes code paths or bindings that would otherwise need behaviour now:
 | History and transaction records gain `counterparty: Option<Counterparty>`. **Done (DP3-02, item 47):** on m1's `TxRecord` (so `history_page` and `tx_detail`'s records); `dw-app`'s `TxRow` binds it (optional), `dw-ffi` withholds it until E0-13 | DP3-02 |
 | `NoticeCode` gains `PlatformTrustMismatch` (E0-10b) and `DashPayStartupIncomplete` (E0-05). `dw-ffi` maps `NoticeCode` one to one, and the Swift bindings are frozen until E0-13. **Done (E0-05, E0-10b):** both are engine-side, and `dw-ffi` withholds them until E0-13 binds them. `PlatformTrustMismatch` goes out once per quorum and session; its detail names the LLMQ type and quorum hash | E0-05, E0-10b, E0-13 |
 | `NetworkSession` gains `quorum_source()` (sync) and the developer toggle `trusted_quorums_only()` / `set_trusted_quorums_only(on)` (the global setting `trust.trusted_only`): quorum keys from the trusted service only, SPV not consulted. **Done (E0-10b).** Not a user setting; the binding exposes it in developer builds | E0-10b, E0-13 |
-| `EngineEvent::Platform{network, wallet_id, change: PlatformChange}` (§3.5). **Done (E0-06):** `PlatformChange` is `Identities` (identities, their keys and profiles), `Contacts{identity}`, `Registration{draft}` (`draft` is the `dp_registration` id as decimal text; `None` for a lock no row names, a top-up), `Payments{identity}`, `Names`, and (DP2-05) `Events{identity}`: the identity's feed or unread count changed (rows journaled, read or recounted). The tap sends no `Startup` change; the bring-up does (BL-153, version 23): `Startup` when a wallet's `dashpay_startup` outcome or named identity changes. `dw-ffi` withholds the variant until E0-13 binds it | E0-06, E0-13 |
+| `EngineEvent::Platform{network, wallet_id, change: PlatformChange}` (§3.5). **Done (E0-06):** `PlatformChange` is `Identities` (identities, their keys and profiles), `Contacts{identity}`, `Registration{draft}` (`draft` is the `dp_registration` id as decimal text; `None` for a lock no row names, a top-up), `Payments{identity}`, `Names`, and (DP2-05) `Events{identity}`: the identity's feed or unread count changed (rows journaled, read or recounted). The tap sends no `Startup` change; the bring-up does (BL-153, version 23): `Startup` when a wallet's `dashpay_startup` outcome or named identity changes. Release 0.1 (version 40) adds `PlatformAddresses`: a Platform-address sync pass changed the wallet's balances, or a move to Core was recorded or settled (§2.12). `dw-ffi` withholds the variant until E0-13 binds it | E0-06, E0-13 |
 | `EngineEvent::DispatchResolved{network, resolved: DispatchResolved}`, sent when a provisional outcome settles. Its sources are E0-04 §4.6's: a Resend is accepted, or the wallet sees the transaction (`Sent`); a reload refuses and cleans up an `Unsent` row (`NotSent`); a row-less artifact settles definitely unsent (`NotSent`); Mode B's derived status moves (E0-04 §2a.5); H16's evidence settles a row-less transition. Its `artifact` is a txid, a state-transition hash or a funding step id (`registration/<draft>/funding`, `topup/<id>/funding`). DP1-02 then moves a registration row back to retryable, and the payment and top-up UIs clear their "may have been sent" or "will be sent" state. With E0-04's `LeaseChanged` and `LockProgress`. The payload record exists now (§3); the variant waits because `dw-ffi` maps `EngineEvent` one to one | E0-04 (P2), E0-13 |
 | `NoticeCode` gains `DispatchRecordMissing`, `UnscopedDispatch` and `DispatchJournalUnavailable` | E0-04 (P2), E0-13 |
 | `EngineEvent::DashPayNews{network, wallet_id, identity, events: Vec<DashPayEvent>, more}`: the OS-notification signal (§5 "news"). **Done (DP2-05):** on the `Platform` clock (≤ 4 Hz per session, trailing edge kept), after the flush's `Platform` changes; one per identity with news, at most `MAX_NEWS` (32) events in arrival order and `more` counting the rest. Hosts show one notification per event for up to 3, else one summary ("N new DashPay notifications"), skip it while the window is frontmost (the bell updates), honour the notifications toggle, and open the bell on a click; the bell (`events`) is the state behind it. Engine-side for `dw-ffi`; `dw-app` forwards it as `dashPayNews` | DP2-05, E0-13 |
@@ -3179,3 +3267,38 @@ renames or reshapes them takes the next version bump:
     kind is `platform.grant_invalid`. `Masternodes.dissolve` and a resend of its operation charge what the wallet's
     share gives up, the penalty and the fee, to `Masternode` before the owner key signs, with `send.grant_exceeded`
     when the cap is short.
+
+**From release 0.1, lane E2** (version 40):
+
+67. **The Platform-address move's lease and keys (§2.12).** `FlowKind` gains `PlatformAddressMove` ("Move to Dash
+    wallet"): one `PlatformOp{max_duffs: 0, max_credits}` grant of the wallet; any other grant kind is
+    `platform.grant_invalid`. Its lease issues no identity, funding or contact-crypto signer, only a signer of dw-vault's
+    new `SignerScope::PlatformAddress`: signatures and public keys of the DIP-17 payment-address keys
+    `m/9'/coin'/17'/account'/key_class'/index` and nothing else (no chain code, no other path), the narrowest scope
+    that signs an address-funds input. Each signature first checks that the key derived there hashes to the input's
+    P2PKH address. The permit charges `credits`, the quote's, before anything is signed.
+68. **The contested lock follows the protocol version (§2.2 Costs, §2.9 `invitation_status`).** The lock of a
+    registration with a contested name is the fund to join a contest
+    (`fee_version.vote_resolution_fund_fees.contested_document_vote_resolution_fund_required_amount`, 0.2 DASH before
+    protocol version 14, 0.1 DASH from it) plus 0.05 DASH: 0.25 DASH, then 0.15 DASH. The quote and the invitation
+    check read the network's version with one proven refresh (`protocol.rs`, which keeps the version learned so far
+    when the refresh fails, so a failure errs on the dearer lock). A contest past 250 contenders asks a larger fund,
+    which the plan's credits already carry.
+
+## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
+
+These are the desktop app's own commands and launch rules, recorded here for the UI lane; no contract test checks this
+section. The choice is kept in `<data root>/network.json` (`dw_engine::network_choice`, shared with `dwcli network`):
+`{"network": "mainnet" | "testnet"}`, written atomically; a missing or unreadable file is no choice.
+
+| Command | Semantics | Errors |
+|---|---|---|
+| `getNetworkChoice()` | `NetworkChoiceView{chosen, saved, launched, forcedByFlag, restartNeeded}`: the saved choice (`mainnet` when none, `saved: false`, which onboarding reads as "not asked yet"), the network this run opens by default (`launchInfo.network`), whether `--network` named it (the saved choice then applies only to a launch without the flag), and whether the choice differs from what this run opened (the app restarts to switch). | `io` |
+| `setNetworkChoice(network)` | Saves `mainnet` or `testnet` and returns the view; the running session is left as it is. | `io`, `invalid_argument` |
+
+- **Which network opens.** `--network` when given; else the saved choice; else mainnet. Read once, when the data root
+  is known (`AppState::new`); the window title follows it.
+- **SPV by default.** Opening the launch network starts SPV on mainnet and testnet unless the app was launched with
+  `--no-sync`; on regtest and devnets only with `--sync` (they name their peers; the self-test and the E2E jobs open
+  regtest without `--sync` and see no change). `--sync` is still accepted everywhere; the last of `--sync` and
+  `--no-sync` wins. A failed start leaves the network open, readable offline.

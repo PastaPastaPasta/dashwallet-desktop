@@ -53,6 +53,7 @@ pub(crate) mod payment_locks;
 mod payments;
 #[cfg(test)]
 mod payments_tests;
+mod platform_addresses;
 mod private_details;
 #[cfg(test)]
 mod private_details_tests;
@@ -60,6 +61,7 @@ mod profile;
 #[cfg(test)]
 mod profile_tests;
 mod profiles;
+mod protocol;
 pub(crate) mod provenance;
 mod recovery;
 #[cfg(test)]
@@ -125,6 +127,10 @@ pub use notifications::{DashPayEvent, EventKind, EventPage, MAX_NEWS};
 pub use payments::{
     ActivityDirection, ActivityFilter, ActivityItem, ActivityPage, Counterparty, LockResolution,
     PaymentLock,
+};
+pub use platform_addresses::{
+    MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformActivityKind,
+    PlatformActivityState, PlatformAddressBalance, PlatformAddressRow,
 };
 pub use profile::{
     AvatarCandidate, AvatarChange, AvatarImage, AvatarSize, AvatarSource, CropRect, Profile,

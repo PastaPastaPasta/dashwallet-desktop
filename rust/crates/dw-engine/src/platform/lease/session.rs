@@ -42,7 +42,8 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         | FlowKind::ContactRequest
         | FlowKind::Accept
         | FlowKind::PrivateDetails
-        | FlowKind::EnableDashPayKeys => &[GrantKind::PlatformOp],
+        | FlowKind::EnableDashPayKeys
+        | FlowKind::PlatformAddressMove => &[GrantKind::PlatformOp],
     }
 }
 

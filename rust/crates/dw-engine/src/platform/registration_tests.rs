@@ -13,6 +13,9 @@ use std::time::{Duration, Instant};
 
 use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
+use dpp::version::PlatformVersion;
+use dpp::version::v13::PROTOCOL_VERSION_13;
+use dpp::version::v14::PROTOCOL_VERSION_14;
 use dw_appdb::{AppDb, NewRegistration, RegistrationChange, RegistrationRow};
 use dw_vault::{
     Credential, GrantPurpose, KdfParams, KdfPolicy, LockState, MemoryOsStore, VaultConfig,
@@ -452,6 +455,9 @@ struct World {
     fund_script: Option<FundScript>,
     hang: Option<(Call, When)>,
     contested: BTreeSet<String>,
+    /// The network's protocol version `platform_version` answers; `None`:
+    /// 13, mainnet's and testnet's floor at the pin.
+    protocol_version: Option<u32>,
     /// The proof `wait_proof` delivers (`None`: it times out).
     proof_arrives: bool,
     /// Every `wait_proof` bound asked for.
@@ -993,6 +999,11 @@ impl RegistrationLib for Fake {
         Ok(NAME_CREDITS)
     }
 
+    async fn platform_version(&self) -> &'static PlatformVersion {
+        let version = self.w().protocol_version.unwrap_or(PROTOCOL_VERSION_13);
+        PlatformVersion::get(version).unwrap()
+    }
+
     async fn credit_balance(&self, _: &str) -> Result<Option<u64>, PlatformError> {
         Ok(Some(0))
     }
@@ -1481,7 +1492,17 @@ fn the_funding_cap_and_balance_are_checked_before_a_row_exists() {
         .block_on(registration::quote(&*lib, &request(CONTESTED)))
         .unwrap();
     assert!(contested.contested);
-    assert_eq!(contested.lock_duffs, flow::CONTESTED_LOCK_DUFFS);
+    // 0.25 DASH before protocol version 14 (iOS's figure)...
+    assert_eq!(contested.lock_duffs, 25_000_000);
+    // ...0.15 DASH from it, where the contest fund fell to 0.1 DASH.
+    lib.w().protocol_version = Some(PROTOCOL_VERSION_14);
+    let cheaper = f
+        .engine
+        .block_on(registration::quote(&*lib, &request(CONTESTED)))
+        .unwrap();
+    assert_eq!(cheaper.lock_duffs, 15_000_000);
+    assert_eq!(cheaper.fee_duffs, contested.fee_duffs);
+    lib.w().protocol_version = None;
 
     // One duff short of the cap.
     let g = f.grant(

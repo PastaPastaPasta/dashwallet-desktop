@@ -94,6 +94,11 @@ pub(super) fn valid() -> InvitationStatus {
     worth(FUNDING)
 }
 
+/// The fake's protocol version (`World::protocol_version` unset).
+fn pv13() -> &'static dpp::version::PlatformVersion {
+    dpp::version::PlatformVersion::get(dpp::version::v13::PROTOCOL_VERSION_13).unwrap()
+}
+
 fn worth(funding_duffs: u64) -> InvitationStatus {
     InvitationStatus::Valid {
         inviter: Some(Counterparty {
@@ -103,7 +108,7 @@ fn worth(funding_duffs: u64) -> InvitationStatus {
             avatar_url: None,
         }),
         funding_duffs,
-        contested_allowed: Checked::contested_allowed(funding_duffs),
+        contested_allowed: Checked::contested_allowed(funding_duffs, pv13()),
         expires_at: Some(1),
     }
 }
@@ -315,7 +320,7 @@ fn the_start_refuses_what_cannot_be_claimed() {
     };
     lib.w().invitation = Some(worth(FUNDING));
     assert_eq!(refused(&contested), Err("name.unavailable_for_invite"));
-    lib.w().invitation = Some(worth(flow::CONTESTED_LOCK_DUFFS));
+    lib.w().invitation = Some(worth(flow::contested_lock_duffs(pv13())));
     let quote = f.engine.block_on(registration::quote(&*lib, &contested));
     assert!(quote.is_ok(), "{quote:?}");
     // D8: a grant with duffs.
