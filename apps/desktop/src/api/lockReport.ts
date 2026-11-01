@@ -53,6 +53,9 @@ export const FLOW_NAME: Record<FlowKindName, string> = {
   proposal: "Proposal fee",
   // 0.1 lane E2: "Move to Dash wallet" from the Platform addresses.
   platformAddressMove: "Move to Dash wallet",
+  // 0.1 E1: Core → Shielded, and a shielded send or unshield.
+  shield: "Shielding",
+  shieldedSpend: "Shielded payment",
 };
 
 const PENDING: ReadonlySet<FlowOutcomeName> = new Set(["maybeSent", "willBeSent"]);
