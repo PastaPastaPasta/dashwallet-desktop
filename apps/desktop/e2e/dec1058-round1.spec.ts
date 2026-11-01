@@ -191,6 +191,24 @@ test.describe("Pay's confirm sheet warns about fees", () => {
   });
 });
 
+test("the PSBT's copy button answers like every other copy button", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: async (t: string) => void ((window as unknown as { __copied: string }).__copied = t) } });
+  });
+  await open(page);
+  await page.evaluate(`document.activeElement?.blur(); window.__dwFixture.shellCommand({ kind: "tools", tab: "psbt" })`);
+  await expect(page.getByTestId("tools-tabs-psbt")).toHaveAttribute("aria-selected", "true");
+  await page.getByTestId("psbt-paste").fill(Buffer.from("psbt\xffunsigned", "latin1").toString("base64"));
+  await page.getByTestId("psbt-load-text").click();
+  const button = page.getByTestId("psbt-copy");
+  await expect(button).toHaveText("Copy to Clipboard");
+  await button.click();
+  await expect(button).toHaveText("✓ Copied");
+  await expect(page.locator(".toast")).toHaveText("Copied");
+  await expect(page.getByTestId("psbt-message")).toHaveText("PSBT copied to clipboard.");
+  await expect(button).toHaveText("Copy to Clipboard", { timeout: 8000 });
+});
+
 async function authorizeUnlock(page: Page, back = "hero") {
   await page.getByTestId("lock-field").fill("demo");
   await page.keyboard.press("Enter");

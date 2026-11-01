@@ -9,7 +9,7 @@ import { copyWithToast } from "./toast";
 export const COPIED_MS = 1500;
 
 /** `copied` is true for `COPIED_MS` after `copy(text)` worked; a second copy restarts it. */
-export function useCopy(ms: number = COPIED_MS): { copied: boolean; copy: (text: string) => Promise<void> } {
+export function useCopy(ms: number = COPIED_MS): { copied: boolean; copy: (text: string) => Promise<boolean> } {
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);
@@ -19,6 +19,7 @@ export function useCopy(ms: number = COPIED_MS): { copied: boolean; copy: (text:
       window.clearTimeout(timer.current);
       setCopied(ok);
       if (ok) timer.current = window.setTimeout(() => setCopied(false), ms);
+      return ok;
     },
     [ms],
   );
