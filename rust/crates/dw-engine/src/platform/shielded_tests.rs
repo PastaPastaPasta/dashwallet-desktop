@@ -9,21 +9,30 @@
 //! The testnet round trip is the smoke (`/work/scratch/dw-rel/e1/smoke.md`).
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dashcore::address::Payload;
+use dashcore::ephemerealdata::instant_lock::InstantLock;
 use dashcore::hashes::Hash;
 use dashcore::{Address, Network, OutPoint, PubkeyHash, Txid};
 use dpp::address_funds::{OrchardAddress, PlatformAddress};
+use dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
+use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
+use dpp::prelude::AssetLockProof;
 use dpp::version::PlatformVersion;
 use dw_vault::{VaultError, VaultSigner};
-use platform_wallet::PlatformWalletError;
+use platform_wallet::changeset::{
+    AssetLockChangeSet, AssetLockEntry, PlatformWalletChangeSet, PlatformWalletPersistence,
+};
 use platform_wallet::wallet::shielded::note_selection::{ShieldedFeeKind, select_notes_with_fee};
 use platform_wallet::wallet::shielded::{
     OrchardKeySet, ShieldedActivityEntry, ShieldedActivityKind as Kind,
     ShieldedActivityStatus as Status, ShieldedDirection as Direction, ShieldedNote,
+};
+use platform_wallet::{
+    AssetLockFundingType, AssetLockStatus, PlatformWalletError, TrackedAssetLock,
 };
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -110,6 +119,40 @@ fn lock(n: u8, status: LockStatus) -> LockInfo {
     }
 }
 
+/// A shield's asset-lock transaction of its own (input `0x66…:n`, one
+/// credit output), for a tracked row of the real library.
+fn lock_transaction(n: u8) -> dashcore::Transaction {
+    use dashcore::transaction::special_transaction::TransactionPayload;
+    use dashcore::transaction::special_transaction::asset_lock::AssetLockPayload;
+    dashcore::Transaction {
+        version: 3,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: OutPoint::new(Txid::from_byte_array([0x66; 32]), u32::from(n)),
+            ..Default::default()
+        }],
+        output: Vec::new(),
+        special_transaction_payload: Some(TransactionPayload::AssetLockPayloadType(
+            AssetLockPayload {
+                version: 1,
+                credit_outputs: vec![dashcore::TxOut {
+                    value: 1_000_000,
+                    script_pubkey: core_address(n).script_pubkey(),
+                }],
+            },
+        )),
+    }
+}
+
+/// The InstantSend proof of output 0 of `tx`.
+fn instant_proof(tx: &dashcore::Transaction) -> AssetLockProof {
+    let islock = InstantLock {
+        txid: tx.txid(),
+        ..InstantLock::default()
+    };
+    AssetLockProof::Instant(InstantAssetLockProof::new(islock, tx.clone(), 0))
+}
+
 /// What a spend handed the library.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Spent {
@@ -172,6 +215,38 @@ struct FakeShielded {
     /// Asked during each spend's library call; its answers, in order.
     probe: Mutex<Option<Box<dyn Fn() -> bool + Send>>>,
     probed: Mutex<Vec<bool>>,
+    /// The shield locks are the library's own tracked rows, in the
+    /// funder's wallet and store, read through the real [`pool::PwShielded`]
+    /// with its journal and `app.sqlite` marks (DEC-1051 tests).
+    real_rows: bool,
+    /// The next apply answers as the library does on Platform's "already
+    /// consumed" (`PlatformWalletError::AssetLockAlreadyConsumed`), after
+    /// its transition was signed.
+    consumed: AtomicBool,
+    /// What the next apply leaves of the lock's real row.
+    row_after: Mutex<RowAfter>,
+    /// The coin reads and the funding permits asked for.
+    coin_reads: AtomicU32,
+    permits: AtomicU32,
+}
+
+/// What a library call leaves of a lock's tracked row (`real_rows`), as
+/// platform-wallet changes it at the pin (`pool::resume`'s doc).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum RowAfter {
+    #[default]
+    Unchanged,
+    /// "Already consumed" with its ChainLock proof: `RecoveredFromChain`
+    /// (`orchestration.rs:478-521`, `sync/tracking.rs:351`).
+    Recovered,
+    /// Chain-locked locally: `ChainLocked` with the outpoint's ChainLock
+    /// proof (`sync/recovery.rs:1693`, `sync/proof.rs:443-455`).
+    ChainLocked,
+    /// A ChainLock proof refused, the record's InstantSend proof back
+    /// (`sync/tracking.rs:564-620`).
+    InstantSend,
+    /// A ChainLock proof refused with nothing better: `Broadcast`, no proof.
+    Broadcast,
 }
 
 impl Default for FakeShielded {
@@ -213,6 +288,11 @@ impl Default for FakeShielded {
             unknown: Mutex::default(),
             probe: Mutex::new(None),
             probed: Mutex::default(),
+            real_rows: false,
+            consumed: AtomicBool::new(false),
+            row_after: Mutex::default(),
+            coin_reads: AtomicU32::new(0),
+            permits: AtomicU32::new(0),
         }
     }
 }
@@ -223,6 +303,67 @@ impl FakeShielded {
         let funder = self.funder.lock().unwrap().clone();
         let (session, wallet) = funder.expect("a test that funds a shield");
         (session.upgrade().expect("the fixture's session"), wallet)
+    }
+
+    /// The real library of the funder's wallet (`real_rows`).
+    async fn real(&self) -> pool::PwShielded {
+        let (session, wallet) = self.funder();
+        pool::PwShielded::open(&session, wallet).await.unwrap()
+    }
+
+    /// The funder's wallet's tracked row of `outpoint`.
+    async fn row(&self, outpoint: OutPoint) -> Option<TrackedAssetLock> {
+        let (session, wallet) = self.funder();
+        let w = session.wallet(&wallet).await.unwrap();
+        w.state().await.tracked_asset_locks.get(&outpoint).cloned()
+    }
+
+    /// Tracks `lock` as the library does: in the wallet's state and,
+    /// through the session's store, in `wallet.sqlite`.
+    async fn track(&self, lock: TrackedAssetLock, stored: bool) {
+        let (session, wallet) = self.funder();
+        let (outpoint, entry) = (lock.out_point, AssetLockEntry::from(&lock));
+        let w = session.wallet(&wallet).await.unwrap();
+        w.state_mut()
+            .await
+            .tracked_asset_locks
+            .insert(outpoint, lock);
+        if stored {
+            let changes = PlatformWalletChangeSet {
+                asset_locks: Some(AssetLockChangeSet {
+                    asset_locks: [(outpoint, entry)].into(),
+                    removed: Default::default(),
+                }),
+                ..Default::default()
+            };
+            (session.live().unwrap().store)
+                .store(wallet.0, changes)
+                .unwrap();
+        }
+    }
+
+    /// Changes the real row of `outpoint` as `after` says.
+    async fn change_row(&self, outpoint: OutPoint, after: RowAfter) {
+        let Some(mut lock) = self.row(outpoint).await else {
+            panic!("a tracked row of {outpoint}");
+        };
+        let chain = || {
+            Some(AssetLockProof::Chain(ChainAssetLockProof::new(
+                100,
+                outpoint.into(),
+            )))
+        };
+        (lock.status, lock.proof) = match after {
+            RowAfter::Unchanged => return,
+            RowAfter::Recovered => (AssetLockStatus::RecoveredFromChain, chain()),
+            RowAfter::ChainLocked => (AssetLockStatus::ChainLocked, chain()),
+            RowAfter::InstantSend => (
+                AssetLockStatus::InstantSendLocked,
+                Some(instant_proof(&lock.transaction)),
+            ),
+            RowAfter::Broadcast => (AssetLockStatus::Broadcast, None),
+        };
+        self.track(lock, true).await;
     }
 
     fn at(version: u32, refreshed: u32) -> Self {
@@ -379,28 +520,47 @@ impl ShieldedLib for FakeShielded {
     }
 
     async fn shield_locks(&self) -> Vec<LockInfo> {
+        if self.real_rows {
+            return self.real().await.shield_locks().await;
+        }
         let funded = self.funded.lock().unwrap().clone();
         self.locks.iter().cloned().chain(funded).collect()
     }
 
     fn own_locks(&self) -> Option<HashSet<Txid>> {
+        if self.real_rows {
+            let (session, wallet) = self.funder();
+            return session.leases.shield_lock_txids(wallet);
+        }
         self.own.clone()
     }
 
     async fn unknown_locks(&self) -> HashSet<Txid> {
+        if self.real_rows {
+            return self.real().await.unknown_locks().await;
+        }
         self.unknown.lock().unwrap().clone()
     }
 
     async fn mark_unknown(&self, txid: Txid) {
+        if self.real_rows {
+            return self.real().await.mark_unknown(txid).await;
+        }
         self.unknown.lock().unwrap().insert(txid);
     }
 
     async fn settled_locks(&self) -> HashSet<Txid> {
+        if self.real_rows {
+            return self.real().await.settled_locks().await;
+        }
         self.settled.lock().unwrap().clone()
     }
 
     async fn settle(&self, txid: Txid) -> Result<(), PlatformError> {
         self.settles.lock().unwrap().push(txid);
+        if self.real_rows {
+            return self.real().await.settle(txid).await;
+        }
         self.settled.lock().unwrap().insert(txid);
         Ok(())
     }
@@ -415,6 +575,7 @@ impl ShieldedLib for FakeShielded {
     }
 
     async fn coin_values(&self) -> Result<Vec<u64>, PlatformError> {
+        self.coin_reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.coins.clone())
     }
 
@@ -437,6 +598,7 @@ impl ShieldedLib for FakeShielded {
         key: FundingKey,
         duffs: u64,
     ) -> Result<CallPermit, FundError> {
+        self.permits.fetch_add(1, Ordering::SeqCst);
         let (session, _) = self.funder();
         let fence =
             (session.coin_fence(lease.wallet).await).map_err(|e| FundError::Refused(e.into()))?;
@@ -447,11 +609,31 @@ impl ShieldedLib for FakeShielded {
     }
 
     /// A new lock of the wallet's coins (input `0x66…:n`), signed by the
-    /// permit's funding signer and recorded as the step's own, proved.
+    /// permit's funding signer and recorded as the step's own, proved; with
+    /// `real_rows` also the library's tracked row, in the wallet's state
+    /// only while the call runs (the session's store refuses a lock its
+    /// call's signatures do not cover yet).
     async fn fund(&self, duffs: u64, permit: &CallPermit) -> Result<OutPoint, FundError> {
-        let (session, wallet) = self.funder();
         let n = self.funded.lock().unwrap().len() as u8 + 0x70;
-        let outpoint = OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let outpoint = if self.real_rows {
+            let transaction = lock_transaction(n);
+            let outpoint = OutPoint::new(transaction.txid(), 0);
+            let row = TrackedAssetLock {
+                out_point: outpoint,
+                proof: Some(instant_proof(&transaction)),
+                transaction,
+                account_index: 0,
+                funding_type: AssetLockFundingType::AssetLockShieldedAddressTopUp,
+                identity_index: 0,
+                amount: duffs,
+                status: AssetLockStatus::InstantSendLocked,
+            };
+            self.track(row, false).await;
+            outpoint
+        } else {
+            OutPoint::new(Txid::from_byte_array([n; 32]), 0)
+        };
+        let (session, wallet) = self.funder();
         let sighash = outpoint.txid.to_byte_array();
         permit.note_signed(sighash);
         session.leases.record_signed_locks(
@@ -480,6 +662,15 @@ impl ShieldedLib for FakeShielded {
 
     async fn apply(&self, outpoint: OutPoint, _: &VaultSigner) -> Result<Applied, PlatformError> {
         self.applied.lock().unwrap().push(outpoint);
+        if self.real_rows {
+            let after = std::mem::take(&mut *self.row_after.lock().unwrap());
+            self.change_row(outpoint, after).await;
+        }
+        if self.consumed.swap(false, Ordering::SeqCst) {
+            // As platform-wallet answers it, mapped by the real function.
+            let consumed = PlatformWalletError::AssetLockAlreadyConsumed(outpoint);
+            return pool::applied_from(Err(consumed), true);
+        }
         (self.applies.lock().unwrap().take()).expect("a scripted apply")
     }
 }
@@ -1958,4 +2149,269 @@ fn a_shield_lock_of_51_coins_is_refused_by_its_signer_and_leaves_nothing() {
     assert_eq!(tracked, 0, "no lock tracked, so none sent");
     assert_eq!(reserved(), 0, "no coin stays reserved");
     assert!(next.is_ok(), "the next shield is not held: {next:?}");
+}
+
+/// A fake over the fixture's wallet whose shield locks are the real
+/// library's tracked rows (`FakeShielded::real_rows`).
+fn real_rows(fx: &Fixture) -> Arc<FakeShielded> {
+    let lib = Arc::new(FakeShielded {
+        real_rows: true,
+        ..FakeShielded::default()
+    });
+    *lib.funder.lock().unwrap() = Some((Arc::downgrade(&fx.s), fx.wallet));
+    lib
+}
+
+/// A shield of 1,000,000 duffs on `lib`, its apply answered as scripted.
+fn shield_on(fx: &Fixture, lib: &Arc<FakeShielded>) -> (OutPoint, ShieldState) {
+    let (wallet, grant) = (fx.wallet, shield_grant(fx, 2_000_000));
+    let funded = lib.funded.lock().unwrap().len();
+    let shielded = run(fx, lib, move |s, lib| async move {
+        pool::shield(&s, wallet, &*lib, 1_000_000, &grant).await
+    })
+    .unwrap();
+    let outpoint = lib.funded.lock().unwrap()[funded].outpoint;
+    assert_eq!(shielded.txid, outpoint.txid.to_string());
+    (outpoint, shielded.state)
+}
+
+/// "Check again" on the pending shield of `outpoint`, its apply (if any)
+/// answered as scripted.
+fn check_again(fx: &Fixture, lib: &Arc<FakeShielded>, outpoint: OutPoint) -> ShieldState {
+    let (wallet, grant) = (fx.wallet, shield_grant(fx, 1));
+    let txid = outpoint.txid.to_string();
+    run(fx, lib, move |s, lib| async move {
+        pool::resume(&s, wallet, &*lib, &txid, &grant).await
+    })
+    .unwrap()
+    .state
+}
+
+/// The real tracked row of `outpoint`.
+fn row_of(fx: &Fixture, lib: &FakeShielded, outpoint: OutPoint) -> TrackedAssetLock {
+    fx.engine
+        .block_on(lib.row(outpoint))
+        .expect("a tracked row")
+}
+
+/// The locks the dispatch journal records settled.
+fn journal_settled(fx: &Fixture) -> HashSet<Txid> {
+    fx.engine
+        .block_on(fx.s.leases.top_ups_settled(fx.wallet))
+        .unwrap()
+}
+
+/// `outpoint` is "Checking": listed `consumption_unknown`, not settled in
+/// the journal, and blocking no new shield.
+fn assert_checking(fx: &Fixture, lib: &Arc<FakeShielded>, outpoint: OutPoint, proved: bool) {
+    let txid = outpoint.txid.to_string();
+    let listed = pending_of(fx, lib);
+    assert!(
+        listed.contains(&(txid.clone(), proved, true)),
+        "{txid} in {listed:?}"
+    );
+    assert!(
+        !journal_settled(fx).contains(&outpoint.txid),
+        "never settled"
+    );
+    assert!(lib.settles.lock().unwrap().is_empty(), "no settle");
+    let quoted = run(fx, lib, |s, lib| async move {
+        pool::shield_quote(&s, &*lib, 1_000_000).await.map(drop)
+    });
+    assert!(
+        quoted.is_ok(),
+        "a Checking lock blocks no new shield: {quoted:?}"
+    );
+}
+
+/// Since `before` (coin reads, permits, locks funded), nothing funded a
+/// lock or read the coins: "Check again" only applied.
+fn assert_no_funding(lib: &FakeShielded, before: (u32, u32, usize)) {
+    let now = (
+        lib.coin_reads.load(Ordering::SeqCst),
+        lib.permits.load(Ordering::SeqCst),
+        lib.funded.lock().unwrap().len(),
+    );
+    assert_eq!(now, before, "no coin read, no funding permit, no new lock");
+}
+
+fn funding_counts(lib: &FakeShielded) -> (u32, u32, usize) {
+    (
+        lib.coin_reads.load(Ordering::SeqCst),
+        lib.permits.load(Ordering::SeqCst),
+        lib.funded.lock().unwrap().len(),
+    )
+}
+
+/// DEC-1045 (b) as DEC-1051 widened it: a shield's apply hands the library
+/// the tracked lock of its outpoint and nothing else to fund it.
+#[test]
+fn a_shields_apply_funds_from_the_tracked_lock_of_its_outpoint_only() {
+    use platform_wallet::wallet::asset_lock::AssetLockFunding;
+    let outpoint = OutPoint::new(Txid::from_byte_array([0x42; 32]), 3);
+    match pool::shield_funding(outpoint) {
+        AssetLockFunding::FromExistingAssetLock {
+            out_point,
+            consume_invitation_voucher,
+        } => {
+            assert_eq!(out_point, outpoint);
+            assert!(!consume_invitation_voucher);
+        }
+        other => panic!("a shield's apply funded {other:?}"),
+    }
+}
+
+/// DEC-1045 (c), r2 condition 2 (`orchestration.rs:478`): Platform's
+/// "already consumed" never settles a shield. The library keeps the lock
+/// "consumption unknown" with its ChainLock proof (`RecoveredFromChain`,
+/// the real tracked row here), or, with no ChainLock proof to get, leaves
+/// the row as it was; either way the lock is listed "Checking" with no
+/// settle in the dispatch journal, and "Check again" stays available: the
+/// pin re-submits the row's proof for the same outpoint
+/// (`sync/recovery.rs:1696-1741`), and another "already consumed" leaves
+/// it Checking again.
+#[test]
+fn already_consumed_leaves_a_shield_checking_and_check_again_available() {
+    let fx = Fixture::new(0);
+    let lib = real_rows(&fx);
+
+    // The library promotes the lock: RecoveredFromChain, ChainLock proof.
+    lib.consumed.store(true, Ordering::SeqCst);
+    *lib.row_after.lock().unwrap() = RowAfter::Recovered;
+    let (promoted, state) = shield_on(&fx, &lib);
+    assert_eq!(state, ShieldState::ConsumptionUnknown);
+    let row = row_of(&fx, &lib, promoted);
+    assert_eq!(row.status, AssetLockStatus::RecoveredFromChain);
+    assert!(
+        matches!(row.proof, Some(AssetLockProof::Chain(_))),
+        "{:?}",
+        row.proof
+    );
+    assert_eq!(row.proof.and_then(|p| p.out_point()), Some(promoted));
+    assert_checking(&fx, &lib, promoted, true);
+
+    // No ChainLock proof within the bound: the row stays as it was.
+    lib.consumed.store(true, Ordering::SeqCst);
+    let (kept, state) = shield_on(&fx, &lib);
+    assert_ne!(kept, promoted);
+    assert_eq!(state, ShieldState::ConsumptionUnknown);
+    assert_eq!(
+        row_of(&fx, &lib, kept).status,
+        AssetLockStatus::InstantSendLocked
+    );
+    assert_checking(&fx, &lib, kept, true);
+
+    let before = funding_counts(&lib);
+    for round in 1..=2 {
+        for outpoint in [promoted, kept] {
+            lib.consumed.store(true, Ordering::SeqCst);
+            let state = check_again(&fx, &lib, outpoint);
+            assert_eq!(state, ShieldState::ConsumptionUnknown, "round {round}");
+            assert_checking(&fx, &lib, outpoint, true);
+        }
+    }
+    assert_eq!(
+        row_of(&fx, &lib, promoted).status,
+        AssetLockStatus::RecoveredFromChain
+    );
+    assert_eq!(
+        *lib.applied.lock().unwrap(),
+        [promoted, kept, promoted, kept, promoted, kept]
+    );
+    let before = (before.0 + 4, before.1, before.2); // the four quotes' coin reads
+    assert_no_funding(&lib, before);
+}
+
+/// r2 condition 1 (DEC-1051): "Check again" reuses the identical outpoint
+/// whatever proof the library derives for it, and never funds or selects
+/// coins: (i) plain, the tracked InstantSend proof; (ii) the lock
+/// chain-locked locally meanwhile, the library swapping to its ChainLock
+/// proof inside the call; (iii) that ChainLock proof refused, the row
+/// falling back to the record's InstantSend proof, or, with nothing better,
+/// to no proof (`Broadcast`: "Check again" then waits for one and applies
+/// nothing). The real tracked rows carry each proof; only the proved apply
+/// at the end settles the lock.
+#[test]
+fn check_again_keeps_the_outpoint_whatever_proof_the_library_derives() {
+    let fx = Fixture::new(0);
+    let lib = real_rows(&fx);
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Unknown));
+    let (outpoint, state) = shield_on(&fx, &lib);
+    assert_eq!(state, ShieldState::ConsumptionUnknown);
+    let before = funding_counts(&lib);
+    let proof_of = |fx: &Fixture| row_of(fx, &lib, outpoint).proof;
+    let applied = |n: usize| assert_eq!(*lib.applied.lock().unwrap(), vec![outpoint; n]);
+
+    // (i) Plain: the tracked InstantSend proof.
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Unknown));
+    assert_eq!(
+        check_again(&fx, &lib, outpoint),
+        ShieldState::ConsumptionUnknown
+    );
+    let proof = proof_of(&fx);
+    assert!(
+        matches!(proof, Some(AssetLockProof::Instant(_))),
+        "{proof:?}"
+    );
+    assert_eq!(proof.and_then(|p| p.out_point()), Some(outpoint));
+    applied(2);
+
+    // (ii) Chain-locked locally: the library carries the ChainLock proof.
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Unknown));
+    *lib.row_after.lock().unwrap() = RowAfter::ChainLocked;
+    assert_eq!(
+        check_again(&fx, &lib, outpoint),
+        ShieldState::ConsumptionUnknown
+    );
+    let proof = proof_of(&fx);
+    assert!(matches!(proof, Some(AssetLockProof::Chain(_))), "{proof:?}");
+    assert_eq!(proof.and_then(|p| p.out_point()), Some(outpoint));
+    assert_eq!(
+        row_of(&fx, &lib, outpoint).status,
+        AssetLockStatus::ChainLocked
+    );
+    applied(3);
+    assert_checking(&fx, &lib, outpoint, true);
+
+    // (iii) The ChainLock proof refused: the record's InstantSend proof.
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Unknown));
+    *lib.row_after.lock().unwrap() = RowAfter::InstantSend;
+    assert_eq!(
+        check_again(&fx, &lib, outpoint),
+        ShieldState::ConsumptionUnknown
+    );
+    let proof = proof_of(&fx);
+    assert!(
+        matches!(proof, Some(AssetLockProof::Instant(_))),
+        "{proof:?}"
+    );
+    assert_eq!(proof.and_then(|p| p.out_point()), Some(outpoint));
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Unknown));
+    assert_eq!(
+        check_again(&fx, &lib, outpoint),
+        ShieldState::ConsumptionUnknown
+    );
+    applied(5);
+    // ... or nothing better: no proof, so "Check again" applies nothing.
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Unknown));
+    *lib.row_after.lock().unwrap() = RowAfter::Broadcast;
+    assert_eq!(
+        check_again(&fx, &lib, outpoint),
+        ShieldState::ConsumptionUnknown
+    );
+    assert_eq!(check_again(&fx, &lib, outpoint), ShieldState::ProofWaiting);
+    applied(6);
+    assert_checking(&fx, &lib, outpoint, false);
+
+    // Its ChainLock proof again, and a proved apply: settled.
+    fx.engine
+        .block_on(lib.change_row(outpoint, RowAfter::ChainLocked));
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    let state = check_again(&fx, &lib, outpoint);
+    assert!(matches!(state, ShieldState::Applied { .. }), "{state:?}");
+    applied(7);
+    assert!(journal_settled(&fx).contains(&outpoint.txid));
+    assert!(pending_of(&fx, &lib).is_empty());
+    let before = (before.0 + 2, before.1, before.2); // the two Checking quotes
+    assert_no_funding(&lib, before);
 }

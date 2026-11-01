@@ -64,8 +64,9 @@
 //!   Platform's "already consumed" proves nothing (any node can say it):
 //!   such a lock, and one of ours a restore read back from the chain, reads
 //!   `consumption_unknown` ("Checking", recorded in `app.sqlite`) and pends
-//!   until a proved apply (`resume_shield` again: the same outpoint, never
-//!   a new lock; see [`resume`] for why Platform executes it at most once),
+//!   until a proved apply (`resume_shield` again: the same outpoint, with
+//!   any proof the library derives for it, never a new lock; see [`resume`]
+//!   for those proofs and why Platform executes it at most once),
 //!   but blocks no new shield, since it may never settle (DEC-1045, SR1);
 //!   only a refusal before the signature is `NotApplied`. A recovered lock
 //!   no shield step signed is history.
@@ -137,9 +138,10 @@ const CORE_FEE_PER_BYTE: u32 =
 const RESUME_PROOF_WAIT: Duration = Duration::from_secs(30);
 /// The most coins a shield's asset lock may spend. Its InstantSend proof
 /// carries the whole transaction, which stops fitting a transition from
-/// about 65 inputs, and the library falls back to a ChainLock proof only
-/// when Platform finds the InstantSend signature invalid, so a bigger lock
-/// would strand (0.2 design review X1b-2).
+/// about 65 inputs, and a fresh lock's first apply carries its InstantSend
+/// proof (a ChainLock one only once the lock is chain-locked locally, its
+/// InstantSend wait timed out, or Platform refused the InstantSend
+/// signature), so a bigger lock would stall (0.2 design review X1b-2).
 pub(crate) const MAX_LOCK_INPUTS: usize = 50;
 /// How long an apply waits for a ChainLock proof when Platform refuses the
 /// lock's InstantSend one (the library's `cl_wait`, `None` being for ever):
@@ -1214,7 +1216,8 @@ async fn apply(
 
 /// Applies the pending shield lock `txid` again ("Check again"), whatever
 /// its consumption: the library's `FromExistingAssetLock` of the same
-/// outpoint and its tracked proof, never a new lock or other coins.
+/// outpoint ([`shield_funding`]), never a new lock, new funding or other
+/// coins.
 ///
 /// The pin cannot re-send a shield's signed bytes (it keeps none), so
 /// this signs a new bundle (DEC-1045's exception for Core → Shielded).
@@ -1226,10 +1229,22 @@ async fn apply(
 /// test `should_return_already_consumed_error_when_fully_consumed`,
 /// `:181`), and an executed shield records the outpoint used with nothing
 /// remaining (rs-drive `action_convert_to_operations/shielded/shield_from_asset_lock_transition.rs:39-53`).
-/// Within one call the library may swap the lock's InstantSend proof for
-/// its ChainLock proof of the same outpoint, only after Platform refused
-/// the InstantSend one (platform-wallet `fund_from_asset_lock.rs:376-420`):
-/// still no new lock and no other coins.
+///
+/// The proof is any the library derives for that outpoint (DEC-1051), not
+/// necessarily the one the first apply carried. In platform-wallet at the
+/// pin: the tracked row's proof, upgraded to the outpoint's ChainLock proof
+/// once the lock is chain-locked locally (`asset_lock/orchestration.rs:701`
+/// → `sync/recovery.rs:1693` → `sync/proof.rs:443-455`); a ChainLock proof
+/// after the InstantSend wait timed out (`shielded/fund_from_asset_lock.rs:245-262`)
+/// or after Platform refused the InstantSend one (`:396-433`); the
+/// ChainLock proof persisted on an "already consumed" report, the row then
+/// `RecoveredFromChain` (`asset_lock/orchestration.rs:478-521`,
+/// `sync/tracking.rs:351`); after Platform refused a ChainLock proof, the
+/// record's InstantSend proof, another ChainLock proof, or none until the
+/// next resume derives one (`fund_from_asset_lock.rs:441-445` →
+/// `sync/tracking.rs:564-620`). Within one call the ChainLock-height
+/// retries sign fresh bundles of the same outpoint and proof (`:378`,
+/// `:416`).
 ///
 /// Only a proved apply settles the lock; Platform's "already consumed" and
 /// a failure after signing leave it pending, `consumption_unknown` (SR1).
@@ -1771,10 +1786,7 @@ impl ShieldedLib for PwShielded {
         let to = OrchardAddress::from_raw_bytes(&raw).map_err(|e| PlatformError::Internal {
             detail: e.to_string(),
         })?;
-        let funding = AssetLockFunding::FromExistingAssetLock {
-            out_point: outpoint,
-            consume_invitation_voucher: false,
-        };
+        let funding = shield_funding(outpoint);
         let signer = Witnessed::new(signer);
         let applied = (self.pw.wallet)
             .shielded_fund_from_asset_lock(
@@ -1790,6 +1802,16 @@ impl ShieldedLib for PwShielded {
             )
             .await;
         applied_from(applied, signer.signed())
+    }
+}
+
+/// The library funding of a shield's apply: the tracked lock at `outpoint`
+/// as it is, whatever proof the library then derives for it; never a new
+/// lock (`FromWalletBalance`) nor an invitation's (DEC-1045 (b), DEC-1051).
+pub(crate) fn shield_funding(outpoint: OutPoint) -> AssetLockFunding {
+    AssetLockFunding::FromExistingAssetLock {
+        out_point: outpoint,
+        consume_invitation_voucher: false,
     }
 }
 

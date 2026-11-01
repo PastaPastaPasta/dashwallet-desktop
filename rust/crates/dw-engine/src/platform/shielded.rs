@@ -325,8 +325,8 @@ impl DashPay {
 
     /// Applies the pending Core → Shielded lock `txid` (`pending_shields`)
     /// again, its consumption known or not ("Check again"): the same
-    /// outpoint, never a new lock or other coins; only a proved apply
-    /// settles it.
+    /// outpoint, with any proof the library derives for it, never a new
+    /// lock, new funding or other coins; only a proved apply settles it.
     pub async fn resume_shield(
         &self,
         txid: String,
