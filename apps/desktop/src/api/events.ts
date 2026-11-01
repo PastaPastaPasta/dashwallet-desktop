@@ -13,6 +13,8 @@ import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
 import { onTopUpSettled } from "../dashpay/topup";
 import { onWithdrawSettled } from "../dashpay/withdraw";
+import { onMoveSettled } from "../platform/move";
+import { onShieldedSettled } from "../shielded/flow";
 import { keys } from "./queries";
 
 /** DP1-09 D28: a status read while a sync pass held the wallet's state is `startupIncomplete` (the
@@ -179,10 +181,15 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
   const stopTopUps = onTopUpSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
   // DP6-02: a withdrawal that ended moved the balance and the recent withdrawals.
   const stopWithdrawals = onWithdrawSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
+  // 0.1: a Platform-address move or a shielded call that ended moved the pools and Activity's rows.
+  const stopMoves = onMoveSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
+  const stopShielded = onShieldedSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
   return () => {
     stopReconcile();
     stopTopUps();
     stopWithdrawals();
+    stopMoves();
+    stopShielded();
     unsubscribe();
   };
 }

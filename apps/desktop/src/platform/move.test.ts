@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MoveToCoreOutcome } from "../api/pending";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { moveCanRetry, moveErrorText, moveFor, PlatformMoveFlow, resetPlatformMoves } from "./move";
+import { moveCanRetry, moveErrorText, moveFor, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
 
 const TO = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
 const OUTCOME: MoveToCoreOutcome = { id: "pm-1", credits: "40000000000", expectedDuffs: 39_998_000, to: TO, state: "done" };
@@ -36,7 +36,7 @@ describe("Move to Dash wallet", () => {
   it("moves everything under the quote's platformOp grant, and keeps the result while the sheet is closed", async () => {
     const { flow, vault, calls, answer } = setup();
     const settled = vi.fn();
-    flow.onSettled = settled;
+    const stop = onMoveSettled(settled);
     flow.begin();
     expect([flow.open, flow.step]).toEqual([true, "confirm"]);
     const going = flow.move(GRANT);
@@ -57,12 +57,13 @@ describe("Move to Dash wallet", () => {
     flow.close();
     flow.begin();
     expect([flow.step, flow.outcome]).toEqual(["confirm", null]);
+    stop();
   });
 
   it("a cancelled passphrase ran nothing: back at the quote, nothing read again", async () => {
     const { flow, api } = setup({ encrypted: true });
     const settled = vi.fn();
-    flow.onSettled = settled;
+    const stop = onMoveSettled(settled);
     flow.begin();
     const going = flow.move(GRANT);
     await vi.waitFor(() => expect(flow.grants.pending).not.toBeNull());
@@ -70,6 +71,7 @@ describe("Move to Dash wallet", () => {
     await going;
     await Promise.resolve();
     expect([flow.step, api.platformMoveToCore.mock.calls.length, settled.mock.calls.length]).toEqual(["confirm", 0, 0]);
+    stop();
   });
 
   it("a refusal keeps its error; Back only when a new quote may pass", async () => {

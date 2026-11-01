@@ -3,10 +3,10 @@
 // and Receive's address with its QR. The card says "not active on this network yet" while the
 // network does not take shielded transitions, and is not there while dw-app has no such commands.
 
-import { useEffect, useId, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useId, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import type { ShieldedStatus } from "../api/pending";
+import { CREDITS_PER_DUFF, creditsToDuffs, SHIELDED_CODES, type ShieldedStatus } from "../api/pending";
 import { keys, shieldedDuffs, useBackend, useShieldedQuote, useShieldedStatus } from "../api/queries";
 import { useDebounced } from "../app/useDebounced";
 import { useUi } from "../app/ui";
@@ -15,13 +15,11 @@ import { CopyValue } from "../components/detail";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { useModel } from "../onboarding/model";
-import { SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
+import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
 import { Qr } from "./Receive";
 import { GrantSheet } from "./tools/common";
 
 const MEMO_BYTES = 36;
-const CREDITS_PER_DUFF = 1000n;
-const creditsToDuffs = (c: string) => Number(BigInt(c) / CREDITS_PER_DUFF);
 
 /** Formats for the sheet: Dash in the display unit, masked in discreet mode. */
 function useFormats(network: NetworkInfo) {
@@ -123,7 +121,7 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
     <>
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="shielded-quote-error">
-          {shieldedErrorText(quote.error, credits, duffs)}
+          {shieldedErrorText(quote.error, credits, duffs, kind)}
         </p>
       ) : !q ? (
         <p className="sheet-text" role="status">
@@ -158,7 +156,7 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
         <DashButton variant="tintedGray" size="large" data-testid="shielded-back" disabled={flow.running} onClick={() => flow.back()}>
           {C.confirm.back}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" disabled={!q || quote.isError || quote.isFetching || flow.running} onClick={() => q && void flow.run(q.grant)}>
+        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" disabled={!q || quote.isError || quote.isFetching || flow.running} onClick={() => q && void flow.run(q.quote.grant)}>
           {C.confirm.go}
         </DashButton>
       </div>
@@ -226,7 +224,7 @@ export function ShieldedSheet({ flow, walletId, network, status }: { flow: Shiel
           {step === "refused" && (
             <>
               <p className="form-problem" role="alert" data-testid="shielded-refusal">
-                {shieldedErrorText(flow.error, fmt.credits, fmt.duffs)}
+                {shieldedErrorText(flow.error, fmt.credits, fmt.duffs, flow.kind)}
               </p>
               <div className="sheet-actions">
                 {shieldedCanChange(flow.error) && flow.request?.kind !== "resume" && (
@@ -247,15 +245,16 @@ export function ShieldedSheet({ flow, walletId, network, status }: { flow: Shiel
   );
 }
 
-function ReceiveSheet({ walletId, onClose }: { walletId: string; onClose: () => void }) {
+function ReceiveSheet({ walletId, network, onClose }: { walletId: string; network: NetworkInfo; onClose: () => void }) {
   const b = useBackend();
+  const fmt = useFormats(network);
   const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false });
   return (
     <Sheet title={C.titles.receive} width="small" testId="shielded-receive-sheet" onClose={onClose}>
       <p className="sheet-text">{C.receive.text}</p>
       {address.isError ? (
         <p className="form-problem" role="alert" data-testid="shielded-receive-error">
-          {shieldedErrorText(address.error, (c) => c, (d) => String(d)).replace(/^Shielded is still syncing\. Try again shortly\.$/, C.receive.notSynced)}
+          {isCode(address.error, SHIELDED_CODES.notSynced) ? C.receive.notSynced : shieldedErrorText(address.error, fmt.credits, fmt.duffs)}
         </p>
       ) : address.data ? (
         <div className="receive-body" data-testid="shielded-receive">
@@ -266,7 +265,7 @@ function ReceiveSheet({ walletId, onClose }: { walletId: string; onClose: () => 
         </div>
       ) : (
         <p className="sheet-text" role="status">
-          …
+          {C.receive.loading}
         </p>
       )}
       <div className="sheet-actions">
@@ -281,16 +280,9 @@ function ReceiveSheet({ walletId, onClose }: { walletId: string; onClose: () => 
 /** Home's Shielded card: the balance and the actions; not there while dw-app has no such commands. */
 export function ShieldedCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const backend = useBackend();
-  const client = useQueryClient();
   const status = useShieldedStatus(walletId);
   const flow = shieldedFor(backend, walletId);
   useModel(flow);
-  useEffect(() => {
-    flow.onSettled = () => void client.invalidateQueries({ queryKey: ["dashpay"] });
-    return () => {
-      flow.onSettled = null;
-    };
-  }, [flow, client]);
   const [receiving, setReceiving] = useState(false);
   const fmt = useFormats(network);
   const s = status.data ?? null;
@@ -346,7 +338,7 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
         )}
       </section>
       {sheet}
-      {receiving && <ReceiveSheet walletId={walletId} onClose={() => setReceiving(false)} />}
+      {receiving && <ReceiveSheet walletId={walletId} network={network} onClose={() => setReceiving(false)} />}
     </>
   );
 }

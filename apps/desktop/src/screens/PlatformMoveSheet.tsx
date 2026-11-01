@@ -1,15 +1,12 @@
 // "Move to Dash wallet" (platform/move.ts): the Home card that offers it while the Platform
 // addresses hold something, and the sheet with the quote, Confirm & move, progress and outcome.
 
-import { useEffect } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
+import { creditsToDuffs } from "../api/pending";
 import { useBackend, usePlatformMoveQuote } from "../api/queries";
 import { useUi } from "../app/ui";
 import { DashButton } from "../components/basics";
 import { Sheet } from "../components/sheet";
-import { creditBalance } from "../dashpay/profile";
-import { useCostTable } from "../dashpay/profileQueries";
 import { useDisplay } from "../format/display";
 import { useModel } from "../onboarding/model";
 import { moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type PlatformMoveFlow } from "../platform/move";
@@ -73,10 +70,9 @@ export function PlatformMoveSheet({ flow, walletId, network }: { flow: PlatformM
   useModel(flow);
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
-  const costs = useCostTable(walletId).data;
   if (!flow.open) return <GrantSheet grants={flow.grants} />;
   const amount = (duffs: number) => (discreet ? shown.masked() : `${shown.compact(duffs)} ${shown.name}`);
-  const credits = (c: string) => creditBalance(c, costs, discreet, amount, shown.masked());
+  const credits = (c: string) => amount(creditsToDuffs(c));
   const { step, outcome } = flow;
   return (
     <>
@@ -135,26 +131,20 @@ export function PlatformMoveSheet({ flow, walletId, network }: { flow: PlatformM
  * waits. `platform` is their balance in duffs (`null`/`undefined`: not known, no card). */
 export function PlatformMoveCard({ walletId, network, platform }: { walletId: string; network: NetworkInfo; platform: number | null | undefined }) {
   const backend = useBackend();
-  const client = useQueryClient();
   const flow = moveFor(backend, walletId);
   useModel(flow);
-  useEffect(() => {
-    flow.onSettled = () => void client.invalidateQueries({ queryKey: ["dashpay"] });
-    return () => {
-      flow.onSettled = null;
-    };
-  }, [flow, client]);
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
   const sheet = <PlatformMoveSheet flow={flow} walletId={walletId} network={network} />;
-  if (!flow.open && !flow.running && !flow.unseen && !(platform && platform > 0)) return sheet;
+  const funded = platform != null && platform > 0;
+  if (!flow.open && !flow.running && !flow.unseen && !funded) return sheet;
   return (
     <>
       <section className="platform-card card-l1" data-testid="platform-card" aria-label={C.card.title}>
         <div className="platform-card-body">
           <h2 className="platform-card-title">{C.card.title}</h2>
           <p className="platform-card-text">
-            {platform != null && platform > 0 && <span data-testid="platform-card-amount">{discreet ? shown.masked() : shown.withUnit(platform)}. </span>}
+            {funded && <span data-testid="platform-card-amount">{discreet ? shown.masked() : shown.withUnit(platform)}. </span>}
             {flow.unseen ? C.unseen : C.card.text}
           </p>
         </div>

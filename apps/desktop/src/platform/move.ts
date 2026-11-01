@@ -76,6 +76,15 @@ export function moveErrorText(e: unknown, credits: (c: string) => string): strin
 /** Back is offered when a new quote may pass. */
 export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "platform.insufficient_credits");
 
+const settledListeners = new Set<() => void>();
+
+/** Called whenever a move that ran has ended (events.ts re-reads `["dashpay"]` from it, so the
+ * balance and Activity follow even when Home is not shown). Returns the unsubscribe. */
+export function onMoveSettled(f: () => void): () => void {
+  settledListeners.add(f);
+  return () => settledListeners.delete(f);
+}
+
 export class PlatformMoveFlow extends Model {
   /** The sheet is shown. */
   open = false;
@@ -83,8 +92,6 @@ export class PlatformMoveFlow extends Model {
   outcome: MoveToCoreOutcome | null = null;
   error: unknown = null;
   running = false;
-  /** Called after a call that ran has ended: what the move changed is read again. */
-  onSettled: (() => void) | null = null;
   readonly grants: GrantModel;
 
   constructor(
@@ -155,7 +162,7 @@ export class PlatformMoveFlow extends Model {
     } finally {
       this.running = false;
       // A cancelled passphrase ran nothing: nothing to read again.
-      if (ran) queueMicrotask(() => this.onSettled?.());
+      if (ran) for (const f of settledListeners) queueMicrotask(f);
       this.changed();
     }
   }

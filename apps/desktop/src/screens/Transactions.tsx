@@ -17,7 +17,7 @@ import { DashButton, Icon } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
-import { mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, sourceRowTitle } from "../history/sourceRows";
+import { filterExtra, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, sourceRowTitle } from "../history/sourceRows";
 import { DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
 
 const PAGE_SIZE = 200;
@@ -75,12 +75,14 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   const shielded = useShieldedHistory(walletId);
   const extra = useMemo(() => [...(platform.data ?? []).map(platformRow), ...(shielded.data ?? []).map(shieldedRow)], [platform.data, shielded.data]);
   const withExtra = mode === "list" && category.id === "all" && !text;
-  const rows = useMemo(
-    () => (withExtra ? mergeActivity(coreRows, !!history.hasNextPage, extra, { dateFrom: range.dateFrom, dateTo: range.dateTo, minAmount }) : coreRows),
-    [withExtra, coreRows, history.hasNextPage, extra, range.dateFrom, range.dateTo, minAmount],
+  const extraShown = useMemo(
+    () => (withExtra ? filterExtra(extra, { dateFrom: range.dateFrom, dateTo: range.dateTo, minAmount }) : []),
+    [withExtra, extra, range.dateFrom, range.dateTo, minAmount],
   );
+  const rows = useMemo(() => mergeActivity(coreRows, !!history.hasNextPage, extraShown), [coreRows, history.hasNextPage, extraShown]);
   const coreTotal = history.data?.pages[0]?.totalMatching ?? null;
-  const total = coreTotal === null ? null : coreTotal + (rows.length - coreRows.length);
+  // Every extra row the filters keep counts, loaded or not; Export is the Core history only.
+  const total = coreTotal === null ? null : coreTotal + extraShown.length;
   const ctx = useRowContext(network);
 
   // Export CSV (QT-093): the records the filters select, all pages; the line under the bar says
@@ -120,7 +122,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
         <header className="top-intro top-intro-row" data-testid="tx-intro">
           <h1 className="top-intro-title">Activity</h1>
           <div className="tx-intro-actions">
-            <DashButton variant="tintedGray" size="small" data-testid="tx-export-csv" disabled={exporting || !total} onClick={() => void exportCsv()}>
+            <DashButton variant="tintedGray" size="small" data-testid="tx-export-csv" disabled={exporting || !coreTotal} onClick={() => void exportCsv()}>
               Export CSV
             </DashButton>
             <div className="segmented" role="group" aria-label="View" data-testid="tx-mode">

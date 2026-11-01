@@ -4,8 +4,7 @@
 import { createContext, useContext } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
-import type { GrantRequest } from "./generated/GrantRequest";
-import type { ShieldedSpendQuote, ShieldedStatus, ShieldQuote } from "./pending";
+import { creditsToDuffs, type ShieldedSpendQuote, type ShieldedStatus, type ShieldQuote } from "./pending";
 import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRequest } from "./generated/HistoryRequest";
@@ -36,17 +35,17 @@ export const keys = {
   lockDrain: ["lockDrain"] as const,
   wallets: ["wallets"] as const,
   balance: (walletId: string) => ["balance", walletId] as const,
-  /** Under the balance's key, so a `balances` event reads them again with it. */
   // Under "dashpay" like the Platform keys: `platform{domain:"shielded"}` re-reads them all.
   shieldedStatus: (walletId: string) => ["dashpay", "shielded", "status", walletId] as const,
   shieldedHistory: (walletId: string) => ["dashpay", "shielded", "history", walletId] as const,
   shieldedAddress: (walletId: string) => ["dashpay", "shielded", "address", walletId] as const,
-  shieldedQuote: (walletId: string, request: string) => ["dashpay", "shielded", "quote", walletId, request] as const,
+  shieldedQuote: (walletId: string, request: string) => ["shieldedQuote", walletId, request] as const,
   // Under "dashpay": a `platform{domain:"platformAddresses"}` event is a domain events.ts does not
   // name, which it answers by invalidating everything under that prefix.
   platformAddresses: (walletId: string) => ["dashpay", "platformAddresses", walletId] as const,
   platformActivity: (walletId: string) => ["dashpay", "platformActivity", walletId] as const,
-  platformMoveQuote: (walletId: string) => ["dashpay", "platformMoveQuote", walletId] as const,
+  // Not under "dashpay": a quote is a proven network read, which a signal must not repeat while Confirm is open.
+  platformMoveQuote: (walletId: string) => ["platformMoveQuote", walletId] as const,
   networkChoice: ["networkChoice"] as const,
   sync: ["sync"] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
@@ -162,12 +161,12 @@ export function useShieldedHistory(walletId: string) {
 }
 
 /** A quote of either kind, with the grant it asks for. */
-export type ShieldedQuoteView = { kind: "add"; quote: ShieldQuote; grant: GrantRequest } | { kind: "spend"; quote: ShieldedSpendQuote; grant: GrantRequest };
+export type ShieldedQuoteView = { kind: "add"; quote: ShieldQuote } | { kind: "spend"; quote: ShieldedSpendQuote };
 
 /** The pool's balance in duffs (a credit is a thousandth of one); `null` while it is no reading:
  * the command is absent, the network is not active or the account has not been scanned yet. */
 export function shieldedDuffs(status: ShieldedStatus | null): number | null {
-  return status?.active && status.ready ? Number(BigInt(status.balance) / 1000n) : null;
+  return status?.active && status.ready ? creditsToDuffs(status.balance) : null;
 }
 
 /** What `request` costs and buys, read while the sheet asks to confirm it. */
@@ -178,16 +177,13 @@ export function useShieldedQuote(walletId: string, request: ShieldedRequest | nu
     queryFn: async (): Promise<ShieldedQuoteView> => {
       switch (request?.kind) {
         case "add": {
-          const q = await b.shieldQuote(walletId, request.duffs);
-          return { kind: "add", quote: q, grant: q.grant };
+          return { kind: "add", quote: await b.shieldQuote(walletId, request.duffs) };
         }
         case "send": {
-          const q = await b.shieldedSendQuote(walletId, request.to, request.credits);
-          return { kind: "spend", quote: q, grant: q.grant };
+          return { kind: "spend", quote: await b.shieldedSendQuote(walletId, request.to, request.credits) };
         }
         case "out": {
-          const q = await b.unshieldQuote(walletId, request.credits, null);
-          return { kind: "spend", quote: q, grant: q.grant };
+          return { kind: "spend", quote: await b.unshieldQuote(walletId, request.credits, null) };
         }
         default:
           throw new Error("nothing to quote");

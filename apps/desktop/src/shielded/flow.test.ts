@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ShieldedSpendOutcome, ShieldOutcome } from "../api/pending";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { resetShielded, shieldedCanChange, shieldedErrorText, shieldedFor, ShieldedFlow } from "./flow";
+import { onShieldedSettled, resetShielded, shieldedCanChange, shieldedErrorText, shieldedFor, ShieldedFlow } from "./flow";
 
 const TO = "tdash1zq0k8y";
 const SPEND: ShieldedSpendOutcome = { credits: "10000000000", balance: "114980000000", to: TO };
@@ -42,7 +42,7 @@ describe("the shielded flow", () => {
   it("adds to Shielded under a duffs grant and reads again", async () => {
     const { flow, vault, calls } = setup();
     const settled = vi.fn();
-    flow.onSettled = settled;
+    const stop = onShieldedSettled(settled);
     flow.begin("add");
     flow.next({ kind: "add", duffs: 100_000 });
     await flow.run({ maxDuffs: 101_000, maxCredits: "0" });
@@ -51,6 +51,7 @@ describe("the shielded flow", () => {
     expect([flow.step, flow.result]).toEqual(["done", { kind: "shield", outcome: APPLIED }]);
     await Promise.resolve();
     expect(settled).toHaveBeenCalledTimes(1);
+    stop();
   });
 
   it("sends with its memo and moves out to the wallet's own address (null)", async () => {
@@ -87,7 +88,7 @@ describe("the shielded flow", () => {
   it("a cancelled passphrase ran nothing: back at the confirm step", async () => {
     const { flow, api } = setup({ encrypted: true });
     const settled = vi.fn();
-    flow.onSettled = settled;
+    const stop = onShieldedSettled(settled);
     flow.begin("out");
     flow.next({ kind: "out", credits: "10000000000" });
     const going = flow.run(GRANT);
@@ -96,6 +97,7 @@ describe("the shielded flow", () => {
     await going;
     await Promise.resolve();
     expect([flow.step, api.unshieldToCore.mock.calls.length, settled.mock.calls.length]).toEqual(["confirm", 0, 0]);
+    stop();
   });
 
   it("a refusal keeps its error; Back when another amount or address may pass", async () => {
@@ -111,6 +113,29 @@ describe("the shielded flow", () => {
     api.unshieldToCore.mockRejectedValueOnce(appError("platform.broadcast_unknown", { kind: "artifact", artifact: "x" }));
     await flow.run(GRANT);
     expect([flow.step, shieldedCanChange(flow.error)]).toEqual(["refused", false]);
+  });
+
+  it("a cancelled Finish passphrase closes the sheet instead of leaving an empty form", async () => {
+    const { flow, api } = setup({ encrypted: true });
+    const going = flow.resume("lock1");
+    await vi.waitFor(() => expect(flow.grants.pending).not.toBeNull());
+    flow.grants.cancel();
+    await going;
+    expect([flow.open, api.resumeShield.mock.calls.length]).toEqual([false, 0]);
+  });
+
+  it("Finish starts clean over an unseen result", async () => {
+    const { flow, answer } = setup();
+    flow.begin("send");
+    flow.next({ kind: "send", credits: "10000000000", to: TO, memo: null });
+    const going = flow.run(GRANT);
+    await vi.waitFor(() => expect(flow.step).toBe("running"));
+    flow.close();
+    answer(SPEND);
+    await going;
+    expect([flow.unseen, flow.step]).toEqual([true, "done"]);
+    await flow.resume("lock1");
+    expect([flow.kind, flow.step, flow.error]).toEqual(["resume", "done", null]);
   });
 
   it("keeps one flow per wallet while the app runs", () => {
@@ -132,7 +157,10 @@ describe("shielded refusal copy", () => {
   it("says what is missing", () => {
     expect(text("shielded.insufficient_funds", { kind: "credits", needed: "2000000", available: "1000000" })).toContain("0.00002 tDASH needed with the fee, 0.00001 tDASH available");
     expect(text("shielded.funding_insufficient", { kind: "duffs", needed: 200_000, available: 100_000 })).toContain("0.002 tDASH needed with the fee, 0.001 tDASH available");
-    expect(text("shielded.below_minimum", { kind: "number", value: 20_000 })).toContain("0.0002 tDASH");
+    const minimum = (kind: "add" | "send", value: number) => shieldedErrorText(appError("shielded.below_minimum" as never, { kind: "number", value } as never), credits, duffs, kind);
+    // In duffs for a shield, in credits for a spend.
+    expect(minimum("add", 20_000)).toBe("Too small to add: the smallest amount is 0.0002 tDASH.");
+    expect(minimum("send", 2_000_000_000)).toBe("Too small: the smallest amount is 0.02 tDASH.");
     expect(text("shielded.invalid_address", { kind: "reason", reason: "x" })).toBe("Enter a Shielded address of this network.");
     expect(text("shielded.shield_pending", { kind: "txid", txid: "t" })).toContain("Finish it");
     expect(text("platform.unavailable")).toBe("Dash Platform did not answer. Try again.");

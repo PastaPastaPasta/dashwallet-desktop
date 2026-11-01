@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TxRow } from "../api/generated/TxRow";
 import type { PlatformActivity, ShieldedActivity } from "../api/pending";
-import { isSourceRow, mergeActivity, platformRow, rowSource, shieldedRow, sourceRowTitle } from "./sourceRows";
+import { filterExtra, mergeActivity, platformRow, rowSource, shieldedRow, sourceRowTitle } from "./sourceRows";
 
 const act = (id: string, over: Partial<PlatformActivity> = {}): PlatformActivity => ({
   id,
@@ -58,7 +58,7 @@ describe("platform activity rows", () => {
     const move = platformRow(act("c", { kind: "moveToCore", address: null, to: "ycore", expectedDuffs: 39_998_000, credits: "40000000000" }));
     expect(move).toMatchObject({ txType: "platformTransfer", category: "platform", amount: 39_998_000, address: "ycore" });
     expect(sourceRowTitle(move)).toBe("Moved to Dash wallet");
-    expect([rowSource(move), isSourceRow(move), isSourceRow(core("abc", 1))]).toEqual(["platform", true, false]);
+    expect([rowSource(move), rowSource(core("abc", 1))]).toEqual(["platform", null]);
   });
 
   it("shows a pending move as pending and a failed one as a problem", () => {
@@ -79,6 +79,8 @@ describe("shielded activity rows", () => {
     expect(add).toMatchObject({ txType: "platformTransfer", category: "platform" });
     expect(sourceRowTitle(add)).toBe("Added to Shielded");
     expect(sourceRowTitle(shieldedRow(shield("d", { kind: "unshield", direction: "out" })))).toBe("Moved to Dash wallet");
+    // Whatever its kind, a move between the account's own notes is internal: no sign.
+    expect(shieldedRow(shield("s", { kind: "spend", direction: "selfTransfer" })).txType).toBe("platformTransfer");
     expect(sourceRowTitle(shieldedRow(shield("e", { kind: "identityTopUp", direction: "out" })))).toBe("Paid from Shielded");
     expect(rowSource(received)).toBe("shielded");
   });
@@ -105,8 +107,19 @@ describe("merging into Activity", () => {
 
   it("applies the date range (end exclusive) and the minimum amount", () => {
     const extra = [platformRow(act("a", { at: 100 })), platformRow(act("b", { at: 200 })), platformRow(act("c", { at: 300, credits: "1000000" }))];
-    expect(ids(mergeActivity([], false, extra, { dateFrom: 150, dateTo: 300 }))).toEqual(["platform:incoming:b"]);
-    expect(ids(mergeActivity([], false, extra, { minAmount: 1_000_000 }))).toEqual(["platform:incoming:b", "platform:incoming:a"]);
+    expect(ids(filterExtra(extra, { dateFrom: 150, dateTo: 300 }))).toEqual(["platform:incoming:b"]);
+    expect(ids(filterExtra(extra, { minAmount: 1_000_000 }))).toEqual(["platform:incoming:a", "platform:incoming:b"]);
+    expect(filterExtra(extra, {})).toHaveLength(3);
+  });
+
+  it("treats a row without a time as the newest, as the engine does", () => {
+    const undated = { ...core("mempool", 0), timestamp: null };
+    const sh = shieldedRow(shield("n", { createdAt: null }));
+    // Stays on top among the Core rows, and a Shielded row without a time passes the page cut.
+    expect(ids(mergeActivity([undated, core("c3", 3000), core("c2", 2000)], true, [platformRow(act("p", { at: 2500 })), sh]))).toEqual(["mempool", "shielded:received:n", "c3", "platform:incoming:p", "c2"]);
+    // A date range drops what has no time, as it drops Core's.
+    expect(filterExtra([sh], { dateFrom: 1 })).toEqual([]);
+    expect(filterExtra([sh], {})).toEqual([sh]);
   });
 
   it("returns the Core rows as they are without extra rows", () => {

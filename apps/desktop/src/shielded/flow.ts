@@ -95,6 +95,7 @@ export const SHIELDED_COPY = {
     text: "Share this address to be paid privately. It does not change what the network sees of your wallet.",
     copy: "Copy address",
     notSynced: "Shielded is still syncing. The address shows when it has.",
+    loading: "Getting your Shielded address…",
   },
 } as const;
 
@@ -110,7 +111,7 @@ function errorLike(e: unknown): { code: string; data: Record<string, unknown> | 
 export const isCode = (e: unknown, code: string): boolean => errorLike(e)?.code === code;
 
 /** A shielded refusal, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. */
-export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string): string {
+export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind): string {
   const err = errorLike(e);
   if (!err) return failureText(e);
   const d = err.data;
@@ -128,11 +129,19 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
     case SHIELDED_CODES.fundingInsufficient:
       return d?.kind === "duffs" ? `Not enough Dash in your wallet: ${duffs(Number(d.needed))} needed with the fee, ${duffs(Number(d.available))} available.` : "Not enough Dash in your wallet.";
     case SHIELDED_CODES.belowMinimum:
-      return d?.kind === "number" ? `Too small to add: the smallest amount is ${duffs(Number(d.value))}.` : "Enter a larger amount.";
+      // The engine's minimum is in duffs for a shield, in credits for a spend.
+      if (d?.kind !== "number") return "Enter a larger amount.";
+      return kind === "add" ? `Too small to add: the smallest amount is ${duffs(Number(d.value))}.` : `Too small: the smallest amount is ${credits(String(d.value))}.`;
     case SHIELDED_CODES.coinsLocked:
       return "Your Dash is reserved right now (for example by CoinJoin). Try again shortly.";
     case SHIELDED_CODES.shieldPending:
       return "An earlier add to Shielded is not finished. Finish it from the Shielded card first.";
+    case "platform.context_unavailable":
+      return "Waiting for the network to sync before Shielded can be used. Try again shortly.";
+    case "platform.trust_mismatch":
+      return "Your Shielded account could not be verified against the network. Nothing was moved.";
+    case "platform.feature_off":
+      return "Shielded is turned off.";
     default:
       return moveErrorText(e, credits);
   }
@@ -141,6 +150,15 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
 /** Back is offered when another amount or address may pass. */
 export const shieldedCanChange = (e: unknown): boolean =>
   [SHIELDED_CODES.invalidAddress, SHIELDED_CODES.insufficientFunds, SHIELDED_CODES.fundingInsufficient, SHIELDED_CODES.belowMinimum, "platform.grant_exceeded", "invalid_argument"].some((c) => isCode(e, c));
+
+const settledListeners = new Set<() => void>();
+
+/** Called whenever a shielded call that ran has ended (events.ts re-reads `["dashpay"]` from it, so
+ * the balances and Activity follow even when Home is not shown). Returns the unsubscribe. */
+export function onShieldedSettled(f: () => void): () => void {
+  settledListeners.add(f);
+  return () => settledListeners.delete(f);
+}
 
 export class ShieldedFlow extends Model {
   /** The sheet is shown. */
@@ -155,8 +173,6 @@ export class ShieldedFlow extends Model {
   result: ShieldedResult | null = null;
   error: unknown = null;
   running = false;
-  /** Called after a call that ran has ended: what it changed is read again. */
-  onSettled: (() => void) | null = null;
   readonly grants: GrantModel;
 
   constructor(
@@ -232,9 +248,14 @@ export class ShieldedFlow extends Model {
 
   /** Finishes the lock `txid` that was not applied: a grant of one duff (its one-time key), no confirm. */
   async resume(txid: string): Promise<void> {
-    this.begin("resume");
+    this.open = true;
+    if (this.running) return this.changed();
     this.kind = "resume";
+    this.step = "form";
+    this.result = null;
+    this.error = null;
     this.request = { kind: "resume", txid };
+    this.changed();
     await this.run({ maxDuffs: 1, maxCredits: "0" });
   }
 
@@ -256,14 +277,18 @@ export class ShieldedFlow extends Model {
       if (got) {
         this.result = got.value;
         this.step = "done";
-      } else this.step = request.kind === "resume" ? "form" : "confirm";
+      } else if (request.kind === "resume") {
+        // A cancelled passphrase: there is no form to go back to.
+        this.open = false;
+        this.step = "form";
+      } else this.step = "confirm";
     } catch (e) {
       this.error = e;
       this.step = "refused";
     } finally {
       this.running = false;
       // A cancelled passphrase ran nothing: nothing to read again.
-      if (ran) queueMicrotask(() => this.onSettled?.());
+      if (ran) for (const f of settledListeners) queueMicrotask(f);
       this.changed();
     }
   }

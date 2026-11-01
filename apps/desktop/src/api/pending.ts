@@ -1,7 +1,7 @@
 // Commands the 0.1 release lanes add to dw-app that the renderer is built against before they land:
 // lane E2's network choice and Platform addresses (contract m4-dashpay-engine v40 §2.12 and §8, branch
-// `dw/rel-platform-addr`), and lane E1's shielded balance (a placeholder until its contract). Each is
-// called by name through `callPending`, which answers `null` while dw-app has no such command (Tauri's
+// `dw/rel-platform-addr`), and lane E1's shielded funds (contract v41 §2.13, branch
+// `dw/rel-shielded`). Each is called by name through `callPending`, which answers `null` while dw-app has no such command (Tauri's
 // ACL refusal or "Command … not found"; the fixture's `platform.not_implemented`), so a screen shows
 // its "unavailable" state. The types below are the generated bindings' shapes by hand (the codegen
 // test refuses files in `generated/` that dw-app does not write). When a command is generated into
@@ -97,6 +97,13 @@ export interface MoveToCoreOutcome {
 }
 
 // Lane E1's shielded funds (contract v41 §2.13, branch `dw/rel-shielded`).
+
+/** Platform's credits per duff (dpp's `CREDITS_PER_DUFF`): what `PlatformAddressBalance.duffs` and
+ * the shielded pool's figures use. */
+export const CREDITS_PER_DUFF = 1000n;
+
+/** Whole duffs in `credits` (a decimal string). */
+export const creditsToDuffs = (credits: string): number => Number(BigInt(credits) / CREDITS_PER_DUFF);
 
 /** Lane E1's `ShieldedCode`s, one place for the screens' copy and the fixture (the generated
  * `ErrorCode` lists them once E1's bindings land). */

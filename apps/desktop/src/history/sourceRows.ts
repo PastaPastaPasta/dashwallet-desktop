@@ -6,15 +6,11 @@
 // history.
 
 import type { TxRow } from "../api/generated/TxRow";
-import type { PlatformActivity, ShieldedActivity } from "../api/pending";
+import { creditsToDuffs, type PlatformActivity, type ShieldedActivity } from "../api/pending";
 
 export type RowSource = "platform" | "shielded";
 
 export const SOURCE_TAG: Record<RowSource, string> = { platform: "Platform", shielded: "Shielded" };
-
-/** Platform's credits per duff (dpp's `CREDITS_PER_DUFF`), the ratio `PlatformAddressBalance.duffs`
- * uses. */
-const CREDITS_PER_DUFF = 1000n;
 
 export const SourceRowText = {
   platformIncoming: "Received on Platform",
@@ -30,10 +26,6 @@ export const SourceRowText = {
 export function rowSource(row: Pick<TxRow, "txid">): RowSource | null {
   return row.txid.startsWith("platform:") ? "platform" : row.txid.startsWith("shielded:") ? "shielded" : null;
 }
-
-export const isSourceRow = (row: Pick<TxRow, "txid">) => rowSource(row) !== null;
-
-const duffsOf = (credits: string) => Number(BigInt(credits) / CREDITS_PER_DUFF);
 
 const statusOf = (kind: TxRow["status"]["kind"]): TxRow["status"] => ({ kind, confirmations: kind === "confirmed" ? 1 : 0, instantLocked: false, chainLocked: false, maturesIn: null });
 
@@ -57,7 +49,7 @@ const base = (txid: string, status: TxRow["status"], timestamp: number | null, a
  * (an internal move: no sign); a failed one is the "not accepted" problem row. */
 export function platformRow(a: PlatformActivity): TxRow {
   const move = a.kind === "moveToCore";
-  const amount = move ? (a.expectedDuffs ?? duffsOf(a.credits)) : duffsOf(a.credits);
+  const amount = move ? (a.expectedDuffs ?? creditsToDuffs(a.credits)) : creditsToDuffs(a.credits);
   return {
     ...base(`platform:${a.kind}:${a.id}`, statusOf(a.state === "done" ? "confirmed" : a.state === "pending" ? "unconfirmed" : "notAccepted"), a.at, a.kind === "outgoing" ? -amount : amount),
     txType: move ? "platformTransfer" : a.kind === "incoming" ? "recvWithAddress" : "sendToAddress",
@@ -69,8 +61,8 @@ export function platformRow(a: PlatformActivity): TxRow {
 /** A shielded activity row as a history row. Moving funds in or out of the pool is an internal
  * move (no sign); the rest are received or paid. */
 export function shieldedRow(a: ShieldedActivity): TxRow {
-  const internal = a.kind === "shield" || a.kind === "shieldFromCore" || a.kind === "unshield" || a.kind === "withdrawal";
-  const amount = duffsOf(a.credits);
+  const internal = a.kind === "shield" || a.kind === "shieldFromCore" || a.kind === "unshield" || a.kind === "withdrawal" || a.direction === "selfTransfer";
+  const amount = creditsToDuffs(a.credits);
   const received = a.direction === "in";
   return {
     ...base(`shielded:${a.kind}:${a.id}`, statusOf(a.status === "confirmed" ? "confirmed" : a.status === "failed" ? "notAccepted" : "unconfirmed"), a.createdAt, a.direction === "out" ? -amount : amount),
@@ -83,8 +75,8 @@ export function shieldedRow(a: ShieldedActivity): TxRow {
 }
 
 export function sourceRowTitle(row: TxRow): string {
-  const [source, kind] = row.txid.split(":");
-  if (source === "platform") return kind === "moveToCore" ? SourceRowText.moveToCore : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
+  const kind = row.txid.split(":")[1];
+  if (rowSource(row) === "platform") return kind === "moveToCore" ? SourceRowText.moveToCore : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
   switch (kind) {
     case "shield":
     case "shieldFromCore":
@@ -108,23 +100,28 @@ export interface SourceFilter {
   minAmount?: number;
 }
 
+/** The `extra` rows the date range and minimum amount keep, as the engine applies them to Core
+ * rows (a row without a time is the newest: a date range drops it, as it does Core's). */
+export function filterExtra(extra: TxRow[], filter: SourceFilter): TxRow[] {
+  const dated = filter.dateFrom !== undefined || filter.dateTo !== undefined;
+  return extra.filter(
+    (r) =>
+      (r.timestamp === null ? !dated : (filter.dateFrom === undefined || r.timestamp >= filter.dateFrom) && (filter.dateTo === undefined || r.timestamp < filter.dateTo)) &&
+      (filter.minAmount === undefined || Math.abs(r.amount) >= filter.minAmount),
+  );
+}
+
+/** Newest first; a row without a time (a fresh arrival) is the newest, as the engine sorts it. */
+const at = (r: TxRow) => r.timestamp ?? Number.POSITIVE_INFINITY;
+const newestFirst = (a: TxRow, b: TxRow) => (at(a) === at(b) ? 0 : at(b) > at(a) ? 1 : -1);
+
 /** Core's `rows` (newest first, `more`: further pages exist) with the other sources' `extra` rows
- * among them by date. While Core has further pages, extra rows older than the oldest loaded Core
- * row wait for them, so a row never appears above where a later page puts the Core rows. The date
- * range and minimum amount apply as the engine applies them to Core rows. */
-export function mergeActivity(rows: TxRow[], more: boolean, extra: TxRow[], filter: SourceFilter = {}): TxRow[] {
-  if (extra.length === 0) return rows;
+ * (already filtered: `filterExtra`) among them by date. While Core has further pages, extra rows
+ * older than the oldest loaded Core row wait for them, so a row never appears above where a later
+ * page puts the Core rows. */
+export function mergeActivity(rows: TxRow[], more: boolean, extra: TxRow[]): TxRow[] {
   const oldest = more ? (rows.at(-1)?.timestamp ?? null) : null;
-  const shown = extra.filter((r) => {
-    const at = r.timestamp ?? 0;
-    return (
-      (filter.dateFrom === undefined || at >= filter.dateFrom) &&
-      (filter.dateTo === undefined || at < filter.dateTo) &&
-      (filter.minAmount === undefined || Math.abs(r.amount) >= filter.minAmount) &&
-      (oldest === null || at >= oldest)
-    );
-  });
-  if (shown.length === 0) return rows;
+  const shown = oldest === null ? extra : extra.filter((r) => at(r) >= oldest);
   // Stable: on a tie the Core row stays first.
-  return [...rows, ...shown].sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
+  return shown.length === 0 ? rows : [...rows, ...shown].sort(newestFirst);
 }
