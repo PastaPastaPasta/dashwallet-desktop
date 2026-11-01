@@ -29,6 +29,9 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let sdk = Self(rawValue: "sdk")
     public static let spv = Self(rawValue: "spv")
     public static let io = Self(rawValue: "io")
+    /// Close or unload refused while a shielded spend's result is unknown
+    /// (0.1 E1, DEC-1046).
+    public static let shieldedSpendUnresolved = Self(rawValue: "shielded_spend_unresolved")
 
     // Vault.
     public static let vaultNoVault = Self(rawValue: "vault.no_vault")
@@ -248,7 +251,7 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     /// `wallet.invalid_mnemonic` / `wallet.already_exists`.
     public static let engineCodes: [ServiceErrorCode] = [
         .invalidArgument, .networkNotOpen, .walletNotFound, .storage, .notImplemented, .internal,
-        .invalidConfig, .storageInUse, .wallet, .sdk, .spv, .io,
+        .invalidConfig, .storageInUse, .wallet, .sdk, .spv, .io, .shieldedSpendUnresolved,
         .vaultNoVault, .vaultAlreadyExists, .vaultLocked, .vaultWrongPassphrase, .vaultThrottled,
         .vaultPassphraseRejected, .vaultNotEncrypted, .vaultAlreadyEncrypted, .vaultGrantInvalid,
         .vaultGrantPurposeMismatch, .vaultMixingOnly, .vaultCredentialRequired, .vaultNoSecret, .vaultQuickUnlockUnavailable,
