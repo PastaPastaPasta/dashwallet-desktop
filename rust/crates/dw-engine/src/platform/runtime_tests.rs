@@ -417,8 +417,11 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
         "stop with a stuck pass took {:?}: {stopped:?}",
         stopping.elapsed()
     );
+    // The shielded pass (0.1 E1) is stuck on the same blackhole; under load
+    // either pass may be the one still in flight at the deadline.
     assert!(
-        matches!(&stopped, Err(EngineError::Sdk(detail)) if detail.contains("dashpay_sync")),
+        matches!(&stopped, Err(EngineError::Sdk(detail))
+            if detail.contains("dashpay_sync") || detail.contains("shielded_sync")),
         "{stopped:?}"
     );
     assert_eq!(s.spv_state().unwrap(), SpvState::Stopped);
