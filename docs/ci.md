@@ -256,16 +256,31 @@ The `checksums` job downloads the three `dist-<os>` artifacts, writes `SHA256SUM
 **Triggers and publishing (DEC-1058).** The workflow runs on pushes to every branch, on tags `v*`, on pull requests
 and on `workflow_dispatch`; all of them build and upload CI artifacts with `contents: read`. Only the `publish` job
 has write permissions (`contents`, `id-token`, `attestations`), and its `if` admits a push to `main` or to a release
-tag (as classified by the read-only `decide` job) only, so a fork's pull request, a branch, a dispatch and a dry-run
-tag never reach it. It checks out the full
-history, runs `ci/github/release-publish.sh`, which refuses any commit that is not on `origin/main`, and publishes:
+tag only when the read-only `decide` job (`ci/github/release-decide.sh`) says `publish=true`: the trigger is a push
+to `main` or a tag `vX.Y.Z[-rc.N]`, in `PastaPastaPasta/dashwallet-desktop`, **and the commit is an ancestor of a
+freshly fetched `origin/main`**. A fork's pull request, a branch, a dispatch, a dry-run tag and a release tag on a
+commit outside `main` therefore never start the job that holds the write token. This check is code of the pushed
+commit, like the workflow, so it cannot stop a tag whose own workflow file was edited; that needs an environment
+deployment policy or a tag ruleset in the repository settings. `release-publish.sh` repeats the ancestry check
+(second line). `decide` also gates the build: a branch push or pull request that changes only `docs/`, `*.md`, the
+Swift trees (`Sources`, `Tests`, `Apps`, `Vendor`, `Package.*`) or the unrelated workflows skips the three build
+jobs and so `checksums` (`script-tests` still runs); main, tags and dispatches always build. A new push to a branch
+or pull request cancels that ref's running release build (main and tags are never cancelled). The `publish` job checks
+out the full history, runs `ci/github/release-publish.sh` and publishes:
 
 - push to `main`: an immutable prerelease `v<version>-dev.<run>+<short sha>` (never edited; skipped if it exists)
   and the rolling prerelease `continuous` with stable names `DashWallet-continuous-<os-arch>.<ext>` and its own
-  `SHA256SUMS`. `continuous` is updated in place: each new file is uploaded as `<name>.new`, then the old asset
-  is renamed `<name>.old`, the new one `<name>`, the old one deleted. A download of one file can fail for the
-  two API calls between the renames (well under a second); `SHA256SUMS` goes last. The tag moves after the assets
-  and never backwards (an older run finishing late leaves `continuous` alone).
+  `SHA256SUMS`. `continuous` is replaced as one generation: recover from an interrupted earlier run, upload every
+  new file as `<name>.new`, then per name rename the old asset `<name>.old` and the new one `<name>` (`SHA256SUMS`
+  last), move the tag, rewrite the notes, and only then delete the `.old` assets. Any failure after the first rename,
+  and a cancel (SIGINT/SIGTERM), rolls back: every name is restored from its `.old`, the tag goes back. The API is
+  not atomic, so for tens of seconds during the renames a file can be missing for the two calls between its renames,
+  or newer than the `SHA256SUMS` next to it (downloaders retry; see `verifying.md`). A hard kill or an API outage can
+  leave canonical names missing, `.new`/`.old` leftovers or mismatched checksums until the next publish, whose
+  first step repairs it (leftover `.new` deleted; a missing name restored from its `.old`; if the binaries do not
+  match `SHA256SUMS` the whole old generation is restored, else the `.old` copies are dropped). By hand: rename each
+  `<name>.old` over the missing or new `<name>`, delete stray `<name>.new`, or re-run the publish job. The tag moves
+  after the assets and never backwards (an older run finishing late leaves `continuous` alone).
 - push of a tag `vX.Y.Z[-rc.N]` (on `main`): a prerelease with the run's files (notes from
   `docs/release/X.Y.Z-notes.md`), nothing rolling. `v0.0.0-rel<N>` dry-run tags only build.
 - `actions/attest-build-provenance` runs before the release is written, on every file (the four bundles and both
@@ -284,7 +299,8 @@ tag. Dev tags (`v*-dev.*`) do not trigger the workflow. `gh` reads that fail wit
 script before any write.
 
 The `script-tests` job runs `ci/github/release-publish-test.sh` (a fake `gh` and a
-scratch git repository: which triggers publish, which refuse, the swap order) on every run. For a dry run against
+scratch git repository: which triggers publish and which refuse, the decide verdicts including an off-main tag, and
+the `continuous` swap under a failed write, an outage and a kill at every write) on every run. For a dry run against
 the real repository: `DRY_RUN=1 ci/github/release-publish.sh publish` after `prepare` runs the reads and prints
 each write. Nothing is signed by hand and no PGP key is involved before 1.0; see `docs/release/verifying.md`.
 
