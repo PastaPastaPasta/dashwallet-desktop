@@ -269,7 +269,9 @@ jobs:
         run: |
           ls -l
           [[ $(ls | wc -l) -eq 4 ]] || { echo "::error::expected 4 bundles (dmg, exe, AppImage, deb)"; exit 1; }
-          LC_ALL=C ls | xargs sha256sum > SHA256SUMS
+          # The list is taken before the redirect creates SHA256SUMS.
+          files=$(LC_ALL=C ls)
+          sha256sum $files > SHA256SUMS
           cat SHA256SUMS
           sha256sum -c SHA256SUMS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

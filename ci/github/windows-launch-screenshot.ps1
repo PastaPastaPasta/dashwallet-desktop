@@ -32,17 +32,32 @@ if ($process.HasExited) {
     exit 1
 }
 
-# The runner agent's console sits in front on a hosted runner: minimize every window, then bring
-# the app's own window back (AppActivate restores a minimized window).
-Add-Type -AssemblyName Microsoft.VisualBasic
-(New-Object -ComObject Shell.Application).MinimizeAll()
-Start-Sleep -Seconds 1
-try { [Microsoft.VisualBasic.Interaction]::AppActivate($process.Id) } catch { Write-Host "::warning::${Name}: could not activate the app window: $_" }
-Start-Sleep -Seconds 3
+# On a hosted runner the agent's console and system dialogs sit in front: restore the app's own
+# window and make it topmost, so the screen shows it.
+Add-Type -Namespace Win -Name User32 -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int cmd);
+[DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr h);
+[DllImport("user32.dll")] public static extern bool SetWindowPos(System.IntPtr h, System.IntPtr after, int x, int y, int cx, int cy, uint flags);
+'@
+for ($i = 0; $i -lt 15 -and -not $process.HasExited; $i++) {
+    $process.Refresh()
+    if ($process.MainWindowHandle -ne [System.IntPtr]::Zero) { break }
+    Start-Sleep -Seconds 1
+}
 if ($process.HasExited) {
     Write-Host "::error::$Name exited while the screen was prepared (code $($process.ExitCode))"
     exit 1
 }
+$handle = $process.MainWindowHandle
+Write-Host "${Name}: main window handle $handle, title '$($process.MainWindowTitle)'"
+if ($handle -eq [System.IntPtr]::Zero) {
+    Write-Host "::warning::${Name}: the process has no main window"
+} else {
+    [void][Win.User32]::ShowWindow($handle, 9)                                    # SW_RESTORE
+    [void][Win.User32]::SetWindowPos($handle, [System.IntPtr](-1), 0, 0, 0, 0, 0x43)  # HWND_TOPMOST, no move/size, show
+    [void][Win.User32]::SetForegroundWindow($handle)
+}
+Start-Sleep -Seconds 3
 
 $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
