@@ -4,8 +4,8 @@
 import { useEffect, useId, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useLockStatus } from "../../api/queries";
-import { ui, useUi } from "../../app/ui";
-import { showToast } from "../../components/toast";
+import { useUi } from "../../app/ui";
+import { dismissPrivateToast, showToast } from "../../components/toast";
 import { useDisplay, type Display } from "../../format/display";
 import { detailDate } from "../../format/tx";
 import { markReceivedRead, onReceived, useReceived, type ReceivedPayment } from "../../payments/received";
@@ -15,15 +15,21 @@ export function receivedText(duffs: number, shown: Display, discreet: boolean): 
   return discreet ? "Received a payment" : `Received ${shown.compact(duffs)} ${shown.name}`;
 }
 
-/** The toast for every payment that arrives, wherever the window is (one per batch, its total). */
+/** The toast for every payment that arrives, wherever the window is (one per batch, its total). It holds
+ * both texts, so Discreet mode masks it while it is up; locking takes it down, and none comes while locked. */
 export function ReceivedToaster({ network }: { network: NetworkInfo }) {
   const shown = useDisplay(network);
-  // Not over the lock screen: what the wallet received is for who unlocked it. The bell has it.
   const locked = useLockStatus().data?.state === "locked";
-  useEffect(
-    () => (locked ? undefined : onReceived((batch) => showToast(receivedText(batch.reduce((n, p) => n + p.duffs, 0), shown, ui.get().discreet)))),
-    [shown, locked],
-  );
+  useEffect(() => {
+    if (locked) {
+      dismissPrivateToast();
+      return;
+    }
+    return onReceived((batch) => {
+      const total = batch.reduce((n, p) => n + p.duffs, 0);
+      showToast(receivedText(total, shown, false), undefined, receivedText(total, shown, true));
+    });
+  }, [shown, locked]);
   return null;
 }
 
