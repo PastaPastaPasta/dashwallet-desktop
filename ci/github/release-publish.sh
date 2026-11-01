@@ -307,8 +307,8 @@ publish)
     rename_asset "$nid" "$n" || fail "cannot promote $n.new"
   done
   if [[ -n "$cur" ]]; then
+    tag_moved=1 # before the call: a PATCH that landed but reported an error is moved back too
     w gh api -X PATCH "repos/$repo/git/refs/tags/continuous" -f sha="$sha" -F force=true --silent || fail "cannot move the tag"
-    tag_moved=1
   else
     w gh api -X POST "repos/$repo/git/refs" -f ref=refs/tags/continuous -f sha="$sha" --silent || fail "cannot create the tag"
   fi

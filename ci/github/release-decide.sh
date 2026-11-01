@@ -16,7 +16,9 @@
 #           environment deployment policy or a tag ruleset (repository settings).
 # build     always, except a branch push or pull request that changes only documentation and files no
 #           release bundle is built from (docs, *.md, the Swift trees, the unrelated workflows). Main,
-#           tags and dispatch always build. An unknown base (a new branch, a forced push) builds.
+#           tags and dispatch always build. A branch push is measured from its merge base with origin/main
+#           (not from the previous push: a docs-only push must not cancel a code push's build and then
+#           skip its own); a pull request from its base. An unknown base builds.
 set -euo pipefail
 
 event=${GITHUB_EVENT_NAME:?}
@@ -26,6 +28,7 @@ repo=${GITHUB_REPOSITORY:?}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 kind=$("$here/release-publish.sh" classify)
+[[ -n "${DECIDE_NO_FETCH:-}" ]] || git fetch --quiet --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
 
 publish=false
 if [[ "$kind" == skip ]]; then
@@ -34,7 +37,6 @@ elif [[ "$repo" != PastaPastaPasta/dashwallet-desktop ]]; then
   echo "decide: $repo is not the release repository; publishing nothing"
 else
   [[ "$(git rev-parse --is-shallow-repository)" == false ]] || { echo "::error::decide: shallow checkout; cannot check ancestry" >&2; exit 1; }
-  [[ -n "${DECIDE_NO_FETCH:-}" ]] || git fetch --quiet --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
   if git merge-base --is-ancestor "$sha" refs/remotes/origin/main; then
     publish=true
   else
@@ -43,11 +45,14 @@ else
 fi
 
 build=true
-base=${DECIDE_BASE:-}
-if [[ "$ref" != refs/heads/main && "$ref" != refs/tags/* && ("$event" == push || "$event" == pull_request) ]] &&
-  [[ -n "$base" && "$base" != 0000000000000000000000000000000000000000 ]] &&
-  git cat-file -e "$base^{commit}" 2>/dev/null; then
-  changed=$(git diff --name-only "$base" "$sha")
+base=
+if [[ "$event" == push ]]; then
+  base=$(git merge-base refs/remotes/origin/main "$sha" 2>/dev/null || true)
+elif [[ "$event" == pull_request ]]; then
+  base=${DECIDE_BASE:-}
+fi
+if [[ "$ref" != refs/heads/main && "$ref" != refs/tags/* ]] && [[ -n "$base" ]] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+  changed=$(git diff --no-renames --name-only "$base" "$sha")
   other=$(grep -vE '^(docs/|(Sources|Tests|Apps|Vendor)/|Package\.(swift|resolved)$|\.github/workflows/(ci|gate|nightly|tauri-selftest)\.yml$)|\.md$' <<<"$changed" || true)
   if [[ -n "$changed" && -z "$other" ]]; then
     build=false

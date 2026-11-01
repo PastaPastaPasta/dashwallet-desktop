@@ -35,6 +35,10 @@ mkdir docs && echo a > docs/a.md && git add docs && git commit -q -m docs
 newer=$(git rev-parse HEAD)
 mkdir rust && echo a > rust/x.rs && git add rust && git commit -q -m code
 code=$(git rev-parse HEAD)
+echo b > docs/b.md && git add docs && git commit -q -m docs2
+docsafter=$(git rev-parse HEAD)
+git mv rust/x.rs docs/x.rs && git commit -q -m move
+moved=$(git rev-parse HEAD)
 
 # A stateful fake gh. State in $FS: ids (id<TAB>name), data/<id>, ref (the continuous tag), mut (writes so far).
 # Faults: FAKE_FAIL_AT=k with FAKE_FAIL_MODE once (only write k fails), outage (write k and every later one
@@ -68,6 +72,7 @@ add_asset() { # name, source file
 }
 case "$1 $2" in
   "release upload")
+    [[ -z "${FAKE_UPLOAD_FAIL:-}" ]] || { echo "gh: upload failed (HTTP 500)" >&2; exit 1; }
     mutate
     f=$4; n=${f##*/}
     [[ -z "$(id_of "$n")" ]] || { echo "gh: asset under the same name already exists (HTTP 422)" >&2; exit 1; }
@@ -240,6 +245,12 @@ for mode in once outage kill killafter; do
       else [[ $g1 == old && $l1 -eq 0 && $(cat "$FS/ref") == "$c1" ]] || { echo "  once@$k: exit $s1, state $g1, leftovers $l1, tag $(cat "$FS/ref")"; bad=1; }; fi
     else
       # an outage or a kill may leave a gap; the next run repairs it
+      # the next run's recovery on its own (its upload fails, so nothing of the new generation survives it):
+      # whatever it keeps must be one whole generation, never a mix or a SHA256SUMS that disagrees
+      FAKE_UPLOAD_FAIL=1 publish_only
+      g2=$(gen_of)
+      [[ $status -ne 0 && ( $g2 == old || $g2 == new ) && $(leftovers) -eq 0 ]] ||
+        { echo "  $mode@$k: recovery alone: exit $status, state $g2, leftovers $(leftovers)"; bad=1; }
       publish_only
       [[ $status -eq 0 && $(gen_of) == new && $(leftovers) -eq 0 && $(cat "$FS/ref") == "$c2" ]] ||
         { echo "  $mode@$k: next run exit $status, state $(gen_of), leftovers $(leftovers)"; bad=1; }
@@ -253,7 +264,7 @@ seed_old
 FAKE_RELEASES="$tag" FAKE_FAIL_AT=12 FAKE_FAIL_MODE=kill publish_only
 FAKE_RELEASES="$tag" FAKE_NO_DIGEST=1 publish_only
 check "recovery without digests: complete new generation" '[[ $status -eq 0 && $(gen_of) == new && $(leftovers) -eq 0 ]]'
-# an interrupted promotion is repaired before the new update: old binaries with a new SHA256SUMS is never kept
+# an outage during the promotions fails the run and leaves one whole generation after the rollback attempt
 seed_old
 FAKE_RELEASES="$tag" FAKE_FAIL_AT=10 FAKE_FAIL_MODE=outage publish_only
 check "outage mid-promotion leaves a failure exit" '[[ $status -ne 0 ]]'
@@ -288,7 +299,7 @@ decide() {
   echo "$(sed -n 's/^publish=//p' "$out") $(sed -n 's/^build=//p' "$out")"
 }
 check "decide: push to main publishes and builds" '[[ $(decide push refs/heads/main "$c2" "$c1") == "true true" ]]'
-check "decide: a docs-only change to main still builds" '[[ $(decide push refs/heads/main "$c2" "$c1") == "true true" ]]'
+check "decide: a docs-only change to main still builds" '[[ $(decide push refs/heads/main "$newer" "$c2") == "false true" ]]'
 check "decide: a release tag on main publishes" '[[ $(decide push refs/tags/v0.1.0 "$c2" 0000000000000000000000000000000000000000) == "true true" ]]'
 check "decide: a release tag OFF main does not publish (so the write job never starts)" '[[ $(decide push refs/tags/v0.1.0 "$side" "") == "false true" ]]'
 check "decide: an rc tag off main does not publish" '[[ $(decide push refs/tags/v0.1.0-rc.1 "$code" "") == "false true" ]]'
@@ -299,8 +310,10 @@ check "decide: a pull request and a dispatch do not publish" '[[ $(decide pull_r
 check "decide: a docs-only branch push does not build" '[[ $(decide push refs/heads/dw/x "$newer" "$c2") == "false false" ]]'
 check "decide: a docs-only pull request does not build" '[[ $(decide pull_request refs/pull/9/merge "$newer" "$c2") == "false false" ]]'
 check "decide: a code change builds" '[[ $(decide push refs/heads/dw/x "$code" "$c2") == "false true" ]]'
-check "decide: a new branch (no base) builds" '[[ $(decide push refs/heads/dw/x "$newer" 0000000000000000000000000000000000000000) == "false true" ]]'
-check "decide: a docs-only tag or main push builds" '[[ $(decide push refs/heads/main "$c2" "$c1") == "true true" ]]'
+check "decide: a docs-only push after a code push on the branch still builds (measured from main, not the last push)" '[[ $(decide push refs/heads/dw/x "$docsafter" "$code") == "false true" ]]'
+check "decide: moving a source file into docs/ is a code change" '[[ $(decide pull_request refs/pull/9/merge "$moved" "$code") == "false true" ]]'
+check "decide: a pull request with no known base builds" '[[ $(decide pull_request refs/pull/9/merge "$newer" "") == "false true" ]]'
+check "decide: a docs-only change on a tag still builds" '[[ $(decide push refs/tags/v0.1.0 "$newer" "$c2") == "false true" ]]'
 
 # --- release-version.sh
 cd "$here/../.."
