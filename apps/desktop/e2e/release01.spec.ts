@@ -111,6 +111,26 @@ test.describe("status bar", () => {
   }
 });
 
+test.describe("sidebar", () => {
+  for (const theme of THEMES) {
+    test(`Settings is the last item of the sidebar and opens Settings (${theme})`, async ({ page }) => {
+      await open(page, "funded", theme);
+      const settings = page.getByTestId("sidebar-settings");
+      await expect(settings).toHaveText("Settings");
+      // Last in the order and below the other items.
+      const last = page.getByTestId("sidebar").getByRole("button").last();
+      await expect(last).toHaveAttribute("data-testid", "sidebar-settings");
+      const [a, b] = await Promise.all([page.getByTestId("sidebar-activity").boundingBox(), settings.boundingBox()]);
+      expect(b!.y).toBeGreaterThan(a!.y);
+      await shot(page, `${theme}-sidebar-settings`);
+      await settings.click();
+      await expect(page.getByTestId("page-settings")).toBeVisible();
+      await expect(settings).toHaveAttribute("aria-current", "page");
+      await shot(page, `${theme}-sidebar-settings-open`);
+    });
+  }
+});
+
 test.describe("first-run notice", () => {
   for (const theme of THEMES) {
     test(`is shown once, then stays dismissed (${theme})`, async ({ page }) => {

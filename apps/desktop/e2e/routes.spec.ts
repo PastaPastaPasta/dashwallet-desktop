@@ -65,10 +65,10 @@ for (const theme of THEMES) {
   }
 }
 
-test("the sidebar opens the DASHPAY sections in order, Explore hidden", async ({ page }) => {
+test("the sidebar opens the DASHPAY sections in order, Explore hidden, Settings last", async ({ page }) => {
   await open(page, "dashpay-registered");
   const ids = await page.getByTestId("sidebar").locator("button").evaluateAll((els) => els.map((e) => e.getAttribute("data-testid")));
-  expect(ids).toEqual(["sidebar-home", "sidebar-pay", "sidebar-receive", "sidebar-contacts", "sidebar-activity", "sidebar-coinJoin"]);
+  expect(ids).toEqual(["sidebar-home", "sidebar-pay", "sidebar-receive", "sidebar-contacts", "sidebar-activity", "sidebar-coinJoin", "sidebar-settings"]);
   for (const id of ids) {
     await page.getByTestId(id!).click();
     await expect(page.getByTestId(id!)).toHaveAttribute("aria-current", "page");
