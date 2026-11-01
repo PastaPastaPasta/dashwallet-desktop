@@ -42,9 +42,13 @@ pub struct UiSettings {
     pub auto_lock_secs: Option<u32>,
     /// A new payment starts with "Subtract fee from amount" checked (QT-137).
     pub subtract_fee_by_default: bool,
-    /// Settings ▸ General ▸ Show Masternodes: the sidebar item shows even
-    /// without a masternode, a collateral or a proposal (MG-00 D1, D2).
+    /// Settings ▸ General ▸ Show Masternodes: the Masternodes sidebar item and
+    /// route (Governance, Username voting) are hidden until it is on (MG-00
+    /// D1, D2; the 0.1 release plan).
     pub show_masternodes: bool,
+    /// The 0.1 pre-release notice was dismissed: it is shown once, on the
+    /// first run.
+    pub pre_release_notice_dismissed: bool,
 }
 
 impl Default for UiSettings {
@@ -57,6 +61,7 @@ impl Default for UiSettings {
             auto_lock_secs: None,
             subtract_fee_by_default: false,
             show_masternodes: false,
+            pre_release_notice_dismissed: false,
         }
     }
 }
@@ -148,10 +153,26 @@ mod tests {
             auto_lock_secs: Some(300),
             subtract_fee_by_default: true,
             show_masternodes: true,
+            pre_release_notice_dismissed: true,
         };
         write(dir.path(), &s).unwrap();
         assert_eq!(read(dir.path()), s);
         assert!(!dir.path().join("settings.json.tmp").exists());
+    }
+
+    #[test]
+    fn the_pre_release_notice_shows_until_dismissed() {
+        let dir = root();
+        assert!(!UiSettings::default().pre_release_notice_dismissed);
+        // A file from before the notice has no such field: not dismissed.
+        std::fs::write(path(dir.path()), r#"{"unit":"duffs"}"#).unwrap();
+        assert!(!read(dir.path()).pre_release_notice_dismissed);
+        let s = UiSettings {
+            pre_release_notice_dismissed: true,
+            ..Default::default()
+        };
+        write(dir.path(), &s).unwrap();
+        assert!(read(dir.path()).pre_release_notice_dismissed);
     }
 
     #[test]
