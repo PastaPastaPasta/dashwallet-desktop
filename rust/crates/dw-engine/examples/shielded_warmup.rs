@@ -6,7 +6,7 @@
 //! call, served from the process-wide cache, is printed for contrast.
 //!
 //! ```sh
-//! cargo run --release -p dw-engine --features shielded --example shielded_warmup
+//! cargo run --release -p dw-engine --example shielded_warmup
 //! ```
 
 use std::time::Instant;
