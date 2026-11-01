@@ -228,8 +228,7 @@ The scripts can use the launch-and-screenshot helpers in `ci/github/`. Playwrigh
 
 ## `release.yml` (PK-01, PK-02; 0.1)
 
-On a pushed tag `v*` (`v0.1.0`; dry runs `v0.0.0-rel<N>`; no branch trigger, so test it with a tag on
-`dw/rel-release` or another `dw/**` branch). One job per OS builds the release-profile app without the
+On every push, pull request and dispatch (see Triggers below), and on a tag `v*`. One job per OS builds the release-profile app without the
 `selftest` feature (`rust-cache` keys `release-<os>`; Node 24, pnpm; the Windows `unistd` shim as in
 `ci.yml`):
 
@@ -249,11 +248,34 @@ runners the screen capture is black or shows the runner console although the win
 VM renders the same build), so there the check is "the process is alive after 30 s", with the window title
 logged; real screenshots of those two come from a person at release time.
 
-The `SHA256SUMS` job downloads the three `dist-<os>` artifacts, writes `SHA256SUMS` in `sha256sum` format
-(file names only), checks it with `sha256sum -c` and uploads everything as `release-v<version>`. No GPG in
-CI: the release owner downloads that artifact, signs `SHA256SUMS` (`SHA256SUMS.asc`) on their own machine and
-publishes the release. `ci/github/release-version.sh` takes the version from the tag and refuses a plain
-`vX.Y.Z` tag that differs from `tauri.conf.json`.
+The `checksums` job downloads the three `dist-<os>` artifacts, writes `SHA256SUMS` in `sha256sum` format
+(file names only), checks it with `sha256sum -c` and uploads everything as `release-v<version>`.
+`ci/github/release-version.sh` names the files: the tag's version for a tag (a plain `vX.Y.Z` must equal
+`tauri.conf.json`), else `<version>-dev.<run>.g<short sha>`.
+
+**Triggers and publishing (DEC-1058).** The workflow runs on pushes to every branch, on tags `v*`, on pull requests
+and on `workflow_dispatch`; all of them build and upload CI artifacts with `contents: read`. Only the `publish` job
+has write permissions (`contents`, `id-token`, `attestations`), and its `if` admits a push to `main` or to a `v*`
+tag only, so a fork's pull request, a branch, a dispatch and a dry-run tag never reach it. It checks out the full
+history, runs `ci/github/release-publish.sh`, which refuses any commit that is not on `origin/main`, and publishes:
+
+- push to `main`: an immutable prerelease `v<version>-dev.<run>+<short sha>` (never edited; skipped if it exists)
+  and the rolling prerelease `continuous` with stable names `DashWallet-continuous-<os-arch>.<ext>` and its own
+  `SHA256SUMS`. `continuous` is updated in place: each new file is uploaded as `<name>.new`, then the old asset
+  is renamed `<name>.old`, the new one `<name>`, the old one deleted. A download of one file can fail for the
+  two API calls between the renames (well under a second); `SHA256SUMS` goes last. The tag moves after the assets
+  and never backwards (an older run finishing late leaves `continuous` alone).
+- push of a tag `vX.Y.Z[-rc.N]` (on `main`): a prerelease with the run's files (notes from
+  `docs/release/X.Y.Z-notes.md`), nothing rolling. `v0.0.0-rel<N>` dry-run tags only build.
+- `actions/attest-build-provenance` runs before the release is written, on every file (the four bundles and both
+  `SHA256SUMS`); the stable-named copies have the same bytes, so one attestation covers both.
+
+`concurrency: release-publish` (no cancel) serializes publishes; GitHub keeps one pending run per group, so a
+third queued publish cancels the second: a burst of pushes can skip the immutable release of a middle commit,
+never the final `continuous`. The `script-tests` job runs `ci/github/release-publish-test.sh` (a fake `gh` and a
+scratch git repository: which triggers publish, which refuse, the swap order) on every run. For a dry run against
+the real repository: `DRY_RUN=1 ci/github/release-publish.sh publish` after `prepare` runs the reads and prints
+each write. Nothing is signed by hand and no PGP key is involved before 1.0; see `docs/release/verifying.md`.
 
 ## `tauri-selftest.yml` (G-02)
 

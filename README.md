@@ -6,8 +6,7 @@ dashpay/platform's `platform-wallet`: Core wallet, DashPay (usernames, contacts,
 Platform on one recovery phrase.
 
 > **Pre-release. No security review has been done. Use small amounts only.**
-> Version 0.1 is signed with a temporary key and its binaries are not code-signed by Apple or
-> Microsoft. Keep a written copy of your recovery phrase and do not hold more than you can afford to lose.
+> The binaries are attested by GitHub but not code-signed by Apple or Microsoft. Keep a written copy of your recovery phrase and do not hold more than you can afford to lose.
 
 ## What is in 0.1
 
@@ -31,16 +30,31 @@ shared masternodes, shielded-funded registration, Platform ↔ Shielded transfer
 Windows code signing, hardware wallets. The plan is
 [`docs/research/gap-2026-10-31/RELEASE-PLAN.md`](docs/research/gap-2026-10-31/RELEASE-PLAN.md).
 
-## Download and install
+## Latest build
 
-Releases are on the [GitHub releases page](https://github.com/PastaPastaPasta/dashwallet-desktop/releases).
-Each release lists its files and the fingerprint of the signing key. Verify the download first (below).
+Preview builds of `main`, one click each. They are **unsigned or ad-hoc signed previews** (no notarization, no
+Windows code signing), made by GitHub Actions on every merge to `main`, and they come with no security review:
+small amounts only.
 
-| OS | File |
+| OS | Latest build |
 |---|---|
-| macOS (Apple silicon and Intel) | `dash-wallet-<version>-macos-universal.dmg` |
-| Windows (x64) | `dash-wallet-<version>-windows-x64-setup.exe` |
-| Linux (x86_64) | `dash-wallet-<version>-linux-x86_64.AppImage` or `dash-wallet-<version>-linux-amd64.deb` |
+| **macOS** (Apple silicon and Intel) | [**DashWallet-continuous-macos-universal.dmg**](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-macos-universal.dmg) |
+| Windows (x64) | [DashWallet-continuous-windows-x64-setup.exe](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-windows-x64-setup.exe) |
+| Linux (x86_64) | [DashWallet-continuous-linux-x86_64.AppImage](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-linux-x86_64.AppImage), [DashWallet-continuous-linux-amd64.deb](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-linux-amd64.deb) |
+| Checksums | [SHA256SUMS](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/SHA256SUMS) |
+
+The [`continuous` release](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/tag/continuous) says which
+commit it holds. Each merge also keeps its own build, `v<version>-dev.<run>+<commit>`, on the
+[releases page](https://github.com/PastaPastaPasta/dashwallet-desktop/releases), next to the tagged releases
+(`v0.1.0`). Check a download with [`docs/release/verifying.md`](docs/release/verifying.md).
+
+## Install
+
+| OS | File (the per-build and tagged names; the latest-build names above replace `dash-wallet-<version>` with `DashWallet-continuous`) |
+|---|---|
+| macOS | `dash-wallet-<version>-macos-universal.dmg` |
+| Windows | `dash-wallet-<version>-windows-x64-setup.exe` |
+| Linux | `dash-wallet-<version>-linux-x86_64.AppImage` or `dash-wallet-<version>-linux-amd64.deb` |
 
 The binaries are not notarized (macOS) or signed (Windows), so each OS warns on first launch.
 
@@ -50,26 +64,22 @@ The binaries are not notarized (macOS) or signed (Windows), so each OS warns on 
 - **Windows.** Run the installer. When SmartScreen says "Windows protected your PC", choose **More info ▸
   Run anyway**. It installs for the current user. Windows needs the WebView2 runtime, which Windows 11 and
   current Windows 10 already have.
-- **Linux AppImage.** `chmod +x dash-wallet-*.AppImage && ./dash-wallet-*.AppImage`. Needs WebKitGTK 4.1
+- **Linux AppImage.** `chmod +x *.AppImage && ./*.AppImage`. Needs WebKitGTK 4.1
   (for example Ubuntu 24.04 or Debian 12) and FUSE 2, or run it with `--appimage-extract-and-run`.
-- **Linux .deb.** `sudo apt install ./dash-wallet-*.deb` (Debian, Ubuntu). It registers the `dash:`, `pay:`,
+- **Linux .deb.** `sudo apt install ./*.deb` (Debian, Ubuntu). It registers the `dash:`, `pay:`,
   `dashwallet:` and `dashpay:` links.
 
 ## Verify a download
 
-Every release carries `SHA256SUMS` and its detached signature `SHA256SUMS.asc`, made with a **temporary**
-signing key. The key's public half is [`docs/release/signing-key-temporary.asc`](docs/release/signing-key-temporary.asc);
-its fingerprint is **`FINGERPRINT-TBD`**. The key will be replaced by a real release key; until then check
-that the fingerprint below matches the one here and on the release page.
+Every published file and every `SHA256SUMS` carries a GitHub build attestation. With the GitHub CLI:
 
 ```sh
-gpg --import signing-key-temporary.asc
-gpg --fingerprint            # must show FINGERPRINT-TBD
-gpg --verify SHA256SUMS.asc SHA256SUMS
-sha256sum -c SHA256SUMS      # on macOS: shasum -a 256 -c SHA256SUMS
+gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop
+sha256sum -c --ignore-missing SHA256SUMS      # on macOS: shasum -a 256 -c SHA256SUMS
 ```
 
-`sha256sum -c` reports a missing file for each download you did not fetch; `--ignore-missing` skips those.
+Details, what an attestation does and does not prove, and the release names: [`docs/release/verifying.md`](docs/release/verifying.md).
+There are no PGP signatures; a real release key is a 1.0 task.
 
 ## Build from source
 
