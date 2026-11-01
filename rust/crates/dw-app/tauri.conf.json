@@ -76,15 +76,16 @@
     "targets": [
       "deb",
       "appimage",
-      "msi",
       "nsis",
-      "app",
       "dmg"
     ],
     "category": "Finance",
+    "publisher": "Dash Wallet Desktop contributors",
+    "homepage": "https://github.com/PastaPastaPasta/dashwallet-desktop",
     "shortDescription": "Dash Wallet",
     "longDescription": "The Dash wallet with DashPay, on the desktop.",
-    "copyright": "MIT",
+    "copyright": "Copyright (c) Dash Wallet Desktop contributors. MIT license.",
+    "license": "MIT",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -92,6 +93,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "macOS": {
+      "signingIdentity": "-"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
     "linux": {
       "deb": {
         "depends": [],
