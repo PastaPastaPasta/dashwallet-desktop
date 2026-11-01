@@ -171,6 +171,16 @@ test.describe("Pay's confirm sheet warns about fees", () => {
     await expect(page.getByTestId("pay-confirm")).toBeVisible();
   }
 
+  test("a Send in progress says Sending… on the button only, with no second line", async ({ page }) => {
+    await review(page, "0.5");
+    await page.evaluate(`window.__dwFixture.hold("draft_prepare")`);
+    await page.getByTestId("pay-confirm-passphrase").fill("demo");
+    await page.getByTestId("pay-confirm-send").click();
+    await expect(page.getByTestId("pay-confirm-send")).toHaveText("Sending…");
+    await expect(page.getByTestId("pay-confirm-send")).toBeDisabled();
+    expect(await page.getByTestId("pay-confirm").locator(".dash-button-why").count()).toBe(0);
+  });
+
   test("22% of a small payment says so", async ({ page }) => {
     await review(page, "0.00001");
     await expect(page.getByTestId("pay-confirm-fee")).toContainText("0.00000226");
