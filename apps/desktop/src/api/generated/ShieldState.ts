@@ -3,4 +3,4 @@
 /**
  * Where a Core → Shielded move stands.
  */
-export type ShieldState = { "kind": "applied", balance: string, } | { "kind": "proofWaiting" } | { "kind": "notApplied", error: string, };
+export type ShieldState = { "kind": "applied", balance: string, } | { "kind": "proofWaiting" } | { "kind": "notApplied", error: string, } | { "kind": "consumptionUnknown" };

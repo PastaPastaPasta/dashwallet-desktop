@@ -52,6 +52,7 @@ or excluded with a reason (`rust/crates/dw-app/src/coverage.rs`).
 | `DashPay::registration_resume_grant` | dw-engine/src/platform/registration.rs | `registration_resume_grant` |
 | `DashPay::registrations` | dw-engine/src/platform/registration.rs | `registrations` |
 | `DashPay::resolve_payment_lock` | dw-engine/src/platform/payments.rs | `resolve_contact_payment_lock` |
+| `DashPay::resolve_shield` | dw-engine/src/platform/shielded.rs | `resolve_shield` |
 | `DashPay::resolve_top_up` | dw-engine/src/platform/credits.rs | `credits_resolve_top_up` |
 | `DashPay::resolve_user` | dw-engine/src/platform/names.rs | `resolve_user` |
 | `DashPay::resume_registration` | dw-engine/src/platform/registration.rs | `resume_registration` |
@@ -320,6 +321,9 @@ or excluded with a reason (`rust/crates/dw-app/src/coverage.rs`).
 | `Vault::scan_key_held` | dw-vault/src/platform.rs | excluded (vault): internal: the identity scan holds the master key inside the engine |
 | `Vault::seed_derivation` | dw-vault/src/vault.rs | excluded (vault): internal: the engine reads how a stored seed was derived (strict BIP39 or Dash Core) when it restores keys |
 | `Vault::set_quick_unlock_spend_limit` | dw-vault/src/vault.rs | `set_quick_unlock_spend_limit` |
+| `Vault::shielded_spend_key` | dw-vault/src/shielded.rs | excluded (vault): internal: reached through `DashPay::shielded_send` and `unshield_to_core`, which redeem their `ShieldedSpend` grant for one spend (m4 §2.13) |
+| `Vault::shielded_spend_key_held` | dw-vault/src/shielded.rs | excluded (vault): internal: the engine's shielded spends read the spend key under the call permit's key hold (m4 §2.13); never a host's |
+| `Vault::shielded_viewing_key` | dw-vault/src/shielded.rs | excluded (vault): internal: the engine binds the Orchard account's viewing key from it, prompt-free, at the Platform start or the first shielded call (m4 §2.13); never a host's |
 | `Vault::signer` | dw-vault/src/vault.rs | excluded (vault): internal: signers never cross the IPC boundary; the engine builds them under a redeemed grant |
 | `Vault::signer_held` | dw-vault/src/vault.rs | excluded (vault): internal: signers never cross the IPC boundary; the lease table builds them |
 | `Vault::stash_link` | dw-vault/src/vault/links.rs | excluded (vault): internal: the engine's `NetworkSession::stash_link` calls it after classifying the link itself (DP5-01 D3) |

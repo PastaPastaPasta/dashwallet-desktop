@@ -570,6 +570,11 @@ pub enum ShieldedError {
     /// applies `txid` rather than funding again.
     #[error("the shield {txid} is not applied yet")]
     ShieldPending { txid: String },
+    /// The shield's asset lock would spend `inputs` coins, more than
+    /// `max`: its InstantSend proof would not fit a transition (from about
+    /// 65 inputs), which would strand the lock. "Combine coins first."
+    #[error("the shield needs {inputs} coins; at most {max} fit one asset lock")]
+    TooManyInputs { inputs: u64, max: u64 },
     /// Platform refused a withdrawal from the pool because the pool holds
     /// fewer than `required` notes (`InsufficientPoolNotesError`): "Shielded
     /// withdrawals open once the network's shielded pool has enough
@@ -592,6 +597,7 @@ impl ShieldedError {
             Self::CoinsLocked => "shielded.coins_locked",
             Self::ShieldPending { .. } => "shielded.shield_pending",
             Self::PoolTooSmall { .. } => "shielded.pool_too_small",
+            Self::TooManyInputs { .. } => "shielded.too_many_inputs",
             Self::Platform(e) => e.code(),
         }
     }

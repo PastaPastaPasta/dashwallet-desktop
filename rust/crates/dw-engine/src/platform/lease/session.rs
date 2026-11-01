@@ -21,6 +21,10 @@ use crate::platform::flows::{FlowKind, RevokeCause};
 use crate::platform::signers::VaultContactCrypto;
 use crate::{EngineError, NetworkSession, WalletId};
 
+/// How long the async lock waits for a shielded pass in flight
+/// (`drain_shielded_pass`).
+const SHIELDED_PASS_DRAIN: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Which vault grant kinds a flow's lease may carry: a `PlatformOp`, plus a
 /// `Spend` for "Accept and pay"'s payment (§16.1); a contact payment's own
 /// lease only the `Spend` (DP3-01), as a proposal's fee (MG-06 D10); the
@@ -286,10 +290,28 @@ impl NetworkSession {
         self.manager()?;
         self.cancel_relock();
         let this = Arc::clone(self);
-        Ok(self
-            .leases
+        let report = (self.leases)
             .lock(RevokeCause::Lock, move || this.vault_gate())
-            .await)
+            .await;
+        self.drain_shielded_pass().await;
+        Ok(report)
+    }
+
+    /// A shielded pass admitted under the background leases the lock just
+    /// dropped ends before the lock does (0.1 E1, DEC-1032): it may re-send
+    /// a stored spend, as a leased call admitted before a freeze may finish
+    /// in its drain. Every pass holds the pass lock to read from its
+    /// admission to its end; once this write is had, the next pass is
+    /// admitted only while each wallet holding such a spend holds its
+    /// background lease again (`shielded_pool::admit_pass`).
+    async fn drain_shielded_pass(&self) {
+        let passes = &self.platform.shielded_passes;
+        if tokio::time::timeout(SHIELDED_PASS_DRAIN, passes.write())
+            .await
+            .is_err()
+        {
+            tracing::warn!("a shielded sync pass did not end within the lock's drain");
+        }
     }
 
     /// The synchronous lock (`Vault.lock()`, the console, the relock
@@ -306,6 +328,9 @@ impl NetworkSession {
 
     /// A lock without admission (the relock timer holds its own).
     pub(crate) fn lock_now(&self) -> VaultStatus {
+        // This lock never waits: a shielded pass admitted before it may
+        // end after it returns (`drain_shielded_pass` is the async lock's).
+        // The next pass is held all the same (`shielded_pool::admit_pass`).
         self.leases
             .lock_sync(RevokeCause::Lock, || self.vault_gate())
     }

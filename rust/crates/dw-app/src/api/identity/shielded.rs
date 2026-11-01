@@ -40,8 +40,12 @@ pub struct ShieldedStatus {
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub pending: u64,
-    /// Core → Shielded locks not applied yet (`resumeShield`).
+    /// Core → Shielded locks not applied yet (`resumeShield`); empty until
+    /// the dispatch journal is read.
     pub pending_shields: Vec<PendingShield>,
+    /// Spends whose result is not confirmed yet (`pending`), until a sync
+    /// pass resolves each. Offer no retry.
+    pub unresolved_spends: Vec<UnresolvedSpend>,
     /// The note-tree position scanned to; `null` before a completed scan.
     pub synced_index: Option<u64>,
     /// Unix seconds of the last completed sync pass.
@@ -61,6 +65,7 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             balance,
             pending,
             pending_shields,
+            unresolved_spends,
             synced_index,
             last_sync_at,
             syncing,
@@ -74,6 +79,7 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             balance,
             pending,
             pending_shields: pending_shields.into_iter().map(Into::into).collect(),
+            unresolved_spends: unresolved_spends.into_iter().map(Into::into).collect(),
             synced_index,
             last_sync_at,
             syncing,
@@ -151,8 +157,13 @@ pub enum ShieldState {
     },
     /// The lock waits for its proof (`resumeShield`).
     ProofWaiting,
-    /// Applying the proved lock failed with `error` (a code).
+    /// Applying the proved lock failed with `error` (a code); `resumeShield`
+    /// tries again.
     NotApplied { error: String },
+    /// Platform said the lock is already consumed, unproved: it stays
+    /// pending (`consumptionUnknown`) until a proved apply or
+    /// `resolveShield`.
+    ConsumptionUnknown,
 }
 
 impl From<engine::ShieldState> for ShieldState {
@@ -162,6 +173,7 @@ impl From<engine::ShieldState> for ShieldState {
             S::Applied { balance } => ShieldState::Applied { balance },
             S::ProofWaiting => ShieldState::ProofWaiting,
             S::NotApplied { error } => ShieldState::NotApplied { error },
+            S::ConsumptionUnknown => ShieldState::ConsumptionUnknown,
         }
     }
 }
@@ -191,6 +203,10 @@ pub struct PendingShield {
     pub txid: String,
     pub duffs: u64,
     pub proved: bool,
+    /// The lock may already be applied (Platform said so unproved, or a
+    /// restore read it back): `resumeShield` asks again; `resolveShield`
+    /// once its credits are seen to have arrived.
+    pub consumption_unknown: bool,
 }
 
 impl From<engine::PendingShield> for PendingShield {
@@ -199,11 +215,13 @@ impl From<engine::PendingShield> for PendingShield {
             txid,
             duffs,
             proved,
+            consumption_unknown,
         } = p;
         PendingShield {
             txid,
             duffs,
             proved,
+            consumption_unknown,
         }
     }
 }
@@ -257,6 +275,9 @@ pub struct ShieldedSpendOutcome {
     pub balance: u64,
     /// The address paid.
     pub to: String,
+    pub state: ShieldedSpendState,
+    /// For a `pending` spend, the library's record of it, when it kept one.
+    pub unresolved: Option<UnresolvedSpend>,
 }
 
 impl From<engine::ShieldedSpendOutcome> for ShieldedSpendOutcome {
@@ -265,11 +286,56 @@ impl From<engine::ShieldedSpendOutcome> for ShieldedSpendOutcome {
             credits,
             balance,
             to,
+            state,
+            unresolved,
         } = o;
         ShieldedSpendOutcome {
             credits,
             balance,
             to,
+            state: state.into(),
+            unresolved: unresolved.map(Into::into),
+        }
+    }
+}
+
+/// Where a spend stands when the call returns. `pending`: it went out and
+/// its result is not confirmed. It is never failed meanwhile: its history
+/// row (`unresolved.activityId`) turns `confirmed` when a scan sees it
+/// executed, or `failed` when the notes come back (not executed). The
+/// wallet re-sends the same signed transition itself; offer no retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ShieldedSpendState {
+    Done,
+    Pending,
+}
+
+mirror_enum!(engine::ShieldedSpendState => ShieldedSpendState { Done, Pending });
+
+/// A spend whose result is not confirmed yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UnresolvedSpend {
+    /// Its history row's id.
+    pub activity_id: String,
+    /// Platform's hash of its signed state transition (hex).
+    pub transition: String,
+    /// Re-sends so far.
+    pub attempts: u32,
+}
+
+impl From<engine::UnresolvedSpend> for UnresolvedSpend {
+    fn from(u: engine::UnresolvedSpend) -> Self {
+        let engine::UnresolvedSpend {
+            activity_id,
+            transition,
+            attempts,
+        } = u;
+        UnresolvedSpend {
+            activity_id,
+            transition,
+            attempts,
         }
     }
 }

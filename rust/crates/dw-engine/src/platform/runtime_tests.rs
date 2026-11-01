@@ -432,6 +432,40 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+/// E0-04 Q15, ruling (c), DEC-1032: the library re-sends a stored
+/// unconfirmed shielded spend only from its coordinator's sync pass
+/// (`coordinator.rs:1431`). The library's own loop never runs; the
+/// supervisor drives the passes (`shielded_pool::guarded_pass`) while the
+/// session is open, and the close seals the coordinator: no pass starts
+/// after it, the engine's nor a direct one.
+#[test]
+fn the_close_ends_the_shielded_passes_that_redrive_spends() {
+    let _serial = serial();
+    let dir = dw_testutil::private_tempdir();
+    let hole = blackhole();
+    let (engine, s) = session_on(dir.path(), &hole, false);
+    let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+    give_identity(&engine, &s, id);
+    engine.block_on(s.start_spv()).unwrap();
+    let manager = s.manager().unwrap();
+    // The supervisor's pass, stuck on the silent nodes.
+    wait_until("a shielded pass in flight", Duration::from_secs(30), || {
+        manager.shielded_sync().is_syncing()
+    });
+    assert!(
+        !manager.shielded_sync().is_running(),
+        "the library's loop never runs"
+    );
+
+    let network = s.network.clone();
+    assert!(engine.block_on(engine.close_network(network)).unwrap());
+    assert!(engine.block_on(s.enter()).is_err(), "no engine pass starts");
+    assert!(!manager.shielded_sync().is_running());
+    let pass = engine.block_on(manager.shielded_sync().sync_now(true));
+    assert!(pass.is_empty() && pass.sync_unix_seconds == 0, "{pass:?}");
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// Writes a `.dwbackup` of `wallets` sealed by `s`'s vault (backup
 /// passphrase `bk`), as `r2_compat_offline.rs` does.
 fn craft_backup(s: &Arc<NetworkSession>, path: &std::path::Path, wallets: &[WalletId]) {

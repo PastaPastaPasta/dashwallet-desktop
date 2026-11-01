@@ -162,6 +162,9 @@ pub enum ShieldedCmd {
     },
     /// Apply a pending Core -> Shielded lock.
     ShieldResume { txid: String },
+    /// Mark a pending shield whose consumption is unknown as arrived (its
+    /// credits are in the pool): it stops pending and blocking.
+    ShieldResolve { txid: String },
     /// Shielded -> Shielded: send `--credits` to a shielded address.
     Send {
         #[arg(long)]
@@ -931,6 +934,7 @@ fn shielded_params(e: &ShieldedError) -> Value {
         ShieldedError::PoolTooSmall { notes, required } => {
             json!({"notes": notes, "required": required})
         }
+        ShieldedError::TooManyInputs { inputs, max } => json!({"inputs": inputs, "max": max}),
         ShieldedError::Platform(p) => platform_params(p),
     }
 }
@@ -1657,6 +1661,7 @@ fn shielded_cmd(ctx: &Ctx, cmd: ShieldedCmd) -> Result<Value, CliError> {
             )?;
             out(ctx.block_on(dp.resume_shield(txid, grant))?)
         }
+        ShieldedCmd::ShieldResolve { txid } => out(ctx.block_on(dp.resolve_shield(txid))?),
         ShieldedCmd::Send {
             to,
             credits,
@@ -2602,11 +2607,12 @@ mod tests {
         // DP5-02.
         ("invite status L", NOT_STASHED),
         // 0.1 E1: regtest's floor (13) is past the activation; the new
-        // wallet's account binds from the vault with nothing scanned. The
+        // wallet's account binds from the vault, and is not ready: no pass
+        // has scanned it this session (Platform is not started here). The
         // address is the random wallet's (see the run below).
         (
             "shielded status",
-            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":true,"balance":0,"pending":0,"pending_shields":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false}}"#,
+            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false}}"#,
         ),
         ("shielded sync", NO_PLATFORM),
         (
@@ -2619,6 +2625,10 @@ mod tests {
         ),
         (
             "shielded shield-resume ab12",
+            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: txid is not a hex txid","params":{"detail":"txid is not a hex txid"}}}"#,
+        ),
+        (
+            "shielded shield-resolve ab12",
             r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: txid is not a hex txid","params":{"detail":"txid is not a hex txid"}}}"#,
         ),
         (
@@ -2852,6 +2862,7 @@ mod tests {
         ("shielded address", "DashPay.shielded_receive_address"),
         ("shielded shield --duffs 100000", "DashPay.shield_quote"),
         ("shielded shield-resume ab12", "DashPay.resume_shield"),
+        ("shielded shield-resolve ab12", "DashPay.resolve_shield"),
         (
             "shielded send --to tZ --credits 5 --memo hi",
             "DashPay.shielded_send_quote",

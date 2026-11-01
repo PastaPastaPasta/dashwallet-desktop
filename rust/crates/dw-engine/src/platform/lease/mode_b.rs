@@ -1391,6 +1391,18 @@ impl LeaseTable {
         })
     }
 
+    /// The txids of the asset locks `wallet`'s shield funding steps
+    /// (`shield/<k>/funding`) signed: every lock a dw shield funded (0.1
+    /// E1). `None` until the dispatch journal is read.
+    pub(crate) fn shield_lock_txids(&self, wallet: WalletId) -> Option<HashSet<Txid>> {
+        self.with_j(|i, _| {
+            (i.fence.journal == JournalState::Ready).then(|| {
+                i.fence
+                    .signed_lock_txids_where(&wallet, |s| s.starts_with("shield/"))
+            })
+        })
+    }
+
     /// The top-up locks of `wallet` the journal records settled (schema 8,
     /// DP1-06): a proved apply or the user's word, kept as long as the
     /// journal keeps those locks' `signed_lock` rows (a wallet's removal
@@ -1415,6 +1427,39 @@ impl LeaseTable {
         let backend = self.journal.get().ok_or("the journal is closed")?;
         (self.rt)
             .spawn_blocking(move || backend.settle_top_up(&wallet.0, &txid.to_byte_array(), how))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Records the shielded spends `redrives` of `wallet` the library holds
+    /// to re-send, `(activity, transition)` (schema 9, 0.1 E1, DEC-1032);
+    /// each first record stands. On the blocking pool.
+    pub(crate) async fn record_shielded_redrives(
+        &self,
+        wallet: WalletId,
+        redrives: Vec<super::fence::ShieldedRedrive>,
+    ) -> Result<(), String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || {
+                (redrives.iter()).try_for_each(|(activity, transition)| {
+                    backend.record_shielded_redrive(&wallet.0, activity, transition)
+                })
+            })
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// The shielded spends of `wallet` on record (schema 9),
+    /// `(activity, transition)`. On the blocking pool.
+    #[cfg(test)]
+    pub(crate) async fn shielded_redrives(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<super::fence::ShieldedRedrive>, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || backend.shielded_redrives(&wallet.0))
             .await
             .map_err(|e| e.to_string())?
     }

@@ -46,8 +46,12 @@ pub struct ShieldedStatus {
     /// confirmed), in either direction.
     pub pending: u64,
     /// Core → Shielded asset locks out but not applied to the pool yet
-    /// (`resume_shield` applies one).
+    /// (`resume_shield` applies one). Empty until the dispatch journal is
+    /// read (the shield calls answer `platform.unavailable` meanwhile).
     pub pending_shields: Vec<PendingShield>,
+    /// Spends whose broadcast the library could not confirm
+    /// ([`ShieldedSpendState::Pending`]), until a sync pass resolves each.
+    pub unresolved_spends: Vec<UnresolvedSpend>,
     /// Position in the pool's note tree the account is scanned up to
     /// (exclusive); `None` before a completed scan.
     pub synced_index: Option<u64>,
@@ -99,8 +103,14 @@ pub enum ShieldState {
     /// The lock is out with no proof yet; `resume_shield` applies it.
     ProofWaiting,
     /// The lock has its proof and applying it failed with `error` (a code);
-    /// `resume_shield` tries again.
+    /// `resume_shield` tries again (Platform takes a lock once, so a resume
+    /// never moves its funds twice).
     NotApplied { error: String },
+    /// Platform answered that the lock is already consumed, which proves
+    /// nothing (any node can say it): the lock stays pending
+    /// (`consumption_unknown`) and blocks a new shield until a proved apply
+    /// (`resume_shield`) or the user's `resolve_shield`.
+    ConsumptionUnknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +128,10 @@ pub struct PendingShield {
     pub duffs: u64,
     /// The lock has its proof: `resume_shield` applies it at once.
     pub proved: bool,
+    /// The lock may already be applied: Platform said so without proof, or
+    /// a restore read it back from the chain. `resume_shield` asks again;
+    /// once the user sees its credits arrived, `resolve_shield` clears it.
+    pub consumption_unknown: bool,
 }
 
 /// What a spend of `credits` from the pool costs: a shielded send or an
@@ -136,13 +150,47 @@ pub struct ShieldedSpendQuote {
     pub grant: GrantRequest,
 }
 
+/// Where a shielded spend stands when the call returns (E0-04 Q15, ruling
+/// (c) for 0.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedSpendState {
+    /// Platform executed it.
+    Done,
+    /// It went out and the library could not confirm its result. It stays
+    /// pending, never failed, until a sync pass resolves it: its history row
+    /// (`activity_id`) turns `confirmed` when the scan sees its notes spent
+    /// (done), or `failed` when the library's prune backstop releases them
+    /// (not executed). Meanwhile the library re-sends the same signed
+    /// transition (`transition`) during sync passes, at most 3 times. The
+    /// facade offers no resend and the host offers no retry.
+    Pending,
+}
+
+/// A spend the library could not confirm, with the signed transition it
+/// holds to re-send.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnresolvedSpend {
+    /// The spend's history row ([`ShieldedActivity::id`]).
+    pub activity_id: String,
+    /// Platform's hash of the signed state transition (SHA-256 of its
+    /// bytes, hex): what each re-send carries, byte for byte.
+    pub transition: String,
+    /// Re-sends so far.
+    pub attempts: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedSpendOutcome {
     pub credits: u64,
-    /// The shielded balance after.
+    /// The shielded balance after (while `pending`, less the notes the
+    /// spend holds).
     pub balance: u64,
     /// For an unshield, the Core address paid.
     pub to: String,
+    pub state: ShieldedSpendState,
+    /// For a `pending` spend, the library's record of it, when it kept one.
+    pub unresolved: Option<UnresolvedSpend>,
 }
 
 /// The kind of a shielded activity row (platform-wallet's
@@ -279,6 +327,17 @@ impl DashPay {
         let wallet = self.wallet_id;
         on_pool(&self.session, wallet, move |session, lib| async move {
             pool::resume(&session, wallet, &lib, &txid, &grant).await
+        })
+        .await
+    }
+
+    /// Records the user's word that the pending shield `txid`, one whose
+    /// consumption is unknown (`pending_shields[].consumption_unknown`),
+    /// reached the pool: it stops pending and blocking new shields.
+    pub async fn resolve_shield(&self, txid: String) -> Result<(), ShieldedError> {
+        let wallet = self.wallet_id;
+        on_pool(&self.session, wallet, move |_, lib| async move {
+            pool::resolve(wallet, &lib, &txid).await
         })
         .await
     }

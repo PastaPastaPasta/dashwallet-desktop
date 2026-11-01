@@ -39,6 +39,10 @@ use dw_appdb::dispatch::{
     TopUpSettled,
 };
 
+/// A shielded spend on record: `(activity, transition)`, the library's
+/// activity id and the SHA-256 of the transition it holds to re-send.
+pub(crate) type ShieldedRedrive = ([u8; 32], [u8; 32]);
+
 /// The durable medium of the journal (§6.2): `dispatch.sqlite`, or a fake
 /// with injected faults in tests. Every call is a short blocking write.
 pub(crate) trait JournalBackend: Send + Sync + 'static {
@@ -146,6 +150,22 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     /// The top-up locks of `wallet` recorded settled.
     fn top_ups_settled(&self, _wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
         Err("this journal keeps no settled top-ups".into())
+    }
+    /// Records the shielded spend `activity` the library holds to re-send
+    /// as transition `transition` (schema 9, 0.1 E1); the first record
+    /// stands.
+    fn record_shielded_redrive(
+        &self,
+        _wallet: &[u8; 32],
+        _activity: &[u8; 32],
+        _transition: &[u8; 32],
+    ) -> Result<(), String> {
+        Err("this journal keeps no shielded redrives".into())
+    }
+    /// The shielded spends of `wallet` on record, `(activity, transition)`.
+    #[cfg(test)]
+    fn shielded_redrives(&self, _wallet: &[u8; 32]) -> Result<Vec<ShieldedRedrive>, String> {
+        Err("this journal keeps no shielded redrives".into())
     }
 }
 
@@ -309,6 +329,22 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
         (self.top_ups_settled(wallet))
             .map(|rows| rows.into_iter().map(|(txid, _)| txid).collect())
             .map_err(|e| e.to_string())
+    }
+
+    fn record_shielded_redrive(
+        &self,
+        wallet: &[u8; 32],
+        activity: &[u8; 32],
+        transition: &[u8; 32],
+    ) -> Result<(), String> {
+        (self.record_shielded_redrive(wallet, activity, transition, crate::events::unix_now()))
+            .map(drop)
+            .map_err(|e| e.to_string())
+    }
+
+    #[cfg(test)]
+    fn shielded_redrives(&self, wallet: &[u8; 32]) -> Result<Vec<ShieldedRedrive>, String> {
+        self.shielded_redrives(wallet).map_err(|e| e.to_string())
     }
 }
 

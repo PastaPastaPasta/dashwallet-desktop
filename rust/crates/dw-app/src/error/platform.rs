@@ -130,6 +130,7 @@ codes! {
         CoinsLocked = "shielded.coins_locked",
         ShieldPending = "shielded.shield_pending",
         PoolTooSmall = "shielded.pool_too_small",
+        TooManyInputs = "shielded.too_many_inputs",
     }
 }
 
@@ -175,6 +176,10 @@ impl From<ShieldedError> for AppError {
             S::PoolTooSmall { notes, required } => (
                 ShieldedCode::PoolTooSmall,
                 Some(ErrorData::PoolNotes { notes, required }),
+            ),
+            S::TooManyInputs { inputs, .. } => (
+                ShieldedCode::TooManyInputs,
+                Some(ErrorData::Number { value: inputs }),
             ),
             S::Platform(e) => return e.into(),
         };
@@ -639,6 +644,10 @@ mod tests {
             ShieldedError::PoolTooSmall {
                 notes: 10,
                 required: 250,
+            },
+            ShieldedError::TooManyInputs {
+                inputs: 51,
+                max: 50,
             },
             ShieldedError::Platform(PlatformError::Unavailable),
         ];

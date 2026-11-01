@@ -296,7 +296,8 @@ pub enum ErrorData {
     /// `tx_action_refused`: why the abandon or resend was refused.
     TxAction { refusal: TxActionRefusalName },
     /// `request_not_found`, `height_out_of_range`, `backup.unsupported_version`,
-    /// `psbt.too_large` (bytes): the number named.
+    /// `psbt.too_large` (bytes), `shielded.too_many_inputs` (the coins the
+    /// shield would spend; at most 50 fit): the number named.
     Number { value: u64 },
     /// `contact.details_too_long`: the details' DIP-15 encoding and its cap,
     /// in bytes.

@@ -146,6 +146,7 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.shield_quote",
     "DashPay.shield_from_core",
     "DashPay.resume_shield",
+    "DashPay.resolve_shield",
     "DashPay.shielded_send_quote",
     "DashPay.shielded_send",
     "DashPay.unshield_quote",
@@ -1087,6 +1088,7 @@ fn error_codes_match_the_contract() {
             ShieldedError::BelowMinimum { min: 0 },
             ShieldedError::CoinsLocked,
             ShieldedError::ShieldPending { txid: s() },
+            ShieldedError::TooManyInputs { inputs: 0, max: 0 },
             ShieldedError::PoolTooSmall {
                 notes: 0,
                 required: 0,
@@ -1534,6 +1536,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.shield_quote(1).await.map(drop),
             dp.shield_from_core(1, s()).await.map(drop),
             dp.resume_shield(s(), s()).await.map(drop),
+            dp.resolve_shield(s()).await.map(drop),
             dp.shielded_send_quote(s(), 1).await.map(drop),
             dp.shielded_send(s(), 1, None, s()).await.map(drop),
             dp.unshield_quote(1, None).await.map(drop),

@@ -3,4 +3,10 @@
 /**
  * A Core → Shielded lock not applied yet.
  */
-export type PendingShield = { txid: string, duffs: number, proved: boolean, };
+export type PendingShield = { txid: string, duffs: number, proved: boolean,
+/**
+ * The lock may already be applied (Platform said so unproved, or a
+ * restore read it back): `resumeShield` asks again; `resolveShield`
+ * once its credits are seen to have arrived.
+ */
+consumptionUnknown: boolean, };
