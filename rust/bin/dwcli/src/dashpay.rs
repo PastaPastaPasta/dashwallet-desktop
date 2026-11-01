@@ -3376,6 +3376,13 @@ mod tests {
                 assert!(address.as_str().unwrap().starts_with("tdash1z"), "{line}");
                 *address = json!("tdash1z…");
             }
+            // Whether the prover is built by now depends on the machine (CI
+            // runners finish it before this row); only its type is checked.
+            let result = line.get_mut("result");
+            if let Some(ready) = result.and_then(|r| r.get_mut("prover_ready")) {
+                assert!(ready.is_boolean(), "{line}");
+                *ready = json!(false);
+            }
             assert!(!line.to_string().contains("SECRET"), "{args:?}");
             if let Some((_, want)) = IMPLEMENTED.iter().find(|(row, _)| row == args) {
                 let want: Value = serde_json::from_str(want).unwrap();

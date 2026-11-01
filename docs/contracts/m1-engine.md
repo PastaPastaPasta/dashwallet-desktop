@@ -557,12 +557,12 @@ and `not_implemented` of these. Domain codes:
 | `MessageError` | `message.invalid_address`, `message.address_no_key`, `message.malformed_signature`, `message.pubkey_not_recovered`, `message.not_signed`, `message.address_not_mine`, `message.watch_only`, `message.vault_locked`, `message.grant_invalid` |
 | `UriError` | `uri.double_slash`, `uri.not_dash_uri`, `uri.unparsable`, `uri.bip70_unsupported`, `uri.invalid_address`, `uri.invalid_amount`, `uri.too_long_for_qr` |
 | `UnitsError` | `units.unparsable` |
-| `EngineError` (M0 calls) | `invalid_config`, `invalid_argument`, `network_not_open`, `storage_in_use`, `storage`, `wallet_not_found`, `invalid_mnemonic`, `wallet_already_exists`, `wallet`, `sdk`, `spv`, `io`, `not_implemented`, `internal`, `shielded_spend_unresolved` (0.1 E1, DEC-1046: "a shielded payment is still being confirmed; wait, or quit and reopen the app") |
+| `EngineError` (M0 calls) | `invalid_config`, `invalid_argument`, `network_not_open`, `storage_in_use`, `storage`, `wallet_not_found`, `invalid_mnemonic`, `wallet_already_exists`, `wallet`, `sdk`, `spv`, `io`, `not_implemented`, `internal`, `shielded_spend_unresolved` (0.1 E1, DEC-1046: "a shielded payment is still being confirmed; wait, or quit and reopen the app"; not in the frozen dw-ffi, which reports it as `wallet`) |
 
 Each FFI error enum exports `code()` returning these strings (a method on the generated Swift type, e.g.
 `SendError.code()`); DashKit maps the generated Swift cases to the same strings (`DashKitError.code`,
 `ServiceErrorCode`) and may read `code()` instead. A dw-ffi test checks the `EngineError` row against its
-variants. Swift chooses dash-qt / iOS copy by code (QT-062,
+variants, less the codes the row marks "not in the frozen dw-ffi". Swift chooses dash-qt / iOS copy by code (QT-062,
 IOS-051). The send codes cover dash-qt's `SendCoinsReturn` statuses.
 
 `send.cancelled` joined `SendError` with DP3-01, for a contact payment that Lock refused before its hand-off (E0-04

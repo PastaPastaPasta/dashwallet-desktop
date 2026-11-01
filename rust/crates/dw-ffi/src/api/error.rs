@@ -122,15 +122,58 @@ impl From<dw_engine::EngineError> for EngineError {
 mod tests {
     use super::*;
 
-    /// The §4 row of `EngineError` lists exactly the codes its variants have.
-    #[test]
-    fn engine_error_codes_match_the_contract() {
+    /// The codes of the §4 `EngineError` row, each with whether its note
+    /// marks it "not in the frozen dw-ffi" (an engine code dw-ffi, frozen
+    /// in 0.1, reports under another, DEC-1046). The row's second cell is
+    /// a comma-separated list of `` `code` `` with an optional note in
+    /// parentheses, whose own backticked words are not codes.
+    fn contract_engine_codes() -> Vec<(String, bool)> {
         let contract = include_str!("../../../../../docs/contracts/m1-engine.md");
         let row = contract
             .lines()
             .find(|l| l.starts_with("| `EngineError` (M0 calls) |"))
             .expect("EngineError row in §4");
-        let mut listed: Vec<&str> = row.split('`').skip(3).step_by(2).collect();
+        let cell = row.split(" | ").nth(1).expect("the codes cell");
+        let mut items = Vec::new();
+        let (mut depth, mut start) = (0usize, 0usize);
+        for (i, c) in cell.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => {
+                    items.push(&cell[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        items.push(&cell[start..]);
+        (items.into_iter())
+            .map(|item| {
+                let code = item.split('`').nth(1).expect("a backticked code");
+                (code.to_owned(), item.contains("not in the frozen dw-ffi"))
+            })
+            .collect()
+    }
+
+    /// The §4 row of `EngineError` lists exactly the codes its variants
+    /// have, plus the engine codes it marks as not in the frozen dw-ffi
+    /// (`shielded_spend_unresolved`, reported as `wallet`).
+    #[test]
+    fn engine_error_codes_match_the_contract() {
+        let contract = contract_engine_codes();
+        let engine_only: Vec<&str> = (contract.iter())
+            .filter(|(_, engine_only)| *engine_only)
+            .map(|(code, _)| code.as_str())
+            .collect();
+        assert_eq!(engine_only, ["shielded_spend_unresolved"]);
+        // Reported as the row says.
+        let mapped = EngineError::from(dw_engine::EngineError::ShieldedSpendUnresolved);
+        assert_eq!(mapped.code(), "wallet");
+        let mut listed: Vec<&str> = (contract.iter())
+            .filter(|(_, engine_only)| !engine_only)
+            .map(|(code, _)| code.as_str())
+            .collect();
         listed.sort_unstable();
         let detail = String::new;
         let mut codes: Vec<String> = [
