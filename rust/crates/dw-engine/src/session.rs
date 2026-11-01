@@ -914,12 +914,16 @@ impl NetworkSession {
         // its stored transition and reservations (`remove_from_manager`).
         // It stays in the sealed manager, which runs nothing more (SPV
         // stopped, every loop quiesced sealed and joined, the payment hooks
-        // drained, above), and its persister writes are committed: every
-        // `store` commits inline (the persister's default `Immediate` mode,
-        // WAL), and a flush here retries any left by a transient failure.
-        // The shielded store committed the spend's row before the spend
-        // returned (`arm_redrive_record`). So nothing of it is only in
-        // memory; the rows rehydrate as pending at the next open. The cost:
+        // drained, above), and its persister writes are committed, not
+        // closed: every `store` commits inline (the persister's default
+        // `Immediate` mode, WAL), and a flush here retries any left by a
+        // transient failure (a failed flush is logged, not returned). The
+        // library wrote the spend's record to the shielded store before the
+        // spend returned, best-effort (`arm_redrive_record`,
+        // operations.rs:2983: a failed write is logged, and that spend has
+        // no record to keep). The connections stay open until the process
+        // exits, so their last WAL checkpoint does not run; the WAL replays
+        // at the next open, and the rows rehydrate as pending. The cost:
         // the Arc cycle above keeps the persister's open-path claim, so the
         // network reopens only in a new process. App quit takes this path
         // (`Engine::shutdown`); an in-app close is refused beforehand

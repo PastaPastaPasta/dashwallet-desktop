@@ -541,11 +541,12 @@ fn quit_with_unresolved_spends_child() {
 /// the test stops at the re-send's first step: each record decodes as
 /// operations.rs:3243 does, to the signed transfer or unshield of its
 /// nullifiers, and a real (offline) pass leaves every record, reservation
-/// and attempt count as it was; nothing is signed or selected again. What the quit left is durable in every store, though the
-/// quitting process exited without dropping anything: the viewing key in
-/// wallet.sqlite (bound again with the vault locked), the address book in
-/// app.sqlite, the spends in the shielded store and their records in the
-/// dispatch journal.
+/// and attempt count as it was; nothing is signed or selected again.
+/// What the quit left is committed in every store and outlives the
+/// quitting process, which exited without dropping anything: the viewing
+/// key in wallet.sqlite (bound again with the vault locked), the address
+/// book in app.sqlite, the spends in the shielded store and their records
+/// in the dispatch journal.
 #[test]
 fn a_quit_keeps_unresolved_spends_for_the_next_launch() {
     let dir = dw_testutil::private_tempdir();
