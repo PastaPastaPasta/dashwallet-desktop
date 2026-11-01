@@ -13,12 +13,11 @@
 
 use std::time::Duration;
 
-use dashcore::{Address, Network, ScriptBuf};
-use dpp::system_data_contracts::withdrawals_contract::WithdrawalStatus as DocStatus;
+use dashcore::Network;
 use dw_appdb::{WithdrawalRow, WithdrawalState};
 use dw_vault::WithdrawalKey;
 
-use super::withdrawal::{self, Destination, KeyView, Quote, WithdrawCall};
+use super::withdrawal::{Destination, KeyView, Quote, WithdrawCall};
 use super::withdrawal_records::{
     CreditWithdrawal, CreditWithdrawalState, HeldWithdrawalKey, NotExecutedFacts,
     WithdrawalCheckingReason, WithdrawalDestinationCheck, WithdrawalIdentityKey,
@@ -26,7 +25,8 @@ use super::withdrawal_records::{
     WithdrawalProofFacts, WithdrawalQuote, WithdrawalRules,
 };
 use super::{Masternodes, MasternodesError, display_hex, parse_pro_tx_hash};
-use crate::platform::{WithdrawAmount, WithdrawalStatus};
+use crate::platform::WithdrawAmount;
+use crate::platform::withdrawal::{address_of, status_of};
 use crate::{EngineError, WalletId};
 
 impl Masternodes {
@@ -76,11 +76,11 @@ impl Masternodes {
             s.require_wallet(&wallet)?;
             let call = WithdrawCall {
                 pro_tx_hash,
-                key: choice(key),
+                key,
                 amount,
                 destination,
             };
-            let row = s.mn_withdraw(wallet, &call, &grant).await?;
+            let row = s.mn_withdraw(wallet, &call, &grant, None).await?;
             s.masternodes.local_change();
             Ok(record_of(&row, s.network.core_network()))
         })
@@ -106,11 +106,11 @@ impl Masternodes {
             let refused = s.mn_withdrawal(&id).await?;
             let call = WithdrawCall {
                 pro_tx_hash: refused.signed.pro_tx_hash,
-                key: choice(key),
+                key,
                 amount,
                 destination,
             };
-            let row = (s.mn_retry_withdrawal(wallet, &id, &call, &grant)).await?;
+            let row = (s.mn_withdraw(wallet, &call, &grant, Some(&id))).await?;
             s.masternodes.local_change();
             Ok(record_of(&row, s.network.core_network()))
         })
@@ -159,7 +159,7 @@ impl Masternodes {
     ) -> Result<CreditWithdrawal, MasternodesError> {
         check_id(&id)?;
         self.protx_op(move |s| async move {
-            let row = s.mn_mark_withdrawal(&id, mark_of(mark)).await?;
+            let row = s.mn_mark_withdrawal(&id, mark.stored()).await?;
             s.masternodes.local_change();
             Ok(record_of(&row, s.network.core_network()))
         })
@@ -187,35 +187,10 @@ fn behind(quote: &Quote) -> bool {
             matches!(
                 d,
                 Destination::Checking {
-                    reason: withdrawal::CheckingReason::PlatformBehind
+                    reason: WithdrawalCheckingReason::PlatformBehind
                 }
             )
         })
-}
-
-fn choice(key: WithdrawalKeyChoice) -> withdrawal::WithdrawalKeyChoice {
-    match key {
-        WithdrawalKeyChoice::Owner => withdrawal::WithdrawalKeyChoice::Owner,
-        WithdrawalKeyChoice::Payout => withdrawal::WithdrawalKeyChoice::Payout,
-    }
-}
-
-fn mark_of(mark: WithdrawalMark) -> dw_appdb::WithdrawalMark {
-    match mark {
-        WithdrawalMark::Received => dw_appdb::WithdrawalMark::Received,
-        WithdrawalMark::NotReceived => dw_appdb::WithdrawalMark::NotReceived,
-    }
-}
-
-fn checking_reason(reason: withdrawal::CheckingReason) -> WithdrawalCheckingReason {
-    match reason {
-        withdrawal::CheckingReason::PlatformBehind => WithdrawalCheckingReason::PlatformBehind,
-        withdrawal::CheckingReason::PayoutChangePending => {
-            WithdrawalCheckingReason::PayoutChangePending
-        }
-        withdrawal::CheckingReason::Unverified => WithdrawalCheckingReason::Unverified,
-        withdrawal::CheckingReason::SpvUnsynced => WithdrawalCheckingReason::SpvUnsynced,
-    }
 }
 
 fn held_of(k: &KeyView) -> HeldWithdrawalKey {
@@ -262,9 +237,9 @@ fn destination_of(d: &Destination) -> WithdrawalDestinationCheck {
             header_tip: *header_tip,
             lag: *lag,
         },
-        Destination::Checking { reason } => WithdrawalDestinationCheck::Checking {
-            reason: checking_reason(*reason),
-        },
+        Destination::Checking { reason } => {
+            WithdrawalDestinationCheck::Checking { reason: *reason }
+        }
     }
 }
 
@@ -303,21 +278,8 @@ fn quote_of(q: &Quote, pro_tx_hash: String, network: Network) -> WithdrawalQuote
 }
 
 /// A script's address on `network`, else its hex.
-fn address(script: &[u8], network: Network) -> String {
-    Address::from_script(&ScriptBuf::from_bytes(script.to_vec()), network)
-        .map_or_else(|_| hex::encode(script), |a| a.to_string())
-}
-
-/// Drive's document status as DP6-02's `Withdrawal` shows it.
-fn status_of(status: u8) -> WithdrawalStatus {
-    DocStatus::try_from(status).map_or(WithdrawalStatus::Unknown, |s| match s {
-        DocStatus::QUEUED => WithdrawalStatus::Queued,
-        DocStatus::POOLED => WithdrawalStatus::Pooled,
-        DocStatus::BROADCASTED => WithdrawalStatus::Broadcasted,
-        DocStatus::COMPLETE => WithdrawalStatus::Complete,
-        DocStatus::EXPIRED => WithdrawalStatus::Expired,
-        DocStatus::FAILED => WithdrawalStatus::Failed,
-    })
+pub(super) fn address(script: &[u8], network: Network) -> String {
+    address_of(script, network).unwrap_or_else(|| hex::encode(script))
 }
 
 fn state_of(state: WithdrawalState) -> CreditWithdrawalState {
@@ -371,10 +333,7 @@ fn record_of(r: &WithdrawalRow, network: Network) -> CreditWithdrawal {
             document_height: e.document_height,
         }),
         last_checked: r.last_checked,
-        mark: r.mark.map(|(m, _)| match m {
-            dw_appdb::WithdrawalMark::Received => WithdrawalMark::Received,
-            dw_appdb::WithdrawalMark::NotReceived => WithdrawalMark::NotReceived,
-        }),
+        mark: r.mark.map(|(m, _)| WithdrawalMark::of_stored(m)),
         marked_at: r.mark.map(|(_, at)| at),
         late_proof_link: r.late_proof_link.clone(),
     }

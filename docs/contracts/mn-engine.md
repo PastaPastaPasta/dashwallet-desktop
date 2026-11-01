@@ -203,7 +203,10 @@ unlocks it: another row's release skips it, and m1's `unlock_outpoints` refuses 
 
 ### 2.5 Evonode credit withdrawal (MG-13)
 
-An evonode's Platform identity (id `sha256(proTxHash)` in wire order) holds the credits its masternode earned; this
+An evonode's Platform identity holds the credits its masternode earned. Its id is the ProTx hash itself, in Core's
+display order (the reverse of the wire bytes), as `evonode_credits` reads it: Drive's `get_owner_identifier`
+(`rs-drive-abci/src/execution/platform_events/core_based_updates/update_masternode_identities/create_owner_identity/v0/mod.rs:35-39`
+at the pinned platform `dc0c9463`) takes the masternode's `pro_tx_hash` bytes as they are. This
 wallet withdraws them to Core as `withdraw_credits` does for a DashPay identity (DP6-02), signed by a key the
 identity holds that this wallet holds too (MG-13 P2, MG-00 D23): its **owner** key, which Drive pays to its window's
 TRANSFER key (the payout address, MG-13 F3), or a **payout** key, which pays a destination the caller chooses (by

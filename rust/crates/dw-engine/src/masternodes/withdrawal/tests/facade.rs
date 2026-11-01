@@ -254,6 +254,54 @@ fn a_quote_while_platform_is_behind_returns_checking_at_once_and_signals_when_it
     );
 }
 
+/// Fix round 1 M1: a quote in flight when the close begins starts no
+/// `withdrawal_ready` wait. Once the close returns, nothing reads Platform
+/// for it, signals, or holds the session.
+#[test]
+fn a_quote_in_flight_at_close_starts_no_ready_wait() {
+    let fa = Fa::new(true);
+    fa.tip(Some(TIP + 5));
+    // The quote's identity read waits until the close has begun.
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let held: Hook = Box::new(move || {
+        entered_tx.send(()).unwrap();
+        released.recv().unwrap();
+    });
+    *fa.plat.hook.lock().unwrap() = Some((Read::Identity, held));
+    let withdrawals = &fa.f.session.masternodes.withdrawals;
+    std::thread::scope(|scope| {
+        let quote = scope.spawn(|| fa.quote());
+        entered.recv().unwrap();
+        let close = scope.spawn(|| fa.on(fa.f.engine.close_network(crate::DashNetwork::Regtest)));
+        assert!(until(Duration::from_secs(5), || withdrawals
+            .work
+            .is_closed()));
+        release.send(()).unwrap();
+        let q = quote.join().unwrap().unwrap();
+        assert_eq!(
+            q.owner_destination,
+            Some(WithdrawalDestinationCheck::Checking {
+                reason: WithdrawalCheckingReason::PlatformBehind,
+            })
+        );
+        assert!(close.join().unwrap().unwrap());
+    });
+    // Platform catches up: a wait would read it and signal.
+    let (reads, generation) = (fa.plat.reads(Read::Identity), fa.generation());
+    fa.plat.with(|w| w.core_height = TIP + 5);
+    std::thread::sleep(FACADE_WAITS.poll * 10);
+    assert_eq!(fa.plat.reads(Read::Identity), reads, "a wait read Platform");
+    assert_eq!(fa.generation(), generation, "withdrawal_ready after close");
+    // The test's handles are the session's last.
+    let session = Arc::downgrade(&fa.f.session);
+    let Fa { f, mn, .. } = fa;
+    drop(mn);
+    let crate::platform::lease::session_tests::Fixture { session: held, .. } = f;
+    drop(held);
+    assert!(session.upgrade().is_none(), "something holds the session");
+}
+
 #[test]
 fn the_ready_wait_stops_at_its_bound_and_one_runs_per_masternode() {
     let fa = Fa::new(true);
@@ -385,7 +433,7 @@ fn a_mark_applies_to_a_couldnt_confirm_record_only() {
         code(mark(Mark::Received)),
         "masternodes.withdrawal_mark_state"
     );
-    fa.plat.deviate(Read::Document, Dev::Fail, ALWAYS);
+    fa.plat.lagging(Read::Document);
     let c = fa.recheck(&r.id).unwrap();
     assert_eq!(c.state, State::CouldntConfirm);
     let before = fa.generation();

@@ -31,6 +31,7 @@
 //! (`Masternodes`, mn-engine §2.5), and [`WithdrawalError`] maps into
 //! `MasternodesError` below.
 
+mod background;
 mod check;
 mod drive;
 mod net;
@@ -40,9 +41,8 @@ mod sign;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 use dpp::identity::IdentityPublicKey;
@@ -50,42 +50,18 @@ use dpp::prelude::Identifier;
 use dpp::state_transition::StateTransition;
 use dw_appdb::{AppDb, AppDbError, PayoutBarrierRow};
 use dw_vault::WithdrawalKey;
-use tokio::task::JoinHandle;
+use tokio::runtime::Handle;
 
 use super::MasternodesError;
+use super::WithdrawalCheckingReason;
 use super::protx_records::ProTxOperationState;
 use crate::EngineError;
 use crate::platform::trust::Rule5;
-use crate::platform::{CreditsError, PlatformError};
+use crate::platform::{CreditsError, Locks, PlatformError, keyed_lock};
+use background::{Background, Job};
 
 pub(crate) use check::{Destination, KeyView, Quote};
 pub(crate) use session::WithdrawCall;
-pub(crate) use sign::WithdrawalKeyChoice;
-
-/// Why a destination reads `checking`, with Withdraw off (MG-13 P4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum CheckingReason {
-    /// (a): Platform's proved core height is below the synced header tip.
-    PlatformBehind,
-    /// (b): a payout-change barrier of the masternode is pending, or the
-    /// barriers may be incomplete (`barriers_ready` false, P16).
-    PayoutChangePending,
-    /// (c): the identity read failed rule 5 (P12).
-    Unverified,
-    /// SPV has no synced header tip to compare with.
-    SpvUnsynced,
-}
-
-impl CheckingReason {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::PlatformBehind => "platform_behind",
-            Self::PayoutChangePending => "payout_change_pending",
-            Self::Unverified => "unverified",
-            Self::SpvUnsynced => "spv_unsynced",
-        }
-    }
-}
 
 /// A masternode withdrawal's refusal (MG-13 P2, P13). The codes are the
 /// facade's (`masternodes.withdrawal_*`), into which they map.
@@ -107,7 +83,7 @@ pub(crate) enum WithdrawalError {
     NoIdentity,
     /// P4: (a)–(c) do not hold; nothing signed.
     #[error("the withdrawal's destination is still being checked: {}", reason.as_str())]
-    DestinationChecking { reason: CheckingReason },
+    DestinationChecking { reason: WithdrawalCheckingReason },
     /// An open record, a lost index race, or P10's "neither".
     #[error("a withdrawal of this masternode is pending")]
     Pending,
@@ -135,48 +111,10 @@ pub(crate) enum WithdrawalError {
     Engine(#[from] EngineError),
 }
 
-impl WithdrawalError {
-    /// What the facade's code for it is (the tests read it; the facade maps
-    /// the variants).
-    #[cfg_attr(not(test), expect(dead_code, reason = "the tests' shorthand"))]
-    pub(crate) fn code(&self) -> &'static str {
-        match self {
-            Self::KeyMissing => "masternodes.withdrawal_key_missing",
-            Self::Shared => "masternodes.withdrawal_shared",
-            Self::NoPayoutKey(_) => "masternodes.withdrawal_no_payout_key",
-            Self::NoIdentity => "masternodes.no_identity",
-            Self::DestinationChecking { .. } => "masternodes.withdrawal_destination_checking",
-            Self::Pending => "masternodes.withdrawal_pending",
-            Self::Unverified => "masternodes.withdrawal_unverified",
-            Self::RetryState => "masternodes.withdrawal_retry_state",
-            Self::MarkState => "masternodes.withdrawal_mark_state",
-            Self::NotFound => "masternodes.withdrawal_not_found",
-            Self::Credits(CreditsError::WithdrawalOutOfRange { .. }) => {
-                "masternodes.withdrawal_amount_out_of_range"
-            }
-            Self::Credits(CreditsError::Platform(PlatformError::InsufficientCredits {
-                ..
-            }))
-            | Self::Platform(PlatformError::InsufficientCredits { .. }) => {
-                "masternodes.withdrawal_amount_insufficient"
-            }
-            Self::Credits(e) => e.code(),
-            Self::Platform(e) => e.code(),
-            Self::Masternodes(e) => e.code(),
-            Self::Engine(e) => e.code(),
-        }
-    }
-
-    fn checking(reason: CheckingReason) -> Self {
-        Self::DestinationChecking { reason }
-    }
-}
-
 impl From<WithdrawalError> for MasternodesError {
     /// The facade's codes (mn-engine §4, P13); DP6-02's amount refusals
     /// become `withdrawal_amount_*`.
     fn from(e: WithdrawalError) -> Self {
-        use crate::masternodes::WithdrawalCheckingReason as Facade;
         type E = MasternodesError;
         match e {
             WithdrawalError::KeyMissing => E::WithdrawalKeyMissing,
@@ -185,14 +123,9 @@ impl From<WithdrawalError> for MasternodesError {
                 detail: detail.into(),
             },
             WithdrawalError::NoIdentity => E::NoIdentity,
-            WithdrawalError::DestinationChecking { reason } => E::WithdrawalDestinationChecking {
-                reason: match reason {
-                    CheckingReason::PlatformBehind => Facade::PlatformBehind,
-                    CheckingReason::PayoutChangePending => Facade::PayoutChangePending,
-                    CheckingReason::Unverified => Facade::Unverified,
-                    CheckingReason::SpvUnsynced => Facade::SpvUnsynced,
-                },
-            },
+            WithdrawalError::DestinationChecking { reason } => {
+                E::WithdrawalDestinationChecking { reason }
+            }
             WithdrawalError::Pending => E::WithdrawalPending,
             WithdrawalError::Unverified => E::WithdrawalUnverified,
             WithdrawalError::RetryState => E::WithdrawalRetryState,
@@ -224,9 +157,9 @@ impl From<AppDbError> for WithdrawalError {
     fn from(e: AppDbError) -> Self {
         match e {
             AppDbError::WithdrawalPending(_) => Self::Pending,
-            AppDbError::PayoutChangePending(_) => {
-                Self::checking(CheckingReason::PayoutChangePending)
-            }
+            AppDbError::PayoutChangePending(_) => Self::DestinationChecking {
+                reason: WithdrawalCheckingReason::PayoutChangePending,
+            },
             e => Self::Engine(EngineError::Storage(format!("app database: {e}"))),
         }
     }
@@ -305,6 +238,9 @@ pub(crate) trait Env: Send + Sync {
     fn now(&self) -> u64;
     /// Surfaces an invariant violation (logged by the caller).
     fn alarm(&self, alarm: Alarm);
+    /// The [`Hold`] each blocking app database call keeps until it returns
+    /// (`on_db`).
+    fn hold(&self) -> Hold;
 }
 
 /// A key the wallet holds that matches one of the identity's keys (P2).
@@ -347,8 +283,7 @@ pub(crate) trait Authorize: Send {
 /// recheck. Unlike `identity_locks` it is not per wallet: records are
 /// app-wide.
 pub(crate) fn identity_lock(identity: Identifier) -> Arc<tokio::sync::Mutex<()>> {
-    type Locks = HashMap<Identifier, Weak<tokio::sync::Mutex<()>>>;
-    static LOCKS: LazyLock<Mutex<Locks>> = LazyLock::new(Mutex::default);
+    static LOCKS: LazyLock<Locks<Identifier>> = LazyLock::new(Locks::default);
     #[cfg(test)]
     if UNLOCKED
         .lock()
@@ -359,14 +294,7 @@ pub(crate) fn identity_lock(identity: Identifier) -> Arc<tokio::sync::Mutex<()>>
         // call, so nothing is serialised.
         return Arc::default();
     }
-    let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
-    locks.retain(|_, lock| lock.strong_count() > 0);
-    if let Some(lock) = locks.get(&identity).and_then(Weak::upgrade) {
-        return lock;
-    }
-    let lock = Arc::<tokio::sync::Mutex<()>>::default();
-    locks.insert(identity, Arc::downgrade(&lock));
-    lock
+    keyed_lock(&LOCKS, &identity)
 }
 
 /// Tests: the identities whose lock is taken away (per identity, so the
@@ -404,30 +332,81 @@ pub(crate) mod points {
     ];
 }
 
-/// Where a fault point stops the step (debug builds with `fault-inject`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Stage {
-    Before,
-    After,
+/// The engine's fault point `point` before its step on `db`: armed, it fails
+/// the step (`storage`), and `DW_FAULT` naming it aborts the process (T2
+/// (4)). Compiled out of release builds and builds without `fault-inject`.
+pub(crate) fn fault_before(db: &AppDb, point: &str) -> Result<(), WithdrawalError> {
+    fault(db, point, true)
 }
 
-/// The engine's fault point `point` at `stage` on `db`: an armed point
-/// fails the step (`storage`), and `DW_FAULT` naming it aborts the process
-/// (T2 (4)). Compiled out of release builds and builds without
-/// `fault-inject`.
+/// [`fault_before`]'s `after_` stage, once the step is done.
+pub(crate) fn fault_after(db: &AppDb, point: &str) -> Result<(), WithdrawalError> {
+    fault(db, point, false)
+}
+
 #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
-pub(crate) fn fault(db: &AppDb, point: &str, stage: Stage) -> Result<(), WithdrawalError> {
-    let stage = match stage {
-        Stage::Before => dw_appdb::fault::Stage::Before,
-        Stage::After => dw_appdb::fault::Stage::After,
-    };
+fn fault(db: &AppDb, point: &str, before: bool) -> Result<(), WithdrawalError> {
+    use dw_appdb::fault::Stage;
+    let stage = if before { Stage::Before } else { Stage::After };
     Ok(db.fault_point(point, stage)?)
 }
 
 #[cfg(not(all(debug_assertions, any(test, feature = "fault-inject"))))]
 #[inline(always)]
-pub(crate) fn fault(_db: &AppDb, _point: &str, _stage: Stage) -> Result<(), WithdrawalError> {
+fn fault(_db: &AppDb, _point: &str, _before: bool) -> Result<(), WithdrawalError> {
     Ok(())
+}
+
+/// A blocking app database call's token: close waits for it (m1), so a
+/// call an aborted task started still ends before close returns.
+pub(crate) struct Hold {
+    _token: background::Token,
+    /// Tests: runs on the blocking thread before the call.
+    #[cfg(test)]
+    before: Option<Box<dyn FnOnce() + Send>>,
+}
+
+/// `call` on the app database, on the blocking pool, holding `env`'s
+/// [`Hold`] until it returned and let go of the database.
+pub(crate) async fn on_db<T, F>(env: &impl Env, call: F) -> Result<T, WithdrawalError>
+where
+    T: Send + 'static,
+    F: FnOnce(&AppDb) -> Result<T, AppDbError> + Send + 'static,
+{
+    let (db, hold) = (Arc::clone(env.db()), env.hold());
+    Ok(tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        let mut hold = hold;
+        #[cfg(test)]
+        if let Some(before) = hold.before.take() {
+            before();
+        }
+        let result = call(&db);
+        drop(db);
+        drop(hold);
+        result
+    })
+    .await??)
+}
+
+/// The withdrawal record `id`, or `withdrawal_not_found`.
+pub(crate) async fn load(
+    env: &impl Env,
+    id: &str,
+) -> Result<dw_appdb::WithdrawalRow, WithdrawalError> {
+    let id = id.to_owned();
+    on_db(env, move |db| db.withdrawal(&id))
+        .await?
+        .ok_or(WithdrawalError::NotFound)
+}
+
+/// A record's identity, as the records encode it (Base58).
+pub(crate) fn parse_id(identity: &str) -> Result<Identifier, WithdrawalError> {
+    Identifier::from_string(
+        identity,
+        dpp::platform_value::string_encoding::Encoding::Base58,
+    )
+    .map_err(|_| WithdrawalError::NotFound)
 }
 
 /// The session's withdrawal state: the alarms, the background recheck (P8)
@@ -435,10 +414,9 @@ pub(crate) fn fault(_db: &AppDb, _point: &str, _stage: Stage) -> Result<(), With
 #[derive(Default)]
 pub(crate) struct WithdrawalRuntime {
     alarms: Mutex<Vec<Alarm>>,
-    task: Mutex<Option<JoinHandle<()>>>,
-    /// The running `withdrawal_ready` waits, one per masternode (wire
-    /// order).
-    ready: Mutex<HashMap<[u8; 32], JoinHandle<()>>>,
+    /// The recheck, the waits and every blocking app database call,
+    /// tracked for close (M1, m1).
+    work: Arc<Background>,
     /// Tests: the scripted Platform, header tip and waits the session's
     /// calls use instead of the SDK's, SPV's and the defaults.
     #[cfg(test)]
@@ -457,7 +435,7 @@ impl WithdrawalRuntime {
 
     /// The alarms raised this session (logged as they are raised; MG-10
     /// surfaces them).
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "MG-10 surfaces them")]
     pub(crate) fn alarms(&self) -> Vec<Alarm> {
         self.alarms
             .lock()
@@ -473,33 +451,30 @@ impl WithdrawalRuntime {
         Waits::default()
     }
 
-    /// Runs `wait` as `pro_tx_hash`'s `withdrawal_ready` wait unless one
-    /// runs already. [`Self::stop`] ends them all.
-    pub(crate) fn wait_ready(&self, pro_tx_hash: [u8; 32], wait: impl FnOnce() -> JoinHandle<()>) {
-        let mut ready = self.ready.lock().unwrap_or_else(PoisonError::into_inner);
-        ready.retain(|_, task| !task.is_finished());
-        ready.entry(pro_tx_hash).or_insert_with(wait);
+    /// Runs `wait` as `pro_tx_hash`'s `withdrawal_ready` wait on `rt`,
+    /// unless one runs already or [`Self::stop`] has begun.
+    pub(crate) fn wait_ready(
+        &self,
+        rt: &Handle,
+        pro_tx_hash: [u8; 32],
+        wait: impl Future<Output = ()> + Send + 'static,
+    ) {
+        self.work.spawn(rt, Job::Ready(pro_tx_hash), wait);
     }
 
-    fn set_task(&self, task: JoinHandle<()>) {
-        let old = (self.task.lock().unwrap_or_else(PoisonError::into_inner)).replace(task);
-        if let Some(old) = old {
-            old.abort();
+    /// A blocking app database call's [`Hold`].
+    pub(crate) fn hold(&self) -> Hold {
+        Hold {
+            _token: self.work.hold(),
+            #[cfg(test)]
+            before: None,
         }
     }
 
-    /// Stops the background recheck and the `withdrawal_ready` waits, and
-    /// waits for them to end (close).
+    /// Close: starts no recheck or wait after it begins, aborts the running
+    /// ones, and returns once each has been dropped and every blocking app
+    /// database call has returned.
     pub(crate) async fn stop(&self) {
-        let task = (self.task.lock().unwrap_or_else(PoisonError::into_inner)).take();
-        let ready: Vec<JoinHandle<()>> =
-            (self.ready.lock().unwrap_or_else(PoisonError::into_inner))
-                .drain()
-                .map(|(_, task)| task)
-                .collect();
-        for task in task.into_iter().chain(ready) {
-            task.abort();
-            let _ = task.await;
-        }
+        self.work.close().await;
     }
 }

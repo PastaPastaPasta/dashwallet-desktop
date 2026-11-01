@@ -834,7 +834,9 @@ impl NetworkSession {
         // E0-04 §8.5: revoke, drain and abort the flows before the gate,
         // which waits for the flows' operation guards.
         self.close_leases().await;
-        // No withdrawal recheck outlives the session (MG-13 P8).
+        // No withdrawal recheck, `withdrawal_ready` wait or app database
+        // call of theirs outlives the session, and none starts after this
+        // (MG-13 P4, P8; a quote still running starts no wait).
         self.masternodes.withdrawals.stop().await;
         // Registration flows waiting keyless for a proof hold no lease.
         self.platform.registrations.abort_all();

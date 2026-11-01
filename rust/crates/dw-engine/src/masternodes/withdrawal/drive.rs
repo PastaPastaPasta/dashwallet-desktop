@@ -13,7 +13,7 @@ use dpp::system_data_contracts::withdrawals_contract::v1::document_types::withdr
 use dw_appdb::WithdrawalRow;
 
 use super::WithdrawalError;
-use crate::platform::withdrawal::{amount_of, document_id};
+use crate::platform::withdrawal::amount_of;
 
 /// Where Drive pays an owner-key withdrawal, which carries no output script
 /// (F3), or why it refuses one.
@@ -160,17 +160,6 @@ pub(crate) fn needs_identity(row: &WithdrawalRow) -> bool {
     row.signed.script.is_none()
 }
 
-/// The document a record's execution writes to `script`: Drive's id for
-/// the record's identity and nonce (`document_id`, its entropy the nonce
-/// then the script).
-pub(crate) fn document_of(
-    identity: &Identifier,
-    row: &WithdrawalRow,
-    script: &CoreScript,
-) -> Identifier {
-    document_id(identity, row.signed.nonce, script)
-}
-
 /// P7's match: the document at the record's id for `script` holds exactly
 /// the record's effect, amount, `coreFeePerByte` and pooling, paid to
 /// `script` by the record's identity. A present document with other
@@ -195,7 +184,7 @@ pub(crate) fn matches(
 }
 
 /// The document's `status` (Drive's integer), if it has one.
-pub(crate) fn status_of(doc: &Document) -> Option<u8> {
+pub(crate) fn document_status(doc: &Document) -> Option<u8> {
     doc.properties()
         .get_integer::<u8>(withdrawal::properties::STATUS)
         .ok()

@@ -13,7 +13,7 @@
 use rusqlite::{Connection, Row, params};
 
 use crate::fault_points::{MN_BARRIER_BACKFILL, MN_BARRIER_CLEAR};
-use crate::{AppDb, GLOBAL_SCOPE, Result, fault_before, write_transaction};
+use crate::{AppDb, GLOBAL_SCOPE, Result, fault_before, sql_u64, write_transaction};
 
 /// The settings key (global scope) of the backfill's "done" marker, set in
 /// the backfill's transaction.
@@ -56,10 +56,6 @@ fn read_row(r: &Row<'_>) -> rusqlite::Result<PayoutBarrierRow> {
     })
 }
 
-fn sql_u64(v: u64) -> i64 {
-    i64::try_from(v).unwrap_or(i64::MAX)
-}
-
 /// Writes `barrier` in the caller's transaction. With `keep_existing`, an
 /// existing barrier of the same operation is kept (the backfill); else it is
 /// an error. Only that conflict is skipped (not `OR IGNORE`, which would
@@ -95,21 +91,25 @@ pub(crate) fn write_barrier(
 impl AppDb {
     /// Every barrier, oldest first.
     pub fn payout_barriers(&self) -> Result<Vec<PayoutBarrierRow>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {COLUMNS} FROM mn_payout_barriers ORDER BY id"
-        ))?;
-        let rows = stmt.query_map([], read_row)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        self.barriers_where("1", [])
     }
 
     /// The masternode's barriers, oldest first (P4 (b)).
     pub fn payout_barriers_of(&self, pro_tx_hash: &str) -> Result<Vec<PayoutBarrierRow>> {
+        self.barriers_where("pro_tx_hash = ?1", [pro_tx_hash])
+    }
+
+    /// The barriers `filter` selects, oldest first.
+    fn barriers_where<P: rusqlite::Params>(
+        &self,
+        filter: &str,
+        params: P,
+    ) -> Result<Vec<PayoutBarrierRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT {COLUMNS} FROM mn_payout_barriers WHERE pro_tx_hash = ?1 ORDER BY id"
+            "SELECT {COLUMNS} FROM mn_payout_barriers WHERE {filter} ORDER BY id"
         ))?;
-        let rows = stmt.query_map([pro_tx_hash], read_row)?;
+        let rows = stmt.query_map(params, read_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 

@@ -20,7 +20,7 @@ use crate::fault_points::{
     MN_WITHDRAW_NOT_EXECUTED, MN_WITHDRAW_NOTE, MN_WITHDRAW_SENT_AT, MN_WITHDRAW_STATE,
     MN_WITHDRAW_SUPERSEDE,
 };
-use crate::{AppDb, AppDbError, Result, fault_before, write_transaction};
+use crate::{AppDb, AppDbError, Result, fault_before, sql_u64, write_transaction};
 
 /// The key that signed (MG-13 P2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -266,10 +266,6 @@ fn corrupt(column: &str, value: &str) -> rusqlite::Error {
     )
 }
 
-fn sql_u64(v: u64) -> i64 {
-    i64::try_from(v).unwrap_or(i64::MAX)
-}
-
 fn get_u64(r: &Row<'_>, i: usize) -> rusqlite::Result<u64> {
     Ok(u64::try_from(r.get::<_, i64>(i)?).unwrap_or(0))
 }
@@ -373,18 +369,23 @@ fn state_list(states: &[WithdrawalState]) -> String {
 }
 
 /// The current state of record `id`, in the transaction.
-fn state_of(conn: &Connection, id: &str) -> Result<Option<(WithdrawalState, String, u64)>> {
-    let row: Option<(String, String, i64)> = conn
+fn state_of(conn: &Connection, id: &str) -> Result<Option<(WithdrawalState, String, u64, String)>> {
+    let row: Option<(String, String, i64, String)> = conn
         .query_row(
-            "SELECT state, identity_id, nonce FROM mn_withdrawals WHERE id = ?1",
+            "SELECT state, identity_id, nonce, pro_tx_hash FROM mn_withdrawals WHERE id = ?1",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    row.map(|(state, identity, nonce)| {
+    row.map(|(state, identity, nonce, pro_tx_hash)| {
         let state = WithdrawalState::parse(&state)
             .ok_or_else(|| AppDbError::Corrupt(format!("mn_withdrawals.state {state:?}")))?;
-        Ok((state, identity, u64::try_from(nonce).unwrap_or(0)))
+        Ok((
+            state,
+            identity,
+            u64::try_from(nonce).unwrap_or(0),
+            pro_tx_hash,
+        ))
     })
     .transpose()
 }
@@ -478,19 +479,12 @@ impl AppDb {
     ) -> Result<bool> {
         let applied = self.durably(|conn| {
             let tx = write_transaction(conn)?;
-            let pro_tx_hash: Option<String> = tx
-                .query_row(
-                    "SELECT pro_tx_hash FROM mn_withdrawals WHERE id = ?1",
-                    [refused_id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let Some((state, identity, nonce)) = state_of(&tx, refused_id)? else {
+            let Some((state, identity, nonce, pro_tx_hash)) = state_of(&tx, refused_id)? else {
                 return Ok(false);
             };
             if identity != sibling.identity_id
                 || nonce != sibling.nonce
-                || pro_tx_hash.as_deref() != Some(sibling.pro_tx_hash.as_str())
+                || pro_tx_hash != sibling.pro_tx_hash
             {
                 return Err(AppDbError::Invalid(format!(
                     "the sibling of {refused_id} is of another group"
@@ -611,7 +605,7 @@ impl AppDb {
         }
         let applied = self.durably(|conn| {
             let tx = write_transaction(conn)?;
-            let Some((_, identity, nonce)) = state_of(&tx, id)? else {
+            let Some((_, identity, nonce, _)) = state_of(&tx, id)? else {
                 return Ok(false);
             };
             let done = tx.execute(

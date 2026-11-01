@@ -10,7 +10,7 @@ use rusqlite::{OptionalExtension, Row, params};
 
 use crate::fault_points::{MN_BARRIER_DISCARD, MN_BARRIER_WRITE};
 use crate::payout_barriers::{NewPayoutBarrier, write_barrier};
-use crate::{AppDb, AppDbError, Holder, Result, fault_before, write_transaction};
+use crate::{AppDb, AppDbError, Holder, Result, fault_before, sql_u64, write_transaction};
 
 /// One `masternode_ops` row. `kind`, `terms` and `request` are the
 /// engine's encodings; this crate does not interpret them.
@@ -75,10 +75,6 @@ fn read_row(r: &Row<'_>) -> rusqlite::Result<MasternodeOpRow> {
         sent_at: opt_u64(r.get(15)?),
         last_error: r.get(16)?,
     })
-}
-
-fn sql_u64(v: u64) -> i64 {
-    i64::try_from(v).unwrap_or(i64::MAX)
 }
 
 impl AppDb {

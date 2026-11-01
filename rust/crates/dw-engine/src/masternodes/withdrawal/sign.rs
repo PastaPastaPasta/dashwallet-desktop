@@ -5,8 +5,6 @@
 //! the nonce, the grant's signature and the record's durable insert, all
 //! before any network step; then the hand-off and P8 step 1's read-back.
 
-use std::sync::Arc;
-
 use dashcore::Network;
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::core_script::CoreScript;
@@ -24,24 +22,21 @@ use dpp::withdrawal::Pooling;
 use dw_appdb::{SignedWithdrawal, WithdrawalKeyKind, WithdrawalRow, WithdrawalState};
 use dw_vault::WithdrawalKey;
 
-use super::check::{Gated, gated, held, identity_of, look, look_until};
+use super::check::{at_least, held, identity_of, look, look_until};
 use super::drive::window;
 use super::net::{Answer, MnWithdrawNet};
 use super::recheck::read_back;
 use super::{
-    Alarm, Authorize, Env, Stage, WalletKeys, WithdrawalError, fault, identity_lock, points,
+    Alarm, Authorize, Env, WalletKeys, WithdrawalError, fault_after, fault_before, identity_lock,
+    load, on_db, points,
 };
 use crate::platform::WithdrawAmount;
 use crate::platform::withdrawal::{CORE_FEE_PER_BYTE, Rules, expected_duffs, takes};
 
-/// Which kind of key signs (P2, D23).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WithdrawalKeyChoice {
-    /// Drive pays its window's script; no destination may be given.
-    Owner,
-    /// The approved script: `destination`, else the signing key's address.
-    Payout,
-}
+/// Which kind of key signs (P2, D23): the owner key (Drive pays its
+/// window's script; no destination may be given) or a payout key (the
+/// approved script: `destination`, else the signing key's address).
+pub(crate) use crate::masternodes::WithdrawalKeyChoice;
 
 /// `withdraw_credits`' arguments (P13).
 #[derive(Debug, Clone)]
@@ -88,19 +83,13 @@ pub(crate) async fn retry(
     refused_id: &str,
     req: &Request,
 ) -> Result<WithdrawalRow, WithdrawalError> {
-    let refused = record(env, refused_id).await?;
+    let refused = load(env, refused_id).await?;
     if refused.state != WithdrawalState::Refused
         || refused.signed.pro_tx_hash != crate::masternodes::display_hex(&req.pro_tx_hash)
     {
         return Err(WithdrawalError::RetryState);
     }
     signed_and_sent(env, net, keys, auth, network, req, Some(refused_id)).await
-}
-
-async fn record(env: &impl Env, id: &str) -> Result<WithdrawalRow, WithdrawalError> {
-    let (db, id) = (Arc::clone(env.db()), id.to_owned());
-    (tokio::task::spawn_blocking(move || db.withdrawal(&id)).await??)
-        .ok_or(WithdrawalError::NotFound)
 }
 
 async fn signed_and_sent(
@@ -135,36 +124,29 @@ async fn signed_and_sent(
         return Err(WithdrawalError::Pending);
     }
     let plan = plan(net, keys, network, &identity, req).await?;
-    let nonce = nonce_for(env, net, &id, &records, sibling_of).await?;
-    let (signed, floor) = sign(env, net, auth, req, &identity, &plan, &nonce).await?;
-    let db = Arc::clone(env.db());
+    let (nonce, floor) = nonce_for(env, net, &id, &records, sibling_of).await?;
+    let signed = sign(env, auth, req, &identity, &plan, nonce).await?;
     let inserted = signed.clone();
     let refused = sibling_of.map(str::to_owned);
-    tokio::task::spawn_blocking(move || match refused {
-        None => db.insert_withdrawal_durable(&inserted, floor),
-        Some(refused) => {
-            match db.supersede_and_insert_withdrawal_durable(&refused, &inserted, floor)? {
-                true => Ok(()),
-                false => Err(dw_appdb::AppDbError::Invalid(
-                    "the refused record moved".into(),
-                )),
-            }
-        }
+    let applied = on_db(env, move |db| match refused {
+        None => db
+            .insert_withdrawal_durable(&inserted, floor)
+            .map(|()| true),
+        Some(refused) => db.supersede_and_insert_withdrawal_durable(&refused, &inserted, floor),
     })
-    .await?
-    .map_err(|e| match e {
-        dw_appdb::AppDbError::Invalid(_) => WithdrawalError::RetryState,
-        e => e.into(),
-    })?;
+    .await?;
+    if !applied {
+        // The refused record moved.
+        return Err(WithdrawalError::RetryState);
+    }
     drop(guard);
-    let row = record(env, &signed.id).await?;
+    let row = load(env, &signed.id).await?;
     hand_off(env, net, &row, points::BROADCAST).await?;
-    let row = record(env, &signed.id).await?;
     // P8 step 1 only: a match decides; nothing else does here.
     if let Err(e) = read_back(env, net, &id, row.signed.nonce).await {
         tracing::info!(error = %e, "reading the masternode withdrawal back");
     }
-    record(env, &signed.id).await
+    load(env, &signed.id).await
 }
 
 /// The identity's records, every group.
@@ -172,8 +154,8 @@ pub(crate) async fn group_records(
     env: &impl Env,
     id: &Identifier,
 ) -> Result<Vec<WithdrawalRow>, WithdrawalError> {
-    let (db, shown) = (Arc::clone(env.db()), shown(id));
-    Ok(tokio::task::spawn_blocking(move || db.withdrawals_of_identity(&shown)).await??)
+    let shown = shown(id);
+    on_db(env, move |db| db.withdrawals_of_identity(&shown)).await
 }
 
 /// What the withdrawal signs, decided against the final look's identity.
@@ -186,7 +168,8 @@ struct Plan {
     /// The owner key's destination as this look saw it.
     expected: Option<CoreScript>,
     credits: u64,
-    rules: Rules,
+    /// Drive's fee reserve the grant's charge adds (P11).
+    fee: u64,
     expected_duffs: u64,
 }
 
@@ -233,7 +216,7 @@ async fn plan(
         script,
         expected,
         credits,
-        rules,
+        fee: rules.fee,
         expected_duffs: expected_duffs(credits, net.version())?,
     })
 }
@@ -251,12 +234,6 @@ fn check_script(script: &CoreScript, network: Network) -> Result<(), WithdrawalE
     }
 }
 
-/// The nonce a new record signs at (P10), and the proved read it rests on.
-struct Nonce {
-    nonce: u64,
-    read: Gated<u64>,
-}
-
 /// P10 over the identity's nonce groups, from a proved nonce read at or
 /// above every floor of its records (never the SDK's cache) that passed
 /// rule 5 (P12):
@@ -271,20 +248,29 @@ struct Nonce {
 ///
 /// For Try again (`sibling_of`), only the refused record's own nonce, while
 /// taken; else `withdrawal_retry_state` (P15).
+///
+/// Returns the nonce and the new record's starting floor: the read's height
+/// when SPV-verified, else 0 (only SPV-provenance reads raise a floor, P5).
 async fn nonce_for(
     env: &impl Env,
     net: &impl MnWithdrawNet,
     id: &Identifier,
     records: &[WithdrawalRow],
     sibling_of: Option<&str>,
-) -> Result<Nonce, WithdrawalError> {
-    let floor = records.iter().map(|r| r.floor_height).max().unwrap_or(0);
-    let read = nonce_read(env, net, id, floor)
-        .await?
-        .ok_or(WithdrawalError::Pending)?;
+) -> Result<(u64, u64), WithdrawalError> {
+    let least = floor_of(records);
+    let read = at_least(env, least, || net.nonce_state(*id)).await?;
+    if read.read.height < least {
+        return Err(WithdrawalError::Pending);
+    }
     if !read.passed {
         return Err(WithdrawalError::Unverified);
     }
+    let floor = if read.read.verified {
+        read.read.height
+    } else {
+        0
+    };
     let state = read.read.value;
     let tip = state & IDENTITY_NONCE_VALUE_FILTER;
     let mut groups: Vec<(u64, bool)> = Vec::new();
@@ -301,7 +287,7 @@ async fn nonce_for(
         if !takes(state, n, *id) {
             return Err(WithdrawalError::RetryState);
         }
-        return Ok(Nonce { nonce: n, read });
+        return Ok((n, floor));
     }
     for &(n, undecided) in &groups {
         if !undecided && takes(state, n, *id) {
@@ -318,7 +304,7 @@ async fn nonce_for(
         .map(|(n, _)| *n)
         .collect();
     match takeable.as_slice() {
-        [n] => return Ok(Nonce { nonce: *n, read }),
+        [n] => return Ok((*n, floor)),
         [] => {}
         _ => return Err(WithdrawalError::Pending),
     }
@@ -326,114 +312,83 @@ async fn nonce_for(
         .iter()
         .all(|(n, _)| *n <= tip && !takes(state, *n, *id))
     {
-        return Ok(Nonce {
-            nonce: tip + 1,
-            read,
-        });
+        return Ok((tip + 1, floor));
     }
     Err(WithdrawalError::Pending)
 }
 
-/// A nonce read under rule 5 at or above `floor`: a read below it is
-/// ignored and made again, [`READ_BACK_TRIES`](crate::platform::withdrawal::READ_BACK_TRIES)
-/// times at most; `None` when none reached it.
-pub(crate) async fn nonce_read(
-    env: &impl Env,
-    net: &impl MnWithdrawNet,
-    id: &Identifier,
-    floor: u64,
-) -> Result<Option<Gated<u64>>, WithdrawalError> {
-    for _ in 0..crate::platform::withdrawal::READ_BACK_TRIES {
-        let read = gated(env.rule_5(), env.waits().probe, || net.nonce_state(*id)).await?;
-        if read.read.height >= floor {
-            return Ok(Some(read));
-        }
-    }
-    Ok(None)
+/// The highest floor of `records` (P5): every read deciding on them is at
+/// or above it.
+pub(crate) fn floor_of(records: &[WithdrawalRow]) -> u64 {
+    records.iter().map(|r| r.floor_height).max().unwrap_or(0)
 }
 
 /// Builds the V1 transition (P3: no user fee increase, Platform's minimum
 /// Core fee, pooling `Never`; the owner key with no output script, the
-/// payout key with the approved one), signs it through the grant, and
-/// returns the record to insert and its starting floor: the nonce read's
-/// height when SPV-verified, else 0 (only SPV-provenance reads raise a
-/// floor, P5).
+/// payout key with the approved one), signs it at `nonce` through the
+/// grant, and returns the record to insert.
 async fn sign(
     env: &impl Env,
-    net: &impl MnWithdrawNet,
     auth: impl Authorize,
     req: &Request,
     identity: &Identity,
     plan: &Plan,
-    nonce: &Nonce,
-) -> Result<(SignedWithdrawal, u64), WithdrawalError> {
-    let _ = net;
+    nonce: u64,
+) -> Result<SignedWithdrawal, WithdrawalError> {
     let id = identity.id();
-    let unsigned = IdentityCreditWithdrawalTransitionV1 {
+    let mut v1 = IdentityCreditWithdrawalTransitionV1 {
         identity_id: id,
         amount: plan.credits,
         core_fee_per_byte: CORE_FEE_PER_BYTE,
         pooling: Pooling::Never,
         output_script: plan.script.clone(),
-        nonce: nonce.nonce,
+        nonce,
         user_fee_increase: 0,
         signature_public_key_id: plan.identity_key.id(),
         signature: BinaryData::default(),
     };
-    let transition =
-        StateTransition::IdentityCreditWithdrawal(IdentityCreditWithdrawalTransition::V1(unsigned));
-    fault(env.db(), points::SIGN, Stage::Before)?;
-    let charge = plan.credits.saturating_add(plan.rules.fee);
+    let v1_transition = |v1: IdentityCreditWithdrawalTransitionV1| {
+        StateTransition::IdentityCreditWithdrawal(IdentityCreditWithdrawalTransition::V1(v1))
+    };
+    fault_before(env.db(), points::SIGN)?;
+    let charge = plan.credits.saturating_add(plan.fee);
     let signature = auth
         .sign(
             charge,
             &plan.key,
             &plan.identity_key,
-            &transition,
+            &v1_transition(v1.clone()),
             req.pro_tx_hash,
         )
         .await?;
-    let mut transition = transition;
-    let StateTransition::IdentityCreditWithdrawal(IdentityCreditWithdrawalTransition::V1(t)) =
-        &mut transition
-    else {
-        unreachable!("built as a V1 withdrawal above");
-    };
-    t.signature = BinaryData::new(signature.to_vec());
+    v1.signature = BinaryData::new(signature.to_vec());
+    let transition = v1_transition(v1);
     let bytes = transition.serialize_to_bytes().map_err(internal)?;
     let hash = transition.transaction_id().map_err(internal)?;
-    fault(env.db(), points::SIGN, Stage::After)?;
-    let floor = if nonce.read.read.verified {
-        nonce.read.read.height
-    } else {
-        0
-    };
+    fault_after(env.db(), points::SIGN)?;
     let mut row_id = [0u8; 16];
     rand::Rng::fill(&mut rand::thread_rng(), &mut row_id);
-    Ok((
-        SignedWithdrawal {
-            id: hex::encode(row_id),
-            transition_hash: hex::encode(hash),
-            created_by: req.created_by.clone(),
-            pro_tx_hash: crate::masternodes::display_hex(&req.pro_tx_hash),
-            identity_id: shown(&id),
-            key_kind: if plan.key.is_owner() {
-                WithdrawalKeyKind::Owner
-            } else {
-                WithdrawalKeyKind::Payout
-            },
-            amount: plan.credits,
-            core_fee_per_byte: CORE_FEE_PER_BYTE,
-            pooling: Pooling::Never as u8,
-            expected_duffs: plan.expected_duffs,
-            nonce: nonce.nonce,
-            signed_bytes: bytes,
-            script: plan.script.as_ref().map(|s| s.as_bytes().to_vec()),
-            expected_script: plan.expected.as_ref().map(|s| s.as_bytes().to_vec()),
-            signed_at: env.now(),
+    Ok(SignedWithdrawal {
+        id: hex::encode(row_id),
+        transition_hash: hex::encode(hash),
+        created_by: req.created_by.clone(),
+        pro_tx_hash: crate::masternodes::display_hex(&req.pro_tx_hash),
+        identity_id: shown(&id),
+        key_kind: if plan.key.is_owner() {
+            WithdrawalKeyKind::Owner
+        } else {
+            WithdrawalKeyKind::Payout
         },
-        floor,
-    ))
+        amount: plan.credits,
+        core_fee_per_byte: CORE_FEE_PER_BYTE,
+        pooling: Pooling::Never as u8,
+        expected_duffs: plan.expected_duffs,
+        nonce,
+        signed_bytes: bytes,
+        script: plan.script.as_ref().map(|s| s.as_bytes().to_vec()),
+        expected_script: plan.expected.as_ref().map(|s| s.as_bytes().to_vec()),
+        signed_at: env.now(),
+    })
 }
 
 fn internal(e: impl std::fmt::Display) -> WithdrawalError {
@@ -455,30 +410,30 @@ pub(crate) async fn hand_off(
     row: &WithdrawalRow,
     point: &'static str,
 ) -> Result<Answer, WithdrawalError> {
-    let (db, id, now) = (Arc::clone(env.db()), row.signed.id.clone(), env.now());
-    let prior = tokio::task::spawn_blocking(move || db.begin_withdrawal_send_durable(&id, now))
-        .await??
+    let (id, now) = (row.signed.id.clone(), env.now());
+    let prior = on_db(env, move |db| db.begin_withdrawal_send_durable(&id, now))
+        .await?
         .ok_or(WithdrawalError::NotFound)?;
-    fault(env.db(), point, Stage::Before)?;
+    fault_before(env.db(), point)?;
     let answer = net.broadcast(&row.signed.signed_bytes).await;
-    fault(env.db(), point, Stage::After)?;
-    let (db, id) = (Arc::clone(env.db()), row.signed.id.clone());
-    let recorded = answer.clone();
-    tokio::task::spawn_blocking(move || {
-        use WithdrawalState::*;
-        match recorded {
-            Answer::Refused(reason) => {
-                let reason = if prior {
-                    format!("{reason} (after an earlier send)")
-                } else {
-                    reason
-                };
-                db.set_withdrawal_state_durable(&id, &[Signed, Sent], Refused, Some(&reason))
-            }
-            _ => db.set_withdrawal_state_durable(&id, &[Signed], Sent, None),
+    fault_after(env.db(), point)?;
+    use WithdrawalState::*;
+    let (from, to, reason): (&[WithdrawalState], _, _) = match &answer {
+        Answer::Refused(reason) => {
+            let reason = if prior {
+                format!("{reason} (after an earlier send)")
+            } else {
+                reason.clone()
+            };
+            (&[Signed, Sent], Refused, Some(reason))
         }
+        _ => (&[Signed], Sent, None),
+    };
+    let id = row.signed.id.clone();
+    on_db(env, move |db| {
+        db.set_withdrawal_state_durable(&id, from, to, reason.as_deref())
     })
-    .await??;
+    .await?;
     tracing::info!(answer = ?answer, "a masternode withdrawal handed off");
     Ok(answer)
 }

@@ -3,7 +3,7 @@
 
 use std::future::Future;
 
-use dashcore::{Address, Network};
+use dashcore::Network;
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::core_script::CoreScript;
 use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -15,10 +15,11 @@ use tokio::time::Instant;
 
 use super::drive::{Window, identity_key, key_hashes, window};
 use super::net::{MnWithdrawNet, Proved};
-use super::{CheckingReason, Env, HeldKey, WalletKeys, WithdrawalError};
+use super::{Env, HeldKey, WalletKeys, WithdrawalError, on_db};
+use crate::masternodes::WithdrawalCheckingReason;
 use crate::masternodes::protx_records::ProTxOperationState;
 use crate::platform::trust::Rule5;
-use crate::platform::withdrawal::{Rules, expected_duffs};
+use crate::platform::withdrawal::{READ_BACK_TRIES, Rules, expected_duffs};
 use crate::platform::{PlatformError, WithdrawAmount};
 
 /// A read and whether it passed rule 5 under the mode (P12).
@@ -77,6 +78,28 @@ where
     }
 }
 
+/// A read under rule 5 at or above `height`, made again while it answers
+/// from below, `READ_BACK_TRIES` times at most: the last read, which the
+/// caller compares with `height`. A failed read is `Err`.
+pub(crate) async fn at_least<T, F, Fut>(
+    env: &impl Env,
+    height: u64,
+    mut read: F,
+) -> Result<Gated<T>, PlatformError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<Proved<T>, PlatformError>>,
+{
+    let mut tries = 1;
+    loop {
+        let r = gated(env.rule_5(), env.waits().probe, &mut read).await?;
+        if r.read.height >= height || tries == READ_BACK_TRIES {
+            return Ok(r);
+        }
+        tries += 1;
+    }
+}
+
 /// The identity id of the masternode `pro_tx_hash` (wire order): the
 /// display-order hash (dw-vault `withdrawal.rs` module doc).
 pub(crate) fn identity_of(pro_tx_hash: &[u8; 32]) -> Identifier {
@@ -92,7 +115,7 @@ pub(crate) struct Seen {
     pub(crate) identity: Gated<Option<Identity>>,
     pub(crate) header_tip: Option<u32>,
     /// `None` when (a)–(c) hold.
-    pub(crate) reason: Option<CheckingReason>,
+    pub(crate) reason: Option<WithdrawalCheckingReason>,
 }
 
 impl Seen {
@@ -128,13 +151,13 @@ pub(crate) async fn look(
     let pending = pending_barriers(env, pro_tx_hash, &identity).await?;
     let core = identity.read.core_height;
     let reason = if header_tip.is_none() {
-        Some(CheckingReason::SpvUnsynced)
+        Some(WithdrawalCheckingReason::SpvUnsynced)
     } else if !identity.passed {
-        Some(CheckingReason::Unverified)
+        Some(WithdrawalCheckingReason::Unverified)
     } else if pending {
-        Some(CheckingReason::PayoutChangePending)
+        Some(WithdrawalCheckingReason::PayoutChangePending)
     } else if header_tip.is_some_and(|tip| core < tip) {
-        Some(CheckingReason::PlatformBehind)
+        Some(WithdrawalCheckingReason::PlatformBehind)
     } else {
         None
     };
@@ -163,15 +186,11 @@ async fn pending_barriers(
     identity: &Gated<Option<Identity>>,
 ) -> Result<bool, WithdrawalError> {
     let shown = crate::masternodes::display_hex(pro_tx_hash);
-    let db = std::sync::Arc::clone(env.db());
-    let barriers = tokio::task::spawn_blocking(move || db.payout_barriers_of(&shown)).await??;
+    let barriers = on_db(env, move |db| db.payout_barriers_of(&shown)).await?;
     let mut pending = !env.barriers_ready();
     for barrier in barriers {
         if clears(env, &barrier, identity).await? {
-            let db = std::sync::Arc::clone(env.db());
-            let cleared =
-                tokio::task::spawn_blocking(move || db.clear_payout_barrier_durable(barrier.id))
-                    .await??;
+            let cleared = on_db(env, move |db| db.clear_payout_barrier_durable(barrier.id)).await?;
             tracing::info!(cleared, "a payout-change barrier cleared (MG-13 P16)");
         } else {
             pending = true;
@@ -217,7 +236,9 @@ pub(crate) async fn look_until(
     loop {
         let seen = look(env, net, pro_tx_hash).await?;
         let poll = env.waits().poll;
-        if seen.reason != Some(CheckingReason::PlatformBehind) || Instant::now() + poll > deadline {
+        if seen.reason != Some(WithdrawalCheckingReason::PlatformBehind)
+            || Instant::now() + poll > deadline
+        {
             return Ok(seen);
         }
         tokio::time::sleep(poll).await;
@@ -247,7 +268,7 @@ pub(crate) enum Destination {
         lag: u32,
     },
     /// Withdraw off (MG-00 D42).
-    Checking { reason: CheckingReason },
+    Checking { reason: WithdrawalCheckingReason },
 }
 
 /// Platform's side as the detail pane shows it (P13).
@@ -305,11 +326,6 @@ pub(crate) async fn held(
     Ok((owner, payout))
 }
 
-pub(crate) fn address(script: &CoreScript, network: Network) -> String {
-    Address::from_script(script, network)
-        .map_or_else(|_| hex::encode(script.as_bytes()), |a| a.to_string())
-}
-
 /// `withdrawal_quote(wallet, pro_tx_hash)` (P13), after waiting up to
 /// `wait` for Platform to catch up (P4; `Duration::ZERO` reads once). The
 /// grant comes after it.
@@ -337,7 +353,7 @@ pub(crate) async fn quote(
     let read = &seen.identity.read;
     let fixed = |script: &CoreScript| match (seen.reason, seen.header_tip) {
         (None, Some(tip)) => Destination::Fixed {
-            address: address(script, network),
+            address: crate::masternodes::withdrawals::address(script.as_bytes(), network),
             script: script.clone(),
             platform_height: read.height,
             core_height: read.core_height,
@@ -345,7 +361,7 @@ pub(crate) async fn quote(
             lag: tip.saturating_sub(read.core_height),
         },
         (reason, _) => Destination::Checking {
-            reason: reason.unwrap_or(CheckingReason::SpvUnsynced),
+            reason: reason.unwrap_or(WithdrawalCheckingReason::SpvUnsynced),
         },
     };
     let owner_destination = match (&owner_key, window(identity)) {
@@ -357,8 +373,7 @@ pub(crate) async fn quote(
         super::drive::script_of(key).map(|s| fixed(&s))
     });
     let shown = id.to_string(dpp::platform_value::string_encoding::Encoding::Base58);
-    let db = std::sync::Arc::clone(env.db());
-    let open = tokio::task::spawn_blocking(move || db.open_withdrawal(&shown)).await??;
+    let open = on_db(env, move |db| db.open_withdrawal(&shown)).await?;
     Ok(Quote {
         owner_key,
         payout_keys,

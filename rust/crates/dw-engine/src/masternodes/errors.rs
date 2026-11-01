@@ -154,7 +154,7 @@ pub enum MasternodesError {
     #[error("the identity has no usable payout key: {detail}")]
     WithdrawalNoPayoutKey { detail: String },
     /// MG-13 P4's (a)–(c) do not hold; nothing was signed.
-    #[error("the withdrawal's destination is still being checked: {}", checking_name(*reason))]
+    #[error("the withdrawal's destination is still being checked: {}", reason.as_str())]
     WithdrawalDestinationChecking { reason: WithdrawalCheckingReason },
     /// An open withdrawal of the masternode's identity, a lost race for the
     /// open slot, or no nonce MG-13 P10 allows.
@@ -244,16 +244,6 @@ impl MasternodesError {
             Self::Engine(e) => Some(e),
             _ => None,
         }
-    }
-}
-
-/// `withdrawal_destination_checking`'s reason as its JSON names it.
-fn checking_name(reason: WithdrawalCheckingReason) -> &'static str {
-    match reason {
-        WithdrawalCheckingReason::PlatformBehind => "platform_behind",
-        WithdrawalCheckingReason::PayoutChangePending => "payout_change_pending",
-        WithdrawalCheckingReason::Unverified => "unverified",
-        WithdrawalCheckingReason::SpvUnsynced => "spv_unsynced",
     }
 }
 

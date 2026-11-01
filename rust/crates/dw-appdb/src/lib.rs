@@ -304,6 +304,11 @@ pub type Result<T> = std::result::Result<T, AppDbError>;
 
 /// [`AppDb::unfinished`]; a poisoned lock is still a usable set (each
 /// change is one insert or removal).
+/// A `u64` as SQLite's INTEGER, saturating at `i64::MAX`.
+pub(crate) fn sql_u64(v: u64) -> i64 {
+    i64::try_from(v).unwrap_or(i64::MAX)
+}
+
 fn unfinished(set: &Mutex<HashSet<String>>) -> MutexGuard<'_, HashSet<String>> {
     set.lock().unwrap_or_else(|p| p.into_inner())
 }

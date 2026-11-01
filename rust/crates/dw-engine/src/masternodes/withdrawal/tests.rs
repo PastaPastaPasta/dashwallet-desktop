@@ -54,25 +54,58 @@ use dw_vault::{
 };
 use zeroize::Zeroizing;
 
+use super::background::{Background, Job};
 use super::check::{Destination, gated, identity_of, quote};
 use super::drive::{Window, candidates, identity_key, matches, window};
 use super::net::{Answer, MnWithdrawNet, Proved, classify};
 use super::recheck::{Outcome, mark, recheck_all, recheck_group, recheck_record};
 use super::sign::{Request, WithdrawalKeyChoice, retry, shown, withdraw};
 use super::{
-    Alarm, Authorize, Chain, CheckingReason, Env, HeldKey, UNLOCKED, Waits, WalletKeys,
-    WithdrawalError, identity_lock, points,
+    Alarm, Authorize, Chain, Env, HeldKey, Hold, UNLOCKED, Waits, WalletKeys, WithdrawalError,
+    identity_lock, points,
 };
 use crate::EngineError;
+use crate::masternodes::WithdrawalCheckingReason as CheckingReason;
 use crate::masternodes::display_hex;
 use crate::masternodes::protx_records::ProTxOperationState;
 use crate::platform::trust::Rule5;
 use crate::platform::withdrawal::{
     CORE_FEE_PER_BYTE, READ_BACK_TRIES, Rules, document_id, drive_document, expected_duffs, takes,
 };
-use crate::platform::{PlatformError, WithdrawAmount};
+use crate::platform::{CreditsError, PlatformError, WithdrawAmount};
 
 mod facade;
+
+impl WithdrawalError {
+    /// What the facade's code for it is (the facade maps the variants).
+    fn code(&self) -> &'static str {
+        match self {
+            Self::KeyMissing => "masternodes.withdrawal_key_missing",
+            Self::Shared => "masternodes.withdrawal_shared",
+            Self::NoPayoutKey(_) => "masternodes.withdrawal_no_payout_key",
+            Self::NoIdentity => "masternodes.no_identity",
+            Self::DestinationChecking { .. } => "masternodes.withdrawal_destination_checking",
+            Self::Pending => "masternodes.withdrawal_pending",
+            Self::Unverified => "masternodes.withdrawal_unverified",
+            Self::RetryState => "masternodes.withdrawal_retry_state",
+            Self::MarkState => "masternodes.withdrawal_mark_state",
+            Self::NotFound => "masternodes.withdrawal_not_found",
+            Self::Credits(CreditsError::WithdrawalOutOfRange { .. }) => {
+                "masternodes.withdrawal_amount_out_of_range"
+            }
+            Self::Credits(CreditsError::Platform(PlatformError::InsufficientCredits {
+                ..
+            }))
+            | Self::Platform(PlatformError::InsufficientCredits { .. }) => {
+                "masternodes.withdrawal_amount_insufficient"
+            }
+            Self::Credits(e) => e.code(),
+            Self::Platform(e) => e.code(),
+            Self::Masternodes(e) => e.code(),
+            Self::Engine(e) => e.code(),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The scripted Platform.
@@ -309,6 +342,16 @@ impl Platform {
 
     fn deviate(&self, read: Read, dev: Dev, n: usize) {
         self.devs.lock().unwrap().insert((read, dev), n);
+    }
+
+    /// Every read of `kind` answers from a node at height 0, below any
+    /// record's floor, SPV-verified: Platform answers, rule 5 passes and
+    /// nothing is decided, a round that counts (P8 step 3).
+    fn lagging(&self, kind: Read) {
+        let mut old = self.world.lock().unwrap().clone();
+        old.height = 0;
+        *self.old.lock().unwrap() = Some(old);
+        self.deviate(kind, Dev::Behind, ALWAYS);
     }
 
     fn calm(&self) {
@@ -555,6 +598,10 @@ struct Scene {
     ops: Mutex<HashMap<String, ProTxOperationState>>,
     clock: AtomicU64,
     alarms: Mutex<Vec<Alarm>>,
+    /// The blocking app database calls' tracker (`on_db`).
+    work: Arc<Background>,
+    /// Runs in the next app database call, on its blocking thread.
+    pause: Arc<Mutex<Option<Hook>>>,
 }
 
 impl Scene {
@@ -568,6 +615,8 @@ impl Scene {
             ops: Mutex::default(),
             clock: AtomicU64::new(1_000),
             alarms: Mutex::default(),
+            work: Arc::default(),
+            pause: Arc::default(),
         }
     }
 
@@ -622,6 +671,13 @@ impl Env for Scene {
 
     fn alarm(&self, alarm: Alarm) {
         self.alarms.lock().unwrap().push(alarm);
+    }
+
+    fn hold(&self) -> Hold {
+        Hold {
+            _token: self.work.hold(),
+            before: self.pause.lock().unwrap().take(),
+        }
     }
 }
 
@@ -1571,15 +1627,72 @@ async fn couldnt_confirm_comes_only_after_every_round() {
         .deviate(Read::Document, Dev::Fail, READ_BACK_TRIES - 1);
     assert_eq!(f.recheck(3).await, Outcome::Pending);
     assert_eq!(f.row(&row.signed.id).state, WithdrawalState::Sent);
-    // Every round fails.
+    // Every round answers from below the floor: each counts.
     let reads = f.plat.reads(Read::Document);
-    f.plat.deviate(Read::Document, Dev::Fail, ALWAYS);
+    f.plat.lagging(Read::Document);
     let outcome = f.recheck(3).await;
     assert!(matches!(outcome, Outcome::CouldntConfirm(_)), "{outcome:?}");
-    assert_eq!(f.plat.reads(Read::Document) - reads, READ_BACK_TRIES);
+    // Each round reads again while below, READ_BACK_TRIES times.
+    assert_eq!(
+        f.plat.reads(Read::Document) - reads,
+        READ_BACK_TRIES * READ_BACK_TRIES
+    );
     let row = f.row(&row.signed.id);
     assert_eq!(row.state, WithdrawalState::CouldntConfirm);
-    assert!(row.state_reason.unwrap().contains("document read failed"));
+    assert!(
+        (row.state_reason.as_deref()).is_some_and(|r| r.contains("below the floor")),
+        "{:?}",
+        row.state_reason
+    );
+}
+
+/// Fix round 1 m2: a round lost to transport or to rule 5 does not count
+/// toward `READ_BACK_TRIES`, however often it comes; the record stays
+/// where it is. Counted rounds still make `couldnt_confirm`.
+#[tokio::test]
+async fn rounds_lost_to_transport_or_rule_5_never_make_couldnt_confirm() {
+    // Each read that loses the round: a failing document read, and under
+    // Enforce an unverified one of each deciding kind.
+    for (read, dev) in [
+        (Read::Document, Dev::Fail),
+        (Read::Nonce, Dev::Fail),
+        (Read::Document, Dev::Unverified),
+        (Read::Nonce, Dev::Unverified),
+        (Read::Identity, Dev::Unverified),
+    ] {
+        let f = fx();
+        let key = if read == Read::Identity {
+            Owner
+        } else {
+            Payout
+        };
+        f.plat.answer(Answer::Unknown("lost".into()), false);
+        let row = f.withdraw(key, AMOUNT).await.unwrap();
+        // Its nonce used by another write: undecidable only on the reads.
+        f.plat.rival(3, None);
+        f.plat.deviate(read, dev, ALWAYS);
+        for pass in 0..2 * READ_BACK_TRIES {
+            let outcome = f.recheck(3).await;
+            assert!(
+                matches!(outcome, Outcome::Unanswered(_)),
+                "{read:?} {dev:?} pass {pass}: {outcome:?}"
+            );
+            assert_eq!(f.row(&row.signed.id).state, WithdrawalState::Sent);
+        }
+        // Platform answers again: P8 decides.
+        f.plat.calm();
+        assert_eq!(f.recheck(3).await, Outcome::NotExecuted, "{read:?} {dev:?}");
+    }
+    // Lost rounds use no try: two lost, then three counted.
+    let f = fx();
+    f.plat.answer(Answer::Unknown("lost".into()), false);
+    let row = f.withdraw(Payout, AMOUNT).await.unwrap();
+    f.plat.lagging(Read::Document);
+    f.plat
+        .deviate(Read::Document, Dev::Fail, READ_BACK_TRIES - 1);
+    let outcome = f.recheck(3).await;
+    assert!(matches!(outcome, Outcome::CouldntConfirm(_)), "{outcome:?}");
+    assert_eq!(f.row(&row.signed.id).state, WithdrawalState::CouldntConfirm);
 }
 
 #[tokio::test]
@@ -1591,7 +1704,7 @@ async fn a_late_proof_after_either_mark_makes_the_record_done() {
         // Only from couldnt_confirm.
         let e = mark(&f.scene, &row.signed.id, to).await.unwrap_err();
         assert_eq!(e.code(), "masternodes.withdrawal_mark_state");
-        f.plat.deviate(Read::Document, Dev::Fail, ALWAYS);
+        f.plat.lagging(Read::Document);
         f.recheck(3).await;
         f.plat.calm();
         let marked = mark(&f.scene, &row.signed.id, to).await.unwrap();
@@ -1729,7 +1842,7 @@ async fn an_undecided_group_whose_nonce_is_taken_signs_again_at_that_nonce() {
     let f = fx();
     f.plat.answer(Answer::Unknown("lost".into()), false);
     let row = f.withdraw(Payout, AMOUNT).await.unwrap();
-    f.plat.deviate(Read::Document, Dev::Fail, ALWAYS);
+    f.plat.lagging(Read::Document);
     f.recheck(3).await;
     f.plat.calm();
     mark(&f.scene, &row.signed.id, WithdrawalMark::NotReceived)
@@ -1814,7 +1927,7 @@ async fn a_mark_racing_a_proof_leaves_the_proof_and_the_mark() {
     let f = fx();
     f.plat.answer(Answer::Unknown("lost".into()), false);
     let row = f.withdraw(Payout, AMOUNT).await.unwrap();
-    f.plat.deviate(Read::Document, Dev::Fail, ALWAYS);
+    f.plat.lagging(Read::Document);
     f.recheck(3).await;
     f.plat.calm();
     assert!(f.plat.execute(&row.signed.signed_bytes));
@@ -1860,6 +1973,55 @@ async fn two_rechecks_decide_a_group_once_with_or_without_the_lock() {
 
 // ---------------------------------------------------------------------------
 // Concurrency and storage.
+
+/// Fix round 1 m1: close waits for an app database write a task it aborts
+/// had started, so nothing touches the app DB once close returns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_waits_for_a_write_its_aborted_recheck_started() {
+    let f = Arc::new(fx());
+    f.plat.answer(Answer::Unknown("lost".into()), false);
+    let row = f.withdraw(Payout, AMOUNT).await.unwrap();
+    assert_eq!(row.floor_height, 10);
+    f.plat.with(|w| w.height = 30);
+    // The recheck's nonce read arms the pause: the floor raise, its next
+    // app database call, waits on the test.
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let pause = Arc::clone(&f.scene.pause);
+    let arm: Hook = Box::new(move || {
+        *pause.lock().unwrap() = Some(Box::new(move || {
+            entered_tx.send(()).unwrap();
+            released.recv().unwrap();
+        }));
+    });
+    *f.plat.hook.lock().unwrap() = Some((Read::Nonce, arm));
+    let recheck = {
+        let f = Arc::clone(&f);
+        async move {
+            let _ = recheck_group(&f.scene, &*f.plat, &f.id, 3).await;
+        }
+    };
+    let rt = tokio::runtime::Handle::current();
+    assert!(f.scene.work.spawn(&rt, Job::Recheck, recheck));
+    tokio::task::spawn_blocking(move || entered.recv().unwrap())
+        .await
+        .unwrap();
+    // The close aborts the recheck mid-write and waits for the write.
+    let close = f.scene.work.close();
+    tokio::pin!(close);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), close.as_mut())
+            .await
+            .is_err(),
+        "close returned while the aborted recheck's write was running"
+    );
+    assert_eq!(f.row(&row.signed.id).floor_height, 10);
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), close)
+        .await
+        .expect("close returns once the write has");
+    assert_eq!(f.row(&row.signed.id).floor_height, 30);
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_sessions_on_one_app_db_racing_one_identity_sign_once() {
@@ -2219,7 +2381,7 @@ async fn an_unverified_nonce_read_under_enforce_signs_nothing_at_any_nonce() {
                 1 => {
                     f.plat.answer(Answer::Unknown("lost".into()), false);
                     let row = f.withdraw(Payout, AMOUNT).await.unwrap();
-                    f.plat.deviate(Read::Document, Dev::Fail, ALWAYS);
+                    f.plat.lagging(Read::Document);
                     f.recheck(3).await;
                     f.plat.calm();
                     mark(&f.scene, &row.signed.id, WithdrawalMark::Received)
@@ -2288,8 +2450,9 @@ async fn an_unverified_non_match_or_nonce_read_under_enforce_decides_no_not_exec
                 "{read:?} {rule:?}: {outcome:?}"
             );
             if !decided {
-                assert!(matches!(outcome, Outcome::CouldntConfirm(_)));
-                assert_eq!(f.row(&row.signed.id).state, WithdrawalState::CouldntConfirm);
+                // Rounds lost to rule 5 do not count (P8 step 3).
+                assert!(matches!(outcome, Outcome::Unanswered(_)), "{outcome:?}");
+                assert_eq!(f.row(&row.signed.id).state, WithdrawalState::Sent);
             }
         }
     }
@@ -2555,14 +2718,15 @@ async fn step(f: &Fx, n: usize) -> Result<(), WithdrawalError> {
             }
             recheck_all(&f.scene, net).await.map(drop)
         }
-        // An owner-key withdrawal that is lost; every document read fails:
-        // couldnt_confirm, then its note; the user's mark.
+        // An owner-key withdrawal that is lost; every document read answers
+        // from below the floor: couldnt_confirm, then its note; the user's
+        // mark.
         6 => {
             f.plat.answer(Answer::Unknown("lost".into()), false);
             f.withdraw(Owner, AMOUNT).await.map(drop)
         }
         7 | 8 => {
-            f.plat.deviate(Read::Document, Dev::Fail, ALWAYS);
+            f.plat.lagging(Read::Document);
             let r = recheck_all(&f.scene, net).await.map(drop);
             f.plat.calm();
             r

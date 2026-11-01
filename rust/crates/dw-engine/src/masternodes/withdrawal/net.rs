@@ -15,8 +15,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 use dash_sdk::dapi_grpc::platform::v0::ResponseMetadata;
+use dash_sdk::platform::Fetch;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use dash_sdk::platform::{DocumentQuery, Fetch};
 use dash_sdk::query_types::{IdentityBalance, IdentityNonceFetcher};
 use dpp::consensus::ConsensusError;
 use dpp::consensus::codes::ErrorWithCode;
@@ -26,12 +26,11 @@ use dpp::identity::Identity;
 use dpp::prelude::Identifier;
 use dpp::serialization::PlatformSerializable;
 use dpp::state_transition::StateTransition;
-use dpp::system_data_contracts::withdrawals_contract::v1::document_types::withdrawal;
 use dpp::version::PlatformVersion;
 
 use crate::platform::PlatformError;
 use crate::platform::trust;
-use crate::platform::withdrawal::withdrawals_contract_v;
+use crate::platform::withdrawal::withdrawal_query;
 
 /// A proved read (module doc).
 #[derive(Debug, Clone, PartialEq)]
@@ -148,10 +147,12 @@ impl MnWithdrawNet for SdkMnWithdrawals {
     }
 
     async fn document(&self, id: Identifier) -> Result<Proved<Option<Document>>, PlatformError> {
-        let query = DocumentQuery::new(withdrawals_contract_v()?, withdrawal::NAME)
-            .map_err(|e| PlatformError::from(dash_sdk::Error::from(e)))?
-            .with_document_id(&id);
-        proved(Document::fetch_with_metadata(&self.0, query, None)).await
+        proved(Document::fetch_with_metadata(
+            &self.0,
+            withdrawal_query(&id)?,
+            None,
+        ))
+        .await
     }
 
     /// The SDK's `broadcast` sends `serialize_to_bytes()` of the transition

@@ -11,18 +11,21 @@ use dpp::identity::core_script::CoreScript;
 use dpp::state_transition::StateTransition;
 use dw_appdb::{AppDb, PayoutBarrierRow, WithdrawalMark, WithdrawalRow};
 use dw_vault::{SignerError, WithdrawalKey};
+use platform_wallet::wallet::platform_wallet::PlatformWallet;
 
 use dpp::document::Document;
 use dpp::identity::Identity;
 use dpp::prelude::Identifier;
 use dpp::version::PlatformVersion;
 
+use super::background::Job;
 use super::check::{Quote, look_until, quote};
 use super::net::{Answer, MnWithdrawNet, Proved, SdkMnWithdrawals};
 use super::recheck::{mark, recheck_all, recheck_record};
 use super::sign::{Request, WithdrawalKeyChoice, retry, withdraw};
 use super::{
-    Alarm, Authorize, Chain, Env, HeldKey, Waits, WalletKeys, WithdrawalError, WithdrawalRuntime,
+    Alarm, Authorize, Chain, Env, HeldKey, Hold, Waits, WalletKeys, WithdrawalError,
+    WithdrawalRuntime, load, on_db,
 };
 use crate::masternodes::protx_records::ProTxOperationState;
 use crate::masternodes::{MasternodesError, display_hex, parse_pro_tx_hash};
@@ -95,6 +98,10 @@ impl Env for SessionEnv {
     fn alarm(&self, alarm: Alarm) {
         self.session.masternodes.withdrawals.alarm(alarm);
     }
+
+    fn hold(&self) -> Hold {
+        self.session.masternodes.withdrawals.hold()
+    }
 }
 
 /// The wallet's withdrawal keys of one masternode (P2): the keychain owner
@@ -121,54 +128,80 @@ impl WalletKeys for SessionKeys {
             .ok_or(EngineError::WalletNotFound(self.wallet.to_string()))?;
         let (vault, hash) = (self.session.vault.clone(), self.pro_tx_hash);
         Ok(tokio::task::spawn_blocking(move || {
-            let mut held = Vec::new();
-            for h in &owner {
-                match wallet.masternode_withdrawal_keys(Some(h), None, None) {
-                    Ok(k) => {
-                        if let Some((index, _)) = k.owner_key {
-                            held.push(HeldKey {
-                                key: WithdrawalKey::KeychainOwner { index },
-                                hash: *h,
-                            });
-                        }
-                    }
-                    Err(e) => tracing::debug!(error = %e, "the keychain owner key"),
-                }
-            }
-            for h in &payout {
-                let script = CoreScript::new_p2pkh(*h);
-                match wallet.masternode_withdrawal_keys(None, Some(script.as_bytes()), None) {
-                    Ok(k) => {
-                        if let Some(path) = k.transfer_key {
-                            held.push(HeldKey {
-                                key: WithdrawalKey::WalletPayout { path },
-                                hash: *h,
-                            });
-                        }
-                    }
-                    Err(e) => tracing::debug!(error = %e, "the wallet's payout key"),
-                }
-            }
-            // Attached keys need the vault's full-scope key; a locked vault
-            // shows none (it could not sign either).
-            for (role, hashes) in [("owner", &owner), ("payout", &payout)] {
-                match vault.masternode_key_id(&hash, role) {
-                    Ok(Some(id)) if hashes.contains(&id) => held.push(HeldKey {
-                        key: if role == "owner" {
-                            WithdrawalKey::AttachedOwner { pro_tx_hash: hash }
-                        } else {
-                            WithdrawalKey::AttachedPayout { pro_tx_hash: hash }
-                        },
-                        hash: id,
-                    }),
-                    Ok(_) => {}
-                    Err(e) => tracing::debug!(error = %e, role, "an attached withdrawal key"),
-                }
-            }
+            let mut held = keychain_owner_keys(&wallet, &owner);
+            held.extend(wallet_payout_keys(&wallet, &payout));
+            held.extend(attached_keys(&vault, &hash, &owner, &payout));
             held
         })
         .await?)
     }
+}
+
+/// The keychain owner keys among `owner` (hash160s).
+fn keychain_owner_keys(wallet: &PlatformWallet, owner: &[[u8; 20]]) -> Vec<HeldKey> {
+    let mut held = Vec::new();
+    for h in owner {
+        match wallet.masternode_withdrawal_keys(Some(h), None, None) {
+            Ok(k) => {
+                if let Some((index, _)) = k.owner_key {
+                    held.push(HeldKey {
+                        key: WithdrawalKey::KeychainOwner { index },
+                        hash: *h,
+                    });
+                }
+            }
+            Err(e) => tracing::debug!(error = %e, "the keychain owner key"),
+        }
+    }
+    held
+}
+
+/// The wallet's payout keys among `payout` (hash160s), by their P2PKH
+/// scripts.
+fn wallet_payout_keys(wallet: &PlatformWallet, payout: &[[u8; 20]]) -> Vec<HeldKey> {
+    let mut held = Vec::new();
+    for h in payout {
+        let script = CoreScript::new_p2pkh(*h);
+        match wallet.masternode_withdrawal_keys(None, Some(script.as_bytes()), None) {
+            Ok(k) => {
+                if let Some(path) = k.transfer_key {
+                    held.push(HeldKey {
+                        key: WithdrawalKey::WalletPayout { path },
+                        hash: *h,
+                    });
+                }
+            }
+            Err(e) => tracing::debug!(error = %e, "the wallet's payout key"),
+        }
+    }
+    held
+}
+
+/// The masternode's attached `owner` and `payout` keys among `owner` and
+/// `payout`. They need the vault's full-scope key; a locked vault shows
+/// none (it could not sign either).
+fn attached_keys(
+    vault: &dw_vault::Vault,
+    hash: &[u8; 32],
+    owner: &[[u8; 20]],
+    payout: &[[u8; 20]],
+) -> Vec<HeldKey> {
+    let mut held = Vec::new();
+    for (role, hashes) in [("owner", owner), ("payout", payout)] {
+        match vault.masternode_key_id(hash, role) {
+            Ok(Some(id)) if hashes.contains(&id) => held.push(HeldKey {
+                key: if role == "owner" {
+                    WithdrawalKey::AttachedOwner { pro_tx_hash: *hash }
+                } else {
+                    WithdrawalKey::AttachedPayout { pro_tx_hash: *hash }
+                },
+                hash: id,
+            }),
+            Ok(_) => {}
+            Err(e) => tracing::debug!(error = %e, role, "an attached withdrawal key"),
+        }
+    }
+    held
 }
 
 /// The grant, redeemed into a `masternode_withdraw` lease whose Credits
@@ -363,12 +396,15 @@ impl NetworkSession {
         })
     }
 
-    /// `withdraw_credits` (P13) under `grant` (a `MasternodeWithdraw` grant).
+    /// `withdraw_credits` (P13) under `grant` (a `MasternodeWithdraw`
+    /// grant), or with `sibling_of` the `refused` record's Try again
+    /// (`retry_withdrawal`, P15).
     pub(crate) async fn mn_withdraw(
         self: &Arc<Self>,
         wallet: WalletId,
         call: &WithdrawCall,
         grant: &str,
+        sibling_of: Option<&str>,
     ) -> Result<WithdrawalRow, WithdrawalError> {
         let net = &self.mn_withdraw_net()?;
         let (hash, keys) = self.withdrawal_keys(wallet, &call.pro_tx_hash).await?;
@@ -379,36 +415,11 @@ impl NetworkSession {
             wallet,
             grant: grant.to_owned(),
         };
-        withdraw(&env, net, &keys, auth, self.network.core_network(), &req).await
-    }
-
-    /// `retry_withdrawal` (P13, P15).
-    pub(crate) async fn mn_retry_withdrawal(
-        self: &Arc<Self>,
-        wallet: WalletId,
-        refused_id: &str,
-        call: &WithdrawCall,
-        grant: &str,
-    ) -> Result<WithdrawalRow, WithdrawalError> {
-        let net = &self.mn_withdraw_net()?;
-        let (hash, keys) = self.withdrawal_keys(wallet, &call.pro_tx_hash).await?;
-        let req = self.request(wallet, hash, call)?;
-        let env = SessionEnv::of(self)?;
-        let auth = LeaseGrant {
-            session: Arc::clone(self),
-            wallet,
-            grant: grant.to_owned(),
-        };
-        retry(
-            &env,
-            net,
-            &keys,
-            auth,
-            self.network.core_network(),
-            refused_id,
-            &req,
-        )
-        .await
+        let network = self.network.core_network();
+        match sibling_of {
+            None => withdraw(&env, net, &keys, auth, network, &req).await,
+            Some(refused) => retry(&env, net, &keys, auth, network, refused, &req).await,
+        }
     }
 
     /// `recheck_withdrawal` (P13).
@@ -434,36 +445,32 @@ impl NetworkSession {
         self: &Arc<Self>,
         id: &str,
     ) -> Result<WithdrawalRow, WithdrawalError> {
-        let (db, id) = (SessionEnv::of(self)?.db, id.to_owned());
-        (tokio::task::spawn_blocking(move || db.withdrawal(&id)).await??)
-            .ok_or(WithdrawalError::NotFound)
+        load(&SessionEnv::of(self)?, id).await
     }
 
     /// P4's `withdrawal_ready`: after a quote whose destination read
     /// `checking{platform_behind}`, the look again every `Waits::poll` for at
     /// most `Waits::quote` (240 s) while only (a) fails, and §6's event once
     /// (a)–(c) hold, so the host reads the quote again. Before consent: no
-    /// grant waits on it. One per masternode; the close stops it.
+    /// grant waits on it. One per masternode; none starts once the close
+    /// has begun, and the close stops the running ones.
     pub(crate) fn mn_withdrawal_ready_wait(self: &Arc<Self>, pro_tx_hash: [u8; 32]) {
-        let (weak, rt) = (Arc::downgrade(self), self.rt.clone());
-        self.masternodes
-            .withdrawals
-            .wait_ready(pro_tx_hash, move || {
-                rt.spawn(async move {
-                    let Some(s) = weak.upgrade() else { return };
-                    let (Ok(env), Ok(net)) = (SessionEnv::of(&s), s.mn_withdraw_net()) else {
-                        return;
-                    };
-                    let wait = env.waits().quote;
-                    match look_until(&env, &net, &pro_tx_hash, wait).await {
-                        Ok(seen) if seen.reason.is_none() => s.masternodes.local_change(),
-                        Ok(seen) => tracing::debug!(reason = ?seen.reason,
-                            "a masternode withdrawal's destination still checking"),
-                        Err(e) => tracing::debug!(error = %e,
-                            "waiting for Platform to catch up (MG-13 P4)"),
-                    }
-                })
-            });
+        let weak = Arc::downgrade(self);
+        let wait = async move {
+            let Some(s) = weak.upgrade() else { return };
+            let (Ok(env), Ok(net)) = (SessionEnv::of(&s), s.mn_withdraw_net()) else {
+                return;
+            };
+            let wait = env.waits().quote;
+            match look_until(&env, &net, &pro_tx_hash, wait).await {
+                Ok(seen) if seen.reason.is_none() => s.masternodes.local_change(),
+                Ok(seen) => tracing::debug!(reason = ?seen.reason,
+                    "a masternode withdrawal's destination still checking"),
+                Err(e) => tracing::debug!(error = %e,
+                    "waiting for Platform to catch up (MG-13 P4)"),
+            }
+        };
+        (self.masternodes.withdrawals).wait_ready(&self.rt, pro_tx_hash, wait);
     }
 
     /// `withdrawals(pro_tx_hash)` (P13), oldest first.
@@ -472,22 +479,24 @@ impl NetworkSession {
         pro_tx_hash: &str,
     ) -> Result<Vec<WithdrawalRow>, WithdrawalError> {
         let shown = display_hex(&parse_pro_tx_hash(pro_tx_hash)?);
-        let db = SessionEnv::of(self)?.db;
-        Ok(tokio::task::spawn_blocking(move || db.withdrawals_of_masternode(&shown)).await??)
+        on_db(&SessionEnv::of(self)?, move |db| {
+            db.withdrawals_of_masternode(&shown)
+        })
+        .await
     }
 }
 
 impl WithdrawalRuntime {
     /// Starts the background recheck (P8): every undecided group at once,
     /// then every `Waits::recheck` while the session lives; nothing to do
-    /// when nothing is undecided. Not with Platform off. [`Self::stop`] at
-    /// close aborts it and waits for it.
+    /// when nothing is undecided. Not with Platform off, nor once
+    /// [`Self::stop`] has begun; it aborts it and waits for it.
     pub(crate) fn start(&self, session: &Arc<NetworkSession>) {
         if !session.platform.enabled() {
             return;
         }
         let weak = Arc::downgrade(session);
-        let task = session.rt.spawn(async move {
+        let task = async move {
             loop {
                 let Some(s) = weak.upgrade() else { return };
                 let every = s.masternodes.withdrawals.waits().recheck;
@@ -499,7 +508,7 @@ impl WithdrawalRuntime {
                 drop(s);
                 tokio::time::sleep(every).await;
             }
-        });
-        self.set_task(task);
+        };
+        self.work.spawn(&session.rt, Job::Recheck, task);
     }
 }

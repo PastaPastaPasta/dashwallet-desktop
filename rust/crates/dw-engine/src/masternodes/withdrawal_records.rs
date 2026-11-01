@@ -59,6 +59,18 @@ pub enum WithdrawalCheckingReason {
     SpvUnsynced,
 }
 
+impl WithdrawalCheckingReason {
+    /// Its JSON name.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::PlatformBehind => "platform_behind",
+            Self::PayoutChangePending => "payout_change_pending",
+            Self::Unverified => "unverified",
+            Self::SpvUnsynced => "spv_unsynced",
+        }
+    }
+}
+
 /// Where a withdrawal by one key pays (P4, MG-00 D42).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -167,6 +179,25 @@ pub enum CreditWithdrawalState {
 pub enum WithdrawalMark {
     Received,
     NotReceived,
+}
+
+// Crate-level conversions, not `From`: a trait impl would be §3 surface.
+impl WithdrawalMark {
+    /// As the app database stores it.
+    pub(crate) fn stored(self) -> dw_appdb::WithdrawalMark {
+        match self {
+            Self::Received => dw_appdb::WithdrawalMark::Received,
+            Self::NotReceived => dw_appdb::WithdrawalMark::NotReceived,
+        }
+    }
+
+    /// From the app database's.
+    pub(crate) fn of_stored(mark: dw_appdb::WithdrawalMark) -> Self {
+        match mark {
+            dw_appdb::WithdrawalMark::Received => Self::Received,
+            dw_appdb::WithdrawalMark::NotReceived => Self::NotReceived,
+        }
+    }
 }
 
 /// The proved document behind `done` (P7).

@@ -85,11 +85,14 @@ fn guard<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-type Locks<K> = Mutex<HashMap<K, Weak<tokio::sync::Mutex<()>>>>;
+pub(crate) type Locks<K> = Mutex<HashMap<K, Weak<tokio::sync::Mutex<()>>>>;
 
 /// The lock for `key` in `locks`, shared by every holder while one lives
-/// (dead entries are dropped as new ones come).
-fn keyed_lock<K: Hash + Eq + Clone>(locks: &Locks<K>, key: &K) -> Arc<tokio::sync::Mutex<()>> {
+/// (dead entries are dropped as new ones come; also MG-13's identity lock).
+pub(crate) fn keyed_lock<K: Hash + Eq + Clone>(
+    locks: &Locks<K>,
+    key: &K,
+) -> Arc<tokio::sync::Mutex<()>> {
     let mut locks = guard(locks);
     locks.retain(|_, l| l.strong_count() > 0);
     if let Some(lock) = locks.get(key).and_then(Weak::upgrade) {
