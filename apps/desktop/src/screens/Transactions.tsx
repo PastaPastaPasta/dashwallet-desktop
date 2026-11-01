@@ -122,7 +122,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
         <header className="top-intro top-intro-row" data-testid="tx-intro">
           <h1 className="top-intro-title">Activity</h1>
           <div className="tx-intro-actions">
-            <DashButton variant="tintedGray" size="small" data-testid="tx-export-csv" disabled={exporting || !coreTotal} onClick={() => void exportCsv()}>
+            <DashButton variant="tintedGray" size="small" data-testid="tx-export-csv" disabled={exporting || !coreTotal} why={exporting ? "Exporting…" : "There are no transactions to export yet."} onClick={() => void exportCsv()}>
               Export CSV
             </DashButton>
             <div className="segmented" role="group" aria-label="View" data-testid="tx-mode">

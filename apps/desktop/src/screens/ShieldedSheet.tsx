@@ -16,6 +16,7 @@ import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { useModel } from "../onboarding/model";
 import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
+import { SHIELDED_SYNCING_TEXT, shieldedSyncing } from "../shielded/syncing";
 import { Qr } from "./Receive";
 import { GrantSheet } from "./tools/common";
 
@@ -117,11 +118,12 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
   const q = quote.data;
   const { duffs, credits } = fmt;
   const kind = flow.kind;
+  const syncing = shieldedSyncing(status);
   return (
     <>
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="shielded-quote-error">
-          {shieldedErrorText(quote.error, credits, duffs, kind)}
+          {shieldedErrorText(quote.error, credits, duffs, kind, syncing)}
         </p>
       ) : !q ? (
         <p className="sheet-text" role="status">
@@ -157,7 +159,7 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
         <DashButton variant="tintedGray" size="large" data-testid="shielded-back" disabled={flow.running} onClick={() => flow.back()}>
           {C.confirm.back}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" disabled={!q || quote.isError || quote.isFetching || flow.running} onClick={() => q && void flow.run(q.quote.grant)}>
+        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" why={syncing ? SHIELDED_SYNCING_TEXT : null} disabled={!q || quote.isError || quote.isFetching || flow.running || syncing} onClick={() => q && void flow.run(q.quote.grant)}>
           {C.confirm.go}
         </DashButton>
       </div>
@@ -225,7 +227,7 @@ export function ShieldedSheet({ flow, walletId, network, status }: { flow: Shiel
           {step === "refused" && (
             <>
               <p className="form-problem" role="alert" data-testid="shielded-refusal">
-                {shieldedErrorText(flow.error, fmt.credits, fmt.duffs, flow.kind)}
+                {shieldedErrorText(flow.error, fmt.credits, fmt.duffs, flow.kind, shieldedSyncing(status))}
               </p>
               <div className="sheet-actions">
                 {shieldedCanChange(flow.error) && flow.request?.kind !== "resume" && (
@@ -246,7 +248,7 @@ export function ShieldedSheet({ flow, walletId, network, status }: { flow: Shiel
   );
 }
 
-function ReceiveSheet({ walletId, network, onClose }: { walletId: string; network: NetworkInfo; onClose: () => void }) {
+function ReceiveSheet({ walletId, network, syncing, onClose }: { walletId: string; network: NetworkInfo; syncing: boolean; onClose: () => void }) {
   const b = useBackend();
   const fmt = useFormats(network);
   const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false });
@@ -255,7 +257,7 @@ function ReceiveSheet({ walletId, network, onClose }: { walletId: string; networ
       <p className="sheet-text">{C.receive.text}</p>
       {address.isError ? (
         <p className="form-problem" role="alert" data-testid="shielded-receive-error">
-          {isCode(address.error, SHIELDED_CODES.notSynced) ? C.receive.notSynced : shieldedErrorText(address.error, fmt.credits, fmt.duffs)}
+          {isCode(address.error, SHIELDED_CODES.notSynced) ? C.receive.notSynced : shieldedErrorText(address.error, fmt.credits, fmt.duffs, undefined, syncing)}
         </p>
       ) : address.data ? (
         <div className="receive-body" data-testid="shielded-receive">
@@ -291,13 +293,15 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
   if (s === null) return sheet;
   const balance = shieldedDuffs(s);
   const busy = flow.running;
+  const syncing = shieldedSyncing(s);
+  const why = (empty: boolean) => (syncing ? SHIELDED_SYNCING_TEXT : busy ? C.card.why.busy : empty ? C.card.why.empty : null);
   return (
     <>
       <section className="shielded-card card-l1" data-testid="shielded-card" data-active={s.active} aria-label={C.card.title}>
         <div className="shielded-card-body">
           <h2 className="platform-card-title">{C.card.title}</h2>
           <p className="platform-card-text" data-testid="shielded-card-text">
-            {!s.active ? C.card.inactive : balance === null ? C.card.syncing : C.card.text}
+            {!s.active ? C.card.inactive : syncing ? SHIELDED_SYNCING_TEXT : balance === null ? C.card.syncing : C.card.text}
           </p>
           {s.active && BigInt(s.pending) > 0n && (
             <p className="platform-card-text" data-testid="shielded-card-pending">
@@ -323,23 +327,23 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
         </div>
         {s.active && (
           <div className="shielded-card-actions">
-            <DashButton variant="tintedBlue" size="small" data-testid="shielded-receive-open" onClick={() => setReceiving(true)}>
+            <DashButton variant="tintedBlue" size="small" data-testid="shielded-receive-open" disabled={syncing} why={syncing ? SHIELDED_SYNCING_TEXT : null} onClick={() => setReceiving(true)}>
               {C.card.receive}
             </DashButton>
-            <DashButton variant="tintedBlue" size="small" data-testid="shielded-send" disabled={busy || !balance} onClick={() => flow.begin("send")}>
+            <DashButton variant="tintedBlue" size="small" data-testid="shielded-send" disabled={syncing || busy || !balance} why={why(!balance)} onClick={() => flow.begin("send")}>
               {C.card.send}
             </DashButton>
-            <DashButton variant="tintedBlue" size="small" data-testid="shielded-add" disabled={busy} onClick={() => flow.begin("add")}>
+            <DashButton variant="tintedBlue" size="small" data-testid="shielded-add" disabled={syncing || busy} why={why(false)} onClick={() => flow.begin("add")}>
               {C.card.add}
             </DashButton>
-            <DashButton variant="tintedBlue" size="small" data-testid="shielded-out" disabled={busy || !balance} onClick={() => flow.begin("out")}>
+            <DashButton variant="tintedBlue" size="small" data-testid="shielded-out" disabled={syncing || busy || !balance} why={why(!balance)} onClick={() => flow.begin("out")}>
               {C.card.out}
             </DashButton>
           </div>
         )}
       </section>
       {sheet}
-      {receiving && <ReceiveSheet walletId={walletId} network={network} onClose={() => setReceiving(false)} />}
+      {receiving && <ReceiveSheet walletId={walletId} network={network} syncing={syncing} onClose={() => setReceiving(false)} />}
     </>
   );
 }

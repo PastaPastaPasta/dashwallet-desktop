@@ -59,7 +59,7 @@ function ConfirmStep({ flow, walletId, credits, amount }: { flow: PlatformMoveFl
         <DashButton variant="tintedGray" size="large" data-testid="platform-move-cancel" disabled={flow.running} onClick={() => flow.close()}>
           {C.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="platform-move-go" disabled={!q || quote.isError || quote.isFetching || flow.running} onClick={() => q && void flow.move(q.grant)}>
+        <DashButton variant="filledBlue" size="large" data-testid="platform-move-go" why={quote.isError ? "The fee could not be worked out." : !q || quote.isFetching ? C.quoting : null} disabled={!q || quote.isError || quote.isFetching || flow.running} onClick={() => q && void flow.move(q.grant)}>
           {C.go}
         </DashButton>
       </div>
@@ -160,7 +160,7 @@ export function PlatformMoveCard({ walletId, network, platform }: { walletId: st
             {C.waiting.action}
           </DashButton>
         ) : (
-          <DashButton variant="tintedBlue" data-testid="platform-move" disabled={flow.running} onClick={() => flow.begin()}>
+          <DashButton variant="tintedBlue" data-testid="platform-move" disabled={flow.running} why={C.running.text} onClick={() => flow.begin()}>
             {flow.running ? C.running.title : flow.unseen ? C.show : C.action}
           </DashButton>
         )}

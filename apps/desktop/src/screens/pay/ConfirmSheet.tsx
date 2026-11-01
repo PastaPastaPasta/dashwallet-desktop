@@ -393,7 +393,7 @@ export function ConfirmSheet({
             </DashButton>
           )}
           {watchOnlyKnown === false && (
-            <DashButton key="send" type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || !waitKnown || retryAt !== null}>
+            <DashButton key="send" type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || !waitKnown || retryAt !== null} why={busy ? "Sending…" : retryAt !== null ? "Wait a moment before trying again." : "Checking the network’s requirements…"}>
               {busy ? "Sending…" : contact?.acceptsToo ? "Accept and pay" : "Send"}
             </DashButton>
           )}

@@ -165,4 +165,13 @@ describe("shielded refusal copy", () => {
     expect(text("shielded.shield_pending", { kind: "txid", txid: "t" })).toContain("Finish it");
     expect(text("platform.unavailable")).toBe("Dash Platform did not answer. Try again.");
   });
+
+  it("DEC1058_syncingNeverReadsAsPlatformDown", () => {
+    const syncing = (code: string, on: boolean) => shieldedErrorText(appError(code as never, null as never), credits, duffs, "add", on);
+    const SAID = "Shielded is still syncing; try again when it finishes.";
+    expect(syncing("shielded.not_synced", false)).toBe(SAID);
+    for (const code of ["platform.unavailable", "platform.timeout", "platform.context_unavailable"]) expect(syncing(code, true)).toBe(SAID);
+    // Not syncing: a real Platform outage keeps its own words.
+    expect(syncing("platform.unavailable", false)).toBe("Dash Platform did not answer. Try again.");
+  });
 });

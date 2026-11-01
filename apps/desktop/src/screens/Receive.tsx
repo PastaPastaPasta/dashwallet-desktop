@@ -106,7 +106,7 @@ function AddressCard({ walletId }: { walletId: string }) {
             <DashButton variant="tintedBlue" data-testid="receive-copy-address" onClick={() => void copyWithToast(shown.address)}>
               Copy address
             </DashButton>
-            <DashButton variant="tintedBlue" data-testid="receive-copy-uri" disabled={!uri.data} onClick={() => uri.data && void copyWithToast(uri.data)}>
+            <DashButton variant="tintedBlue" data-testid="receive-copy-uri" disabled={!uri.data} why="The address is still loading." onClick={() => uri.data && void copyWithToast(uri.data)}>
               Copy link
             </DashButton>
             <DashButton variant="plainBlue" data-testid="receive-new-address" onClick={() => void newAddress()}>
@@ -218,7 +218,7 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
         <DashButton variant="tintedGray" onClick={clear}>
           Clear
         </DashButton>
-        <DashButton type="submit" variant="filledBlue" data-testid="request-create" disabled={!ready}>
+        <DashButton type="submit" variant="filledBlue" data-testid="request-create" disabled={!ready} why="Enter an amount first.">
           Create request
         </DashButton>
       </div>

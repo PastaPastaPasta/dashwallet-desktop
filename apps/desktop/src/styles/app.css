@@ -906,6 +906,23 @@ button {
   color: var(--dw-c-button-filled-white-content-disabled);
 }
 
+/* A disabled button stays readable in both themes (DEC-1058): the generated disabled tokens are
+ * 40 % ink, and in the dark theme dark ink on a dark card. Text takes the tertiary role colour
+ * (AA on both surfaces) on a neutral tint, whatever the style, and the cursor says "not here". */
+.dash-button:disabled:not(.dash-button-plainBlue):not(.dash-button-plainRed):not(.dash-button-plainWhite) {
+  background: var(--dw-c-button-tinted-gray-background);
+  color: var(--dw-role-text-tertiary);
+}
+
+.dash-button-plainBlue:disabled,
+.dash-button-plainRed:disabled {
+  color: var(--dw-role-text-tertiary);
+}
+
+.dash-button:disabled {
+  cursor: not-allowed;
+}
+
 .dash-button-plainWhite {
   background: transparent;
   color: var(--dw-c-button-plain-white-content);

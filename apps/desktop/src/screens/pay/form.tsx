@@ -200,7 +200,7 @@ export function PayFooter({
           </span>
         ) : null}
       </div>
-      <DashButton ref={reviewRef} type="submit" variant="filledBlue" size="large" data-testid="pay-continue" disabled={!ready}>
+      <DashButton ref={reviewRef} type="submit" variant="filledBlue" size="large" data-testid="pay-continue" disabled={!ready} why={problem ?? "Enter an address and an amount first."}>
         Review
       </DashButton>
     </div>

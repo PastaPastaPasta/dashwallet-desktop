@@ -99,12 +99,16 @@ export function DashButton({
   fill = false,
   className,
   children,
+  why,
   ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant: ButtonStyle; size?: ButtonSize; fill?: boolean; ref?: Ref<HTMLButtonElement> }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & { variant: ButtonStyle; size?: ButtonSize; fill?: boolean; ref?: Ref<HTMLButtonElement>; why?: string | null }) {
   return (
     <button
       type="button"
       {...rest}
+      // Why it is disabled (DEC-1058): the tooltip, and what a screen reader reads after the name.
+      title={rest.disabled && why ? why : rest.title}
+      aria-description={rest.disabled && why ? why : rest["aria-description"]}
       className={`dash-button dash-button-${variant} dash-button-${size} ${fill ? "dash-button-fill" : ""} ${className ?? ""}`}
     >
       {children}

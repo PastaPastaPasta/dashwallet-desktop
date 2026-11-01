@@ -594,6 +594,13 @@ const SCENARIOS = {
     w.pending.shielded!.active = false;
     return w;
   },
+  /** Shielded is on and its account is not established yet: its actions wait and say why. */
+  "shielded-syncing": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    return w;
+  },
   /** Shielded has too few notes to withdraw from. */
   "shielded-pool-small": (t) => {
     const w = base(t);

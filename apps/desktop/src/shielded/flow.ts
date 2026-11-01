@@ -13,6 +13,7 @@ import { SHIELDED_CODES, type ShieldedSpendOutcome, type ShieldOutcome } from ".
 import { platformOp } from "../dashpay/topup";
 import { failureText, Model } from "../onboarding/model";
 import { moveErrorText } from "../platform/move";
+import { SHIELDED_SYNCING_TEXT, syncingRefusal } from "./syncing";
 import { GrantModel } from "../tools/grant";
 
 export type ShieldedApi = Pick<
@@ -46,6 +47,7 @@ export const SHIELDED_COPY = {
     add: "Add to Shielded",
     out: "Move to Dash wallet",
     finish: "Finish",
+    why: { empty: "Nothing in Shielded to send yet.", busy: "Another Shielded move is running." },
     unfinished: (amount: string) => `${amount} was locked to add to Shielded and is not applied yet.`,
   },
   titles: { add: "Add to Shielded", send: "Send from Shielded", out: "Move to Dash wallet", resume: "Add to Shielded", receive: "Receive in Shielded" },
@@ -97,7 +99,7 @@ export const SHIELDED_COPY = {
   receive: {
     text: "Share this address to be paid privately. It does not change what the network sees of your wallet.",
     copy: "Copy address",
-    notSynced: "Shielded is still syncing. The address shows when it has.",
+    notSynced: SHIELDED_SYNCING_TEXT,
     loading: "Getting your Shielded address…",
   },
 } as const;
@@ -114,17 +116,16 @@ function errorLike(e: unknown): { code: string; data: Record<string, unknown> | 
 export const isCode = (e: unknown, code: string): boolean => errorLike(e)?.code === code;
 
 /** A shielded refusal, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. */
-export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind): string {
+export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, syncing = false): string {
   const err = errorLike(e);
   if (!err) return failureText(e);
   const d = err.data;
+  if (syncingRefusal(err.code, syncing)) return SHIELDED_SYNCING_TEXT;
   switch (err.code) {
     case SHIELDED_CODES.notActive:
       return SHIELDED_COPY.card.inactive;
     case SHIELDED_CODES.poolTooSmall:
       return "Shielded withdrawals open once the network's shielded pool has enough activity. Try again later.";
-    case SHIELDED_CODES.notSynced:
-      return "Shielded is still syncing. Try again shortly.";
     case SHIELDED_CODES.invalidAddress:
       return "Enter a Shielded address of this network.";
     case SHIELDED_CODES.insufficientFunds:
