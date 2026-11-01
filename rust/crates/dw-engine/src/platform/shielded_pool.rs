@@ -1381,8 +1381,16 @@ pub(crate) async fn coordinator(
     if let Some(coordinator) = manager.shielded_coordinator().await {
         return Ok(coordinator);
     }
-    // The store's open rehydrates every stored spend: not under a pass
-    // (R1-3, `PlatformRuntime::shielded_passes`).
+    // The store's open rehydrates every stored spend, so it is admitted as
+    // a wallet load is (E1 r3 m1): an in-app close waits for one in flight
+    // before its check, and none starts from its check to its commit,
+    // where it would bring in a spend the check did not see. `try_read`:
+    // the close holds the write side while the session's close awaits the
+    // supervisor, which may be here (`read().await` would deadlock).
+    let Ok(_admitted) = session.platform.wallet_loads.try_read() else {
+        return Err(PlatformError::NetworkNotOpen);
+    };
+    // Not under a pass (R1-3, `PlatformRuntime::shielded_passes`).
     let _passes = session.platform.shielded_passes.write().await;
     (manager
         .configure_shielded(session.data_dir().join(SHIELDED_DB_FILE))

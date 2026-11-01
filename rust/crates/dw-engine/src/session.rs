@@ -929,9 +929,11 @@ impl NetworkSession {
         // network reopens only in a new process. App quit takes this path
         // (`Engine::shutdown`); an in-app close is refused beforehand
         // (`Engine::close_network`), and from that check to this close no
-        // signing shielded call starts and no wallet loads (an import or a
-        // create stores no spend), so an in-app close keeps no wallet
-        // (`PlatformRuntime::close_preflight`, `wallet_loads`, E1 r2 R2-3).
+        // signing shielded call starts, no wallet loads (an import or a
+        // create stores no spend) and the shielded store does not first
+        // open (its open rehydrates the stored spends), so an in-app close
+        // keeps no wallet (`PlatformRuntime::close_preflight`,
+        // `wallet_loads`, E1 r2 R2-3, r3 m1).
         let mut kept = Vec::new();
         for id in manager.list_wallet_ids_blocking() {
             let unloaded = (self.platform).remove_from_manager(

@@ -472,6 +472,67 @@ fn a_spend_started_during_the_close_check_waits_and_finds_the_session_closed() {
     assert!(stored.is_empty(), "{stored:?}");
 }
 
+/// E1 r3 m1: the shielded coordinator's first configuration rehydrates
+/// every stored spend, so it is admitted as a wallet load is. Between the
+/// close's check and its commit (here paused after the wallet's check) a
+/// configuration, as the supervisor's start or a status call would run it,
+/// is refused as `network_not_open` and leaves the coordinator
+/// unconfigured; the close then commits with nothing kept, and the network
+/// reopens in this process.
+#[test]
+fn a_coordinator_setup_during_the_close_check_is_refused() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    // A wallet no shielded call has used yet: the coordinator is not
+    // configured (a bind would configure it).
+    let session = open(&engine);
+    engine
+        .block_on(session.vault_op(|v| v.create(Some(PASS))))
+        .unwrap();
+    let wallet = engine
+        .block_on(session.import_wallet(
+            Zeroizing::new(PHRASE.as_bytes().to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions {
+                birth_height: Some(0),
+                core_compat: false,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    let manager = session.manager().unwrap();
+    assert!(
+        engine.block_on(manager.shielded_coordinator()).is_none(),
+        "the coordinator opens on first use"
+    );
+    let (reached_tx, reached) = tokio::sync::oneshot::channel();
+    let (resume, resume_rx) = tokio::sync::oneshot::channel();
+    *session.platform.close_check_pause.lock().unwrap() = Some(pool::CheckPause {
+        reached: reached_tx,
+        resume: resume_rx,
+    });
+    let (closed, configured) = std::thread::scope(|scope| {
+        let closing = scope.spawn(|| engine.block_on(engine.close_network(DashNetwork::Regtest)));
+        assert_eq!(engine.block_on(reached).unwrap(), wallet);
+        let (s, m) = (Arc::clone(&session), Arc::clone(&manager));
+        let configured = engine.block_on(async move { pool::coordinator(&s, &m).await.map(drop) });
+        resume.send(()).unwrap();
+        (closing.join().unwrap(), configured)
+    });
+    assert!(
+        matches!(
+            configured,
+            Err(super::errors::PlatformError::NetworkNotOpen)
+        ),
+        "{configured:?}"
+    );
+    assert!(engine.block_on(manager.shielded_coordinator()).is_none());
+    assert!(matches!(closed, Ok(true)), "{closed:?}");
+    drop(manager);
+    let session = open(&engine);
+    assert!(session.require_wallet(&wallet).is_ok());
+}
+
 /// E1 r2, the owner on checkpoint 2: a wallet load in flight is no
 /// shielded payment. An in-app close waits for it (here its admission,
 /// held as a load holds it) up to `CLOSE_LOAD_WAIT`, then goes ahead once

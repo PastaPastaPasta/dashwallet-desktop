@@ -655,8 +655,10 @@ nothing (dw-app keeps the network active and its drafts); a restore's rollback k
 its commit are one step: a signing shielded call (`shielded_send`, `unshield_to_core`, `shield_from_core`,
 `resume_shield`) or a wallet load that arrives meanwhile waits for it, then fails with the session closed if the close
 went ahead; a signing call already running refuses the close, while a wallet load already running is waited for (up to
-30 s, then the close is refused with `wallet`, "a wallet is still opening; close the network once it is open"). So a
-close or switch that succeeds leaves no spend unresolved. App quit (`shutdown`)
+30 s, then the close is refused with `wallet`, "a wallet is still opening; close the network once it is open"). The
+shielded store's first open, which rehydrates its stored spends (the supervisor's start, or the session's first
+shielded call), is admitted as a load is: one running is waited for, and one that starts after the check fails with
+`network_not_open`. So a close or switch that succeeds leaves no spend unresolved. App quit (`shutdown`)
 is never refused: it seals and drains as any close, then leaves that wallet loaded in the sealed manager, which runs
 nothing more. Its stores are committed (WAL), not closed: wallet.sqlite writes commit inline (the persister's
 `Immediate` mode), the close flushes the wallet once more (a failed flush is logged, not returned), and the library
