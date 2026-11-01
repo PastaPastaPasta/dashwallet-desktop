@@ -9,6 +9,7 @@ import type { AppEvent } from "./generated/commands";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRows } from "./generated/HistoryRows";
 import type { PlatformChangeName } from "./generated/PlatformChangeName";
+import type { SyncStatus } from "./generated/SyncStatus";
 import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
 import { onTopUpSettled } from "../dashpay/topup";
@@ -133,8 +134,13 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
   const unsubscribe = await backend.onEvent((event) => {
     if (event.kind === "notice") console.warn("engine notice", event.code, event.detail);
     // A payment that arrives while the app is open is announced (toast, bell, Receive); a batch the
-    // sync found on catching up is not news.
-    if (event.kind === "newTransactions" && !event.catchUp) void announceReceived(backend, event.walletId, event.txids);
+    // sync found on catching up is not news. The engine's `catchUp` is "SPV is not idle" at that
+    // moment, which a payment found in a new block can be too: while the sync reading says the wallet
+    // was caught up (`settleSync`: at most a few blocks behind), it is a new block, not a catch-up.
+    if (event.kind === "newTransactions") {
+      const sync = client.getQueryData<SyncStatus>(keys.sync);
+      if (!event.catchUp || (sync?.running && sync.caughtUp)) void announceReceived(backend, event.walletId, event.txids);
+    }
     if (event.kind === "historyChanged" || (event.kind === "platform" && rereadsHistory(event.change.domain))) {
       // Refetch only the first page of each list: every history_page call re-reads the whole
       // history in the engine, and during sync events arrive up to 4 times a second (contacts

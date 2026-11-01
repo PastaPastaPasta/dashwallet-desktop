@@ -20,18 +20,40 @@ function phasePercent(s: SyncStatus): number | null {
 /** The most a not-caught-up sync shows. */
 export const MAX_SYNCING_PERCENT = 99.9;
 
-/** A synced wallet that falls this far behind (percent of the chain) is syncing again; less is a
- * new block arriving (DEC-1058 #5). */
-export const RESYNC_BELOW_PERCENT = 99;
+/** A synced wallet whose phases are this many blocks or fewer behind their targets has had a new block
+ * arrive; more is syncing (DEC-1058 #5). Blocks, not a share of the chain: 1% of mainnet is days. */
+export const SETTLE_BLOCKS = 3;
 
-/** `s` as the status bar should show it, given whether the last reading was synced. A new block makes
- * the engine report `caughtUp: false` for a moment with every phase at or near 100%: while the wallet
- * was synced and the phases are still within `RESYNC_BELOW_PERCENT`, it stays caught up. A real
- * catch-up (offline for a while: far behind) and `running: false` still show. */
-export function settleSync(wasSynced: boolean, s: SyncStatus): SyncStatus {
-  if (!wasSynced || !s.running || s.caughtUp) return s;
-  const percent = phasePercent(s);
-  return percent !== null && percent >= RESYNC_BELOW_PERCENT ? { ...s, caughtUp: true } : s;
+/** And a reading that is not caught up for longer than this is not a new block, whatever its gap. */
+export const SETTLE_MS = 60_000;
+
+/** What `settleSync` remembers between readings. */
+export interface Settled {
+  /** The last reading was caught up, or a new block that `settleSync` held at synced. */
+  synced: boolean;
+  /** Since when readings were held at synced without the engine saying caught up (ms); `null` if not. */
+  heldSince: number | null;
+}
+
+export const NOT_SETTLED: Settled = { synced: false, heldSince: null };
+
+/** Whether every phase that reports a target is within `blocks` of it. */
+function within(s: SyncStatus, blocks: number): boolean {
+  const known = s.phases.filter((p) => p.targetHeight !== null && p.targetHeight > 0);
+  return known.length > 0 && known.every((p) => p.done || p.targetHeight! - (p.currentHeight ?? 0) <= blocks);
+}
+
+/** `s` as the status bar should show it, and what to remember for the next reading. A new block makes
+ * the engine report `caughtUp: false` for a moment with every phase a block from its target: while
+ * the wallet was synced, it stays caught up if the phases are within `SETTLE_BLOCKS` and it has not
+ * been so for `SETTLE_MS`. A real catch-up (far behind, or stuck) and `running: false` show as they are. */
+export function settleSync(prev: Settled, s: SyncStatus, now: number): { status: SyncStatus; settled: Settled } {
+  if (s.running && s.caughtUp) return { status: s, settled: { synced: true, heldSince: null } };
+  const heldSince = prev.heldSince ?? now;
+  if (prev.synced && s.running && within(s, SETTLE_BLOCKS) && now - heldSince < SETTLE_MS) {
+    return { status: { ...s, caughtUp: true }, settled: { synced: true, heldSince } };
+  }
+  return { status: s, settled: NOT_SETTLED };
 }
 
 /** SPV is running and not caught up yet. */

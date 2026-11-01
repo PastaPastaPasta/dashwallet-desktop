@@ -98,7 +98,7 @@ const grantFor = (credits: bigint) => ({ maxDuffs: 0, maxCredits: String(credits
 function shieldQuote(ctx: Ctx, walletId: string, duffs: number): ShieldQuote {
   const s = shieldedOf(ctx, walletId, PENDING.shieldQuote);
   // As the engine answers while the account is not established: the generic Platform refusal (pasta's preview, 03-…png).
-  if (!s.ready) raise("platform.unavailable", "Platform did not answer");
+  if (!s.ready) raise("platform.unavailable", "the fixture account is not established yet");
   if (duffs < MIN_SHIELD_DUFFS) raise(SHIELDED_CODES.belowMinimum, "below the minimum", { kind: "number", value: MIN_SHIELD_DUFFS });
   if (s.pendingShields.length > 0) raise(SHIELDED_CODES.shieldPending, "an earlier shield is pending", { kind: "txid", txid: s.pendingShields[0].txid });
   const total = duffs + LOCK_FEE_DUFFS;

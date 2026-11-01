@@ -66,6 +66,7 @@ export const SHIELDED_COPY = {
   },
   confirm: {
     quoting: "Working out the fee…",
+    quoteFailed: "The fee could not be worked out.",
     amount: "Amount",
     fee: "Network fee",
     coreFee: "Core network fee",

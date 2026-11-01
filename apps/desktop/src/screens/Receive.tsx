@@ -58,7 +58,7 @@ function AddressCard({ walletId, network }: { walletId: string; network: Network
   const [fresh, setFresh] = useState<AddressInfo | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   // A payment to the address on show is said first; the engine's next address follows (DEC-1058 #6).
-  const { shown, paid } = useHeldAddress(current.data, fresh, useReceived(walletId));
+  const { shown, paid } = useHeldAddress(current.data, current.isSuccess && !current.isFetching, fresh, useReceived(walletId));
   const display = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
   // The QR carries the wallet's DashPay username as `user=` (DP3-03). The engine reads none
@@ -106,7 +106,7 @@ function AddressCard({ walletId, network }: { walletId: string; network: Network
       ) : (
         <>
           {paid.length > 0 && (
-            <p className="receive-received" role="status" data-testid="receive-received">
+            <p className="receive-received" data-testid="receive-received">
               <span aria-hidden="true">✓</span> {receivedText(paid.reduce((n, p) => n + p.duffs, 0), display, discreet)}
             </p>
           )}
@@ -120,7 +120,7 @@ function AddressCard({ walletId, network }: { walletId: string; network: Network
             <CopyDashButton variant="tintedBlue" data-testid="receive-copy-address" text={shown.address}>
               Copy address
             </CopyDashButton>
-            <CopyDashButton variant="tintedBlue" data-testid="receive-copy-uri" disabled={!uri.data} why="The address is still loading." text={uri.data ?? null}>
+            <CopyDashButton variant="tintedBlue" data-testid="receive-copy-uri" disabled={!uri.data} why="The payment link is not ready yet." text={uri.data ?? null}>
               Copy link
             </CopyDashButton>
             <DashButton variant="plainBlue" data-testid="receive-new-address" onClick={() => void newAddress()}>

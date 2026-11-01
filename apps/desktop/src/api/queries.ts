@@ -5,7 +5,7 @@ import { createContext, useContext } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
 import { creditsToDuffs, type ShieldedSpendQuote, type ShieldedStatus, type ShieldQuote } from "./pending";
-import { settleSync } from "../format/sync";
+import { NOT_SETTLED, settleSync, type Settled } from "../format/sync";
 import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRequest } from "./generated/HistoryRequest";
@@ -221,17 +221,17 @@ export function useNetworkChoice() {
   return useQuery({ queryKey: keys.networkChoice, queryFn: () => b.networkChoice(), retry: false });
 }
 
-/** Whether each backend's last sync reading was synced (see `settleSync`). */
-const wasSynced = new WeakMap<object, boolean>();
+/** What `settleSync` remembers of each backend's last sync reading. */
+const settledSync = new WeakMap<object, Settled>();
 
 export function useSyncStatus() {
   const b = useBackend();
   return useQuery({
     queryKey: keys.sync,
     queryFn: async () => {
-      const s = settleSync(wasSynced.get(b) ?? false, await b.syncStatus());
-      wasSynced.set(b, s.running && s.caughtUp);
-      return s;
+      const { status, settled } = settleSync(settledSync.get(b) ?? NOT_SETTLED, await b.syncStatus(), Date.now());
+      settledSync.set(b, settled);
+      return status;
     },
   });
 }

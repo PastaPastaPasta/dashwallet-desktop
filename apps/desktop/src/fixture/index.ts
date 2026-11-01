@@ -43,7 +43,7 @@ export interface FixtureHandle {
   emit(event: AppEvent): void;
   /** A payment of `duffs` arrives at the wallet's current receiving address (the next one is current
    * from then on): its row, `historyChanged` and `newTransactions`. Returns the address paid. */
-  receivePayment(duffs: number, walletId?: string): string;
+  receivePayment(duffs: number, walletId?: string, to?: string): string;
   /** Queues links as dw-app's shell routed them and says so (`linksPending`), as a clicked link
    * or a second launch would. */
   deliverLinks(routes: LinkRoute[]): void;
@@ -124,7 +124,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
     scenario: opts.scenario,
     world,
     emit: ctx.emit,
-    receivePayment: (duffs, walletId = FIXTURE_WALLET_ID) => receivePayment(ctx, walletId, duffs),
+    receivePayment: (duffs, walletId = FIXTURE_WALLET_ID, to) => receivePayment(ctx, walletId, duffs, to),
     deliverLinks: (routes) => {
       world.links.push(...routes);
       void emit(SHELL_EVENT, { kind: "linksPending" } satisfies ShellEvent);

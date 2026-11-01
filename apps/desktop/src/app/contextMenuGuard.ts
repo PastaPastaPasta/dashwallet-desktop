@@ -7,7 +7,7 @@ const TEXT_INPUTS = new Set(["text", "search", "email", "url", "tel", "password"
 
 /** Whether the menu belongs to a text field or an editable area. */
 export function inTextField(target: EventTarget | null): boolean {
-  const t = target as { tagName?: string; type?: string; isContentEditable?: boolean; closest?: (s: string) => unknown } | null;
+  const t = target as { tagName?: string; type?: string; isContentEditable?: boolean} | null;
   if (!t) return false;
   if (t.isContentEditable === true) return true;
   return t.tagName === "TEXTAREA" || (t.tagName === "INPUT" && TEXT_INPUTS.has(t.type ?? ""));

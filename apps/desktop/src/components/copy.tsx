@@ -48,7 +48,7 @@ export function CopyDashButton({ text, children, ...rest }: { text: string | nul
 export function CopyIconButton({ text, label, title, size = 20 }: { text: string; label: string; title?: string; size?: number }) {
   const { copied, copy } = useCopy();
   return (
-    <button type="button" className="copy-button" aria-label={copied ? "Copied" : label} title={title ?? label} data-copied={copied || undefined} onClick={() => void copy(text)}>
+    <button type="button" className="copy-button" aria-label={label} title={title ?? label} data-copied={copied || undefined} onClick={() => void copy(text)}>
       {copied ? <CopiedLabel /> : <Icon id="copy" size={size} />}
     </button>
   );

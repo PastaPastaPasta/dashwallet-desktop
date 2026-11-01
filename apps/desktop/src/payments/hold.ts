@@ -14,17 +14,25 @@ export const ROTATION_GRACE_MS = 1500;
 /** How long the address on show stays once `target` is the engine's: not at all for an address the
  * user asked for, `RECEIVED_HOLD_MS` once a payment to the one shown is known, else the grace. */
 export function holdFor(asked: boolean, paid: boolean): number {
-  return asked ? 0 : paid ? RECEIVED_HOLD_MS : ROTATION_GRACE_MS;
+  if (asked) return 0;
+  return paid ? RECEIVED_HOLD_MS : ROTATION_GRACE_MS;
 }
 
 /** The address to show and the payments that paid it. `current` is the engine's receiving address,
- * `asked` the one "New address" issued (shown at once). */
-export function useHeldAddress(current: AddressInfo | undefined, asked: AddressInfo | null, payments: readonly ReceivedPayment[]): { shown: AddressInfo | undefined; paid: ReceivedPayment[] } {
-  const target = asked ?? current;
-  const [held, setHeld] = useState<AddressInfo | undefined>(target);
+ * counted once `settled` (read, not a cached one being read again: a used address is never shown
+ * first); `asked` the one "New address" issued, shown at once and until a payment uses it. */
+export function useHeldAddress(
+  current: AddressInfo | undefined,
+  settled: boolean,
+  asked: AddressInfo | null,
+  payments: readonly ReceivedPayment[],
+): { shown: AddressInfo | undefined; paid: ReceivedPayment[] } {
+  const keep = asked !== null && !payments.some((p) => p.address === asked.address) ? asked : null;
+  const target = keep ?? (settled ? current : undefined);
+  const [held, setHeld] = useState<AddressInfo | undefined>(undefined);
   const shown = held ?? target;
   const paid = shown ? payments.filter((p) => p.address === shown.address) : [];
-  const delay = holdFor(asked !== null, paid.length > 0);
+  const delay = holdFor(keep !== null, paid.length > 0);
   useEffect(() => {
     // The first address read is the one on show; only later ones are held back.
     if (held === undefined && target) setHeld(target);

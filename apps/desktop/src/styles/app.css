@@ -5409,3 +5409,9 @@ button.bell-row-open:focus-visible {
   color: var(--dw-role-text-primary);
   font-weight: var(--dw-type-subhead-medium-weight);
 }
+
+/* "✓ Copied" in an icon copy button is a label, not a circle. */
+.copy-button[data-copied] {
+  padding: 0 var(--dw-space-xs);
+  border-radius: var(--dw-radius-small);
+}

@@ -66,7 +66,7 @@ function ConfirmStep({ flow, walletId, credits, amount }: { flow: PlatformMoveFl
         <DashButton variant="tintedGray" size="large" data-testid="platform-move-cancel" disabled={flow.running} onClick={() => flow.close()}>
           {C.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="platform-move-go" why={quote.isError ? "The fee could not be worked out." : !q || quote.isFetching ? C.quoting : null} disabled={!q || quote.isError || quote.isFetching || flow.running} onClick={() => q && void flow.move(q.grant)}>
+        <DashButton variant="filledBlue" size="large" data-testid="platform-move-go" why={quote.isError ? C.quoteFailed : flow.running ? C.running.title : C.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running} onClick={() => q && void flow.move(q.grant)}>
           {C.go}
         </DashButton>
       </div>

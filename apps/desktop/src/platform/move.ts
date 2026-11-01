@@ -26,6 +26,7 @@ export const MOVE_COPY = {
   message: "Everything on your Platform addresses moves to your Dash wallet. Dash Platform pays it to the address below.",
   rows: { taken: "Taken from Platform", fee: "Network fee", receive: "You receive about", to: "To your Dash wallet" },
   quoting: "Working out the fee…",
+  quoteFailed: "The fee could not be worked out.",
   back: "Back",
   go: "Confirm & move",
   cancel: "Cancel",

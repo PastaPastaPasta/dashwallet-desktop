@@ -38,7 +38,6 @@ export interface Display {
 export function display(prefs: Pick<UiSettings, "unit" | "decimalDigits">, network: NetworkInfo): Display {
   const unit = UNIT_OF[prefs.unit];
   const chain = chainOf(network);
-  const digits = prefs.decimalDigits;
   const duffs = prefs.unit === "duffs";
   return {
     unit: prefs.unit,
@@ -47,7 +46,7 @@ export function display(prefs: Pick<UiSettings, "unit" | "decimalDigits">, netwo
     name: unitName(unit, chain),
     full: (amount, signed = false) => full(amount, signed, unit),
     compact: (amount, signed = false) => compact(amount, signed, unit),
-    masked: () => masked(digits, unit),
+    masked: () => masked(undefined, unit),
     withUnit: (amount) => formatWithUnit(unit, amount, false, "standard", chain),
     placeholder: duffs ? "0" : "0.00",
     invalidAmount: `Enter an amount in ${UNIT_LABEL[prefs.unit]}, for example ${duffs ? "25000" : "0.25"}.`,

@@ -254,6 +254,7 @@ function Shell() {
     // Whose avatars every list may show (DP4-03 D12): the window's wallet, others' only with
     // "Load contact pictures" on.
     <PictureScope.Provider value={pictures}>
+      <ReceivedToaster network={network} />
       {/* Behind a sheet or the lock screen the shell takes no focus and is hidden from assistive tech. */}
       <div className="app-chrome" inert={notice || locked || onboarding || forgot || sheet || layered || shown !== null}>
         <SheetLayer.Provider value={layer}>
@@ -293,7 +294,6 @@ function Shell() {
       {onboarding && <Onboarding network={network} inert={notice} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
       {locked && <LockScreen network={network} covered={forgot || notice} onForgot={() => ui.set({ forgotPassphrase: true })} />}
       {/* Over the lock screen, and still open once the recovery unlocked the vault (U-02 D11). */}
-      <ReceivedToaster network={network} />
       {forgot && !onboarding && !notice && <ForgotPassphraseSheet onClose={closeForgot} />}
       {/* Over everything, the lock screen too: the first thing a new install shows. */}
       {notice && (

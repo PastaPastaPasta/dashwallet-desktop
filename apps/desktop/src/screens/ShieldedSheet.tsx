@@ -172,7 +172,7 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
         <DashButton variant="tintedGray" size="large" data-testid="shielded-back" disabled={flow.running} onClick={() => flow.back()}>
           {C.confirm.back}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" why={syncing ? SHIELDED_SYNCING_TEXT : null} disabled={!q || quote.isError || quote.isFetching || flow.running || syncing} onClick={() => q && void flow.run(q.quote.grant)}>
+        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" why={syncing ? SHIELDED_SYNCING_TEXT : quote.isError ? C.confirm.quoteFailed : flow.running ? C.running.title : C.confirm.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running || syncing} onClick={() => q && void flow.run(q.quote.grant)}>
           {C.confirm.go}
         </DashButton>
       </div>

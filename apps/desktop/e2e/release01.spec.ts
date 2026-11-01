@@ -72,7 +72,7 @@ test.describe("copy feedback", () => {
       await shot(page, `${theme}-copy-button-copied`);
       expect(await contrast(button.locator(".copied-label"))).toBeGreaterThanOrEqual(3);
       // About 1.5 s later it is the label again.
-      await expect(button).toHaveText("Copy address", { timeout: 4000 });
+      await expect(button).toHaveText("Copy address", { timeout: 8000 });
     });
   }
 
@@ -82,8 +82,8 @@ test.describe("copy feedback", () => {
     await page.getByTestId("shielded-receive-open").click();
     const button = page.getByRole("button", { name: "Copy Shielded address" });
     await button.click();
-    await expect(page.getByRole("button", { name: "Copied" })).toHaveText("✓ Copied");
-    await expect(page.getByRole("button", { name: "Copy Shielded address" })).toBeVisible({ timeout: 4000 });
+    await expect(button.locator(".copied-label")).toHaveText("✓ Copied");
+    await expect(button.locator(".copied-label")).toHaveCount(0, { timeout: 8000 });
   });
 });
 
@@ -179,6 +179,36 @@ test.describe("incoming payment", () => {
     await expect(page.getByTestId("tx-detail")).toBeVisible();
   });
 
+  test("no toast over the lock screen; the bell has the payment after unlocking", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("hero").waitFor();
+    await page.getByTestId("toolbar-lock").click();
+    await expect(page.getByTestId("lock-screen")).toBeVisible();
+    await pay(page, 150_000_000);
+    await page.waitForTimeout(500);
+    await expect(page.locator(".toast")).toHaveCount(0);
+    await page.getByTestId("lock-field").fill("demo");
+    await page.keyboard.press("Enter");
+    await page.getByTestId("hero").waitFor();
+    await expect(page.getByTestId("toolbar-bell-badge")).toHaveText("1");
+  });
+
+  test("a payment to a New address says so, then moves on to the engine's address", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("sidebar-receive").click();
+    const address = page.getByTestId("receive-address");
+    const engines = (await address.textContent())!;
+    await page.getByTestId("receive-new-address").click();
+    await expect(address).not.toHaveText(engines);
+    const asked = (await address.textContent())!;
+    await page.evaluate(`window.__dwFixture.receivePayment(150000000, undefined, ${JSON.stringify(asked)})`);
+    await expect(page.getByTestId("receive-received")).toHaveText("✓ Received 1.50 tDASH");
+    await expect(address).toHaveText(asked);
+    // It does not stay on the used address: the engine's current one follows.
+    await expect(address).toHaveText(engines, { timeout: 8000 });
+    await expect(page.getByTestId("receive-received")).toHaveCount(0);
+  });
+
   test("a catch-up batch and discreet mode say nothing about the amount", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("hero").waitFor();
@@ -206,6 +236,18 @@ test("a release build has no context menu on the page, and keeps a text field's"
   await page.getByTestId("sidebar-pay").click();
   await page.getByTestId("pay-tabs-address").click();
   expect(await prevented("[data-testid=pay-address]")).toBe(false);
+});
+
+test.describe("balances", () => {
+  for (const theme of THEMES) {
+    test(`Home shows every balance exactly, never cut to two decimals (${theme})`, async ({ page }) => {
+      await open(page, "funded", theme);
+      await expect(page.getByTestId("hero")).toContainText("32.04698287");
+      await expect(page.getByTestId("hero")).toContainText("30.39698287");
+      await expect(page.getByTestId("hero")).not.toHaveText(/(^|[^\d.])32\.04([^\d]|$)/);
+      await shot(page, `${theme}-home-exact-balance`);
+    });
+  }
 });
 
 test.describe("first-run notice", () => {

@@ -3,6 +3,7 @@
 
 import { useEffect, useId, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
+import { useLockStatus } from "../../api/queries";
 import { ui, useUi } from "../../app/ui";
 import { showToast } from "../../components/toast";
 import { useDisplay, type Display } from "../../format/display";
@@ -17,11 +18,11 @@ export function receivedText(duffs: number, shown: Display, discreet: boolean): 
 /** The toast for every payment that arrives, wherever the window is (one per batch, its total). */
 export function ReceivedToaster({ network }: { network: NetworkInfo }) {
   const shown = useDisplay(network);
-  const discreet = useUi((s) => s.discreet);
+  // Not over the lock screen: what the wallet received is for who unlocked it. The bell has it.
+  const locked = useLockStatus().data?.state === "locked";
   useEffect(
-    () => onReceived((batch) => showToast(receivedText(batch.reduce((n, p) => n + p.duffs, 0), shown, ui.get().discreet))),
-    // `discreet` is read when the payment arrives.
-    [shown, discreet],
+    () => (locked ? undefined : onReceived((batch) => showToast(receivedText(batch.reduce((n, p) => n + p.duffs, 0), shown, ui.get().discreet)))),
+    [shown, locked],
   );
   return null;
 }
