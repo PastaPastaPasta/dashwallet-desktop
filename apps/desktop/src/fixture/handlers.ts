@@ -71,7 +71,7 @@ function stashIndex(w: World, linkId: string): number {
   return w.stash.findIndex((s) => s.info.id === linkId);
 }
 
-function wallet(w: World, walletId: string) {
+export function wallet(w: World, walletId: string) {
   const found = w.wallets.find((x) => x.summary.walletId === walletId);
   if (!found || isClosed(w, walletId)) throw fail("wallet_not_found", `wallet not found: ${walletId}`);
   return found;
@@ -253,12 +253,12 @@ function revokeGrants(w: World) {
 
 /** `Vault::check_grant`: the unused grant `id` of `walletId` and of one of `kinds`, if a key
  * can use it: its own, or the vault's. */
-function checkGrant(w: World, id: string, walletId: string, kinds: GrantPurposeSpec["kind"][]): FixtureGrant | null {
+export function checkGrant(w: World, id: string, walletId: string, kinds: GrantPurposeSpec["kind"][]): FixtureGrant | null {
   const g = w.grants.find((x) => x.grant.id === id && !x.used);
   return g && g.grant.walletId === walletId && kinds.includes(g.grant.purpose.kind) && (g.ownKey || !keyless(w)) ? g : null;
 }
 
-function useGrant(w: World, id: string) {
+export function useGrant(w: World, id: string) {
   for (const g of w.grants) if (g.grant.id === id) g.used = true;
 }
 

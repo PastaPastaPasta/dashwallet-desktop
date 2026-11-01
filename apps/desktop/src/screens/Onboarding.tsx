@@ -81,7 +81,7 @@ export function Onboarding({
         </header>
         <main className="onboarding-body" ref={body} data-testid={ready ? `onboarding-${step}` : "onboarding-preparing"}>
           {ready ? (
-            <Step model={model} network={network} onCancel={onCancel} onDone={onDone} restoreText={restoreText} setRestoreText={setRestoreText} />
+            <Step model={model} onCancel={onCancel} onDone={onDone} restoreText={restoreText} setRestoreText={setRestoreText} />
           ) : (
             <ProtectionPending protection={protection} onCancel={onCancel} />
           )}
@@ -101,14 +101,12 @@ function Title({ children }: { children: string }) {
 
 function Step({
   model,
-  network,
   onCancel,
   onDone,
   restoreText,
   setRestoreText,
 }: {
   model: OnboardingModel;
-  network: NetworkInfo;
   onCancel: (() => void) | null;
   onDone: (walletId: string | null) => void;
   restoreText: string;
@@ -116,7 +114,7 @@ function Step({
 }) {
   switch (model.step) {
     case "welcome":
-      return <Welcome model={model} network={network} onCancel={onCancel} />;
+      return <Welcome model={model} onCancel={onCancel} />;
     case "choosePassphrase":
       return <ChoosePassphrase model={model} />;
     case "unlockVault":
@@ -204,10 +202,10 @@ function Step({
   }
 }
 
-function Welcome({ model, network, onCancel }: { model: OnboardingModel; network: NetworkInfo; onCancel: (() => void) | null }) {
+function Welcome({ model, onCancel }: { model: OnboardingModel; onCancel: (() => void) | null }) {
   // A wallet is made on the network this window runs on: with another one chosen, it waits for
   // the restart that opens it.
-  const picker = useNetworkPicker(network.kind);
+  const picker = useNetworkPicker();
   const wait = picker.restart || picker.loading;
   return (
     <>

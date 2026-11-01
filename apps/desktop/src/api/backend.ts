@@ -10,7 +10,7 @@ import type { AuthGrant } from "./generated/AuthGrant";
 import type { CsvUnitName } from "./generated/CsvUnitName";
 import type { HistoryFilterRequest } from "./generated/HistoryFilterRequest";
 import type { HistorySortName } from "./generated/HistorySortName";
-import type { NetworkChoice } from "./pending";
+import type { MoveToCoreOutcome, MoveToCoreQuote, NetworkChoice, NetworkChoiceView, PlatformActivity, PlatformAddressBalance } from "./pending";
 import type { Balances } from "./generated/Balances";
 import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { ContactList } from "./generated/ContactList";
@@ -185,14 +185,20 @@ export interface Backend {
   dispatchStatus(walletId: string, artifact: string): Promise<DispatchStateName | null>;
   balance(walletId: string): Promise<Balances | null>;
   // Lanes E1 and E2 add these (api/pending.ts): `null` until dw-app has the command.
-  /** The network the next start opens (`get_network_choice`). */
-  networkChoice(): Promise<NetworkChoice | null>;
-  /** Saves it for the next start (`set_network_choice`); the window keeps its network. */
-  setNetworkChoice(choice: NetworkChoice): Promise<null>;
-  /** The wallet's shielded balance in duffs. */
+  /** The network choice (`get_network_choice`, contract §8). */
+  networkChoice(): Promise<NetworkChoiceView | null>;
+  /** Saves the choice for the next start (`set_network_choice`); the window keeps its network. */
+  setNetworkChoice(network: NetworkChoice): Promise<NetworkChoiceView>;
+  /** The wallet's shielded balance in duffs (a placeholder until lane E1's contract). */
   shieldedBalance(walletId: string): Promise<number | null>;
-  /** The wallet's Platform addresses' balance in duffs. */
-  platformBalance(walletId: string): Promise<number | null>;
+  /** The wallet's Platform addresses (`platform_addresses`, contract §2.12). */
+  platformAddresses(walletId: string): Promise<PlatformAddressBalance | null>;
+  /** Their activity, the newest first (`platform_activity`). */
+  platformActivity(walletId: string): Promise<PlatformActivity[] | null>;
+  /** What "Move to Dash wallet" takes and pays out (`platform_move_to_core_quote`). */
+  platformMoveToCoreQuote(walletId: string, amount: WithdrawAmount): Promise<MoveToCoreQuote>;
+  /** Moves the Platform addresses' credits to the wallet's Core address under `grant`. */
+  platformMoveToCore(walletId: string, amount: WithdrawAmount, grant: string): Promise<MoveToCoreOutcome>;
   syncStatus(): Promise<SyncStatus>;
   historyPage(walletId: string, request: HistoryRequest): Promise<HistoryRows>;
   /** dash-qt's CSV of the history `filter` and `sort` select (every field quoted, `\n` ends);

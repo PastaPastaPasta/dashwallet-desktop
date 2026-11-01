@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
-import { callPending, PENDING_COMMANDS as PENDING, type NetworkChoice } from "./pending";
+import { callPending, callRequired, PENDING_COMMANDS as PENDING, type MoveToCoreOutcome, type MoveToCoreQuote, type NetworkChoice, type NetworkChoiceView, type PlatformActivity, type PlatformAddressBalance } from "./pending";
+import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import * as cmd from "./generated/commands";
 import type { AppEvent, ShellEvent } from "./generated/commands";
 import type { AddressPurposeName } from "./generated/AddressPurposeName";
@@ -53,13 +54,13 @@ export class IpcBackend implements Backend {
   historyPage = cmd.historyPage;
   exportHistoryCsv = cmd.exportHistoryCsv;
   // Not generated yet (api/pending.ts): swap each line for `cmd.<name>` when its command lands.
-  networkChoice = async () => (await callPending<NetworkChoice>(PENDING.getNetworkChoice))?.value ?? null;
-  setNetworkChoice = async (choice: NetworkChoice) => {
-    if (!(await callPending<null>(PENDING.setNetworkChoice, { choice }))) throw new Error("The network choice is not available in this build.");
-    return null;
-  };
+  networkChoice = async () => (await callPending<NetworkChoiceView>(PENDING.getNetworkChoice))?.value ?? null;
+  setNetworkChoice = (network: NetworkChoice) => callRequired<NetworkChoiceView>(PENDING.setNetworkChoice, { network });
   shieldedBalance = async (walletId: string) => (await callPending<number>(PENDING.shieldedBalance, { walletId }))?.value ?? null;
-  platformBalance = async (walletId: string) => (await callPending<number>(PENDING.platformBalance, { walletId }))?.value ?? null;
+  platformAddresses = async (walletId: string) => (await callPending<PlatformAddressBalance>(PENDING.platformAddresses, { walletId }))?.value ?? null;
+  platformActivity = async (walletId: string) => (await callPending<PlatformActivity[]>(PENDING.platformActivity, { walletId }))?.value ?? null;
+  platformMoveToCoreQuote = (walletId: string, amount: WithdrawAmount) => callRequired<MoveToCoreQuote>(PENDING.platformMoveToCoreQuote, { walletId, amount });
+  platformMoveToCore = (walletId: string, amount: WithdrawAmount, grant: string) => callRequired<MoveToCoreOutcome>(PENDING.platformMoveToCore, { walletId, amount, grant });
   txDetail = cmd.txDetail;
   txDetailExtras = cmd.txDetailExtras;
   setTxLabel = cmd.setTxLabel;

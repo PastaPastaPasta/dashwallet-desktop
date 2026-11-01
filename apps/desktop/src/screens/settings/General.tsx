@@ -270,7 +270,7 @@ function DustCard() {
 function NetworkCard() {
   const { network } = useLaunch();
   const node = useNodeInfo();
-  const picker = useNetworkPicker(network.kind);
+  const picker = useNetworkPicker();
   return (
     <SettingsCard title="Network" testId="settings-network">
       <dl className="detail-list settings-details">

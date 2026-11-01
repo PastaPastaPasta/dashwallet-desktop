@@ -1192,6 +1192,10 @@ button {
   background: var(--dw-role-accent-tint);
 }
 
+.tx-row.is-readonly:hover {
+  background: transparent;
+}
+
 .tx-row-icon {
   width: var(--dw-layout-row-icon-size);
   height: var(--dw-layout-row-icon-size);
@@ -3874,6 +3878,39 @@ button.bell-row-open:focus-visible {
 
 .about-dashpay-question .about-dashpay-item-text {
   margin-top: var(--dw-space-xs);
+}
+
+/* ------------------------------------------------------------------ Platform addresses */
+
+.platform-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.platform-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+}
+
+.platform-card-title {
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.platform-card-text {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
 }
 
 /* ------------------------------------------------------------------ CoinJoin (U-06) */

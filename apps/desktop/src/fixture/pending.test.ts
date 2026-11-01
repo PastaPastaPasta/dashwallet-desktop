@@ -21,9 +21,11 @@ afterEach(() => {
 
 describe("fixture pending commands", () => {
   it("reads and saves the network choice", async () => {
-    expect(await backend.networkChoice()).toBe("testnet");
-    expect(await backend.setNetworkChoice("mainnet")).toBeNull();
-    expect(await backend.networkChoice()).toBe("mainnet");
+    const first = await backend.networkChoice();
+    expect(first).toMatchObject({ chosen: "testnet", saved: true, forcedByFlag: false, restartNeeded: false });
+    expect(await backend.setNetworkChoice("mainnet")).toMatchObject({ chosen: "mainnet", restartNeeded: true });
+    expect(await backend.networkChoice()).toMatchObject({ chosen: "mainnet", restartNeeded: true });
+    expect(await backend.setNetworkChoice("testnet")).toMatchObject({ restartNeeded: false });
     expect(fixture.calls).toContain("set_network_choice");
   });
 
@@ -35,11 +37,21 @@ describe("fixture pending commands", () => {
 
   it("reads the shielded and Platform balances, null while their commands are absent", async () => {
     expect(await backend.shieldedBalance(W)).toBe(125_000_000);
-    expect(await backend.platformBalance(W)).toBe(40_000_000);
+    const platform = await backend.platformAddresses(W);
+    expect(platform).toMatchObject({ credits: "40000000000", duffs: 40_000_000, syncing: false });
+    expect(platform?.addresses.map((a) => a.credits)).toEqual(["30000000000", "10000000000"]);
     fixture.world.pending.shielded = null;
     fixture.world.pending.platform = null;
     expect(await backend.shieldedBalance(W)).toBeNull();
-    expect(await backend.platformBalance(W)).toBeNull();
+    expect(await backend.platformAddresses(W)).toBeNull();
+    expect(await backend.platformActivity(W)).toBeNull();
+  });
+
+  it("quotes a move to Core and refuses a grant that is too small", async () => {
+    const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+    expect(quote).toMatchObject({ credits: "40000000000", feeCredits: "2000000", expectedDuffs: 39_998_000, grant: { maxCredits: "40000000000" } });
+    expect(quote.to).toMatch(/^y/);
+    await expect(backend.platformMoveToCore(W, { kind: "all" }, "no-such-grant")).rejects.toMatchObject({ code: "platform.grant_invalid" });
   });
 
   it("exports the history as dash-qt's CSV: one quoted line per record, the header first", async () => {

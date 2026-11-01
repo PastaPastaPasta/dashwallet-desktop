@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
-import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // The 0.1 release's renderer pieces on the fixture backend: the first-run notice, the network
 // choice, Export CSV, Show Masternodes, the Experimental label and Home's three-pool balance.
@@ -79,7 +79,7 @@ test.describe("network choice", () => {
     await page.getByTestId("onboarding-network-testnet").click();
     await expect(page.getByTestId("onboarding-network-restart")).toHaveCount(0);
     await expect(page.getByTestId("onboarding-create")).toBeEnabled();
-    expect(await world(page, (w) => w.pending.networkChoice)).toBe("testnet");
+    expect(await world(page, (w) => w.pending.networkChoice?.chosen)).toBe("testnet");
   });
 
   test("Welcome offers the choice, mainnet or testnet", async ({ page }) => {
@@ -98,7 +98,7 @@ test.describe("network choice", () => {
     await expect(page.getByTestId("settings-network-choice-restart")).toHaveCount(0);
     await page.getByTestId("settings-network-choice-mainnet").click();
     await expect(page.getByTestId("settings-network-choice-restart")).toContainText("Restart Dash Wallet to use Mainnet.");
-    expect(await world(page, (w) => w.pending.networkChoice)).toBe("mainnet");
+    expect(await world(page, (w) => w.pending.networkChoice?.chosen)).toBe("mainnet");
     await shot(page, "light-settings-network");
     await page.getByTestId("settings-network-choice-testnet").click();
     await expect(page.getByTestId("settings-network-choice-restart")).toHaveCount(0);
@@ -189,6 +189,88 @@ test.describe("CoinJoin is experimental", () => {
     await shot(page, "light-coinjoin-experimental");
     await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
     await expect(page.getByTestId("settings-tabs-coinjoin")).toHaveText("CoinJoin (experimental)");
+  });
+});
+
+test.describe("Move to Dash wallet", () => {
+  test("quotes, asks for approval, moves everything and shows it in Activity", async ({ page }) => {
+    const errors = await open(page, "funded");
+    await expect(page.getByTestId("platform-card-amount")).toContainText("0.4");
+    await shot(page, "light-home-platform-card");
+    await page.getByTestId("platform-move").click();
+    await expect(page.getByTestId("platform-move-quote")).toBeVisible();
+    await expect(page.getByTestId("platform-move-quote-duffs")).toContainText("0.39998");
+    await expect(page.getByTestId("platform-move-quote-to")).toHaveText(/^y/);
+    await shot(page, "light-platform-move-quote");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("platform-move-go").click();
+    await expect(page.getByTestId("grant-sheet")).toBeVisible();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
+    await shot(page, "light-platform-move-done");
+    await page.getByTestId("platform-move-done").click();
+    await expect(page.getByTestId("platform-card")).toHaveCount(0);
+    await expect(page.getByTestId("breakdown-platform")).toContainText("0.00");
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    await expect(page.getByText("Moved to Dash wallet")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test("says so when Platform's answer did not settle it", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("hero").waitFor();
+    await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "pending"));
+    await page.getByTestId("platform-move").click();
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
+    await expect(page.getByTestId("platform-move-outcome-text")).toContainText("Do not move again");
+  });
+
+  test("shows a refusal and can be closed", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("hero").waitFor();
+    await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "refused"));
+    await page.getByTestId("platform-move").click();
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-refusal")).toContainText("Dash Platform did not answer");
+    await page.getByTestId("platform-move-close").click();
+    await expect(page.getByTestId("platform-move-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("platform-move")).toBeEnabled();
+  });
+
+  test("offers nothing without Platform funds, or without the command", async ({ page }) => {
+    await open(page, "pools-absent");
+    await page.getByTestId("hero").waitFor();
+    await expect(page.getByTestId("platform-card")).toHaveCount(0);
+  });
+});
+
+test.describe("Platform activity in Activity", () => {
+  test("mixes Platform rows into the list with a tag, and they open nothing", async ({ page }) => {
+    const errors = await open(page, "funded");
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    const rows = page.locator('[data-txid^="platform:"]');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.first()).toContainText("Received on Platform");
+    await expect(rows.first()).toContainText("Platform");
+    await expect(page.locator('button[data-txid^="platform:"]')).toHaveCount(0);
+    await shot(page, "light-activity-platform");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    // Only under "All": a type filter is the Core engine's.
+    await page.getByTestId("tx-category-sent").click();
+    await expect(page.locator('[data-txid^="platform:"]')).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test("leaves them out when the command is absent", async ({ page }) => {
+    await open(page, "pools-absent");
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    await expect(page.locator('[data-txid^="platform:"]')).toHaveCount(0);
   });
 });
 

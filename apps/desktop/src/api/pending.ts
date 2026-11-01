@@ -1,22 +1,91 @@
-// Commands the 0.1 release lanes add to dw-app (lane E2's network choice; lanes E1 and E2's
-// shielded and Platform balances) that the renderer is built against before they land. Each one
-// is called by name through `callPending`, which answers `null` while dw-app has no such command
-// (Tauri: "Command … not found"; the fixture: `platform.not_implemented`), so a screen shows its
-// "unavailable" state. When a command is generated into `generated/commands.ts`, the adapter
-// line in `IpcBackend` (api/tauri.ts) becomes `cmd.<name>` and this file loses its entry.
+// Commands the 0.1 release lanes add to dw-app that the renderer is built against before they land:
+// lane E2's network choice and Platform addresses (contract m4-dashpay-engine v40 §2.12 and §8, branch
+// `dw/rel-platform-addr`), and lane E1's shielded balance (a placeholder until its contract). Each is
+// called by name through `callPending`, which answers `null` while dw-app has no such command (Tauri's
+// ACL refusal or "Command … not found"; the fixture's `platform.not_implemented`), so a screen shows
+// its "unavailable" state. The types below are the generated bindings' shapes by hand (the codegen
+// test refuses files in `generated/` that dw-app does not write). When a command is generated into
+// `generated/commands.ts`, its adapter line in `IpcBackend` (api/tauri.ts) becomes `cmd.<name>`, its
+// type becomes an import from `generated/`, and its entry leaves `PENDING_COMMANDS`.
 
 import { invoke } from "@tauri-apps/api/core";
+import type { GrantRequest } from "./generated/GrantRequest";
+import type { NetworkInfo } from "./generated/NetworkInfo";
 
-/** The commands' names, one place for the adapter and the fixture. */
+/** The commands' wire names, one place for the adapter and the fixture. */
 export const PENDING_COMMANDS = {
   getNetworkChoice: "get_network_choice",
   setNetworkChoice: "set_network_choice",
+  platformAddresses: "platform_addresses",
+  platformActivity: "platform_activity",
+  platformMoveToCoreQuote: "platform_move_to_core_quote",
+  platformMoveToCore: "platform_move_to_core",
   shieldedBalance: "shielded_balance",
-  platformBalance: "platform_address_balance",
 } as const;
 
-/** The network a start opens when no `--network` is given (mainnet by default). */
+/** `ChosenNetwork`: the networks the user chooses between (developer networks are launch flags). */
 export type NetworkChoice = "mainnet" | "testnet";
+
+/** `NetworkChoiceView`: the network choice of onboarding and Settings (contract §8). */
+export interface NetworkChoiceView {
+  /** The saved choice; mainnet when none was saved. */
+  chosen: NetworkChoice;
+  /** A choice was saved (`false`: first run). */
+  saved: boolean;
+  /** The network this run opened. */
+  launched: NetworkInfo;
+  /** `--network` named it: the saved choice applies only to a launch without it. */
+  forcedByFlag: boolean;
+  /** The choice takes effect at the next start. */
+  restartNeeded: boolean;
+}
+
+/** `PlatformAddressBalance`: the wallet's Platform addresses as the last sync pass left them (§2.12). */
+export interface PlatformAddressBalance {
+  credits: string;
+  /** `credits` in whole duffs: what Home adds to the spendable total. */
+  duffs: number;
+  /** The funded addresses (bech32m), the largest first. */
+  addresses: { address: string; credits: string }[];
+  /** Unix seconds of this session's last sync pass; `null` before one. */
+  syncedAt: number | null;
+  syncing: boolean;
+}
+
+export type PlatformActivityKind = "incoming" | "outgoing" | "moveToCore";
+export type PlatformActivityState = "done" | "pending" | "failed";
+
+/** `PlatformActivity`: one Platform-address activity row, for Activity. */
+export interface PlatformActivity {
+  id: string;
+  kind: PlatformActivityKind;
+  state: PlatformActivityState;
+  credits: string;
+  address: string | null;
+  to: string | null;
+  expectedDuffs: number | null;
+  /** Unix seconds. */
+  at: number;
+}
+
+/** `MoveToCoreQuote`: what "Move to Dash wallet" takes and pays out. */
+export interface MoveToCoreQuote {
+  credits: string;
+  feeCredits: string;
+  expectedDuffs: number;
+  /** The wallet's own Core receive address. */
+  to: string;
+  grant: GrantRequest;
+}
+
+/** `MoveToCoreOutcome`: `done`, or `pending` when Platform's answer said nothing either way. */
+export interface MoveToCoreOutcome {
+  id: string;
+  credits: string;
+  expectedDuffs: number;
+  to: string;
+  state: PlatformActivityState;
+}
 
 /** Whether `e` says the command does not exist in this dw-app. dw-app's ACL manifest lists every
  * command it has, so Tauri answers an unknown one from the ACL check: "Command x not allowed by
@@ -36,4 +105,12 @@ export async function callPending<T>(command: string, args?: Record<string, unkn
     if (commandAbsent(e)) return null;
     throw e;
   }
+}
+
+/** A command that must exist for the call to mean anything (a save, a move of funds): its absence
+ * is an error the screen shows. */
+export async function callRequired<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const got = await callPending<T>(command, args);
+  if (got === null) throw new Error("This is not available in this build.");
+  return got.value;
 }

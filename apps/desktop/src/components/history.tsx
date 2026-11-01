@@ -59,6 +59,10 @@ export const rowTestId = (row: TxRow) => `tx-row-${row.txid.slice(0, 10)}-${row.
 export interface RowDecor {
   title?: string;
   leading?: ReactNode;
+  /** The row's source, as a tag beside the time (Platform rows among the Core ones). */
+  tag?: string;
+  /** The row opens nothing: it is not a button. */
+  readOnly?: boolean;
 }
 
 function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext; onOpen: (row: TxRow) => void; decorate?: (row: TxRow) => RowDecor }) {
@@ -74,23 +78,35 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
   const leading =
     decor?.leading ??
     (letters !== null ? <Avatar letters={letters} identity={row.counterparty?.identity} /> : <Icon id={TX_ICON[txIcon(row.txType, row.status, row.amount)]} size={30} className="tx-row-icon" />);
+  const body = (
+    <>
+      {leading}
+      <span className="tx-row-text">
+        <span className={`tx-row-title ${isProblem(row.status) ? "is-problem" : ""}`}>{title}</span>
+        {aside && <VisuallyHidden>{aside}</VisuallyHidden>}
+        <span className="tx-row-subtitle">
+          {date && <span className="tx-row-time">{timeOfDay(date, ctx.locale)}</span>}
+          {decor?.tag && <Chip tone="info">{decor.tag}</Chip>}
+          {chip && <Chip tone={isProblem(row.status) ? "danger" : "info"}>{chip}</Chip>}
+        </span>
+      </span>
+      <span className="tx-row-trailing">
+        {trailing && <span className="tx-row-status">{trailing}</span>}
+        <AmountText className="tx-row-amount" text={amount} unitName={ctx.display.name} />
+      </span>
+    </>
+  );
   return (
     <li className="tx-row-item">
-      <button type="button" className="tx-row" data-testid={rowTestId(row)} data-txid={row.txid} onClick={() => onOpen(row)}>
-        {leading}
-        <span className="tx-row-text">
-          <span className={`tx-row-title ${isProblem(row.status) ? "is-problem" : ""}`}>{title}</span>
-          {aside && <VisuallyHidden>{aside}</VisuallyHidden>}
-          <span className="tx-row-subtitle">
-            {date && <span className="tx-row-time">{timeOfDay(date, ctx.locale)}</span>}
-            {chip && <Chip tone={isProblem(row.status) ? "danger" : "info"}>{chip}</Chip>}
-          </span>
-        </span>
-        <span className="tx-row-trailing">
-          {trailing && <span className="tx-row-status">{trailing}</span>}
-          <AmountText className="tx-row-amount" text={amount} unitName={ctx.display.name} />
-        </span>
-      </button>
+      {decor?.readOnly ? (
+        <div className="tx-row is-readonly" data-testid={rowTestId(row)} data-txid={row.txid}>
+          {body}
+        </div>
+      ) : (
+        <button type="button" className="tx-row" data-testid={rowTestId(row)} data-txid={row.txid} onClick={() => onOpen(row)}>
+          {body}
+        </button>
+      )}
     </li>
   );
 }

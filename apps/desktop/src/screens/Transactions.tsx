@@ -9,18 +9,22 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxRow } from "../api/generated/TxRow";
 import { errorMessage } from "../api/backend";
-import { useBackend, useHistory, type HistoryFilter } from "../api/queries";
+import { useBackend, useHistory, usePlatformActivity, type HistoryFilter } from "../api/queries";
 import { fileErrorText } from "../app/files";
 import { useLocalDay } from "../app/localDay";
 import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
-import { EmptyState, LoadingState, TxGroups, TxTable, useRowContext } from "../components/history";
+import { EmptyState, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
+import { isPlatformRow, mergeActivity, PLATFORM_TAG, platformRowTitle } from "../history/platformRows";
 import { DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
 
 const PAGE_SIZE = 200;
 const SEARCH_DEBOUNCE_MS = 250;
+
+/** A Platform row among the Core ones: titled and tagged, and it opens nothing. */
+const decoratePlatform = (row: TxRow): RowDecor => (isPlatformRow(row) ? { title: platformRowTitle(row), tag: PLATFORM_TAG, readOnly: true } : {});
 
 const CATEGORIES: { id: string; title: string; categories: TxCategoryName[] }[] = [
   { id: "all", title: "All", categories: [] },
@@ -61,8 +65,17 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   // Query keys are hashed structurally, so a fresh filter object per render is fine.
   const filter: HistoryFilter = { categories: category.categories, text: text || null, sort: order, ...range, ...(minAmount ? { minAmount } : {}) };
   const history = useHistory(walletId, filter, PAGE_SIZE);
-  const rows = useMemo(() => history.data?.pages.flatMap((p) => p.rows) ?? [], [history.data]);
-  const total = history.data?.pages[0]?.totalMatching ?? null;
+  const coreRows = useMemo(() => history.data?.pages.flatMap((p) => p.rows) ?? [], [history.data]);
+  // Platform-address activity joins the list under "All" with no search text (it has no type to
+  // filter by, and nothing to search); Table mode is the Core columns.
+  const platform = usePlatformActivity(walletId);
+  const withPlatform = mode === "list" && category.id === "all" && !text;
+  const rows = useMemo(
+    () => (withPlatform ? mergeActivity(coreRows, !!history.hasNextPage, platform.data, { dateFrom: range.dateFrom, dateTo: range.dateTo, minAmount }) : coreRows),
+    [withPlatform, coreRows, history.hasNextPage, platform.data, range.dateFrom, range.dateTo, minAmount],
+  );
+  const coreTotal = history.data?.pages[0]?.totalMatching ?? null;
+  const total = coreTotal === null ? null : coreTotal + (rows.length - coreRows.length);
   const ctx = useRowContext(network);
 
   // Export CSV (QT-093): the records the filters select, all pages; the line under the bar says
@@ -177,13 +190,13 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
         </div>
         {history.isPending ? (
           <LoadingState testId="tx-loading" text="Loading transactions" />
-        ) : history.isError && rows.length === 0 ? (
+        ) : history.isError && coreRows.length === 0 ? (
           <EmptyState testId="tx-error" title="Could not load transactions" message={errorMessage(history.error)} />
         ) : rows.length === 0 ? (
           <EmptyState testId="tx-empty" title="There are no transactions to display" />
         ) : mode === "list" ? (
           <div data-testid="tx-list">
-            <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="tx" />
+            <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="tx" decorate={decoratePlatform} />
           </div>
         ) : (
           <TxTable rows={rows} ctx={ctx} onOpen={onOpen} sort={sort} onSort={setSort} />

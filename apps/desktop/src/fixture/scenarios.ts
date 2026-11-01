@@ -578,7 +578,7 @@ const SCENARIOS = {
     w.wallets = [];
     w.phrases = {};
     w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
-    w.pending.networkChoice = "mainnet";
+    w.pending.networkChoice = { chosen: "mainnet", saved: true };
     return w;
   },
   /** The funded wallet when dw-app has no shielded or Platform command: Home shows "—" for both. */

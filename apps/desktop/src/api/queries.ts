@@ -35,7 +35,11 @@ export const keys = {
   balance: (walletId: string) => ["balance", walletId] as const,
   /** Under the balance's key, so a `balances` event reads them again with it. */
   shieldedBalance: (walletId: string) => ["balance", walletId, "shielded"] as const,
-  platformBalance: (walletId: string) => ["balance", walletId, "platform"] as const,
+  // Under "dashpay": a `platform{domain:"platformAddresses"}` event is a domain events.ts does not
+  // name, which it answers by invalidating everything under that prefix.
+  platformAddresses: (walletId: string) => ["dashpay", "platformAddresses", walletId] as const,
+  platformActivity: (walletId: string) => ["dashpay", "platformActivity", walletId] as const,
+  platformMoveQuote: (walletId: string) => ["dashpay", "platformMoveQuote", walletId] as const,
   networkChoice: ["networkChoice"] as const,
   sync: ["sync"] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
@@ -114,17 +118,43 @@ export function useBalance(walletId: string) {
   return useQuery({ queryKey: keys.balance(walletId), queryFn: () => b.balance(walletId) });
 }
 
+/** The wallet's Platform addresses; `null` while dw-app has no such command (api/pending.ts). */
+export function usePlatformAddresses(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.platformAddresses(walletId), queryFn: () => b.platformAddresses(walletId), retry: false });
+}
+
+/** The Platform-address activity rows, newest first; `null` while dw-app has no such command. */
+export function usePlatformActivity(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.platformActivity(walletId), queryFn: () => b.platformActivity(walletId), retry: false });
+}
+
+/** What "Move to Dash wallet" would take and pay out, read while its sheet asks to confirm. */
+export function usePlatformMoveQuote(walletId: string, enabled: boolean) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.platformMoveQuote(walletId),
+    queryFn: () => b.platformMoveToCoreQuote(walletId, { kind: "all" }),
+    enabled,
+    retry: false,
+    gcTime: 0,
+  });
+}
+
 /** The shielded and Platform balances in duffs; `null` while dw-app has no command for one
- * (api/pending.ts), `undefined` while it is being read. */
+ * (api/pending.ts) or it failed, `undefined` while it is being read. */
 export function usePoolBalances(walletId: string) {
   const b = useBackend();
   const shielded = useQuery({ queryKey: keys.shieldedBalance(walletId), queryFn: () => b.shieldedBalance(walletId), retry: false });
-  const platform = useQuery({ queryKey: keys.platformBalance(walletId), queryFn: () => b.platformBalance(walletId), retry: false });
-  const value = (q: typeof shielded) => (q.isError ? null : q.data);
-  return { shielded: value(shielded), platform: value(platform) };
+  const platform = usePlatformAddresses(walletId);
+  return {
+    shielded: shielded.isError ? null : shielded.data,
+    platform: platform.isError ? null : platform.data === undefined ? undefined : (platform.data?.duffs ?? null),
+  };
 }
 
-/** The network the next start opens; `null` while dw-app has no such command. */
+/** The saved network choice and how this run relates to it; `null` while dw-app has no such command. */
 export function useNetworkChoice() {
   const b = useBackend();
   return useQuery({ queryKey: keys.networkChoice, queryFn: () => b.networkChoice(), retry: false });

@@ -456,19 +456,20 @@ test.describe("Activity", () => {
   test("filters by date and minimum amount", async ({ page }) => {
     await open(page);
     await page.getByTestId("sidebar-activity").click();
-    await expect(page.getByTestId("tx-footer")).toHaveText("45 transactions");
+    // 45 Core records and the fixture's 2 Platform-address rows.
+    await expect(page.getByTestId("tx-footer")).toHaveText("47 transactions");
     await page.getByTestId("tx-date").selectOption("today");
     await expect(page.getByTestId("tx-footer")).toHaveText("2 transactions");
     await page.getByTestId("tx-date").selectOption("all");
     await page.getByTestId("tx-min-amount").fill("3");
-    await expect(page.getByTestId("tx-footer")).not.toHaveText("45 transactions");
+    await expect(page.getByTestId("tx-footer")).not.toHaveText("47 transactions");
     const n = Number((await page.getByTestId("tx-footer").textContent())!.split(" ")[0]);
     expect(n).toBeGreaterThan(0);
-    expect(n).toBeLessThan(45);
+    expect(n).toBeLessThan(47);
     await page.getByTestId("tx-min-amount").fill("x");
     await expect(page.getByTestId("tx-min-amount")).toHaveAttribute("aria-invalid", "true");
     await expect(page.getByTestId("tx-min-amount-error")).toBeVisible();
-    await expect(page.getByTestId("tx-footer")).toHaveText("45 transactions");
+    await expect(page.getByTestId("tx-footer")).toHaveText("47 transactions");
   });
 
   test("Today moves with the local day once the window comes back (D25)", async ({ page }) => {
