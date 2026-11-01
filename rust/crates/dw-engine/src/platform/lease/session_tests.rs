@@ -1515,6 +1515,11 @@ fn mode_b_a_funding_permit_refuses_a_step_or_key_it_cannot_vouch_for() {
         key(T::IdentityRegistration, 4, 0),
         "is no top-up's funding key",
     );
+    refused(
+        "shield/0/funding",
+        key(T::IdentityTopUp, 0, 0),
+        "is no shield's funding key",
+    );
     refused("registration/999/funding", own, "has no funding key");
     for wrong in [
         key(T::IdentityRegistration, 5, 0),
@@ -1526,7 +1531,12 @@ fn mode_b_a_funding_permit_refuses_a_step_or_key_it_cannot_vouch_for() {
     let view = l.view().unwrap();
     assert!(!view.call_running && !view.funds_committed);
     assert!(view.budgets.iter().all(|b| b.spent == 0), "nothing charged");
-    for step in [step.as_str(), "topup/i/funding", "registration/999/funding"] {
+    for step in [
+        step.as_str(),
+        "topup/i/funding",
+        "shield/0/funding",
+        "registration/999/funding",
+    ] {
         assert_eq!(s.leases.call_step(f.wallet, step).funding, None, "{step}");
     }
     // The draft's own key: the permit.

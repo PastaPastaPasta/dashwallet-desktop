@@ -51,7 +51,9 @@
 //! account) is not unique per step: every top-up of an identity carries
 //! the same one, and a `Consumed` row stays. A top-up's step (its marker
 //! under an `IdentityTopUp` key) therefore matches only its own signed
-//! locks ([`own_row`]; DP1-06, as §2a.6 foresaw): every lock a call of it
+//! locks ([`own_row`]; DP1-06, as §2a.6 foresaw), and so does a shield's
+//! (0.1 E1: every shield funds under the one `AssetLockShieldedAddressTopUp`
+//! key of account 0): every lock a call of it
 //! signed has its durable record before it can be stored or sent (§2a.7),
 //! so they are all of its rows, across restarts too. Any other step matches by
 //! its draft's own key and its marker's: the J step that marks it records
@@ -584,10 +586,10 @@ pub(crate) fn derive_funding(
     }
 }
 
-/// Whether tracked row `r` matches `step`: a top-up's (its marker under
-/// an `IdentityTopUp` key) by being one of its `signed` locks (module
-/// doc); else by the draft's own key, or by the marker's unless the row
-/// preceded the marker (`foreign`).
+/// Whether tracked row `r` matches `step`: a top-up's or a shield's (its
+/// marker under an [`signed_lock_key`]) by being one of its `signed` locks
+/// (module doc); else by the draft's own key, or by the marker's unless the
+/// row preceded the marker (`foreign`).
 fn matches_step(
     s: &Snapshot,
     step: &str,
@@ -596,14 +598,20 @@ fn matches_step(
     signed: &[SignedLock],
     r: &TrackedRow,
 ) -> bool {
-    if info
-        .funding
-        .is_some_and(|k| k.funding_type == AssetLockFundingType::IdentityTopUp)
-    {
+    if info.funding.is_some_and(|k| signed_lock_key(&k)) {
         return signed.iter().any(|l| l.txid == r.txid);
     }
     s.drafts.iter().any(|d| d.step == step && d.matches(&r.key))
         || (info.funding.as_ref() == Some(&r.key) && !foreign.is_some_and(|f| f.contains(&r.txid)))
+}
+
+/// A funding key many steps share, so a step's rows are its own signed
+/// locks (module doc): a top-up's, or a shield's.
+fn signed_lock_key(key: &FundingKey) -> bool {
+    matches!(
+        key.funding_type,
+        AssetLockFundingType::IdentityTopUp | AssetLockFundingType::AssetLockShieldedAddressTopUp
+    )
 }
 
 /// The first unattributed row (module doc) that may be `step`'s lock: of
@@ -1761,13 +1769,14 @@ impl NetworkSession {
     ///
     /// Refused `invalid_argument` before anything is charged or marked
     /// (review M-3, M-4): a step that is no funding step; a top-up step
-    /// whose `key` is no `IdentityTopUp` key; a registration step whose
+    /// whose `key` is no `IdentityTopUp` key, or a shield step (0.1 E1)
+    /// whose `key` is no `AssetLockShieldedAddressTopUp` key; a registration step whose
     /// `key` is not its draft's own (`DraftKey`, from `app.sqlite`), or
     /// whose draft has no known key: a row under another key would be
     /// found by neither the marker nor the draft; and a `fence` of another
-    /// wallet. A top-up step needs no draft: its rows are its own signed
-    /// locks (module doc), and DP1-06 never calls a step again unless it
-    /// reads `None` or `NotSent` (`topup.rs`).
+    /// wallet. A top-up or shield step needs no draft: its rows are its own
+    /// signed locks (module doc), and neither flow calls a step again unless
+    /// it reads `None` or `NotSent` (`topup.rs`, `shielded_pool.rs`).
     pub async fn funding_call_permit(
         &self,
         lease: &Lease,
@@ -1784,10 +1793,22 @@ impl NetworkSession {
         if !is_funding_step(&step) {
             return refuse(format!("{step} is not a funding step"));
         }
-        let top_up = step.starts_with("topup/");
-        if top_up && key.funding_type != AssetLockFundingType::IdentityTopUp {
-            return refuse(format!("{key:?} is no top-up's funding key"));
+        let own_key = if step.starts_with("topup/") {
+            Some((AssetLockFundingType::IdentityTopUp, "top-up"))
+        } else if step.starts_with("shield/") {
+            Some((
+                AssetLockFundingType::AssetLockShieldedAddressTopUp,
+                "shield",
+            ))
+        } else {
+            None
+        };
+        if let Some((funding_type, flow)) = own_key
+            && key.funding_type != funding_type
+        {
+            return refuse(format!("{key:?} is no {flow}'s funding key"));
         }
+        let top_up = own_key.is_some();
         let wallet = lease.wallet();
         let fee_bound_worst = self.fee_bound_worst(wallet).await?;
         if !self.leases.refresh_funding(wallet).await {

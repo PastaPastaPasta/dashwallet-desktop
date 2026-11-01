@@ -361,10 +361,10 @@ impl DashPay {
     }
 }
 
-/// A Mode B funding step id (§2a.3): `registration/<draft>/funding` or
-/// `topup/<id>/funding`.
+/// A Mode B funding step id (§2a.3): `registration/<draft>/funding`,
+/// `topup/<id>/funding` or (0.1 E1) a shield's `shield/<k>/funding`.
 pub(crate) fn is_funding_step(step: &str) -> bool {
-    (step.starts_with("registration/") || step.starts_with("topup/"))
+    (step.starts_with("registration/") || step.starts_with("topup/") || step.starts_with("shield/"))
         && step.ends_with("/funding")
         && step.matches('/').count() == 2
 }
