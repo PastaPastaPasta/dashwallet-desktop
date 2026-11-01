@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { authorize, fixtureUrl } from "./helpers";
+import { PAYEE } from "./wallet";
 
 // DEC-1058 fix round 1 (Sol's review): the cases the first batch's tests did not reach. Each test
 // here failed on d74b2dab.
@@ -154,6 +155,39 @@ test.describe("Receive waits for the notice lookup", () => {
     await expect(page.getByTestId("receive-received")).toHaveText("✓ Received 0.00999819 tDASH");
     await expect(address).toHaveText(first);
     await expect(address).not.toHaveText(first, { timeout: 8000 });
+  });
+});
+
+test.describe("Pay's confirm sheet warns about fees", () => {
+  async function review(page: Page, amount: string, subtract = false) {
+    await open(page);
+    await page.getByTestId("sidebar-pay").click();
+    await page.getByTestId("pay-tabs-address").click();
+    await page.getByTestId("pay-address").fill(PAYEE);
+    await page.getByTestId("pay-amount").fill(amount);
+    if (subtract) await page.getByTestId("pay-subtract-fee").check();
+    await expect(page.getByTestId("pay-continue")).toBeEnabled();
+    await page.getByTestId("pay-continue").click();
+    await expect(page.getByTestId("pay-confirm")).toBeVisible();
+  }
+
+  test("22% of a small payment says so", async ({ page }) => {
+    await review(page, "0.00001");
+    await expect(page.getByTestId("pay-confirm-fee")).toContainText("0.00000226");
+    await expect(page.getByTestId("pay-confirm-fee-warning")).toHaveText("Fees are 22% of this amount.");
+  });
+
+  test("a payment well above ten times the fee has no warning", async ({ page }) => {
+    await review(page, "0.5");
+    await expect(page.getByTestId("pay-confirm-fee")).toBeVisible();
+    await expect(page.getByTestId("pay-confirm-fee-warning")).toHaveCount(0);
+  });
+
+  test("with the fee subtracted it counts against what the payee receives", async ({ page }) => {
+    await review(page, "0.00001", true);
+    // The payee gets 1000 - 226 duffs: the fee is 29% of that.
+    await expect(page.getByTestId("pay-confirm-amount")).toContainText("0.00000774");
+    await expect(page.getByTestId("pay-confirm-fee-warning")).toHaveText("Fees are 29% of this amount.");
   });
 });
 

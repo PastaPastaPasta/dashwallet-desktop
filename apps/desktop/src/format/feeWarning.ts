@@ -18,3 +18,7 @@ export function feeWarning(fees: bigint, amount: bigint): FeeWarning | null {
 }
 
 export const feeWarningText = (w: FeeWarning): string => (w.most ? "Most of this goes to fees." : `Fees are ${w.percent}% of this amount.`);
+
+/** Pay's confirm sheet: `fee` against what the payee receives, both in duffs. `received` is the sheet's
+ * Amount: after a subtract-fee share, and never the change, which comes back to the wallet. */
+export const payFeeWarning = (fee: number, received: number): FeeWarning | null => feeWarning(BigInt(fee), BigInt(received));
