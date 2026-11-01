@@ -125,6 +125,14 @@ pub enum DashPayCommand {
         #[command(subcommand)]
         cmd: InviteCmd,
     },
+    /// Platform addresses (release 0.1): the balance, its activity and
+    /// "Move to Dash wallet".
+    PlatformAddr {
+        #[command(flatten)]
+        common: Common,
+        #[command(subcommand)]
+        cmd: PlatformAddrCmd,
+    },
 }
 
 #[derive(Args)]
@@ -584,6 +592,40 @@ pub enum ProfileCmd {
 }
 
 #[derive(Subcommand)]
+pub enum PlatformAddrCmd {
+    /// The balance and the funded addresses, as the last sync pass left
+    /// them.
+    Status,
+    /// The activity rows, newest first (a pending move settled first).
+    Activity,
+    /// Run a sync pass now and print the balance after it.
+    Sync,
+    /// "Move to Dash wallet": withdraw to the wallet's own Core receiving
+    /// address.
+    MoveToCore {
+        #[arg(long, required_unless_present = "all", conflicts_with = "all")]
+        credits: Option<u64>,
+        /// The library's plan: every input at or above the minimum, less
+        /// the fee.
+        #[arg(long)]
+        all: bool,
+        /// Print the quote only.
+        #[arg(long)]
+        quote_only: bool,
+    },
+    /// Test only (the release-0.1 smoke): fund the first Platform address
+    /// from the Core balance with an asset lock of `duffs`.
+    Fund {
+        #[arg(long)]
+        duffs: u64,
+    },
+}
+
+/// What `platform-addr fund`'s Spend grant allows above the lock: the
+/// asset lock transaction's fee.
+const FUND_FEE_ALLOWANCE: u64 = 100_000;
+
+#[derive(Subcommand)]
 pub enum InviteCmd {
     /// Claim an invitation read from stdin: stash it, quote, authorize and
     /// start the registration it funds. The link stays stashed (also with
@@ -804,6 +846,7 @@ fn credits_params(e: &CreditsError) -> Value {
         CreditsError::TopUpPending { txid } => json!({"txid": txid}),
         CreditsError::WithdrawalOutOfRange { min, max } => json!({"min": min, "max": max}),
         CreditsError::WithdrawalLanded { artifact } => json!({"artifact": artifact}),
+        CreditsError::MovePending { id } => json!({"id": id}),
         CreditsError::Platform(p) => platform_params(p),
     }
 }
@@ -1249,7 +1292,8 @@ fn common(cmd: &mut DashPayCommand) -> &mut Common {
         | DashPayCommand::Contact { common, .. }
         | DashPayCommand::PayContact { common, .. }
         | DashPayCommand::Profile { common, .. }
-        | DashPayCommand::Invite { common, .. } => common,
+        | DashPayCommand::Invite { common, .. }
+        | DashPayCommand::PlatformAddr { common, .. } => common,
     }
 }
 
@@ -1450,6 +1494,51 @@ fn dispatch(ctx: &Ctx, cmd: DashPayCommand, stdin: &mut dyn Read) -> Result<Valu
         }
         DashPayCommand::Profile { cmd, .. } => profile_cmd(ctx, cmd),
         DashPayCommand::Invite { cmd, .. } => invite_cmd(ctx, cmd, stdin),
+        DashPayCommand::PlatformAddr { cmd, .. } => platform_addr_cmd(ctx, cmd),
+    }
+}
+
+fn platform_addr_cmd(ctx: &Ctx, cmd: PlatformAddrCmd) -> Result<Value, CliError> {
+    let dp = ctx.dashpay()?;
+    match cmd {
+        PlatformAddrCmd::Status => out(ctx.block_on(dp.platform_addresses())?),
+        PlatformAddrCmd::Activity => out(ctx.block_on(dp.platform_activity())?),
+        PlatformAddrCmd::Sync => out(ctx.block_on(dp.sync_platform_addresses())?),
+        PlatformAddrCmd::MoveToCore {
+            credits,
+            all: _,
+            quote_only,
+        } => {
+            let amount = credits.map_or(WithdrawAmount::All, |credits| WithdrawAmount::Credits {
+                credits,
+            });
+            let quote = ctx.block_on(dp.move_to_core_quote(amount))?;
+            if quote_only {
+                return Ok(json!({"quote": quote}));
+            }
+            let grant = ctx.platform_op(&dp, quote.grant)?;
+            let outcome = ctx.block_on(dp.move_to_core(amount, grant))?;
+            Ok(json!({"quote": quote, "outcome": outcome}))
+        }
+        PlatformAddrCmd::Fund { duffs } => {
+            let address = ctx.grant(
+                &dp,
+                GrantPurpose::PlatformOp {
+                    max_duffs: 0,
+                    max_credits: 1,
+                },
+            )?;
+            let spend = ctx.grant(
+                &dp,
+                GrantPurpose::Spend {
+                    max_duffs: duffs.saturating_add(FUND_FEE_ALLOWANCE),
+                },
+            )?;
+            let funded =
+                ctx.session
+                    .fund_platform_addresses_for_test(dp.wallet_id(), duffs, address, spend);
+            out(ctx.block_on(funded)?)
+        }
     }
 }
 
@@ -2193,6 +2282,7 @@ mod tests {
         "pay-contact",
         "profile",
         "invite",
+        "platform-addr",
     ];
 
     /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04, DP2-01,
@@ -2200,6 +2290,22 @@ mod tests {
     /// line each prints on the tests' wallet, which has no identity and no
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
+        // Release 0.1 (lane E2): the Platform addresses.
+        (
+            "platform-addr status",
+            r#"{"ok":true,"result":{"credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false}}"#,
+        ),
+        ("platform-addr activity", r#"{"ok":true,"result":[]}"#),
+        // Offline (DAPI refuses): the pass and the plan's proved read.
+        ("platform-addr sync", UNAVAILABLE),
+        (
+            "platform-addr move-to-core --credits 5 --quote-only",
+            UNAVAILABLE,
+        ),
+        (
+            "platform-addr fund --duffs 100000",
+            r#"{"ok":false,"error":{"code":"internal","message":"internal error: asset lock coin selection is short: available 0 duffs, required 100000 duffs","params":{"detail":"asset lock coin selection is short: available 0 duffs, required 100000 duffs"}}}"#,
+        ),
         // A new wallet, offline: SPV has not caught up (BL-153).
         (
             "dashpay status",
@@ -2368,7 +2474,7 @@ mod tests {
 
     /// A fresh wallet before `start_spv`: nothing ran, and quorum keys come
     /// from the trusted service (DEC-168's degraded mode, E0-10b).
-    const SYNC_STATUS: &str = r#"{"ok":true,"result":{"startup":"not_run","last_pass":null,"pending_contact_crypto":0,"loops":[{"sync_loop":"identity_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dash_pay_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dpns_sync","running":false,"last_run_at":null,"next_run_at":null}],"quorum_source":"trusted"}}"#;
+    const SYNC_STATUS: &str = r#"{"ok":true,"result":{"startup":"not_run","last_pass":null,"pending_contact_crypto":0,"loops":[{"sync_loop":"identity_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dash_pay_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dpns_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"platform_address_sync","running":false,"last_run_at":null,"next_run_at":null}],"quorum_source":"trusted"}}"#;
 
     /// `I` and `C` are not identity ids.
     const NOT_BASE58: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a Base58 identity id","params":{"detail":"not a Base58 identity id"}}}"#;
@@ -2381,6 +2487,8 @@ mod tests {
     const NO_FILE: &str = r#"{"ok":false,"error":{"code":"io","message":"io error: No such file or directory (os error 2)","params":{}}}"#;
     #[cfg(windows)]
     const NO_FILE: &str = r#"{"ok":false,"error":{"code":"io","message":"io error: The system cannot find the path specified. (os error 3)","params":{}}}"#;
+    /// `platform.unavailable`: an offline read.
+    const UNAVAILABLE: &str = r#"{"ok":false,"error":{"code":"platform.unavailable","message":"platform unavailable","params":{}}}"#;
     /// `avatar.fetch_failed` (DP4-02).
     const FETCH_FAILED: &str = r#"{"ok":false,"error":{"code":"avatar.fetch_failed","message":"avatar fetch failed","params":{}}}"#;
 
@@ -2396,6 +2504,17 @@ mod tests {
     /// that fills in a body moves its rows on to the next stub, or gives
     /// the row its line in [`IMPLEMENTED`].
     const TABLE: &[(&str, &str)] = &[
+        ("platform-addr status", "DashPay.platform_addresses"),
+        ("platform-addr activity", "DashPay.platform_activity"),
+        ("platform-addr sync", "DashPay.sync_platform_addresses"),
+        (
+            "platform-addr move-to-core --credits 5 --quote-only",
+            "DashPay.move_to_core_quote",
+        ),
+        (
+            "platform-addr fund --duffs 100000",
+            "NetworkSession.fund_platform_addresses_for_test",
+        ),
         ("dashpay status", "DashPay.status"),
         ("dashpay sync", "DashPay.sync_now"),
         ("dashpay sync-status", "DashPay.sync_status"),

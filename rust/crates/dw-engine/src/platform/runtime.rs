@@ -26,6 +26,11 @@ const DASHPAY_HIDDEN: Duration = Duration::from_secs(60);
 /// contests have their watch (`contest_watch.rs`).
 const MARKETPLACE: Duration = Duration::from_secs(600);
 const MARKETPLACE_ENDING: Duration = Duration::from_secs(60);
+/// The Platform-address balance pass (release 0.1): a window showing it,
+/// none (the library's default is 15 s; a pass is a proof query per
+/// address-tree branch).
+const PLATFORM_ADDRESSES_VISIBLE: Duration = Duration::from_secs(60);
+const PLATFORM_ADDRESSES_HIDDEN: Duration = Duration::from_secs(300);
 
 /// How long a stop or close waits for the bring-up's blocking vault work (a
 /// keyring read) after cancelling it. A read that takes longer is stuck, for
@@ -694,6 +699,7 @@ impl NetworkSession {
                 next_run_at: last.filter(|_| running).map(|t| t + every.as_secs()),
             };
         let (identity, dashpay, dpns) = (m.identity_sync(), m.dashpay_sync(), m.dpns_sync());
+        let addresses = m.platform_address_sync();
         Ok(vec![
             status(
                 SyncLoop::IdentitySync,
@@ -712,6 +718,12 @@ impl NetworkSession {
                 dpns.is_running(),
                 dpns.last_sync_unix_seconds(),
                 dpns.interval(),
+            ),
+            status(
+                SyncLoop::PlatformAddressSync,
+                addresses.is_running(),
+                addresses.last_sync_unix_seconds(),
+                addresses.interval(),
             ),
         ])
     }
@@ -767,5 +779,12 @@ impl NetworkSession {
         } else {
             MARKETPLACE
         });
+        manager
+            .platform_address_sync()
+            .set_interval(if c.window_visible {
+                PLATFORM_ADDRESSES_VISIBLE
+            } else {
+                PLATFORM_ADDRESSES_HIDDEN
+            });
     }
 }

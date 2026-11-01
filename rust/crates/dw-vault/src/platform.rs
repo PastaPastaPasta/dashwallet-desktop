@@ -138,6 +138,57 @@ impl VaultSigner {
         })?
     }
 
+    fn require_platform_address(&self, path: &DerivationPath) -> Result<(), SignerError> {
+        require(
+            paths::is_platform_payment_address(path, self.network()),
+            path,
+        )
+    }
+
+    /// Whether the DIP-17 payment key at `path` is the one whose HASH160 is
+    /// the P2PKH Platform address `hash`.
+    pub fn platform_address_matches(
+        &self,
+        path: &DerivationPath,
+        hash: &[u8; 20],
+    ) -> Result<bool, SignerError> {
+        self.require_platform_address(path)?;
+        self.with_key(path, KeyUse::PublicKey, |x| {
+            key_data_matches(
+                &PublicKey::from_secret_key(&x.private_key).serialize(),
+                hash,
+            )
+        })
+    }
+
+    /// Signs `data` with the DIP-17 payment key at `path`, once its HASH160
+    /// is shown to be the P2PKH Platform address `hash`: the same 65-byte
+    /// compact recoverable signature over double-SHA256 as
+    /// [`Self::sign_identity`] (dpp's `AddressWitness::P2pkh` carries it).
+    /// Another key is [`SignerError::KeyMismatch`] and nothing is signed.
+    pub fn sign_platform_address(
+        &self,
+        path: &DerivationPath,
+        hash: &[u8; 20],
+        data: &[u8],
+    ) -> Result<[u8; 65], SignerError> {
+        self.require_platform_address(path)?;
+        let digest: [u8; 32] = double_sha(data)
+            .try_into()
+            .map_err(|_| SignerError::Derivation("digest length".into()))?;
+        self.with_key(path, KeyUse::Sign, |x| {
+            let public = PublicKey::from_secret_key(&x.private_key).serialize();
+            if !key_data_matches(&public, hash) {
+                return Err(SignerError::KeyMismatch(path.to_string()));
+            }
+            let sig = RecoverableSignature::sign_ecdsa_recoverable(
+                Message::from_digest(digest),
+                &x.private_key,
+            );
+            Ok(MessageSignature::new(sig, true).serialize())
+        })?
+    }
+
     /// DIP-15 ECDH between the identity key at `path` (an encryption or
     /// decryption key) and `peer`: `SHA256((y&1|2) ‖ x)` of the shared
     /// point (as `platform_encryption::derive_shared_key_ecdh`).

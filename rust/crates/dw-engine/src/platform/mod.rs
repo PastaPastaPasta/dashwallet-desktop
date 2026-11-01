@@ -54,6 +54,7 @@ mod payments;
 #[cfg(test)]
 mod payments_tests;
 mod platform_addresses;
+mod platform_moves;
 mod private_details;
 #[cfg(test)]
 mod private_details_tests;
@@ -141,7 +142,10 @@ pub use registration::{
     RegistrationInvitation, RegistrationPhase, RegistrationQuote, RegistrationRequest,
     RegistrationStatus, RegistrationWait,
 };
-pub use signers::{CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultScanKey};
+pub use signers::{
+    CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultPlatformAddressSigner,
+    VaultScanKey,
+};
 pub use startup::{
     DashPayStatus, DashPaySyncStatus, NoIdentityReason, QuorumSource, StartupStatus, SyncLoop,
     SyncLoopStatus, SyncPassReport,

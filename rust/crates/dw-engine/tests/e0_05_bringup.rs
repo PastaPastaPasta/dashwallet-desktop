@@ -266,7 +266,8 @@ fn start_spv_returns_at_once_and_spv_starts_after_the_bring_up() {
         [
             SyncLoop::IdentitySync,
             SyncLoop::DashPaySync,
-            SyncLoop::DpnsSync
+            SyncLoop::DpnsSync,
+            SyncLoop::PlatformAddressSync,
         ]
     );
     f.session.dashpay_sync_soon().unwrap();

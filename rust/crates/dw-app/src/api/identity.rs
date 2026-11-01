@@ -40,6 +40,10 @@ use crate::state::parse_wallet_id;
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     (
+        "NetworkSession::fund_platform_addresses_for_test",
+        "test only: dwcli's testnet smoke funds a Platform address; the 0.1 app has no receive or fund path",
+    ),
+    (
         "NetworkSession::dashpay",
         "internal: every DashPay command obtains it via state.dashpay",
     ),

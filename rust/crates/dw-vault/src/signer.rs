@@ -68,6 +68,13 @@ pub enum SignerScope {
     /// cannot see the debit, so the engine checks it before the transaction
     /// leaves the process (E0-04 design §3.4, §4.2).
     PlatformFunding { max_duffs: u64 },
+    /// Platform-address spends (release 0.1, "Move to Dash wallet"):
+    /// signatures and public keys (no chain codes) of the DIP-17 payment
+    /// address keys `m/9'/coin'/17'/account'/key_class'/index` only. Like
+    /// `PlatformIdentity`, the vault signs state-transition bytes and cannot
+    /// see what they spend; the engine bounds the spend by the grant's
+    /// credits before it signs.
+    PlatformAddress,
     /// Governance votes (MG-05 §3, D1): the keychain voting keys
     /// `m/9'/coin'/3'/1'/i` and the `voting` key attached to a tracked
     /// masternode, for [`KeyUse::Vote`] only, which no [`VaultSigner`]
@@ -174,6 +181,9 @@ impl SignerScope {
                 KeyUse::ExtendedPublicKey => paths::is_identity_top_up_account(path, network),
                 _ => false,
             },
+            SignerScope::PlatformAddress => {
+                sign_or_public_key && paths::is_platform_payment_address(path, network)
+            }
             SignerScope::MasternodeVoting => {
                 key_use == KeyUse::Vote && paths::is_voting_key(path, network)
             }
@@ -672,6 +682,40 @@ mod tests {
         }
     }
 
+    /// Release 0.1: a Platform-address signer reaches the DIP-17 payment
+    /// keys and nothing else, and no other Platform scope reaches them.
+    #[test]
+    fn platform_address_signs_payment_address_keys_only() {
+        let s = SignerScope::PlatformAddress;
+        for ok in ["m/9'/1'/17'/0'/0'/0", "m/9'/1'/17'/2'/1'/19"] {
+            assert_eq!(uses(s, ok), vec![KeyUse::Sign, KeyUse::PublicKey], "{ok}");
+        }
+        for other in [
+            "m/9'/5'/17'/0'/0'/0",
+            "m/9'/1'/17'/0'/0'/0'",
+            "m/9'/1'/17'/0'/0/0",
+            "m/9'/1'/17'/0'/0'",
+            "m/9'/1'/17'/0'/0'/0/1",
+            "m/9'/1'/5'/0'/0'/0'/0'",
+            "m/9'/1'/5'/1'/0",
+            "m/44'/1'/0'/0/0",
+            "m",
+        ] {
+            assert!(uses(s, other).is_empty(), "{other}");
+        }
+        for other in [
+            SignerScope::CoinJoinOnly,
+            SignerScope::CoinJoinFunding,
+            SignerScope::PlatformIdentity,
+            SignerScope::DashPayCrypto,
+            SignerScope::PlatformFunding { max_duffs: 1 },
+            SignerScope::MasternodeVoting,
+            SignerScope::MasternodeOwner,
+        ] {
+            assert!(uses(other, "m/9'/1'/17'/0'/0'/0").is_empty(), "{other:?}");
+        }
+    }
+
     /// A voting key is reached for votes only (MG-05 D1), and no other scope
     /// but `Full` reaches it at all.
     #[test]
@@ -697,6 +741,7 @@ mod tests {
             SignerScope::PlatformIdentity,
             SignerScope::DashPayCrypto,
             SignerScope::PlatformFunding { max_duffs: 1 },
+            SignerScope::PlatformAddress,
             SignerScope::MasternodeOwner,
         ] {
             assert!(uses(other, "m/9'/1'/3'/1'/0").is_empty(), "{other:?}");
@@ -748,6 +793,7 @@ mod tests {
             SignerScope::PlatformIdentity,
             SignerScope::DashPayCrypto,
             SignerScope::PlatformFunding { max_duffs: 1 },
+            SignerScope::PlatformAddress,
             SignerScope::MasternodeVoting,
             SignerScope::Full,
         ] {

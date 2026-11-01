@@ -20,7 +20,7 @@ use key_wallet::dip9::{
     FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_AUTHENTICATION,
     FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_INVITATIONS,
     FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_REGISTRATION,
-    FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP,
+    FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP, FEATURE_PURPOSE_PLATFORM_PAYMENT,
 };
 
 /// BIP44 purpose.
@@ -239,6 +239,18 @@ pub fn is_asset_lock_credit_key(path: &DerivationPath, network: Network) -> bool
         }
         _ => false,
     }
+}
+
+/// A DIP-17 Platform payment address key
+/// `m/9'/coin'/17'/account'/key_class'/index` (key-wallet
+/// `AccountType::PlatformPayment`, whose pool appends a non-hardened index).
+pub fn is_platform_payment_address(path: &DerivationPath, network: Network) -> bool {
+    let p: &[ChildNumber] = path.as_ref();
+    p.len() == 6
+        && has_dip9_feature(p, network, FEATURE_PURPOSE_PLATFORM_PAYMENT)
+        && hardened_index(&p[3]).is_some()
+        && hardened_index(&p[4]).is_some()
+        && is_normal(&p[5])
 }
 
 /// The top-up account of one identity, `m/9'/coin'/5'/2'/identity'`

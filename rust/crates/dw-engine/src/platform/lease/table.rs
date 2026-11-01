@@ -70,6 +70,8 @@ pub(crate) struct Signers {
     pub(crate) masternode: Option<VaultSigner>,
     /// The vote signer (MG-05 §3): no `VaultSigner`, so no transaction.
     pub(crate) vote: Option<VoteSigner>,
+    /// `PlatformAddress`: "Move to Dash wallet"'s DIP-17 payment keys.
+    pub(crate) platform_address: Option<VaultSigner>,
 }
 
 /// What a redemption produced (§4.1 step 2): the caps per purpose, the one
@@ -940,6 +942,17 @@ impl Lease {
         let signer = self.signer(BudgetPurpose::Credits, |s| s.identity.as_ref(), budget)?;
         VaultIdentitySigner::new(signer, identity_indices.iter().copied())
             .map_err(|_| LeaseError::Vault("identity signer scope"))
+    }
+
+    /// The Platform-address signer a call's permit hands out
+    /// (`PlatformAddress`, a `PlatformAddressMove` lease's only signer):
+    /// the permit's J step already charged the call's quote.
+    pub(crate) fn call_platform_address_signer(&self) -> Result<VaultSigner, LeaseError> {
+        self.signer(
+            BudgetPurpose::Credits,
+            |s| s.platform_address.as_ref(),
+            |e| e.credits.granted(),
+        )
     }
 
     /// The asset-lock funding signer (`PlatformFunding`, cap fixed at

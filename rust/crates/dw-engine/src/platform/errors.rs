@@ -501,6 +501,11 @@ pub enum CreditsError {
     /// spent.
     #[error("the earlier withdrawal {artifact} went through; this one does not")]
     WithdrawalLanded { artifact: String },
+    /// An earlier "Move to Dash wallet" of the wallet, `id`, is still
+    /// pending (release 0.1, m4 §2.12): its outcome is read first, so its
+    /// credits are not spent twice.
+    #[error("the move {id} is still pending")]
+    MovePending { id: String },
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -514,6 +519,7 @@ impl CreditsError {
             Self::TopUpPending { .. } => "credits.top_up_pending",
             Self::WithdrawalOutOfRange { .. } => "credits.withdrawal_out_of_range",
             Self::WithdrawalLanded { .. } => "credits.withdrawal_landed",
+            Self::MovePending { .. } => "credits.move_pending",
             Self::Platform(e) => e.code(),
         }
     }

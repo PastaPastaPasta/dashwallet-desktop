@@ -8,9 +8,10 @@
 use serde::{Deserialize, Serialize};
 
 use super::credits::WithdrawAmount;
-use super::dashpay::{DashPay, stub};
+use super::dashpay::DashPay;
 use super::errors::CreditsError;
 use super::flows::GrantRequest;
+use super::platform_moves;
 
 /// The wallet's Platform addresses (payment account 0), as the last sync
 /// pass left them; no network read.
@@ -118,19 +119,31 @@ pub struct MoveToCoreOutcome {
 impl DashPay {
     /// The Platform addresses' balance as the sync loop left it.
     pub async fn platform_addresses(&self) -> Result<PlatformAddressBalance, CreditsError> {
-        stub("DashPay.platform_addresses")
+        self.on_wallet(move |session, manager, wallet| async move {
+            Ok(platform_moves::balance(&manager, &wallet, session.vault.network()).await)
+        })
+        .await
     }
 
     /// The Platform addresses' activity, the newest first: the balance
     /// changes the sync passes saw and the moves this wallet made. Settles
     /// a pending move first when Platform can tell.
     pub async fn platform_activity(&self) -> Result<Vec<PlatformActivity>, CreditsError> {
-        stub("DashPay.platform_activity")
+        let wallet_id = self.wallet_id;
+        self.on_wallet(move |session, manager, wallet| async move {
+            platform_moves::activity(&session, &manager, &wallet, wallet_id).await
+        })
+        .await
     }
 
     /// Runs a sync pass of the Platform addresses now and waits for it.
     pub async fn sync_platform_addresses(&self) -> Result<PlatformAddressBalance, CreditsError> {
-        stub("DashPay.sync_platform_addresses")
+        let wallet_id = self.wallet_id;
+        self.on_wallet(move |session, manager, wallet| async move {
+            platform_moves::sync(&session, &manager, wallet_id).await?;
+            Ok(platform_moves::balance(&manager, &wallet, session.vault.network()).await)
+        })
+        .await
     }
 
     /// What moving `amount` of the Platform addresses' credits to the
@@ -139,8 +152,11 @@ impl DashPay {
         &self,
         amount: WithdrawAmount,
     ) -> Result<MoveToCoreQuote, CreditsError> {
-        let _ = amount;
-        stub("DashPay.move_to_core_quote")
+        let wallet_id = self.wallet_id;
+        self.on_wallet(move |session, manager, wallet| async move {
+            platform_moves::quote(&session, &manager, &wallet, wallet_id, amount).await
+        })
+        .await
     }
 
     /// Moves `amount` of the Platform addresses' credits to the wallet's
@@ -151,7 +167,11 @@ impl DashPay {
         amount: WithdrawAmount,
         grant: String,
     ) -> Result<MoveToCoreOutcome, CreditsError> {
-        let _ = (amount, grant);
-        stub("DashPay.move_to_core")
+        let wallet_id = self.wallet_id;
+        self.on_wallet(move |session, manager, wallet| async move {
+            platform_moves::move_to_core(&session, &manager, &wallet, wallet_id, amount, &grant)
+                .await
+        })
+        .await
     }
 }

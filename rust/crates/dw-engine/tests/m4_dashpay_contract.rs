@@ -133,6 +133,12 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.withdraw_quote",
     "DashPay.withdraw",
     "DashPay.withdrawals",
+    // Release 0.1 (lane E2): the Platform addresses.
+    "DashPay.platform_addresses",
+    "DashPay.platform_activity",
+    "DashPay.sync_platform_addresses",
+    "DashPay.move_to_core_quote",
+    "DashPay.move_to_core",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -215,6 +221,8 @@ const NOT_FACADE: &[&str] = &[
     "private_details_tests.rs",
     "profile_tests.rs",
     "profiles.rs",
+    "platform_moves.rs",
+    "platform_moves_tests.rs",
     "protocol.rs",
     "provenance.rs",
     "recovery.rs",
@@ -1036,6 +1044,7 @@ fn error_codes_match_the_contract() {
             CreditsError::WithdrawalLanded {
                 artifact: String::new(),
             },
+            CreditsError::MovePending { id: String::new() },
         ],
         CreditsError::code,
     );
@@ -1456,12 +1465,17 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }
 
-        // Release 0.1 (lane E2): the Platform addresses.
-        c.stub(dp.platform_addresses().await);
-        c.stub(dp.platform_activity().await);
-        c.stub(dp.sync_platform_addresses().await);
-        c.stub(dp.move_to_core_quote(WithdrawAmount::All).await);
-        c.stub(dp.move_to_core(WithdrawAmount::All, s()).await);
+        // Release 0.1 (lane E2): the Platform addresses refuse an unknown
+        // wallet.
+        for refused in [
+            dp.platform_addresses().await.map(drop),
+            dp.platform_activity().await.map(drop),
+            dp.sync_platform_addresses().await.map(drop),
+            dp.move_to_core_quote(WithdrawAmount::All).await.map(drop),
+            dp.move_to_core(WithdrawAmount::All, s()).await.map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
     });
 
     let mut want: BTreeSet<String> = facade_calls().into_keys().collect();

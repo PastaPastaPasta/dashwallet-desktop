@@ -781,7 +781,22 @@ impl EventHandler for SessionHub {
     }
 }
 
-impl PlatformEventHandler for SessionHub {}
+impl PlatformEventHandler for SessionHub {
+    /// A Platform-address pass (release 0.1, m4 §2.12): every wallet it
+    /// synced re-reads its balance and activity. A skipped pass (another in
+    /// flight) names no wallet.
+    fn on_platform_address_sync_completed(
+        &self,
+        summary: &platform_wallet::manager::platform_address_sync::PlatformAddressSyncSummary,
+    ) {
+        for (id, outcome) in &summary.wallet_results {
+            if outcome.is_ok() {
+                self.pump
+                    .mark_platform(WalletId(*id), [PlatformChange::PlatformAddresses]);
+            }
+        }
+    }
+}
 
 /// Delivers the hub's merged changes. Runs on the pump task, which the
 /// session stops before it shuts the manager down.
