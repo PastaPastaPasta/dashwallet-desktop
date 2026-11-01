@@ -1382,7 +1382,7 @@ fn common(cmd: &mut DashPayCommand) -> &mut Common {
         | DashPayCommand::PayContact { common, .. }
         | DashPayCommand::Profile { common, .. }
         | DashPayCommand::Invite { common, .. }
-        | DashPayCommand::PlatformAddr { common, .. } => common,
+        | DashPayCommand::PlatformAddr { common, .. }
         | DashPayCommand::Shielded { common, .. } => common,
     }
 }
