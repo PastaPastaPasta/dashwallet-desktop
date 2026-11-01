@@ -9,7 +9,12 @@
 # launch uses an empty private data dir and `--network regtest --no-platform` with an unreachable
 # DAPI address, so the app starts no mainnet or testnet sync and touches no network. It fails the
 # job if the process dies before the screenshot (test bar 7). Windows launches the installed app,
-# so the installer is exercised too.
+# so the installer is exercised too; macOS launches the app out of the staged dmg.
+# Only the Linux screenshot shows the app. On the hosted macOS and Windows runners the capture
+# APIs return a black screen or the runner console even though the window exists (checked on a
+# real Windows 11 VM: the same build renders), so there the check is "the process is alive after
+# 30 s" with the window title logged; real screenshots of those two come from a person at release
+# time.
 #
 # Bundles are staged under stable names, dash-wallet-<version>-<os-arch>.<ext>, and uploaded as
 # `dist-<os>`. The final job gathers them, writes SHA256SUMS (sha256sum format, file names only)
