@@ -2343,7 +2343,7 @@ impl Vault {
     /// [`Self::dashpay_crypto_signer`]). The state is read under the same
     /// lock that issues the signer, so an unlock for mixing in between is
     /// refused rather than served with the mixing-only key.
-    fn prompt_free_signer(
+    pub(crate) fn prompt_free_signer(
         &self,
         wallet: &WalletId,
         scope: SignerScope,

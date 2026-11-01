@@ -58,6 +58,7 @@ mod owner;
 pub mod paths;
 mod platform;
 mod shared;
+mod shielded;
 mod signer;
 mod types;
 mod vault;
@@ -69,6 +70,7 @@ pub use os_store::{KeyringOsStore, MemoryOsStore, OsSecretStore};
 pub use owner::OwnerKey;
 pub use paths::{is_bip44_path, is_coinjoin_path};
 pub use platform::{ContactInfoOpened, ContactInfoSealed, ScanKey};
+pub use shielded::{SHIELDED_ACCOUNT, ShieldedSpendKey};
 pub use signer::{SignerScope, VaultSigner, WalletSigner};
 pub use types::{
     AuthGrant, CREDITS_PER_DUFF, Clock, Credential, DEFAULT_GRANT_TTL_SECS,

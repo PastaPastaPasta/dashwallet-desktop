@@ -21,6 +21,9 @@ fault-inject = []
 # Same crypto stack (and exact versions) platform-wallet-storage's `secrets`
 # feature locks; the OS-store slot goes through its keyring backends.
 platform-wallet-storage = { workspace = true }
+# The Orchard key set of the shielded scopes (`shielded.rs`, 0.1 E1):
+# platform-wallet's own ZIP-32 derivation, so the keys are the library's.
+platform-wallet = { workspace = true }
 argon2 = { version = "=0.5.3", features = ["zeroize"] }
 chacha20poly1305 = "=0.10.1"
 getrandom = "=0.2.17"
