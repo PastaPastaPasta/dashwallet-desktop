@@ -110,6 +110,15 @@ struct PoolView {
     balances: HashMap<Address, u64>,
 }
 
+/// The first receiving address no transaction paid yet.
+fn current_receiving(view: &PoolView) -> Result<&PoolAddress, EngineError> {
+    view.addresses
+        .iter()
+        .filter(|a| a.chain == AddressChain::Receiving && !matches!(a.state, AddressState::Used))
+        .min_by_key(|a| a.index)
+        .ok_or(EngineError::GapLimit)
+}
+
 fn pool_addresses(pool: &AddressPool, chain: AddressChain) -> Vec<PoolAddress> {
     pool.addresses
         .values()
@@ -261,18 +270,36 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             let view = this.pool_view(wallet).await?;
-            let current = view
-                .addresses
-                .iter()
-                .filter(|a| {
-                    a.chain == AddressChain::Receiving && !matches!(a.state, AddressState::Used)
-                })
-                .min_by_key(|a| a.index)
-                .ok_or(EngineError::GapLimit)?;
+            let current = current_receiving(&view)?;
             let labels = this.address_labels(wallet).await?;
             Ok(this.address_info(current, &view, &labels, &this.tx_counts(&wallet)))
         })
         .await
+    }
+
+    /// [`Self::current_receive_address`]'s address alone, for a caller
+    /// already inside the session (release 0.1: "Move to Dash wallet" pays
+    /// it).
+    pub(crate) async fn current_receiving_address(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Address, EngineError> {
+        let view = self.pool_view(wallet).await?;
+        Ok(current_receiving(&view)?.address.clone())
+    }
+
+    /// Whether `address` is one of the wallet's BIP44 account 0 receiving
+    /// addresses (a quote's destination, release 0.1).
+    pub(crate) async fn is_receiving_address(
+        &self,
+        wallet: WalletId,
+        address: &Address,
+    ) -> Result<bool, EngineError> {
+        let view = self.pool_view(wallet).await?;
+        Ok(view
+            .addresses
+            .iter()
+            .any(|a| a.chain == AddressChain::Receiving && a.address == *address))
     }
 
     /// Issues a fresh receiving address: unused, not reserved by

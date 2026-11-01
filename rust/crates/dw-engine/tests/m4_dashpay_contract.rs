@@ -133,6 +133,12 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.withdraw_quote",
     "DashPay.withdraw",
     "DashPay.withdrawals",
+    // Release 0.1 (lane E2): the Platform addresses.
+    "DashPay.platform_addresses",
+    "DashPay.platform_activity",
+    "DashPay.sync_platform_addresses",
+    "DashPay.move_to_core_quote",
+    "DashPay.move_to_core",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -148,6 +154,7 @@ const FACADE: &[&str] = &[
     "names.rs",
     "notifications.rs",
     "payments.rs",
+    "platform_addresses.rs",
     "profile.rs",
     "registration.rs",
     "startup.rs",
@@ -173,7 +180,8 @@ const FACADE: &[&str] = &[
 /// pipeline's guard, decoder, cache and tests (DP4-02), the mobile
 /// wallets' dHash (DP4-03 D27), the Identities page's reads with their
 /// tests (DP6-01), the withdrawal with its network seam and tests (DP6-02),
-/// and the invitation checks with their tests (DP5-02).
+/// and the invitation checks with their tests (DP5-02), and the network's
+/// protocol version (release 0.1).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -201,6 +209,8 @@ const NOT_FACADE: &[&str] = &[
     "journal_tests.rs",
     "keys_policy.rs",
     "lease",
+    "lock_inputs.rs",
+    "lock_inputs_tests.rs",
     "mod.rs",
     "money_gate.rs",
     "money_gate_tests.rs",
@@ -213,6 +223,9 @@ const NOT_FACADE: &[&str] = &[
     "private_details_tests.rs",
     "profile_tests.rs",
     "profiles.rs",
+    "platform_moves.rs",
+    "platform_moves_tests.rs",
+    "protocol.rs",
     "provenance.rs",
     "recovery.rs",
     "recovery_tests.rs",
@@ -1033,6 +1046,7 @@ fn error_codes_match_the_contract() {
             CreditsError::WithdrawalLanded {
                 artifact: String::new(),
             },
+            CreditsError::MovePending { id: String::new() },
         ],
         CreditsError::code,
     );
@@ -1449,6 +1463,20 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
                 .await
                 .map(drop),
             dp.withdrawals(s()).await.map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
+
+        // Release 0.1 (lane E2): the Platform addresses refuse an unknown
+        // wallet.
+        for refused in [
+            dp.platform_addresses().await.map(drop),
+            dp.platform_activity().await.map(drop),
+            dp.sync_platform_addresses().await.map(drop),
+            dp.move_to_core_quote(WithdrawAmount::All).await.map(drop),
+            dp.move_to_core(WithdrawAmount::All, s(), s())
+                .await
+                .map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }

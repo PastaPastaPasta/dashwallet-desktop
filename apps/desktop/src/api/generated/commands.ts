@@ -22,6 +22,7 @@ import type { BackupSummary } from "./BackupSummary";
 import type { Balances } from "./Balances";
 import type { BroadcastOutcome } from "./BroadcastOutcome";
 import type { ChangePolicy } from "./ChangePolicy";
+import type { ChosenNetwork } from "./ChosenNetwork";
 import type { CoinJoinLimits } from "./CoinJoinLimits";
 import type { CoinJoinRecoveryReport } from "./CoinJoinRecoveryReport";
 import type { CoinJoinSettings } from "./CoinJoinSettings";
@@ -93,11 +94,14 @@ import type { MixedCoinsSweepPlan } from "./MixedCoinsSweepPlan";
 import type { MixedCoinsSweepResult } from "./MixedCoinsSweepResult";
 import type { MnemonicCheck } from "./MnemonicCheck";
 import type { MnemonicLanguageName } from "./MnemonicLanguageName";
+import type { MoveToCoreOutcome } from "./MoveToCoreOutcome";
+import type { MoveToCoreQuote } from "./MoveToCoreQuote";
 import type { MyProposal } from "./MyProposal";
 import type { NameAvailability } from "./NameAvailability";
 import type { NameChoice } from "./NameChoice";
 import type { NameOutcome } from "./NameOutcome";
 import type { NameVoteCast } from "./NameVoteCast";
+import type { NetworkChoiceView } from "./NetworkChoiceView";
 import type { NetworkData } from "./NetworkData";
 import type { NetworkInfo } from "./NetworkInfo";
 import type { NodeSummary } from "./NodeSummary";
@@ -108,6 +112,8 @@ import type { OutPoint } from "./OutPoint";
 import type { PaymentLockInfo } from "./PaymentLockInfo";
 import type { PeerSummary } from "./PeerSummary";
 import type { PendingTopUp } from "./PendingTopUp";
+import type { PlatformActivity } from "./PlatformActivity";
+import type { PlatformAddressBalance } from "./PlatformAddressBalance";
 import type { PlatformPacing } from "./PlatformPacing";
 import type { PlatformReachability } from "./PlatformReachability";
 import type { PreparedTxHandle } from "./PreparedTxHandle";
@@ -239,8 +245,9 @@ export function probeUnlisted(): Promise<string> {
  * active one, opening it if needed and closing the network that was
  * active, with its draft handles. When it is already active, the open
  * session is kept and `settings` are ignored. Opening the launch
- * network of a `--sync` launch starts SPV; a failed start leaves the
- * network open, readable offline.
+ * network starts SPV on mainnet and testnet unless the app was launched
+ * with `--no-sync`, and on another network with `--sync`; a failed
+ * start leaves the network open, readable offline.
  */
 export function openNetwork(network: string | null, settings: SessionSettings | null): Promise<OpenedNetwork> {
   return invoke<OpenedNetwork>("open_network", { network, settings });
@@ -259,6 +266,22 @@ export function closeNetwork(): Promise<boolean> {
  */
 export function activeNetwork(): Promise<NetworkInfo | null> {
   return invoke<NetworkInfo | null>("active_network");
+}
+
+/**
+ * The saved network choice (mainnet or testnet) and whether the app
+ * must restart to open it.
+ */
+export function getNetworkChoice(): Promise<NetworkChoiceView> {
+  return invoke<NetworkChoiceView>("get_network_choice");
+}
+
+/**
+ * Saves the network the app opens from the next start (onboarding,
+ * Settings); the running session is left as it is.
+ */
+export function setNetworkChoice(network: ChosenNetwork): Promise<NetworkChoiceView> {
+  return invoke<NetworkChoiceView>("set_network_choice", { network });
 }
 
 /**
@@ -1658,6 +1681,42 @@ export function creditsWithdrawals(walletId: string, identity: string): Promise<
 }
 
 /**
+ * The Platform addresses' balance as the last sync pass left them.
+ */
+export function platformAddresses(walletId: string): Promise<PlatformAddressBalance> {
+  return invoke<PlatformAddressBalance>("platform_addresses", { walletId });
+}
+
+/**
+ * The Platform addresses' activity, the newest first.
+ */
+export function platformActivity(walletId: string): Promise<Array<PlatformActivity>> {
+  return invoke<Array<PlatformActivity>>("platform_activity", { walletId });
+}
+
+/**
+ * Runs a Platform-address sync pass now and returns the balance after.
+ */
+export function platformAddressesSync(walletId: string): Promise<PlatformAddressBalance> {
+  return invoke<PlatformAddressBalance>("platform_addresses_sync", { walletId });
+}
+
+/**
+ * What "Move to Dash wallet" of `amount` takes and pays out.
+ */
+export function platformMoveToCoreQuote(walletId: string, amount: WithdrawAmount): Promise<MoveToCoreQuote> {
+  return invoke<MoveToCoreQuote>("platform_move_to_core_quote", { walletId, amount });
+}
+
+/**
+ * Moves `amount` of the Platform addresses' credits to `to` (the
+ * quote's: one of the wallet's Core receiving addresses) under `grant`.
+ */
+export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, grant: string): Promise<MoveToCoreOutcome> {
+  return invoke<MoveToCoreOutcome>("platform_move_to_core", { walletId, amount, to, grant });
+}
+
+/**
  * The caps of the grant `action` needs.
  */
 export function grantRequest(walletId: string, identity: string, action: GrantAction): Promise<GrantRequest> {
@@ -2404,6 +2463,8 @@ export type CommandArgs = {
   open_network: { network: string | null; settings: SessionSettings | null };
   close_network: {  };
   active_network: {  };
+  get_network_choice: {  };
+  set_network_choice: { network: ChosenNetwork };
   existing_networks: {  };
   lock_status: {  };
   unlock: { passphrase: string };
@@ -2578,6 +2639,11 @@ export type CommandArgs = {
   credits_withdraw_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
   credits_withdrawals: { walletId: string; identity: string };
+  platform_addresses: { walletId: string };
+  platform_activity: { walletId: string };
+  platform_addresses_sync: { walletId: string };
+  platform_move_to_core_quote: { walletId: string; amount: WithdrawAmount };
+  platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; grant: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
   dispatch_status: { walletId: string; artifact: string };
   resolve_stuck_funding: { walletId: string; step: string; grant: string };
@@ -2679,6 +2745,8 @@ export type CommandResults = {
   open_network: OpenedNetwork;
   close_network: boolean;
   active_network: NetworkInfo | null;
+  get_network_choice: NetworkChoiceView;
+  set_network_choice: NetworkChoiceView;
   existing_networks: Array<NetworkData>;
   lock_status: LockStatus;
   unlock: LockStatus;
@@ -2853,6 +2921,11 @@ export type CommandResults = {
   credits_withdraw_quote: WithdrawQuote;
   credits_withdraw: WithdrawOutcome;
   credits_withdrawals: Array<Withdrawal>;
+  platform_addresses: PlatformAddressBalance;
+  platform_activity: Array<PlatformActivity>;
+  platform_addresses_sync: PlatformAddressBalance;
+  platform_move_to_core_quote: MoveToCoreQuote;
+  platform_move_to_core: MoveToCoreOutcome;
   grant_request: GrantRequest;
   dispatch_status: DispatchStateName | null;
   resolve_stuck_funding: BroadcastOutcome;
@@ -2956,6 +3029,8 @@ export const COMMANDS: Record<CommandName, string> = {
   open_network: "network",
   close_network: "network",
   active_network: "network",
+  get_network_choice: "network",
+  set_network_choice: "network",
   existing_networks: "network",
   lock_status: "vault",
   unlock: "vault",
@@ -3130,6 +3205,11 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_withdraw_quote: "identity",
   credits_withdraw: "identity",
   credits_withdrawals: "identity",
+  platform_addresses: "identity",
+  platform_activity: "identity",
+  platform_addresses_sync: "identity",
+  platform_move_to_core_quote: "identity",
+  platform_move_to_core: "identity",
   grant_request: "identity",
   dispatch_status: "identity",
   resolve_stuck_funding: "identity",
@@ -3440,6 +3520,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.top_up_pending",
   "credits.withdrawal_out_of_range",
   "credits.withdrawal_landed",
+  "credits.move_pending",
   "governance.sync_disabled",
   "governance.not_synced",
   "governance.proposal_not_found",

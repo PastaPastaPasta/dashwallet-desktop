@@ -220,6 +220,10 @@ impl RegistrationLib for Hooked {
         self.fake.name_credits(label).await
     }
 
+    async fn platform_version(&self) -> &'static dpp::version::PlatformVersion {
+        self.fake.platform_version().await
+    }
+
     async fn credit_balance(&self, identity: &str) -> Result<Option<u64>, PlatformError> {
         self.fake.credit_balance(identity).await
     }

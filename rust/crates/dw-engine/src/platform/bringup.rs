@@ -427,6 +427,7 @@ impl NetworkSession {
             manager.identity_sync_arc(),
             manager.dashpay_sync_arc(),
             manager.dpns_sync_arc(),
+            manager.platform_address_sync_arc(),
         );
         // `start` reaps a previous loop thread for up to a second and needs
         // the runtime's context; the blocking pool has both.
@@ -434,6 +435,7 @@ impl NetworkSession {
             loops.0.start();
             loops.1.start();
             loops.2.start();
+            loops.3.start();
         })
         .await
         {
@@ -949,19 +951,21 @@ pub(super) fn read_bring_up_markers(
     ))
 }
 
-/// Quiesces the three loops; the names of those whose pass did not drain
+/// Quiesces the four loops; the names of those whose pass did not drain
 /// within the library's budget (review r1 M1: the library asks its caller to
 /// fail closed then).
 async fn undrained_loops(manager: &Manager) -> Vec<&'static str> {
-    let (identity, dashpay, dpns) = tokio::join!(
+    let (identity, dashpay, dpns, addresses) = tokio::join!(
         manager.identity_sync().quiesce(),
         manager.dashpay_sync().quiesce(),
         manager.dpns_sync().quiesce(),
+        manager.platform_address_sync().quiesce(),
     );
     [
         ("identity_sync", identity),
         ("dashpay_sync", dashpay),
         ("dpns_sync", dpns),
+        ("platform_address_sync", addresses),
     ]
     .into_iter()
     .filter_map(|(name, drained)| (!drained).then_some(name))

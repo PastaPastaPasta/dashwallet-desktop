@@ -41,6 +41,7 @@ pub(crate) mod journal;
 mod journal_tests;
 pub mod keys_policy;
 pub mod lease;
+mod lock_inputs;
 pub(crate) mod money_gate;
 #[cfg(test)]
 pub(crate) mod money_gate_tests;
@@ -53,6 +54,8 @@ pub(crate) mod payment_locks;
 mod payments;
 #[cfg(test)]
 mod payments_tests;
+mod platform_addresses;
+mod platform_moves;
 mod private_details;
 #[cfg(test)]
 mod private_details_tests;
@@ -60,6 +63,7 @@ mod profile;
 #[cfg(test)]
 mod profile_tests;
 mod profiles;
+mod protocol;
 pub(crate) mod provenance;
 mod recovery;
 #[cfg(test)]
@@ -126,6 +130,10 @@ pub use payments::{
     ActivityDirection, ActivityFilter, ActivityItem, ActivityPage, Counterparty, LockResolution,
     PaymentLock,
 };
+pub use platform_addresses::{
+    MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformActivityKind,
+    PlatformActivityState, PlatformAddressBalance, PlatformAddressRow,
+};
 pub use profile::{
     AvatarCandidate, AvatarChange, AvatarImage, AvatarSize, AvatarSource, CropRect, Profile,
     ProfileBaseline, ProfileEdit, ProfileField, ProfileLimits,
@@ -135,7 +143,10 @@ pub use registration::{
     RegistrationInvitation, RegistrationPhase, RegistrationQuote, RegistrationRequest,
     RegistrationStatus, RegistrationWait,
 };
-pub use signers::{CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultScanKey};
+pub use signers::{
+    CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultPlatformAddressSigner,
+    VaultScanKey,
+};
 pub use startup::{
     DashPayStatus, DashPaySyncStatus, NoIdentityReason, QuorumSource, StartupStatus, SyncLoop,
     SyncLoopStatus, SyncPassReport,

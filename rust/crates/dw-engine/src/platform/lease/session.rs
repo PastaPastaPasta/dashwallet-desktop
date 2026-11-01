@@ -42,7 +42,8 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         | FlowKind::ContactRequest
         | FlowKind::Accept
         | FlowKind::PrivateDetails
-        | FlowKind::EnableDashPayKeys => &[GrantKind::PlatformOp],
+        | FlowKind::EnableDashPayKeys
+        | FlowKind::PlatformAddressMove => &[GrantKind::PlatformOp],
     }
 }
 
@@ -127,6 +128,17 @@ pub(crate) fn issue(
             None => vault.platform_signer(&wallet.0, token, scope),
         };
         match token.purpose() {
+            GrantPurpose::PlatformOp { max_credits, .. }
+                if flow == FlowKind::PlatformAddressMove =>
+            {
+                // "Move to Dash wallet" (release 0.1): the DIP-17 payment
+                // keys alone, no identity key and no contact crypto.
+                out.credits = max_credits;
+                if max_credits > 0 {
+                    out.signers.platform_address =
+                        Some(scoped(SignerScope::PlatformAddress).map_err(issuing)?);
+                }
+            }
             GrantPurpose::PlatformOp {
                 max_duffs,
                 max_credits,
