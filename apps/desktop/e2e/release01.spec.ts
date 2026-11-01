@@ -277,6 +277,28 @@ test.describe("Move to Dash wallet", () => {
     await expect(page.getByTestId("platform-card")).toHaveCount(0);
   });
 
+  test("a pending move that settles while Home is shown frees the card again", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("hero").waitFor();
+    await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "pending"));
+    await page.getByTestId("platform-move").click();
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
+    // Settled while the sheet is still open: it keeps showing the result.
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      const p = f.world.pending.platform!;
+      p.activity = p.activity.map((a) => (a.kind === "moveToCore" ? { ...a, state: "done" as const } : a));
+      p.addresses = [];
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "identities" } });
+    });
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
+    await page.getByTestId("platform-move-done").click();
+    await expect(page.getByTestId("platform-card")).toHaveCount(0);
+    await expect(page.getByTestId("platform-move-sheet")).toHaveCount(0);
+  });
+
   test("shows a refusal and can be closed", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("hero").waitFor();

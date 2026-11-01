@@ -101,18 +101,6 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
               </Fragment>
             );
           })}
-          {balances.immature > 0 && (
-            <>
-              <span className="breakdown-divider" aria-hidden="true" />
-              <BreakdownCell
-                title="Immature"
-                subtitle="Mining/masternode rewards maturing"
-                amount={fmt(balances.immature)}
-                unitName={unit}
-                testId="breakdown-immature"
-              />
-            </>
-          )}
         </div>
       )}
     </section>

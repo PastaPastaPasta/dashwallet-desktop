@@ -137,8 +137,9 @@ export function PlatformMoveCard({ walletId, network, platform }: { walletId: st
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
   const activity = usePlatformActivity(walletId);
-  // Activity settles a retained `pending` result.
-  useEffect(() => flow.settle(activity.data), [flow, activity.data]);
+  // Activity settles a retained `pending` result: when it changes, when a move turns pending (the
+  // rows read may already have shown it settled) and when the sheet closes.
+  useEffect(() => flow.settle(activity.data), [flow, activity.data, flow.pending, flow.open]);
   const sheet = <PlatformMoveSheet flow={flow} walletId={walletId} network={network} />;
   const funded = platform != null && platform > 0;
   // A move Platform has not confirmed: this session's result, or (after a restart) Activity's record.

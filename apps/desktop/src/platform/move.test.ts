@@ -68,6 +68,10 @@ describe("Move to Dash wallet", () => {
     await vi.waitFor(() => expect(flow.step).toBe("running"));
     answer({ ...OUTCOME, state: "pending" });
     await going;
+    // The sheet is open on the result: Activity settling it does not swap it for a new quote.
+    const settled = [{ id: OUTCOME.id, kind: "moveToCore", state: "done", credits: OUTCOME.credits, address: null, to: TO, expectedDuffs: OUTCOME.expectedDuffs, at: 1 }] as PlatformActivity[];
+    flow.settle(settled);
+    expect([flow.open, flow.step, flow.pending]).toEqual([true, "done", true]);
     flow.close();
     flow.begin();
     flow.close();

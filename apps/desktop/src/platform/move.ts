@@ -123,10 +123,12 @@ export class PlatformMoveFlow extends Model {
     return this.step === "done" && this.outcome?.state === "pending";
   }
 
-  /** Drops a retained `pending` result once `activity` has its move as `done` or `failed`. */
+  /** Drops a retained `pending` result once `activity` has its move as `done` or `failed`. An open
+   * sheet keeps showing it (a new quote would hide that the move went through): the caller asks
+   * again once it is closed. */
   settle(activity: readonly PlatformActivity[] | null | undefined) {
     const id = this.outcome?.id;
-    if (!this.pending || !activity || this.running) return;
+    if (!this.pending || !activity || this.running || this.open) return;
     const row = activity.find((a) => a.id === id);
     if (row && row.state !== "pending") {
       this.step = "confirm";
