@@ -5,7 +5,7 @@ import { createContext, useContext } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
 import { creditsToDuffs, type ShieldedSpendQuote, type ShieldedStatus, type ShieldQuote } from "./pending";
-import { feedSync, useShownSync } from "./syncDisplay";
+import { feedSync, rawSync, readTicket, useShownSync } from "./syncDisplay";
 import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRequest } from "./generated/HistoryRequest";
@@ -227,9 +227,11 @@ export function useSyncStatus() {
   const b = useBackend();
   const query = useQuery({
     queryKey: keys.sync,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
+      const ticket = readTicket(b);
       const raw = await b.syncStatus();
-      feedSync(b, raw);
+      // A reply that was superseded or cancelled is not a reading: the query keeps the newest one.
+      if (signal.aborted || !feedSync(b, raw, Date.now(), ticket)) return rawSync(b) ?? raw;
       return raw;
     },
   });

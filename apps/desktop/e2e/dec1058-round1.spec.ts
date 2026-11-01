@@ -108,6 +108,55 @@ test.describe("catch-up is not news", () => {
   });
 });
 
+test.describe("round 2: stale sync replies", () => {
+  const emitCurrent = (page: Page) => page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "sync", network: f.world.launch.network.dirName, status: f.world.sync }); })()`);
+  const readsOfSync = (page: Page) => page.evaluate(`window.__dwFixture.calls.filter((c) => c === "sync_status").length`) as Promise<number>;
+
+  test("an older caught-up reply released after a stall does not restore Synced, or catch-up news", async ({ page }) => {
+    await page.clock.install();
+    await open(page);
+    const bar = page.getByTestId("status-bar");
+    await expect(bar).toContainText("Synced");
+    const txid = (await page.evaluate(
+      `(() => { const w = window.__dwFixture.world.wallets[0]; return w.rows.find((x) => x.txType === "recvWithAddress" && x.amount > 0).txid; })()`,
+    )) as string;
+    const release = await page.evaluateHandle(`window.__dwFixture.hold("sync_status")`);
+    // A read starts while the engine says caught up, and its reply is held (IPC is slow).
+    const before = await readsOfSync(page);
+    await emitCurrent(page);
+    await expect.poll(() => readsOfSync(page)).toBeGreaterThan(before);
+    // Then the engine says one block behind, and 45 s later says it again (a stall reading).
+    await syncEvent(page, 1);
+    await page.clock.runFor(45_000);
+    await syncEvent(page, 1);
+    // The old reply arrives.
+    await release.evaluate((f) => (f as unknown as () => void)());
+    await page.clock.runFor(120_000);
+    await expect(bar).toContainText("Syncing");
+    await expect(bar).not.toContainText("Synced");
+    // And a catch-up batch is history, not news.
+    await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [${JSON.stringify(txid)}], count: 1, catchUp: true }); })()`);
+    await page.clock.runFor(500);
+    expect(await page.evaluate(`window.__dwFixture.calls.filter((c) => c === "tx_notices").length`)).toBe(0);
+    expect(await toastText(page)).toBe("");
+  });
+});
+
+test.describe("round 2: catch-up near the tip", () => {
+  test("a wallet that starts one block behind does not announce history", async ({ page }) => {
+    await open(page, "sync-one-behind");
+    await expect(page.getByTestId("status-bar")).toContainText("Syncing");
+    const txid = (await page.evaluate(
+      `(() => { const w = window.__dwFixture.world.wallets[0]; return w.rows.find((x) => x.txType === "recvWithAddress" && x.amount > 0).txid; })()`,
+    )) as string;
+    await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [${JSON.stringify(txid)}], count: 1, catchUp: true }); })()`);
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(`window.__dwFixture.calls.filter((c) => c === "tx_notices").length`)).toBe(0);
+    expect(await toastText(page)).toBe("");
+    await expect(page.getByTestId("toolbar-bell-badge")).toHaveCount(0);
+  });
+});
+
 test.describe("read marking", () => {
   test("the popover marks read only the rows it shows", async ({ page }) => {
     await open(page, "dashpay-registered");

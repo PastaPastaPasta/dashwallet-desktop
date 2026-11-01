@@ -27,12 +27,6 @@ export const SETTLE_BLOCKS = 3;
 /** And a reading that is not caught up for longer than this is not a new block, whatever its gap. */
 export const SETTLE_MS = 60_000;
 
-/** Whether the engine's own reading is caught up, or at most `SETTLE_BLOCKS` short of it: what a new
- * block looks like. Raw, with no hold: it says nothing of how long it has been so. */
-export function isNewBlock(raw: SyncStatus | undefined): boolean {
-  return !!raw && raw.running && (raw.caughtUp || within(raw, SETTLE_BLOCKS));
-}
-
 /** What `settleSync` remembers between readings. */
 export interface Settled {
   /** The last reading was caught up, or a new block that `settleSync` held at synced. */

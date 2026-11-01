@@ -9,17 +9,15 @@ import type { AppEvent } from "./generated/commands";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRows } from "./generated/HistoryRows";
 import type { PlatformChangeName } from "./generated/PlatformChangeName";
-import type { SyncStatus } from "./generated/SyncStatus";
 import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
 import { onTopUpSettled } from "../dashpay/topup";
 import { onWithdrawSettled } from "../dashpay/withdraw";
-import { isNewBlock } from "../format/sync";
 import { announceReceived } from "../payments/received";
 import { onMoveSettled } from "../platform/move";
 import { onShieldedSettled } from "../shielded/flow";
 import { keys } from "./queries";
-import { feedSync, rawSync } from "./syncDisplay";
+import { announceable, feedSync } from "./syncDisplay";
 
 /** DP1-09 D28: a status read while a sync pass held the wallet's state is `startupIncomplete` (the
  * engine's identity read was not live, so it proves nothing), and no Platform signal follows when
@@ -141,9 +139,10 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
     // A payment that arrives while the app is open is announced (toast, bell, Receive); a batch the
     // sync found on catching up is not news. The engine's `catchUp` is "SPV is not idle" at that
     // moment, which a payment found in a new block can be too: so it is news when the engine's own
-    // latest reading says caught up, or at most a few blocks short of it (`withinBlocks`). The
-    // smoothed display never decides this.
-    if (event.kind === "newTransactions" && (!event.catchUp || isNewBlock(rawSync(backend) ?? client.getQueryData<SyncStatus>(keys.sync)))) {
+    // latest reading says caught up, or a caught-up wallet is a few blocks short of it for a minute
+    // at most (`announceable`). A wallet that has not been caught up yet is catching up. The smoothed
+    // display never decides this.
+    if (event.kind === "newTransactions" && (!event.catchUp || announceable(backend))) {
       void announceReceived(backend, event.walletId, event.txids);
     }
     if (event.kind === "historyChanged" || (event.kind === "platform" && rereadsHistory(event.change.domain))) {

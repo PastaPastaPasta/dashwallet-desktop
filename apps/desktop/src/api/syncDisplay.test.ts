@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SETTLE_MS } from "../format/sync";
 import type { SyncStatus } from "./generated/SyncStatus";
-import { feedSync, rawSync, resetSync, shownSync } from "./syncDisplay";
+import { announceable, feedSync, rawSync, readTicket, resetSync, shownSync } from "./syncDisplay";
 
 const owner = {};
 const status = (caughtUp: boolean, behind = 0): SyncStatus => ({
@@ -46,5 +46,56 @@ describe("DEC1058_syncHoldExpires", () => {
     vi.setSystemTime(1000 + SETTLE_MS + 5000);
     vi.advanceTimersByTime(SETTLE_MS + 5000);
     expect(shownSync(owner)?.caughtUp).toBe(true);
+  });
+});
+
+describe("DEC1058_staleSyncReply", () => {
+  it("a read that started before an event is dropped when it answers, and the hold's timer stays", () => {
+    feedSync(owner, status(true), 0);
+    const ticket = readTicket(owner); // the read starts: its snapshot says caught up
+    const behind = status(false, 1);
+    expect(feedSync(owner, behind, 1000)).toBe(true); // an event: one block behind
+    expect(feedSync(owner, status(true), 2000, ticket)).toBe(false); // the old reply arrives
+    expect(rawSync(owner)).toBe(behind);
+    expect(shownSync(owner)?.caughtUp).toBe(true); // still the hold
+    vi.setSystemTime(1000 + SETTLE_MS);
+    vi.advanceTimersByTime(SETTLE_MS);
+    expect(shownSync(owner)?.caughtUp).toBe(false);
+  });
+
+  it("of two reads, the one that started later wins whichever answers first", () => {
+    const first = readTicket(owner);
+    const second = readTicket(owner);
+    const newer = status(false, 5);
+    expect(feedSync(owner, newer, 0, second)).toBe(true);
+    expect(feedSync(owner, status(true), 1, first)).toBe(false);
+    expect(rawSync(owner)).toBe(newer);
+  });
+
+  it("a read nothing overtook is applied", () => {
+    expect(feedSync(owner, status(true), 0, readTicket(owner))).toBe(true);
+    expect(rawSync(owner)?.caughtUp).toBe(true);
+  });
+});
+
+describe("DEC1058_announceable", () => {
+  it("is false before any reading, and for a wallet that starts one block behind", () => {
+    expect(announceable(owner, 0)).toBe(false);
+    feedSync(owner, status(false, 1), 0);
+    expect(announceable(owner, 1000)).toBe(false);
+  });
+
+  it("is true when caught up, and for a minute after a caught-up wallet is a block behind", () => {
+    feedSync(owner, status(true), 0);
+    expect(announceable(owner, 100)).toBe(true);
+    feedSync(owner, status(false, 1), 1000);
+    expect(announceable(owner, 1000 + SETTLE_MS - 1)).toBe(true);
+    expect(announceable(owner, 1000 + SETTLE_MS)).toBe(false);
+  });
+
+  it("is false when the wallet is far behind, even after being caught up", () => {
+    feedSync(owner, status(true), 0);
+    feedSync(owner, status(false, 5000), 1000);
+    expect(announceable(owner, 1100)).toBe(false);
   });
 });

@@ -594,6 +594,13 @@ const SCENARIOS = {
     w.pending.shielded!.active = false;
     return w;
   },
+  /** A wallet that starts one block short of the tip and has never been caught up. */
+  "sync-one-behind": (t) => {
+    const w = base(t);
+    const s = w.sync;
+    w.sync = { ...s, caughtUp: false, activePhase: "filters", phases: s.phases.map((p) => ({ ...p, currentHeight: p.targetHeight! - 1, done: false })) };
+    return w;
+  },
   /** Shielded is on and its account is not established yet: its actions wait and say why. */
   "shielded-syncing": (t) => {
     const w = base(t);
