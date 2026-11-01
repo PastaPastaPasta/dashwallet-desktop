@@ -20,7 +20,7 @@ import { CopyDashButton } from "../components/copy";
 import { useUi } from "../app/ui";
 import { useDisplay } from "../format/display";
 import { useHeldAddress } from "../payments/hold";
-import { useReceived } from "../payments/received";
+import { useLookupPending, useReceived } from "../payments/received";
 import { receivedText } from "./notifications/Received";
 import { shortAddress } from "../format/tx";
 import { Page } from "./Routes";
@@ -58,7 +58,7 @@ function AddressCard({ walletId, network }: { walletId: string; network: Network
   const [fresh, setFresh] = useState<AddressInfo | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   // A payment to the address on show is said first; the engine's next address follows (DEC-1058 #6).
-  const { shown, paid } = useHeldAddress(current.data, current.isSuccess && !current.isFetching, fresh, useReceived(walletId));
+  const { shown, paid } = useHeldAddress(current.data, current.isSuccess && !current.isFetching, fresh, useReceived(walletId), useLookupPending(walletId));
   const display = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
   // The QR carries the wallet's DashPay username as `user=` (DP3-03). The engine reads none

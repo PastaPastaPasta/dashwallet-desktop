@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TxNoticeRow } from "../api/generated/TxNoticeRow";
-import { announceReceived, isReceivedPayment, markReceivedRead, onReceived, recordReceived, resetReceived, unreadReceived } from "./received";
+import { announceReceived, lookupPending, LOOKUP_TIMEOUT_MS, isReceivedPayment, markReceivedRead, onReceived, recordReceived, resetReceived, unreadReceived } from "./received";
 
 const row = (over: Partial<TxNoticeRow> = {}): TxNoticeRow => ({
   txid: "aa".repeat(32),
@@ -42,7 +42,7 @@ describe("received payments (DEC-1058 #6)", () => {
     stop();
     expect(recordReceived("w1", [row({ txid: "cc".repeat(32) })])).toHaveLength(1);
     expect(seen).toHaveBeenCalledTimes(2);
-    markReceivedRead("w1");
+    markReceivedRead("w1", [batch[0].id]);
     expect(unreadReceived([{ ...batch[0], read: true }])).toBe(0);
   });
 
@@ -57,5 +57,50 @@ describe("received payments (DEC-1058 #6)", () => {
     await announceReceived({ txNotices: vi.fn().mockRejectedValue(new Error("x")) }, "w1", ["t"]);
     expect(seen).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+});
+
+describe("DEC1058_noticeLookup", () => {
+  it("is pending while the lookup is out, and not after a failure", async () => {
+    let answer!: (rows: TxNoticeRow[]) => void;
+    const txNotices = vi.fn().mockReturnValue(new Promise<TxNoticeRow[]>((r) => (answer = r)));
+    const done = announceReceived({ txNotices }, "w1", ["t"]);
+    expect(lookupPending("w1")).toBe(true);
+    expect(lookupPending("w2")).toBe(false);
+    answer([row()]);
+    await done;
+    expect(lookupPending("w1")).toBe(false);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await announceReceived({ txNotices: vi.fn().mockRejectedValue(new Error("x")) }, "w1", ["t"]);
+    expect(lookupPending("w1")).toBe(false);
+    warn.mockRestore();
+  });
+
+  it("stops being waited for after its timeout, and still records a late answer", async () => {
+    vi.useFakeTimers();
+    try {
+      let answer!: (rows: TxNoticeRow[]) => void;
+      const txNotices = vi.fn().mockReturnValue(new Promise<TxNoticeRow[]>((r) => (answer = r)));
+      const seen = vi.fn();
+      onReceived(seen);
+      const done = announceReceived({ txNotices }, "w1", ["t"]);
+      vi.advanceTimersByTime(LOOKUP_TIMEOUT_MS - 1);
+      expect(lookupPending("w1")).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(lookupPending("w1")).toBe(false);
+      answer([row()]);
+      await done;
+      expect(seen).toHaveBeenCalledTimes(1);
+      expect(lookupPending("w1")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("marks read only the ids it is given", () => {
+    recordReceived("w1", [row({ txid: "a1".repeat(32) }), row({ txid: "b2".repeat(32) })]);
+    markReceivedRead("w1", [`${"a1".repeat(32)}:0`]);
+    // The other is still unread.
+    expect(recordReceived("w1", [row({ txid: "b2".repeat(32) })])).toEqual([]);
   });
 });

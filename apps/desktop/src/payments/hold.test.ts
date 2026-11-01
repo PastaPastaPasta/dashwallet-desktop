@@ -9,4 +9,9 @@ describe("DEC1058_receiveHold", () => {
     expect(holdFor(false, false)).toBe(ROTATION_GRACE_MS);
     expect(RECEIVED_HOLD_MS).toBeGreaterThan(ROTATION_GRACE_MS);
   });
+  it("waits for an outstanding notice lookup, however long it takes, unless a payment is already known", () => {
+    expect(holdFor(false, false, true)).toBeNull();
+    expect(holdFor(false, true, true)).toBe(RECEIVED_HOLD_MS);
+    expect(holdFor(true, false, true)).toBe(0);
+  });
 });

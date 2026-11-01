@@ -43,11 +43,15 @@ export function ReceivedSection({ walletId, network, limit, onOpen }: { walletId
   // The payments seen before the view opened: any other, including one that arrives while it is
   // open, is marked new until the view closes.
   const [seen] = useState<ReadonlySet<string>>(() => new Set(payments.filter((p) => p.read).map((p) => p.id)));
-  useEffect(() => {
-    markReceivedRead(walletId);
-  }, [walletId, payments]);
-  if (payments.length === 0) return null;
   const rows: readonly ReceivedPayment[] = limit ? payments.slice(0, limit) : payments;
+  // Seen means shown, to someone: the rows on screen, with the wallet unlocked (a page can stay mounted
+  // behind the lock screen).
+  const locked = useLockStatus().data?.state === "locked";
+  const shownIds = rows.map((p) => p.id).join(",");
+  useEffect(() => {
+    if (!locked && shownIds !== "") markReceivedRead(walletId, shownIds.split(","));
+  }, [walletId, locked, shownIds]);
+  if (payments.length === 0) return null;
   return (
     <section className="bell-section" aria-labelledby={titleId} data-testid="bell-payments">
       <h3 className="bell-section-title" id={titleId}>

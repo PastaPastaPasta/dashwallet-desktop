@@ -50,13 +50,42 @@ export function recordReceived(walletId: string, rows: readonly TxNoticeRow[], n
   return fresh;
 }
 
-/** Asks the engine what `txids` are and records the payments among them. A failed read says nothing:
- * Activity still shows the payment. */
-export async function announceReceived(backend: Pick<Backend, "txNotices">, walletId: string, txids: string[]): Promise<void> {
+/** How long a notice lookup holds Receive's rotation back before the page stops waiting for it. */
+export const LOOKUP_TIMEOUT_MS = 10_000;
+
+const lookups = new Map<string, number>();
+const lookupListeners = new Set<() => void>();
+
+const setLookups = (walletId: string, by: 1 | -1) => {
+  const n = (lookups.get(walletId) ?? 0) + by;
+  if (n > 0) lookups.set(walletId, n);
+  else lookups.delete(walletId);
+  lookupListeners.forEach((l) => l());
+};
+
+/** Whether a notice lookup of `walletId` is outstanding (and not past `LOOKUP_TIMEOUT_MS`). */
+export const lookupPending = (walletId: string): boolean => lookups.has(walletId);
+
+/** Asks the engine what `txids` are and records the payments among them. While it asks, `lookupPending`
+ * says so, so a screen does not take the lack of a payment for proof (Receive's rotation). A failed read
+ * says nothing: Activity still shows the payment. A lookup slower than `timeoutMs` stops being waited
+ * for, and is recorded all the same if it answers later. */
+export async function announceReceived(backend: Pick<Backend, "txNotices">, walletId: string, txids: string[], timeoutMs: number = LOOKUP_TIMEOUT_MS): Promise<void> {
+  let open = true;
+  const end = () => {
+    if (!open) return;
+    open = false;
+    setLookups(walletId, -1);
+  };
+  setLookups(walletId, 1);
+  const timer = setTimeout(end, timeoutMs);
   try {
     recordReceived(walletId, await backend.txNotices(walletId, txids));
   } catch (e) {
     console.warn("could not read the notices of new transactions", e);
+  } finally {
+    clearTimeout(timer);
+    end();
   }
 }
 
@@ -66,16 +95,18 @@ export function onReceived(f: (batch: ReceivedPayment[]) => void): () => void {
   return () => announced.delete(f);
 }
 
-/** Marks `walletId`'s payments as seen (the bell was opened). */
-export function markReceivedRead(walletId: string) {
-  if (!list.some((p) => p.walletId === walletId && !p.read)) return;
-  list = list.map((p) => (p.walletId === walletId ? { ...p, read: true } : p));
+/** Marks the payments `ids` of `walletId` as seen: the rows a view showed, not the ones it left out. */
+export function markReceivedRead(walletId: string, ids: readonly string[]) {
+  const mark = new Set(ids);
+  if (!list.some((p) => p.walletId === walletId && !p.read && mark.has(p.id))) return;
+  list = list.map((p) => (p.walletId === walletId && mark.has(p.id) ? { ...p, read: true } : p));
   changed();
 }
 
 /** Tests: forget everything (a fresh app). */
 export function resetReceived() {
   list = [];
+  lookups.clear();
   changed();
 }
 
@@ -97,6 +128,17 @@ export function useReceived(walletId: string | undefined): readonly ReceivedPaym
     byWallet.set(walletId, { source: list, value });
     return value;
   });
+}
+
+/** Whether a notice lookup of `walletId` is outstanding; a screen re-renders when that changes. */
+export function useLookupPending(walletId: string | undefined): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      lookupListeners.add(l);
+      return () => void lookupListeners.delete(l);
+    },
+    () => !!walletId && lookupPending(walletId),
+  );
 }
 
 /** How many of `walletId`'s payments the bell has not shown yet. */

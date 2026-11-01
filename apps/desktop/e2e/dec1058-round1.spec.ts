@@ -107,10 +107,60 @@ test.describe("catch-up is not news", () => {
   });
 });
 
-async function authorizeUnlock(page: Page) {
+test.describe("read marking", () => {
+  test("the popover marks read only the rows it shows", async ({ page }) => {
+    await open(page, "dashpay-registered");
+    for (let i = 1; i <= 6; i++) await pay(page, i * 1_000_000);
+    // The identity's three unread events and six payments.
+    await expect(page.getByTestId("toolbar-bell-badge")).toHaveText("9");
+    await page.getByTestId("toolbar-bell").click();
+    await expect(page.getByTestId("bell-payment")).toHaveCount(5);
+    // The sixth was not shown: it is still unread (the events were shown).
+    await expect(page.getByTestId("toolbar-bell-badge")).toHaveText("1");
+    await page.getByTestId("bell-see-all").click();
+    await expect(page.getByTestId("bell-payment")).toHaveCount(6);
+    await expect(page.getByTestId("toolbar-bell-badge")).toHaveCount(0);
+  });
+
+  test("a Notifications page behind the lock screen marks nothing read", async ({ page }) => {
+    await open(page);
+    await page.getByTestId("toolbar-bell").click();
+    await expect(page.getByTestId("notifications-payments")).toBeAttached();
+    await page.getByTestId("toolbar-lock").click();
+    await expect(page.getByTestId("lock-screen")).toBeVisible();
+    await pay(page, 150_000_000);
+    await page.waitForTimeout(500);
+    // The badge is in the (inert) toolbar: still unread, not cleared behind the lock screen.
+    expect(await page.getByTestId("toolbar-bell-badge").evaluate((e) => e.textContent)).toBe("1");
+    await authorizeUnlock(page, "notifications-payments");
+    // Unlocked, the page shows it: now read.
+    await expect(page.getByTestId("bell-payment")).toHaveCount(1);
+    await expect(page.getByTestId("toolbar-bell-badge")).toHaveCount(0);
+  });
+});
+
+test.describe("Receive waits for the notice lookup", () => {
+  test("a tx_notices answer slower than the grace still shows Received before the next address", async ({ page }) => {
+    await open(page);
+    await page.getByTestId("sidebar-receive").click();
+    const address = page.getByTestId("receive-address");
+    const first = (await address.textContent())!;
+    const release = await page.evaluateHandle(`window.__dwFixture.hold("tx_notices")`);
+    await pay(page, 999_819);
+    // Well past the 1.5 s grace: the lookup is outstanding, so the address has not moved.
+    await page.waitForTimeout(2500);
+    await expect(address).toHaveText(first);
+    await release.evaluate((f) => (f as unknown as () => void)());
+    await expect(page.getByTestId("receive-received")).toHaveText("✓ Received 0.00999819 tDASH");
+    await expect(address).toHaveText(first);
+    await expect(address).not.toHaveText(first, { timeout: 8000 });
+  });
+});
+
+async function authorizeUnlock(page: Page, back = "hero") {
   await page.getByTestId("lock-field").fill("demo");
   await page.keyboard.press("Enter");
-  await page.getByTestId("hero").waitFor();
+  await page.getByTestId(back).waitFor();
 }
 
 void authorize;
