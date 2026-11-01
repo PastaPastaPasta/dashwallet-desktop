@@ -45,12 +45,17 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
   const to = flow.to.trim();
   const ready = amount !== null && amount > 0 && amountProblem === null && (kind !== "send" || (to !== "" && !memoTooLong));
   const available = shieldedDuffs(status);
+  // What Next waits for, said beside it: the same text the card gives while Shielded syncs.
+  const syncing = shieldedSyncing(status);
+  const nextWhy = syncing
+    ? SHIELDED_SYNCING_TEXT
+    : amountProblem ?? (amount === null || amount <= 0 ? C.form.why.amount : kind === "send" && to === "" ? C.form.why.to : memoTooLong ? C.form.why.memo : null);
   return (
     <form
       className="topup-form"
       onSubmit={(e) => {
         e.preventDefault();
-        if (!ready) return;
+        if (!ready || syncing) return;
         if (kind === "add") flow.next({ kind: "add", duffs: amount });
         else {
           const credits = String(BigInt(amount) * CREDITS_PER_DUFF);
@@ -95,7 +100,7 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
         <DashButton variant="tintedGray" size="large" type="button" data-testid="shielded-cancel" onClick={() => flow.close()}>
           {C.form.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" type="submit" data-testid="shielded-next" disabled={!ready}>
+        <DashButton variant="filledBlue" size="large" type="submit" data-testid="shielded-next" disabled={!ready || syncing} why={nextWhy}>
           {C.form.next}
         </DashButton>
       </div>
@@ -308,13 +313,23 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
   const busy = flow.running;
   const syncing = shieldedSyncing(s);
   const why = (empty: boolean) => (syncing ? SHIELDED_SYNCING_TEXT : busy ? C.card.why.busy : empty ? C.card.why.empty : null);
+  // One visible line per distinct reason on the card: each disabled action is described by its own.
+  const reasons = {
+    receive: syncing ? SHIELDED_SYNCING_TEXT : null,
+    send: why(!balance),
+    add: why(false),
+    out: why(!balance),
+    finish: syncing ? SHIELDED_SYNCING_TEXT : busy ? C.card.why.busy : null,
+  };
+  const lines = [...new Set(Object.values(reasons).filter((r): r is string => !!r))];
+  const lineId = (r: string | null) => (r ? `shielded-card-why-${lines.indexOf(r)}` : undefined);
   return (
     <>
       <section className="shielded-card card-l1" data-testid="shielded-card" data-active={s.active} aria-label={C.card.title}>
         <div className="shielded-card-body">
           <h2 className="platform-card-title">{C.card.title}</h2>
           <p className="platform-card-text" data-testid="shielded-card-text">
-            {!s.active ? C.card.inactive : syncing ? SHIELDED_SYNCING_TEXT : balance === null ? C.card.syncing : C.card.text}
+            {!s.active ? C.card.inactive : balance === null ? C.card.syncing : C.card.text}
           </p>
           {s.active && BigInt(s.pending) > 0n && (
             <p className="platform-card-text" data-testid="shielded-card-pending">
@@ -324,9 +339,14 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
           {s.pendingShields.map((p) => (
             <p key={p.txid} className="platform-card-text" data-testid="shielded-unfinished">
               {C.card.unfinished(fmt.duffs(p.duffs))}{" "}
-              <DashButton variant="plainBlue" size="small" data-testid="shielded-finish" disabled={busy} onClick={() => void flow.resume(p.txid)}>
+              <DashButton variant="plainBlue" size="small" data-testid="shielded-finish" disabled={syncing || busy} why={reasons.finish} whyId={lineId(reasons.finish)} onClick={() => void flow.resume(p.txid)}>
                 {C.card.finish}
               </DashButton>
+            </p>
+          ))}
+          {lines.map((r, i) => (
+            <p key={r} id={`shielded-card-why-${i}`} className="field-hint" data-testid="shielded-card-why">
+              {r}
             </p>
           ))}
           {flow.unseen && (
@@ -340,16 +360,16 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
         </div>
         {s.active && (
           <div className="shielded-card-actions">
-            <DashButton variant="tintedBlue" size="small" data-testid="shielded-receive-open" disabled={syncing} why={syncing ? SHIELDED_SYNCING_TEXT : null} onClick={() => setReceiving(true)}>
+            <DashButton variant="tintedBlue" size="small" data-testid="shielded-receive-open" disabled={syncing} why={reasons.receive} whyId={lineId(reasons.receive)} onClick={() => setReceiving(true)}>
               {C.card.receive}
             </DashButton>
-            <DashButton variant="tintedBlue" size="small" data-testid="shielded-send" disabled={syncing || busy || !balance} why={why(!balance)} onClick={() => flow.begin("send")}>
+            <DashButton variant="tintedBlue" size="small" data-testid="shielded-send" disabled={syncing || busy || !balance} why={reasons.send} whyId={lineId(reasons.send)} onClick={() => flow.begin("send")}>
               {C.card.send}
             </DashButton>
-            <DashButton variant="tintedBlue" size="small" data-testid="shielded-add" disabled={syncing || busy} why={why(false)} onClick={() => flow.begin("add")}>
+            <DashButton variant="tintedBlue" size="small" data-testid="shielded-add" disabled={syncing || busy} why={reasons.add} whyId={lineId(reasons.add)} onClick={() => flow.begin("add")}>
               {C.card.add}
             </DashButton>
-            <DashButton variant="tintedBlue" size="small" data-testid="shielded-out" disabled={syncing || busy || !balance} why={why(!balance)} onClick={() => flow.begin("out")}>
+            <DashButton variant="tintedBlue" size="small" data-testid="shielded-out" disabled={syncing || busy || !balance} why={reasons.out} whyId={lineId(reasons.out)} onClick={() => flow.begin("out")}>
               {C.card.out}
             </DashButton>
           </div>

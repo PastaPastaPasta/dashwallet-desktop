@@ -601,6 +601,20 @@ const SCENARIOS = {
     w.pending.shielded!.balance = "0";
     return w;
   },
+  /** Shielded is not ready and an earlier shield is waiting to be finished. */
+  "shielded-syncing-pending": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.pendingShields = [{ txid: "c0ffee00".repeat(8), duffs: 50_000_000, proved: false }];
+    return w;
+  },
+  /** Shielded is ready and holds nothing: Send and Move wait for a balance. */
+  "shielded-empty": (t) => {
+    const w = base(t);
+    w.pending.shielded!.balance = "0";
+    return w;
+  },
   /** Shielded has too few notes to withdraw from. */
   "shielded-pool-small": (t) => {
     const w = base(t);

@@ -172,6 +172,8 @@ export function AmountFields({
   );
 }
 
+const PAY_INCOMPLETE = "Enter an address and an amount first.";
+
 /** The fee line, or what holds the payment back; then Review. */
 export function PayFooter({
   problem,
@@ -191,8 +193,12 @@ export function PayFooter({
     <div className="pay-footer" data-testid="pay-footer">
       <div className="pay-footer-text" aria-live="polite">
         {problem ? (
-          <span className="form-problem" data-testid="pay-problem">
+          <span className="form-problem" id="pay-reason" data-testid="pay-problem">
             {problem}
+          </span>
+        ) : !ready ? (
+          <span className="field-hint" id="pay-reason" data-testid="pay-incomplete">
+            {PAY_INCOMPLETE}
           </span>
         ) : fee !== null ? (
           <span className="pay-fee-line" data-testid="pay-fee-line">
@@ -200,7 +206,7 @@ export function PayFooter({
           </span>
         ) : null}
       </div>
-      <DashButton ref={reviewRef} type="submit" variant="filledBlue" size="large" data-testid="pay-continue" disabled={!ready} why={problem ?? "Enter an address and an amount first."}>
+      <DashButton ref={reviewRef} type="submit" variant="filledBlue" size="large" data-testid="pay-continue" disabled={!ready} why={problem ?? PAY_INCOMPLETE} whyId="pay-reason">
         Review
       </DashButton>
     </div>

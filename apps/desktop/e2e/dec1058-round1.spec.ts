@@ -191,6 +191,56 @@ test.describe("Pay's confirm sheet warns about fees", () => {
   });
 });
 
+test.describe("disabled reasons are visible and described", () => {
+  /** The visible text a disabled control is described by. */
+  async function reasonOf(page: Page, testId: string) {
+    const button = page.getByTestId(testId);
+    await expect(button).toBeDisabled();
+    const id = await button.getAttribute("aria-describedby");
+    expect(id, `${testId} is described`).toBeTruthy();
+    const text = page.locator(`[id="${id}"]`);
+    await expect(text).toBeVisible();
+    return (await text.textContent())!.trim();
+  }
+
+  test("the Shielded card's actions, Finish included, are described by the syncing text", async ({ page }) => {
+    await page.goto(fixtureUrl("shielded-syncing-pending", "light"));
+    await page.getByTestId("shielded-card").waitFor();
+    for (const id of ["shielded-receive-open", "shielded-send", "shielded-add", "shielded-out", "shielded-finish"]) {
+      expect(await reasonOf(page, id)).toContain("Shielded is still syncing; try again when it finishes.");
+    }
+  });
+
+  test("the Shielded card says why Send and Move wait with nothing in Shielded", async ({ page }) => {
+    await page.goto(fixtureUrl("shielded-empty", "light"));
+    await page.getByTestId("shielded-card").waitFor();
+    for (const id of ["shielded-send", "shielded-out"]) expect(await reasonOf(page, id)).toContain("Nothing in Shielded to send yet.");
+    await expect(page.getByTestId("shielded-add")).toBeEnabled();
+  });
+
+  test("Shielded's Next says what is missing, and waits while Shielded syncs", async ({ page }) => {
+    await open(page);
+    await page.getByTestId("shielded-add").click();
+    expect(await reasonOf(page, "shielded-next")).toBe("Enter an amount first.");
+    await page.getByTestId("shielded-amount").fill("1");
+    await expect(page.getByTestId("shielded-next")).toBeEnabled();
+    // Readiness lost with the form open: Next waits too.
+    await page.evaluate(`(() => { const f = window.__dwFixture; f.world.pending.shielded.ready = false; f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "startup" } }); f.emit({ kind: "eventsOverflowed" }); })()`);
+    // The form stays open; Confirm and Next both wait.
+    expect(await reasonOf(page, "shielded-next")).toContain("Shielded is still syncing; try again when it finishes.");
+  });
+
+  test("Export CSV and Pay's Review say why, beside the control", async ({ page }) => {
+    await page.goto(fixtureUrl("empty", "light"));
+    await page.getByTestId("toolbar").waitFor();
+    await page.getByTestId("sidebar-activity").click();
+    expect(await reasonOf(page, "tx-export-csv")).toBe("There are no transactions to export yet.");
+    await page.getByTestId("sidebar-pay").click();
+    await page.getByTestId("pay-tabs-address").click();
+    expect(await reasonOf(page, "pay-continue")).toBe("Enter an address and an amount first.");
+  });
+});
+
 test("the PSBT's copy button answers like every other copy button", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", { value: { writeText: async (t: string) => void ((window as unknown as { __copied: string }).__copied = t) } });

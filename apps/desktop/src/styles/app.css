@@ -822,6 +822,15 @@ button {
   transition: filter var(--dw-motion-hover);
 }
 
+/* The reason a disabled button waits (DEC-1058): a line beside it, wrapping under it in a button row. */
+.dash-button-why {
+  flex: 1 0 100%;
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+  color: var(--dw-role-text-secondary);
+}
+
 .dash-button:hover:not(:disabled):not([aria-disabled="true"]) {
   filter: brightness(0.96); /* UX-SPEC §3.2: buttons darken 4 % on hover */
 }

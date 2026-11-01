@@ -1,7 +1,7 @@
 // Small building blocks (UX-SPEC §3.1): icons, the Dash glyph and wordmark, AmountText (C10),
 // chips and the network capsule (C20) and DashButton (C14). Styles are in styles/app.css and read only --dw-* tokens.
 
-import type { ButtonHTMLAttributes, CSSProperties, ReactNode, Ref } from "react";
+import { useId, type ButtonHTMLAttributes, type CSSProperties, type ReactNode, type Ref } from "react";
 import { useAppearance } from "../app/theme";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { iconFiles, type IconFiles, type UsedIcon } from "./icons";
@@ -100,19 +100,40 @@ export function DashButton({
   className,
   children,
   why,
+  whyId,
   ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant: ButtonStyle; size?: ButtonSize; fill?: boolean; ref?: Ref<HTMLButtonElement>; why?: string | null }) {
-  // Why it is disabled (DEC-1058): the tooltip, and what a screen reader reads after the name.
-  const whyDisabled = rest.disabled ? why : null;
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant: ButtonStyle;
+  size?: ButtonSize;
+  fill?: boolean;
+  ref?: Ref<HTMLButtonElement>;
+  /** Why the button is disabled (DEC-1058): shown as a line beside it, described to a screen reader
+   * and in the tooltip. Nothing shows while it is enabled. */
+  why?: string | null;
+  /** The id of a visible line the screen already shows for the reason (a card that explains several
+   * buttons at once): the button is described by it, and no line of its own is added. */
+  whyId?: string;
+}) {
+  const ownId = useId();
+  const reason = rest.disabled ? why : null;
+  const ownLine = !!reason && !whyId;
+  const describedBy = reason ? (whyId ?? ownId) : rest["aria-describedby"];
   return (
-    <button
-      type="button"
-      {...rest}
-      title={whyDisabled || rest.title}
-      aria-description={whyDisabled || rest["aria-description"]}
-      className={`dash-button dash-button-${variant} dash-button-${size} ${fill ? "dash-button-fill" : ""} ${className ?? ""}`}
-    >
-      {children}
-    </button>
+    <>
+      <button
+        type="button"
+        {...rest}
+        title={reason || rest.title}
+        aria-describedby={describedBy}
+        className={`dash-button dash-button-${variant} dash-button-${size} ${fill ? "dash-button-fill" : ""} ${className ?? ""}`}
+      >
+        {children}
+      </button>
+      {ownLine && (
+        <span id={ownId} className="dash-button-why">
+          {reason}
+        </span>
+      )}
+    </>
   );
 }

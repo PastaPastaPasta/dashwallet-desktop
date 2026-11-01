@@ -52,6 +52,7 @@ export const SHIELDED_COPY = {
   },
   titles: { add: "Add to Shielded", send: "Send from Shielded", out: "Move to Dash wallet", resume: "Add to Shielded", receive: "Receive in Shielded" },
   form: {
+    why: { amount: "Enter an amount first.", to: "Enter a Shielded address first.", memo: "The note is too long." },
     add: "Move Dash from your wallet into Shielded. It is locked first, then Dash Platform adds it to your private balance.",
     send: "Send privately to another Shielded address.",
     out: "Move Shielded funds to your Dash wallet's next receive address.",
