@@ -80,6 +80,36 @@ fn a_moves_own_spend_is_no_outgoing_row() {
     assert_eq!(unseen["b"], 50);
 }
 
+/// The testnet smoke's order: funded, never read, then moved with "all".
+/// The move reads its inputs first, so the funding is one incoming row of
+/// the whole balance and the fall to the fee left over is the move's.
+#[test]
+fn a_move_reads_its_inputs_before_it_spends() {
+    let funded = snap(&[("a", 29_985_189_580)]);
+    let (rows, before) = changes(None, &funded, &BTreeSet::new(), &mut BTreeMap::new(), 1);
+    assert_eq!(
+        kinds(&rows),
+        vec![(PlatformActivityKind::Incoming, "a".into(), 29_985_189_580)]
+    );
+    let mut r = MoveRecord {
+        inputs: vec![MoveInput {
+            address: "a".into(),
+            nonce: 1,
+            credits: 29_584_689_580,
+            unseen: 0,
+        }],
+        fee_credits: 400_500_000,
+        ..record(1, &[])
+    };
+    r.done();
+    let mut unseen = [("a".to_owned(), r.inputs[0].unseen)].into();
+    let left = snap(&[("a", 296_442_300)]);
+    let (rows, next) = changes(Some(&before), &left, &BTreeSet::new(), &mut unseen, 2);
+    assert!(rows.is_empty(), "{rows:?}");
+    assert_eq!(next, left);
+    assert_eq!(unseen["a"], 0);
+}
+
 fn record(at: u64, inputs: &[(&str, u32)]) -> MoveRecord {
     MoveRecord {
         id: "move-x".into(),

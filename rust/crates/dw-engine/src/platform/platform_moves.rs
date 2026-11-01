@@ -33,7 +33,9 @@ use dash_sdk::query_types::AddressInfo;
 use dpp::address_funds::{AddressFundsFeeStrategy, AddressFundsFeeStrategyStep, PlatformAddress};
 use dpp::balances::credits::CREDITS_PER_DUFF;
 use dpp::dashcore::Network;
-use dpp::state_transition::address_credit_withdrawal_transition::MIN_CORE_FEE_PER_BYTE;
+use dpp::state_transition::address_credit_withdrawal_transition::{
+    AddressCreditWithdrawalTransition, MIN_CORE_FEE_PER_BYTE,
+};
 use dpp::version::PlatformVersion;
 use key_wallet::PlatformP2PKHAddress;
 use key_wallet::bip32::DerivationPath;
@@ -502,18 +504,14 @@ async fn settle_moves(
     Ok((moves, changed))
 }
 
-/// `DashPay::platform_activity`.
-pub(crate) async fn activity(
-    session: &NetworkSession,
-    manager: &Manager,
-    wallet: &PlatformWallet,
-    wallet_id: WalletId,
-) -> Result<Vec<PlatformActivity>, CreditsError> {
-    let lock = wallet_lock(wallet_id);
-    let _one = lock.lock().await;
-    let network = session.vault.network();
-    let store = Store::of(session, wallet_id)?;
-    let (mut moves, mut changed) = settle_moves(&manager.sdk_arc(), &store, network).await?;
+/// Reads `now` (address → credits) against the stored snapshot: stores
+/// the change rows, the spent falls of `moves` and the new snapshot.
+/// Whether any row was added.
+async fn record_changes(
+    store: &Store,
+    moves: &mut [MoveRecord],
+    now: &Snapshot,
+) -> Result<bool, PlatformError> {
     let held: BTreeSet<String> = (moves.iter())
         .filter(|m| m.state == PlatformActivityState::Pending)
         .flat_map(|m| m.inputs.iter().map(|i| i.address.clone()))
@@ -523,8 +521,7 @@ pub(crate) async fn activity(
         *unseen.entry(input.address.clone()).or_default() += input.unseen;
     }
     let before = store.snapshot().await?;
-    let now = balances(wallet, network).await;
-    let (rows, next) = changes(before.as_ref(), &now, &held, &mut unseen, unix_now());
+    let (rows, next) = changes(before.as_ref(), now, &held, &mut unseen, unix_now());
     for row in &rows {
         let key = format!(
             "{ROW_PREFIX}{:020}/{}",
@@ -534,7 +531,7 @@ pub(crate) async fn activity(
         store.put(key, row).await?;
     }
     // A done move's fall, once read, is spent.
-    for record in &mut moves {
+    for record in moves.iter_mut() {
         let before = record.clone();
         for input in &mut record.inputs {
             if unseen.get(&input.address) == Some(&0) {
@@ -548,7 +545,23 @@ pub(crate) async fn activity(
     if before.as_ref() != Some(&next) {
         store.put(SNAPSHOT_KEY.to_owned(), &next).await?;
     }
-    changed |= !rows.is_empty();
+    Ok(!rows.is_empty())
+}
+
+/// `DashPay::platform_activity`.
+pub(crate) async fn activity(
+    session: &NetworkSession,
+    manager: &Manager,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+) -> Result<Vec<PlatformActivity>, CreditsError> {
+    let lock = wallet_lock(wallet_id);
+    let _one = lock.lock().await;
+    let network = session.vault.network();
+    let store = Store::of(session, wallet_id)?;
+    let (mut moves, mut changed) = settle_moves(&manager.sdk_arc(), &store, network).await?;
+    let now = balances(wallet, network).await;
+    changed |= record_changes(&store, &mut moves, &now).await?;
     let mut stored = store.all::<PlatformActivity>(ROW_PREFIX).await?;
     // Keys sort by time: the oldest beyond the kept ones go.
     while stored.len() > ROWS_KEPT {
@@ -601,7 +614,10 @@ async fn plan(
         Err(
             PlatformWalletError::OnlyDustInputs { .. } | PlatformWalletError::AddressOperation(_),
         ) => {
-            return Err(short(rules.min).into());
+            // One address must hold the minimum and the fee the plan sets
+            // aside on it.
+            let fee = AddressCreditWithdrawalTransition::estimate_min_fee(1, false, version);
+            return Err(short(rules.min.saturating_add(fee)).into());
         }
         Err(e) => return Err(PlatformError::from(e).into()),
     };
@@ -723,7 +739,7 @@ pub(crate) async fn move_to_core(
     let network = session.vault.network();
     let sdk = manager.sdk_arc();
     let store = Store::of(session, wallet_id)?;
-    let (moves, _) = settle_moves(&sdk, &store, network).await?;
+    let (mut moves, _) = settle_moves(&sdk, &store, network).await?;
     if let Some(pending) = moves
         .iter()
         .find(|m| m.state == PlatformActivityState::Pending)
@@ -771,6 +787,22 @@ pub(crate) async fn move_to_core(
             .into());
         };
         inputs.insert(*address, (info.nonce.saturating_add(1), *credits));
+    }
+    // Activity up to here, the inputs at their proved balances, so the
+    // move's fall is read against what it spends (module doc).
+    let mut now = balances(wallet, network).await;
+    for (address, info) in &proved {
+        let address = bech32m(address, network);
+        match info.as_ref().map_or(0, |i| i.balance) {
+            0 => now.remove(&address),
+            credits => now.insert(address, credits),
+        };
+    }
+    if record_changes(&store, &mut moves, &now).await? {
+        session
+            .hub
+            .pump
+            .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
     }
     let lease = match authority {
         NameAuthority::Lease(lease) => lease,
