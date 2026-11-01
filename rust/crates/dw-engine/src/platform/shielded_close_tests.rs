@@ -9,6 +9,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, UnlockScope, VaultConfig};
 use platform_wallet::wallet::shielded::store::{PendingRedrive, StalePendingSpend};
@@ -19,14 +20,11 @@ use zeroize::Zeroizing;
 use super::runtime::StoredSpends;
 use super::shielded::UnresolvedSpend;
 use super::shielded_pool::{self as pool, on_pool};
-use super::topup_tests::options;
+use super::topup_tests::{PASS, PHRASE, options};
 use crate::{
     DashNetwork, Engine, EngineConfig, EngineError, ImportOptions, NetworkSession, WalletId,
 };
 
-const PHRASE: &str =
-    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-const PASS: &[u8] = b"pass phrase";
 /// Where the quitting child process keeps its data root.
 const QUIT_ROOT: &str = "DW_E1_QUIT_ROOT";
 
@@ -264,6 +262,48 @@ fn close_wallet_and_the_network_close_are_refused_while_a_spend_is_unresolved() 
             .block_on(engine.close_network(DashNetwork::Regtest))
             .unwrap()
     );
+}
+
+/// Own review r1, minors 1-3: a shielded call of the wallet in flight (here its
+/// lock, as a send holds it from its quote to its record) refuses the
+/// network close, and Close Wallet waits for it to end; a spend it stored
+/// meanwhile then refuses the unload, which leaves the wallet loaded with
+/// its background lease (the passes are not held back).
+#[test]
+fn a_close_waits_for_or_refuses_a_shielded_call_in_flight() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    assert!(bind(&engine, &session, wallet));
+    engine.block_on(session.ensure_background());
+    assert!(session.leases.background(&wallet).is_some());
+
+    let spending = engine.block_on(pool::wallet_lock(&session, wallet).lock_owned());
+    let closed = engine.block_on(engine.close_network(DashNetwork::Regtest));
+    assert!(
+        matches!(closed, Err(EngineError::ShieldedSpendUnresolved)),
+        "{closed:?}"
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    let s = Arc::clone(&session);
+    session.rt.spawn(async move {
+        let _ = tx.send(s.unload_wallet(wallet).await);
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "Close Wallet did not wait for the call"
+    );
+    // The call stores its spend, then ends.
+    store_spends(&engine, &session, wallet);
+    drop(spending);
+    let unloaded = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(
+        matches!(unloaded, Err(EngineError::ShieldedSpendUnresolved)),
+        "{unloaded:?}"
+    );
+    assert!(session.require_wallet(&wallet).is_ok(), "still loaded");
+    assert_eq!(kept(&engine, &session, wallet), expected());
+    assert!(session.leases.background(&wallet).is_some());
 }
 
 /// The quitting half of the next test, run in a child process: the first

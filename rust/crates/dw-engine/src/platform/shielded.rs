@@ -102,9 +102,11 @@ pub enum ShieldState {
     Applied { balance: u64 },
     /// The lock is out with no proof yet; `resume_shield` applies it.
     ProofWaiting,
-    /// The lock has its proof and the apply was refused before its
-    /// transition was signed, with `error` (a code): nothing reached
-    /// Platform. `resume_shield` tries again.
+    /// The lock has its proof and this apply was refused before its
+    /// transition was signed, with `error` (a code): nothing of this
+    /// attempt reached Platform (an earlier one of a `consumption_unknown`
+    /// lock may have; the lock keeps that mark). `resume_shield` tries
+    /// again.
     NotApplied { error: String },
     /// The apply may have executed, unproved: Platform answered that the
     /// lock is already consumed (any node can say it), or the apply failed

@@ -723,6 +723,13 @@ impl NetworkSession {
                     .await?
                 }
                 .await;
+                if let Err(EngineError::ShieldedSpendUnresolved) = removed {
+                    // It stays whole, its seed with it: without the seed it
+                    // would never hold a background lease again, and every
+                    // shielded pass of the network would be held back.
+                    tracing::warn!(wallet_id = %id, "a restored wallet holding a shielded spend stays");
+                    continue;
+                }
                 if let Err(e) = removed {
                     tracing::warn!(wallet_id = %id, error = %e, "could not roll back a restored wallet");
                 }

@@ -902,8 +902,10 @@ impl NetworkSession {
         //   SpvRuntime -> PlatformEventManager -> BalanceUpdateHandler
         //     -> Arc<ArcSwap<wallets map>> -> Arc<PlatformWallet>
         //     (manager/mod.rs:522, wallet/core/balance_handler.rs:43-45)
-        // `remove_wallet` is an in-memory unload (no persister writes:
-        // manager/wallet_lifecycle.rs:676-900, key-wallet-manager accessors.rs:75).
+        // `remove_wallet` writes nothing through the persister
+        // (manager/wallet_lifecycle.rs:676-900, key-wallet-manager accessors.rs:75),
+        // but with the shielded coordinator configured it purges the
+        // wallet's rows of `shielded.sqlite` (below).
         // Through the wallets' write fence: the close returns after their
         // fenced writes in flight (private details, the bell's `mark_read`).
         //

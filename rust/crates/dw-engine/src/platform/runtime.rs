@@ -85,7 +85,6 @@ pub(super) struct LockView {
     pub(super) locks: u64,
 }
 
-/// The session's Platform state (DASHPAY §3.1 `PlatformRuntime`).
 /// What [`PlatformRuntime::remove_from_manager`] does when the wallet holds
 /// a shielded spend whose result is not known (DEC-1046).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +96,7 @@ pub(crate) enum StoredSpends {
     Purge,
 }
 
+/// The session's Platform state (DASHPAY §3.1 `PlatformRuntime`).
 pub(crate) struct PlatformRuntime {
     /// `false` for a chain without Platform (`SessionOptions::no_platform`):
     /// SPV starts without a bring-up and no loop runs.
@@ -132,6 +132,10 @@ pub(crate) struct PlatformRuntime {
     /// runs meanwhile. Apart from `shielded_passes` so a lock's drain waits
     /// for the passes only, not for a spend's network call.
     pub(crate) shielded_spends: tokio::sync::RwLock<()>,
+    /// Each wallet's shielded call lock (`shielded_pool::wallet_lock`).
+    pub(crate) shielded_calls: std::sync::Mutex<
+        std::collections::HashMap<WalletId, std::sync::Weak<tokio::sync::Mutex<()>>>,
+    >,
     /// The shield locks of unknown consumption marked this session, kept
     /// also in `app.sqlite` (`shielded_pool::ShieldedLib::unknown_locks`).
     pub(crate) shield_unknown: std::sync::Mutex<std::collections::HashSet<dashcore::Txid>>,
@@ -402,6 +406,7 @@ impl PlatformRuntime {
             #[cfg(test)]
             pass_pause: Mutex::new(None),
             shielded_spends: tokio::sync::RwLock::new(()),
+            shielded_calls: std::sync::Mutex::default(),
             shield_unknown: std::sync::Mutex::default(),
             key_work: Arc::default(),
             restoring: Mutex::new(HashMap::new()),
@@ -709,14 +714,21 @@ impl PlatformRuntime {
 
 impl NetworkSession {
     /// Whether a loaded wallet holds a shielded spend whose result is not
-    /// known: an in-app close of the session is refused then (DEC-1046,
-    /// `Engine::close_network`). `false` once closed.
+    /// known, or has a shielded call in flight that may store one before
+    /// the close's gate lets it end: an in-app close of the session is
+    /// refused then (DEC-1046, `Engine::close_network`). `false` once
+    /// closed.
     pub(crate) async fn holds_shielded_spends(&self) -> bool {
         let Ok(live) = self.live() else {
             return false;
         };
         for id in live.manager.list_wallet_ids_blocking() {
-            if super::shielded_pool::holds_stored_spends(&live.manager, WalletId(id)).await {
+            let id = WalletId(id);
+            if super::shielded_pool::wallet_lock(self, id)
+                .try_lock()
+                .is_err()
+                || super::shielded_pool::holds_stored_spends(&live.manager, id).await
+            {
                 return true;
             }
         }

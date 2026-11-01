@@ -310,8 +310,8 @@ fn close_active(
     slot: &mut Option<Arc<dw_engine::NetworkSession>>,
     closed: Result<bool, dw_engine::EngineError>,
 ) -> Result<bool, AppError> {
-    if let Err(dw_engine::EngineError::ShieldedSpendUnresolved) = closed {
-        return Err(dw_engine::EngineError::ShieldedSpendUnresolved.into());
+    if let Err(e @ dw_engine::EngineError::ShieldedSpendUnresolved) = closed {
+        return Err(e.into());
     }
     *slot = None;
     state.clear_handles();

@@ -623,9 +623,21 @@ pub(super) async fn funding_cap(
     wallet: WalletId,
     grant: &str,
 ) -> Result<u64, PlatformError> {
+    grant_cap(session, wallet, grant, BudgetPurpose::Funding).await
+}
+
+/// The `purpose` cap `grant` gives (a lease's remaining budget, or a
+/// vault grant's `PlatformOp` cap), read without redeeming it.
+pub(super) async fn grant_cap(
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    grant: &str,
+    purpose: BudgetPurpose,
+) -> Result<u64, PlatformError> {
     if let Some(lease) = session.lease_for(&wallet, grant) {
-        return Ok(lease?.available(BudgetPurpose::Funding)?);
+        return Ok(lease?.available(purpose)?);
     }
+    let budget = purpose;
     let vault = session.vault.clone();
     let grant = grant.to_owned();
     let purpose = tokio::task::spawn_blocking(move || {
@@ -636,8 +648,9 @@ pub(super) async fn funding_cap(
         detail: e.to_string(),
     })?
     .map_err(PlatformError::from)?;
-    match purpose {
-        GrantPurpose::PlatformOp { max_duffs, .. } => Ok(max_duffs),
+    match (purpose, budget) {
+        (GrantPurpose::PlatformOp { max_duffs, .. }, BudgetPurpose::Funding) => Ok(max_duffs),
+        (GrantPurpose::PlatformOp { max_credits, .. }, BudgetPurpose::Credits) => Ok(max_credits),
         _ => Err(PlatformError::GrantInvalid),
     }
 }

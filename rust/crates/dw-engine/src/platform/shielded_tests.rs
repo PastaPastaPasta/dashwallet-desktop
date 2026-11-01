@@ -815,7 +815,8 @@ fn a_send_charges_its_quote_and_a_refusal_keeps_the_grant() {
 /// and its library call cannot raise the fee the library builds above what
 /// the grant confirmed. The send quotes again under the pass hold, where
 /// nothing moves them, and charges that: a total above the grant is
-/// `platform.grant_exceeded` before any key leaves the vault.
+/// `platform.grant_exceeded` before the grant is redeemed or any key
+/// leaves the vault.
 #[test]
 fn a_spend_quotes_again_under_the_hold_and_refuses_a_fee_above_its_grant() {
     let fx = Fixture::new(0);
@@ -823,7 +824,7 @@ fn a_spend_quotes_again_under_the_hold_and_refuses_a_fee_above_its_grant() {
     let wallet = fx.wallet;
     // The user confirmed the quote of the notes as they are.
     let quoted = NOTE + fee_of(NOTE, ShieldedFeeKind::Base);
-    let lease = fx.flow(FlowKind::ShieldedSpend, vec![fx.grant(quoted)]);
+    let grant = fx.grant(quoted);
     // A pass is in flight; it moves the notes before it ends: the send
     // now needs three smaller ones, so a higher fee.
     let smaller: Vec<_> = (3..7).map(|n| note(n, NOTE / 2)).collect();
@@ -831,7 +832,7 @@ fn a_spend_quotes_again_under_the_hold_and_refuses_a_fee_above_its_grant() {
         .unwrap()
         .2;
     assert!(NOTE + higher > quoted);
-    let (s, l, lib2) = (Arc::clone(&fx.s), lease.clone(), Arc::clone(&lib));
+    let (s, l, lib2) = (Arc::clone(&fx.s), grant.clone(), Arc::clone(&lib));
     let sent = fx.engine.block_on(async move {
         let pass = s.platform.shielded_spends.read().await;
         let send = {
@@ -847,7 +848,7 @@ fn a_spend_quotes_again_under_the_hold_and_refuses_a_fee_above_its_grant() {
     });
     assert_eq!(code(sent), "platform.grant_exceeded");
     assert!(lib.spent().is_empty(), "no key left the vault");
-    assert_eq!(fx.credits_spent(&lease), 0);
+    assert!(fx.unused(&grant), "the refusal keeps the grant");
 }
 
 /// Once the key set is out the quote stays charged whatever the library

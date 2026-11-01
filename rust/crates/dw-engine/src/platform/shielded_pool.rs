@@ -76,11 +76,11 @@
 //!   aborts, under no engine timeout; the library's own waits are bounded
 //!   by its arguments.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
+use std::sync::{Arc, PoisonError, Weak};
 use std::time::Duration;
 
 use dashcore::{Address, Network, OutPoint, Txid};
@@ -106,7 +106,7 @@ use sha2::{Digest, Sha256};
 use super::errors::{PlatformError, ShieldedError};
 use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::lease::{CallPermit, FundingKey, Lease, LeaseError};
-use super::registration::{RegistrationWait, funding_cap};
+use super::registration::{RegistrationWait, funding_cap, grant_cap};
 use super::registration_flow::{
     FundError, LockInfo, LockStatus, PwLib, RegistrationLib as Reg, Spendable, lock_status,
 };
@@ -300,12 +300,15 @@ impl From<LeaseError> for SpendError {
     }
 }
 
-/// The lock serializing the wallet's shielded spends and shields, shared by
-/// every caller while any holds it.
-fn wallet_lock(wallet: WalletId) -> Arc<tokio::sync::Mutex<()>> {
-    type Locks = HashMap<WalletId, Weak<tokio::sync::Mutex<()>>>;
-    static LOCKS: LazyLock<Mutex<Locks>> = LazyLock::new(Mutex::default);
-    let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+/// The lock serializing the wallet's shielded spends and shields in
+/// `session`, shared by every caller while any holds it; Close Wallet and
+/// the network close read it as "a shielded call is in flight".
+pub(crate) fn wallet_lock(
+    session: &NetworkSession,
+    wallet: WalletId,
+) -> Arc<tokio::sync::Mutex<()>> {
+    let mut locks =
+        (session.platform.shielded_calls.lock()).unwrap_or_else(PoisonError::into_inner);
     locks.retain(|_, lock| lock.strong_count() > 0);
     if let Some(lock) = locks.get(&wallet).and_then(Weak::upgrade) {
         return lock;
@@ -733,7 +736,6 @@ async fn spend(
         To::Shielded(..) => "transfer",
         To::Core(_) => "withdraw",
     };
-    let lease = authority(session, wallet, grant, FlowKind::ShieldedSpend).await?;
     // No pass runs from here until this spend's record is written: one
     // admitted meanwhile could find what the library stores on an unknown
     // result and re-send it before `admit_pass` saw it (Q15).
@@ -741,12 +743,23 @@ async fn spend(
     // Quoted again under the hold and the wallet's lock: nothing changes
     // the notes the library selects from now (a pass could, up to the
     // hold), so its fee is the one the library builds, at the version
-    // `priced_gate` reads now. Charged before anything is signed: a fee
-    // above what the grant confirmed is `platform.grant_exceeded`.
+    // `priced_gate` reads now. Checked against the grant before it is
+    // redeemed, so every refusal keeps it: a fee above what the grant
+    // confirmed is `platform.grant_exceeded`, nothing signed (Opus r1 m1).
     let quote = match to {
         To::Shielded(_, text) => send_quote(lib, text, credits).await?,
         To::Core(_) => unshield_plan(lib, credits).await?,
     };
+    let remaining = grant_cap(session, wallet, grant, BudgetPurpose::Credits).await?;
+    if quote.total_credits > remaining {
+        return Err(PlatformError::GrantExceeded {
+            purpose: BudgetPurpose::Credits,
+            needed: quote.total_credits,
+            remaining,
+        }
+        .into());
+    }
+    let lease = authority(session, wallet, grant, FlowKind::ShieldedSpend).await?;
     let permit = write_permit(&lease, operation, quote.total_credits)?;
     // The records before, to tell this spend's (spends of the wallet run
     // one at a time, under its lock).
@@ -827,7 +840,7 @@ pub(crate) async fn send(
 ) -> Result<ShieldedSpendOutcome, ShieldedError> {
     let memo = memo_field(memo)?;
     let address = shielded_address(lib.network(), to)?;
-    let lock = wallet_lock(wallet);
+    let lock = wallet_lock(session, wallet);
     let _spending = lock.lock().await;
     // Before the grant, so a refusal keeps it; `spend` quotes again under
     // the hold.
@@ -848,7 +861,7 @@ pub(crate) async fn unshield(
     to: Option<&str>,
     grant: &str,
 ) -> Result<ShieldedSpendOutcome, ShieldedError> {
-    let lock = wallet_lock(wallet);
+    let lock = wallet_lock(session, wallet);
     let _spending = lock.lock().await;
     unshield_quote(lib, credits, to).await?;
     let to = match to {
@@ -1084,7 +1097,7 @@ pub(crate) async fn shield(
     if !lib.bind().await? {
         return Err(ShieldedError::NotSynced);
     }
-    let lock = wallet_lock(wallet);
+    let lock = wallet_lock(session, wallet);
     let _shielding = lock.lock().await;
     let plan = shield_plan(session, lib, duffs).await?;
     if !session.leases.refresh_funding(wallet).await {
@@ -1235,7 +1248,7 @@ pub(crate) async fn resume(
     if !lib.bind().await? {
         return Err(ShieldedError::NotSynced);
     }
-    let lock = wallet_lock(wallet);
+    let lock = wallet_lock(session, wallet);
     let _shielding = lock.lock().await;
     let pending = (open_shields(lib).await?.into_iter())
         .map(|o| o.lock)
@@ -1422,8 +1435,14 @@ impl ShieldedLib for PwShielded {
             return Ok(true);
         }
         // A bind adds the wallet to the coordinator's passes: never while
-        // one is in flight (R1-3, `PlatformRuntime::shielded_passes`).
-        let _passes = self.pw.session.platform.shielded_passes.write().await;
+        // one is in flight (R1-3, `PlatformRuntime::shielded_passes`). A
+        // read waits for it a little, then answers "not bound yet", so a
+        // wallet that cannot bind (watch-only, the vault locked) does not
+        // hold its status behind every pass.
+        let passes = self.pw.session.platform.shielded_passes.write();
+        let Ok(_passes) = tokio::time::timeout(BIND_PASS_WAIT, passes).await else {
+            return Ok(false);
+        };
         if (wallet.bind_shielded_from_persisted(&accounts, &self.coordinator)).await? {
             return Ok(true);
         }
@@ -1622,11 +1641,13 @@ impl ShieldedLib for PwShielded {
 
     async fn settle(&self, txid: Txid) -> Result<(), PlatformError> {
         let (leases, wallet) = (&self.pw.session.leases, self.pw.wallet_id);
-        let how = TopUpSettled::Applied;
-        leases.settle_top_up(wallet, txid, how).await.map_err(|e| {
-            tracing::warn!(%txid, error = %e, "could not record a shield's lock settled");
-            PlatformError::Unavailable
-        })
+        (leases
+            .settle_top_up(wallet, txid, TopUpSettled::Applied)
+            .await)
+            .map_err(|e| {
+                tracing::warn!(%txid, error = %e, "could not record a shield's lock settled");
+                PlatformError::Unavailable
+            })
     }
 
     async fn record(&self, spend: &UnresolvedSpend) -> Result<(), PlatformError> {
@@ -1904,8 +1925,7 @@ pub(crate) async fn admit_pass(
     // latter, `coordinator.rs:1342-1348`, `:1423-1439`). Neither set changes
     // until the pass ends: loads, binds, removals and the configuration
     // wait for `shielded_passes` (R1-3).
-    let mut wallets: std::collections::BTreeSet<[u8; 32]> =
-        manager.list_wallet_ids_blocking().into_iter().collect();
+    let mut wallets: BTreeSet<[u8; 32]> = manager.list_wallet_ids_blocking().into_iter().collect();
     wallets.extend(
         (coordinator.registered_subwallets().await)
             .into_iter()
@@ -1988,6 +2008,10 @@ pub(crate) async fn drain_passes(passes: &tokio::sync::RwLock<()>) {
 /// How long a spend waits for a pass in flight before it holds the passes
 /// off ([`hold_passes`]); a pass scanning a large pool takes seconds.
 const SPEND_PASS_WAIT: Duration = Duration::from_secs(60);
+
+/// How long a first bind waits for a pass in flight before it answers
+/// "not bound yet" (`PwShielded::bind`).
+const BIND_PASS_WAIT: Duration = Duration::from_secs(5);
 
 /// Holds the shielded passes off, from a spend's library call until its
 /// record is written; `platform.unavailable` (retry) when a pass in flight

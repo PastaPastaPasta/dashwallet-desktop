@@ -270,10 +270,17 @@ impl NetworkSession {
                 return Ok(());
             }
             this.require_wallet(&id)?;
+            // A shielded call of the wallet in flight (a send, an unshield,
+            // a shield) ends first and none starts until the unload is
+            // done: a spend's library call outlives its permit's drain, and
+            // may store its transition up to its end.
+            let _shielded = crate::platform::shielded_pool::wallet_lock(&this, id)
+                .lock_owned()
+                .await;
             // DEC-1046: unloading a wallet that holds a shielded spend of
             // unknown result would delete its stored transition (no detach
             // at the pin); refused before anything of it changes, and again
-            // at the removal for a spend stored meanwhile.
+            // at the removal (fail closed).
             if crate::platform::shielded_pool::holds_stored_spends(&live.manager, id).await {
                 return Err(EngineError::ShieldedSpendUnresolved);
             }
@@ -295,6 +302,9 @@ impl NetworkSession {
                 .await
             {
                 live.store.set_unloaded(id.0, false);
+                // The revocation dropped its background lease, without
+                // which every shielded pass of the network is held back.
+                this.spawn_ensure_background();
                 return Err(e);
             }
             this.hub.unload_wallet(&id);
