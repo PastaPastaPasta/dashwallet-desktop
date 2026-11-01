@@ -47,7 +47,8 @@ const IDENTITY = "8tvHgfq4BLx3bRBcxSs7ZsjaTnAZDSmLhNpAgXyNomeR";
 for (const theme of THEMES) {
   for (const route of ROUTES) {
     test(`route ${route} ${theme}: renders, 0 serious axe issues`, async ({ page }, info) => {
-      const errors = await open(page, "dashpay-registered", theme);
+      // Masternodes is hidden until Show Masternodes is on: `governance` has it on.
+      const errors = await open(page, route === "masternodes" ? "governance" : "dashpay-registered", theme);
       await command(page, { kind: "navigate", route });
       await expect(page.getByTestId(`page-${route}`)).toBeVisible();
       await fontsReady(page);

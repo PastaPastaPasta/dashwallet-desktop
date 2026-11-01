@@ -29,6 +29,15 @@ export function NetworkCapsule({ network, testId }: { network: NetworkInfo; test
   );
 }
 
+/** "Experimental", beside the name of a feature that is not release quality yet (CoinJoin in 0.1). */
+export function ExperimentalBadge({ testId }: { testId?: string }) {
+  return (
+    <span className="experimental-badge" data-testid={testId}>
+      Experimental
+    </span>
+  );
+}
+
 /** The Dash currency glyph, a template image tinted with the text colour. */
 export function Glyph({ factor = 1 }: { factor?: number }) {
   const style = { "--glyph-url": `url("${iconFiles.dashCurrency.light}")`, "--glyph-factor": factor } as CSSProperties;

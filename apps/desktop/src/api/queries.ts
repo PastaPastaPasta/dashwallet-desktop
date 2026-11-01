@@ -33,6 +33,10 @@ export const keys = {
   lockDrain: ["lockDrain"] as const,
   wallets: ["wallets"] as const,
   balance: (walletId: string) => ["balance", walletId] as const,
+  /** Under the balance's key, so a `balances` event reads them again with it. */
+  shieldedBalance: (walletId: string) => ["balance", walletId, "shielded"] as const,
+  platformBalance: (walletId: string) => ["balance", walletId, "platform"] as const,
+  networkChoice: ["networkChoice"] as const,
   sync: ["sync"] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
   history: (walletId: string, filter: HistoryFilter, limit: number) => ["history", walletId, filter, limit] as const,
@@ -108,6 +112,22 @@ export function useWallets() {
 export function useBalance(walletId: string) {
   const b = useBackend();
   return useQuery({ queryKey: keys.balance(walletId), queryFn: () => b.balance(walletId) });
+}
+
+/** The shielded and Platform balances in duffs; `null` while dw-app has no command for one
+ * (api/pending.ts), `undefined` while it is being read. */
+export function usePoolBalances(walletId: string) {
+  const b = useBackend();
+  const shielded = useQuery({ queryKey: keys.shieldedBalance(walletId), queryFn: () => b.shieldedBalance(walletId), retry: false });
+  const platform = useQuery({ queryKey: keys.platformBalance(walletId), queryFn: () => b.platformBalance(walletId), retry: false });
+  const value = (q: typeof shielded) => (q.isError ? null : q.data);
+  return { shielded: value(shielded), platform: value(platform) };
+}
+
+/** The network the next start opens; `null` while dw-app has no such command. */
+export function useNetworkChoice() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.networkChoice, queryFn: () => b.networkChoice(), retry: false });
 }
 
 export function useSyncStatus() {

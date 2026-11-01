@@ -7,6 +7,10 @@
 import type { AppError, AppEvent, ErrorCode } from "./generated/commands";
 import { ERROR_CODES } from "./generated/commands";
 import type { AuthGrant } from "./generated/AuthGrant";
+import type { CsvUnitName } from "./generated/CsvUnitName";
+import type { HistoryFilterRequest } from "./generated/HistoryFilterRequest";
+import type { HistorySortName } from "./generated/HistorySortName";
+import type { NetworkChoice } from "./pending";
 import type { Balances } from "./generated/Balances";
 import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { ContactList } from "./generated/ContactList";
@@ -180,8 +184,20 @@ export interface Backend {
   recoverWithMnemonic(walletId: string, mnemonic: string, bip39Passphrase: string, newPassphrase: string): Promise<VaultRecovery>;
   dispatchStatus(walletId: string, artifact: string): Promise<DispatchStateName | null>;
   balance(walletId: string): Promise<Balances | null>;
+  // Lanes E1 and E2 add these (api/pending.ts): `null` until dw-app has the command.
+  /** The network the next start opens (`get_network_choice`). */
+  networkChoice(): Promise<NetworkChoice | null>;
+  /** Saves it for the next start (`set_network_choice`); the window keeps its network. */
+  setNetworkChoice(choice: NetworkChoice): Promise<null>;
+  /** The wallet's shielded balance in duffs. */
+  shieldedBalance(walletId: string): Promise<number | null>;
+  /** The wallet's Platform addresses' balance in duffs. */
+  platformBalance(walletId: string): Promise<number | null>;
   syncStatus(): Promise<SyncStatus>;
   historyPage(walletId: string, request: HistoryRequest): Promise<HistoryRows>;
+  /** dash-qt's CSV of the history `filter` and `sort` select (every field quoted, `\n` ends);
+   * `typeNames` empty: dash-qt's English type names. */
+  exportHistoryCsv(walletId: string, filter: HistoryFilterRequest, sort: HistorySortName, unit: CsvUnitName, typeNames: string[], utcOffsetSecs: number): Promise<string>;
   txDetail(walletId: string, txid: string): Promise<TxDetails>;
   /** Which actions the detail sheet offers (Abandon, Resend). */
   txDetailExtras(walletId: string, txid: string): Promise<TxDetailExtrasInfo>;

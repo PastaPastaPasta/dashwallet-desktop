@@ -26,7 +26,7 @@ export function CoinJoinTab() {
   const limits = useCoinJoinLimits();
   if (!settings.data || !limits.data)
     return (
-      <SettingsCard title="CoinJoin" testId="settings-coinjoin-loading">
+      <SettingsCard title="CoinJoin (experimental)" testId="settings-coinjoin-loading">
         <Hint>{pendingText(settings.isError ? settings : limits)}</Hint>
       </SettingsCard>
     );
@@ -127,7 +127,7 @@ function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: 
 
   return (
     <>
-      <SettingsCard title="CoinJoin" testId="settings-coinjoin">
+      <SettingsCard title="CoinJoin (experimental)" testId="settings-coinjoin">
         {box("settings-coinjoin-enabled", CoinJoinText.enableFeatures, CoinJoinText.enableFeaturesTip, shown.enabled, (enabled) => ({ enabled }))}
         {box("settings-coinjoin-multisession", CoinJoinText.multiSession, CoinJoinText.multiSessionTip, shown.multiSession, (multiSession) => ({ multiSession }))}
         <Hint>{CoinJoinText.persists}</Hint>

@@ -116,7 +116,7 @@ test.describe("General", () => {
 
   test("rows without an engine say who brings them (D6, D7)", async ({ page }) => {
     await settings(page, "general");
-    await expect(page.getByTestId("settings-switch-network")).toContainText("U-04b");
+    await expect(page.getByTestId("settings-network-choice")).toBeVisible();
     await expect(page.getByTestId("settings-currency")).toContainText("MP-01");
     await expect(page.getByTestId("settings-proxy")).toContainText("Not available yet");
     await expect(page.getByTestId("settings-data-dir")).toContainText("/home/user/.local/share/dashwallet");

@@ -120,6 +120,7 @@ export const DEFAULT_PREFS: UiSettings = {
   autoLockSecs: null,
   subtractFeeByDefault: false,
   showMasternodes: false,
+  preReleaseNoticeDismissed: false,
 };
 
 let state: UiState = {

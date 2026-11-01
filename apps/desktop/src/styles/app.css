@@ -785,6 +785,20 @@ button {
   letter-spacing: 1.2px; /* UX-SPEC §2.2: tracking 1.2 */
 }
 
+.experimental-badge {
+  display: inline-block;
+  margin-inline-start: var(--dw-space-xs);
+  padding: 0 var(--dw-space-xs);
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-warning-tint);
+  color: var(--dw-role-warning);
+  font-size: var(--dw-type-caption2-size);
+  font-weight: 700;
+  line-height: var(--dw-type-caption2-line);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
 .network-capsule-slot {
   display: block;
   height: 19px; /* capsule height, so the hero never jumps on mainnet */
@@ -971,6 +985,10 @@ button {
   grid-template-columns: 1fr auto 1fr auto 1fr;
 }
 
+.hero-breakdown:has(> :nth-child(7)) {
+  grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+}
+
 .breakdown-cell {
   display: flex;
   align-items: center;
@@ -1012,7 +1030,8 @@ button {
 /* Narrow windows stack the strip's cells (UX-SPEC §4.5; the sidebar takes 220 of the 980). */
 @media (max-width: 979px) {
   .hero-breakdown,
-  .hero-breakdown:has(> :nth-child(5)) {
+  .hero-breakdown:has(> :nth-child(5)),
+  .hero-breakdown:has(> :nth-child(7)) {
     grid-template-columns: 1fr;
   }
   .breakdown-divider {
@@ -2043,6 +2062,12 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: var(--dw-space-m);
+}
+
+.tx-intro-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
 }
 
 .segmented {

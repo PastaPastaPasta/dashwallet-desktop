@@ -8,6 +8,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { useBackend } from "../api/queries";
 import { useSecretScreen } from "../app/ui";
 import { DashButton, DashLogo, NetworkCapsule } from "../components/basics";
+import { NetworkPicker, useNetworkPicker } from "../components/networkPicker";
 import { NewPassphraseForm, PassphrasePrompt } from "../components/passphrase";
 import { Bip39Field, noCopy, PhraseGrid, PhraseInput, ProtectionPending } from "../components/phrase";
 import { useModel } from "../onboarding/model";
@@ -77,7 +78,7 @@ export function Onboarding({
         </header>
         <main className="onboarding-body" ref={body} data-testid={ready ? `onboarding-${step}` : "onboarding-preparing"}>
           {ready ? (
-            <Step model={model} onCancel={onCancel} onDone={onDone} restoreText={restoreText} setRestoreText={setRestoreText} />
+            <Step model={model} network={network} onCancel={onCancel} onDone={onDone} restoreText={restoreText} setRestoreText={setRestoreText} />
           ) : (
             <ProtectionPending protection={protection} onCancel={onCancel} />
           )}
@@ -97,12 +98,14 @@ function Title({ children }: { children: string }) {
 
 function Step({
   model,
+  network,
   onCancel,
   onDone,
   restoreText,
   setRestoreText,
 }: {
   model: OnboardingModel;
+  network: NetworkInfo;
   onCancel: (() => void) | null;
   onDone: (walletId: string | null) => void;
   restoreText: string;
@@ -110,7 +113,7 @@ function Step({
 }) {
   switch (model.step) {
     case "welcome":
-      return <Welcome model={model} onCancel={onCancel} />;
+      return <Welcome model={model} network={network} onCancel={onCancel} />;
     case "choosePassphrase":
       return <ChoosePassphrase model={model} />;
     case "unlockVault":
@@ -198,16 +201,21 @@ function Step({
   }
 }
 
-function Welcome({ model, onCancel }: { model: OnboardingModel; onCancel: (() => void) | null }) {
+function Welcome({ model, network, onCancel }: { model: OnboardingModel; network: NetworkInfo; onCancel: (() => void) | null }) {
+  // A wallet is made on the network this window runs on: with another one chosen, it waits for
+  // the restart that opens it.
+  const picker = useNetworkPicker(network.kind);
+  const wait = picker.restart || picker.loading;
   return (
     <>
       <Title>{onCancel ? "Add a wallet" : "Welcome to Dash Wallet"}</Title>
       <p className="onboarding-text">Create a new wallet, or restore one with its recovery phrase.</p>
+      <NetworkPicker state={picker} testId="onboarding-network" />
       <div className="onboarding-actions">
-        <DashButton variant="filledBlue" size="large" fill disabled={model.busy} data-testid="onboarding-create" onClick={() => void model.startCreate()}>
+        <DashButton variant="filledBlue" size="large" fill disabled={model.busy || wait} data-testid="onboarding-create" onClick={() => void model.startCreate()}>
           Create a new wallet
         </DashButton>
-        <DashButton variant="plainBlue" size="large" fill disabled={model.busy} data-testid="onboarding-restore" onClick={() => void model.startRestore()}>
+        <DashButton variant="plainBlue" size="large" fill disabled={model.busy || wait} data-testid="onboarding-restore" onClick={() => void model.startRestore()}>
           Restore from recovery phrase
         </DashButton>
         {onCancel && (

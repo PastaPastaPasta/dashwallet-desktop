@@ -8,7 +8,7 @@ import type { CoinJoinStatus } from "../../api/generated/CoinJoinStatus";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useLockStatus } from "../../api/queries";
 import { navigate, useUi } from "../../app/ui";
-import { DashButton, Icon } from "../../components/basics";
+import { DashButton, ExperimentalBadge, Icon } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
 import { CoinJoinText, LEVELS, levelOf, lockLine, poolMessageText, POOL_STATE_TEXT, settingsFailureText } from "../../coinjoin/model";
 import { useCoinJoinAmount, useCoinJoinSettings, useCoinJoinView, useMaskedAmount, useSaveCoinJoinSettings } from "../../coinjoin/queries";
@@ -28,7 +28,7 @@ export function CoinJoinPage({ walletId, network }: { walletId: string; network:
   const { action } = view;
   const lockText = lockLine(lock.data?.state);
   return (
-    <Page route="coinJoin">
+    <Page route="coinJoin" badge={<ExperimentalBadge testId="coinjoin-experimental" />}>
       <p className="coinjoin-subtitle">{CoinJoinText.subtitle}</p>
       <section className="coinjoin-status card-l1" data-testid="coinjoin-status" data-state={view.state} aria-labelledby={`${id}-title`}>
         <Icon id="coinjoin" size={56} className="coinjoin-status-icon" />

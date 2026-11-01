@@ -9,6 +9,7 @@ import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { navigate, ui, useUi, type Route } from "../app/ui";
 import { namesState, type NamesState } from "../dashpay/status";
+import { ExperimentalBadge } from "./basics";
 import { isSyncing, syncPercent, syncState } from "../format/sync";
 import { Avatar } from "../screens/contacts/Avatar";
 
@@ -88,7 +89,10 @@ export function Sidebar({ joined, requests, masternodes }: { joined: boolean; re
                 <svg className="sidebar-icon" viewBox="0 0 20 20" aria-hidden="true">
                   {item.icon}
                 </svg>
-                <span className="sidebar-title">{item.title}</span>
+                <span className="sidebar-title">
+                  {item.title}
+                  {item.route === "coinJoin" && <ExperimentalBadge testId="sidebar-coinJoin-experimental" />}
+                </span>
                 {badge !== null && (
                   <span className="sidebar-badge" data-testid={`sidebar-${item.route}-badge`} aria-label={`${badge} waiting`}>
                     {badgeText(badge)}

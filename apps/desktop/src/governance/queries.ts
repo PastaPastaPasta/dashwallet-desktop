@@ -7,10 +7,10 @@ import { useIsMutating, useMutation, useQueries, useQuery, useQueryClient } from
 import { useMemo } from "react";
 import type { ProposalScopeName } from "../api/generated/ProposalScopeName";
 import { errorMessage } from "../api/backend";
-import { keys, useBackend, useUtxos } from "../api/queries";
+import { keys, useBackend } from "../api/queries";
 import { useUi } from "../app/ui";
 import { showToast } from "../components/toast";
-import { badgeCount, GovText, governanceErrorText, masternodesShown, SUPERBLOCK_CHOICES } from "./model";
+import { badgeCount, GovText, governanceErrorText, SUPERBLOCK_CHOICES } from "./model";
 
 const g = keys.governanceAll;
 /** Tip-derived reads: a block is about 2.5 minutes. */
@@ -73,17 +73,13 @@ export function useMyProposals(walletId: string, enabled = true) {
   return useQuery({ queryKey: govKeys.mine(walletId), queryFn: () => b.governanceMyProposals(walletId), refetchInterval: TIP_REFRESH_MS, enabled });
 }
 
-/** The sidebar's Masternodes item (D3, D5): shown or not, and its badge. The coins are read only
- * while neither the setting nor a proposal shows it. */
+/** The sidebar's Masternodes item and its badge (MG-09 D3, D5). 0.1 release plan: Masternodes,
+ * Governance and Username voting stay out of the sidebar and off their route until Settings ▸
+ * General ▸ Show Masternodes is on, whatever the wallet holds; nothing is read while it is off. */
 export function useMasternodesItem(walletId: string | null): { shown: boolean; badge: number } {
   const setting = useUi((s) => s.prefs.showMasternodes);
-  const mine = useMyProposals(walletId ?? "", walletId !== null);
-  const early = masternodesShown(setting, mine.data, undefined);
-  const coins = useUtxos(walletId ?? "", walletId !== null && !early && mine.isFetched);
-  return {
-    shown: early || masternodesShown(false, undefined, coins.data?.map((c) => c.amount)),
-    badge: badgeCount(mine.data),
-  };
+  const mine = useMyProposals(walletId ?? "", walletId !== null && setting);
+  return { shown: setting, badge: setting ? badgeCount(mine.data) : 0 };
 }
 
 export function useUpcomingSuperblocks() {

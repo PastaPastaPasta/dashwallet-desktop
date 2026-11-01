@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
+import { callPending, PENDING_COMMANDS as PENDING, type NetworkChoice } from "./pending";
 import * as cmd from "./generated/commands";
 import type { AppEvent, ShellEvent } from "./generated/commands";
 import type { AddressPurposeName } from "./generated/AddressPurposeName";
@@ -50,6 +51,15 @@ export class IpcBackend implements Backend {
   balance = (walletId: string) => cmd.balance(walletId);
   syncStatus = () => cmd.syncStatus();
   historyPage = cmd.historyPage;
+  exportHistoryCsv = cmd.exportHistoryCsv;
+  // Not generated yet (api/pending.ts): swap each line for `cmd.<name>` when its command lands.
+  networkChoice = async () => (await callPending<NetworkChoice>(PENDING.getNetworkChoice))?.value ?? null;
+  setNetworkChoice = async (choice: NetworkChoice) => {
+    if (!(await callPending<null>(PENDING.setNetworkChoice, { choice }))) throw new Error("The network choice is not available in this build.");
+    return null;
+  };
+  shieldedBalance = async (walletId: string) => (await callPending<number>(PENDING.shieldedBalance, { walletId }))?.value ?? null;
+  platformBalance = async (walletId: string) => (await callPending<number>(PENDING.platformBalance, { walletId }))?.value ?? null;
   txDetail = cmd.txDetail;
   txDetailExtras = cmd.txDetailExtras;
   setTxLabel = cmd.setTxLabel;

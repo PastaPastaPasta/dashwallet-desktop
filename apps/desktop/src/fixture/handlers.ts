@@ -51,7 +51,7 @@ import { identitiesHandlers } from "./identities";
 import { isClosed, settingsHandlers } from "./settings";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
-import { BASE58, FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
+import { BASE58, FIXTURE_NOW, historyCsv, historyPage, secs, txDetails } from "./wallet";
 
 export interface Ctx {
   world: World;
@@ -872,6 +872,7 @@ export const HANDLERS: Handlers = {
   import_wallet: ({ mnemonic, options }, ctx) => importWallet(ctx, mnemonic, options.name),
   sync_status: (_, { world }) => world.sync,
   history_page: ({ walletId, request }, { world }) => historyPage(wallet(world, walletId).rows, request),
+  export_history_csv: ({ walletId, filter, sort, unit, utcOffsetSecs }, { world }) => historyCsv(wallet(world, walletId).rows, filter, sort, unit, utcOffsetSecs),
   tx_detail: ({ walletId, txid }, { world }) => {
     const row = wallet(world, walletId).rows.find((r) => r.txid === txid);
     if (!row) throw fail("tx_not_found", `transaction not found: ${txid}`);

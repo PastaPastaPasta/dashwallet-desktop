@@ -95,7 +95,8 @@ for (const theme of THEMES) {
       await expect(page.getByTestId("history-header")).toBeVisible();
       if (home) {
         await expect(card(page)).toHaveAttribute("data-state", state);
-        await expect(card(page).locator("h2")).toHaveText(title);
+        // The card's heading also holds the Experimental label: the title is its button.
+        await expect(card(page).getByTestId("coinjoin-card-open")).toHaveText(title);
         await fontsReady(page);
         expect(await seriousAxeViolations(page)).toEqual([]);
       } else await expect(card(page)).toHaveCount(0);

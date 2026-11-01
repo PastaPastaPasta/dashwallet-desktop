@@ -14,6 +14,7 @@ import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { ThemeName } from "../api/generated/ThemeName";
 import { isErrorClass, sampleError, type ErrorClass } from "./errors";
+import { PENDING_HANDLERS } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
 import { restarted } from "./registration";
 import { buildWorld, DEFAULT_SCENARIO, FIXTURE_WALLET_ID, isScenario, type ScenarioName, type World } from "./scenarios";
@@ -97,7 +98,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
       if (opts.delayMs && !UNDELAYED.has(cmd)) await new Promise((r) => setTimeout(r, opts.delayMs));
       const cls = failures.get(cmd as CommandName);
       if (cls) throw sampleError(cls);
-      const handler = HANDLERS[cmd as CommandName] as ((args: unknown, ctx: Ctx) => unknown) | undefined;
+      const handler = (HANDLERS[cmd as CommandName] ?? PENDING_HANDLERS[cmd]) as ((args: unknown, ctx: Ctx) => unknown) | undefined;
       if (!handler) throw notImplemented(cmd);
       const result = handler(payload ?? {}, ctx);
       const release = held.get(cmd);

@@ -34,6 +34,7 @@ import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
+import { newPendingWorld, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
@@ -112,6 +113,8 @@ export interface World {
   coinjoin: CoinJoinWorld;
   /** Governance: sync, proposals, voting masternodes and own proposals (governance.ts, MG-09). */
   governance: GovernanceWorld;
+  /** The commands dw-app does not have yet: network choice, shielded and Platform balances (pending.ts). */
+  pending: PendingWorld;
 }
 
 /** A vault grant: single use (`used` once redeemed or revoked); `ownKey` when it was issued
@@ -207,6 +210,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     scan: scanWorld(),
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
+    pending: newPendingWorld(),
   };
 }
 
@@ -547,6 +551,28 @@ function withInvitation(w: World, status?: InvitationStatus): World {
 const SCENARIOS = {
   /** The reference wallet: balance, a month of history, caught up, unlocked. */
   funded: (t) => base(t),
+  /** The first run: the pre-release notice is up (the other scenarios start past it). */
+  "pre-release-notice": (t) => {
+    const w = base(t);
+    w.settings.ui = { ...w.settings.ui, preReleaseNoticeDismissed: false };
+    return w;
+  },
+  /** No wallet yet, and Mainnet chosen while this window is on testnet: Welcome asks for a restart. */
+  "no-wallet-network-restart": (t) => {
+    const w = base(t);
+    w.wallets = [];
+    w.phrases = {};
+    w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+    w.pending.networkChoice = "mainnet";
+    return w;
+  },
+  /** The funded wallet when dw-app has no shielded or Platform command: Home shows "—" for both. */
+  "pools-absent": (t) => {
+    const w = base(t);
+    w.pending.shielded = null;
+    w.pending.platform = null;
+    return w;
+  },
   /** A new wallet: no history, zero balance. */
   empty: (t) => base(t, "empty"),
   /** No wallet on the network yet, and no vault. */

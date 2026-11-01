@@ -9,12 +9,14 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxRow } from "../api/generated/TxRow";
 import { errorMessage } from "../api/backend";
-import { useBackend, useHistory } from "../api/queries";
+import { useBackend, useHistory, type HistoryFilter } from "../api/queries";
+import { fileErrorText } from "../app/files";
 import { useLocalDay } from "../app/localDay";
 import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, TxTable, useRowContext } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
+import { exportHistory } from "../history/exportCsv";
 import { DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
 
 const PAGE_SIZE = 200;
@@ -57,10 +59,28 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   // List mode always shows the newest first (it groups by day); Table mode sorts.
   const order = mode === "table" ? sort : "newestFirst";
   // Query keys are hashed structurally, so a fresh filter object per render is fine.
-  const history = useHistory(walletId, { categories: category.categories, text: text || null, sort: order, ...range, ...(minAmount ? { minAmount } : {}) }, PAGE_SIZE);
+  const filter: HistoryFilter = { categories: category.categories, text: text || null, sort: order, ...range, ...(minAmount ? { minAmount } : {}) };
+  const history = useHistory(walletId, filter, PAGE_SIZE);
   const rows = useMemo(() => history.data?.pages.flatMap((p) => p.rows) ?? [], [history.data]);
   const total = history.data?.pages[0]?.totalMatching ?? null;
   const ctx = useRowContext(network);
+
+  // Export CSV (QT-093): the records the filters select, all pages; the line under the bar says
+  // where the file went, or why not.
+  const [exporting, setExporting] = useState(false);
+  const [exported, setExported] = useState<{ ok: boolean; text: string } | null>(null);
+  const exportCsv = async () => {
+    setExporting(true);
+    setExported(null);
+    try {
+      const path = await exportHistory(backend, walletId, filter, shown.unit, backend.now());
+      if (path !== null) setExported({ ok: true, text: `Exported to ${path}.` });
+    } catch (e) {
+      setExported({ ok: false, text: `The history could not be exported. ${fileErrorText(e)}` });
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // Load the next page when the end of the list scrolls into view. After a failed page the
   // observer stays off until the user retries, so a persistent error cannot loop.
@@ -81,14 +101,24 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
       <div className="page-column">
         <header className="top-intro top-intro-row" data-testid="tx-intro">
           <h1 className="top-intro-title">Activity</h1>
-          <div className="segmented" role="group" aria-label="View" data-testid="tx-mode">
-            {(["list", "table"] as const).map((m) => (
-              <button key={m} type="button" className="segment" aria-pressed={mode === m} data-testid={`tx-mode-${m}`} onClick={() => setMode(m)}>
-                {m === "list" ? "List" : "Table"}
-              </button>
-            ))}
+          <div className="tx-intro-actions">
+            <DashButton variant="tintedGray" size="small" data-testid="tx-export-csv" disabled={exporting || !total} onClick={() => void exportCsv()}>
+              Export CSV
+            </DashButton>
+            <div className="segmented" role="group" aria-label="View" data-testid="tx-mode">
+              {(["list", "table"] as const).map((m) => (
+                <button key={m} type="button" className="segment" aria-pressed={mode === m} data-testid={`tx-mode-${m}`} onClick={() => setMode(m)}>
+                  {m === "list" ? "List" : "Table"}
+                </button>
+              ))}
+            </div>
           </div>
         </header>
+        {exported && (
+          <p className={exported.ok ? "settings-done" : "form-problem"} role={exported.ok ? "status" : "alert"} data-testid="tx-export-result">
+            {exported.text}
+          </p>
+        )}
         <div className="tx-filter-bar" data-testid="tx-filter-bar">
           <div className="tx-filter-row">
             <label className="search-field" data-testid="tx-search">
