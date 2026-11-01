@@ -90,6 +90,8 @@ jobs:
           lipo -archs "$app/Contents/MacOS/dash-wallet"
           codesign -dv "$app" 2>&1 | grep -E "Signature|Identifier"
       - name: Launch the built app and take a screenshot
+        env:
+          DWD_SHOT_SETTLE: "15"
         run: |
           data=$(mktemp -d)
           read -ra args <<<"$LAUNCH_ARGS"
