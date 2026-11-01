@@ -5,8 +5,10 @@
  */
 export type PendingShield = { txid: string, duffs: number, proved: boolean,
 /**
- * The lock may already be applied (Platform said so unproved, or a
- * restore read it back): `resumeShield` asks again; `resolveShield`
- * once its credits are seen to have arrived.
+ * The lock may already be applied ("Checking": Platform said so
+ * unproved, an apply failed after signing, or a restore read it back);
+ * its amount may already be in the shielded balance. `resumeShield`
+ * checks again; only a proved apply clears it. It blocks no new
+ * shield.
  */
 consumptionUnknown: boolean, };

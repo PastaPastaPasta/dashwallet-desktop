@@ -56,7 +56,6 @@
     "allow-shield-quote",
     "allow-shield-from-core",
     "allow-resume-shield",
-    "allow-resolve-shield",
     "allow-shielded-send-quote",
     "allow-shielded-send",
     "allow-unshield-quote",

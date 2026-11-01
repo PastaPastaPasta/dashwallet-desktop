@@ -1889,18 +1889,11 @@ export function shieldFromCore(walletId: string, duffs: number, grant: string): 
 }
 
 /**
- * Applies the pending Core → Shielded lock `txid` under `grant`.
+ * Applies the pending Core → Shielded lock `txid` under `grant`, or
+ * checks one of unknown consumption again ("Check again").
  */
 export function resumeShield(walletId: string, txid: string, grant: string): Promise<ShieldOutcome> {
   return invoke<ShieldOutcome>("resume_shield", { walletId, txid, grant });
-}
-
-/**
- * Records the user's word that the pending shield `txid` (one whose
- * consumption is unknown) reached the pool.
- */
-export function resolveShield(walletId: string, txid: string): Promise<null> {
-  return invoke<null>("resolve_shield", { walletId, txid });
 }
 
 /**
@@ -2763,7 +2756,6 @@ export type CommandArgs = {
   shield_quote: { walletId: string; duffs: number };
   shield_from_core: { walletId: string; duffs: number; grant: string };
   resume_shield: { walletId: string; txid: string; grant: string };
-  resolve_shield: { walletId: string; txid: string };
   shielded_send_quote: { walletId: string; to: string; credits: string };
   shielded_send: { walletId: string; to: string; credits: string; memo: string | null; grant: string };
   unshield_quote: { walletId: string; credits: string; to: string | null };
@@ -3057,7 +3049,6 @@ export type CommandResults = {
   shield_quote: ShieldQuote;
   shield_from_core: ShieldOutcome;
   resume_shield: ShieldOutcome;
-  resolve_shield: null;
   shielded_send_quote: ShieldedSpendQuote;
   shielded_send: ShieldedSpendOutcome;
   unshield_quote: ShieldedSpendQuote;
@@ -3353,7 +3344,6 @@ export const COMMANDS: Record<CommandName, string> = {
   shield_quote: "identity",
   shield_from_core: "identity",
   resume_shield: "identity",
-  resolve_shield: "identity",
   shielded_send_quote: "identity",
   shielded_send: "identity",
   unshield_quote: "identity",

@@ -132,9 +132,9 @@ pub(crate) struct PlatformRuntime {
     /// runs meanwhile. Apart from `shielded_passes` so a lock's drain waits
     /// for the passes only, not for a spend's network call.
     pub(crate) shielded_spends: tokio::sync::RwLock<()>,
-    /// The shield locks Platform answered "already consumed", unproved,
-    /// for in this session (`shielded_pool::open_shields`).
-    pub(crate) shield_taken: std::sync::Mutex<std::collections::HashSet<dashcore::Txid>>,
+    /// The shield locks of unknown consumption marked this session, kept
+    /// also in `app.sqlite` (`shielded_pool::ShieldedLib::unknown_locks`).
+    pub(crate) shield_unknown: std::sync::Mutex<std::collections::HashSet<dashcore::Txid>>,
     pub(super) key_work: Arc<KeyWork>,
     /// Wallets a restore has begun storing and has not committed or rolled
     /// back (review r2 M4).
@@ -402,7 +402,7 @@ impl PlatformRuntime {
             #[cfg(test)]
             pass_pause: Mutex::new(None),
             shielded_spends: tokio::sync::RwLock::new(()),
-            shield_taken: std::sync::Mutex::default(),
+            shield_unknown: std::sync::Mutex::default(),
             key_work: Arc::default(),
             restoring: Mutex::new(HashMap::new()),
             events: AtomicU64::new(0),

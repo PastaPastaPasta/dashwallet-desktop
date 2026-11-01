@@ -644,19 +644,12 @@ commands! {
         Ok(dashpay.shield_from_core(duffs, grant).await?.into())
     }
 
-    /// Applies the pending Core → Shielded lock `txid` under `grant`.
+    /// Applies the pending Core → Shielded lock `txid` under `grant`, or
+    /// checks one of unknown consumption again ("Check again").
     #[facade("DashPay::resume_shield")]
     fn resume_shield(state, wallet_id: String, txid: String, grant: String) -> ShieldOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         Ok(dashpay.resume_shield(txid, grant).await?.into())
-    }
-
-    /// Records the user's word that the pending shield `txid` (one whose
-    /// consumption is unknown) reached the pool.
-    #[facade("DashPay::resolve_shield")]
-    fn resolve_shield(state, wallet_id: String, txid: String) -> () {
-        state.dashpay(&wallet_id).await?.resolve_shield(txid).await?;
-        Ok(())
     }
 
     /// What sending `credits` (a decimal string) to the shielded address

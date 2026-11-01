@@ -157,12 +157,13 @@ pub enum ShieldState {
     },
     /// The lock waits for its proof (`resumeShield`).
     ProofWaiting,
-    /// Applying the proved lock failed with `error` (a code); `resumeShield`
-    /// tries again.
+    /// The apply was refused before its transition was signed, with `error`
+    /// (a code): nothing reached Platform. `resumeShield` tries again.
     NotApplied { error: String },
-    /// Platform said the lock is already consumed, unproved: it stays
-    /// pending (`consumptionUnknown`) until a proved apply or
-    /// `resolveShield`.
+    /// The apply may have executed, unproved (Platform said the lock is
+    /// already consumed, or the apply failed after signing): it stays
+    /// pending (`consumptionUnknown`, "Checking") until a proved apply
+    /// (`resumeShield`, "Check again"); it blocks no new shield.
     ConsumptionUnknown,
 }
 
@@ -203,9 +204,11 @@ pub struct PendingShield {
     pub txid: String,
     pub duffs: u64,
     pub proved: bool,
-    /// The lock may already be applied (Platform said so unproved, or a
-    /// restore read it back): `resumeShield` asks again; `resolveShield`
-    /// once its credits are seen to have arrived.
+    /// The lock may already be applied ("Checking": Platform said so
+    /// unproved, an apply failed after signing, or a restore read it back);
+    /// its amount may already be in the shielded balance. `resumeShield`
+    /// checks again; only a proved apply clears it. It blocks no new
+    /// shield.
     pub consumption_unknown: bool,
 }
 

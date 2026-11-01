@@ -18,7 +18,6 @@ use dashcore::hashes::Hash;
 use dashcore::{Address, Network, OutPoint, PubkeyHash, Txid};
 use dpp::address_funds::{OrchardAddress, PlatformAddress};
 use dpp::version::PlatformVersion;
-use dw_appdb::dispatch::TopUpSettled;
 use dw_vault::{VaultError, VaultSigner};
 use platform_wallet::PlatformWalletError;
 use platform_wallet::wallet::shielded::note_selection::{ShieldedFeeKind, select_notes_with_fee};
@@ -139,9 +138,16 @@ struct FakeShielded {
     /// The locks the journal records settled.
     settled: Mutex<HashSet<Txid>>,
     /// Every settle, in order.
-    settles: Mutex<Vec<(Txid, TopUpSettled)>>,
+    settles: Mutex<Vec<Txid>>,
     /// The next apply's answer.
     applies: Mutex<Option<Result<Applied, PlatformError>>>,
+    /// The outpoint of every apply, in order.
+    applied: Mutex<Vec<OutPoint>>,
+    /// The session a shield's funding records its lock in; none for tests
+    /// that fund nothing.
+    funder: Mutex<Option<(std::sync::Weak<NetworkSession>, crate::WalletId)>>,
+    /// The locks the fundings built, proved.
+    funded: Mutex<Vec<LockInfo>>,
     syncs: AtomicU32,
     spendable: Spendable,
     /// The coins a funding may select.
@@ -159,8 +165,8 @@ struct FakeShielded {
     /// What the next pass finds of the unconfirmed spends: `Confirmed`
     /// (their notes spent) or `Failed` (the prune backstop released them).
     scan_finds: Mutex<Option<Status>>,
-    /// Platform's unproved "already consumed" answers this session.
-    taken: Mutex<HashSet<Txid>>,
+    /// The locks of unknown consumption, as `app.sqlite` keeps them.
+    unknown: Mutex<HashSet<Txid>>,
     /// Asked during each spend's library call; its answers, in order.
     probe: Mutex<Option<Box<dyn Fn() -> bool + Send>>>,
     probed: Mutex<Vec<bool>>,
@@ -184,6 +190,9 @@ impl Default for FakeShielded {
             settled: Mutex::default(),
             settles: Mutex::default(),
             applies: Mutex::new(None),
+            applied: Mutex::default(),
+            funder: Mutex::default(),
+            funded: Mutex::default(),
             syncs: AtomicU32::new(0),
             spendable: Spendable {
                 duffs: 10_000_000_000,
@@ -198,7 +207,7 @@ impl Default for FakeShielded {
             recorded: Mutex::default(),
             rows: Mutex::default(),
             scan_finds: Mutex::new(None),
-            taken: Mutex::default(),
+            unknown: Mutex::default(),
             probe: Mutex::new(None),
             probed: Mutex::default(),
         }
@@ -206,6 +215,13 @@ impl Default for FakeShielded {
 }
 
 impl FakeShielded {
+    /// The session and wallet a shield's funding records its lock for.
+    fn funder(&self) -> (Arc<NetworkSession>, crate::WalletId) {
+        let funder = self.funder.lock().unwrap().clone();
+        let (session, wallet) = funder.expect("a test that funds a shield");
+        (session.upgrade().expect("the fixture's session"), wallet)
+    }
+
     fn at(version: u32, refreshed: u32) -> Self {
         Self {
             version,
@@ -359,27 +375,28 @@ impl ShieldedLib for FakeShielded {
     }
 
     async fn shield_locks(&self) -> Vec<LockInfo> {
-        self.locks.clone()
+        let funded = self.funded.lock().unwrap().clone();
+        self.locks.iter().cloned().chain(funded).collect()
     }
 
     fn own_locks(&self) -> Option<HashSet<Txid>> {
         self.own.clone()
     }
 
-    fn taken_locks(&self) -> HashSet<Txid> {
-        self.taken.lock().unwrap().clone()
+    async fn unknown_locks(&self) -> HashSet<Txid> {
+        self.unknown.lock().unwrap().clone()
     }
 
-    fn mark_taken(&self, txid: Txid) {
-        self.taken.lock().unwrap().insert(txid);
+    async fn mark_unknown(&self, txid: Txid) {
+        self.unknown.lock().unwrap().insert(txid);
     }
 
     async fn settled_locks(&self) -> HashSet<Txid> {
         self.settled.lock().unwrap().clone()
     }
 
-    async fn settle(&self, txid: Txid, how: TopUpSettled) -> Result<(), PlatformError> {
-        self.settles.lock().unwrap().push((txid, how));
+    async fn settle(&self, txid: Txid) -> Result<(), PlatformError> {
+        self.settles.lock().unwrap().push(txid);
         self.settled.lock().unwrap().insert(txid);
         Ok(())
     }
@@ -411,23 +428,54 @@ impl ShieldedLib for FakeShielded {
 
     async fn funding_permit(
         &self,
-        _: &Lease,
-        _: String,
-        _: FundingKey,
-        _: u64,
+        lease: &Lease,
+        step: String,
+        key: FundingKey,
+        duffs: u64,
     ) -> Result<CallPermit, FundError> {
-        unreachable!("no test funds a shield")
+        let (session, _) = self.funder();
+        let fence =
+            (session.coin_fence(lease.wallet).await).map_err(|e| FundError::Refused(e.into()))?;
+        (session
+            .funding_call_permit(lease, step.clone(), duffs, step, key, fence)
+            .await)
+            .map_err(FundError::Refused)
     }
 
-    async fn fund(&self, _: u64, _: &CallPermit) -> Result<OutPoint, FundError> {
-        unreachable!("no test funds a shield")
+    /// A new lock of the wallet's coins (input `0x66…:n`), signed by the
+    /// permit's funding signer and recorded as the step's own, proved.
+    async fn fund(&self, duffs: u64, permit: &CallPermit) -> Result<OutPoint, FundError> {
+        let (session, wallet) = self.funder();
+        let n = self.funded.lock().unwrap().len() as u8 + 0x70;
+        let outpoint = OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let sighash = outpoint.txid.to_byte_array();
+        permit.note_signed(sighash);
+        session.leases.record_signed_locks(
+            wallet,
+            &[super::lease::StoredLock {
+                txid: outpoint.txid,
+                inputs: vec![OutPoint::new(
+                    Txid::from_byte_array([0x66; 32]),
+                    u32::from(n),
+                )],
+                sighashes: Some(vec![sighash]),
+                built: true,
+            }],
+        );
+        self.funded.lock().unwrap().push(LockInfo {
+            outpoint,
+            amount: duffs,
+            ..lock(n, LockStatus::InstantSendLocked)
+        });
+        Ok(outpoint)
     }
 
     async fn wait_proof(&self, _: OutPoint, _: Duration) -> Result<(), FundError> {
         Err(FundError::Refused(PlatformError::Unavailable))
     }
 
-    async fn apply(&self, _: OutPoint, _: &VaultSigner) -> Result<Applied, PlatformError> {
+    async fn apply(&self, outpoint: OutPoint, _: &VaultSigner) -> Result<Applied, PlatformError> {
+        self.applied.lock().unwrap().push(outpoint);
         (self.applies.lock().unwrap().take()).expect("a scripted apply")
     }
 }
@@ -1150,92 +1198,109 @@ fn a_close_waits_for_a_shielded_call_and_never_drops_it() {
     });
 }
 
-/// A lock Platform calls consumed without proof pends, as does one of ours
-/// a restore read back from the chain, and blocks a new shield until the
-/// user's word settles it; a recovered lock no shield step signed is
-/// history. Nothing is told apart before the journal is read.
-#[test]
-fn a_shield_lock_of_unknown_consumption_pends_until_the_user_resolves_it() {
-    let fx = Fixture::new(0);
-    let wallet = fx.wallet;
-    let txid = |n: u8| lock(n, LockStatus::Broadcast).outpoint.txid;
-    let grant = || {
-        let purpose = dw_vault::GrantPurpose::PlatformOp {
-            max_duffs: 1,
-            max_credits: 0,
-        };
-        let granted =
-            fx.s.vault
-                .authorize(purpose, Some(&wallet.0), dw_vault::Credential::None);
-        granted.unwrap().id
+/// A `PlatformOp` grant of the fixture's wallet for `max_duffs`.
+fn shield_grant(fx: &Fixture, max_duffs: u64) -> String {
+    let purpose = dw_vault::GrantPurpose::PlatformOp {
+        max_duffs,
+        max_credits: 0,
     };
+    let granted =
+        fx.s.vault
+            .authorize(purpose, Some(&fx.wallet.0), dw_vault::Credential::None);
+    granted.unwrap().id
+}
 
-    // Platform answers "already consumed" to the apply.
-    let lib = Arc::new(FakeShielded {
-        locks: vec![lock(1, LockStatus::InstantSendLocked)],
-        own: Some(HashSet::from([txid(1)])),
-        applies: Mutex::new(Some(Ok(Applied::Taken))),
-        ..FakeShielded::default()
-    });
-    let g = grant();
-    let resumed = run(&fx, &lib, move |s, lib| async move {
-        pool::resume(&s, wallet, &*lib, &txid(1).to_string(), &g).await
+/// Resumes the pending shield `n` with `answer` as the library's.
+fn resume_with(
+    fx: &Fixture,
+    lib: &Arc<FakeShielded>,
+    n: u8,
+    answer: Result<Applied, PlatformError>,
+) -> ShieldState {
+    *lib.applies.lock().unwrap() = Some(answer);
+    let (wallet, grant) = (fx.wallet, shield_grant(fx, 1));
+    let txid = lock(n, LockStatus::Broadcast).outpoint.txid.to_string();
+    run(fx, lib, move |s, lib| async move {
+        pool::resume(&s, wallet, &*lib, &txid, &grant).await
     })
-    .unwrap();
-    assert_eq!(resumed.state, ShieldState::ConsumptionUnknown);
-    assert!(lib.settles.lock().unwrap().is_empty(), "nothing settled");
-    // It pends as such, though the library's status of it is unchanged
-    // (no ChainLock proof promoted it), and the user may resolve it.
-    let pending = run(&fx, &lib, |_, lib| async move {
+    .unwrap()
+    .state
+}
+
+fn pending_of(fx: &Fixture, lib: &Arc<FakeShielded>) -> Vec<(String, bool, bool)> {
+    let pending = run(fx, lib, |_, lib| async move {
         pool::status(&*lib).await.unwrap().pending_shields
     });
-    assert!(pending[0].consumption_unknown, "{pending:?}");
-    run(&fx, &lib, move |_, lib| async move {
-        pool::resolve(wallet, &*lib, &txid(1).to_string()).await
-    })
-    .unwrap();
-    assert_eq!(
-        *lib.settles.lock().unwrap(),
-        [(txid(1), TopUpSettled::Resolved)]
-    );
+    (pending.into_iter())
+        .map(|p| (p.txid, p.proved, p.consumption_unknown))
+        .collect()
+}
 
-    // The library then holds it `RecoveredFromChain`, as a restore reads
-    // ours back; lock 6 is another install's.
-    let lib = Arc::new(FakeShielded {
-        locks: vec![
-            lock(1, LockStatus::RecoveredFromChain),
-            lock(6, LockStatus::RecoveredFromChain),
-        ],
-        own: Some(HashSet::from([txid(1)])),
-        ..FakeShielded::default()
-    });
-    let pending = run(&fx, &lib, |_, lib| async move {
-        pool::status(&*lib).await.unwrap().pending_shields
-    });
-    let pending: Vec<_> = (pending.iter())
-        .map(|p| (p.txid.clone(), p.proved, p.consumption_unknown))
-        .collect();
-    assert_eq!(pending, [(txid(1).to_string(), true, true)]);
+/// DEC-1045 (c): Platform's "already consumed" is no settle evidence. A
+/// lock it answers so pends "Checking" however often a resume hears it,
+/// until a proved apply settles it, and each resume applies the same
+/// outpoint (b). A lock of ours a restore read back from the chain pends
+/// the same; one no shield step signed is history. Neither blocks a new
+/// shield (it may never settle); any other pending lock does. Nothing is
+/// told apart before the journal is read.
+#[test]
+fn a_shield_lock_of_unknown_consumption_pends_until_a_proved_apply() {
+    let fx = Fixture::new(0);
+    let txid = |n: u8| lock(n, LockStatus::Broadcast).outpoint.txid;
     let quote = |lib: &Arc<FakeShielded>| {
         run(&fx, lib, |s, lib| async move {
             pool::shield_quote(&s, &*lib, 1_000_000).await.map(drop)
         })
     };
-    assert_eq!(code(quote(&lib)), "shielded.shield_pending");
-    let resolved = run(&fx, &lib, move |_, lib| async move {
-        let history = code(pool::resolve(wallet, &*lib, &txid(6).to_string()).await);
-        (
-            history,
-            pool::resolve(wallet, &*lib, &txid(1).to_string()).await,
-        )
+    let lib = Arc::new(FakeShielded {
+        locks: vec![lock(1, LockStatus::InstantSendLocked)],
+        own: Some(HashSet::from([txid(1)])),
+        ..FakeShielded::default()
     });
-    assert_eq!(resolved.0, "invalid_argument");
-    resolved.1.unwrap();
+    // Not applied yet: it blocks a new shield.
+    assert_eq!(code(quote(&lib)), "shielded.shield_pending");
+    for _ in 0..2 {
+        let state = resume_with(&fx, &lib, 1, Ok(Applied::Taken));
+        assert_eq!(state, ShieldState::ConsumptionUnknown);
+        assert!(lib.settles.lock().unwrap().is_empty(), "nothing settled");
+        assert_eq!(pending_of(&fx, &lib), [(txid(1).to_string(), true, true)]);
+        quote(&lib).unwrap();
+    }
+    let state = resume_with(&fx, &lib, 1, Ok(Applied::Done));
+    assert!(matches!(state, ShieldState::Applied { .. }), "{state:?}");
+    assert_eq!(*lib.settles.lock().unwrap(), [txid(1)]);
+    assert!(pending_of(&fx, &lib).is_empty());
     assert_eq!(
-        *lib.settles.lock().unwrap(),
-        [(txid(1), TopUpSettled::Resolved)]
+        *lib.applied.lock().unwrap(),
+        [lock(1, LockStatus::Broadcast).outpoint; 3]
     );
+
+    // The library holds ours `RecoveredFromChain`, as a restore reads it
+    // back; lock 6 is another install's; lock 2 is ours, not applied.
+    let lib = Arc::new(FakeShielded {
+        locks: vec![
+            lock(1, LockStatus::RecoveredFromChain),
+            lock(6, LockStatus::RecoveredFromChain),
+        ],
+        own: Some(HashSet::from([txid(1), txid(2)])),
+        ..FakeShielded::default()
+    });
+    assert_eq!(pending_of(&fx, &lib), [(txid(1).to_string(), true, true)]);
     quote(&lib).unwrap();
+    let (wallet, grant) = (fx.wallet, shield_grant(&fx, 1));
+    let history = run(&fx, &lib, move |s, lib| async move {
+        pool::resume(&s, wallet, &*lib, &txid(6).to_string(), &grant).await
+    });
+    assert_eq!(code(history), "invalid_argument");
+    let lib = Arc::new(FakeShielded {
+        locks: vec![
+            lock(1, LockStatus::RecoveredFromChain),
+            lock(2, LockStatus::InstantSendLocked),
+        ],
+        own: Some(HashSet::from([txid(1), txid(2)])),
+        ..FakeShielded::default()
+    });
+    assert_eq!(code(quote(&lib)), "shielded.shield_pending");
 
     // Before the journal is read: no pending list, the shield calls wait.
     let unread = Arc::new(FakeShielded {
@@ -1248,6 +1313,195 @@ fn a_shield_lock_of_unknown_consumption_pends_until_the_user_resolves_it() {
     });
     assert!(status.pending_shields.is_empty());
     assert_eq!(code(quote(&unread)), "platform.unavailable");
+}
+
+/// E1 r1 R1-2: a shield whose apply failed after its transition was
+/// signed may have executed: it pends "Checking", never `NotApplied`, and
+/// blocks no new shield. That shield funds a new lock of the wallet's
+/// coins and applies that lock, never the pending one; "Check again"
+/// applies the pending one's same outpoint (DEC-1045 (b)), and only its
+/// proved apply settles it.
+#[test]
+fn an_unknown_shield_pends_and_resume_applies_the_same_lock() {
+    let fx = Fixture::new(0);
+    let pending = lock(1, LockStatus::InstantSendLocked);
+    let lib = Arc::new(FakeShielded {
+        locks: vec![pending.clone()],
+        own: Some(HashSet::from([pending.outpoint.txid])),
+        ..FakeShielded::default()
+    });
+    *lib.funder.lock().unwrap() = Some((Arc::downgrade(&fx.s), fx.wallet));
+
+    // The pending lock's apply fails after its signature.
+    let state = resume_with(&fx, &lib, 1, Ok(Applied::Unknown));
+    assert_eq!(state, ShieldState::ConsumptionUnknown);
+    assert!(lib.unknown.lock().unwrap().contains(&pending.outpoint.txid));
+    assert!(lib.settles.lock().unwrap().is_empty());
+
+    // A new shield: a new lock, applied itself; its apply is lost too.
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Unknown));
+    let (wallet, grant) = (fx.wallet, shield_grant(&fx, 2_000_000));
+    let shielded = run(&fx, &lib, move |s, lib| async move {
+        pool::shield(&s, wallet, &*lib, 1_000_000, &grant).await
+    })
+    .unwrap();
+    let new = lib.funded.lock().unwrap()[0].outpoint;
+    assert_ne!(new, pending.outpoint);
+    assert_eq!(shielded.txid, new.txid.to_string());
+    assert_eq!(shielded.state, ShieldState::ConsumptionUnknown);
+    assert_eq!(*lib.applied.lock().unwrap(), [pending.outpoint, new]);
+    let mut listed = pending_of(&fx, &lib);
+    listed.sort();
+    let mut expected = vec![
+        (pending.outpoint.txid.to_string(), true, true),
+        (new.txid.to_string(), true, true),
+    ];
+    expected.sort();
+    assert_eq!(listed, expected);
+
+    // "Check again" on the new one: the same outpoint, proved, settled.
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    let (txid, grant) = (new.txid.to_string(), shield_grant(&fx, 1));
+    let state = run(&fx, &lib, move |s, lib| async move {
+        pool::resume(&s, wallet, &*lib, &txid, &grant).await
+    })
+    .unwrap()
+    .state;
+    assert!(matches!(state, ShieldState::Applied { .. }), "{state:?}");
+    assert_eq!(*lib.applied.lock().unwrap(), [pending.outpoint, new, new]);
+    assert_eq!(*lib.settles.lock().unwrap(), [new.txid]);
+    assert_eq!(lib.funded.lock().unwrap().len(), 1, "no other lock");
+}
+
+/// A refusal before the lock's key signed anything is `NotApplied`:
+/// nothing reached Platform, the lock pends as not applied (it blocks a
+/// new shield) and is not marked unknown.
+#[test]
+fn a_shield_refused_before_its_signature_is_not_applied() {
+    let fx = Fixture::new(0);
+    let pending = lock(1, LockStatus::InstantSendLocked);
+    let lib = Arc::new(FakeShielded {
+        locks: vec![pending.clone()],
+        own: Some(HashSet::from([pending.outpoint.txid])),
+        ..FakeShielded::default()
+    });
+    let state = resume_with(&fx, &lib, 1, Err(PlatformError::Unavailable));
+    assert_eq!(
+        state,
+        ShieldState::NotApplied {
+            error: "platform.unavailable".into()
+        }
+    );
+    assert!(lib.unknown.lock().unwrap().is_empty());
+    assert_eq!(
+        pending_of(&fx, &lib),
+        [(pending.outpoint.txid.to_string(), true, false)]
+    );
+}
+
+/// The library's result maps by whether the lock's key signed: an error
+/// after a signature is unknown (it may follow the submission), before
+/// one it is a refusal; "already consumed" is `Taken` either way.
+#[test]
+fn a_shield_result_is_unknown_once_its_transition_was_signed() {
+    let lost = || PlatformWalletError::ShieldedBuildError("no result".into());
+    assert_eq!(pool::applied_from(Ok(()), true).unwrap(), Applied::Done);
+    assert_eq!(
+        pool::applied_from(Err(lost()), true).unwrap(),
+        Applied::Unknown
+    );
+    assert!(pool::applied_from(Err(lost()), false).is_err());
+    for signed in [false, true] {
+        let consumed = PlatformWalletError::AssetLockAlreadyConsumed(OutPoint::null());
+        assert_eq!(
+            pool::applied_from(Err(consumed), signed).unwrap(),
+            Applied::Taken
+        );
+    }
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        use key_wallet::Signer;
+        let path = key_wallet::bip32::DerivationPath::default();
+        let refusing = TestSigner(false);
+        let witness = pool::Witnessed::new(&refusing);
+        assert!(witness.public_key(&path).await.is_ok());
+        assert!(witness.sign_ecdsa(&path, [1; 32]).await.is_err());
+        assert!(!witness.signed(), "a refused signature is none");
+        let signing = TestSigner(true);
+        let witness = pool::Witnessed::new(&signing);
+        witness.sign_ecdsa(&path, [1; 32]).await.unwrap();
+        assert!(witness.signed());
+    });
+}
+
+/// Signs with a fixed key when `.0`, else refuses.
+struct TestSigner(bool);
+
+fn test_key() -> dashcore::secp256k1::SecretKey {
+    dashcore::secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap()
+}
+
+#[async_trait::async_trait]
+impl key_wallet::Signer for TestSigner {
+    type Error = dw_vault::SignerError;
+
+    fn supported_methods(&self) -> &[key_wallet::SignerMethod] {
+        &[key_wallet::SignerMethod::Digest]
+    }
+
+    async fn sign_ecdsa(
+        &self,
+        _: &key_wallet::bip32::DerivationPath,
+        sighash: [u8; 32],
+    ) -> Result<
+        (
+            dashcore::secp256k1::ecdsa::Signature,
+            dashcore::secp256k1::PublicKey,
+        ),
+        Self::Error,
+    > {
+        if !self.0 {
+            return Err(dw_vault::SignerError::PathNotAllowed("refused".into()));
+        }
+        let key = test_key();
+        let message = dashcore::secp256k1::Message::from_digest(sighash);
+        Ok((
+            dashcore::secp256k1::ecdsa::sign(message, &key),
+            key.public_key(),
+        ))
+    }
+
+    async fn public_key(
+        &self,
+        _: &key_wallet::bip32::DerivationPath,
+    ) -> Result<dashcore::secp256k1::PublicKey, Self::Error> {
+        Ok(test_key().public_key())
+    }
+}
+
+/// The unknown marks live in `app.sqlite`, per wallet, across a reopen.
+#[test]
+fn unknown_shield_marks_survive_a_reopen() {
+    let dir = dw_testutil::private_tempdir();
+    let path = dir.path().join("app.sqlite");
+    let (a, b) = (crate::WalletId([1; 32]), crate::WalletId([2; 32]));
+    let txid = |n: u8| lock(n, LockStatus::Broadcast).outpoint.txid;
+    {
+        let db = dw_appdb::AppDb::open(&path).unwrap();
+        assert!(pool::read_unknown_shields(&db, a).unwrap().is_empty());
+        pool::mark_unknown_shield(&db, a, txid(1)).unwrap();
+        pool::mark_unknown_shield(&db, a, txid(1)).unwrap();
+        pool::mark_unknown_shield(&db, a, txid(3)).unwrap();
+    }
+    let db = dw_appdb::AppDb::open(&path).unwrap();
+    assert_eq!(
+        pool::read_unknown_shields(&db, a).unwrap(),
+        HashSet::from([txid(1), txid(3)])
+    );
+    assert!(pool::read_unknown_shields(&db, b).unwrap().is_empty());
 }
 
 /// A shield's lock spends at most 50 coins (its InstantSend proof stops

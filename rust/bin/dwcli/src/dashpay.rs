@@ -160,11 +160,9 @@ pub enum ShieldedCmd {
         #[arg(long)]
         quote_only: bool,
     },
-    /// Apply a pending Core -> Shielded lock.
+    /// Apply a pending Core -> Shielded lock, or check one of unknown
+    /// consumption again (the same lock; only a proved apply settles it).
     ShieldResume { txid: String },
-    /// Mark a pending shield whose consumption is unknown as arrived (its
-    /// credits are in the pool): it stops pending and blocking.
-    ShieldResolve { txid: String },
     /// Shielded -> Shielded: send `--credits` to a shielded address.
     Send {
         #[arg(long)]
@@ -1661,7 +1659,6 @@ fn shielded_cmd(ctx: &Ctx, cmd: ShieldedCmd) -> Result<Value, CliError> {
             )?;
             out(ctx.block_on(dp.resume_shield(txid, grant))?)
         }
-        ShieldedCmd::ShieldResolve { txid } => out(ctx.block_on(dp.resolve_shield(txid))?),
         ShieldedCmd::Send {
             to,
             credits,
@@ -2628,10 +2625,6 @@ mod tests {
             r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: txid is not a hex txid","params":{"detail":"txid is not a hex txid"}}}"#,
         ),
         (
-            "shielded shield-resolve ab12",
-            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: txid is not a hex txid","params":{"detail":"txid is not a hex txid"}}}"#,
-        ),
-        (
             "shielded send --to tZ --credits 5 --memo hi",
             r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a shielded address of this network","params":{"detail":"not a shielded address of this network"}}}"#,
         ),
@@ -2862,7 +2855,6 @@ mod tests {
         ("shielded address", "DashPay.shielded_receive_address"),
         ("shielded shield --duffs 100000", "DashPay.shield_quote"),
         ("shielded shield-resume ab12", "DashPay.resume_shield"),
-        ("shielded shield-resolve ab12", "DashPay.resolve_shield"),
         (
             "shielded send --to tZ --credits 5 --memo hi",
             "DashPay.shielded_send_quote",

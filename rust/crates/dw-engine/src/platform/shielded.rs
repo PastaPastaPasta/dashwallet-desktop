@@ -102,14 +102,15 @@ pub enum ShieldState {
     Applied { balance: u64 },
     /// The lock is out with no proof yet; `resume_shield` applies it.
     ProofWaiting,
-    /// The lock has its proof and applying it failed with `error` (a code);
-    /// `resume_shield` tries again (Platform takes a lock once, so a resume
-    /// never moves its funds twice).
+    /// The lock has its proof and the apply was refused before its
+    /// transition was signed, with `error` (a code): nothing reached
+    /// Platform. `resume_shield` tries again.
     NotApplied { error: String },
-    /// Platform answered that the lock is already consumed, which proves
-    /// nothing (any node can say it): the lock stays pending
-    /// (`consumption_unknown`) and blocks a new shield until a proved apply
-    /// (`resume_shield`) or the user's `resolve_shield`.
+    /// The apply may have executed, unproved: Platform answered that the
+    /// lock is already consumed (any node can say it), or the apply failed
+    /// after its transition was signed. The lock stays pending
+    /// (`consumption_unknown`, "Checking") until a proved apply
+    /// (`resume_shield`, "Check again"); it blocks no new shield.
     ConsumptionUnknown,
 }
 
@@ -128,9 +129,11 @@ pub struct PendingShield {
     pub duffs: u64,
     /// The lock has its proof: `resume_shield` applies it at once.
     pub proved: bool,
-    /// The lock may already be applied: Platform said so without proof, or
-    /// a restore read it back from the chain. `resume_shield` asks again;
-    /// once the user sees its credits arrived, `resolve_shield` clears it.
+    /// The lock may already be applied ("Checking"): Platform said so
+    /// without proof, an apply failed after signing, or a restore read it
+    /// back from the chain. Its amount may already be in the shielded
+    /// balance, unconfirmed. `resume_shield` checks again; only a proved
+    /// apply clears it. It blocks no new shield.
     pub consumption_unknown: bool,
 }
 
@@ -318,7 +321,10 @@ impl DashPay {
         .await
     }
 
-    /// Applies the pending Core → Shielded lock `txid` (`pending_shields`).
+    /// Applies the pending Core → Shielded lock `txid` (`pending_shields`)
+    /// again, its consumption known or not ("Check again"): the same
+    /// outpoint, never a new lock or other coins; only a proved apply
+    /// settles it.
     pub async fn resume_shield(
         &self,
         txid: String,
@@ -327,17 +333,6 @@ impl DashPay {
         let wallet = self.wallet_id;
         on_pool(&self.session, wallet, move |session, lib| async move {
             pool::resume(&session, wallet, &lib, &txid, &grant).await
-        })
-        .await
-    }
-
-    /// Records the user's word that the pending shield `txid`, one whose
-    /// consumption is unknown (`pending_shields[].consumption_unknown`),
-    /// reached the pool: it stops pending and blocking new shields.
-    pub async fn resolve_shield(&self, txid: String) -> Result<(), ShieldedError> {
-        let wallet = self.wallet_id;
-        on_pool(&self.session, wallet, move |_, lib| async move {
-            pool::resolve(wallet, &lib, &txid).await
         })
         .await
     }

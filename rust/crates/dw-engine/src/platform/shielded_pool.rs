@@ -53,11 +53,16 @@
 //!   `shielded_fund_from_asset_lock` of the proved lock to the account's own
 //!   address, signed with the lock's credit key by the lease's uncounted
 //!   funding signer. A lock not applied pends (`pending_shields`) and
-//!   blocks a new shield until `resume_shield` applies it. As for top-ups
-//!   (`topup.rs`), Platform's "already consumed" proves nothing: such a
-//!   lock (this session's answer), and one of ours a restore read back from
-//!   the chain, reads `consumption_unknown` and pends until a proved apply or the user's
-//!   `resolve_shield`; a recovered lock no shield step signed is history.
+//!   blocks a new shield until `resume_shield` applies it. An apply whose
+//!   transition was signed and then failed may have executed, and
+//!   Platform's "already consumed" proves nothing (any node can say it):
+//!   such a lock, and one of ours a restore read back from the chain, reads
+//!   `consumption_unknown` ("Checking", recorded in `app.sqlite`) and pends
+//!   until a proved apply (`resume_shield` again: the same outpoint, never
+//!   a new lock; see [`resume`] for why Platform executes it at most once),
+//!   but blocks no new shield, since it may never settle (DEC-1045, SR1);
+//!   only a refusal before the signature is `NotApplied`. A recovered lock
+//!   no shield step signed is history.
 //!   Until the dispatch journal is read none of this can be told, so the
 //!   shield calls answer `platform.unavailable`. The lock spends at most
 //!   [`MAX_LOCK_INPUTS`] coins. Nothing stops a shield partway: the call
@@ -68,6 +73,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
 use std::time::Duration;
 
@@ -202,21 +208,18 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// The locks the wallet's shield steps signed (the dispatch journal's
     /// records); `None` until the journal is read.
     fn own_locks(&self) -> Option<HashSet<Txid>>;
-    /// The shield locks Platform answered "already consumed", unproved, for
-    /// in this session.
-    fn taken_locks(&self) -> HashSet<Txid>;
-    /// Records Platform's unproved "already consumed" for `txid`.
-    fn mark_taken(&self, txid: Txid);
+    /// The shield locks whose apply may have executed, unproved: Platform
+    /// answered "already consumed", or an apply failed after the lock's
+    /// credit key signed its transition ([`Applied::Unknown`]). Kept in
+    /// `app.sqlite` across restarts.
+    fn unknown_locks(&self) -> impl Future<Output = HashSet<Txid>> + Send;
+    /// Records `txid` among [`Self::unknown_locks`].
+    fn mark_unknown(&self, txid: Txid) -> impl Future<Output = ()> + Send;
     /// The wallet's locks the dispatch journal records settled; none when
     /// they cannot be read (the locks then pend, fail closed).
     fn settled_locks(&self) -> impl Future<Output = HashSet<Txid>> + Send;
-    /// Records the shield lock `txid` settled: a proved apply or the user's
-    /// word.
-    fn settle(
-        &self,
-        txid: Txid,
-        how: TopUpSettled,
-    ) -> impl Future<Output = Result<(), PlatformError>> + Send;
+    /// Records the shield lock `txid` settled by a proved apply.
+    fn settle(&self, txid: Txid) -> impl Future<Output = Result<(), PlatformError>> + Send;
     /// Records `spend` in the dispatch journal against its activity
     /// (schema 9); the first record stands.
     fn record(
@@ -271,6 +274,9 @@ pub(crate) enum Applied {
     Done,
     /// Platform answered that the lock is already consumed: unproved.
     Taken,
+    /// The apply failed after the lock's credit key signed its transition:
+    /// it may have reached Platform and executed.
+    Unknown,
 }
 
 /// How a library spend failed.
@@ -888,7 +894,7 @@ struct OpenShield {
 async fn open_shields(lib: &impl ShieldedLib) -> Result<Vec<OpenShield>, ShieldedError> {
     let ours = lib.own_locks().ok_or(PlatformError::Unavailable)?;
     let settled = lib.settled_locks().await;
-    let taken = lib.taken_locks();
+    let unknown = lib.unknown_locks().await;
     Ok((lib.shield_locks().await.into_iter())
         .filter(|l| !settled.contains(&l.outpoint.txid))
         .filter_map(|lock| {
@@ -899,7 +905,7 @@ async fn open_shields(lib: &impl ShieldedLib) -> Result<Vec<OpenShield>, Shielde
                     return None;
                 }
                 LockStatus::RecoveredFromChain => true,
-                _ => taken.contains(&lock.outpoint.txid),
+                _ => unknown.contains(&lock.outpoint.txid),
             };
             Some(OpenShield {
                 lock,
@@ -954,7 +960,12 @@ async fn shield_plan(
     if duffs < min {
         return Err(ShieldedError::BelowMinimum { min });
     }
-    if let Some(open) = open_shields(lib).await?.first() {
+    // A lock whose consumption is unknown may never settle (only a proved
+    // apply does, and Platform answers a consumed lock "already consumed",
+    // unproved): it stays listed, resumable, and blocks nothing. The new
+    // shield funds a new lock from the wallet's coins; that outpoint is no
+    // coin of the wallet's.
+    if let Some(open) = (open_shields(lib).await?.iter()).find(|o| !o.consumption_unknown) {
         return Err(ShieldedError::ShieldPending {
             txid: open.lock.outpoint.txid.to_string(),
         });
@@ -1141,7 +1152,7 @@ async fn apply(
         .mark_platform(wallet, [PlatformChange::Shielded]);
     match applied {
         Ok(Applied::Done) => {
-            if let Err(e) = lib.settle(outpoint.txid, TopUpSettled::Applied).await {
+            if let Err(e) = lib.settle(outpoint.txid).await {
                 tracing::warn!(%outpoint, error = %e, "could not record a shield's lock settled");
             }
             // The shielded note is the library's once a pass finds it.
@@ -1150,14 +1161,19 @@ async fn apply(
                 balance: balance(lib).await,
             }
         }
-        Ok(Applied::Taken) => {
+        // Neither settles (SR1): the lock pends, checking, until a proved
+        // apply.
+        Ok(how @ (Applied::Taken | Applied::Unknown)) => {
             tracing::warn!(
                 %outpoint,
-                "Platform says a shield's lock is already consumed, unproved; it stays pending"
+                ?how,
+                "a shield's apply may have executed, unproved; its lock stays pending"
             );
-            lib.mark_taken(outpoint.txid);
+            lib.mark_unknown(outpoint.txid).await;
             ShieldState::ConsumptionUnknown
         }
+        // Refused before the lock's key signed a transition: nothing
+        // reached Platform.
         Err(e) => {
             tracing::warn!(%outpoint, error = %e, "a shield's apply failed; the lock stays tracked");
             ShieldState::NotApplied {
@@ -1167,6 +1183,27 @@ async fn apply(
     }
 }
 
+/// Applies the pending shield lock `txid` again ("Check again"), whatever
+/// its consumption: the library's `FromExistingAssetLock` of the same
+/// outpoint and its tracked proof, never a new lock or other coins.
+///
+/// The pin cannot re-send a shield's signed bytes (it keeps none), so
+/// this signs a new bundle (DEC-1045's exception for Core → Shielded).
+/// Platform executes at most one shield of an outpoint: the transition's
+/// `transform_into_action` validates the asset-lock proof
+/// (rs-drive-abci `state_transitions/shield_from_asset_lock/transform_into_action/v1/mod.rs:126-138`),
+/// whose `verify_is_not_spent` refuses an outpoint already fully consumed
+/// (`common/asset_lock/proof/verify_is_not_spent/v0/mod.rs:30-55`; pin
+/// test `should_return_already_consumed_error_when_fully_consumed`,
+/// `:181`), and an executed shield records the outpoint used with nothing
+/// remaining (rs-drive `action_convert_to_operations/shielded/shield_from_asset_lock_transition.rs:39-53`).
+/// Within one call the library may swap the lock's InstantSend proof for
+/// its ChainLock proof of the same outpoint, only after Platform refused
+/// the InstantSend one (platform-wallet `fund_from_asset_lock.rs:376-420`):
+/// still no new lock and no other coins.
+///
+/// Only a proved apply settles the lock; Platform's "already consumed" and
+/// a failure after signing leave it pending, `consumption_unknown` (SR1).
 pub(crate) async fn resume(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
@@ -1208,29 +1245,6 @@ pub(crate) async fn resume(
     Ok(outcome(state))
 }
 
-/// The user's word that the pending shield `txid`, one whose consumption
-/// is unknown, reached the pool: recorded settled in the journal, so it
-/// stops pending and blocking (`topup.rs`'s `resolve`).
-pub(crate) async fn resolve(
-    wallet: WalletId,
-    lib: &impl ShieldedLib,
-    txid: &str,
-) -> Result<(), ShieldedError> {
-    gate(lib).await?;
-    let txid: Txid = txid
-        .trim()
-        .parse()
-        .map_err(|_| invalid("txid is not a hex txid"))?;
-    let lock = wallet_lock(wallet);
-    let _shielding = lock.lock().await;
-    (open_shields(lib).await?.into_iter())
-        .find(|o| o.lock.outpoint.txid == txid && o.consumption_unknown)
-        .ok_or_else(|| invalid("no pending shield of that txid has an unknown consumption"))?;
-    lib.settle(txid, TopUpSettled::Resolved).await?;
-    tracing::info!(%txid, "the user resolved a shield's lock");
-    Ok(())
-}
-
 fn invalid(detail: &str) -> PlatformError {
     PlatformError::InvalidArgument {
         detail: detail.into(),
@@ -1244,6 +1258,32 @@ fn internal(e: impl std::fmt::Display) -> ShieldedError {
     .into()
 }
 
+/// The key prefix, in a wallet's local scope of `app.sqlite`, of its shield
+/// locks of unknown consumption (`ShieldedLib::unknown_locks`).
+const UNKNOWN_SHIELD_PREFIX: &str = "shielded.shield_unknown.";
+
+/// `wallet`'s shield locks recorded of unknown consumption.
+pub(crate) fn read_unknown_shields(
+    db: &dw_appdb::AppDb,
+    wallet: WalletId,
+) -> Result<HashSet<Txid>, dw_appdb::AppDbError> {
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let rows = db.settings_with_prefix(&scope, UNKNOWN_SHIELD_PREFIX)?;
+    Ok((rows.into_iter())
+        .filter_map(|(key, _)| key[UNKNOWN_SHIELD_PREFIX.len()..].parse().ok())
+        .collect())
+}
+
+/// Records `wallet`'s shield lock `txid` of unknown consumption, durably.
+pub(crate) fn mark_unknown_shield(
+    db: &dw_appdb::AppDb,
+    wallet: WalletId,
+    txid: Txid,
+) -> Result<(), dw_appdb::AppDbError> {
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    db.set_setting_durable(&scope, &format!("{UNKNOWN_SHIELD_PREFIX}{txid}"), Some("1"))
+}
+
 // MARK: the library
 
 /// The real [`ShieldedLib`]: the wallet's library handles and the network's
@@ -1255,6 +1295,20 @@ pub(crate) struct PwShielded {
 }
 
 impl PwShielded {
+    /// Runs `f` on the session's `app.sqlite` off the async threads.
+    async fn on_appdb<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&dw_appdb::AppDb) -> Result<T, dw_appdb::AppDbError> + Send + 'static,
+    ) -> Result<T, PlatformError> {
+        let appdb = self.pw.session.live()?.appdb;
+        tokio::task::spawn_blocking(move || f(&appdb))
+            .await
+            .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
+            .map_err(|e| PlatformError::Storage {
+                detail: e.to_string(),
+            })
+    }
+
     pub(crate) async fn open(
         session: &Arc<NetworkSession>,
         wallet_id: WalletId,
@@ -1511,16 +1565,35 @@ impl ShieldedLib for PwShielded {
         (self.pw.session.leases).shield_lock_txids(self.pw.wallet_id)
     }
 
-    fn taken_locks(&self) -> HashSet<Txid> {
-        (self.pw.session.platform.shield_taken.lock())
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
+    async fn unknown_locks(&self) -> HashSet<Txid> {
+        let mut out = (self.pw.session.platform.shield_unknown.lock())
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let wallet = self.pw.wallet_id;
+        match self
+            .on_appdb(move |db| read_unknown_shields(db, wallet))
+            .await
+        {
+            Ok(stored) => out.extend(stored),
+            Err(e) => {
+                tracing::warn!(wallet_id = %wallet, error = %e, "could not read the shields of unknown consumption");
+            }
+        }
+        out
     }
 
-    fn mark_taken(&self, txid: Txid) {
-        (self.pw.session.platform.shield_taken.lock())
-            .unwrap_or_else(|p| p.into_inner())
+    async fn mark_unknown(&self, txid: Txid) {
+        // In memory first: a failed write still shows it this session.
+        (self.pw.session.platform.shield_unknown.lock())
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(txid);
+        let wallet = self.pw.wallet_id;
+        if let Err(e) = self
+            .on_appdb(move |db| mark_unknown_shield(db, wallet, txid))
+            .await
+        {
+            tracing::warn!(%txid, error = %e, "could not record a shield of unknown consumption");
+        }
     }
 
     async fn settled_locks(&self) -> HashSet<Txid> {
@@ -1531,10 +1604,11 @@ impl ShieldedLib for PwShielded {
         })
     }
 
-    async fn settle(&self, txid: Txid, how: TopUpSettled) -> Result<(), PlatformError> {
+    async fn settle(&self, txid: Txid) -> Result<(), PlatformError> {
         let (leases, wallet) = (&self.pw.session.leases, self.pw.wallet_id);
+        let how = TopUpSettled::Applied;
         leases.settle_top_up(wallet, txid, how).await.map_err(|e| {
-            tracing::warn!(%txid, ?how, error = %e, "could not record a shield's lock settled");
+            tracing::warn!(%txid, error = %e, "could not record a shield's lock settled");
             PlatformError::Unavailable
         })
     }
@@ -1664,12 +1738,13 @@ impl ShieldedLib for PwShielded {
             out_point: outpoint,
             consume_invitation_voucher: false,
         };
+        let signer = Witnessed::new(signer);
         let applied = (self.pw.wallet)
             .shielded_fund_from_asset_lock(
                 &self.coordinator,
                 funding,
                 vec![(to, None)],
-                signer,
+                &signer,
                 &CachedOrchardProver::new(),
                 None,
                 0,
@@ -1677,13 +1752,94 @@ impl ShieldedLib for PwShielded {
                 Some(APPLY_CHAIN_LOCK_WAIT),
             )
             .await;
-        match applied {
-            Ok(()) => Ok(Applied::Done),
-            // The library keeps the lock "consumption unknown" with its
-            // ChainLock proof (it cannot authenticate the report).
-            Err(PlatformWalletError::AssetLockAlreadyConsumed(_)) => Ok(Applied::Taken),
-            Err(e) => Err(e.into()),
+        applied_from(applied, signer.signed())
+    }
+}
+
+/// How the library's shield call ended, given whether the lock's credit key
+/// signed a transition in it.
+pub(crate) fn applied_from(
+    result: Result<(), PlatformWalletError>,
+    signed: bool,
+) -> Result<Applied, PlatformError> {
+    match result {
+        Ok(()) => Ok(Applied::Done),
+        // The library keeps the lock "consumption unknown" with its
+        // ChainLock proof (it cannot authenticate the report).
+        Err(PlatformWalletError::AssetLockAlreadyConsumed(_)) => Ok(Applied::Taken),
+        // The library signs the transition and then broadcasts it
+        // (`build_and_broadcast_shielded`, `fund_from_asset_lock.rs:707-757`):
+        // a failure after a signature may follow its submission.
+        Err(e) if signed => {
+            tracing::warn!(error = %e, "a shield's apply failed after its transition was signed");
+            Ok(Applied::Unknown)
         }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// A shield's credit-key signer that notes whether it signed: nothing can
+/// reach Platform before it has (R1-2).
+pub(crate) struct Witnessed<'a, S> {
+    inner: &'a S,
+    signed: AtomicBool,
+}
+
+impl<'a, S> Witnessed<'a, S> {
+    pub(crate) fn new(inner: &'a S) -> Self {
+        Self {
+            inner,
+            signed: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether `inner` returned a signature.
+    pub(crate) fn signed(&self) -> bool {
+        self.signed.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl<S: key_wallet::Signer<Error = dw_vault::SignerError>> key_wallet::Signer for Witnessed<'_, S> {
+    type Error = dw_vault::SignerError;
+
+    fn supported_methods(&self) -> &[key_wallet::SignerMethod] {
+        self.inner.supported_methods()
+    }
+
+    async fn sign_ecdsa(
+        &self,
+        path: &key_wallet::bip32::DerivationPath,
+        sighash: [u8; 32],
+    ) -> Result<
+        (
+            dashcore::secp256k1::ecdsa::Signature,
+            dashcore::secp256k1::PublicKey,
+        ),
+        Self::Error,
+    > {
+        let signature = self.inner.sign_ecdsa(path, sighash).await?;
+        self.signed.store(true, Ordering::SeqCst);
+        Ok(signature)
+    }
+
+    async fn public_key(
+        &self,
+        path: &key_wallet::bip32::DerivationPath,
+    ) -> Result<dashcore::secp256k1::PublicKey, Self::Error> {
+        self.inner.public_key(path).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<S: key_wallet::ExtendedPubKeySigner + key_wallet::Signer<Error = dw_vault::SignerError>>
+    key_wallet::ExtendedPubKeySigner for Witnessed<'_, S>
+{
+    async fn extended_public_key(
+        &self,
+        path: &key_wallet::bip32::DerivationPath,
+    ) -> Result<key_wallet::bip32::ExtendedPubKey, Self::Error> {
+        self.inner.extended_public_key(path).await
     }
 }
 
@@ -1895,7 +2051,6 @@ pub(crate) async fn start(session: &Arc<NetworkSession>, manager: &Manager, wall
 /// (about 3.5 s of CPU, `docs/research/shielded-cost.md`): a process-wide
 /// cache that holds nothing of a session, so a close does not wait for it.
 pub(crate) fn warm_prover() {
-    use std::sync::atomic::{AtomicBool, Ordering};
     static STARTED: AtomicBool = AtomicBool::new(false);
     if CachedOrchardProver::new().is_ready() || STARTED.swap(true, Ordering::AcqRel) {
         return;
