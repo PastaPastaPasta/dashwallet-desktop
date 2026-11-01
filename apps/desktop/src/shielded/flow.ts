@@ -14,7 +14,7 @@ import { platformOp } from "../dashpay/topup";
 import { failureText, Model } from "../onboarding/model";
 import { moveErrorText } from "../platform/move";
 import { SHIELDED_SYNCING_TEXT, syncingRefusal } from "./syncing";
-import { GrantModel } from "../tools/grant";
+import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 
 export type ShieldedApi = Pick<
   Backend,
@@ -70,6 +70,7 @@ export const SHIELDED_COPY = {
     fee: "Network fee",
     coreFee: "Core network fee",
     poolFee: "Platform pool fee",
+    poolFeeFixed: (amount: string) => `The Platform pool fee is fixed at about ${amount}, whatever you add.`,
     total: "Total",
     totalFromWallet: "Total from your wallet",
     lock: "Amount to add",
@@ -185,6 +186,7 @@ export class ShieldedFlow extends Model {
   ) {
     super();
     this.grants = new GrantModel(api);
+    this.grants.prompt = PAYMENT_PROMPT;
     this.grants.subscribe(() => this.changed());
   }
 

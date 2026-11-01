@@ -15,7 +15,7 @@ import type { Withdrawal } from "../api/generated/Withdrawal";
 import type { WithdrawalStatusName } from "../api/generated/WithdrawalStatusName";
 import type { WithdrawOutcome } from "../api/generated/WithdrawOutcome";
 import { failureText, Model } from "../onboarding/model";
-import { GrantModel } from "../tools/grant";
+import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { creditsToDuffs } from "./profile";
 import { platformOp } from "./topup";
 
@@ -247,6 +247,7 @@ export class WithdrawFlow extends Model {
   ) {
     super();
     this.grants = new GrantModel(api);
+    this.grants.prompt = PAYMENT_PROMPT;
     this.grants.subscribe(() => this.changed());
   }
 

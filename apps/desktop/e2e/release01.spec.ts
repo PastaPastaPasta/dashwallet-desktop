@@ -192,6 +192,22 @@ test.describe("incoming payment", () => {
   });
 });
 
+test("a release build has no context menu on the page, and keeps a text field's", async ({ page }) => {
+  await open(page, "funded");
+  await page.getByTestId("hero").waitFor();
+  const prevented = (selector: string) =>
+    page.evaluate((sel) => {
+      const el = document.querySelector(sel)!;
+      const e = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      el.dispatchEvent(e);
+      return e.defaultPrevented;
+    }, selector);
+  expect(await prevented("[data-testid=hero]")).toBe(true);
+  await page.getByTestId("sidebar-pay").click();
+  await page.getByTestId("pay-tabs-address").click();
+  expect(await prevented("[data-testid=pay-address]")).toBe(false);
+});
+
 test.describe("first-run notice", () => {
   for (const theme of THEMES) {
     test(`is shown once, then stays dismissed (${theme})`, async ({ page }) => {
@@ -409,6 +425,14 @@ test.describe("Move to Dash wallet", () => {
     expect(errors).toEqual([]);
   });
 
+  test("Move to Dash wallet warns when most of the balance goes to the fee", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("hero").waitFor();
+    await world(page, (w) => { w.pending.platform!.addresses = [{ address: w.pending.platform!.addresses[0].address, credits: "3000000" }]; });
+    await page.getByTestId("platform-move").click();
+    await expect(page.getByTestId("platform-move-fee-warning")).toHaveText("Most of this goes to fees.");
+  });
+
   test("says so when Platform's answer did not settle it", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("hero").waitFor();
@@ -611,12 +635,36 @@ test.describe("Shielded", () => {
     await expect(page.getByTestId("shielded-quote-error")).toContainText("Not enough in Shielded");
   });
 
+  test("the confirm sheet names the fixed pool fee and warns when most of the amount goes to fees", async ({ page }) => {
+    await open(page, "funded");
+    await amountStep(page, "add", "0.0002");
+    await page.getByTestId("shielded-next").click();
+    await expect(page.getByTestId("shielded-quote")).toBeVisible();
+    // The quote's own pool fee, not a constant.
+    await expect(page.getByTestId("shielded-quote-pool-fee")).toHaveText("0.0001 tDASH");
+    await expect(page.getByTestId("shielded-pool-fee-note")).toHaveText("The Platform pool fee is fixed at about 0.0001 tDASH, whatever you add.");
+    await expect(page.getByTestId("shielded-fee-warning")).toHaveText("Most of this goes to fees.");
+    await shot(page, "light-shielded-fee-warning");
+    await page.getByTestId("shielded-back").click();
+    await page.getByTestId("shielded-amount").fill("0.1");
+    await page.getByTestId("shielded-next").click();
+    await expect(page.getByTestId("shielded-quote")).toBeVisible();
+    await expect(page.getByTestId("shielded-fee-warning")).toHaveCount(0);
+    // Between a tenth and a half it says how much, not "most".
+    await page.getByTestId("shielded-back").click();
+    await page.getByTestId("shielded-amount").fill("0.001");
+    await page.getByTestId("shielded-next").click();
+    await expect(page.getByTestId("shielded-fee-warning")).toHaveText("Fees are 11% of this amount.");
+  });
+
   test("Move to Dash wallet pays out, and shows in Activity", async ({ page }) => {
     await open(page, "funded");
     await amountStep(page, "out", "0.5");
     await page.getByTestId("shielded-next").click();
     await expect(page.getByTestId("shielded-quote-receive")).toContainText("0.5");
     await page.getByTestId("shielded-go").click();
+    // What the prompt says for money moving (DEC-1058 #8).
+    await expect(page.getByTestId("grant-sheet")).toContainText("Enter your passphrase to authorize this payment.");
     await authorize(page);
     await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Moved");
     await page.getByTestId("shielded-done").click();

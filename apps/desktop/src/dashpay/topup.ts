@@ -11,7 +11,7 @@ import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
 import type { TopUpOutcome } from "../api/generated/TopUpOutcome";
 import { failureText, Model } from "../onboarding/model";
-import { GrantModel } from "../tools/grant";
+import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { PROFILE_COPY } from "./profile";
 import { COPY } from "./status";
 
@@ -180,6 +180,7 @@ export class TopUpFlow extends Model {
   ) {
     super();
     this.grants = new GrantModel(api);
+    this.grants.prompt = PAYMENT_PROMPT;
     this.grants.subscribe(() => this.changed());
   }
 

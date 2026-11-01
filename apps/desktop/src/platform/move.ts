@@ -12,7 +12,7 @@ import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { MoveToCoreOutcome, PlatformActivity } from "../api/pending";
 import { platformOp } from "../dashpay/topup";
 import { failureText, Model } from "../onboarding/model";
-import { GrantModel } from "../tools/grant";
+import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 
 export type PlatformMoveApi = Pick<Backend, "platformMoveToCore" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
@@ -109,6 +109,7 @@ export class PlatformMoveFlow extends Model {
   ) {
     super();
     this.grants = new GrantModel(api);
+    this.grants.prompt = PAYMENT_PROMPT;
     this.grants.subscribe(() => this.changed());
   }
 

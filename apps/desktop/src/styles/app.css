@@ -5399,3 +5399,13 @@ button.bell-row-open:focus-visible {
 .receive-qr.is-used {
   opacity: 0.35;
 }
+
+/* "Most of this goes to fees" on a confirm sheet (DEC-1058 #8). */
+.fee-warning {
+  margin: 0;
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border-radius: var(--dw-radius-small);
+  background: var(--dw-role-warning-tint);
+  color: var(--dw-role-text-primary);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}

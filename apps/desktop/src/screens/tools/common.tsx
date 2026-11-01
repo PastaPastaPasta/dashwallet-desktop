@@ -27,7 +27,7 @@ export function GrantSheet({ grants }: { grants: GrantModel }) {
   return (
     // Not closed while the passphrase is checked: the grant it brings has to find its request.
     <Sheet title="Authorize" width="small" testId="grant-sheet" closable={!lock.working} onClose={() => grants.cancel()}>
-      <p className="sheet-text">{PURPOSE_TEXT[request.purpose.kind] ?? "Enter your passphrase to continue."}</p>
+      <p className="sheet-text">{grants.prompt ?? PURPOSE_TEXT[request.purpose.kind] ?? "Enter your passphrase to continue."}</p>
       <PassphrasePrompt
         testId="grant-sheet"
         error={lock.message}

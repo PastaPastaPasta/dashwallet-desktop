@@ -9,6 +9,7 @@ import { navigate, useUi } from "../app/ui";
 import { DashButton } from "../components/basics";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
+import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { hasPendingMove, moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type PlatformMoveFlow } from "../platform/move";
 import { GrantSheet } from "./tools/common";
@@ -16,6 +17,7 @@ import { GrantSheet } from "./tools/common";
 function ConfirmStep({ flow, walletId, credits, amount }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string }) {
   const quote = usePlatformMoveQuote(walletId, true);
   const q = quote.data;
+  const warning = q ? feeWarning(BigInt(q.feeCredits), BigInt(q.credits)) : null;
   return (
     <>
       <p className="sheet-text">{C.message}</p>
@@ -54,6 +56,11 @@ function ConfirmStep({ flow, walletId, credits, amount }: { flow: PlatformMoveFl
             </dd>
           </div>
         </dl>
+      )}
+      {warning && (
+        <p className="fee-warning" role="alert" data-testid="platform-move-fee-warning">
+          {feeWarningText(warning)}
+        </p>
       )}
       <div className="sheet-actions">
         <DashButton variant="tintedGray" size="large" data-testid="platform-move-cancel" disabled={flow.running} onClick={() => flow.close()}>

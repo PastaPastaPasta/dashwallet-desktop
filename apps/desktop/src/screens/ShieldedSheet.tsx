@@ -14,6 +14,7 @@ import { DashButton } from "../components/basics";
 import { CopyValue } from "../components/detail";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
+import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
 import { SHIELDED_SYNCING_TEXT, shieldedSyncing } from "../shielded/syncing";
@@ -119,6 +120,8 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
   const { duffs, credits } = fmt;
   const kind = flow.kind;
   const syncing = shieldedSyncing(status);
+  // The fees against what is added or sent: for an add, the Core fee and the pool fee.
+  const warning = !q ? null : q.kind === "add" ? feeWarning(BigInt(q.quote.feeDuffs) * CREDITS_PER_DUFF + BigInt(q.quote.poolFeeCredits), BigInt(q.quote.duffs) * CREDITS_PER_DUFF) : feeWarning(BigInt(q.quote.feeCredits), BigInt(q.quote.credits));
   return (
     <>
       {quote.isError ? (
@@ -149,6 +152,16 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
             </>
           )}
         </dl>
+      )}
+      {q?.kind === "add" && (
+        <p className="field-hint" data-testid="shielded-pool-fee-note">
+          {C.confirm.poolFeeFixed(credits(q.quote.poolFeeCredits))}
+        </p>
+      )}
+      {warning && (
+        <p className="fee-warning" role="alert" data-testid="shielded-fee-warning">
+          {feeWarningText(warning)}
+        </p>
       )}
       {kind !== "add" && (
         <p className="field-hint" data-testid="shielded-slow">
