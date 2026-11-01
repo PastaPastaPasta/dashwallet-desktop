@@ -32,6 +32,18 @@ if ($process.HasExited) {
     exit 1
 }
 
+# The runner agent's console sits in front on a hosted runner: minimize every window, then bring
+# the app's own window back (AppActivate restores a minimized window).
+Add-Type -AssemblyName Microsoft.VisualBasic
+(New-Object -ComObject Shell.Application).MinimizeAll()
+Start-Sleep -Seconds 1
+try { [Microsoft.VisualBasic.Interaction]::AppActivate($process.Id) } catch { Write-Host "::warning::${Name}: could not activate the app window: $_" }
+Start-Sleep -Seconds 3
+if ($process.HasExited) {
+    Write-Host "::error::$Name exited while the screen was prepared (code $($process.ExitCode))"
+    exit 1
+}
+
 $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
