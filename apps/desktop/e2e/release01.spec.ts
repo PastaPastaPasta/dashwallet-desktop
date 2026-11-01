@@ -131,6 +131,67 @@ test.describe("sidebar", () => {
   }
 });
 
+test.describe("incoming payment", () => {
+  const pay = (page: Page, duffs: number) => page.evaluate(`window.__dwFixture.receivePayment(${duffs})`) as Promise<string>;
+  for (const theme of THEMES) {
+    test(`Receive says Received before the next address; the toast and the bell follow (${theme})`, async ({ page }) => {
+      const errors = await open(page, "funded", theme);
+      await page.getByTestId("sidebar-receive").click();
+      const address = page.getByTestId("receive-address");
+      const first = (await address.textContent())!;
+      await expect(page.getByTestId("receive-received")).toHaveCount(0);
+      expect(await pay(page, 999_819)).toBe(first);
+      // The page says what came, on the address that was paid.
+      const received = page.getByTestId("receive-received");
+      await expect(received).toHaveText("✓ Received 0.00999819 tDASH");
+      await expect(address).toHaveText(first);
+      // App-wide toast, and the bell's badge.
+      await expect(page.locator(".toast")).toHaveText("Received 0.00999819 tDASH");
+      await expect(page.getByTestId("toolbar-bell-badge")).toHaveText("1");
+      await shot(page, `${theme}-received-receive-page`);
+      expect(await contrast(received)).toBeGreaterThanOrEqual(4.5);
+      // Then the next address.
+      await expect(address).not.toHaveText(first, { timeout: 8000 });
+      await expect(received).toHaveCount(0);
+      // The bell lists it (no identity: its page), and opening it clears the badge.
+      await page.getByTestId("toolbar-bell").click();
+      await expect(page.getByTestId("bell-payment")).toContainText("Received 0.00999819 tDASH");
+      await expect(page.getByTestId("toolbar-bell-badge")).toHaveCount(0);
+      await shot(page, `${theme}-received-bell`);
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test("the toast shows on any page, and the bell popover lists the payment", async ({ page }) => {
+    await open(page, "dashpay-registered");
+    await page.getByTestId("hero").waitFor();
+    await pay(page, 150_000_000);
+    await expect(page.locator(".toast")).toHaveText("Received 1.50 tDASH");
+    // The identity's three unread events and the payment.
+    await expect(page.getByTestId("toolbar-bell-badge")).toHaveText("4");
+    await page.getByTestId("toolbar-bell").click();
+    await expect(page.getByTestId("bell-popover")).toBeVisible();
+    await expect(page.getByTestId("bell-payments")).toContainText("Received 1.50 tDASH");
+    await expect(page.getByTestId("bell-empty")).toHaveCount(0);
+    await expect(page.getByTestId("toolbar-bell-badge")).toHaveCount(0);
+    // A row opens the payment's detail.
+    await page.getByTestId("bell-payment").click();
+    await expect(page.getByTestId("tx-detail")).toBeVisible();
+  });
+
+  test("a catch-up batch and discreet mode say nothing about the amount", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("hero").waitFor();
+    await page.getByTestId("toolbar-discreet").click();
+    await pay(page, 150_000_000);
+    await expect(page.locator(".toast")).toHaveText("Received a payment");
+    // A batch found while catching up is not announced.
+    await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [f.world.wallets[0].rows[0].txid], count: 1, catchUp: true }); })()`);
+    await page.waitForTimeout(300);
+    await expect(page.getByTestId("toolbar-bell-badge")).toHaveText("1");
+  });
+});
+
 test.describe("first-run notice", () => {
   for (const theme of THEMES) {
     test(`is shown once, then stays dismissed (${theme})`, async ({ page }) => {

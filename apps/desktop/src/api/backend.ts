@@ -55,6 +55,7 @@ import type { OpenedNetwork } from "./generated/OpenedNetwork";
 import type { RevealedMnemonic } from "./generated/RevealedMnemonic";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { TxDetails } from "./generated/TxDetails";
+import type { TxNoticeRow } from "./generated/TxNoticeRow";
 import type { VaultRecovery } from "./generated/VaultRecovery";
 import type { WalletSummary } from "./generated/WalletSummary";
 import type { AddressClass } from "./generated/AddressClass";
@@ -233,6 +234,8 @@ export interface Backend {
   /** dash-qt's CSV of the history `filter` and `sort` select (every field quoted, `\n` ends);
    * `typeNames` empty: dash-qt's English type names. */
   exportHistoryCsv(walletId: string, filter: HistoryFilterRequest, sort: HistorySortName, unit: CsvUnitName, typeNames: string[], utcOffsetSecs: number): Promise<string>;
+  /** Notification rows for the transactions a `newTransactions` event names (unknown txids are skipped). */
+  txNotices(walletId: string, txids: string[]): Promise<TxNoticeRow[]>;
   txDetail(walletId: string, txid: string): Promise<TxDetails>;
   /** Which actions the detail sheet offers (Abandon, Resend). */
   txDetailExtras(walletId: string, txid: string): Promise<TxDetailExtrasInfo>;

@@ -873,6 +873,20 @@ export const HANDLERS: Handlers = {
   sync_status: (_, { world }) => world.sync,
   history_page: ({ walletId, request }, { world }) => historyPage(wallet(world, walletId).rows, request),
   export_history_csv: ({ walletId, filter, sort, unit, utcOffsetSecs }, { world }) => historyCsv(wallet(world, walletId).rows, filter, sort, unit, utcOffsetSecs),
+  // The rows a `newTransactions` event names, in dash-qt's popup shape.
+  tx_notices: ({ walletId, txids }, { world }) =>
+    wallet(world, walletId)
+      .rows.filter((r) => txids.includes(r.txid))
+      .map((r) => ({
+        txid: r.txid,
+        recordIndex: r.recordIndex,
+        amount: r.amount,
+        timestamp: r.timestamp,
+        txType: r.txType,
+        address: r.address,
+        label: r.label,
+        coinjoinInternal: r.txType === "coinJoinMixing" || r.txType === "coinJoinCollateralPayment" || r.txType === "coinJoinMakeCollaterals" || r.txType === "coinJoinCreateDenominations",
+      })),
   tx_detail: ({ walletId, txid }, { world }) => {
     const row = wallet(world, walletId).rows.find((r) => r.txid === txid);
     if (!row) throw fail("tx_not_found", `transaction not found: ${txid}`);

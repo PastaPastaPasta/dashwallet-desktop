@@ -5374,3 +5374,28 @@ button.bell-row-open:focus-visible {
   font-weight: var(--dw-type-subhead-medium-weight);
   color: var(--dw-role-text-link);
 }
+
+/* A payment arrived at the address on Receive (DEC-1058 #6). */
+.receive-received {
+  margin: 0;
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border-radius: var(--dw-radius-small);
+  background: var(--dw-role-success-tint);
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  text-align: center;
+}
+
+.receive-received span {
+  color: var(--dw-role-success);
+}
+
+.receive-qr {
+  display: flex;
+  justify-content: center;
+}
+
+.receive-qr.is-used {
+  opacity: 0.35;
+}

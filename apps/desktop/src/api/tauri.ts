@@ -70,6 +70,7 @@ export class IpcBackend implements Backend {
   syncStatus = () => cmd.syncStatus();
   historyPage = cmd.historyPage;
   exportHistoryCsv = cmd.exportHistoryCsv;
+  txNotices = cmd.txNotices;
   // Not generated yet (api/pending.ts): swap each line for `cmd.<name>` when its command lands.
   networkChoice = async () => (await callPending<NetworkChoiceView>(PENDING.getNetworkChoice))?.value ?? null;
   setNetworkChoice = (network: NetworkChoice) => callRequired<NetworkChoiceView>(PENDING.setNetworkChoice, { network });

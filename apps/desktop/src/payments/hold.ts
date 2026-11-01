@@ -1,0 +1,36 @@
+// Receive shows a payment before the next address (DEC-1058 #6). The engine moves its current
+// receiving address on as soon as one is used, so the page would swap the QR before anyone saw that
+// the payment came. The address stays for `RECEIVED_HOLD_MS` while the page says what was received;
+// an address that moves on with no payment named waits `ROTATION_GRACE_MS` for the notice, which
+// can arrive a moment after the new address does.
+
+import { useEffect, useState } from "react";
+import type { AddressInfo } from "../api/generated/AddressInfo";
+import type { ReceivedPayment } from "./received";
+
+export const RECEIVED_HOLD_MS = 4000;
+export const ROTATION_GRACE_MS = 1500;
+
+/** How long the address on show stays once `target` is the engine's: not at all for an address the
+ * user asked for, `RECEIVED_HOLD_MS` once a payment to the one shown is known, else the grace. */
+export function holdFor(asked: boolean, paid: boolean): number {
+  return asked ? 0 : paid ? RECEIVED_HOLD_MS : ROTATION_GRACE_MS;
+}
+
+/** The address to show and the payments that paid it. `current` is the engine's receiving address,
+ * `asked` the one "New address" issued (shown at once). */
+export function useHeldAddress(current: AddressInfo | undefined, asked: AddressInfo | null, payments: readonly ReceivedPayment[]): { shown: AddressInfo | undefined; paid: ReceivedPayment[] } {
+  const target = asked ?? current;
+  const [held, setHeld] = useState<AddressInfo | undefined>(target);
+  const shown = held ?? target;
+  const paid = shown ? payments.filter((p) => p.address === shown.address) : [];
+  const delay = holdFor(asked !== null, paid.length > 0);
+  useEffect(() => {
+    // The first address read is the one on show; only later ones are held back.
+    if (held === undefined && target) setHeld(target);
+    if (!target || target.address === shown?.address) return;
+    const timer = window.setTimeout(() => setHeld(target), delay);
+    return () => window.clearTimeout(timer);
+  }, [target, held, shown?.address, delay]);
+  return { shown, paid };
+}

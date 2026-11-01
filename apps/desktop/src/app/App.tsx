@@ -23,6 +23,8 @@ import { ContactsPage, PayPage, Placeholder } from "../screens/Routes";
 import { JoinDashPayPage } from "../screens/dashpay/JoinDashPay";
 import { MyProfilePage } from "../screens/dashpay/MyProfile";
 import { NotificationsPage, NotificationsPopover } from "../screens/notifications/Notifications";
+import { ReceivedToaster } from "../screens/notifications/Received";
+import { unreadReceived, useReceived } from "../payments/received";
 import { ToolsPage } from "../screens/tools/ToolsPage";
 import { SettingsPage } from "../screens/settings/SettingsPage";
 import { AboutSheet, OpenUriSheet } from "../screens/ShellDialogs";
@@ -209,7 +211,7 @@ function Shell() {
     else if (route === "pay") content = <PayPage walletId={wallet.walletId} network={network} />;
     else if (route === "receive") content = <ReceivePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "contacts") content = <ContactsPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
-    else if (route === "notifications") content = <NotificationsPage key={wallet.walletId} walletId={wallet.walletId} />;
+    else if (route === "notifications") content = <NotificationsPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "joinDashPay") content = <JoinDashPayPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "profile") content = <MyProfilePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "coinJoin") content = <CoinJoinPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
@@ -224,10 +226,13 @@ function Shell() {
 
   // The bell's popover once the main identity is known; before that the bell opens its page.
   const main = dashpay.main?.identity;
+  // The bell's badge: DashPay events not seen, and payments that arrived and were not.
+  const receivedUnread = unreadReceived(useReceived(wallet?.walletId));
+  const unread = receivedUnread > 0 ? (dashpay.unread ?? 0) + receivedUnread : dashpay.unread;
   const bellOwner = wallet && main ? `${wallet.walletId}:${main}` : undefined;
   const bellPanel =
     wallet && main
-      ? (id: string, close: () => void) => <NotificationsPopover key={bellOwner} walletId={wallet.walletId} identity={main} id={id} close={close} />
+      ? (id: string, close: () => void) => <NotificationsPopover key={bellOwner} walletId={wallet.walletId} identity={main} network={network} id={id} close={close} />
       : undefined;
   // A contested username still has its identity: Contacts, not Join DashPay (D11).
   const joined = !(dashpay.status?.kind === "noIdentity" || dashpay.status?.kind === "registering");
@@ -256,7 +261,7 @@ function Shell() {
           wallets={wallets.data ?? []}
           wallet={wallet}
           chip={chipState(dashpay.status, dashpay.main, registration)}
-          unread={dashpay.unread}
+          unread={unread}
           canLock={canLock}
           onLock={lockNow}
           bellPanel={bellPanel}
@@ -288,6 +293,7 @@ function Shell() {
       {onboarding && <Onboarding network={network} inert={notice} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
       {locked && <LockScreen network={network} covered={forgot || notice} onForgot={() => ui.set({ forgotPassphrase: true })} />}
       {/* Over the lock screen, and still open once the recovery unlocked the vault (U-02 D11). */}
+      <ReceivedToaster network={network} />
       {forgot && !onboarding && !notice && <ForgotPassphraseSheet onClose={closeForgot} />}
       {/* Over everything, the lock screen too: the first thing a new install shows. */}
       {notice && (

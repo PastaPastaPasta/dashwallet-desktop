@@ -13,6 +13,7 @@ import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
 import { onTopUpSettled } from "../dashpay/topup";
 import { onWithdrawSettled } from "../dashpay/withdraw";
+import { announceReceived } from "../payments/received";
 import { onMoveSettled } from "../platform/move";
 import { onShieldedSettled } from "../shielded/flow";
 import { keys } from "./queries";
@@ -98,6 +99,7 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       return [keys.governanceAll];
     // No screen reads these yet (the notice and masternode views come with their tasks).
     // `masternodes` also follows a shared-masternode session change (mn-engine §6, MG-04b).
+    // `newTransactions` is announced above (payments/received.ts), not read as a query.
     case "newTransactions":
     case "notice":
     case "masternodes":
@@ -130,6 +132,9 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
   };
   const unsubscribe = await backend.onEvent((event) => {
     if (event.kind === "notice") console.warn("engine notice", event.code, event.detail);
+    // A payment that arrives while the app is open is announced (toast, bell, Receive); a batch the
+    // sync found on catching up is not news.
+    if (event.kind === "newTransactions" && !event.catchUp) void announceReceived(backend, event.walletId, event.txids);
     if (event.kind === "historyChanged" || (event.kind === "platform" && rereadsHistory(event.change.domain))) {
       // Refetch only the first page of each list: every history_page call re-reads the whole
       // history in the engine, and during sync events arrive up to 4 times a second (contacts
