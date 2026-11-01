@@ -142,14 +142,21 @@ jobs:
           setup=$(ci/github/release-stage.sh "$RUNNER_TEMP/dist" "$VERSION" windows-x64-setup.exe 'release/bundle/nsis/*-setup.exe')
           echo "SETUP=$setup" >> "$GITHUB_ENV"
       # The NSIS installer, per user and silent, into a private directory (/D= must come last and
-      # unquoted); the launch is of the installed app, not of the build output.
+      # unquoted); the launch is of the installed app, not of the build output. Tauri's installer
+      # starts the app when it finishes, even when silent, and that child holds the step's output
+      # open: so the installer runs detached, the step waits for the file, and the app the
+      # installer started is stopped before the launch check begins.
       - name: Install the built installer
         run: |
           dest="$RUNNER_TEMP\\dw-install"
-          "$SETUP" /S "/D=$dest"
-          # The installer returns before it has finished copying.
-          for _ in $(seq 60); do [[ -f "$(cygpath -u "$dest")/dash-wallet.exe" ]] && break; sleep 1; done
-          [[ -f "$(cygpath -u "$dest")/dash-wallet.exe" ]] || { echo "::error::the installer left no dash-wallet.exe in $dest"; ls -la "$(cygpath -u "$dest")" || true; exit 1; }
+          exe="$(cygpath -u "$dest")/dash-wallet.exe"
+          "$SETUP" /S "/D=$dest" >/dev/null 2>&1 </dev/null &
+          for _ in $(seq 120); do [[ -f "$exe" ]] && break; sleep 1; done
+          [[ -f "$exe" ]] || { echo "::error::the installer left no dash-wallet.exe in $dest"; ls -la "$(cygpath -u "$dest")" || true; exit 1; }
+          # Let the installer finish and its app start, then stop that app.
+          sleep 15
+          taskkill //IM dash-wallet.exe //F || true
+          sleep 3
           echo "INSTALLED_EXE=$dest\\dash-wallet.exe" >> "$GITHUB_ENV"
           echo "LAUNCH_DATA=$RUNNER_TEMP\\dw-launch-data" >> "$GITHUB_ENV"
       - name: Launch the installed app and take a screenshot

@@ -15,7 +15,9 @@ suffix=${3:?}
 glob=${4:?}
 
 target=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../rust/target" && pwd)
-mapfile -t matches < <(compgen -G "$target/$glob" || true)
+# No mapfile: macOS runners have bash 3.2.
+matches=()
+while IFS= read -r line; do matches+=("$line"); done < <(compgen -G "$target/$glob" || true)
 if [[ ${#matches[@]} -ne 1 ]]; then
   echo "::error::release-stage: expected one file for $glob, found ${#matches[@]}: ${matches[*]:-none}" >&2
   exit 1

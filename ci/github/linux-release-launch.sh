@@ -45,7 +45,7 @@ for _ in $(seq "$seconds"); do
   window=""
 done
 # Let the first screen load.
-[[ -n "$window" ]] && sleep "${DWD_SHOT_SETTLE:-10}"
+[[ -n "$window" ]] && sleep "${DWD_SHOT_SETTLE:-20}"
 
 status=0
 if ! kill -0 "$pid" 2>/dev/null; then
