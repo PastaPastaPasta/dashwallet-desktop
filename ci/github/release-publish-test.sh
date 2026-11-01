@@ -9,7 +9,7 @@
 #     canonical asset present, binaries matching the SHA256SUMS next to them, no .old/.new left.
 #
 #   ci/github/release-publish-test.sh
-# shellcheck disable=SC2016,SC2034,SC2329 # check() takes expressions as strings; helpers run inside eval
+# shellcheck disable=SC2015,SC2016,SC2034,SC2329 # check() takes expressions as strings; helpers run inside eval
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -42,7 +42,8 @@ moved=$(git rev-parse HEAD)
 
 # A stateful fake gh. State in $FS: ids (id<TAB>name), data/<id>, ref (the continuous tag), mut (writes so far).
 # Faults: FAKE_FAIL_AT=k with FAKE_FAIL_MODE once (only write k fails), outage (write k and every later one
-# fails), kill (the calling script is SIGKILLed instead of doing write k) or killafter (after doing it).
+# fails), lateerr (write k takes effect but reports an error), kill (the calling script is SIGKILLed instead
+# of doing write k) or killafter (after doing it).
 # FAKE_API_ERROR=releases|assets|ref makes that read fail with a 503. FAKE_NO_DIGEST=1 leaves the digest out.
 bin=$work/bin
 mkdir "$bin"
@@ -52,7 +53,7 @@ echo "$*" >> "$LOG"
 FS=$FAKE_FS
 e503() { echo "gh: Service Unavailable (HTTP 503)" >&2; exit 1; }
 n404() { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
-KILLAFTER=
+KILLAFTER=; LATE=
 mutate() { # count a write; maybe fail or kill
   local n
   n=$(( $(cat "$FS/mut" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FS/mut"
@@ -60,11 +61,16 @@ mutate() { # count a write; maybe fail or kill
   case "${FAKE_FAIL_MODE:-once}" in
     once) [[ $n -ne $FAKE_FAIL_AT ]] || { echo "gh: boom (HTTP 500)" >&2; exit 1; } ;;
     outage) [[ $n -lt $FAKE_FAIL_AT ]] || { echo "gh: boom (HTTP 500)" >&2; exit 1; } ;;
+    lateerr) [[ $n -ne $FAKE_FAIL_AT ]] || LATE=1 ;;
     kill) [[ $n -ne $FAKE_FAIL_AT ]] || { kill -9 "$PPID"; exit 1; } ;;
     killafter) [[ $n -ne $FAKE_FAIL_AT ]] || KILLAFTER=1 ;;
   esac
 }
-finish() { [[ -z "$KILLAFTER" ]] || kill -9 "$PPID"; exit 0; }
+finish() {
+  [[ -z "$LATE" ]] || { echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1; }
+  [[ -z "$KILLAFTER" ]] || kill -9 "$PPID"
+  exit 0
+}
 id_of() { awk -F'\t' -v n="$1" '$2==n{print $1; exit}' "$FS/ids"; }
 add_asset() { # name, source file
   local id=$(( $(cat "$FS/next") )); echo $((id + 1)) > "$FS/next"
@@ -77,7 +83,11 @@ case "$1 $2" in
     f=$4; n=${f##*/}
     [[ -z "$(id_of "$n")" ]] || { echo "gh: asset under the same name already exists (HTTP 422)" >&2; exit 1; }
     add_asset "$n" "$f"; finish ;;
-  "release create"|"release edit") mutate; finish ;;
+  "release create") mutate; finish ;;
+  "release edit")
+    mutate
+    prev=; for a in "$@"; do [[ $prev != --notes ]] || printf "%s" "$a" > "$FS/notes"; prev=$a; done
+    finish ;;
   "api "*)
     args=("$@"); method=GET; name=; sha=; path=
     for ((i = 0; i < ${#args[@]}; i++)); do
@@ -95,6 +105,7 @@ case "$1 $2" in
         for t in ${FAKE_DRAFTS:-}; do printf '%s\t2\ttrue\t0\n' "$t"; done
         [[ -z "${FAKE_CONT_RELEASE:-}" ]] || printf 'continuous\t42\tfalse\t%s\n' "$(wc -l < "$FS/ids")"
         exit 0 ;;
+      "GET releases/42") cat "$FS/notes" 2>/dev/null; exit 0 ;;
       "GET releases/42/assets")
         [[ "${FAKE_API_ERROR:-}" != assets ]] || e503
         while IFS=$'\t' read -r id n; do
@@ -163,11 +174,15 @@ seed_old() {
   for n in "${CN[@]}"; do [[ $n == SHA256SUMS ]] || echo "old:$n" > "$t/$n"; done
   (cd "$t" && sha256sum DashWallet-continuous-* > SHA256SUMS)
   for n in "${CN[@]}"; do FS=$FS bash -c 'id=$(( $(cat "$FS/next") )); echo $((id+1)) > "$FS/next"; printf "%s\t%s\n" "$id" "$2" >> "$FS/ids"; cp "$1" "$FS/data/$id"' _ "$t/$n" "$n"; done
-  echo "$c1" > "$FS/ref"
+  echo "$c1" > "$FS/ref"; printf old-notes > "$FS/notes"
   export FAKE_CONT_RELEASE=1
 }
 body() { local id; id=$(awk -F'\t' -v n="$1" '$2==n{print $1; exit}' "$FS/ids"); [[ -z "$id" ]] || cat "$FS/data/$id"; }
-leftovers() { awk -F'\t' '$2 ~ /\.(old|new)$/' "$FS/ids" | wc -l; }
+leftovers() { awk -F'\t' '$2 ~ /\.(old|new)$/ || $2 == "txn.json"' "$FS/ids" | wc -l; }
+# which generation the tag and the notes describe: old | new (the notes name the commit)
+meta_gen() { if grep -q "commit $c2" "$FS/notes"; then echo new; else echo old; fi; }
+# the tag and notes of generation $1 (old: tag c1, old notes; new: tag c2, new notes)
+meta_ok() { [[ "$(meta_gen)" == "$1" && "$(cat "$FS/ref")" == "$([[ $1 == new ]] && echo "$c2" || echo "$c1")" ]]; }
 # old | new | missing:<name> | mixed | badsums
 gen_of() {
   local n g="" one want have
@@ -231,7 +246,7 @@ seed_old
 FAKE_RELEASES="$tag" run push refs/heads/main "$c2" "$ver"
 total=$(writes)
 check "a full update is $total writes" '[[ $total -ge 20 ]]'
-for mode in once outage kill killafter; do
+for mode in once lateerr outage kill killafter; do
   bad=0
   for ((k = 1; k <= total; k++)); do
     seed_old
@@ -239,25 +254,38 @@ for mode in once outage kill killafter; do
     publish_only; s1=$status
     unset FAKE_FAIL_AT FAKE_FAIL_MODE
     g1=$(gen_of); l1=$(leftovers)
-    if [[ $mode == once ]]; then
-      # the run itself leaves one whole generation: the new one, or the old one restored
-      if [[ $s1 -eq 0 ]]; then [[ $g1 == new ]] || { echo "  once@$k: exit 0 but $g1"; bad=1; }
-      else [[ $g1 == old && $l1 -eq 0 && $(cat "$FS/ref") == "$c1" ]] || { echo "  once@$k: exit $s1, state $g1, leftovers $l1, tag $(cat "$FS/ref")"; bad=1; }; fi
+    if [[ $mode == once || $mode == lateerr ]]; then
+      # the run itself leaves one whole generation with its tag and notes: the new one, or the old one restored
+      if [[ $s1 -eq 0 ]]; then [[ $g1 == new ]] && meta_ok new || { echo "  $mode@$k: exit 0 but $g1, tag $(cat "$FS/ref")"; bad=1; }
+      else [[ $g1 == old && $l1 -eq 0 ]] && meta_ok old || { echo "  $mode@$k: exit $s1, state $g1, leftovers $l1, tag $(cat "$FS/ref"), notes $(meta_gen)"; bad=1; }; fi
     else
-      # an outage or a kill may leave a gap; the next run repairs it
-      # the next run's recovery on its own (its upload fails, so nothing of the new generation survives it):
-      # whatever it keeps must be one whole generation, never a mix or a SHA256SUMS that disagrees
+      # an outage or a kill may leave a gap; the next run repairs it.
+      # First the next run's recovery on its own (its upload fails, so nothing of the new generation survives
+      # it): whatever it keeps must be one whole generation, never a mix or a SHA256SUMS that disagrees, and
+      # the tag and notes must describe that generation.
       FAKE_UPLOAD_FAIL=1 publish_only
       g2=$(gen_of)
-      [[ $status -ne 0 && ( $g2 == old || $g2 == new ) && $(leftovers) -eq 0 ]] ||
-        { echo "  $mode@$k: recovery alone: exit $status, state $g2, leftovers $(leftovers)"; bad=1; }
+      [[ $status -ne 0 && ( $g2 == old || $g2 == new ) && $(leftovers) -eq 0 ]] && meta_ok "$g2" ||
+        { echo "  $mode@$k: recovery alone: exit $status, state $g2, leftovers $(leftovers), tag $(cat "$FS/ref"), notes $(meta_gen)"; bad=1; }
       publish_only
-      [[ $status -eq 0 && $(gen_of) == new && $(leftovers) -eq 0 && $(cat "$FS/ref") == "$c2" ]] ||
+      [[ $status -eq 0 && $(gen_of) == new && $(leftovers) -eq 0 ]] && meta_ok new ||
         { echo "  $mode@$k: next run exit $status, state $(gen_of), leftovers $(leftovers)"; bad=1; }
     fi
   done
-  check "faults ($mode) at each of the $total writes end in one complete generation" '[[ $bad -eq 0 ]]'
+  check "faults ($mode) at each of the $total writes end in one complete generation, tag and notes matching" '[[ $bad -eq 0 ]]'
 done
+# an OLDER run after an interrupted update of the newer commit still repairs it (then leaves continuous alone)
+bad=0
+for ((k = 1; k <= total; k++)); do
+  seed_old; echo "$c2" > "$FS/ref"
+  FAKE_RELEASES="$tag" FAKE_FAIL_AT=$k FAKE_FAIL_MODE=killafter publish_only
+  GITHUB_SHA=$c1 publish_only
+  g=$(gen_of)
+  [[ $status -eq 0 && ( $g == old || $g == new ) && $(leftovers) -eq 0 && "$(cat "$FS/ref")" == "$c2" && "$(meta_gen)" == "$g" ]] ||
+    { echo "  older run after killafter@$k: exit $status, state $g, leftovers $(leftovers), tag $(cat "$FS/ref"), notes $(meta_gen)"; bad=1; }
+done
+check "an older run repairs an interrupted update of the newer commit (killafter at each write)" '[[ $bad -eq 0 ]]'
+export GITHUB_SHA=$c2
 unset FAKE_RELEASES
 # recovery without the API's digests: hashes the downloaded bodies
 seed_old
@@ -272,8 +300,11 @@ check "outage mid-promotion leaves a failure exit" '[[ $status -ne 0 ]]'
 # --- a failing read is not "absent": no write happens
 for what in releases assets ref; do
   seed_old
+  FAKE_RELEASES="" FAKE_API_ERROR=$what publish_only
+  check "a fresh run (no immutable release yet): a failing $what read stops it before any write" '[[ $status -ne 0 && $(writes) -eq 0 ]]'
+  seed_old
   FAKE_RELEASES="$tag" FAKE_API_ERROR=$what publish_only
-  check "a failing $what read stops the script before any write" '[[ $status -ne 0 && $(writes) -eq 0 ]]'
+  check "a rerun: a failing $what read stops it before any write" '[[ $status -ne 0 && $(writes) -eq 0 ]]'
 done
 seed_old
 FAKE_RELEASES="$tag" FAKE_DRAFTS="" FAKE_ASSET_COUNT=3 publish_only

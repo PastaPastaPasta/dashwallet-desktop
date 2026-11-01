@@ -20,23 +20,32 @@
 # A commit that is not on origin/main never publishes, whatever the trigger or the tag says.
 #
 # `continuous` is replaced as one generation, with the previous one kept until everything has worked:
-#   1. recover from an interrupted earlier run (leftover <name>.new / <name>.old assets, a canonical name
-#      missing, binaries that don't match SHA256SUMS): finish or roll back, never delete the only copy;
-#   2. upload every new file as <name>.new (a failure here changes nothing a user sees);
+#   0. read everything that decides what to write (release lookups, the tag, the asset list) before the
+#      first write of the run; a failed read stops the script there. Recovery and rollback read again later;
+#      a failure there stops the rest of that step, never a guess;
+#   1. recover from an interrupted earlier run, in every run, also an older one that will then leave
+#      `continuous` alone: leftover <name>.new / <name>.old assets, a canonical name missing, binaries that
+#      don't match SHA256SUMS: finish or roll back, never delete the only copy. The transaction record
+#      (asset txn.json: old and new commit, old and new notes, the new SHA256SUMS hash) then decides which
+#      generation the assets are, and the tag and notes are set to match it;
+#   2. upload txn.json, then every new file as <name>.new (a failure here changes nothing a user sees);
 #   3. for each name, SHA256SUMS last: rename the old asset <name>.old, then the new one <name>;
 #   4. move the tag and rewrite the notes;
-#   5. only then delete the <name>.old assets.
+#   5. only then delete the <name>.old assets and txn.json.
 # Any failure in 3 or 4, and SIGINT / SIGTERM (a cancelled run), roll the whole generation back: every
-# canonical name is restored from its .old, so the end state is the old generation, complete.
+# canonical name is restored from its .old, the tag and the notes go back (also when the API call that
+# failed had in fact taken effect), then txn.json goes. The end state is the old generation, complete.
 # The Releases API is not atomic. While step 3 runs (a few seconds per asset, tens of seconds in all) a
 # download of one name can fail for the two calls between its renames, and bundles can be the new build
 # while SHA256SUMS is still the old one: check a download against the SHA256SUMS you fetch at the same
-# time, and retry on a mismatch. A hard kill or an API outage during 3-5 can leave canonical names missing
-# or mixed until the next run, whose step 1 repairs it (by hand: rename each <name>.old over the missing or
-# new <name>, delete stray <name>.new, or re-run the publish job). The tag moves after the assets and never
-# backwards: if the current `continuous` commit is a descendant of this run's, the run publishes its
-# immutable release and leaves `continuous` alone. Every read is checked: a failed listing stops the script
-# before any write (an API error is never read as "nothing there").
+# time, and retry on a mismatch. A hard kill or an API outage during 2-5 can leave canonical names missing,
+# mixed, or the tag and notes out of step with the assets, until the next run, whose step 1 repairs all of
+# it (by hand: rename each <name>.old over the missing or new <name>, delete stray <name>.new and
+# txn.json, set the tag and notes to the commit of the assets, or re-run the publish job). The tag moves
+# after the assets and never backwards: if the current `continuous` commit is a descendant of this
+# run's, the run publishes its immutable release and leaves `continuous` alone (after step 1). The immutable
+# release is created after the reads of step 0 and before step 1, so a read failure in step 1 or later can
+# follow that one creation, and nothing else.
 #
 # GitHub keeps one pending job per concurrency group and cancels the older pending one when another
 # arrives. The workflow's group is per ref (main has one, each tag its own), so a tag's release is
@@ -163,37 +172,11 @@ publish)
     exit 0
   fi
 
-  # main: the immutable per-run prerelease. Never edited once it exists.
-  if complete_release "$tag" 5; then
-    echo "release-publish: release $tag exists and is complete; immutable, leaving it as it is"
-  else
-    w gh release create "$tag" "${files[@]}" "$DIST/SHA256SUMS" --repo "$repo" --target "$sha" \
-      --prerelease --latest=false --title "Preview build $VERSION" \
-      --notes "Automated preview build of commit $sha ([run ${GITHUB_RUN_NUMBER}]($run_url)). Ad-hoc signed on macOS, unsigned on Windows and Linux; not for real funds. $verify_note"
-  fi
-
-  # main: the rolling prerelease.
-  if probe gh api "repos/$repo/git/ref/tags/continuous" --jq .object.sha; then cur=$PROBE_OUT; else cur=; fi
-  if [[ -n "$cur" && "$cur" != "$sha" ]] && git cat-file -e "$cur^{commit}" 2>/dev/null \
-    && git merge-base --is-ancestor "$sha" "$cur"; then
-    echo "release-publish: continuous is at $cur, newer than $sha; not moving it back"
-    exit 0
-  fi
   cont_notes="Latest build of main: commit $sha ([run ${GITHUB_RUN_NUMBER}]($run_url)), also published as $tag. Ad-hoc signed on macOS, unsigned on Windows and Linux; not for real funds. $verify_note"
   cont_files=("$out/continuous"/"$cont_prefix"-* "$out/continuous/SHA256SUMS")
   names=()
   for f in "${cont_files[@]}"; do names+=("${f##*/}"); done # SHA256SUMS last
-
-  release_row continuous
-  if [[ -z "$ROW" ]]; then
-    # No release yet; a tag may still be there from an earlier one.
-    [[ -z "$cur" || "$cur" == "$sha" ]] || w gh api -X PATCH "repos/$repo/git/refs/tags/continuous" -f sha="$sha" -F force=true --silent
-    w gh release create continuous "${cont_files[@]}" --repo "$repo" --target "$sha" \
-      --prerelease --latest=false --title "Latest build of main" --notes "$cont_notes"
-    exit 0
-  fi
-  IFS=$'\t' read -r _ cont_id cont_draft _ <<<"$ROW"
-  [[ "$cont_draft" == false ]] || die "the continuous release is a draft: publish or delete it by hand"
+  marker=txn.json # the transaction record of an update (see the header)
 
   # ---- asset helpers (all reads checked; a failed write in a rollback is reported, not fatal)
   ASSETS=
@@ -242,58 +225,134 @@ publish)
     done
     return $rc
   }
-  # Step 1: what an interrupted earlier run left.
+  drop_marker() { # the transaction record, once the assets, tag and notes agree again
+    local id
+    ASSETS=$(gh api "repos/$repo/releases/$cont_id/assets" --paginate --jq '.[]|[.id,.name,(.digest // "")]|@tsv') || return 1
+    id=$(aid "$marker")
+    if [[ -n "$id" ]]; then delete_asset "$id"; fi
+  }
+  # Step 1: what an interrupted earlier run left. Assets first (leftover <name>.new / <name>.old), then the
+  # tag and notes are set to match whichever generation the assets ended up as, using the transaction record.
   recover() {
-    local n id oid nid left=0
+    local n id oid nid mid txn left=0 want_sums t nn
     load_assets
     for n in "${names[@]}"; do
       [[ -z "$(aid "$n.new")$(aid "$n.old")" ]] || left=1
     done
-    ((left)) || return 0
+    mid=$(aid "$marker")
+    ((left)) || [[ -n "$mid" ]] || return 0
     echo "release-publish: continuous has leftovers of an interrupted update; recovering"
-    for n in "${names[@]}"; do # a new file that was never promoted is not authoritative
-      nid=$(aid "$n.new")
-      if [[ -n "$nid" ]]; then delete_asset "$nid" || die "recovery: cannot delete $n.new"; fi
-    done
-    load_assets
-    for n in "${names[@]}"; do # a promotion cut off between its two renames: put the old file back
-      id=$(aid "$n"); oid=$(aid "$n.old")
-      if [[ -z "$id" && -n "$oid" ]]; then rename_asset "$oid" "$n" || die "recovery: cannot restore $n"; fi
-    done
-    if [[ -n "$dry" ]]; then return 0; fi
-    load_assets
-    if consistent; then
-      echo "release-publish: the generation is consistent; dropping the .old copies"
-      for n in "${names[@]}"; do
-        oid=$(aid "$n.old")
-        if [[ -n "$oid" ]]; then delete_asset "$oid" || die "recovery: cannot delete $n.old"; fi
+    if ((left)); then
+      for n in "${names[@]}"; do # a new file that was never promoted is not authoritative
+        nid=$(aid "$n.new")
+        if [[ -n "$nid" ]]; then delete_asset "$nid" || die "recovery: cannot delete $n.new"; fi
       done
-    else
-      echo "release-publish: binaries and SHA256SUMS disagree; rolling back to the old generation"
-      restore_olds || die "recovery: rollback failed; see the repair procedure in release-publish.sh"
+      load_assets
+      for n in "${names[@]}"; do # a promotion cut off between its two renames: put the old file back
+        id=$(aid "$n"); oid=$(aid "$n.old")
+        if [[ -z "$id" && -n "$oid" ]]; then rename_asset "$oid" "$n" || die "recovery: cannot restore $n"; fi
+      done
+      if [[ -n "$dry" ]]; then return 0; fi
+      load_assets
+      if consistent; then
+        echo "release-publish: the generation is consistent; dropping the .old copies"
+        for n in "${names[@]}"; do
+          oid=$(aid "$n.old")
+          if [[ -n "$oid" ]]; then delete_asset "$oid" || die "recovery: cannot delete $n.old"; fi
+        done
+      else
+        echo "release-publish: binaries and SHA256SUMS disagree; rolling back to the old generation"
+        restore_olds || die "recovery: rollback failed; see the repair procedure in release-publish.sh"
+      fi
+    fi
+    [[ -z "$dry" ]] || return 0
+    if [[ -n "$mid" ]]; then
+      load_assets
+      txn=$(asset_body "$mid") || die "recovery: cannot read the transaction record"
+      want_sums=$(jq -r .new_sums <<<"$txn")
+      if [[ -n "$(aid SHA256SUMS)" && "$(asset_sha SHA256SUMS)" == "$want_sums" ]]; then
+        t=$(jq -r .new_sha <<<"$txn"); nn=$(jq -r .new_notes <<<"$txn")
+      else
+        t=$(jq -r .old_sha <<<"$txn"); nn=$(jq -r .old_notes <<<"$txn")
+      fi
+      echo "release-publish: setting the continuous tag and notes to match its assets (${t:-no tag})"
+      if [[ -n "$t" ]]; then
+        w gh api -X PATCH "repos/$repo/git/refs/tags/continuous" -f sha="$t" -F force=true --silent || die "recovery: cannot set the tag"
+      fi
+      w gh release edit continuous --repo "$repo" --notes "$nn" --prerelease --latest=false || die "recovery: cannot set the notes"
+      delete_asset "$mid" || die "recovery: cannot delete the transaction record"
     fi
   }
 
-  recover
-  # Step 2: the new generation, under temporary names.
+  # ---- the reads that decide what to write come first: a failed one stops the script before any write
+  if complete_release "$tag" 5; then imm=1; else imm=0; fi
+  if probe gh api "repos/$repo/git/ref/tags/continuous" --jq .object.sha; then cur=$PROBE_OUT; else cur=; fi
+  release_row continuous
+  cont_id=
+  if [[ -n "$ROW" ]]; then
+    IFS=$'\t' read -r _ cont_id cont_draft _ <<<"$ROW"
+    [[ "$cont_draft" == false ]] || die "the continuous release is a draft: publish or delete it by hand"
+    load_assets
+  fi
+
+  # main: the immutable per-run prerelease. Never edited once it exists.
+  if ((imm)); then
+    echo "release-publish: release $tag exists and is complete; immutable, leaving it as it is"
+  else
+    w gh release create "$tag" "${files[@]}" "$DIST/SHA256SUMS" --repo "$repo" --target "$sha" \
+      --prerelease --latest=false --title "Preview build $VERSION" \
+      --notes "Automated preview build of commit $sha ([run ${GITHUB_RUN_NUMBER}]($run_url)). Ad-hoc signed on macOS, unsigned on Windows and Linux; not for real funds. $verify_note"
+  fi
+
+  # main: the rolling prerelease. An interrupted earlier update is repaired first, whichever run this is.
+  if [[ -n "$cont_id" ]]; then
+    recover
+    if probe gh api "repos/$repo/git/ref/tags/continuous" --jq .object.sha; then cur=$PROBE_OUT; else cur=; fi
+  fi
+  if [[ -n "$cur" && "$cur" != "$sha" ]] && git cat-file -e "$cur^{commit}" 2>/dev/null \
+    && git merge-base --is-ancestor "$sha" "$cur"; then
+    echo "release-publish: continuous is at $cur, newer than $sha; not moving it back"
+    exit 0
+  fi
+  if [[ -z "$cont_id" ]]; then
+    # No release yet; a tag may still be there from an earlier one.
+    [[ -z "$cur" || "$cur" == "$sha" ]] || w gh api -X PATCH "repos/$repo/git/refs/tags/continuous" -f sha="$sha" -F force=true --silent
+    w gh release create continuous "${cont_files[@]}" --repo "$repo" --target "$sha" \
+      --prerelease --latest=false --title "Latest build of main" --notes "$cont_notes"
+    exit 0
+  fi
+
+  # Step 2: the transaction record, then the new generation under temporary names.
+  old_notes=$(gh api "repos/$repo/releases/$cont_id" --jq '.body // ""') || die "cannot read the continuous notes"
   stage=$(mktemp -d)
+  jq -n --arg old_sha "$cur" --arg old_notes "$old_notes" --arg new_sha "$sha" --arg new_notes "$cont_notes" \
+    --arg new_sums "$(sha256sum < "$out/continuous/SHA256SUMS" | cut -d' ' -f1)" \
+    '{old_sha: $old_sha, old_notes: $old_notes, new_sha: $new_sha, new_notes: $new_notes, new_sums: $new_sums}' > "$stage/$marker"
+  w gh release upload continuous "$stage/$marker" --repo "$repo" || { drop_marker || true; die "cannot record the update"; }
   for n in "${names[@]}"; do
     cp "$out/continuous/$n" "$stage/$n.new"
-    w gh release upload continuous "$stage/$n.new" --repo "$repo" || { restore_olds || true; die "upload of $n.new failed"; }
+    w gh release upload continuous "$stage/$n.new" --repo "$repo" || { restore_olds && drop_marker || true; die "upload of $n.new failed"; }
   done
   if [[ -n "$dry" ]]; then
-    echo "DRY-RUN: then, for each of ${names[*]} (SHA256SUMS last): rename <name> to <name>.old, <name>.new to <name>; move the tag to $sha; edit the notes; delete the .old assets"
+    echo "DRY-RUN: then, for each of ${names[*]} (SHA256SUMS last): rename <name> to <name>.old, <name>.new to <name>; move the tag to $sha; edit the notes; delete the .old assets and the record"
     exit 0
   fi
   # Steps 3-5, with rollback on any failure and on a cancel.
   tag_moved=
+  notes_touched=
   fail() {
+    local ok=1
     echo "release-publish: $* ; rolling back the continuous release" >&2
     trap '' INT TERM
     if [[ -n "$tag_moved" && -n "$cur" ]]; then
-      w gh api -X PATCH "repos/$repo/git/refs/tags/continuous" -f sha="$cur" -F force=true --silent || echo "release-publish: could not move the tag back to $cur" >&2
+      w gh api -X PATCH "repos/$repo/git/refs/tags/continuous" -f sha="$cur" -F force=true --silent || { ok=0; echo "release-publish: could not move the tag back to $cur" >&2; }
     fi
-    restore_olds || echo "release-publish: ROLLBACK INCOMPLETE: rename each <name>.old over <name> (delete <name> first if present) and delete <name>.new, or re-run this job" >&2
+    if [[ -n "$notes_touched" ]]; then
+      w gh release edit continuous --repo "$repo" --notes "$old_notes" --prerelease --latest=false || { ok=0; echo "release-publish: could not restore the notes" >&2; }
+    fi
+    restore_olds || { ok=0; echo "release-publish: ROLLBACK INCOMPLETE: rename each <name>.old over <name> (delete <name> first if present) and delete <name>.new, or re-run this job" >&2; }
+    # The record stays when anything above failed: the next run's recovery finishes the job with it.
+    if ((ok)); then drop_marker || echo "release-publish: could not delete $marker; the next run removes it" >&2; fi
     exit 1
   }
   trap 'fail "interrupted"' INT TERM
@@ -312,6 +371,7 @@ publish)
   else
     w gh api -X POST "repos/$repo/git/refs" -f ref=refs/tags/continuous -f sha="$sha" --silent || fail "cannot create the tag"
   fi
+  notes_touched=1 # likewise: a notes edit that landed but reported an error is undone too
   w gh release edit continuous --repo "$repo" --notes "$cont_notes" --prerelease --latest=false || fail "cannot edit the notes"
   trap - INT TERM
   # Step 5: the old generation goes only now; a failure here leaves harmless .old files for the next recovery.
@@ -320,6 +380,7 @@ publish)
     oid=$(aid "$n.old")
     if [[ -n "$oid" ]]; then delete_asset "$oid" || echo "release-publish: warning: could not delete $n.old; the next run removes it" >&2; fi
   done
+  drop_marker || echo "release-publish: warning: could not delete $marker; the next run removes it" >&2
   ;;
 *) die "unknown mode $mode" ;;
 esac
