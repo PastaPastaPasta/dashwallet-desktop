@@ -135,7 +135,9 @@ pub struct MoveToCoreOutcome {
     pub credits: u64,
     /// The payout; `None` when a group's `Done` cannot attribute it.
     pub expected_duffs: Option<u64>,
-    pub to: String,
+    /// The Core address paid; for a group's `Done`, `None` unless every
+    /// member named the same one (no evidence says which executed).
+    pub to: Option<String>,
     /// `Done` once a proved read shows every input at its signed nonce;
     /// `Pending` until then (the library's answer is no such proof);
     /// `Replaced` when another move of the group carries the outcome.

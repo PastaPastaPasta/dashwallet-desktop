@@ -966,6 +966,7 @@ fn a_retry_with_other_terms_settles_as_one_group() {
         (retry.credits, retry.expected_duffs, retry.fee_credits),
         (debit, None, None)
     );
+    assert_eq!(retry.to.as_deref(), Some(w.to.as_str()), "one destination");
     let activity = w.activity();
     let moves: Vec<_> = (activity.iter())
         .filter(|r| r.kind == PlatformActivityKind::MoveToCore)
@@ -1143,7 +1144,7 @@ fn the_fund_route_refuses_a_lock_of_more_than_fifty_coins() {
     ));
     let e = funded.unwrap_err();
     assert_eq!(e.code(), "invalid_argument", "{e}");
-    assert!(e.to_string().contains("needs 51"), "{e}");
+    assert!(e.to_string().contains("would use 51 coins"), "{e}");
     assert!(w.f.unused(&address_grant));
     let spend = (w.f.s.vault).check_grant(
         &spend_grant,
@@ -1151,4 +1152,46 @@ fn the_fund_route_refuses_a_lock_of_more_than_fifty_coins() {
         Some(&w.f.wallet.0),
     );
     assert!(spend.is_ok(), "{spend:?}");
+}
+
+/// Review r3 R3-m3: a held move to one own address and its retry to
+/// another, the earlier one executing while the retry is answered with a
+/// snapshot. Nothing says which address was paid: the group's outcome, as
+/// its activity row, names none (at 016082be the outcome named the
+/// retry's).
+#[test]
+fn a_group_with_two_destinations_names_none() {
+    let w = World::new();
+    let (a, b) = (w.address(0), w.address(1));
+    w.net.fund(a, 3 * DASH);
+    w.net.then(Act::Lost);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let first = w.move_to(one, &w.to, &w.f.grant(2 * DASH)).unwrap();
+    w.net.fund(b, 9 * DASH);
+    w.activity();
+    // The current address is not recorded as issued, so the first issue
+    // may be `w.to` itself: issue until another own address comes.
+    let other = std::iter::repeat_with(|| {
+        (w.f.engine)
+            .block_on(w.f.s.next_receive_address(w.f.wallet, None))
+            .unwrap()
+            .address
+    })
+    .take(3)
+    .find(|a| *a != w.to)
+    .unwrap();
+    w.net.then(Act::EarlierExecutes(0));
+    let retry = w.move_to(one, &other, &w.f.grant(2 * DASH)).unwrap();
+    assert_eq!(first.to.as_deref(), Some(w.to.as_str()));
+    assert_eq!(retry.state, PlatformActivityState::Done);
+    assert_eq!(
+        (retry.to.as_deref(), retry.expected_duffs, retry.fee_credits),
+        (None, None, None)
+    );
+    let activity = w.activity();
+    let row = (activity.iter()).find(|r| r.id == retry.id).unwrap();
+    assert_eq!(
+        (row.state, row.to.as_deref()),
+        (PlatformActivityState::Done, None)
+    );
 }

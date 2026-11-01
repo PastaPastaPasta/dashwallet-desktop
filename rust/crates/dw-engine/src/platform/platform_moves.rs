@@ -1344,7 +1344,7 @@ pub(crate) async fn move_to_core(
         id: record.id.clone(),
         credits: row.credits,
         expected_duffs: row.expected_duffs,
-        to: record.to.clone(),
+        to: row.to,
         state: record.state,
         fee_credits: row.fee_credits,
     })

@@ -39,10 +39,11 @@ pub(crate) const MAX_INPUTS: usize = 50;
 /// The refusal: `needs` coins, or more than the bound when unknown.
 pub(crate) fn too_many(needs: Option<usize>) -> PlatformError {
     let needs = needs.map_or_else(|| format!("more than {MAX_INPUTS}"), |n| n.to_string());
+    // Shown as it is (the top-up's presenter): the advice is the remedy.
     PlatformError::InvalidArgument {
         detail: format!(
-            "an asset lock spends at most {MAX_INPUTS} coins and this one needs {needs}: \
-             consolidate the wallet's coins with a send to itself first"
+            "this payment would use {needs} coins and at most {MAX_INPUTS} can be used: \
+             send Dash to your own wallet first to combine them, then try again"
         ),
     }
 }

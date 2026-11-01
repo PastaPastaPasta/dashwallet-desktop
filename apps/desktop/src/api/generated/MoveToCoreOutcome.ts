@@ -10,7 +10,11 @@ export type MoveToCoreOutcome = { id: string, credits: string,
 /**
  * `null` when a group's outcome cannot attribute the payout.
  */
-expectedDuffs: number | null, to: string, state: PlatformActivityState,
+expectedDuffs: number | null,
+/**
+ * `null` when a group's outcome cannot attribute the destination.
+ */
+to: string | null, state: PlatformActivityState,
 /**
  * Done: the fee taken.
  */

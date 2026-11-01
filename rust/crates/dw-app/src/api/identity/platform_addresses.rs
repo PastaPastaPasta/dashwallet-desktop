@@ -194,7 +194,8 @@ pub struct MoveToCoreOutcome {
     pub credits: u64,
     /// `null` when a group's outcome cannot attribute the payout.
     pub expected_duffs: Option<u64>,
-    pub to: String,
+    /// `null` when a group's outcome cannot attribute the destination.
+    pub to: Option<String>,
     pub state: PlatformActivityState,
     /// Done: the fee taken.
     #[ts(type = "string | null")]

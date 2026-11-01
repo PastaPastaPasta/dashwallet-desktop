@@ -3277,8 +3277,11 @@ impl PwLib {
             .await;
         match funded {
             Ok((_, _, outpoint)) => Ok(outpoint),
-            // The builder released its selection; nothing was broadcast.
+            // The signer refused before the transaction was complete: the
+            // builder released its selection and nothing can be out, so the
+            // step ends `NotSent`, not possibly sent (review r3 R3-m1).
             Err(_) if signer.refused() => {
+                permit.abort_unsent();
                 Err(FundError::NotSent(super::lock_inputs::too_many(None)))
             }
             Err(e) => Err(fund_error(e)),

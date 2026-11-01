@@ -4215,13 +4215,113 @@ fn a_lock_needing_more_than_fifty_coins_is_refused_before_signing() {
     let Err(FundError::Refused(PlatformError::InvalidArgument { detail })) = funded else {
         panic!("{funded:?}")
     };
-    assert!(
-        detail.contains("at most 50 coins and this one needs 51"),
-        "{detail}"
-    );
+    assert!(detail.contains("would use 51 coins"), "{detail}");
     assert_eq!(released, 0, "nothing signed");
     assert!(
         coins.iter().all(|c| !reads_reserved(&f, *c)),
         "nothing selected"
     );
+}
+
+/// 51 confirmed coins of `value` at txid 0xec…, on the wallet's BIP44 account.
+fn small_coins(f: &Fixture, wallet: &platform_wallet::PlatformWallet, value: u64) -> Vec<OutPoint> {
+    f.engine.block_on(async {
+        let address = wallet
+            .core()
+            .next_receive_address_for_account(0)
+            .await
+            .unwrap();
+        let mut state = wallet.state_mut().await;
+        let account = (state.core_wallet.accounts.standard_bip44_accounts)
+            .get_mut(&0)
+            .unwrap();
+        (0..51)
+            .map(|vout| {
+                let outpoint = OutPoint::new(Txid::from_byte_array([0xec; 32]), vout);
+                let mut utxo = key_wallet::Utxo::new(
+                    outpoint,
+                    dashcore::TxOut {
+                        value,
+                        script_pubkey: address.script_pubkey(),
+                    },
+                    address.clone(),
+                    1,
+                    false,
+                );
+                utxo.is_confirmed = true;
+                account.utxos.insert(outpoint, utxo);
+                outpoint
+            })
+            .collect()
+    })
+}
+
+/// Review r3 R3-m1: 51 coins of 60,000 duffs. The fewest that reach the
+/// 3,000,000-duff lock are 50, so the early check passes; the fee needs
+/// the 51st, and the capped signer refuses it after 50 signatures, before
+/// the transaction is complete. That abort is definitive: the call ends
+/// `Cancelled`, the step reads `NotSent` (at 016082be it stayed
+/// `MaybeSent`, so the retry was refused until Repair), and once the coins
+/// are consolidated the same draft funds again at once.
+#[test]
+fn a_lock_refused_at_its_fifty_first_signature_is_not_sent() {
+    use super::flows::DispatchState;
+    use super::lease::FlowOutcome;
+    let f = fixture(false);
+    let wallet = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
+    assert_eq!(flow::LOCK_DUFFS, 50 * 60_000);
+    let coins = small_coins(&f, &wallet, 60_000);
+    let lib = f.pw_lib(&wallet);
+    let lease = f.lease();
+    let draft = prepared(&f, 1);
+    let step = flow::funding_step(draft);
+    let (funded, released, outcome) = f.engine.block_on(async {
+        let call = permit(&lib, &lease, draft, 1).await.unwrap();
+        let funded = lib
+            .fund_lock(
+                platform_wallet::AssetLockFundingType::IdentityRegistration,
+                flow::LOCK_DUFFS,
+                1,
+                &call,
+            )
+            .await;
+        let released = call.signatures().released();
+        (funded, released, call.finish(false))
+    });
+    let Err(FundError::NotSent(PlatformError::InvalidArgument { detail })) = funded else {
+        panic!("{funded:?}")
+    };
+    assert!(detail.contains("would use more than 50 coins"), "{detail}");
+    assert_eq!(released, 50, "refused at the 51st");
+    assert_eq!(outcome, FlowOutcome::Cancelled);
+    assert!(
+        f.engine
+            .block_on(f.session.leases.refresh_funding(f.wallet))
+    );
+    assert_eq!(
+        f.session.leases.funding_status(f.wallet, &step),
+        Some(DispatchState::NotSent)
+    );
+    assert!(
+        coins.iter().all(|c| !reads_reserved(&f, *c)),
+        "selection released"
+    );
+    // Consolidated: one coin instead of the 51. The draft funds at once.
+    f.engine.block_on(async {
+        let mut state = wallet.state_mut().await;
+        let account = (state.core_wallet.accounts.standard_bip44_accounts)
+            .get_mut(&0)
+            .unwrap();
+        for c in &coins {
+            account.utxos.remove(c);
+        }
+    });
+    let (_, coin) = f.coin();
+    let inputs = f.engine.block_on(async {
+        let call = permit(&lib, &lease, draft, 1).await.unwrap();
+        let (_, inputs) = build_and_track(&f, &wallet, 1, &call).await;
+        call.finish(true);
+        inputs
+    });
+    assert_eq!(inputs, vec![coin]);
 }

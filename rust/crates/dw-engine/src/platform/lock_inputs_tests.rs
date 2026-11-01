@@ -75,5 +75,10 @@ fn the_least_coins_reaching_an_amount() {
     assert_eq!(least(&[5, 1, 3], 10), None);
     assert_eq!(least(&[1; 51], 51), Some(51));
     assert_eq!(least(&[1; 51], 50), Some(MAX_INPUTS));
-    assert!(too_many(Some(51)).to_string().contains("needs 51"));
+    // The top-up screen shows this detail as it is (topup.test.ts pins it).
+    assert_eq!(
+        too_many(Some(51)).to_string(),
+        "invalid argument: this payment would use 51 coins and at most 50 can be used: \
+         send Dash to your own wallet first to combine them, then try again"
+    );
 }
