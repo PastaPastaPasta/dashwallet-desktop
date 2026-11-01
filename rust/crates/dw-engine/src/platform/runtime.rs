@@ -117,8 +117,16 @@ pub(crate) struct PlatformRuntime {
     pub(super) loops_on: Arc<AtomicBool>,
     /// Held to read by each shielded pass from its admission to its end; to
     /// write by the drain of a lock, a revocation or the close
-    /// (`shielded_pool::guarded_pass`, 0.1 E1).
+    /// (`shielded_pool::guarded_pass`, 0.1 E1), and by every change to the
+    /// wallets a pass covers: a wallet's load, its shielded bind, its
+    /// removal from the manager, the coordinator's configuration (E1 r1
+    /// R1-3). So the wallets the library's pass syncs and re-sends for are
+    /// the ones its admission checked.
     pub(crate) shielded_passes: Arc<tokio::sync::RwLock<()>>,
+    /// A test's pause of the next shielded pass, after its admission and
+    /// before the library's pass (`shielded_pool::guarded_pass`).
+    #[cfg(test)]
+    pub(crate) pass_pause: Mutex<Option<super::shielded_pool::PassPause>>,
     /// Held to read by each shielded pass, before `shielded_passes`; to
     /// write by a spend from its library call to its record, so no pass
     /// runs meanwhile. Apart from `shielded_passes` so a lock's drain waits
@@ -391,6 +399,8 @@ impl PlatformRuntime {
             tasks: Mutex::new(HashMap::new()),
             loops_on: Arc::new(AtomicBool::new(false)),
             shielded_passes: Arc::default(),
+            #[cfg(test)]
+            pass_pause: Mutex::new(None),
             shielded_spends: tokio::sync::RwLock::new(()),
             shield_taken: std::sync::Mutex::default(),
             key_work: Arc::default(),

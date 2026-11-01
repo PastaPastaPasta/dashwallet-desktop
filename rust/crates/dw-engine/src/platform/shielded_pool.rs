@@ -1283,6 +1283,9 @@ pub(crate) async fn coordinator(
     if let Some(coordinator) = manager.shielded_coordinator().await {
         return Ok(coordinator);
     }
+    // The store's open rehydrates every stored spend: not under a pass
+    // (R1-3, `PlatformRuntime::shielded_passes`).
+    let _passes = session.platform.shielded_passes.write().await;
     (manager
         .configure_shielded(session.data_dir().join(SHIELDED_DB_FILE))
         .await)?;
@@ -1345,9 +1348,13 @@ impl ShieldedLib for PwShielded {
     async fn bind(&self) -> Result<bool, PlatformError> {
         let wallet = &self.pw.wallet;
         let accounts = [SHIELDED_ACCOUNT];
-        if wallet.is_shielded_bound().await
-            || (wallet.bind_shielded_from_persisted(&accounts, &self.coordinator)).await?
-        {
+        if wallet.is_shielded_bound().await {
+            return Ok(true);
+        }
+        // A bind adds the wallet to the coordinator's passes: never while
+        // one is in flight (R1-3, `PlatformRuntime::shielded_passes`).
+        let _passes = self.pw.session.platform.shielded_passes.write().await;
+        if (wallet.bind_shielded_from_persisted(&accounts, &self.coordinator)).await? {
             return Ok(true);
         }
         // First bind: the vault's viewing key, persisted before it is bound
@@ -1696,6 +1703,13 @@ pub(crate) enum PassHeld {
     Journal(String),
 }
 
+/// A test's pause of a pass after its admission (`PlatformRuntime::pass_pause`).
+#[cfg(test)]
+pub(crate) struct PassPause {
+    pub(crate) reached: tokio::sync::oneshot::Sender<()>,
+    pub(crate) resume: tokio::sync::oneshot::Receiver<()>,
+}
+
 /// Platform's hash of a state transition: SHA-256 of its serialized bytes.
 fn transition_hash(st_bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(st_bytes).into()
@@ -1713,7 +1727,19 @@ pub(crate) async fn admit_pass(
     manager: &Manager,
 ) -> Result<Arc<NetworkShieldedCoordinator>, PassHeld> {
     let coordinator = (manager.shielded_coordinator().await).ok_or(PassHeld::NoCoordinator)?;
-    for id in manager.list_wallet_ids_blocking() {
+    // Every wallet the library's pass will cover: the manager's and the
+    // coordinator's registered ones (the pass syncs and re-sends for the
+    // latter, `coordinator.rs:1342-1348`, `:1423-1439`). Neither set changes
+    // until the pass ends: loads, binds, removals and the configuration
+    // wait for `shielded_passes` (R1-3).
+    let mut wallets: std::collections::BTreeSet<[u8; 32]> =
+        manager.list_wallet_ids_blocking().into_iter().collect();
+    wallets.extend(
+        (coordinator.registered_subwallets().await)
+            .into_iter()
+            .map(|s| s.wallet_id),
+    );
+    for id in wallets {
         let stored = (coordinator.store().read().await)
             .pending_redrives_for_wallet(id)
             .map_err(|e| PassHeld::Store(e.to_string()))?;
@@ -1815,6 +1841,16 @@ pub(crate) async fn guarded_pass(session: &NetworkSession, manager: &Manager, fo
     if let Err(held) = admit_pass(session, manager).await {
         tracing::info!(?held, "a shielded sync pass is held back");
         return false;
+    }
+    #[cfg(test)]
+    {
+        let pause = (session.platform.pass_pause.lock())
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(pause) = pause {
+            let _ = pause.reached.send(());
+            let _ = pause.resume.await;
+        }
     }
     let summary = manager.shielded_sync().sync_now(force).await;
     if summary.error_count() > 0 {

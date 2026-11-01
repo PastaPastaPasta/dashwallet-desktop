@@ -323,6 +323,9 @@ impl NetworkSession {
             if !live.store.is_unloaded(&id.0) {
                 return this.require_wallet(&id);
             }
+            // The wallet joins the shielded passes' set: not while one is in
+            // flight (R1-3, `PlatformRuntime::shielded_passes`).
+            let passes = this.platform.shielded_passes.write().await;
             live.store.set_unloaded(id.0, false);
             if let Err(e) = live.manager.load_from_persistor().await {
                 live.store.set_unloaded(id.0, true);
@@ -332,6 +335,7 @@ impl NetworkSession {
                 live.store.set_unloaded(id.0, true);
                 return Err(EngineError::WalletNotFound(id.to_string()));
             }
+            drop(passes);
             this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;
             this.load_payment_locks(id).await;

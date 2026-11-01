@@ -1412,6 +1412,142 @@ fn a_pass_records_each_stored_spend_and_waits_for_the_wallets_lease() {
     assert_eq!(held, Some(pool::PassHeld::NoLease(wallet)));
 }
 
+/// R1-3 (E1 review r1): the wallets the library's pass covers are the ones
+/// its admission checked. A pass is paused after admitting wallet A alone;
+/// meanwhile wallet B, unloaded with a stored spend of unknown result and
+/// its viewing key persisted, is loaded and bound while the vault is locked.
+/// The load and the bind wait for the pass to end, so the library never
+/// syncs or re-sends for B in a pass that did not check it. The next pass
+/// is held back for B (no background lease, nothing re-sent), and once the
+/// vault is unlocked B's spend is on record, by hash, before a pass runs.
+#[test]
+fn a_wallet_bound_during_a_pass_waits_for_it_and_is_admitted_before_its_spend_is_sent() {
+    use platform_wallet::wallet::shielded::store::PendingRedrive;
+    use platform_wallet::wallet::shielded::{ShieldedStore, SubwalletId};
+    const PHRASE_B: &str =
+        "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    let f = super::topup_tests::fixture(true);
+    let (engine, session, a) = (&f.engine, &f.session, f.wallet);
+    let b = engine
+        .block_on(session.import_wallet(
+            Zeroizing::new(PHRASE_B.as_bytes().to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions {
+                birth_height: Some(0),
+                core_compat: false,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    assert!(bound_address(engine, session, a).0);
+    assert!(
+        bound_address(engine, session, b).0,
+        "B's viewing key persisted"
+    );
+    engine.block_on(session.unload_wallet(b)).unwrap();
+    let st_bytes = b"B's signed transfer".to_vec();
+    let redrive = PendingRedrive {
+        activity_id: [0xb1; 32],
+        anchor: [0xb2; 32],
+        nullifiers: vec![[0xb3; 32]],
+        st_bytes: st_bytes.clone(),
+        attempts: 0,
+        identity_nonce_finalized: false,
+        identity_user_abandoned: false,
+    };
+    let manager = session.manager().unwrap();
+    let (s, m) = (Arc::clone(session), Arc::clone(&manager));
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m).await.unwrap();
+        let sub = SubwalletId::new(b.0, dw_vault::SHIELDED_ACCOUNT);
+        (coordinator.store().write().await)
+            .arm_redrive(sub, redrive)
+            .unwrap();
+    });
+    engine.block_on(session.lock_vault()).unwrap();
+    assert!(session.leases.background(&a).is_none());
+
+    let (s, m) = (Arc::clone(session), Arc::clone(&manager));
+    engine.block_on(async move {
+        let (reached_tx, reached) = tokio::sync::oneshot::channel();
+        let (resume, resume_rx) = tokio::sync::oneshot::channel();
+        *s.platform.pass_pause.lock().unwrap() = Some(pool::PassPause {
+            reached: reached_tx,
+            resume: resume_rx,
+        });
+        let pass = {
+            let (s, m) = (Arc::clone(&s), Arc::clone(&m));
+            tokio::spawn(async move { pool::guarded_pass(&s, &m, true).await })
+        };
+        reached.await.unwrap();
+        let joined = {
+            let s = Arc::clone(&s);
+            tokio::spawn(async move {
+                s.load_wallet(b).await.unwrap();
+                on_pool(&s, b, |_, lib| async move { Ok(lib.bind().await?) }).await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !joined.is_finished(),
+            "B joined while a pass that did not check it ran"
+        );
+        assert!(
+            !(m.shielded_coordinator()
+                .await
+                .unwrap()
+                .registered_subwallets()
+                .await)
+                .iter()
+                .any(|sub| sub.wallet_id == b.0)
+        );
+        resume.send(()).unwrap();
+        assert!(pass.await.unwrap(), "the paused pass was admitted (A only)");
+        assert!(
+            joined.await.unwrap().unwrap(),
+            "B bound from storage, vault locked"
+        );
+
+        // B now holds a stored spend and no background lease: held back,
+        // nothing re-sent, nothing recorded yet.
+        assert_eq!(
+            pool::admit_pass(&s, &m).await.err(),
+            Some(pool::PassHeld::NoLease(b))
+        );
+        assert!(!pool::guarded_pass(&s, &m, true).await);
+        let coordinator = m.shielded_coordinator().await.unwrap();
+        let stored = (coordinator.store().read().await)
+            .pending_redrives_for_wallet(b.0)
+            .unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].1.attempts, 0, "never re-sent");
+    });
+    assert!(
+        engine
+            .block_on(session.leases.shielded_redrives(b))
+            .unwrap()
+            .is_empty()
+    );
+
+    engine
+        .block_on(
+            session.vault_op(|v| v.unlock(super::topup_tests::PASS, dw_vault::UnlockScope::Full)),
+        )
+        .unwrap();
+    let (s, m) = (Arc::clone(session), Arc::clone(&manager));
+    engine.block_on(async move {
+        s.ensure_background().await;
+        assert!(pool::admit_pass(&s, &m).await.is_ok());
+    });
+    let hash: [u8; 32] = Sha256::digest(&st_bytes).into();
+    assert_eq!(
+        engine
+            .block_on(session.leases.shielded_redrives(b))
+            .unwrap(),
+        [([0xb1; 32], hash)]
+    );
+}
+
 /// Lane V's reference through the facade: a mainnet session of the
 /// "abandon … about" wallet shows the mobile wallets' shielded address.
 #[test]

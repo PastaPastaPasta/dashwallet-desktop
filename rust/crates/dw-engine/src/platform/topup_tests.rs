@@ -35,7 +35,7 @@ use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, Wa
 
 const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-const PASS: &[u8] = b"pass phrase";
+pub(super) const PASS: &[u8] = b"pass phrase";
 const COIN: u64 = 100_000_000;
 /// A top-up of 0.05 DASH.
 const DUFFS: u64 = 5_000_000;
