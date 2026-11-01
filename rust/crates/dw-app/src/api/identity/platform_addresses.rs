@@ -15,7 +15,14 @@ pub struct PlatformAddressBalance {
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub credits: u64,
-    /// `credits` in whole duffs: what Home adds to the spendable total.
+    /// What a "Move to Dash wallet" of everything would withdraw now (0 when
+    /// it would be refused); a remainder too small to move is in `credits`
+    /// only.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub movable_credits: u64,
+    /// `movableCredits` in whole duffs: what Home adds to the spendable
+    /// total.
     pub duffs: u64,
     /// The funded addresses, the largest first.
     pub addresses: Vec<PlatformAddressRow>,
@@ -28,6 +35,7 @@ impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
     fn from(b: engine::PlatformAddressBalance) -> Self {
         let engine::PlatformAddressBalance {
             credits,
+            movable_credits,
             duffs,
             addresses,
             synced_at,
@@ -35,6 +43,7 @@ impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
         } = b;
         PlatformAddressBalance {
             credits,
+            movable_credits,
             duffs,
             addresses: addresses.into_iter().map(Into::into).collect(),
             synced_at,
@@ -100,6 +109,10 @@ pub struct PlatformActivity {
     pub address: Option<String>,
     pub to: Option<String>,
     pub expected_duffs: Option<u64>,
+    /// A done move's fee as its inputs' proved balances show it.
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub fee_credits: Option<u64>,
     /// Unix seconds.
     pub at: u64,
 }
@@ -114,6 +127,7 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             address,
             to,
             expected_duffs,
+            fee_credits,
             at,
         } = a;
         PlatformActivity {
@@ -124,6 +138,7 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             address,
             to,
             expected_duffs,
+            fee_credits,
             at,
         }
     }
@@ -140,7 +155,7 @@ pub struct MoveToCoreQuote {
     #[serde(with = "crate::dto::credits")]
     pub fee_credits: u64,
     pub expected_duffs: u64,
-    /// The wallet's own Core receive address.
+    /// The wallet's own Core receive address: `platformMoveToCore` pays it.
     pub to: String,
     pub grant: GrantRequest,
 }
@@ -164,8 +179,8 @@ impl From<engine::MoveToCoreQuote> for MoveToCoreQuote {
     }
 }
 
-/// A move's outcome: `done`, or `pending` when Platform's answer said
-/// nothing either way.
+/// A move's outcome: `done` once a proved read shows its inputs' signed
+/// nonces, else `pending`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct MoveToCoreOutcome {
@@ -176,6 +191,10 @@ pub struct MoveToCoreOutcome {
     pub expected_duffs: u64,
     pub to: String,
     pub state: PlatformActivityState,
+    /// Done: the fee taken.
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub fee_credits: Option<u64>,
 }
 
 impl From<engine::MoveToCoreOutcome> for MoveToCoreOutcome {
@@ -186,6 +205,7 @@ impl From<engine::MoveToCoreOutcome> for MoveToCoreOutcome {
             expected_duffs,
             to,
             state,
+            fee_credits,
         } = o;
         MoveToCoreOutcome {
             id,
@@ -193,6 +213,7 @@ impl From<engine::MoveToCoreOutcome> for MoveToCoreOutcome {
             expected_duffs,
             to,
             state: state.into(),
+            fee_credits,
         }
     }
 }

@@ -48,6 +48,26 @@ fn every_version_from_the_first_withdrawals_has_rules() {
     );
 }
 
+/// The address withdrawal's range is keyed on its own structure knob; at
+/// every version that takes both, it agrees with the identity
+/// withdrawal's (PV13: the platform floor alone, PV14 on: plus the Core
+/// fee), so a change to one knob alone shows here.
+#[test]
+fn the_address_range_follows_its_own_knob_and_agrees() {
+    for v in versions() {
+        let (min, max) = address_range(v).unwrap();
+        let rules = Rules::at(v).unwrap();
+        assert_eq!((min, max), (rules.min, rules.max), "{}", v.protocol_version);
+    }
+    let pv13 = PlatformVersion::get(13).unwrap();
+    let pv14 = PlatformVersion::get(14).unwrap();
+    assert_eq!(
+        (pv13.dpp.state_transitions.address_funds).validate_credit_withdrawal_structure,
+        0
+    );
+    assert!(address_range(pv14).unwrap().0 > address_range(pv13).unwrap().0);
+}
+
 /// The range is Drive's structure check's, raised to clear dust; the
 /// reserve is dpp's minimum fee, which the metered bound stays under.
 #[test]

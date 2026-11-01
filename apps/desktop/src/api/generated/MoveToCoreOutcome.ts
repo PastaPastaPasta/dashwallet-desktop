@@ -2,7 +2,11 @@
 import type { PlatformActivityState } from "./PlatformActivityState";
 
 /**
- * A move's outcome: `done`, or `pending` when Platform's answer said
- * nothing either way.
+ * A move's outcome: `done` once a proved read shows its inputs' signed
+ * nonces, else `pending`.
  */
-export type MoveToCoreOutcome = { id: string, credits: string, expectedDuffs: number, to: string, state: PlatformActivityState, };
+export type MoveToCoreOutcome = { id: string, credits: string, expectedDuffs: number, to: string, state: PlatformActivityState,
+/**
+ * Done: the fee taken.
+ */
+feeCredits: string | null, };

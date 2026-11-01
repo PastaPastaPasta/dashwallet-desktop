@@ -7,6 +7,10 @@ import type { PlatformActivityState } from "./PlatformActivityState";
  */
 export type PlatformActivity = { id: string, kind: PlatformActivityKind, state: PlatformActivityState, credits: string, address: string | null, to: string | null, expectedDuffs: number | null,
 /**
+ * A done move's fee as its inputs' proved balances show it.
+ */
+feeCredits: string | null,
+/**
  * Unix seconds.
  */
 at: number, };

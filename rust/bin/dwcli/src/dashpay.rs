@@ -605,16 +605,18 @@ pub enum PlatformAddrCmd {
     MoveToCore {
         #[arg(long, required_unless_present = "all", conflicts_with = "all")]
         credits: Option<u64>,
-        /// The library's plan: every input at or above the minimum, less
-        /// the fee.
+        /// Every input at or above the input minimum, less the fee, at
+        /// most Platform's largest withdrawal.
         #[arg(long)]
         all: bool,
         /// Print the quote only.
         #[arg(long)]
         quote_only: bool,
     },
-    /// Test only (the release-0.1 smoke): fund the first Platform address
-    /// from the Core balance with an asset lock of `duffs`.
+    /// Test only (the release-0.1 smoke; debug builds with the
+    /// `platform-addr-fund` feature): fund the first Platform address from
+    /// the Core balance with an asset lock of `duffs`.
+    #[cfg(feature = "platform-addr-fund")]
     Fund {
         #[arg(long)]
         duffs: u64,
@@ -623,6 +625,7 @@ pub enum PlatformAddrCmd {
 
 /// What `platform-addr fund`'s Spend grant allows above the lock: the
 /// asset lock transaction's fee.
+#[cfg(feature = "platform-addr-fund")]
 const FUND_FEE_ALLOWANCE: u64 = 100_000;
 
 #[derive(Subcommand)]
@@ -1517,9 +1520,10 @@ fn platform_addr_cmd(ctx: &Ctx, cmd: PlatformAddrCmd) -> Result<Value, CliError>
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
-            let outcome = ctx.block_on(dp.move_to_core(amount, grant))?;
+            let outcome = ctx.block_on(dp.move_to_core(amount, quote.to.clone(), grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
+        #[cfg(feature = "platform-addr-fund")]
         PlatformAddrCmd::Fund { duffs } => {
             let address = ctx.grant(
                 &dp,
@@ -2293,7 +2297,7 @@ mod tests {
         // Release 0.1 (lane E2): the Platform addresses.
         (
             "platform-addr status",
-            r#"{"ok":true,"result":{"credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false}}"#,
+            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false}}"#,
         ),
         ("platform-addr activity", r#"{"ok":true,"result":[]}"#),
         // Offline (DAPI refuses): the pass and the plan's proved read.
@@ -2301,10 +2305,6 @@ mod tests {
         (
             "platform-addr move-to-core --credits 5 --quote-only",
             UNAVAILABLE,
-        ),
-        (
-            "platform-addr fund --duffs 100000",
-            r#"{"ok":false,"error":{"code":"internal","message":"internal error: asset lock coin selection is short: available 0 duffs, required 100000 duffs","params":{"detail":"asset lock coin selection is short: available 0 duffs, required 100000 duffs"}}}"#,
         ),
         // A new wallet, offline: SPV has not caught up (BL-153).
         (
@@ -2510,10 +2510,6 @@ mod tests {
         (
             "platform-addr move-to-core --credits 5 --quote-only",
             "DashPay.move_to_core_quote",
-        ),
-        (
-            "platform-addr fund --duffs 100000",
-            "NetworkSession.fund_platform_addresses_for_test",
         ),
         ("dashpay status", "DashPay.status"),
         ("dashpay sync", "DashPay.sync_now"),
@@ -2726,6 +2722,10 @@ mod tests {
         }
         // Tested on its own below.
         assert!(want.remove("dashpay session"));
+        // The smoke's funding: debug builds with its feature only, no test.
+        if cfg!(feature = "platform-addr-fund") {
+            assert!(want.remove("platform-addr fund"));
+        }
         let have: BTreeSet<_> = TABLE.iter().map(|(args, _)| path(args)).collect();
         assert_eq!(have, want);
     }

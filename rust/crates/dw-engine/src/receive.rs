@@ -288,6 +288,20 @@ impl NetworkSession {
         Ok(current_receiving(&view)?.address.clone())
     }
 
+    /// Whether `address` is one of the wallet's BIP44 account 0 receiving
+    /// addresses (a quote's destination, release 0.1).
+    pub(crate) async fn is_receiving_address(
+        &self,
+        wallet: WalletId,
+        address: &Address,
+    ) -> Result<bool, EngineError> {
+        let view = self.pool_view(wallet).await?;
+        Ok(view
+            .addresses
+            .iter()
+            .any(|a| a.chain == AddressChain::Receiving && a.address == *address))
+    }
+
     /// Issues a fresh receiving address: unused, not reserved by
     /// key-wallet and never issued before. Stored as a `receive` address-book
     /// entry with `label` (dash-qt `getNewDestination(label)`, QT-081).

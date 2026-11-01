@@ -443,17 +443,18 @@ commands! {
         Ok(dashpay.move_to_core_quote(amount.into()).await?.into())
     }
 
-    /// Moves `amount` of the Platform addresses' credits to the wallet's
-    /// Core receive address under `grant`.
+    /// Moves `amount` of the Platform addresses' credits to `to` (the
+    /// quote's: one of the wallet's Core receiving addresses) under `grant`.
     #[facade("DashPay::move_to_core")]
     fn platform_move_to_core(
         state,
         wallet_id: String,
         amount: WithdrawAmount,
+        to: String,
         grant: String,
     ) -> MoveToCoreOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
-        Ok(dashpay.move_to_core(amount.into(), grant).await?.into())
+        Ok(dashpay.move_to_core(amount.into(), to, grant).await?.into())
     }
 
     // Grants, flows and leases.

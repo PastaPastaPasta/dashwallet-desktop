@@ -16,6 +16,8 @@ mod tools;
 // DP5-02 D18: the test-only invitation maker never reaches a release build.
 #[cfg(all(feature = "invitation-create-test", not(debug_assertions)))]
 compile_error!("the invitation-create-test feature is for debug builds only");
+#[cfg(all(feature = "platform-addr-fund", not(debug_assertions)))]
+compile_error!("the platform-addr-fund feature is for debug builds only");
 
 use std::io::Read;
 use std::path::PathBuf;

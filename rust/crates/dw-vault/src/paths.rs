@@ -241,15 +241,17 @@ pub fn is_asset_lock_credit_key(path: &DerivationPath, network: Network) -> bool
     }
 }
 
-/// A DIP-17 Platform payment address key
-/// `m/9'/coin'/17'/account'/key_class'/index` (key-wallet
-/// `AccountType::PlatformPayment`, whose pool appends a non-hardened index).
+/// A DIP-17 Platform payment address key of account 0, key class 0
+/// (`m/9'/coin'/17'/0'/0'/index`, key-wallet `AccountType::PlatformPayment`,
+/// whose pool appends a non-hardened index): the one account the engine's
+/// Platform addresses use (release 0.1). Other accounts and key classes are
+/// not reached.
 pub fn is_platform_payment_address(path: &DerivationPath, network: Network) -> bool {
     let p: &[ChildNumber] = path.as_ref();
     p.len() == 6
         && has_dip9_feature(p, network, FEATURE_PURPOSE_PLATFORM_PAYMENT)
-        && hardened_index(&p[3]).is_some()
-        && hardened_index(&p[4]).is_some()
+        && is_hardened(&p[3], 0)
+        && is_hardened(&p[4], 0)
         && is_normal(&p[5])
 }
 

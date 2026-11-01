@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 41
+Contract-Version: 42
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -580,15 +580,16 @@ finds there (RELEASE-PLAN §1). Every call refuses an unknown wallet (`wallet_no
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `platform_addresses()` | async | `PlatformAddressBalance`: the funded addresses (bech32m, the largest first) with their credits, the total in credits and in whole duffs (rounded down; Home adds `duffs` to the spendable total), this session's last completed pass (`synced_at`, unix seconds; `None` before one, when the balances are the ones stored at the last run) and whether a pass runs now. Reads the library's memory; no network. **Implemented (release 0.1).** | `CreditsError` |
-| `platform_activity()` | async | The addresses' activity, the newest first: `Incoming` (an address's balance rose) and `Outgoing` (it fell, by no move of this wallet) as the engine saw them between two reads of the synced balances (the library keeps balances, not transfers: the first read, after a restore too, lists each funded address once as `Incoming`), at most 200 such rows, and `MoveToCore` rows, one per `move_to_core`. Rows are kept in app.sqlite (the wallet's local scope, `platform_address/…` settings). A `Pending` move is settled first: `Done` once Platform's proved nonces show every input at or past the nonce the move signed at; `Failed` when they are still below it 10 minutes after it was recorded (it may still land, paying the same Core address of this wallet; nothing else can be lost); a failed read leaves it `Pending`. While a move is `Pending` its inputs are not compared; once `Done`, the first fall of each input, up to what the move took from it plus the fee estimate, is the move's and no `Outgoing` row. **Implemented (release 0.1).** | `CreditsError` |
+| `platform_addresses()` | async | `PlatformAddressBalance`: the funded addresses (bech32m, the largest first) with their credits, the total in credits (`credits`), what one `All` move could take of it (`movable_credits`: the plan of `move_to_core_quote(All)` at the session's protocol version over these balances, so balances below the minimum input, beyond the inputs one transition takes, and the fee reserve are not movable) and that in whole duffs (`duffs`, rounded down; Home adds `duffs`, the movable part only, to the spendable total), this session's last completed pass (`synced_at`, unix seconds; `None` before one, when the balances are the ones stored at the last run) and whether a pass runs now. Reads the library's memory; no network. **Implemented (release 0.1).** | `CreditsError` |
+| `platform_activity()` | async | The addresses' activity, the newest first: `Incoming` (an address's balance rose) and `Outgoing` (it fell, by no move of this wallet), and `MoveToCore` rows, one per `move_to_core`. The library keeps balances, not transfers: each call takes **one proved read** of the payment account's addresses and of any address a recorded move signed (nonces, balances and the proof's block height; never the sync loop's cache) and compares it with the baseline the last read stored, at its height. A read whose height is below the baseline's (a node behind) decides nothing; the first read, after a restore too, lists each funded address once as `Incoming`. At most 200 such rows, ids and keys carrying the proof height. The read first settles the moves (§7 item 69): `Done` once the proof shows every input at or past the nonce the move signed at (with `fee_credits`, the fee the proved balances show it took; `None` when a balance before was not on record); `Failed` when it can never execute, or when a proof at a height above the first read after its call still shows every nonce below the signed one. No clock ages a move out: a move nothing proves stays `Pending`, and a failed or unverified read leaves everything as stored. While a move is `Pending` its inputs are not compared; once `Done`, the first fall of each input, up to what the move took from it and, on the input the fee was deducted from, the fee, is the move's and no `Outgoing` row. The rows, the settled moves and the new baseline are written in one durable app.sqlite transaction (the wallet's local scope, `platform_address/…` settings); a failed write records none of them. **Implemented (release 0.1).** | `CreditsError` |
 | `sync_platform_addresses()` | async | Runs one pass of the library's sync for the wallet now and returns `platform_addresses()` after it; a pass already running is waited for (up to 2 minutes, then `platform.timeout`), not repeated. A session without Platform (`no_platform`) is `platform.feature_off{feature: "platform"}`. **Implemented (release 0.1).** | `CreditsError` |
-| `move_to_core_quote(amount)` | async | What "Move to Dash wallet" takes and pays out at the network's protocol version (the one the plan's proved read leaves the SDK at): `credits` taken from the addresses (the fee included), `fee_credits` (the library's estimate, reserved on the largest input; Platform takes the actual fee from what the input keeps, so after `All` the estimate's surplus stays on that address, typically below what another move needs), `expected_duffs` (the payout on Core: the credits less the fee, converted as Platform converts a withdrawal), `to` (the wallet's current receiving address: the first unused one, not marked by a quote) and the `grant` (`max_credits` = `credits`, no duffs). `All` is the library's own plan (`preflight_withdrawal`, one proved read): every input at or above the minimum input at its proved balance, the fee kept on the largest; `Credits{credits}` takes that many from the plan's inputs, the fee's input first, then the largest (a last input below the minimum input borrows from the one before). Refuses nothing funded or `All` below the least withdrawal (`platform.insufficient_credits{needed, available}`; with no address able to carry a withdrawal, `needed` is the least withdrawal plus the one-input fee estimate the plan would keep on it), an amount outside Platform's withdrawal range (`credits.withdrawal_out_of_range{min, max}`, as DP6-02's `Rules`), and an amount above what the plan withdraws (`platform.insufficient_credits`). **Implemented (release 0.1).** | `CreditsError` |
-| `move_to_core(amount, grant)` | async | Moves `amount` to `to` (the quote's address), at Core fee rate 1 with pooling `Never`. Under the wallet's move lock: a `Pending` move settled first, and one still pending refuses this one (`credits.move_pending{id}`, nothing redeemed); the quote's refusals again; the grant or a `PlatformAddressMove` lease (`platform.grant_exceeded` below `credits`, `platform.grant_invalid` for another flow's lease) before it is redeemed; the inputs' proved balances and nonces read again (`platform.insufficient_credits` when one fell below its amount); an input the payment account's pool does not hold yet (before the first pass after a restart) is `platform.unavailable`. Its permit is charged `credits`. Then the activity is read (as `platform_activity`) with the inputs at the balances just proved, so the move's fall is read against what it spends. Before anything is signed the move is **recorded durably** (app.sqlite, a full checkpoint) as `Pending` with its inputs, the nonces it signs at (proved + 1), the amounts, the address and the payout, and read back; a failed write or read-back is `storage` with nothing signed. The payment-address keys sign (vault scope `PlatformAddress`, §7 item 67) and the library broadcasts (`withdraw`, `ExplicitWithNonces`, so it executes at most once). Platform's proved answer: `MoveToCoreOutcome{state: Done}`, the library having applied the proved balances; a failure before any signature: the record `Failed` and that error; any other failure: the inputs' nonces read once, `Done` when they reached the signed ones, else `MoveToCoreOutcome{state: Pending}`, never retried (`platform_activity` settles it). **Implemented (release 0.1).** | `CreditsError` |
+| `move_to_core_quote(amount)` | async | What "Move to Dash wallet" takes and pays out at the network's protocol version, planned on one proved read of the payment account's addresses (rule 5 as `move_to_core`'s read): `credits` taken from the addresses (the fee estimate included), `fee_credits` (an **estimate**: dpp's minimum fee for the plan's inputs, `AddressCreditWithdrawalTransition::estimate_min_fee`, kept on the fee's input; Platform deducts the fee it meters from what that input keeps and no cap on it exists, so the fee taken may differ, and is reported by the move once done; after `All` the estimate's surplus stays on that address), `expected_duffs` (the payout on Core: the withdrawal, converted as Platform converts one), `to` (the wallet's current receiving address: the first unused one, not marked by a quote; `move_to_core` takes it) and the `grant` (`max_credits` = `credits`, no duffs). The plan: the funded addresses at or above the minimum input, the largest first, at most the inputs one transition takes; the fee's input is the largest, which keeps the estimate. `All` takes them all less the estimate, at most Platform's largest withdrawal; `Credits{credits}` takes that many, the fee's input first, then the largest (a last input below the minimum input borrows from the one before), so a partial move never depends on what the other addresses hold. The range is the address withdrawal's own (`validate_credit_withdrawal_structure` version: the platform minimum, raised by the Core fee from the version that does so, and at least the dust floor; at most `max_withdrawal_amount`). Refuses nothing movable (`platform.insufficient_credits{needed, available}`, `needed` the least withdrawal plus the one-input estimate), an amount outside the range (`credits.withdrawal_out_of_range{min, max}`), and an amount above what the inputs carry (`platform.insufficient_credits`). **Implemented (release 0.1).** | `CreditsError` |
+| `move_to_core(amount, to, grant)` | async | Moves `amount` to `to` (the quote's address; anything but one of the wallet's BIP44 account 0 receiving addresses on this network is `invalid_argument`), at Core fee rate 1 with pooling `Never`. Under the wallet's move lock it takes **one proved read** of the addresses, with rule 5: under an enforcing trust mode with the fallback latch set, the read is repeated until its proofs used only SPV-verified quorum keys, within the money gate's wait, else `platform.context_unavailable` with nothing redeemed. The read settles and records the activity (as `platform_activity`); a move still `Pending` refuses this one (`credits.move_pending{id}`). A move `Failed` by height may still execute, so this one is planned on that move's inputs only and must sign exactly its inputs at its nonces, else `credits.move_pending{id}`. Then the quote's plan and refusals, at the nonces proved + 1 (an address Platform holds no nonce for is `platform.unavailable`); the destination; the grant or a `PlatformAddressMove` lease (`platform.grant_exceeded` below `credits`, `platform.grant_invalid` for another flow's lease), all before the grant is redeemed. Its permit is charged `credits`. Before anything is signed the move is **recorded durably** (app.sqlite, a full checkpoint) as `Pending` with its inputs, the nonces it signs at, each input's proved balance, the amounts, the address and the payout, and read back; a failed write or read-back is `storage` with nothing signed. The payment-address keys sign (vault scope `PlatformAddress`, §7 item 67) and the library broadcasts (`withdraw`, `ExplicitWithNonces`). The record is `Failed` with the call's error when the transition can never execute: not every input was signed, or Platform's structure or signature check refused it (raised before the broadcast, §7 item 69). Otherwise the outcome is decided by the inputs' proved nonces, read once after the call, never by the call's answer alone: `MoveToCoreOutcome{state: Done, fee_credits}` (the fee taken, from the proved balances) when every input reached its signed nonce, else `Pending` (`platform_activity` settles it; the call's error, if any, is logged, not returned). **Implemented (release 0.1).** | `CreditsError` |
 
 **0.1 rulings.** The move pays only the wallet's own Core address, so a move that lands after it was marked `Failed`
-moves the user's credits to the user's wallet: the engine refuses a second move only while the first is `Pending`
-(at most 10 minutes). A nonce another device's spend took reads as the move done (0.1 has one device per wallet). No external Platform send, no Platform receive address, no Max drain of the shielded
+moves the user's credits to the user's wallet; even so a move that may still execute holds its inputs' nonces, so
+two moves never both spend them (§7 item 69). A nonce another device's spend took reads as the move done (0.1 has
+one device per wallet). No external Platform send, no Platform receive address, no Max drain of the shielded
 pool (0.2).
 
 ## 3. Surface (generated)
@@ -598,7 +599,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: fc14e1050fe7b5284d6cc1fe5c40a06ae6ce2e8f84b83ff76ef4e02c1ddf8471 version: 41 -->
+<!-- surface-sha256: f80c44b83df587ad83666535a45a12f89feb0eb87a0d961cf0f822531a944d4e version: 42 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1460,6 +1461,7 @@ impl DashPay {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlatformAddressBalance {
     pub credits: u64,
+    pub movable_credits: u64,
     pub duffs: u64,
     pub addresses: Vec<PlatformAddressRow>,
     pub synced_at: Option<u64>,
@@ -1493,6 +1495,7 @@ pub struct PlatformActivity {
     pub address: Option<String>,
     pub to: Option<String>,
     pub expected_duffs: Option<u64>,
+    pub fee_credits: Option<u64>,
     pub at: u64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1510,13 +1513,14 @@ pub struct MoveToCoreOutcome {
     pub expected_duffs: u64,
     pub to: String,
     pub state: PlatformActivityState,
+    pub fee_credits: Option<u64>,
 }
 impl DashPay {
     pub async fn platform_addresses(&self) -> Result<PlatformAddressBalance, CreditsError>;
     pub async fn platform_activity(&self) -> Result<Vec<PlatformActivity>, CreditsError>;
     pub async fn sync_platform_addresses(&self) -> Result<PlatformAddressBalance, CreditsError>;
     pub async fn move_to_core_quote(&self, amount: WithdrawAmount) -> Result<MoveToCoreQuote, CreditsError>;
-    pub async fn move_to_core(&self, amount: WithdrawAmount, grant: String) -> Result<MoveToCoreOutcome, CreditsError>;
+    pub async fn move_to_core(&self, amount: WithdrawAmount, to: String, grant: String) -> Result<MoveToCoreOutcome, CreditsError>;
 }
 // src/platform/profile.rs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1886,8 +1890,9 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   after (the two shared a nonce), this one was sent at a nonce now used and its grant is spent. The host says so and
   offers no retry.
   `credits.move_pending{id}` (data `artifact` = the move's id) is a "Move to Dash wallet" refused, unsigned and its
-  grant unredeemed, because the wallet's last move `id` is still `pending` (§2.12): the host shows that move's row and
-  offers the move again once it settles (at most ten minutes).
+  grant unredeemed, because the wallet's move `id` is still `pending`, or `failed` but able to execute and this move
+  would not sign its very inputs at its nonces (§2.12, §7 item 69): the host shows that move's row and offers the
+  move again once it settles (no time bound: only a proved read settles it).
   `credits.coins_locked` is `registration.coins_locked` for a top-up (a held-back coin
   the pinned asset-lock builder would select). `credits.top_up_pending{txid}` is an earlier top-up of the identity not
   applied yet: the host offers `resume_top_up(txid)`, never a second funding; when its `PendingTopUp` is
@@ -3278,7 +3283,7 @@ renames or reshapes them takes the next version bump:
     wallet"): one `PlatformOp{max_duffs: 0, max_credits}` grant of the wallet; any other grant kind is
     `platform.grant_invalid`. Its lease issues no identity, funding or contact-crypto signer, only a signer of dw-vault's
     new `SignerScope::PlatformAddress`: signatures and public keys of the DIP-17 payment-address keys
-    `m/9'/coin'/17'/account'/key_class'/index` and nothing else (no chain code, no other path), the narrowest scope
+    `m/9'/coin'/17'/0'/0'/index` (account 0, key class 0, the only ones 0.1 uses) and nothing else (no chain code, no other path), the narrowest scope
     that signs an address-funds input. Each signature first checks that the key derived there hashes to the input's
     P2PKH address. The permit charges `credits`, the quote's, before anything is signed.
 68. **The contested lock follows the protocol version (§2.2 Costs, §2.9 `invitation_status`).** The lock of a
@@ -3288,12 +3293,30 @@ renames or reshapes them takes the next version bump:
     check read the network's version with one proven refresh (`protocol.rs`, which keeps the version learned so far
     when the refresh fails, so a failure errs on the dearer lock). A contest past 250 contenders asks a larger fund,
     which the plan's credits already carry.
-69. **One move at a time, recorded before it is signed (§2.12, version 41).** `move_to_core` writes the move, with
-    each input's address and the nonce it signs, to the wallet's local settings durably and reads it back before the
-    library signs; a write or read-back failure ends the flow with nothing signed. While a recorded move is `pending`
-    (no proof yet that every input's nonce reached the signed one, and under ten minutes old), a second move is
-    `credits.move_pending{id}` (`CreditsError::MovePending`), so a retry never spends the same inputs twice. 0.1
-    assumes one device per wallet.
+69. **One move at a time, decided by proved nonces (§2.12, versions 41–42).** `move_to_core` writes the move, with
+    each input's address, the nonce it signs (proved + 1) and its proved balance, to the wallet's local settings
+    durably and reads it back before the library signs; a write or read-back failure ends the flow with nothing
+    signed. Drive takes an address input only at its stored nonce + 1, so of transitions signing one input at one
+    nonce at most one executes. A move is `done` only when a proved read shows every input at or past its signed
+    nonce (the library's `Ok` is a snapshot of the addresses, not proof of execution). It is `failed` only on
+    evidence: it can never execute (not every input was signed; or the SDK's structure check, or Platform's
+    structure or signature check, refused it: rs-sdk `address_credit_withdrawal.rs:97-109` signs and checks the
+    structure before `:114` broadcasts, and the basic and signature checks are stateless), or a proof at a height
+    above the first read after its call shows every nonce still below the signed one. No timer fails a move: an
+    unknown one stays `pending` and refuses the next (`credits.move_pending{id}`, `CreditsError::MovePending`). A
+    move `failed` by height may still execute while its nonces are unused, so it keeps holding them: the next move
+    is planned on its inputs alone and must sign them at the same nonces, or is refused the same way. When such a
+    group's nonces are taken, one proof settles it: the newest member the library answered is `done`, else the
+    oldest; the others `failed` for good. Move ids carry the proof height and the move count. The activity's rows,
+    the moves it settles and its baseline (with the proof height) are one durable transaction. 0.1 assumes one
+    device per wallet.
+70. **The move's reads pass rule 5 through the trust tally, not the money gate's subjects (§2.12).** The money
+    gate re-checks held content of a payee or identity (`money_gate.rs:130-135`; `reverify.rs:94`, `:275`), which
+    a Platform-address read has none of. The move's deciding read is instead run inside `trust::scoped`, which
+    counts the quorum-key lookups its proofs made (`trust.rs:545`, `Tally::verified`); under rule 5 enforcing with
+    the fallback latch set it is repeated within the gate's wait until every lookup was SPV-verified, else
+    `platform.context_unavailable` (`Refusal::Unverified`) before anything is redeemed. `platform_activity` takes
+    one read and, unverified, decides nothing.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

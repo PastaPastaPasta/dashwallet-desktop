@@ -6,7 +6,14 @@ import type { PlatformAddressRow } from "./PlatformAddressRow";
  */
 export type PlatformAddressBalance = { credits: string,
 /**
- * `credits` in whole duffs: what Home adds to the spendable total.
+ * What a "Move to Dash wallet" of everything would withdraw now (0 when
+ * it would be refused); a remainder too small to move is in `credits`
+ * only.
+ */
+movableCredits: string,
+/**
+ * `movableCredits` in whole duffs: what Home adds to the spendable
+ * total.
  */
 duffs: number,
 /**

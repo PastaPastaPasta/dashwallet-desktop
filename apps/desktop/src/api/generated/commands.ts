@@ -1709,11 +1709,11 @@ export function platformMoveToCoreQuote(walletId: string, amount: WithdrawAmount
 }
 
 /**
- * Moves `amount` of the Platform addresses' credits to the wallet's
- * Core receive address under `grant`.
+ * Moves `amount` of the Platform addresses' credits to `to` (the
+ * quote's: one of the wallet's Core receiving addresses) under `grant`.
  */
-export function platformMoveToCore(walletId: string, amount: WithdrawAmount, grant: string): Promise<MoveToCoreOutcome> {
-  return invoke<MoveToCoreOutcome>("platform_move_to_core", { walletId, amount, grant });
+export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, grant: string): Promise<MoveToCoreOutcome> {
+  return invoke<MoveToCoreOutcome>("platform_move_to_core", { walletId, amount, to, grant });
 }
 
 /**
@@ -2643,7 +2643,7 @@ export type CommandArgs = {
   platform_activity: { walletId: string };
   platform_addresses_sync: { walletId: string };
   platform_move_to_core_quote: { walletId: string; amount: WithdrawAmount };
-  platform_move_to_core: { walletId: string; amount: WithdrawAmount; grant: string };
+  platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; grant: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
   dispatch_status: { walletId: string; artifact: string };
   resolve_stuck_funding: { walletId: string; step: string; grant: string };

@@ -602,6 +602,31 @@ fn dust_floor(version: &PlatformVersion) -> Result<u64, PlatformError> {
     Ok((dust + carved) * CREDITS_PER_DUFF)
 }
 
+/// The least and the most an address-funds withdrawal (a Platform-address
+/// move, release 0.1) takes at `version`, in credits. The least is keyed on
+/// `address_funds.validate_credit_withdrawal_structure`, as dpp's address
+/// structure check is (platform-wallet's `min_withdrawal_amount_for`):
+/// `min_withdrawal_amount` alone at structure 0, plus the asset unlock's
+/// Core fee from 1 on; raised, as [`Rules::min`] is, to a payout above
+/// dust. `invalid_argument` before address funds exist.
+pub(crate) fn address_range(version: &PlatformVersion) -> Result<(u64, u64), PlatformError> {
+    let limits = &version.system_limits;
+    let structure = version
+        .dpp
+        .state_transitions
+        .address_funds
+        .validate_credit_withdrawal_structure;
+    let platform_min = if structure == 0 {
+        limits.min_withdrawal_amount
+    } else {
+        min_withdrawal_amount_with_core_fee(CORE_FEE_PER_BYTE, version)
+    };
+    Ok((
+        platform_min.max(dust_floor(version)?),
+        limits.max_withdrawal_amount,
+    ))
+}
+
 /// The output script of `to`, a P2PKH or P2SH address of `network`;
 /// anything else is `invalid_argument`.
 pub(crate) fn destination(network: Network, to: &str) -> Result<CoreScript, PlatformError> {

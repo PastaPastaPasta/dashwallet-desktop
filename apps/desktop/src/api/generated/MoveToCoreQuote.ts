@@ -6,6 +6,6 @@ import type { GrantRequest } from "./GrantRequest";
  */
 export type MoveToCoreQuote = { credits: string, feeCredits: string, expectedDuffs: number,
 /**
- * The wallet's own Core receive address.
+ * The wallet's own Core receive address: `platformMoveToCore` pays it.
  */
 to: string, grant: GrantRequest, };

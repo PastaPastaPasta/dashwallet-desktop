@@ -5,6 +5,8 @@
 //! the wallet shows and empties what it finds there, it does not ask for
 //! more (RELEASE-PLAN §1).
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use super::credits::WithdrawAmount;
@@ -19,8 +21,13 @@ use super::platform_moves;
 pub struct PlatformAddressBalance {
     /// The addresses' credits together.
     pub credits: u64,
-    /// `credits` in whole duffs, rounded down: what the Home breakdown adds
-    /// to the spendable total.
+    /// What "Move to Dash wallet" with `All` would withdraw from them now:
+    /// 0 when it would be refused. A remainder below the least withdrawal
+    /// and its fee (an `All` move leaves the fee estimate's surplus), or
+    /// below the input minimum, is in `credits` only.
+    pub movable_credits: u64,
+    /// `movable_credits` in whole duffs, rounded down: what the Home
+    /// breakdown adds to the spendable total.
     pub duffs: u64,
     /// The funded addresses, the largest first.
     pub addresses: Vec<PlatformAddressRow>,
@@ -60,10 +67,12 @@ pub enum PlatformActivityState {
     /// inputs Platform spent.
     Done,
     /// A move recorded and signed whose outcome is not known yet; the next
-    /// read asks Platform again. Never retried by the engine.
+    /// read asks Platform again. No time limit; never retried by the engine.
     Pending,
-    /// A move Platform refused, or one never sent: nothing left the
-    /// addresses.
+    /// A move that can never execute (not fully signed, or refused by
+    /// Platform's structure or signature check), or one a proof after its
+    /// call shows unexecuted: the latter may still execute, so a next move
+    /// signs the same inputs at the same nonces (m4 §2.12).
     Failed,
 }
 
@@ -83,6 +92,9 @@ pub struct PlatformActivity {
     pub to: Option<String>,
     /// A move's expected payout on Core, in duffs.
     pub expected_duffs: Option<u64>,
+    /// A done move's fee, as the proved balances of its inputs show it
+    /// (`None` before, or when another change to them hides it).
+    pub fee_credits: Option<u64>,
     /// Unix seconds the engine recorded the row.
     pub at: u64,
 }
@@ -91,13 +103,18 @@ pub struct PlatformActivity {
 /// protocol version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveToCoreQuote {
-    /// The credits the addresses lose, the fee included.
+    /// The credits the addresses may lose: the withdrawal and the fee
+    /// estimate.
     pub credits: u64,
-    /// The fee Platform takes from them (the library's estimate).
+    /// The fee estimate: dpp's minimum fee for the inputs, kept on the fee
+    /// source. Platform takes the actual fee from what that input keeps;
+    /// nothing in the transition caps it (the pin has no max-fee field), so
+    /// with an amount the fee may exceed it; the done move reports it.
     pub fee_credits: u64,
     /// What reaches the Core address, in duffs.
     pub expected_duffs: u64,
-    /// The wallet's own Core receive address the move pays.
+    /// The wallet's own Core receive address the move pays: pass it to
+    /// `move_to_core`.
     pub to: String,
     /// What to authorize: no duffs, `credits` credits.
     pub grant: GrantRequest,
@@ -111,9 +128,11 @@ pub struct MoveToCoreOutcome {
     pub credits: u64,
     pub expected_duffs: u64,
     pub to: String,
-    /// `Done` when Platform's answer proved the inputs spent; `Pending`
-    /// when the answer said nothing either way.
+    /// `Done` once a proved read shows every input at its signed nonce;
+    /// `Pending` until then (the library's answer is no such proof).
     pub state: PlatformActivityState,
+    /// Done: the fee taken, as [`PlatformActivity::fee_credits`].
+    pub fee_credits: Option<u64>,
 }
 
 impl DashPay {
@@ -131,7 +150,11 @@ impl DashPay {
     pub async fn platform_activity(&self) -> Result<Vec<PlatformActivity>, CreditsError> {
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
-            platform_moves::activity(&session, &manager, &wallet, wallet_id).await
+            let net = platform_moves::SdkMoves {
+                sdk: manager.sdk_arc(),
+                wallet: Arc::clone(&wallet),
+            };
+            platform_moves::activity(&net, &session, &wallet, wallet_id).await
         })
         .await
     }
@@ -154,23 +177,32 @@ impl DashPay {
     ) -> Result<MoveToCoreQuote, CreditsError> {
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
-            platform_moves::quote(&session, &manager, &wallet, wallet_id, amount).await
+            let net = platform_moves::SdkMoves {
+                sdk: manager.sdk_arc(),
+                wallet: Arc::clone(&wallet),
+            };
+            platform_moves::quote(&net, &session, &wallet, wallet_id, amount).await
         })
         .await
     }
 
-    /// Moves `amount` of the Platform addresses' credits to the wallet's
-    /// Core receive address under `grant` (a `PlatformOp` grant or a
-    /// `PlatformAddressMove` lease).
+    /// Moves `amount` of the Platform addresses' credits to `to` (the
+    /// quote's: one of the wallet's Core receiving addresses) under `grant`
+    /// (a `PlatformOp` grant or a `PlatformAddressMove` lease).
     pub async fn move_to_core(
         &self,
         amount: WithdrawAmount,
+        to: String,
         grant: String,
     ) -> Result<MoveToCoreOutcome, CreditsError> {
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
-            platform_moves::move_to_core(&session, &manager, &wallet, wallet_id, amount, &grant)
-                .await
+            let net = platform_moves::SdkMoves {
+                sdk: manager.sdk_arc(),
+                wallet: Arc::clone(&wallet),
+            };
+            let ask = (amount, to.as_str());
+            platform_moves::move_to_core(&net, &session, &wallet, wallet_id, ask, &grant).await
         })
         .await
     }

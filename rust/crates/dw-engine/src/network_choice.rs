@@ -64,13 +64,33 @@ pub fn read_network_choice(root: &Path) -> Option<NetworkChoice> {
     }
 }
 
-/// Saves `choice` in `root`, replacing the file atomically.
+/// Saves `choice` in `root`, replacing the file atomically and durably: a
+/// temporary file of this write's own (the app and `dwcli` may write at
+/// once), synced, renamed over the file, and the directory synced.
 pub fn write_network_choice(root: &Path, choice: NetworkChoice) -> Result<(), EngineError> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+
     let json = serde_json::to_string_pretty(&File { network: choice })
         .map_err(|e| EngineError::Internal(e.to_string()))?;
-    let tmp = root.join(format!("{NETWORK_CHOICE_FILE}.tmp"));
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path(root))?;
+    let tmp = root.join(format!(
+        "{NETWORK_CHOICE_FILE}.{}.{}.tmp",
+        std::process::id(),
+        WRITES.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path(root))
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written?;
+    #[cfg(unix)]
+    std::fs::File::open(root)?.sync_all()?;
     Ok(())
 }
 
@@ -99,7 +119,43 @@ mod tests {
             read_network_choice(dir.path()),
             Some(NetworkChoice::Mainnet)
         );
-        assert!(!dir.path().join("network.json.tmp").exists());
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![NETWORK_CHOICE_FILE.to_owned()],
+            "no temporary file left"
+        );
+    }
+
+    /// Two writers at once (the app and `dwcli`) each replace the whole
+    /// file: neither fails on the other's temporary file.
+    #[test]
+    fn concurrent_writes_each_replace_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let writers: Vec<_> = (0..8)
+            .map(|i| {
+                let root = root.clone();
+                std::thread::spawn(move || {
+                    let choice = if i % 2 == 0 {
+                        NetworkChoice::Testnet
+                    } else {
+                        NetworkChoice::Mainnet
+                    };
+                    for _ in 0..20 {
+                        write_network_choice(&root, choice).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        assert!(read_network_choice(&root).is_some());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
     }
 
     #[test]

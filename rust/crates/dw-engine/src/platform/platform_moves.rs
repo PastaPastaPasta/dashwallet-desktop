@@ -2,29 +2,50 @@
 //! (release 0.1, lane E2; m4 §2.12): the balance as the sync loop left it,
 //! the activity rows, and "Move to Dash wallet". Not part of the facade.
 //!
-//! **Activity.** platform-wallet keeps balances, not transfers. Each
-//! `platform_activity` read compares the synced balances with the snapshot
-//! the last read stored (app.sqlite, the wallet's local scope) and records a
-//! row for each address whose balance rose (`incoming`) or fell
-//! (`outgoing`). The first read records every funded address as incoming. A
-//! move's own spend is no `outgoing` row: while it is pending its inputs are
-//! not compared, and once it is done the first fall of each input, up to
-//! what the move took from it plus its fee estimate, is the move's.
+//! **Reads.** Every decision (the activity, a move's settlement, its plan
+//! and nonces) rests on one proved read of the payment account's addresses
+//! (`MoveNet::read`, `AddressInfo::fetch_many_with_metadata`): their nonces,
+//! balances and the proof's block height. A move's read passes rule 5 as the
+//! identity withdrawal does (DP3-04): once the fallback latch is set and
+//! the mode enforces, it is repeated until its proofs used only SPV-verified
+//! quorum keys (`trust::scoped`), within the gate's wait, else the move is
+//! refused before anything is redeemed. The activity takes one read and,
+//! unverified, decides nothing.
 //!
-//! **Moves.** A move withdraws to the wallet's current Core receiving
-//! address. Its inputs, the nonces it signs at and the credits it takes are
-//! fixed first, and recorded `pending` durably (and read back) before the
-//! permit's signer can sign anything; it signs at those nonces
-//! (`ExplicitWithNonces`), so it executes at most once. An answer with the
-//! proved balances settles it `done`; a failure with no signature released
-//! is `failed`; any other failure reads the inputs' nonces once: all at the
-//! signed ones is `done`, else it stays `pending`. A later read settles a
-//! pending move the same way, and calls it `failed` once ten minutes pass
-//! without (a nonce taken by another device's spend reads as done: 0.1 has
-//! one device per wallet). Nothing retries a move; a pending one refuses the
-//! next (`credits.move_pending`).
+//! **Activity.** platform-wallet keeps balances, not transfers. Each read
+//! compares the proved balances with the baseline the last read stored, at
+//! its proof height (a read older than the baseline decides nothing), and
+//! records a row for each address whose balance rose (`incoming`) or fell
+//! (`outgoing`); the first read records every funded address as incoming.
+//! The rows, the moves the read settled and the new baseline are written in
+//! one durable transaction. A move's own spend is no `outgoing` row: while
+//! it is pending its inputs are not compared, and once it is done the first
+//! fall of each input, up to what the move took from it (and the fee, on
+//! the fee source), is the move's.
+//!
+//! **Moves.** A move withdraws to the quote's address, one of the wallet's
+//! Core receiving addresses. Its inputs, the nonces it signs at (proved + 1)
+//! and the credits it takes are fixed first, and recorded `pending` durably
+//! (and read back) before the permit's signer can sign anything; it signs at
+//! those nonces (`ExplicitWithNonces`), and Drive takes an input only at its
+//! stored nonce + 1, so of two transitions at one input's nonce at most one
+//! executes. A move is `done` only once a proved read shows every input at
+//! or past its signed nonce (the library's answer is a snapshot of the
+//! addresses, not proof of this transition); `failed` when it can never
+//! execute (not every input was signed, or Platform's structure or signature
+//! check refused it: deterministic, raised before the broadcast or by every
+//! node), or when a proof at a height above the first read after its call
+//! still shows its nonces unused. Nothing else ages a move out: an unknown
+//! one stays `pending` and refuses the next move (`credits.move_pending`).
+//! A move `failed` by height may still execute (its transition stays valid
+//! while its nonces are unused), so a later move must sign exactly its
+//! inputs at its nonces, or is refused the same way. When such a group's
+//! nonces are taken, one proof settles all of it: the newest member the
+//! library answered is `done`, else the oldest; the others `failed`.
+//! 0.1 assumes one device per wallet.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -32,14 +53,14 @@ use dash_sdk::platform::FetchMany;
 use dash_sdk::query_types::AddressInfo;
 use dpp::address_funds::{AddressFundsFeeStrategy, AddressFundsFeeStrategyStep, PlatformAddress};
 use dpp::balances::credits::CREDITS_PER_DUFF;
+use dpp::consensus::ConsensusError;
 use dpp::dashcore::Network;
-use dpp::state_transition::address_credit_withdrawal_transition::{
-    AddressCreditWithdrawalTransition, MIN_CORE_FEE_PER_BYTE,
-};
+use dpp::identity::core_script::CoreScript;
+use dpp::state_transition::address_credit_withdrawal_transition::MIN_CORE_FEE_PER_BYTE;
 use dpp::version::PlatformVersion;
 use key_wallet::PlatformP2PKHAddress;
 use key_wallet::bip32::DerivationPath;
-use platform_wallet::wallet::platform_addresses::{InputSelection, WithdrawalPlan};
+use platform_wallet::wallet::platform_addresses::InputSelection;
 use platform_wallet::{PlatformWallet, PlatformWalletError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -47,29 +68,32 @@ use serde::{Deserialize, Serialize};
 use super::credits::WithdrawAmount;
 use super::errors::{CreditsError, PlatformError};
 use super::flows::{FlowKind, GrantRequest};
+use super::money_gate::Refusal;
 use super::names::{NameAuthority, check_credit_cap};
 use super::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformActivityKind,
     PlatformActivityState, PlatformAddressBalance, PlatformAddressRow,
 };
 use super::requests::{leased, write_permit};
-use super::withdrawal::{self, Rules};
+use super::signers::VaultPlatformAddressSigner;
+use super::trust::{self, Rule5};
+use super::withdrawal;
 use crate::events::unix_now;
 use crate::session::Manager;
 use crate::{NetworkSession, PlatformChange, WalletId};
 
-/// The DIP-17 payment account the wallet uses (key class 0).
+/// The Platform payment account the wallet's addresses live in.
 const ACCOUNT: u32 = 0;
 /// The Core fee rate of the asset unlock, Platform's minimum (as DP6-02).
 const CORE_FEE_PER_BYTE: u32 = MIN_CORE_FEE_PER_BYTE;
-/// How long a move may stay pending before it is called failed.
-const PENDING_FOR: u64 = 600;
 /// The change rows kept, the newest.
 const ROWS_KEPT: usize = 200;
 /// How long `sync_platform_addresses` waits for a pass already running.
 const PASS_WAIT: Duration = Duration::from_secs(120);
 
-const SNAPSHOT_KEY: &str = "platform_address/snapshot";
+/// Before the baseline had a height (never shipped; read once, then gone).
+const LEGACY_SNAPSHOT_KEY: &str = "platform_address/snapshot";
+const BASELINE_KEY: &str = "platform_address/baseline";
 const ROW_PREFIX: &str = "platform_address/row/";
 const MOVE_PREFIX: &str = "platform_address/move/";
 
@@ -78,13 +102,30 @@ const MOVE_PREFIX: &str = "platform_address/move/";
 pub(crate) struct MoveRecord {
     pub(crate) id: String,
     pub(crate) inputs: Vec<MoveInput>,
-    /// What the addresses lose, the fee estimate included.
+    /// What the addresses may lose: the withdrawal and the fee estimate.
     pub(crate) credits: u64,
+    /// The fee estimate (dpp's minimum fee for the inputs; no cap exists).
     pub(crate) fee_credits: u64,
     pub(crate) expected_duffs: u64,
     pub(crate) to: String,
     pub(crate) at: u64,
     pub(crate) state: PlatformActivityState,
+    /// A signature was released.
+    #[serde(default)]
+    pub(crate) signed: bool,
+    /// The library's call returned `Ok` (no proof of execution).
+    #[serde(default)]
+    pub(crate) answered: bool,
+    /// Its transition may still execute: signed, and nothing shows it never
+    /// can. Such a move holds its inputs' nonces until they are taken.
+    #[serde(default)]
+    pub(crate) can_land: bool,
+    /// The proof height of the first read after its call returned.
+    #[serde(default)]
+    pub(crate) seen_at: Option<u64>,
+    /// Done: the fee the proved balances show it took.
+    #[serde(default)]
+    pub(crate) fee_taken: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,10 +136,41 @@ pub(crate) struct MoveInput {
     pub(crate) nonce: u32,
     /// What the move withdraws from it.
     pub(crate) credits: u64,
+    /// Its proved balance when the move was planned.
+    #[serde(default)]
+    pub(crate) before: u64,
+    /// The fee is deducted from it.
+    #[serde(default)]
+    pub(crate) fee_source: bool,
     /// Once the move is done: the fall of the address's balance still to
     /// be read as the move's (module doc), 0 once read.
     #[serde(default)]
     pub(crate) unseen: u64,
+}
+
+/// One proved read: bech32m → `(nonce, credits)` (`None`: Platform holds no
+/// such address), at the proof's block height.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Seen {
+    pub(crate) height: u64,
+    pub(crate) at: BTreeMap<String, Option<(u32, u64)>>,
+}
+
+impl Seen {
+    fn nonce(&self, address: &str) -> Option<u32> {
+        self.at.get(address).copied().flatten().map(|(n, _)| n)
+    }
+
+    fn credits(&self, address: &str) -> Option<u64> {
+        self.at.get(address).copied().flatten().map(|(_, c)| c)
+    }
+
+    /// The funded addresses.
+    fn balances(&self) -> Snapshot {
+        (self.at.iter())
+            .filter_map(|(a, i)| i.filter(|(_, c)| *c > 0).map(|(_, c)| (a.clone(), c)))
+            .collect()
+    }
 }
 
 impl MoveRecord {
@@ -111,32 +183,129 @@ impl MoveRecord {
             address: None,
             to: Some(self.to.clone()),
             expected_duffs: Some(self.expected_duffs),
+            fee_credits: self.fee_taken,
             at: self.at,
         }
     }
 
-    /// Done: each input's fall is the move's, up to its credits and the fee.
-    fn done(&mut self) {
+    /// Its inputs at their signed nonces: two moves with one key cannot
+    /// both execute.
+    fn key(&self) -> Vec<(String, u32)> {
+        let mut key: Vec<_> = (self.inputs.iter())
+            .map(|i| (i.address.clone(), i.nonce))
+            .collect();
+        key.sort();
+        key
+    }
+
+    /// It may still execute and is not known done.
+    fn holds(&self) -> bool {
+        self.can_land && self.state != PlatformActivityState::Done
+    }
+
+    /// `seen` shows every input at or past its signed nonce.
+    fn reached(&self, seen: &Seen) -> bool {
+        (self.inputs.iter()).all(|i| seen.nonce(&i.address).is_some_and(|n| n >= i.nonce))
+    }
+
+    /// `seen` shows every input still below its signed nonce.
+    fn unused(&self, seen: &Seen) -> bool {
+        (self.inputs.iter()).all(|i| seen.nonce(&i.address).is_some_and(|n| n < i.nonce))
+    }
+
+    /// Done as `seen` shows it: the fee its inputs' balances lost beyond
+    /// the withdrawal (unknown when a balance before is not on record or
+    /// they do not add up), and each input's fall the move's, its credits
+    /// and, on the fee source, the fee.
+    fn done(&mut self, seen: &Seen) {
         self.state = PlatformActivityState::Done;
+        let before: Option<u64> = (self.inputs.iter())
+            .map(|i| (i.before > 0).then_some(i.before))
+            .sum();
+        let after: u64 = (self.inputs.iter())
+            .map(|i| seen.credits(&i.address).unwrap_or(0))
+            .sum();
+        let withdrawn: u64 = self.inputs.iter().map(|i| i.credits).sum();
+        self.fee_taken = before
+            .and_then(|b| b.checked_sub(after))
+            .and_then(|fell| fell.checked_sub(withdrawn));
+        let fee = self.fee_taken.unwrap_or(self.fee_credits);
         for input in &mut self.inputs {
-            input.unseen = input.credits.saturating_add(self.fee_credits);
+            input.unseen = input.credits + if input.fee_source { fee } else { 0 };
         }
     }
+}
+
+/// Settles the moves that hold their inputs against `seen` (module doc);
+/// the indices of those it changed.
+pub(crate) fn settle(moves: &mut [MoveRecord], seen: &Seen) -> BTreeSet<usize> {
+    let mut changed = BTreeSet::new();
+    let landed: BTreeSet<Vec<(String, u32)>> = (moves.iter())
+        .filter(|m| m.holds() && m.reached(seen))
+        .map(MoveRecord::key)
+        .collect();
+    for key in landed {
+        let group: Vec<usize> = (0..moves.len())
+            .filter(|&i| moves[i].holds() && moves[i].key() == key)
+            .collect();
+        let order = |i: usize| (moves[i].at, moves[i].id.clone());
+        let winner = (group.iter().copied().filter(|&i| moves[i].answered))
+            .max_by_key(|&i| order(i))
+            .or_else(|| group.iter().copied().min_by_key(|&i| order(i)));
+        for i in group {
+            if Some(i) == winner {
+                moves[i].done(seen);
+            } else {
+                moves[i].state = PlatformActivityState::Failed;
+                moves[i].can_land = false;
+            }
+            changed.insert(i);
+        }
+    }
+    for (i, m) in moves.iter_mut().enumerate() {
+        if !m.holds() {
+            continue;
+        }
+        match m.seen_at {
+            None => {
+                m.seen_at = Some(seen.height);
+                changed.insert(i);
+            }
+            Some(after) => {
+                if m.state == PlatformActivityState::Pending
+                    && seen.height > after
+                    && m.unused(seen)
+                {
+                    m.state = PlatformActivityState::Failed;
+                    changed.insert(i);
+                }
+            }
+        }
+    }
+    changed
 }
 
 /// address (bech32m) → credits.
 pub(crate) type Snapshot = BTreeMap<String, u64>;
 
-/// The change rows from `before` (`None`: no read yet) to `now`, and the
-/// snapshot to store. `held` (a pending move's inputs) is not compared and
-/// keeps its stored value; `unseen` (address → a done move's fall still to
-/// read) absorbs the first fall of its address and is then spent.
+/// The last read's balances and its proof height.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Baseline {
+    pub(crate) height: u64,
+    pub(crate) balances: Snapshot,
+}
+
+/// The change rows from `before` (`None`: no read yet) to `now`, read at
+/// `height`, and the snapshot to store. `held` (a pending move's inputs) is
+/// not compared and keeps its stored value; `unseen` (address → a done
+/// move's fall still to read) absorbs the first fall of its address and is
+/// then spent.
 pub(crate) fn changes(
     before: Option<&Snapshot>,
     now: &Snapshot,
     held: &BTreeSet<String>,
     unseen: &mut BTreeMap<String, u64>,
-    at: u64,
+    (at, height): (u64, u64),
 ) -> (Vec<PlatformActivity>, Snapshot) {
     let empty = Snapshot::new();
     let before_map = before.unwrap_or(&empty);
@@ -158,13 +327,14 @@ pub(crate) fn changes(
             next.insert(address.clone(), is);
         }
         let row = |kind, credits| PlatformActivity {
-            id: format!("seen-{at}-{address}"),
+            id: format!("seen-{height}-{address}"),
             kind,
             state: PlatformActivityState::Done,
             credits,
             address: Some(address.clone()),
             to: None,
             expected_duffs: None,
+            fee_credits: None,
             at,
         };
         if is > was {
@@ -180,81 +350,301 @@ pub(crate) fn changes(
     (rows, next)
 }
 
-/// Where `record` stands given its inputs' proved nonces (`None`: the read
-/// failed, or the address is unknown to Platform) at `now`.
-pub(crate) fn settled(
-    record: &MoveRecord,
-    nonces: &BTreeMap<String, Option<u32>>,
-    now: u64,
-) -> PlatformActivityState {
-    let reached = record.inputs.iter().all(|i| {
-        nonces
-            .get(&i.address)
-            .copied()
-            .flatten()
-            .is_some_and(|n| n >= i.nonce)
-    });
-    if reached {
-        PlatformActivityState::Done
-    } else if now >= record.at.saturating_add(PENDING_FOR) {
-        PlatformActivityState::Failed
-    } else {
-        PlatformActivityState::Pending
+/// The address-withdrawal rules at one protocol version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Limits {
+    /// The least an input may take (dpp `address_funds.min_input_amount`).
+    pub(crate) min_input: u64,
+    /// The most inputs one transition has.
+    pub(crate) max_inputs: usize,
+    /// The least and the most one withdrawal takes ([`withdrawal::address_range`]).
+    pub(crate) min: u64,
+    pub(crate) max: u64,
+    /// dpp's minimum fee: `fee_base + fee_per_input × inputs`, no change
+    /// output (`AddressCreditWithdrawalTransition::estimate_min_fee`).
+    pub(crate) fee_base: u64,
+    pub(crate) fee_per_input: u64,
+}
+
+impl Limits {
+    pub(crate) fn at(version: &PlatformVersion) -> Result<Self, PlatformError> {
+        let (min, max) = withdrawal::address_range(version)?;
+        let funds = &version.dpp.state_transitions;
+        let fees = &version.fee_version.state_transition_min_fees;
+        Ok(Self {
+            min_input: funds.address_funds.min_input_amount,
+            max_inputs: funds.max_address_inputs as usize,
+            min,
+            max,
+            fee_base: fees.address_credit_withdrawal,
+            fee_per_input: fees.address_funds_transfer_input_cost,
+        })
+    }
+
+    pub(crate) fn fee(&self, inputs: usize) -> u64 {
+        (self.fee_per_input.saturating_mul(inputs as u64)).saturating_add(self.fee_base)
     }
 }
 
-/// The inputs that withdraw `want` of `plan`'s (an "all" plan: each input's
-/// balance, the fee source's less the fee estimate), and the fee strategy
-/// that keeps the fee on the plan's fee source: the fee source first, then
-/// the largest; a last input below `min_input` borrows from the one before.
-/// `None` when no such set exists.
-pub(crate) fn select(
-    plan: &WithdrawalPlan,
-    want: u64,
-    min_input: u64,
-) -> Option<(BTreeMap<PlatformAddress, u64>, AddressFundsFeeStrategy)> {
-    let source = plan.fee_strategy.iter().find_map(|s| match s {
-        AddressFundsFeeStrategyStep::DeductFromInput(i) => {
-            plan.inputs.keys().nth(usize::from(*i)).copied()
+/// What a move takes: each input's amount, the fee source (which keeps the
+/// fee estimate), and the estimate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Plan {
+    pub(crate) inputs: BTreeMap<PlatformAddress, u64>,
+    pub(crate) fee_source: PlatformAddress,
+    pub(crate) fee: u64,
+}
+
+impl Plan {
+    /// What reaches Core, in credits (before the asset unlock's own fee).
+    pub(crate) fn credits(&self) -> u64 {
+        self.inputs.values().sum()
+    }
+
+    fn fee_strategy(&self) -> AddressFundsFeeStrategy {
+        let index = (self.inputs.keys()).position(|a| *a == self.fee_source);
+        let index = index.and_then(|i| u16::try_from(i).ok()).unwrap_or(0);
+        vec![AddressFundsFeeStrategyStep::DeductFromInput(index)]
+    }
+}
+
+/// Why no plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refused {
+    /// `platform.insufficient_credits`.
+    Short { needed: u64, available: u64 },
+    /// `credits.withdrawal_out_of_range`.
+    OutOfRange,
+}
+
+impl Refused {
+    fn error(self, limits: &Limits) -> CreditsError {
+        match self {
+            Refused::Short { needed, available } => {
+                PlatformError::InsufficientCredits { needed, available }.into()
+            }
+            Refused::OutOfRange => CreditsError::WithdrawalOutOfRange {
+                min: limits.min,
+                max: limits.max,
+            },
         }
-        AddressFundsFeeStrategyStep::ReduceOutput(_) => None,
-    })?;
-    let mut order: Vec<(PlatformAddress, u64)> =
-        plan.inputs.iter().map(|(a, c)| (*a, *c)).collect();
-    order.sort_by_key(|(a, c)| (*a != source, std::cmp::Reverse(*c), *a));
-    let mut taken: Vec<(PlatformAddress, u64)> = Vec::new();
-    let mut left = want;
-    for (address, credits) in order {
-        if left == 0 {
-            break;
+    }
+}
+
+/// The plan for `amount` over the proved `balances` (module doc; as
+/// platform-wallet's own plan: inputs of at least the input minimum, at most
+/// `max_inputs`, the largest the fee source keeping the estimate). `All`
+/// moves every such input, less the fee, at most [`Limits::max`] (a second
+/// move takes the rest); an amount takes the fee source first, then the
+/// largest, and a last input below the minimum borrows from the one before.
+pub(crate) fn plan(
+    balances: &BTreeMap<PlatformAddress, u64>,
+    amount: WithdrawAmount,
+    limits: &Limits,
+) -> Result<Plan, Refused> {
+    let available: u64 = balances.values().sum();
+    let mut candidates: Vec<(PlatformAddress, u64)> = (balances.iter())
+        .filter(|(_, c)| **c >= limits.min_input)
+        .map(|(a, c)| (*a, *c))
+        .collect();
+    candidates.sort_by_key(|(a, c)| (std::cmp::Reverse(*c), *a));
+    candidates.truncate(limits.max_inputs.max(1));
+    // One address must hold the least withdrawal and its one-input fee.
+    let least = Refused::Short {
+        needed: limits.min.saturating_add(limits.fee(1)),
+        available,
+    };
+    let Some(&(source, top)) = candidates.first() else {
+        return Err(least);
+    };
+    let want = match amount {
+        WithdrawAmount::All => {
+            let all = (candidates.iter().map(|(_, c)| *c).sum::<u64>())
+                .saturating_sub(limits.fee(candidates.len()));
+            if all < limits.min {
+                return Err(least);
+            }
+            all.min(limits.max)
         }
-        let take = credits.min(left);
-        taken.push((address, take));
-        left -= take;
-    }
-    if left > 0 {
-        return None;
-    }
-    if let [.., before, last] = taken.as_mut_slice()
-        && last.1 < min_input
-    {
-        let short = min_input - last.1;
-        if before.1 < min_input.saturating_add(short) {
-            return None;
+        WithdrawAmount::Credits { credits } => {
+            if credits < limits.min || credits > limits.max {
+                return Err(Refused::OutOfRange);
+            }
+            credits
         }
-        before.1 -= short;
-        last.1 = min_input;
+    };
+    let mut count = 1;
+    for _ in 0..=candidates.len() {
+        let fee = limits.fee(count);
+        let first = top.saturating_sub(fee).min(want);
+        if first < limits.min_input {
+            return Err(least);
+        }
+        let mut taken = vec![(source, first)];
+        let mut left = want - first;
+        for &(address, credits) in &candidates[1..] {
+            if left == 0 {
+                break;
+            }
+            let take = credits.min(left);
+            taken.push((address, take));
+            left -= take;
+        }
+        if left > 0 {
+            return Err(Refused::Short {
+                needed: want.saturating_add(fee),
+                available,
+            });
+        }
+        if taken.len() != count {
+            // More inputs, a larger fee: again with that many.
+            count = taken.len();
+            continue;
+        }
+        if let [.., before, last] = taken.as_mut_slice()
+            && last.1 < limits.min_input
+        {
+            let short = limits.min_input - last.1;
+            if before.1 < limits.min_input.saturating_add(short) {
+                return Err(Refused::OutOfRange);
+            }
+            before.1 -= short;
+            last.1 = limits.min_input;
+        }
+        return Ok(Plan {
+            inputs: taken.into_iter().collect(),
+            fee_source: source,
+            fee,
+        });
     }
-    if taken.iter().any(|(_, c)| *c < min_input) {
-        return None;
+    Err(Refused::OutOfRange)
+}
+
+/// What `balances` (credits) can move: an `All` plan's withdrawal, 0 when
+/// none (a remainder below the least withdrawal and its fee, or dust below
+/// the input minimum, stays where it is).
+pub(crate) fn movable(balances: &BTreeMap<PlatformAddress, u64>, limits: &Limits) -> u64 {
+    plan(balances, WithdrawAmount::All, limits).map_or(0, |p| p.credits())
+}
+
+/// A transition Platform can never take: its structure or a signature
+/// refused (consensus basic and signature errors are stateless, raised by
+/// the SDK's structure check before the broadcast or by every node).
+fn never_valid(e: &PlatformWalletError) -> bool {
+    match e {
+        PlatformWalletError::Sdk(dash_sdk::Error::Protocol(
+            dpp::ProtocolError::ConsensusError(ce),
+        )) => matches!(
+            **ce,
+            ConsensusError::BasicError(_) | ConsensusError::SignatureError(_)
+        ),
+        _ => false,
     }
-    let inputs: BTreeMap<PlatformAddress, u64> = taken.into_iter().collect();
-    let index = inputs.keys().position(|a| *a == source)?;
-    let index = u16::try_from(index).ok()?;
-    Some((
-        inputs,
-        vec![AddressFundsFeeStrategyStep::DeductFromInput(index)],
-    ))
+}
+
+/// address → `(nonce, credits)` (`None`: unknown to Platform), and the
+/// proof's block height.
+pub(crate) type Proved = (u64, BTreeMap<PlatformAddress, Option<(u32, u64)>>);
+
+/// The network a move uses; tests script it.
+pub(crate) trait MoveNet: Send + Sync {
+    /// The network's protocol version, as the SDK last proved it.
+    fn version(&self) -> &'static PlatformVersion;
+    /// The addresses' nonces and balances, proved, with the proof's height.
+    fn read(
+        &self,
+        addresses: BTreeSet<PlatformAddress>,
+    ) -> impl Future<Output = Result<Proved, PlatformError>> + Send;
+    /// Signs the withdrawal with `signer` and broadcasts it; `Ok` once
+    /// Platform answered with the addresses' state.
+    fn withdraw(
+        &self,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        script: CoreScript,
+        fee_strategy: AddressFundsFeeStrategy,
+        signer: &VaultPlatformAddressSigner,
+    ) -> impl Future<Output = Result<(), PlatformWalletError>> + Send;
+}
+
+/// The SDK and platform-wallet.
+pub(crate) struct SdkMoves {
+    pub(crate) sdk: Arc<dash_sdk::Sdk>,
+    pub(crate) wallet: Arc<PlatformWallet>,
+}
+
+impl MoveNet for SdkMoves {
+    fn version(&self) -> &'static PlatformVersion {
+        self.sdk.version()
+    }
+
+    async fn read(&self, addresses: BTreeSet<PlatformAddress>) -> Result<Proved, PlatformError> {
+        let (infos, metadata) =
+            AddressInfo::fetch_many_with_metadata(&self.sdk, addresses, None).await?;
+        let infos = (infos.into_iter())
+            .map(|(a, i)| (a, i.map(|i| (i.nonce, i.balance))))
+            .collect();
+        Ok((metadata.height, infos))
+    }
+
+    async fn withdraw(
+        &self,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        script: CoreScript,
+        fee_strategy: AddressFundsFeeStrategy,
+        signer: &VaultPlatformAddressSigner,
+    ) -> Result<(), PlatformWalletError> {
+        (self.wallet.platform())
+            .withdraw(
+                ACCOUNT,
+                InputSelection::ExplicitWithNonces(inputs),
+                script,
+                CORE_FEE_PER_BYTE,
+                fee_strategy,
+                Some(self.sdk.version()),
+                signer,
+            )
+            .await
+            .map(drop)
+    }
+}
+
+/// `addresses` read once (module doc, Reads), converted for `network`. With
+/// `wait`, rule 5 applies: under an enforcing mode with the fallback latch
+/// set, the read repeats until its proofs used only SPV-verified quorum
+/// keys, within the gate's wait. Without, an unverified read is refused at
+/// once.
+async fn read(
+    session: &NetworkSession,
+    net: &impl MoveNet,
+    addresses: BTreeSet<PlatformAddress>,
+    wait: bool,
+) -> Result<Seen, PlatformError> {
+    let network = session.vault.network();
+    let gated =
+        session.trust.rule_5() == Rule5::Enforce && session.live()?.provenance.fallback_used();
+    let waits = session.platform.money_gate.waits();
+    let deadline = tokio::time::Instant::now() + waits.wait;
+    let (height, infos) = if gated {
+        loop {
+            let (read, tally) = trust::scoped(net.read(addresses.clone())).await;
+            let read = read?;
+            if tally.verified() {
+                break read;
+            }
+            if !wait || tokio::time::Instant::now() + waits.retry >= deadline {
+                return Err(Refusal::Unverified.platform());
+            }
+            tokio::time::sleep(waits.retry).await;
+        }
+    } else {
+        net.read(addresses).await?
+    };
+    Ok(Seen {
+        height,
+        at: (infos.into_iter())
+            .map(|(a, i)| (bech32m(&a, network), i))
+            .collect(),
+    })
 }
 
 /// One wallet's moves and activity reads, one at a time.
@@ -312,15 +702,29 @@ impl Store {
             .collect())
     }
 
-    /// Writes `value` at `key` durably and reads it back.
-    async fn put(&self, key: String, value: &impl Serialize) -> Result<(), PlatformError> {
-        let json = serde_json::to_string(value).map_err(|e| PlatformError::Internal {
-            detail: e.to_string(),
-        })?;
+    async fn delete(&self, key: String) -> Result<(), PlatformError> {
+        self.blocking(move |db, scope| db.set_setting_durable(scope, &key, None))
+            .await
+    }
+
+    /// Writes every `(key, value)` (`None` deletes) in one durable
+    /// transaction, and reads them back.
+    async fn commit(&self, writes: Vec<(String, Option<String>)>) -> Result<(), PlatformError> {
+        if writes.is_empty() {
+            return Ok(());
+        }
         let read = self
             .blocking(move |db, scope| {
-                db.set_setting_durable(scope, &key, Some(&json))?;
-                Ok(db.setting(scope, &key)? == Some(json))
+                let batch: Vec<(&str, Option<&str>)> = (writes.iter())
+                    .map(|(k, v)| (k.as_str(), v.as_deref()))
+                    .collect();
+                db.set_settings_durable(scope, &batch)?;
+                for (key, value) in &writes {
+                    if db.setting(scope, key)? != *value {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
             })
             .await?;
         if read {
@@ -332,69 +736,103 @@ impl Store {
         }
     }
 
-    async fn delete(&self, key: String) -> Result<(), PlatformError> {
-        self.blocking(move |db, scope| db.set_setting_durable(scope, &key, None))
-            .await
-    }
-
-    async fn snapshot(&self) -> Result<Option<Snapshot>, PlatformError> {
-        Ok(self
-            .all(SNAPSHOT_KEY)
-            .await?
-            .into_iter()
-            .next()
-            .map(|(_, s)| s))
+    /// The baseline; a legacy snapshot reads as one at height 0.
+    async fn baseline(&self) -> Result<Option<Baseline>, PlatformError> {
+        if let Some((_, b)) = self.all::<Baseline>(BASELINE_KEY).await?.into_iter().next() {
+            return Ok(Some(b));
+        }
+        Ok(
+            (self.all::<Snapshot>(LEGACY_SNAPSHOT_KEY).await?.into_iter())
+                .next()
+                .map(|(_, balances)| Baseline {
+                    height: 0,
+                    balances,
+                }),
+        )
     }
 
     async fn moves(&self) -> Result<Vec<MoveRecord>, PlatformError> {
-        Ok(self
-            .all(MOVE_PREFIX)
-            .await?
-            .into_iter()
+        let mut moves: Vec<MoveRecord> = (self.all(MOVE_PREFIX).await?.into_iter())
             .map(|(_, m)| m)
-            .collect())
+            .collect();
+        moves.sort_by(|a, b| (a.at, &a.id).cmp(&(b.at, &b.id)));
+        Ok(moves)
     }
+}
 
-    async fn put_move(&self, record: &MoveRecord) -> Result<(), PlatformError> {
-        self.put(format!("{MOVE_PREFIX}{}", record.id), record)
-            .await
-    }
+fn json(value: &impl Serialize) -> Result<String, PlatformError> {
+    serde_json::to_string(value).map_err(|e| PlatformError::Internal {
+        detail: e.to_string(),
+    })
+}
+
+fn move_write(record: &MoveRecord) -> Result<(String, Option<String>), PlatformError> {
+    Ok((format!("{MOVE_PREFIX}{}", record.id), Some(json(record)?)))
 }
 
 fn bech32m(address: &PlatformAddress, network: Network) -> String {
     address.to_bech32m_string(network)
 }
 
+fn parse(address: &str) -> Option<PlatformAddress> {
+    PlatformAddress::from_bech32m_string(address).ok()
+}
+
 /// The wallet's funded Platform addresses (bech32m → credits) as the last
 /// sync pass left them.
-async fn balances(wallet: &PlatformWallet, network: Network) -> Snapshot {
-    wallet
+async fn cached(wallet: &PlatformWallet) -> BTreeMap<PlatformAddress, u64> {
+    (wallet
         .platform()
         .addresses_with_balances()
         .await
-        .into_iter()
-        .filter(|(_, c)| *c > 0)
-        .map(|(a, c)| (bech32m(&a, network), c))
-        .collect()
+        .into_iter())
+    .filter(|(_, c)| *c > 0)
+    .collect()
 }
 
-/// `DashPay::platform_addresses`.
+/// The payment account's addresses and their DIP-17 paths.
+pub(crate) async fn pool(
+    wallet: &PlatformWallet,
+) -> Result<BTreeMap<PlatformAddress, DerivationPath>, PlatformError> {
+    let wm = wallet.wallet_manager().read().await;
+    let info = wm
+        .get_wallet_info(&wallet.wallet_id())
+        .ok_or(PlatformError::WalletNotFound)?;
+    let account = info
+        .core_wallet
+        .platform_payment_managed_account_at_index(ACCOUNT)
+        .ok_or_else(|| PlatformError::Internal {
+            detail: "the wallet has no Platform payment account".into(),
+        })?;
+    Ok((account.addresses.addresses.values())
+        .filter_map(|a| {
+            let p2pkh = PlatformP2PKHAddress::from_address(&a.address).ok()?;
+            Some((PlatformAddress::P2pkh(p2pkh.to_bytes()), a.path.clone()))
+        })
+        .collect())
+}
+
+/// `DashPay::platform_addresses`: the cached balances; `movable_credits`
+/// (and `duffs`, what Home adds) only what an `All` move would take.
 pub(crate) async fn balance(
     manager: &Manager,
     wallet: &PlatformWallet,
     network: Network,
 ) -> PlatformAddressBalance {
-    let mut addresses: Vec<PlatformAddressRow> = balances(wallet, network)
-        .await
-        .into_iter()
-        .map(|(address, credits)| PlatformAddressRow { address, credits })
+    let cached = cached(wallet).await;
+    let movable = Limits::at(manager.sdk_arc().version()).map_or(0, |l| movable(&cached, &l));
+    let mut addresses: Vec<PlatformAddressRow> = (cached.iter())
+        .map(|(a, c)| PlatformAddressRow {
+            address: bech32m(a, network),
+            credits: *c,
+        })
         .collect();
     addresses.sort_by(|a, b| b.credits.cmp(&a.credits).then(a.address.cmp(&b.address)));
-    let credits = addresses.iter().map(|r| r.credits).sum::<u64>();
     let sync = manager.platform_address_sync();
     PlatformAddressBalance {
-        credits,
-        duffs: credits / CREDITS_PER_DUFF,
+        credits: cached.values().sum(),
+        movable_credits: movable,
+        duffs: movable / CREDITS_PER_DUFF,
         addresses,
         synced_at: sync.last_sync_unix_seconds(),
         syncing: sync.is_syncing(),
@@ -446,122 +884,114 @@ pub(crate) async fn sync(
     Ok(())
 }
 
-/// The inputs' proved nonces (bech32m → nonce; `None` for an address
-/// Platform does not hold).
-async fn nonces(
-    sdk: &dash_sdk::Sdk,
-    addresses: BTreeSet<PlatformAddress>,
-    network: Network,
-) -> Result<BTreeMap<String, Option<u32>>, PlatformError> {
-    let infos = AddressInfo::fetch_many(sdk, addresses).await?;
-    Ok(infos
-        .into_iter()
-        .map(|(a, info)| (bech32m(&a, network), info.map(|i| i.nonce)))
-        .collect())
-}
-
-fn parse(address: &str) -> Option<PlatformAddress> {
-    PlatformAddress::from_bech32m_string(address).ok()
-}
-
-/// The wallet's moves, a pending one settled where Platform can tell
-/// (module doc); a changed record is stored.
-async fn settle_moves(
-    sdk: &dash_sdk::Sdk,
-    store: &Store,
-    network: Network,
-) -> Result<(Vec<MoveRecord>, bool), PlatformError> {
-    let mut moves = store.moves().await?;
-    let pending: BTreeSet<PlatformAddress> = (moves.iter())
-        .filter(|m| m.state == PlatformActivityState::Pending)
-        .flat_map(|m| m.inputs.iter().filter_map(|i| parse(&i.address)))
-        .collect();
-    if pending.is_empty() {
-        return Ok((moves, false));
-    }
-    let proved = match nonces(sdk, pending, network).await {
-        Ok(proved) => proved,
-        Err(e) => {
-            // Nothing is known: the moves stay pending.
-            tracing::info!("reading a pending move's nonces: {e}");
-            return Ok((moves, false));
-        }
-    };
-    let now = unix_now();
-    let mut changed = false;
-    for record in moves
-        .iter_mut()
-        .filter(|m| m.state == PlatformActivityState::Pending)
-    {
-        match settled(record, &proved, now) {
-            PlatformActivityState::Pending => continue,
-            PlatformActivityState::Done => record.done(),
-            PlatformActivityState::Failed => record.state = PlatformActivityState::Failed,
-        }
-        store.put_move(record).await?;
-        changed = true;
-    }
-    Ok((moves, changed))
-}
-
-/// Reads `now` (address → credits) against the stored snapshot: stores
-/// the change rows, the spent falls of `moves` and the new snapshot.
-/// Whether any row was added.
-async fn record_changes(
+/// Settles `moves` against `seen` and records the activity it shows, all
+/// in one durable write (module doc). Whether anything changed.
+async fn observe(
     store: &Store,
     moves: &mut [MoveRecord],
-    now: &Snapshot,
+    seen: &Seen,
 ) -> Result<bool, PlatformError> {
-    let held: BTreeSet<String> = (moves.iter())
-        .filter(|m| m.state == PlatformActivityState::Pending)
-        .flat_map(|m| m.inputs.iter().map(|i| i.address.clone()))
-        .collect();
-    let mut unseen: BTreeMap<String, u64> = BTreeMap::new();
-    for input in moves.iter().flat_map(|m| &m.inputs) {
-        *unseen.entry(input.address.clone()).or_default() += input.unseen;
-    }
-    let before = store.snapshot().await?;
-    let (rows, next) = changes(before.as_ref(), now, &held, &mut unseen, unix_now());
-    for row in &rows {
-        let key = format!(
-            "{ROW_PREFIX}{:020}/{}",
-            row.at,
-            row.address.as_deref().unwrap_or("")
+    let before = moves.to_vec();
+    settle(moves, seen);
+    let baseline = store.baseline().await?;
+    let mut writes = Vec::new();
+    let mut rows = 0;
+    // A proof older than the baseline's (a node behind) decides nothing.
+    if baseline.as_ref().is_none_or(|b| seen.height >= b.height) {
+        let held: BTreeSet<String> = (moves.iter())
+            .filter(|m| m.state == PlatformActivityState::Pending)
+            .flat_map(|m| m.inputs.iter().map(|i| i.address.clone()))
+            .collect();
+        let mut unseen: BTreeMap<String, u64> = BTreeMap::new();
+        for input in moves.iter().flat_map(|m| &m.inputs) {
+            *unseen.entry(input.address.clone()).or_default() += input.unseen;
+        }
+        let (found, next) = changes(
+            baseline.as_ref().map(|b| &b.balances),
+            &seen.balances(),
+            &held,
+            &mut unseen,
+            (unix_now(), seen.height),
         );
-        store.put(key, row).await?;
-    }
-    // A done move's fall, once read, is spent.
-    for record in moves.iter_mut() {
-        let before = record.clone();
-        for input in &mut record.inputs {
+        // A done move's fall, once read, is spent.
+        for input in moves.iter_mut().flat_map(|m| &mut m.inputs) {
             if unseen.get(&input.address) == Some(&0) {
                 input.unseen = 0;
             }
         }
-        if *record != before {
-            store.put_move(record).await?;
+        for row in &found {
+            let address = row.address.as_deref().unwrap_or("");
+            let key = format!("{ROW_PREFIX}{:020}/{:020}/{address}", row.at, seen.height);
+            writes.push((key, Some(json(row)?)));
+        }
+        rows = found.len();
+        let next = Baseline {
+            height: seen.height,
+            balances: next,
+        };
+        if baseline.as_ref() != Some(&next) {
+            writes.push((BASELINE_KEY.to_owned(), Some(json(&next)?)));
+            writes.push((LEGACY_SNAPSHOT_KEY.to_owned(), None));
         }
     }
-    if before.as_ref() != Some(&next) {
-        store.put(SNAPSHOT_KEY.to_owned(), &next).await?;
+    let mut changed = rows > 0;
+    for (m, was) in moves.iter().zip(&before) {
+        if m != was {
+            writes.push(move_write(m)?);
+            changed = true;
+        }
     }
-    Ok(!rows.is_empty())
+    store.commit(writes).await?;
+    Ok(changed)
+}
+
+/// Every address a read for the wallet covers: the payment account's and
+/// any a recorded move signed.
+fn covered(
+    pool: &BTreeMap<PlatformAddress, DerivationPath>,
+    moves: &[MoveRecord],
+) -> BTreeSet<PlatformAddress> {
+    (pool.keys().copied())
+        .chain(
+            moves
+                .iter()
+                .flat_map(|m| m.inputs.iter().filter_map(|i| parse(&i.address))),
+        )
+        .collect()
+}
+
+/// The proved balances of the payment account's addresses.
+fn proved_balances(
+    pool: &BTreeMap<PlatformAddress, DerivationPath>,
+    seen: &Seen,
+    network: Network,
+) -> BTreeMap<PlatformAddress, u64> {
+    (pool.keys())
+        .filter_map(|a| Some((*a, seen.credits(&bech32m(a, network))?)))
+        .filter(|(_, c)| *c > 0)
+        .collect()
 }
 
 /// `DashPay::platform_activity`.
 pub(crate) async fn activity(
+    net: &impl MoveNet,
     session: &NetworkSession,
-    manager: &Manager,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
 ) -> Result<Vec<PlatformActivity>, CreditsError> {
     let lock = wallet_lock(wallet_id);
     let _one = lock.lock().await;
-    let network = session.vault.network();
     let store = Store::of(session, wallet_id)?;
-    let (mut moves, mut changed) = settle_moves(&manager.sdk_arc(), &store, network).await?;
-    let now = balances(wallet, network).await;
-    changed |= record_changes(&store, &mut moves, &now).await?;
+    let mut moves = store.moves().await?;
+    let addresses = covered(&pool(wallet).await?, &moves);
+    let changed = match read(session, net, addresses, false).await {
+        Ok(seen) => observe(&store, &mut moves, &seen).await?,
+        Err(e) => {
+            // Nothing is known: what is stored stands.
+            tracing::info!("reading the Platform addresses for their activity: {e}");
+            false
+        }
+    };
     let mut stored = store.all::<PlatformActivity>(ROW_PREFIX).await?;
     // Keys sort by time: the oldest beyond the kept ones go.
     while stored.len() > ROWS_KEPT {
@@ -581,105 +1011,30 @@ pub(crate) async fn activity(
     Ok(out)
 }
 
-/// What a move of `amount` takes, at the network's protocol version.
-struct Planned {
-    inputs: BTreeMap<PlatformAddress, u64>,
-    fee_strategy: AddressFundsFeeStrategy,
-    /// What reaches Core, in credits.
-    credits: u64,
-    fee: u64,
-    expected_duffs: u64,
-    version: &'static PlatformVersion,
-}
-
-async fn plan(
-    sdk: &dash_sdk::Sdk,
-    wallet: &PlatformWallet,
-    amount: WithdrawAmount,
-) -> Result<Planned, CreditsError> {
-    let platform = wallet.platform();
-    let total = platform.total_credits().await;
-    let planned = platform
-        .preflight_withdrawal(ACCOUNT, CORE_FEE_PER_BYTE)
-        .await;
-    // After the plan's proved read, which ratchets the SDK's version.
-    let version = sdk.version();
-    let rules = Rules::at(version)?;
-    let short = |needed: u64| PlatformError::InsufficientCredits {
-        needed,
-        available: total,
-    };
-    let plan = match planned {
-        Ok(plan) => plan,
-        Err(
-            PlatformWalletError::OnlyDustInputs { .. } | PlatformWalletError::AddressOperation(_),
-        ) => {
-            // One address must hold the minimum and the fee the plan sets
-            // aside on it.
-            let fee = AddressCreditWithdrawalTransition::estimate_min_fee(1, false, version);
-            return Err(short(rules.min.saturating_add(fee)).into());
-        }
-        Err(e) => return Err(PlatformError::from(e).into()),
-    };
-    let fee = plan.estimated_fee;
-    let all: u64 = plan.inputs.values().sum();
-    let (inputs, fee_strategy, credits) = match amount {
-        WithdrawAmount::All => {
-            if all < rules.min {
-                return Err(short(rules.min.saturating_add(fee)).into());
-            }
-            (plan.inputs.clone(), plan.fee_strategy.clone(), all)
-        }
-        WithdrawAmount::Credits { credits } => {
-            let out_of_range = CreditsError::WithdrawalOutOfRange {
-                min: rules.min,
-                max: rules.max,
-            };
-            if credits < rules.min || credits > rules.max {
-                return Err(out_of_range);
-            }
-            if credits > all {
-                return Err(short(credits.saturating_add(fee)).into());
-            }
-            let min_input = platform.min_input_amount();
-            let (inputs, strategy) = select(&plan, credits, min_input).ok_or(out_of_range)?;
-            (inputs, strategy, credits)
-        }
-    };
-    if credits > rules.max {
-        return Err(CreditsError::WithdrawalOutOfRange {
-            min: rules.min,
-            max: rules.max,
-        });
-    }
-    Ok(Planned {
-        inputs,
-        fee_strategy,
-        credits,
-        fee,
-        expected_duffs: withdrawal::expected_duffs(credits, version)?,
-        version,
-    })
-}
-
 /// `DashPay::move_to_core_quote`.
 pub(crate) async fn quote(
+    net: &impl MoveNet,
     session: &NetworkSession,
-    manager: &Manager,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
     amount: WithdrawAmount,
 ) -> Result<MoveToCoreQuote, CreditsError> {
-    let planned = plan(&manager.sdk_arc(), wallet, amount).await?;
+    let network = session.vault.network();
+    let pool = pool(wallet).await?;
+    let seen = read(session, net, pool.keys().copied().collect(), true).await?;
+    let version = net.version();
+    let limits = Limits::at(version)?;
+    let planned = plan(&proved_balances(&pool, &seen, network), amount, &limits)
+        .map_err(|r| r.error(&limits))?;
     let to = session
         .current_receiving_address(wallet_id)
         .await
         .map_err(PlatformError::from)?;
-    let credits = planned.credits.saturating_add(planned.fee);
+    let credits = planned.credits() + planned.fee;
     Ok(MoveToCoreQuote {
         credits,
         fee_credits: planned.fee,
-        expected_duffs: planned.expected_duffs,
+        expected_duffs: withdrawal::expected_duffs(planned.credits(), version)?,
         to: to.to_string(),
         grant: GrantRequest {
             max_duffs: 0,
@@ -688,68 +1043,104 @@ pub(crate) async fn quote(
     })
 }
 
-/// The DIP-17 path of each of `addresses` (HASH160 → path), from the
-/// payment account's address pool. One the pool does not hold yet (before
-/// the first sync pass after a restart) is `platform.unavailable`.
-pub(crate) async fn input_paths<'a>(
-    wallet: &PlatformWallet,
-    addresses: impl IntoIterator<Item = &'a PlatformAddress>,
-) -> Result<BTreeMap<[u8; 20], DerivationPath>, PlatformError> {
-    let wm = wallet.wallet_manager().read().await;
-    let info = wm
-        .get_wallet_info(&wallet.wallet_id())
-        .ok_or(PlatformError::WalletNotFound)?;
-    let account = info
-        .core_wallet
-        .platform_payment_managed_account_at_index(ACCOUNT)
-        .ok_or_else(|| PlatformError::Internal {
-            detail: "the wallet has no Platform payment account".into(),
-        })?;
-    let pool: HashMap<[u8; 20], &DerivationPath> = (account.addresses.addresses.values())
-        .filter_map(|a| {
-            let p2pkh = PlatformP2PKHAddress::from_address(&a.address).ok()?;
-            Some((p2pkh.to_bytes(), &a.path))
-        })
-        .collect();
-    addresses
-        .into_iter()
-        .map(|address| match address {
-            PlatformAddress::P2pkh(hash) => pool
-                .get(hash)
-                .map(|path| (*hash, (*path).clone()))
-                .ok_or(PlatformError::Unavailable),
-            PlatformAddress::P2sh(_) => Err(PlatformError::Internal {
-                detail: "a P2SH Platform address is no payment address".into(),
-            }),
-        })
-        .collect()
-}
-
 /// `DashPay::move_to_core` (module doc).
 pub(crate) async fn move_to_core(
+    net: &impl MoveNet,
     session: &Arc<NetworkSession>,
-    manager: &Manager,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
-    amount: WithdrawAmount,
+    (amount, to): (WithdrawAmount, &str),
     grant: &str,
 ) -> Result<MoveToCoreOutcome, CreditsError> {
     let lock = wallet_lock(wallet_id);
     let _one = lock.lock().await;
     let network = session.vault.network();
-    let sdk = manager.sdk_arc();
     let store = Store::of(session, wallet_id)?;
-    let (mut moves, _) = settle_moves(&sdk, &store, network).await?;
-    if let Some(pending) = moves
-        .iter()
-        .find(|m| m.state == PlatformActivityState::Pending)
-    {
+    let mut moves = store.moves().await?;
+    let pool = pool(wallet).await?;
+    // Rule 5 and the one read every decision below rests on.
+    let seen = read(session, net, covered(&pool, &moves), true).await?;
+    if observe(&store, &mut moves, &seen).await? {
+        session
+            .hub
+            .pump
+            .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
+    }
+    if let Some(pending) = (moves.iter()).find(|m| m.state == PlatformActivityState::Pending) {
         return Err(CreditsError::MovePending {
             id: pending.id.clone(),
         });
     }
-    let planned = plan(&sdk, wallet, amount).await?;
-    let quote = planned.credits.saturating_add(planned.fee);
+    let version = net.version();
+    let limits = Limits::at(version)?;
+    let mut balances = proved_balances(&pool, &seen, network);
+    // A move that may still execute: the next one draws from its inputs only,
+    // so it signs at the same nonces (checked below).
+    let held = moves.iter().find(|m| m.holds());
+    if let Some(held) = held {
+        let only: BTreeSet<&str> = held.inputs.iter().map(|i| i.address.as_str()).collect();
+        balances.retain(|a, _| only.contains(bech32m(a, network).as_str()));
+    }
+    let planned = plan(&balances, amount, &limits).map_err(|r| r.error(&limits))?;
+    let mut inputs = BTreeMap::new();
+    for (address, credits) in &planned.inputs {
+        let nonce = seen
+            .nonce(&bech32m(address, network))
+            .ok_or(PlatformError::Unavailable)?;
+        inputs.insert(*address, (nonce.saturating_add(1), *credits));
+    }
+    let mut record = MoveRecord {
+        id: format!("move-{}-{}", seen.height, moves.len()),
+        inputs: (inputs.iter())
+            .map(|(a, (nonce, credits))| {
+                let address = bech32m(a, network);
+                MoveInput {
+                    before: seen.credits(&address).unwrap_or(0),
+                    address,
+                    nonce: *nonce,
+                    credits: *credits,
+                    fee_source: *a == planned.fee_source,
+                    unseen: 0,
+                }
+            })
+            .collect(),
+        credits: planned.credits() + planned.fee,
+        fee_credits: planned.fee,
+        expected_duffs: withdrawal::expected_duffs(planned.credits(), version)?,
+        to: to.to_owned(),
+        at: unix_now(),
+        state: PlatformActivityState::Pending,
+        signed: false,
+        answered: false,
+        can_land: false,
+        seen_at: None,
+        fee_taken: None,
+    };
+    // A move `failed` by height may still execute: only one at its very
+    // inputs and nonces may follow it.
+    if let Some(held) = held.filter(|h| h.key() != record.key()) {
+        return Err(CreditsError::MovePending {
+            id: held.id.clone(),
+        });
+    }
+    let script = withdrawal::destination(network, to)?;
+    // `destination` checked it parses, for this network.
+    let address = std::str::FromStr::from_str(to.trim())
+        .ok()
+        .and_then(|a: dpp::dashcore::Address<_>| a.require_network(network).ok())
+        .ok_or(PlatformError::InvalidArgument {
+            detail: "not a Dash address of this network".into(),
+        })?;
+    let own = session
+        .is_receiving_address(wallet_id, &address)
+        .await
+        .map_err(PlatformError::from)?;
+    if !own {
+        return Err(PlatformError::InvalidArgument {
+            detail: "a move pays only one of this wallet's receiving addresses".into(),
+        }
+        .into());
+    }
     // The authority before anything is redeemed: a refusal keeps the grant.
     let authority = match session.lease_for(&wallet_id, grant) {
         Some(lease) => {
@@ -761,49 +1152,13 @@ pub(crate) async fn move_to_core(
         }
         None => NameAuthority::Grant(grant.to_owned()),
     };
-    check_credit_cap(session, wallet_id, &authority, quote).await?;
-    let to = session
-        .current_receiving_address(wallet_id)
-        .await
-        .map_err(PlatformError::from)?
-        .to_string();
-    let script = withdrawal::destination(network, &to)?;
-    let paths = input_paths(wallet, planned.inputs.keys()).await?;
-    let proved = AddressInfo::fetch_many(
-        sdk.as_ref(),
-        planned.inputs.keys().copied().collect::<BTreeSet<_>>(),
-    )
-    .await
-    .map_err(PlatformError::from)?;
-    let mut inputs = BTreeMap::new();
-    for (address, credits) in &planned.inputs {
-        let info = proved.get(address).cloned().flatten();
-        let available = info.as_ref().map_or(0, |i| i.balance);
-        let Some(info) = info.filter(|i| i.balance >= *credits) else {
-            return Err(PlatformError::InsufficientCredits {
-                needed: *credits,
-                available,
-            }
-            .into());
-        };
-        inputs.insert(*address, (info.nonce.saturating_add(1), *credits));
-    }
-    // Activity up to here, the inputs at their proved balances, so the
-    // move's fall is read against what it spends (module doc).
-    let mut now = balances(wallet, network).await;
-    for (address, info) in &proved {
-        let address = bech32m(address, network);
-        match info.as_ref().map_or(0, |i| i.balance) {
-            0 => now.remove(&address),
-            credits => now.insert(address, credits),
-        };
-    }
-    if record_changes(&store, &mut moves, &now).await? {
-        session
-            .hub
-            .pump
-            .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
-    }
+    check_credit_cap(session, wallet_id, &authority, record.credits).await?;
+    let paths: BTreeMap<[u8; 20], DerivationPath> = (inputs.keys())
+        .map(|a| match (a, pool.get(a)) {
+            (PlatformAddress::P2pkh(hash), Some(path)) => Ok((*hash, path.clone())),
+            _ => Err(PlatformError::Unavailable),
+        })
+        .collect::<Result<_, _>>()?;
     let lease = match authority {
         NameAuthority::Lease(lease) => lease,
         NameAuthority::Grant(grant) => session
@@ -811,7 +1166,7 @@ pub(crate) async fn move_to_core(
             .await
             .map_err(PlatformError::from)?,
     };
-    let permit = write_permit(&lease, "move_to_core", quote)?;
+    let permit = write_permit(&lease, "move_to_core", record.credits)?;
     let signer = match permit.platform_address_signer(paths) {
         Ok(signer) => signer,
         Err(e) => {
@@ -819,30 +1174,8 @@ pub(crate) async fn move_to_core(
             return Err(PlatformError::from(e).into());
         }
     };
-    let first = inputs
-        .iter()
-        .next()
-        .map(|(a, (n, _))| (bech32m(a, network), *n));
-    let (first_address, first_nonce) = first.unwrap_or_default();
-    let mut record = MoveRecord {
-        id: format!("move-{first_address}-{first_nonce}"),
-        inputs: (inputs.iter())
-            .map(|(a, (nonce, credits))| MoveInput {
-                address: bech32m(a, network),
-                nonce: *nonce,
-                credits: *credits,
-                unseen: 0,
-            })
-            .collect(),
-        credits: quote,
-        fee_credits: planned.fee,
-        expected_duffs: planned.expected_duffs,
-        to: to.clone(),
-        at: unix_now(),
-        state: PlatformActivityState::Pending,
-    };
     // Recorded and read back before anything is signed.
-    if let Err(e) = store.put_move(&record).await {
+    if let Err(e) = store.commit(vec![move_write(&record)?]).await {
         drop(signer);
         permit.finish(false);
         return Err(e.into());
@@ -851,73 +1184,60 @@ pub(crate) async fn move_to_core(
         .hub
         .pump
         .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
-    let sent = leased(
+    let call = leased(
         &lease,
-        wallet.platform().withdraw(
-            ACCOUNT,
-            InputSelection::ExplicitWithNonces(inputs),
-            script,
-            CORE_FEE_PER_BYTE,
-            planned.fee_strategy,
-            Some(planned.version),
-            &signer,
-        ),
+        net.withdraw(inputs, script, planned.fee_strategy(), &signer),
     )
     .await;
-    let signed = permit.signatures().released() > 0;
+    let released = permit.signatures().released();
     drop(signer);
-    permit.finish(sent.is_ok());
-    let failure = match sent {
-        Ok(_) => {
-            record.done();
-            None
-        }
-        Err(e) if !signed => {
-            record.state = PlatformActivityState::Failed;
-            Some(e)
-        }
-        Err(e) => {
-            tracing::info!(id = %record.id, "a move's broadcast failed: {e}");
-            let addresses = record
-                .inputs
-                .iter()
-                .filter_map(|i| parse(&i.address))
-                .collect();
-            match nonces(&sdk, addresses, network).await {
-                Ok(proved)
-                    if settled(&record, &proved, record.at) == PlatformActivityState::Done =>
-                {
-                    record.done();
-                }
-                read => {
-                    if let Err(again) = read {
-                        tracing::info!(id = %record.id, "reading the move's nonces: {again}");
-                    }
-                }
+    permit.finish(call.is_ok());
+    record.signed = released > 0;
+    record.answered = call.is_ok();
+    let cannot_land =
+        released < record.inputs.len() as u64 || call.as_ref().err().is_some_and(never_valid);
+    if let Err(e) = &call {
+        tracing::info!(id = %record.id, cannot_land, "a move's call failed: {e}");
+    }
+    moves.push(record);
+    let at = moves.len() - 1;
+    if cannot_land {
+        moves[at].state = PlatformActivityState::Failed;
+    } else {
+        moves[at].can_land = true;
+        // Done only on its proved nonces, whatever the call answered.
+        let signed = moves[at].inputs.iter().filter_map(|i| parse(&i.address));
+        match read(session, net, signed.collect(), false).await {
+            Ok(after) => {
+                settle(&mut moves, &after);
             }
-            None
+            Err(e) => tracing::info!(id = %moves[at].id, "reading a move's nonces: {e}"),
         }
-    };
-    if let Err(e) = store.put_move(&record).await {
+    }
+    let writes: Vec<_> = moves.iter().map(move_write).collect::<Result<_, _>>()?;
+    if let Err(e) = store.commit(writes).await {
         // The pending record stands and settles on a later read.
-        tracing::warn!(id = %record.id, "storing a move's outcome: {e}");
+        tracing::warn!(id = %moves[at].id, "storing a move's outcome: {e}");
     }
     session
         .hub
         .pump
         .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
-    if let Some(e) = failure {
+    let record = &moves[at];
+    if cannot_land && let Err(e) = call {
         return Err(PlatformError::from(e).into());
     }
     Ok(MoveToCoreOutcome {
-        id: record.id,
+        id: record.id.clone(),
         credits: record.credits,
         expected_duffs: record.expected_duffs,
-        to,
+        to: record.to.clone(),
         state: record.state,
+        fee_credits: record.fee_taken,
     })
 }
 
+#[cfg(all(feature = "test-fund", debug_assertions))]
 impl NetworkSession {
     /// **Test only** (dwcli `platform-addr fund`, the release-0.1 testnet
     /// smoke; the app never calls it, and it is no facade call): funds the

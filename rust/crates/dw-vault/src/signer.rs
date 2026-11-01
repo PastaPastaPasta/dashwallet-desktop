@@ -687,10 +687,14 @@ mod tests {
     #[test]
     fn platform_address_signs_payment_address_keys_only() {
         let s = SignerScope::PlatformAddress;
-        for ok in ["m/9'/1'/17'/0'/0'/0", "m/9'/1'/17'/2'/1'/19"] {
+        for ok in ["m/9'/1'/17'/0'/0'/0", "m/9'/1'/17'/0'/0'/19"] {
             assert_eq!(uses(s, ok), vec![KeyUse::Sign, KeyUse::PublicKey], "{ok}");
         }
         for other in [
+            // Accounts and key classes the engine does not use.
+            "m/9'/1'/17'/1'/0'/0",
+            "m/9'/1'/17'/0'/1'/0",
+            "m/9'/1'/17'/2'/1'/19",
             "m/9'/5'/17'/0'/0'/0",
             "m/9'/1'/17'/0'/0'/0'",
             "m/9'/1'/17'/0'/0/0",
