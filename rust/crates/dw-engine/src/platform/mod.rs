@@ -80,6 +80,8 @@ pub(crate) mod runtime;
 #[cfg(test)]
 mod runtime_tests;
 mod shielded;
+#[cfg(test)]
+mod shielded_close_tests;
 pub(crate) mod shielded_pool;
 #[cfg(test)]
 mod shielded_tests;

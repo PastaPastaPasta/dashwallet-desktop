@@ -3486,6 +3486,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "internal",
   "outpoint_not_found",
   "stuck_funding",
+  "shielded_spend_unresolved",
   "vault.no_vault",
   "vault.already_exists",
   "vault.locked",

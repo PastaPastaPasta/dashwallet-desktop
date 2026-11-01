@@ -639,6 +639,17 @@ from its library call until its record is written. A lock (async, synchronous or
 wait for a pass in flight to end, so no re-send ends after a lock completes or a close; the close then seals the
 coordinator. A re-send signs nothing: the bytes are those the spend's lease charged.
 
+**Closing with an unresolved spend (DEC-1046).** At the pin, removing a wallet from platform-wallet's manager deletes its
+stored transitions and reservations (`remove_wallet` → `unregister_wallet` → `purge_wallet`, `wallet_lifecycle.rs:847`,
+`coordinator.rs:878-902`, `file_store.rs:880-901`), and the library has no detach. So while a wallet holds such a spend:
+Close Wallet (`unload_wallet`) and an in-app network close or switch (`close_network`) are refused with the engine code
+`shielded_spend_unresolved`, "a shielded payment is still being confirmed; wait, or quit and reopen the app", and change
+nothing (dw-app keeps the network active and its drafts); a restore's rollback keeps the wallet. App quit (`shutdown`)
+is never refused: it seals and drains as any close, then leaves that wallet loaded in the sealed manager, which runs
+nothing more, with its stores committed (wallet.sqlite writes commit inline, the shielded store committed the spend
+before it returned), and the next launch rehydrates the spend as pending, reservations and all. Removing the wallet (the
+user's `remove_wallet`, under its wipe grant) deletes its spends with it. 0.2 replaces this with an upstream detach.
+
 **Shield locks.** A shield's asset lock spends at most 50 coins: an InstantSend proof carries the whole transaction and
 stops fitting a transition from about 65 inputs. A lock whose consumption is unknown (Platform answered "already
 consumed", which proves nothing, or a restore read one of the wallet's shield locks back from the chain) stays in

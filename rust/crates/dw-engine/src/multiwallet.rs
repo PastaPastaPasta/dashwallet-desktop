@@ -258,6 +258,8 @@ impl NetworkSession {
 
     /// dash-qt "Close Wallet": unloads a loaded wallet. Its data stays; its
     /// prepared, unsent payments lose their reservations. Idempotent.
+    /// `ShieldedSpendUnresolved` while it holds a shielded spend whose
+    /// result is not known (DEC-1046).
     pub async fn unload_wallet(self: &Arc<Self>, id: WalletId) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
@@ -268,6 +270,13 @@ impl NetworkSession {
                 return Ok(());
             }
             this.require_wallet(&id)?;
+            // DEC-1046: unloading a wallet that holds a shielded spend of
+            // unknown result would delete its stored transition (no detach
+            // at the pin); refused before anything of it changes, and again
+            // at the removal for a spend stored meanwhile.
+            if crate::platform::shielded_pool::holds_stored_spends(&live.manager, id).await {
+                return Err(EngineError::ShieldedSpendUnresolved);
+            }
             // E0-04 §8.6: the wallet's leases end and its permits drain.
             let _barrier = this
                 .revoke_wallet(id, crate::platform::RevokeCause::WalletClosed)
@@ -277,7 +286,14 @@ impl NetworkSession {
             // Its discoveries end first, as for a removal: none may apply
             // what it finds to the wallet once it is loaded again.
             let _discoveries = this.platform.recovery.end_discoveries(id).await;
-            if let Err(e) = this.platform.remove_from_manager(&live.manager, id).await {
+            if let Err(e) = (this.platform)
+                .remove_from_manager(
+                    &live.manager,
+                    id,
+                    crate::platform::runtime::StoredSpends::Refuse,
+                )
+                .await
+            {
                 live.store.set_unloaded(id.0, false);
                 return Err(e);
             }

@@ -86,6 +86,17 @@ pub(super) struct LockView {
 }
 
 /// The session's Platform state (DASHPAY §3.1 `PlatformRuntime`).
+/// What [`PlatformRuntime::remove_from_manager`] does when the wallet holds
+/// a shielded spend whose result is not known (DEC-1046).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StoredSpends {
+    /// The wallet stays: `ShieldedSpendUnresolved` (Close Wallet, the
+    /// close, a restore's rollback).
+    Refuse,
+    /// The user removes the wallet: its stored spends go with it.
+    Purge,
+}
+
 pub(crate) struct PlatformRuntime {
     /// `false` for a chain without Platform (`SessionOptions::no_platform`):
     /// SPV starts without a bring-up and no loop runs.
@@ -645,15 +656,34 @@ impl PlatformRuntime {
     }
 
     /// Takes wallet `id` out of `manager` (a removal, an unload, a restore's
-    /// rollback): its fenced writes in flight (private details, the bell's
-    /// `mark_read`) land first and none lands afterwards ([`super::private_details::WriteFences`]), and its
+    /// rollback, the close): its fenced writes in flight (private details,
+    /// the bell's `mark_read`) land first and none lands afterwards ([`super::private_details::WriteFences`]), and its
     /// digests leave memory.
+    ///
+    /// The engine's only route to platform-wallet's `remove_wallet`, which
+    /// at the pin always purges the wallet's shielded store, its stored
+    /// spends included (`wallet_lifecycle.rs:847-850` →
+    /// `coordinator.rs:878-902` → `file_store.rs:880-901`). So with
+    /// [`StoredSpends::Refuse`] a wallet holding a spend whose result is
+    /// not known stays (`ShieldedSpendUnresolved`, DEC-1046); only the
+    /// user's removal of the wallet passes [`StoredSpends::Purge`]. The
+    /// removal runs with no shielded pass in flight (`shielded_passes`,
+    /// R1-3): the coordinator's set of wallets changes only between passes.
+    /// Every caller ended the wallet's permits first (its revocation, the
+    /// close's), so no spend of it stores a transition after the check.
     pub(crate) async fn remove_from_manager(
         &self,
         manager: &Manager,
         id: WalletId,
+        spends: StoredSpends,
     ) -> Result<(), EngineError> {
         let _fence = self.contacts.fences.removal(id).await;
+        let _passes = self.shielded_passes.write().await;
+        if spends == StoredSpends::Refuse
+            && super::shielded_pool::holds_stored_spends(manager, id).await
+        {
+            return Err(EngineError::ShieldedSpendUnresolved);
+        }
         manager.remove_wallet(&id.0).await?;
         self.contacts.digests.forget(&id);
         Ok(())
@@ -668,6 +698,21 @@ impl PlatformRuntime {
 }
 
 impl NetworkSession {
+    /// Whether a loaded wallet holds a shielded spend whose result is not
+    /// known: an in-app close of the session is refused then (DEC-1046,
+    /// `Engine::close_network`). `false` once closed.
+    pub(crate) async fn holds_shielded_spends(&self) -> bool {
+        let Ok(live) = self.live() else {
+            return false;
+        };
+        for id in live.manager.list_wallet_ids_blocking() {
+            if super::shielded_pool::holds_stored_spends(&live.manager, WalletId(id)).await {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Whether SPV is starting or running ([`Self::spv_state`] tells which).
     /// While starting, calls that need a running SPV (`rescan`,
     /// `rotate_peers`, a broadcast) still fail as when it is stopped.

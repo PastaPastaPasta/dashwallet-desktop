@@ -906,10 +906,50 @@ impl NetworkSession {
         // manager/wallet_lifecycle.rs:676-900, key-wallet-manager accessors.rs:75).
         // Through the wallets' write fence: the close returns after their
         // fenced writes in flight (private details, the bell's `mark_read`).
+        //
+        // DEC-1046: a wallet holding a shielded spend whose result is not
+        // known is not unloaded, as the pin's `remove_wallet` would delete
+        // its stored transition and reservations (`remove_from_manager`).
+        // It stays in the sealed manager, which runs nothing more (SPV
+        // stopped, every loop quiesced sealed and joined, the payment hooks
+        // drained, above), and its persister writes are committed: every
+        // `store` commits inline (the persister's default `Immediate` mode,
+        // WAL), and a flush here retries any left by a transient failure.
+        // The shielded store committed the spend's row before the spend
+        // returned (`arm_redrive_record`). So nothing of it is only in
+        // memory; the rows rehydrate as pending at the next open. The cost:
+        // the Arc cycle above keeps the persister's open-path claim, so the
+        // network reopens only in a new process. App quit takes this path
+        // (`Engine::shutdown`); an in-app close is refused beforehand
+        // (`Engine::close_network`), so it is reached there only by a spend
+        // stored after that check.
+        let mut kept = Vec::new();
         for id in manager.list_wallet_ids_blocking() {
-            let unloaded = self.platform.remove_from_manager(&manager, WalletId(id));
-            if let Err(e) = unloaded.await {
-                tracing::warn!(wallet_id = %hex::encode(id), error = %e, "unload on close failed");
+            let unloaded = (self.platform).remove_from_manager(
+                &manager,
+                WalletId(id),
+                crate::platform::runtime::StoredSpends::Refuse,
+            );
+            match unloaded.await {
+                Ok(()) => {}
+                Err(EngineError::ShieldedSpendUnresolved) => kept.push(id),
+                Err(e) => {
+                    tracing::warn!(wallet_id = %hex::encode(id), error = %e, "unload on close failed");
+                }
+            }
+        }
+        for id in kept {
+            tracing::info!(
+                wallet_id = %hex::encode(id),
+                "kept loaded at close: a shielded payment is still being confirmed"
+            );
+            let persister = Arc::clone(&live.persister);
+            let flushed = tokio::task::spawn_blocking(move || {
+                platform_wallet::changeset::PlatformWalletPersistence::flush(&*persister, id)
+            })
+            .await;
+            if !matches!(flushed, Ok(Ok(()))) {
+                tracing::warn!(wallet_id = %hex::encode(id), ?flushed, "flush on close failed");
             }
         }
         let persister = Arc::downgrade(&live.persister);

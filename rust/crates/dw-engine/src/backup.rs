@@ -696,7 +696,14 @@ impl NetworkSession {
             if created {
                 let removed = async {
                     let live = self.live()?;
-                    let removal = self.platform.remove_from_manager(&live.manager, id).await;
+                    // A wallet holding a stored shielded spend stays (DEC-1046).
+                    let removal = (self.platform)
+                        .remove_from_manager(
+                            &live.manager,
+                            id,
+                            crate::platform::runtime::StoredSpends::Refuse,
+                        )
+                        .await;
                     // Again, now that it is out of the manager (or failed to
                     // leave it): a scan begun since the first forget passed
                     // the wallet check, and a names check begun since read

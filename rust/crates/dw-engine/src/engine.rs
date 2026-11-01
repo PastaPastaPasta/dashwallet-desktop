@@ -146,11 +146,22 @@ impl Engine {
     }
 
     /// Closes the session for `network`. Returns `false` when none was open.
+    /// `ShieldedSpendUnresolved`, the session left open, while one of its
+    /// wallets holds a shielded spend whose result is not known (DEC-1046):
+    /// the close would have to keep that wallet loaded, and the network
+    /// could not reopen in this process. [`Self::shutdown`] (app quit) is
+    /// never refused.
     pub async fn close_network(&self, network: DashNetwork) -> Result<bool, EngineError> {
         let shared = Arc::clone(&self.shared);
         self.handle
             .spawn(async move {
                 let mut sessions = shared.sessions.lock().await;
+                let Some(session) = sessions.get(&network) else {
+                    return Ok(false);
+                };
+                if session.holds_shielded_spends().await {
+                    return Err(EngineError::ShieldedSpendUnresolved);
+                }
                 let Some(session) = sessions.remove(&network) else {
                     return Ok(false);
                 };

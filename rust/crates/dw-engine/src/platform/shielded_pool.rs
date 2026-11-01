@@ -1736,6 +1736,20 @@ pub(crate) async fn admit_pass(
     Ok(coordinator)
 }
 
+/// Whether wallet `id` holds a spend whose result is not known, stored by
+/// the library for its identical-bytes redrive (every row of the wallet in
+/// `shielded_pending_spends`, rehydrated at the store's open). Removing the
+/// wallet from the manager would delete it (DEC-1046,
+/// `PlatformRuntime::remove_from_manager`). No coordinator: nothing is
+/// purged, so nothing is held. A store that cannot be read holds.
+pub(crate) async fn holds_stored_spends(manager: &Manager, id: WalletId) -> bool {
+    let Some(coordinator) = manager.shielded_coordinator().await else {
+        return false;
+    };
+    let stored = (coordinator.store().read().await).pending_redrives_for_wallet(id.0);
+    stored.map_or(true, |stored| !stored.is_empty())
+}
+
 /// After this long a drain logs that a shielded pass in flight is still
 /// running ([`drain_passes`]), and keeps waiting.
 pub(crate) const SHIELDED_PASS_DRAIN: Duration = Duration::from_secs(10);
