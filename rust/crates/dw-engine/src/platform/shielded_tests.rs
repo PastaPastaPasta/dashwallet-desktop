@@ -130,6 +130,8 @@ struct FakeShielded {
     bound: bool,
     ledger: Option<Ledger>,
     notes: Vec<ShieldedNote>,
+    /// The unspent notes from now on, when set (a pass moved them).
+    notes_now: Mutex<Option<Vec<ShieldedNote>>>,
     activity: Vec<ShieldedActivityEntry>,
     locks: Vec<LockInfo>,
     /// The locks the wallet's shield steps signed; `None` while the
@@ -184,6 +186,7 @@ impl Default for FakeShielded {
                 synced_index: Some(42),
             }),
             notes: vec![note(1, NOTE), note(2, NOTE)],
+            notes_now: Mutex::default(),
             activity: Vec::new(),
             locks: Vec::new(),
             own: Some(HashSet::new()),
@@ -312,7 +315,8 @@ impl ShieldedLib for FakeShielded {
     }
 
     async fn unspent(&self) -> Result<Vec<ShieldedNote>, PlatformError> {
-        Ok(self.notes.clone())
+        let now = self.notes_now.lock().unwrap().clone();
+        Ok(now.unwrap_or_else(|| self.notes.clone()))
     }
 
     async fn activity(
@@ -805,6 +809,45 @@ fn a_send_charges_its_quote_and_a_refusal_keeps_the_grant() {
         code(pool::send(&s, wallet, &*lib, (&payee_text(), 1), None, &other).await)
     });
     assert_eq!(refused, "platform.grant_invalid");
+}
+
+/// Opus r1 m1: a pass that moves the notes between a send's first quote
+/// and its library call cannot raise the fee the library builds above what
+/// the grant confirmed. The send quotes again under the pass hold, where
+/// nothing moves them, and charges that: a total above the grant is
+/// `platform.grant_exceeded` before any key leaves the vault.
+#[test]
+fn a_spend_quotes_again_under_the_hold_and_refuses_a_fee_above_its_grant() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let wallet = fx.wallet;
+    // The user confirmed the quote of the notes as they are.
+    let quoted = NOTE + fee_of(NOTE, ShieldedFeeKind::Base);
+    let lease = fx.flow(FlowKind::ShieldedSpend, vec![fx.grant(quoted)]);
+    // A pass is in flight; it moves the notes before it ends: the send
+    // now needs three smaller ones, so a higher fee.
+    let smaller: Vec<_> = (3..7).map(|n| note(n, NOTE / 2)).collect();
+    let higher = select_notes_with_fee(&smaller, NOTE, 2, ShieldedFeeKind::Base, version(LATEST))
+        .unwrap()
+        .2;
+    assert!(NOTE + higher > quoted);
+    let (s, l, lib2) = (Arc::clone(&fx.s), lease.clone(), Arc::clone(&lib));
+    let sent = fx.engine.block_on(async move {
+        let pass = s.platform.shielded_spends.read().await;
+        let send = {
+            let (s, lib) = (Arc::clone(&s), Arc::clone(&lib2));
+            tokio::spawn(async move {
+                pool::send(&s, wallet, &*lib, (&payee_text(), NOTE), None, &l).await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        *lib2.notes_now.lock().unwrap() = Some(smaller);
+        drop(pass);
+        send.await.unwrap()
+    });
+    assert_eq!(code(sent), "platform.grant_exceeded");
+    assert!(lib.spent().is_empty(), "no key left the vault");
+    assert_eq!(fx.credits_spent(&lease), 0);
 }
 
 /// Once the key set is out the quote stays charged whatever the library

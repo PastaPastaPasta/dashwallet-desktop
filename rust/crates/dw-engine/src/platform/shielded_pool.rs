@@ -709,15 +709,16 @@ async fn balance(lib: &impl ShieldedLib) -> u64 {
     (lib.ledger().await.ok().flatten()).map_or(0, |l| l.spendable)
 }
 
-/// A spend under a `ShieldedSpend` lease from `grant`, charged `quote`'s
-/// total. One the library could not confirm is `Pending` with the record
-/// the library keeps of it (module doc), never an error: the host must
-/// not offer to send it again.
+/// A spend of `credits` under a `ShieldedSpend` lease from `grant`,
+/// charged the total of its quote under the hold, so what the lease is
+/// charged is what the library builds (Opus r1 m1). One the library could
+/// not confirm is `Pending` with the record the library keeps of it
+/// (module doc), never an error: the host must not offer to send it again.
 async fn spend(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
     lib: &impl ShieldedLib,
-    quote: &ShieldedSpendQuote,
+    credits: u64,
     grant: &str,
     to: &To,
     memo: [u8; MEMO_BYTES],
@@ -726,17 +727,26 @@ async fn spend(
         To::Shielded(..) => "transfer",
         To::Core(_) => "withdraw",
     };
+    let lease = authority(session, wallet, grant, FlowKind::ShieldedSpend).await?;
     // No pass runs from here until this spend's record is written: one
     // admitted meanwhile could find what the library stores on an unknown
     // result and re-send it before `admit_pass` saw it (Q15).
     let hold = hold_passes(session).await?;
+    // Quoted again under the hold and the wallet's lock: nothing changes
+    // the notes the library selects from now (a pass could, up to the
+    // hold), so its fee is the one the library builds, at the version
+    // `priced_gate` reads now. Charged before anything is signed: a fee
+    // above what the grant confirmed is `platform.grant_exceeded`.
+    let quote = match to {
+        To::Shielded(_, text) => send_quote(lib, text, credits).await?,
+        To::Core(_) => unshield_plan(lib, credits).await?,
+    };
+    let permit = write_permit(&lease, operation, quote.total_credits)?;
     // The records before, to tell this spend's (spends of the wallet run
     // one at a time, under its lock).
     let before: HashSet<String> = (lib.unresolved().await?.into_iter())
         .map(|u| u.activity_id)
         .collect();
-    let lease = authority(session, wallet, grant, FlowKind::ShieldedSpend).await?;
-    let permit = write_permit(&lease, operation, quote.total_credits)?;
     let sent = leased(&lease, async {
         match to {
             To::Shielded(address, _) => lib.transfer(&permit, address, quote.credits, memo).await,
@@ -813,11 +823,11 @@ pub(crate) async fn send(
     let address = shielded_address(lib.network(), to)?;
     let lock = wallet_lock(wallet);
     let _spending = lock.lock().await;
-    // Under the lock, so the notes quoted are the ones this send takes,
-    // and before the grant, so a refusal keeps it.
-    let quote = send_quote(lib, to, credits).await?;
+    // Before the grant, so a refusal keeps it; `spend` quotes again under
+    // the hold.
+    send_quote(lib, to, credits).await?;
     let to = To::Shielded(address, to.trim().to_owned());
-    let spent = spend(session, wallet, lib, &quote, grant, &to, memo).await?;
+    let spent = spend(session, wallet, lib, credits, grant, &to, memo).await?;
     let To::Shielded(_, to) = to else {
         unreachable!("a send pays a shielded address")
     };
@@ -834,7 +844,7 @@ pub(crate) async fn unshield(
 ) -> Result<ShieldedSpendOutcome, ShieldedError> {
     let lock = wallet_lock(wallet);
     let _spending = lock.lock().await;
-    let quote = unshield_quote(lib, credits, to).await?;
+    unshield_quote(lib, credits, to).await?;
     let to = match to {
         Some(to) => to.to_owned(),
         None => lib.receive_address().await?,
@@ -844,7 +854,7 @@ pub(crate) async fn unshield(
         session,
         wallet,
         lib,
-        &quote,
+        credits,
         grant,
         &To::Core(address),
         [0; MEMO_BYTES],
