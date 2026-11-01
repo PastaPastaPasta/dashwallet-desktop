@@ -691,6 +691,36 @@ fn a_txdraft_under_a_lease_is_charged_fenced_and_refunded() {
     f.engine.block_on(d.prepare(g)).unwrap();
 }
 
+/// DEC-1032 check 2: a shielded pass admitted before a lock (held here as
+/// its read of the session's pass lock) ends before the lock completes:
+/// the synchronous lock's `Done` and the async lock's return wait for it,
+/// past the 10 s the drain logs at.
+#[test]
+fn a_lock_completes_only_after_a_shielded_pass_in_flight_ends() {
+    let f = fixture(true);
+    let passes = || Arc::clone(&f.session.platform.shielded_passes);
+    let pass = f.engine.block_on(passes().read_owned());
+    let status = f.session.lock_vault_sync().unwrap();
+    assert_eq!(status.state, LockState::Locked);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(f.rec.done().is_empty(), "Done before the pass ended");
+    drop(pass);
+    f.eventually("LockProgress::Done", || !f.rec.done().is_empty());
+
+    let pass = f.engine.block_on(passes().read_owned());
+    let s = Arc::clone(&f.session);
+    let (tx, rx) = std::sync::mpsc::channel();
+    f.session.rt.spawn(async move {
+        let _ = tx.send(s.lock_vault().await.map(drop));
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the async lock returned before the pass ended"
+    );
+    drop(pass);
+    rx.recv_timeout(Duration::from_secs(30)).unwrap().unwrap();
+}
+
 #[test]
 fn the_synchronous_lock_returns_after_its_gate_and_done_carries_the_report() {
     let f = fixture(true);

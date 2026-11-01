@@ -107,7 +107,7 @@ pub(crate) struct PlatformRuntime {
     /// Held to read by each shielded pass from its admission to its end;
     /// to write by a spend from its library call to its record, and by the
     /// drain of a lock or the close (`shielded_pool::guarded_pass`, 0.1 E1).
-    pub(crate) shielded_passes: tokio::sync::RwLock<()>,
+    pub(crate) shielded_passes: Arc<tokio::sync::RwLock<()>>,
     /// The shield locks Platform answered "already consumed", unproved,
     /// for in this session (`shielded_pool::open_shields`).
     pub(crate) shield_taken: std::sync::Mutex<std::collections::HashSet<dashcore::Txid>>,
@@ -374,7 +374,7 @@ impl PlatformRuntime {
             }),
             tasks: Mutex::new(HashMap::new()),
             loops_on: Arc::new(AtomicBool::new(false)),
-            shielded_passes: tokio::sync::RwLock::new(()),
+            shielded_passes: Arc::default(),
             shield_taken: std::sync::Mutex::default(),
             key_work: Arc::default(),
             restoring: Mutex::new(HashMap::new()),

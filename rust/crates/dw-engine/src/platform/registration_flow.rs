@@ -247,6 +247,10 @@ pub(crate) enum FundError {
     /// broadcast rejection, or no lock built at all (coin selection, the
     /// build, a key). Positive evidence of `NotSent` (H12).
     NotSent(PlatformError),
+    /// The funding signer's input cap refused the build (a shield's lock
+    /// needing more than `max` coins): nothing tracked or sent, the inputs
+    /// free, the call `Cancelled` (`CountingFundingSigner::with_input_cap`).
+    TooManyInputs { max: u64 },
     /// Any other failure after the call started.
     Failed(PlatformError),
 }
@@ -2736,6 +2740,10 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 self.failed(&e)
             }
             Err(FundError::CoinsLocked) => Step::Fail(RegistrationError::CoinsLocked.code(), true),
+            // A shield's funding only; no proof wait returns it.
+            Err(e @ FundError::TooManyInputs { .. }) => self.failed(&PlatformError::Internal {
+                detail: format!("{e:?}"),
+            }),
         }
     }
 
@@ -3286,6 +3294,25 @@ impl PwLib {
             }
             Err(e) => Err(fund_error(e)),
         }
+    }
+
+    /// The build of [`Self::fund_lock`] with `signer`, a funding signer of
+    /// the call's permit, without its `lock_inputs` bound: a shield's lock
+    /// caps its inputs at its own signer
+    /// (`CountingFundingSigner::with_input_cap`).
+    pub(crate) async fn fund_lock_with(
+        &self,
+        funding_type: platform_wallet::AssetLockFundingType,
+        duffs: u64,
+        identity_index: u32,
+        signer: &super::signers::CountingFundingSigner,
+    ) -> Result<OutPoint, FundError> {
+        self.wallet
+            .asset_locks()
+            .create_funded_asset_lock_proof(duffs, 0, funding_type, identity_index, signer)
+            .await
+            .map(|(_, _, outpoint)| outpoint)
+            .map_err(fund_error)
     }
 }
 

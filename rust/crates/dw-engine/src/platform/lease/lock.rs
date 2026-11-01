@@ -183,10 +183,22 @@ impl LeaseTable {
     /// The synchronous lock (§8.1, `Vault.lock()`): freeze, `gate` inline as
     /// this request's own gate, then a spawned drain; never block-waits.
     /// The drain's end arrives as `LockProgress::Done`.
+    #[cfg(test)]
     pub(crate) fn lock_sync(
         self: &Arc<Self>,
         cause: RevokeCause,
         gate: impl FnOnce() -> VaultStatus,
+    ) -> VaultStatus {
+        self.lock_sync_then(cause, gate, std::future::ready(()))
+    }
+
+    /// [`Self::lock_sync`], whose background drain also awaits `then`
+    /// before the lock reports `Done` (the session's shielded pass drain).
+    pub(crate) fn lock_sync_then(
+        self: &Arc<Self>,
+        cause: RevokeCause,
+        gate: impl FnOnce() -> VaultStatus,
+        then: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> VaultStatus {
         let mut freeze = self.freeze(cause, Scope::All, true);
         let status = gate();
@@ -194,6 +206,7 @@ impl LeaseTable {
         let report_status = status.clone();
         self.rt.spawn(async move {
             freeze.drain().await;
+            then.await;
             freeze.finish(report_status);
         });
         status

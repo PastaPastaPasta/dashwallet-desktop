@@ -37,13 +37,13 @@
 //!   (a spend holds the passes off from its library call until its record
 //!   is written, so none can find a spend stored mid-pass). The library's
 //!   own loop never runs. A pass admitted before a lock or a close may
-//!   finish after the leases drop, as a leased call admitted before a freeze
-//!   finishes in its drain: the lock (async, and the relock timer) and the
-//!   close wait for it up to [`SHIELDED_PASS_DRAIN`],
-//!   and the close then seals the coordinator (`Manager::shutdown`). The
-//!   library has no stop inside a pass, so one stuck longer is logged and
-//!   ends on its own; the synchronous lock does not wait (0.2: the library
-//!   admits each send, `q15-hook`).
+//!   still run when the leases drop, as a leased call admitted before a
+//!   freeze finishes in its drain: the lock, async or synchronous (the
+//!   relock timer's, the console's), and the close wait for its end
+//!   ([`drain_passes`]: the SDK's request settings bound every call of a
+//!   pass), so no redrive ends after a lock completes (`LockProgress::Done`)
+//!   or a close; the close then seals the coordinator (`Manager::shutdown`).
+//!   0.2: the library admits each send (`q15-hook`).
 //! - **Shields.** Core → Shielded is a top-up's two steps (`topup.rs`): an
 //!   asset lock of the Core balance (funding type
 //!   `AssetLockShieldedAddressTopUp`, step `shield/<k>/funding`, held at
@@ -1015,7 +1015,10 @@ pub(super) fn shield_step(k: u32) -> String {
 
 /// The step the next shield funds under: the first the funding gate
 /// admits (`topup.rs`'s `next_step`).
-fn next_step(session: &NetworkSession, wallet: WalletId) -> Result<String, PlatformError> {
+pub(super) fn next_step(
+    session: &NetworkSession,
+    wallet: WalletId,
+) -> Result<String, PlatformError> {
     use super::flows::DispatchState as D;
     use super::lease::FundingBlock as B;
     for k in 0.. {
@@ -1093,6 +1096,11 @@ pub(crate) async fn shield(
         return Err(match funded {
             Err(FundError::Refused(e) | FundError::NotSent(e)) => e.into(),
             Err(FundError::CoinsLocked) => ShieldedError::CoinsLocked,
+            // "Combine coins first": at least one coin past the cap.
+            Err(FundError::TooManyInputs { max }) => ShieldedError::TooManyInputs {
+                inputs: max + 1,
+                max,
+            },
             _ => PlatformError::BroadcastUnknown { artifact: step }.into(),
         });
     };
@@ -1602,14 +1610,30 @@ impl ShieldedLib for PwShielded {
     }
 
     async fn fund(&self, duffs: u64, permit: &CallPermit) -> Result<OutPoint, FundError> {
-        (self.pw)
-            .fund_lock(
+        // At most `MAX_LOCK_INPUTS` coins, whatever key-wallet's selection
+        // picks (its BranchAndBound counts no inputs): the quote's check is
+        // largest first.
+        let signer = (permit.funding_signer())
+            .map_err(|e| FundError::Refused(e.into()))?
+            .with_input_cap(MAX_LOCK_INPUTS);
+        let funded = (self.pw)
+            .fund_lock_with(
                 AssetLockFundingType::AssetLockShieldedAddressTopUp,
                 duffs,
                 0,
-                permit,
+                &signer,
             )
-            .await
+            .await;
+        if signer.capped() {
+            tracing::info!(
+                ?funded,
+                "a shield's lock needed more than {MAX_LOCK_INPUTS} coins"
+            );
+            return Err(FundError::TooManyInputs {
+                max: MAX_LOCK_INPUTS as u64,
+            });
+        }
+        funded
     }
 
     async fn wait_proof(&self, outpoint: OutPoint, timeout: Duration) -> Result<(), FundError> {
@@ -1710,16 +1734,37 @@ pub(crate) async fn admit_pass(
     Ok(coordinator)
 }
 
-/// One shielded sync pass, the only way the engine runs one: after
-/// [`admit_pass`], started only while the session is open (the facade's
-/// calls in [`on_pool`], the supervisor's `kick_shielded_pass`), and
-/// holding the session's pass lock from the admission to its end, so a
-/// lock's drain (`drain_shielded_pass`) waits for it and no pass admitted
-/// before the lock outlives it. `false` when it was held back.
-/// How long a lock or a close waits for a shielded pass in flight
-/// (`drain_shielded_pass`), as the library's own drain
-/// (`COORDINATOR_DRAIN_BUDGET`).
+/// After this long a drain logs that a shielded pass in flight is still
+/// running ([`drain_passes`]), and keeps waiting.
 pub(crate) const SHIELDED_PASS_DRAIN: Duration = Duration::from_secs(10);
+
+/// Waits until no shielded pass is in flight (the lock's, the relock
+/// timer's and the close's drain, `drain_shielded_pass`). A pass ends on
+/// its own: each of its SDK calls (the anchors' fetch, the note sync's
+/// chunk fetches, a redrive's `st.broadcast(sdk, None)`) runs under the
+/// SDK's default request settings, every attempt cut at `timeout` (10 s,
+/// rs-dapi-client `request_settings.rs:9`, enforced on the whole attempt at
+/// `dapi_client.rs:1198`), at most `retries` + 1 = 6 attempts
+/// (`request_settings.rs:10`, `dapi_client.rs:1086`), and a trusted quorum
+/// lookup at 30 s (rs-sdk-trusted-context-provider `provider.rs:211`). The
+/// calls of one pass are bounded in number by the pool's size and the
+/// stored spends (at most 3 attempts each).
+pub(crate) async fn drain_passes(passes: &tokio::sync::RwLock<()>) {
+    if tokio::time::timeout(SHIELDED_PASS_DRAIN, passes.write())
+        .await
+        .is_ok()
+    {
+        return;
+    }
+    let started = std::time::Instant::now();
+    tracing::warn!("a shielded sync pass is still running; the drain waits for its end");
+    drop(passes.write().await);
+    let waited = started.elapsed() + SHIELDED_PASS_DRAIN;
+    tracing::info!(
+        waited_ms = waited.as_millis() as u64,
+        "the shielded sync pass ended"
+    );
+}
 
 /// How long a spend waits for a pass in flight before it holds the passes
 /// off ([`hold_passes`]); a pass scanning a large pool takes seconds.
@@ -1736,6 +1781,12 @@ async fn hold_passes(
         .map_err(|_| PlatformError::Unavailable.into())
 }
 
+/// One shielded sync pass, the only way the engine runs one: after
+/// [`admit_pass`], started only while the session is open (the facade's
+/// calls in [`on_pool`], the supervisor's `kick_shielded_pass`), and
+/// holding the session's pass lock from the admission to its end, so a
+/// lock's drain (`drain_shielded_pass`) waits for it and no pass admitted
+/// before the lock outlives it. `false` when it was held back.
 pub(crate) async fn guarded_pass(session: &NetworkSession, manager: &Manager, force: bool) -> bool {
     let _pass = session.platform.shielded_passes.read().await;
     if let Err(held) = admit_pass(session, manager).await {

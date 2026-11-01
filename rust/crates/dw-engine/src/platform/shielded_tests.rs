@@ -1437,3 +1437,91 @@ fn the_facade_shows_the_mobile_wallets_address_for_the_abandon_wallet() {
     assert_eq!(address.address, ABANDON_MAINNET);
     assert_eq!(address.account, 0);
 }
+
+/// X1b-1 / DEC-1032 (owner, M3): a shield's lock spends at most 50 coins
+/// whatever key-wallet's selection picks. Through the real build
+/// (platform-wallet's `create_funded_asset_lock_proof`, key-wallet's
+/// BranchAndBound over 51 coins of 0.01 DASH, every one needed), the
+/// funding signer refuses the 51st input before the vault is asked: the
+/// call is `shielded.too_many_inputs`-bound (`FundError::TooManyInputs`),
+/// no lock is tracked (platform-wallet tracks before it sends, so none was
+/// sent), no coin stays reserved, and the step ends `Cancelled` with its
+/// `NotSent` row, so the next shield is not held behind it.
+#[test]
+fn a_shield_lock_of_51_coins_is_refused_by_its_signer_and_leaves_nothing() {
+    use super::lease::FlowOutcome;
+    use platform_wallet::AssetLockFundingType;
+    const COIN_DUFFS: u64 = 1_000_000;
+    let f = super::topup_tests::fixture(false);
+    let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
+    let pw = engine.block_on(session.wallet(&wallet)).unwrap();
+    let coins: Vec<OutPoint> = (0..51)
+        .map(|vout| OutPoint::new(Txid::from_byte_array([0xef; 32]), vout))
+        .collect();
+    engine.block_on(async {
+        let address = (pw.core().next_receive_address_for_account(0).await).unwrap();
+        let mut state = pw.state_mut().await;
+        let account = (state.core_wallet.accounts.standard_bip44_accounts)
+            .get_mut(&0)
+            .unwrap();
+        for &outpoint in &coins {
+            let mut utxo = key_wallet::Utxo::new(
+                outpoint,
+                dashcore::TxOut {
+                    value: COIN_DUFFS,
+                    script_pubkey: address.script_pubkey(),
+                },
+                address.clone(),
+                1,
+                false,
+            );
+            utxo.is_confirmed = true;
+            account.utxos.insert(outpoint, utxo);
+        }
+    });
+    let reserved = || {
+        engine.block_on(async {
+            let fence = session.coin_fence(wallet).await.unwrap();
+            let view = session.fenced_coins(&fence).await.unwrap();
+            (view.coins.iter())
+                .filter(|c| c.reserved && coins.contains(&c.utxo.outpoint))
+                .count()
+        })
+    };
+    let grant = session
+        .vault()
+        .authorize(
+            dw_vault::GrantPurpose::PlatformOp {
+                max_duffs: 100 * COIN_DUFFS,
+                max_credits: 0,
+            },
+            Some(&wallet.0),
+            dw_vault::Credential::None,
+        )
+        .unwrap()
+        .id;
+    let s = Arc::clone(session);
+    let (funded, outcome, tracked, next) = engine.block_on(async move {
+        let lib = pool::PwShielded::open(&s, wallet).await.unwrap();
+        let lease = (s.begin_lease(wallet, FlowKind::Shield, &[grant]).await).unwrap();
+        let step = pool::next_step(&s, wallet).unwrap();
+        let key = FundingKey {
+            funding_type: AssetLockFundingType::AssetLockShieldedAddressTopUp,
+            identity_index: 0,
+            account: 0,
+        };
+        // More than 50 coins' worth: all 51 are needed.
+        let duffs = 50 * COIN_DUFFS + COIN_DUFFS / 2;
+        let permit = (lib.funding_permit(&lease, step.clone(), key, duffs).await).unwrap();
+        let funded = lib.fund(duffs, &permit).await;
+        let outcome = permit.finish(funded.is_ok());
+        let shield_locks = lib.shield_locks().await.len();
+        (funded, outcome, shield_locks, pool::next_step(&s, wallet))
+    });
+    let tracked = tracked + engine.block_on(pw.asset_locks().list_tracked_locks()).len();
+    assert_eq!(funded, Err(FundError::TooManyInputs { max: 50 }));
+    assert_eq!(outcome, FlowOutcome::Cancelled);
+    assert_eq!(tracked, 0, "no lock tracked, so none sent");
+    assert_eq!(reserved(), 0, "no coin stays reserved");
+    assert!(next.is_ok(), "the next shield is not held: {next:?}");
+}

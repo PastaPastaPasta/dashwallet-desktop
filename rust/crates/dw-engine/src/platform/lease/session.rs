@@ -21,7 +21,7 @@ use crate::platform::flows::{FlowKind, RevokeCause};
 use crate::platform::signers::VaultContactCrypto;
 use crate::{EngineError, NetworkSession, WalletId};
 
-use crate::platform::shielded_pool::SHIELDED_PASS_DRAIN;
+use crate::platform::shielded_pool::drain_passes;
 
 /// Which vault grant kinds a flow's lease may carry: a `PlatformOp`, plus a
 /// `Spend` for "Accept and pay"'s payment (§16.1); a contact payment's own
@@ -282,8 +282,7 @@ impl NetworkSession {
     /// Locks the vault (§8.1): revokes every lease and drops the background
     /// leases before the first await, runs this request's own vault gate,
     /// and returns after the drain, within `max(H, T_gate)` of the call,
-    /// then waits for a shielded pass in flight up to
-    /// [`SHIELDED_PASS_DRAIN`].
+    /// and after a shielded pass in flight ends ([`Self::drain_shielded_pass`]).
     /// Cancels a pending [`Self::relock_after`] timer.
     pub async fn lock_vault(self: &Arc<Self>) -> Result<LockReport, EngineError> {
         let _op = self.try_enter()?;
@@ -303,20 +302,17 @@ impl NetworkSession {
     /// in its drain. Every pass holds the pass lock to read from its
     /// admission to its end; once this write is had, the next pass is
     /// admitted only while each wallet holding such a spend holds its
-    /// background lease again (`shielded_pool::admit_pass`).
+    /// background lease again (`shielded_pool::admit_pass`). It waits for
+    /// the pass's end, which the SDK's request settings bound
+    /// (`shielded_pool::drain_passes`).
     pub(crate) async fn drain_shielded_pass(&self) {
-        let passes = &self.platform.shielded_passes;
-        if tokio::time::timeout(SHIELDED_PASS_DRAIN, passes.write())
-            .await
-            .is_err()
-        {
-            tracing::warn!("a shielded sync pass did not end within the drain; it ends on its own");
-        }
+        drain_passes(&self.platform.shielded_passes).await;
     }
 
     /// The synchronous lock (`Vault.lock()`, the console, the relock
-    /// timer): the freeze and this request's vault gate inline; the drain
-    /// continues in the background and ends with `LockProgress::Done`.
+    /// timer): the freeze and this request's vault gate inline; the drain,
+    /// a shielded pass in flight's among it, continues in the background
+    /// and ends with `LockProgress::Done`.
     /// Never block-waits on the runtime. Revokes leases even on a vault
     /// that is already locked.
     pub fn lock_vault_sync(&self) -> Result<VaultStatus, EngineError> {
@@ -328,12 +324,14 @@ impl NetworkSession {
 
     /// A lock without admission (the relock timer holds its own).
     pub(crate) fn lock_now(&self) -> VaultStatus {
-        // This lock never waits: a shielded pass admitted before it may
-        // end after it returns (`drain_shielded_pass` is the async lock's,
-        // the relock timer's and the close's).
-        // The next pass is held all the same (`shielded_pool::admit_pass`).
+        // A shielded pass admitted before the freeze ends before `Done`
+        // (`drain_shielded_pass`); none is admitted after it for a wallet
+        // holding a stored spend (its background lease is gone).
+        let passes = Arc::clone(&self.platform.shielded_passes);
         self.leases
-            .lock_sync(RevokeCause::Lock, || self.vault_gate())
+            .lock_sync_then(RevokeCause::Lock, || self.vault_gate(), async move {
+                drain_passes(&passes).await
+            })
     }
 
     /// One lock request's vault gate: ends the epoch and every grant issued
