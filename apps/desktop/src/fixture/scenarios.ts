@@ -588,6 +588,18 @@ const SCENARIOS = {
     w.pending.platform = null;
     return w;
   },
+  /** The network does not take shielded transitions yet: Home says so, and the actions are gone. */
+  "shielded-inactive": (t) => {
+    const w = base(t);
+    w.pending.shielded!.active = false;
+    return w;
+  },
+  /** Shielded has too few notes to withdraw from. */
+  "shielded-pool-small": (t) => {
+    const w = base(t);
+    w.pending.shielded!.poolTooSmall = true;
+    return w;
+  },
   /** A new wallet: no history, zero balance. */
   empty: (t) => base(t, "empty"),
   /** No wallet on the network yet, and no vault. */

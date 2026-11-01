@@ -274,6 +274,162 @@ test.describe("Platform activity in Activity", () => {
   });
 });
 
+const shielded = (page: Page, fn: string) => page.evaluate(`(${fn})(window.__dwFixture.world.pending.shielded)`);
+
+async function amountStep(page: Page, action: string, amount: string) {
+  await page.getByTestId(`shielded-${action}`).click();
+  await page.getByTestId("shielded-amount").fill(amount);
+}
+
+test.describe("Shielded", () => {
+  test("shows the card with its balance and actions", async ({ page }) => {
+    const errors = await open(page, "funded");
+    await expect(page.getByTestId("shielded-card")).toBeVisible();
+    for (const a of ["receive-open", "send", "add", "out"]) await expect(page.getByTestId(`shielded-${a}`)).toBeEnabled();
+    await shot(page, "light-home-shielded-card");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test("Receive shows the address, its QR and a copy button", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("shielded-receive-open").click();
+    await expect(page.getByTestId("shielded-receive-address")).toContainText("tdash1zq0k8y");
+    await expect(page.getByTestId("shielded-receive-qr")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Copy Shielded address" })).toBeVisible();
+    await shot(page, "light-shielded-receive");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("shielded-receive-close").click();
+    await expect(page.getByTestId("shielded-receive-sheet")).toHaveCount(0);
+  });
+
+  test("Add to Shielded quotes the lock, asks for approval and grows the balance", async ({ page }) => {
+    await open(page, "funded");
+    await amountStep(page, "add", "0.001");
+    await page.getByTestId("shielded-next").click();
+    await expect(page.getByTestId("shielded-quote-total")).toContainText("0.00101");
+    await expect(page.getByTestId("shielded-quote-gain")).toContainText("0.0009 ");
+    await shot(page, "light-shielded-add-quote");
+    await page.getByTestId("shielded-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Added to Shielded");
+    await page.getByTestId("shielded-done").click();
+    // 1.25 plus the lock less the pool's fee, in credits.
+    await expect.poll(() => shielded(page, `(s) => s.balance`)).toBe("125090000000");
+  });
+
+  test("a lock that is not applied is finished from the card", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("hero").waitFor();
+    await shielded(page, `(s) => (s.shield = "proofWaiting")`);
+    await amountStep(page, "add", "0.001");
+    await page.getByTestId("shielded-next").click();
+    await page.getByTestId("shielded-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Locked, not applied yet");
+    await page.getByTestId("shielded-done").click();
+    await expect(page.getByTestId("shielded-unfinished")).toContainText("not applied yet");
+    await page.getByTestId("shielded-finish").click();
+    await authorize(page);
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Added to Shielded");
+    await page.getByTestId("shielded-done").click();
+    await expect(page.getByTestId("shielded-unfinished")).toHaveCount(0);
+  });
+
+  test("Send tells the proof takes a while, refuses a bad address and sends", async ({ page }) => {
+    await open(page, "funded");
+    await amountStep(page, "send", "0.5");
+    await page.getByTestId("shielded-to").fill("yNotAShieldedAddress");
+    await page.getByTestId("shielded-next").click();
+    await expect(page.getByTestId("shielded-quote-error")).toHaveText("Enter a Shielded address of this network.");
+    await page.getByTestId("shielded-back").click();
+    await page.getByTestId("shielded-to").fill("tdash1zabcdef");
+    await page.getByTestId("shielded-memo").fill("Lunch");
+    await page.getByTestId("shielded-next").click();
+    await expect(page.getByTestId("shielded-quote-to")).toHaveText("tdash1zabcdef");
+    await expect(page.getByTestId("shielded-slow")).toContainText("Making the private proof takes up to a minute");
+    await shot(page, "light-shielded-send-quote");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("shielded-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Sent");
+    await page.getByTestId("shielded-done").click();
+    await expect(page.getByTestId("breakdown-shielded")).toContainText("0.74");
+  });
+
+  test("Send says when it is too much", async ({ page }) => {
+    await open(page, "funded");
+    await amountStep(page, "send", "5");
+    await page.getByTestId("shielded-to").fill("tdash1zabcdef");
+    await page.getByTestId("shielded-next").click();
+    await expect(page.getByTestId("shielded-quote-error")).toContainText("Not enough in Shielded");
+  });
+
+  test("Move to Dash wallet pays out, and shows in Activity", async ({ page }) => {
+    await open(page, "funded");
+    await amountStep(page, "out", "0.5");
+    await page.getByTestId("shielded-next").click();
+    await expect(page.getByTestId("shielded-quote-receive")).toContainText("0.5");
+    await page.getByTestId("shielded-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Moved");
+    await page.getByTestId("shielded-done").click();
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    await expect(page.locator('[data-txid^="shielded:unshield:"]')).toContainText("Moved to Dash wallet");
+    await expect(page.locator('[data-txid^="shielded:unshield:"]')).toContainText("Shielded");
+  });
+
+  test("Move to Dash wallet says when the pool is too small", async ({ page }) => {
+    await open(page, "shielded-pool-small");
+    await amountStep(page, "out", "0.5");
+    await page.getByTestId("shielded-next").click();
+    await page.getByTestId("shielded-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("shielded-refusal")).toHaveText("Shielded withdrawals open once the network's shielded pool has enough activity. Try again later.");
+    await shot(page, "light-shielded-pool-small");
+  });
+
+  test("a spend with no proved answer says it may have been sent", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("hero").waitFor();
+    await shielded(page, `(s) => (s.next = "unknown")`);
+    await amountStep(page, "out", "0.5");
+    await page.getByTestId("shielded-next").click();
+    await page.getByTestId("shielded-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("shielded-refusal")).toContainText("It may have been sent");
+    await expect(page.getByTestId("shielded-refused-back")).toHaveCount(0);
+  });
+
+  test("says Shielded is not active on this network yet, with no actions", async ({ page }) => {
+    const errors = await open(page, "shielded-inactive");
+    await expect(page.getByTestId("shielded-card-text")).toHaveText("Shielded is not active on this network yet.");
+    await expect(page.getByTestId("shielded-send")).toHaveCount(0);
+    await expect(page.getByTestId("breakdown-shielded")).toContainText("—");
+    await shot(page, "light-shielded-inactive");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test("is not on Home while the commands are absent", async ({ page }) => {
+    await open(page, "pools-absent");
+    await page.getByTestId("hero").waitFor();
+    await expect(page.getByTestId("shielded-card")).toHaveCount(0);
+  });
+
+  test("Activity lists the shielded rows with a Shielded tag, that open nothing", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    const rows = page.locator('[data-txid^="shielded:"]');
+    await expect(rows).toHaveCount(3);
+    await expect(page.locator('[data-txid^="shielded:received:"]')).toContainText("Received in Shielded");
+    await expect(page.locator('[data-txid^="shielded:shieldFromCore:"]')).toContainText("Added to Shielded");
+    await expect(page.locator('button[data-txid^="shielded:"]')).toHaveCount(0);
+  });
+});
+
 test.describe("Home balance", () => {
   for (const theme of THEMES) {
     test(`shows Core, Shielded and Platform and a hero that adds them up (${theme})`, async ({ page }) => {

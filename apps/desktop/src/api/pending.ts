@@ -20,7 +20,16 @@ export const PENDING_COMMANDS = {
   platformActivity: "platform_activity",
   platformMoveToCoreQuote: "platform_move_to_core_quote",
   platformMoveToCore: "platform_move_to_core",
-  shieldedBalance: "shielded_balance",
+  shieldedStatus: "shielded_status",
+  shieldedReceiveAddress: "shielded_receive_address",
+  shieldQuote: "shield_quote",
+  shieldFromCore: "shield_from_core",
+  resumeShield: "resume_shield",
+  shieldedSendQuote: "shielded_send_quote",
+  shieldedSend: "shielded_send",
+  unshieldQuote: "unshield_quote",
+  unshieldToCore: "unshield_to_core",
+  shieldedHistory: "shielded_history",
 } as const;
 
 /** `ChosenNetwork`: the networks the user chooses between (developer networks are launch flags). */
@@ -85,6 +94,110 @@ export interface MoveToCoreOutcome {
   expectedDuffs: number;
   to: string;
   state: PlatformActivityState;
+}
+
+// Lane E1's shielded funds (contract v41 §2.13, branch `dw/rel-shielded`).
+
+/** Lane E1's `ShieldedCode`s, one place for the screens' copy and the fixture (the generated
+ * `ErrorCode` lists them once E1's bindings land). */
+export const SHIELDED_CODES = {
+  notActive: "shielded.not_active",
+  notSynced: "shielded.not_synced",
+  invalidAddress: "shielded.invalid_address",
+  insufficientFunds: "shielded.insufficient_funds",
+  fundingInsufficient: "shielded.funding_insufficient",
+  belowMinimum: "shielded.below_minimum",
+  coinsLocked: "shielded.coins_locked",
+  shieldPending: "shielded.shield_pending",
+  poolTooSmall: "shielded.pool_too_small",
+} as const;
+
+/** `PendingShield`: a Core → Shielded lock not applied yet (`resume_shield`). */
+export interface PendingShield {
+  txid: string;
+  duffs: number;
+  proved: boolean;
+}
+
+/** `ShieldedStatus`: where the wallet's shielded account stands. When `active` is false the network
+ * does not take shielded transitions yet and the other fields are empty. */
+export interface ShieldedStatus {
+  active: boolean;
+  protocolVersion: number;
+  activationVersion: number;
+  /** Keys bound, notes restored or scanned: until then `balance` is not a reading. */
+  ready: boolean;
+  /** Spendable credits. */
+  balance: string;
+  /** Credits of activity still pending, either direction. */
+  pending: string;
+  pendingShields: PendingShield[];
+  syncedIndex: number | null;
+  /** Unix seconds. */
+  lastSyncAt: number | null;
+  syncing: boolean;
+  /** The prover is ready, so a spend proves at once. */
+  proverReady: boolean;
+}
+
+export interface ShieldedAddress {
+  address: string;
+  account: number;
+}
+
+/** `ShieldQuote`: what moving `duffs` of the Core balance into the pool costs and buys. */
+export interface ShieldQuote {
+  duffs: number;
+  feeDuffs: number;
+  totalDuffs: number;
+  poolFeeCredits: string;
+  /** What the shielded balance gains. */
+  credits: string;
+  grant: GrantRequest;
+}
+
+export type ShieldState = { kind: "applied"; balance: string } | { kind: "proofWaiting" } | { kind: "notApplied"; error: string };
+
+export interface ShieldOutcome {
+  /** The asset lock's txid. */
+  txid: string;
+  state: ShieldState;
+}
+
+/** `ShieldedSpendQuote`: what a shielded send or an unshield costs. */
+export interface ShieldedSpendQuote {
+  credits: string;
+  feeCredits: string;
+  totalCredits: string;
+  /** For an unshield, what reaches the Core address. */
+  expectedDuffs: number | null;
+  grant: GrantRequest;
+}
+
+export interface ShieldedSpendOutcome {
+  credits: string;
+  /** The shielded balance after. */
+  balance: string;
+  /** The address paid. */
+  to: string;
+}
+
+export type ShieldedActivityKind = "shield" | "shieldFromCore" | "received" | "sent" | "unshield" | "withdrawal" | "identityCreate" | "identityTopUp" | "spend";
+export type ShieldedActivityStatus = "pending" | "confirmed" | "failed" | "unknown";
+
+/** `ShieldedActivity`: one row of the wallet's shielded history. */
+export interface ShieldedActivity {
+  id: string;
+  kind: ShieldedActivityKind;
+  direction: "in" | "out" | "selfTransfer";
+  credits: string;
+  feeCredits: string | null;
+  counterparty: string | null;
+  memo: string | null;
+  blockHeight: number | null;
+  status: ShieldedActivityStatus;
+  /** Unix seconds. */
+  createdAt: number | null;
 }
 
 /** Whether `e` says the command does not exist in this dw-app. dw-app's ACL manifest lists every

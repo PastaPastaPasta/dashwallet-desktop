@@ -1,7 +1,24 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
-import { callPending, callRequired, PENDING_COMMANDS as PENDING, type MoveToCoreOutcome, type MoveToCoreQuote, type NetworkChoice, type NetworkChoiceView, type PlatformActivity, type PlatformAddressBalance } from "./pending";
+import {
+  callPending,
+  callRequired,
+  PENDING_COMMANDS as PENDING,
+  type MoveToCoreOutcome,
+  type MoveToCoreQuote,
+  type NetworkChoice,
+  type NetworkChoiceView,
+  type PlatformActivity,
+  type PlatformAddressBalance,
+  type ShieldedActivity,
+  type ShieldedAddress,
+  type ShieldedSpendOutcome,
+  type ShieldedSpendQuote,
+  type ShieldedStatus,
+  type ShieldOutcome,
+  type ShieldQuote,
+} from "./pending";
 import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import * as cmd from "./generated/commands";
 import type { AppEvent, ShellEvent } from "./generated/commands";
@@ -56,7 +73,19 @@ export class IpcBackend implements Backend {
   // Not generated yet (api/pending.ts): swap each line for `cmd.<name>` when its command lands.
   networkChoice = async () => (await callPending<NetworkChoiceView>(PENDING.getNetworkChoice))?.value ?? null;
   setNetworkChoice = (network: NetworkChoice) => callRequired<NetworkChoiceView>(PENDING.setNetworkChoice, { network });
-  shieldedBalance = async (walletId: string) => (await callPending<number>(PENDING.shieldedBalance, { walletId }))?.value ?? null;
+  shieldedStatus = async (walletId: string) => (await callPending<ShieldedStatus>(PENDING.shieldedStatus, { walletId }))?.value ?? null;
+  shieldedReceiveAddress = (walletId: string) => callRequired<ShieldedAddress>(PENDING.shieldedReceiveAddress, { walletId });
+  shieldQuote = (walletId: string, duffs: number) => callRequired<ShieldQuote>(PENDING.shieldQuote, { walletId, duffs });
+  shieldFromCore = (walletId: string, duffs: number, grant: string) => callRequired<ShieldOutcome>(PENDING.shieldFromCore, { walletId, duffs, grant });
+  resumeShield = (walletId: string, txid: string, grant: string) => callRequired<ShieldOutcome>(PENDING.resumeShield, { walletId, txid, grant });
+  shieldedSendQuote = (walletId: string, to: string, credits: string) => callRequired<ShieldedSpendQuote>(PENDING.shieldedSendQuote, { walletId, to, credits });
+  shieldedSend = (walletId: string, to: string, credits: string, memo: string | null, grant: string) =>
+    callRequired<ShieldedSpendOutcome>(PENDING.shieldedSend, { walletId, to, credits, memo, grant });
+  unshieldQuote = (walletId: string, credits: string, to: string | null) => callRequired<ShieldedSpendQuote>(PENDING.unshieldQuote, { walletId, credits, to });
+  unshieldToCore = (walletId: string, credits: string, to: string | null, grant: string) =>
+    callRequired<ShieldedSpendOutcome>(PENDING.unshieldToCore, { walletId, credits, to, grant });
+  shieldedHistory = async (walletId: string, offset: number, limit: number) =>
+    (await callPending<ShieldedActivity[]>(PENDING.shieldedHistory, { walletId, offset, limit }))?.value ?? null;
   platformAddresses = async (walletId: string) => (await callPending<PlatformAddressBalance>(PENDING.platformAddresses, { walletId }))?.value ?? null;
   platformActivity = async (walletId: string) => (await callPending<PlatformActivity[]>(PENDING.platformActivity, { walletId }))?.value ?? null;
   platformMoveToCoreQuote = (walletId: string, amount: WithdrawAmount) => callRequired<MoveToCoreQuote>(PENDING.platformMoveToCoreQuote, { walletId, amount });

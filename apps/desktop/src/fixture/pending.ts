@@ -1,7 +1,7 @@
 // dw-fixture-module: never in a production build (vite.config.ts, noFixtureModules).
 // The fixture's answers for the commands dw-app does not have yet (api/pending.ts): the network
 // choice and the Platform addresses (lane E2's contract, m4-dashpay-engine v40 §2.12 and §8) and the
-// shielded balance. They are not in the generated `COMMANDS`, so they sit beside `HANDLERS`
+// shielded pool (shielded.ts). They are not in the generated `COMMANDS`, so they sit beside `HANDLERS`
 // (index.ts looks here second). A test makes one "absent" by setting its field to `null`: the
 // handler then rejects as an unknown command does.
 
@@ -17,6 +17,7 @@ import {
   type PlatformAddressBalance,
 } from "../api/pending";
 import { checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
+import { newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
 import { FIXTURE_NOW } from "./wallet";
 
 /** Platform's credits per duff (dpp's `CREDITS_PER_DUFF`), as the fixture's cost table has it. */
@@ -38,8 +39,8 @@ export interface PlatformWorld {
 export interface PendingWorld {
   /** The network choice: the saved one and whether one was saved; `null`: the command is absent. */
   networkChoice: { chosen: NetworkChoice; saved: boolean } | null;
-  /** The shielded balance in duffs; `null`: the command is absent. */
-  shielded: number | null;
+  /** The shielded pool (fixture/shielded.ts); `null`: its commands are absent. */
+  shielded: ShieldedWorld | null;
   /** The Platform addresses; `null`: the commands are absent. */
   platform: PlatformWorld | null;
 }
@@ -61,7 +62,7 @@ export const newPlatformWorld = (): PlatformWorld => ({
 
 export const newPendingWorld = (): PendingWorld => ({
   networkChoice: { chosen: "testnet", saved: true },
-  shielded: 125_000_000,
+  shielded: newShieldedWorld(),
   platform: newPlatformWorld(),
 });
 
@@ -118,10 +119,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     world.pending.networkChoice = { chosen: network, saved: true };
     return networkView(world);
   },
-  [PENDING.shieldedBalance]: (_: unknown, { world }: Ctx) => {
-    if (world.pending.shielded === null) throw absent(PENDING.shieldedBalance);
-    return world.pending.shielded;
-  },
+  ...SHIELDED_HANDLERS,
   [PENDING.platformAddresses]: ({ walletId }: { walletId: string }, { world }: Ctx) => {
     wallet(world, walletId);
     return balance(platformOf(world, PENDING.platformAddresses));
@@ -140,7 +138,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     if (BigInt(g.grant.purpose.maxCredits) < BigInt(q.credits))
       throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: q.credits, remaining: g.grant.purpose.maxCredits });
     useGrant(world, grant);
-    if (p.nextMove === "refused") throw fail("platform.unavailable", "Platform refused");
+    if (p.nextMove === "refused") throw fail("platform.unavailable", "the fixture refuses the move");
     const state = p.nextMove === "pending" ? "pending" : "done";
     const id = `pm-${p.activity.length + 1}`;
     p.activity = [{ id, kind: "moveToCore", state, credits: q.credits, address: null, to: q.to, expectedDuffs: q.expectedDuffs, at: Math.floor(FIXTURE_NOW.getTime() / 1000) }, ...p.activity];

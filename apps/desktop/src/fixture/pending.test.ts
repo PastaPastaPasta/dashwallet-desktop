@@ -36,13 +36,14 @@ describe("fixture pending commands", () => {
   });
 
   it("reads the shielded and Platform balances, null while their commands are absent", async () => {
-    expect(await backend.shieldedBalance(W)).toBe(125_000_000);
+    expect(await backend.shieldedStatus(W)).toMatchObject({ active: true, ready: true, balance: "125000000000" });
     const platform = await backend.platformAddresses(W);
     expect(platform).toMatchObject({ credits: "40000000000", duffs: 40_000_000, syncing: false });
     expect(platform?.addresses.map((a) => a.credits)).toEqual(["30000000000", "10000000000"]);
     fixture.world.pending.shielded = null;
     fixture.world.pending.platform = null;
-    expect(await backend.shieldedBalance(W)).toBeNull();
+    expect(await backend.shieldedStatus(W)).toBeNull();
+    expect(await backend.shieldedHistory(W, 0, 10)).toBeNull();
     expect(await backend.platformAddresses(W)).toBeNull();
     expect(await backend.platformActivity(W)).toBeNull();
   });

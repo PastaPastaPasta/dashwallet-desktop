@@ -3892,11 +3892,29 @@ button.bell-row-open:focus-visible {
   border-radius: var(--dw-radius-card);
 }
 
+.shielded-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.shielded-card-body,
 .platform-card-body {
   display: flex;
   flex-direction: column;
   gap: var(--dw-space-xxs);
   min-width: 0;
+}
+
+.shielded-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--dw-space-xs);
 }
 
 .platform-card-title {

@@ -9,7 +9,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxRow } from "../api/generated/TxRow";
 import { errorMessage } from "../api/backend";
-import { useBackend, useHistory, usePlatformActivity, type HistoryFilter } from "../api/queries";
+import { useBackend, useHistory, usePlatformActivity, useShieldedHistory, type HistoryFilter } from "../api/queries";
 import { fileErrorText } from "../app/files";
 import { useLocalDay } from "../app/localDay";
 import { useDebounced } from "../app/useDebounced";
@@ -17,14 +17,17 @@ import { DashButton, Icon } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
-import { isPlatformRow, mergeActivity, PLATFORM_TAG, platformRowTitle } from "../history/platformRows";
+import { mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, sourceRowTitle } from "../history/sourceRows";
 import { DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
 
 const PAGE_SIZE = 200;
 const SEARCH_DEBOUNCE_MS = 250;
 
-/** A Platform row among the Core ones: titled and tagged, and it opens nothing. */
-const decoratePlatform = (row: TxRow): RowDecor => (isPlatformRow(row) ? { title: platformRowTitle(row), tag: PLATFORM_TAG, readOnly: true } : {});
+/** A Platform or Shielded row among the Core ones: titled and tagged, and it opens nothing. */
+const decorateSource = (row: TxRow): RowDecor => {
+  const source = rowSource(row);
+  return source ? { title: sourceRowTitle(row), tag: SOURCE_TAG[source], readOnly: true } : {};
+};
 
 const CATEGORIES: { id: string; title: string; categories: TxCategoryName[] }[] = [
   { id: "all", title: "All", categories: [] },
@@ -66,13 +69,15 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   const filter: HistoryFilter = { categories: category.categories, text: text || null, sort: order, ...range, ...(minAmount ? { minAmount } : {}) };
   const history = useHistory(walletId, filter, PAGE_SIZE);
   const coreRows = useMemo(() => history.data?.pages.flatMap((p) => p.rows) ?? [], [history.data]);
-  // Platform-address activity joins the list under "All" with no search text (it has no type to
-  // filter by, and nothing to search); Table mode is the Core columns.
+  // Platform-address and Shielded activity join the list under "All" with no search text (they
+  // have no type to filter by, and nothing to search); Table mode is the Core columns.
   const platform = usePlatformActivity(walletId);
-  const withPlatform = mode === "list" && category.id === "all" && !text;
+  const shielded = useShieldedHistory(walletId);
+  const extra = useMemo(() => [...(platform.data ?? []).map(platformRow), ...(shielded.data ?? []).map(shieldedRow)], [platform.data, shielded.data]);
+  const withExtra = mode === "list" && category.id === "all" && !text;
   const rows = useMemo(
-    () => (withPlatform ? mergeActivity(coreRows, !!history.hasNextPage, platform.data, { dateFrom: range.dateFrom, dateTo: range.dateTo, minAmount }) : coreRows),
-    [withPlatform, coreRows, history.hasNextPage, platform.data, range.dateFrom, range.dateTo, minAmount],
+    () => (withExtra ? mergeActivity(coreRows, !!history.hasNextPage, extra, { dateFrom: range.dateFrom, dateTo: range.dateTo, minAmount }) : coreRows),
+    [withExtra, coreRows, history.hasNextPage, extra, range.dateFrom, range.dateTo, minAmount],
   );
   const coreTotal = history.data?.pages[0]?.totalMatching ?? null;
   const total = coreTotal === null ? null : coreTotal + (rows.length - coreRows.length);
@@ -196,7 +201,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
           <EmptyState testId="tx-empty" title="There are no transactions to display" />
         ) : mode === "list" ? (
           <div data-testid="tx-list">
-            <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="tx" decorate={decoratePlatform} />
+            <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="tx" decorate={decorateSource} />
           </div>
         ) : (
           <TxTable rows={rows} ctx={ctx} onOpen={onOpen} sort={sort} onSort={setSort} />

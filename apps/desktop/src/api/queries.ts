@@ -4,6 +4,9 @@
 import { createContext, useContext } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
+import type { GrantRequest } from "./generated/GrantRequest";
+import type { ShieldedSpendQuote, ShieldedStatus, ShieldQuote } from "./pending";
+import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRequest } from "./generated/HistoryRequest";
 import type { IdentitySummary } from "./generated/IdentitySummary";
@@ -34,7 +37,11 @@ export const keys = {
   wallets: ["wallets"] as const,
   balance: (walletId: string) => ["balance", walletId] as const,
   /** Under the balance's key, so a `balances` event reads them again with it. */
-  shieldedBalance: (walletId: string) => ["balance", walletId, "shielded"] as const,
+  // Under "dashpay" like the Platform keys: `platform{domain:"shielded"}` re-reads them all.
+  shieldedStatus: (walletId: string) => ["dashpay", "shielded", "status", walletId] as const,
+  shieldedHistory: (walletId: string) => ["dashpay", "shielded", "history", walletId] as const,
+  shieldedAddress: (walletId: string) => ["dashpay", "shielded", "address", walletId] as const,
+  shieldedQuote: (walletId: string, request: string) => ["dashpay", "shielded", "quote", walletId, request] as const,
   // Under "dashpay": a `platform{domain:"platformAddresses"}` event is a domain events.ts does not
   // name, which it answers by invalidating everything under that prefix.
   platformAddresses: (walletId: string) => ["dashpay", "platformAddresses", walletId] as const,
@@ -142,14 +149,63 @@ export function usePlatformMoveQuote(walletId: string, enabled: boolean) {
   });
 }
 
+/** The shielded account's status; `null` while dw-app has no such command (api/pending.ts). */
+export function useShieldedStatus(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.shieldedStatus(walletId), queryFn: () => b.shieldedStatus(walletId), retry: false });
+}
+
+/** The shielded activity rows, pending first; `null` while dw-app has no such command. */
+export function useShieldedHistory(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.shieldedHistory(walletId), queryFn: () => b.shieldedHistory(walletId, 0, 200), retry: false });
+}
+
+/** A quote of either kind, with the grant it asks for. */
+export type ShieldedQuoteView = { kind: "add"; quote: ShieldQuote; grant: GrantRequest } | { kind: "spend"; quote: ShieldedSpendQuote; grant: GrantRequest };
+
+/** The pool's balance in duffs (a credit is a thousandth of one); `null` while it is no reading:
+ * the command is absent, the network is not active or the account has not been scanned yet. */
+export function shieldedDuffs(status: ShieldedStatus | null): number | null {
+  return status?.active && status.ready ? Number(BigInt(status.balance) / 1000n) : null;
+}
+
+/** What `request` costs and buys, read while the sheet asks to confirm it. */
+export function useShieldedQuote(walletId: string, request: ShieldedRequest | null) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.shieldedQuote(walletId, JSON.stringify(request)),
+    queryFn: async (): Promise<ShieldedQuoteView> => {
+      switch (request?.kind) {
+        case "add": {
+          const q = await b.shieldQuote(walletId, request.duffs);
+          return { kind: "add", quote: q, grant: q.grant };
+        }
+        case "send": {
+          const q = await b.shieldedSendQuote(walletId, request.to, request.credits);
+          return { kind: "spend", quote: q, grant: q.grant };
+        }
+        case "out": {
+          const q = await b.unshieldQuote(walletId, request.credits, null);
+          return { kind: "spend", quote: q, grant: q.grant };
+        }
+        default:
+          throw new Error("nothing to quote");
+      }
+    },
+    enabled: request !== null && request.kind !== "resume",
+    retry: false,
+    gcTime: 0,
+  });
+}
+
 /** The shielded and Platform balances in duffs; `null` while dw-app has no command for one
  * (api/pending.ts) or it failed, `undefined` while it is being read. */
 export function usePoolBalances(walletId: string) {
-  const b = useBackend();
-  const shielded = useQuery({ queryKey: keys.shieldedBalance(walletId), queryFn: () => b.shieldedBalance(walletId), retry: false });
+  const shielded = useShieldedStatus(walletId);
   const platform = usePlatformAddresses(walletId);
   return {
-    shielded: shielded.isError ? null : shielded.data,
+    shielded: shielded.isError ? null : shielded.data === undefined ? undefined : shieldedDuffs(shielded.data),
     platform: platform.isError ? null : platform.data === undefined ? undefined : (platform.data?.duffs ?? null),
   };
 }

@@ -24,7 +24,7 @@ import { Page } from "./Routes";
 const QR_SIDE = 200;
 
 /** The QR of `text`, or why there is none (dash-qt "Resulting URI too long"). */
-function Qr({ text, label, testId }: { text: string | undefined; label: string; testId: string }) {
+export function Qr({ text, label, testId }: { text: string | undefined; label: string; testId: string }) {
   const qr = useQrMatrix(text);
   if (qr.data) return <QrCode matrix={qr.data} size={QR_SIDE} label={label} testId={testId} />;
   if (qr.isError)

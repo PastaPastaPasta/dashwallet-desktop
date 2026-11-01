@@ -10,7 +10,21 @@ import type { AuthGrant } from "./generated/AuthGrant";
 import type { CsvUnitName } from "./generated/CsvUnitName";
 import type { HistoryFilterRequest } from "./generated/HistoryFilterRequest";
 import type { HistorySortName } from "./generated/HistorySortName";
-import type { MoveToCoreOutcome, MoveToCoreQuote, NetworkChoice, NetworkChoiceView, PlatformActivity, PlatformAddressBalance } from "./pending";
+import type {
+  MoveToCoreOutcome,
+  MoveToCoreQuote,
+  NetworkChoice,
+  NetworkChoiceView,
+  PlatformActivity,
+  PlatformAddressBalance,
+  ShieldedActivity,
+  ShieldedAddress,
+  ShieldedSpendOutcome,
+  ShieldedSpendQuote,
+  ShieldedStatus,
+  ShieldOutcome,
+  ShieldQuote,
+} from "./pending";
 import type { Balances } from "./generated/Balances";
 import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { ContactList } from "./generated/ContactList";
@@ -189,8 +203,23 @@ export interface Backend {
   networkChoice(): Promise<NetworkChoiceView | null>;
   /** Saves the choice for the next start (`set_network_choice`); the window keeps its network. */
   setNetworkChoice(network: NetworkChoice): Promise<NetworkChoiceView>;
-  /** The wallet's shielded balance in duffs (a placeholder until lane E1's contract). */
-  shieldedBalance(walletId: string): Promise<number | null>;
+  /** Where the wallet's shielded account stands (`shielded_status`, contract §2.13). */
+  shieldedStatus(walletId: string): Promise<ShieldedStatus | null>;
+  /** The account's receive address, for Receive and its QR. */
+  shieldedReceiveAddress(walletId: string): Promise<ShieldedAddress>;
+  /** Core → Shielded: what `duffs` cost and buy. */
+  shieldQuote(walletId: string, duffs: number): Promise<ShieldQuote>;
+  shieldFromCore(walletId: string, duffs: number, grant: string): Promise<ShieldOutcome>;
+  /** Applies a pending lock. */
+  resumeShield(walletId: string, txid: string, grant: string): Promise<ShieldOutcome>;
+  /** Shielded → Shielded; `credits` is a decimal string. */
+  shieldedSendQuote(walletId: string, to: string, credits: string): Promise<ShieldedSpendQuote>;
+  shieldedSend(walletId: string, to: string, credits: string, memo: string | null, grant: string): Promise<ShieldedSpendOutcome>;
+  /** Shielded → Core; `to` null: the wallet's next receive address. */
+  unshieldQuote(walletId: string, credits: string, to: string | null): Promise<ShieldedSpendQuote>;
+  unshieldToCore(walletId: string, credits: string, to: string | null, grant: string): Promise<ShieldedSpendOutcome>;
+  /** The account's activity, pending first (`offset`, `limit` ≤ 500). */
+  shieldedHistory(walletId: string, offset: number, limit: number): Promise<ShieldedActivity[] | null>;
   /** The wallet's Platform addresses (`platform_addresses`, contract §2.12). */
   platformAddresses(walletId: string): Promise<PlatformAddressBalance | null>;
   /** Their activity, the newest first (`platform_activity`). */
