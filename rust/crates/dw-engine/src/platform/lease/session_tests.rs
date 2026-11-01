@@ -730,6 +730,45 @@ fn a_lock_completes_only_after_a_shielded_pass_in_flight_ends() {
     drop(spend);
 }
 
+/// Opus r1 n2: a wallet's revocation (its removal, Close Wallet) and a
+/// revoking vault operation drop background leases too, so they also end
+/// only after a shielded pass in flight ends.
+#[test]
+fn a_revocation_completes_only_after_a_shielded_pass_in_flight_ends() {
+    let f = fixture(true);
+    let passes = || Arc::clone(&f.session.platform.shielded_passes);
+    let wallet = f.wallet;
+    let pass = f.engine.block_on(passes().read_owned());
+    let s = Arc::clone(&f.session);
+    let (tx, rx) = std::sync::mpsc::channel();
+    f.session.rt.spawn(async move {
+        drop(s.revoke_wallet(wallet, RevokeCause::WalletClosed).await);
+        let _ = tx.send(());
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the wallet's revocation ended before the pass"
+    );
+    drop(pass);
+    rx.recv_timeout(Duration::from_secs(30)).unwrap();
+
+    let pass = f.engine.block_on(passes().read_owned());
+    let s = Arc::clone(&f.session);
+    let (tx, rx) = std::sync::mpsc::channel();
+    f.session.rt.spawn(async move {
+        let done = s
+            .revoking_vault_op(RevokeCause::PassphraseChange, |_| Ok(()))
+            .await;
+        let _ = tx.send(done);
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the vault operation returned before the pass ended"
+    );
+    drop(pass);
+    rx.recv_timeout(Duration::from_secs(30)).unwrap().unwrap();
+}
+
 #[test]
 fn the_synchronous_lock_returns_after_its_gate_and_done_carries_the_report() {
     let f = fixture(true);

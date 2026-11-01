@@ -155,7 +155,7 @@ pub(crate) fn issue(
                         Some(scoped(SignerScope::PlatformFunding { max_duffs }).map_err(issuing)?);
                 }
                 if max_credits > 0 && flow == FlowKind::ShieldedSpend {
-                    // The shielded spend key, and no identity key (§7 item 69).
+                    // The shielded spend key, and no identity key (§7 item 72).
                     let spend_key = match &key {
                         Some(hold) => vault.shielded_spend_key_held(&wallet.0, hold, token),
                         None => vault.shielded_spend_key(&wallet.0, token),
@@ -299,7 +299,9 @@ impl NetworkSession {
     }
 
     /// A shielded pass admitted under the background leases the lock just
-    /// dropped ends before the lock does (0.1 E1, DEC-1032): it may re-send
+    /// dropped ends before the lock completes, at its `LockProgress::Done`
+    /// (the async lock's return; the synchronous lock returns before it)
+    /// (0.1 E1, DEC-1032): it may re-send
     /// a stored spend, as a leased call admitted before a freeze may finish
     /// in its drain. Every pass holds the pass lock to read from its
     /// admission to its end; once this write is had, the next pass is

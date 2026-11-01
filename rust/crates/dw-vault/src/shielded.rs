@@ -1,5 +1,5 @@
 //! The wallet's Orchard keys for Platform's shielded pool (0.1 E1;
-//! m4-dashpay-engine §2.13, §7 item 69).
+//! m4-dashpay-engine §2.13, §7 item 72).
 //!
 //! platform-wallet derives them with ZIP-32 from the seed
 //! (`OrchardKeySet::from_seed`, `m_orchard/32'/coin'/account'`, coin 5 on

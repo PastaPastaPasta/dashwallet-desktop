@@ -1,4 +1,4 @@
-//! Shielded funds (0.1 E1; m4-dashpay-engine §2.13, §7 item 69) over
+//! Shielded funds (0.1 E1; m4-dashpay-engine §2.13, §7 item 72) over
 //! platform-wallet's `wallet::shielded`, behind the facade calls of
 //! `shielded.rs`. Not part of the facade.
 //!
@@ -28,7 +28,9 @@
 //!   coordinator's sync pass re-sends byte for byte, at most 3 times
 //!   (`redrive_pending_spends`), until the scan sees the notes spent (the
 //!   row confirms: done) or the prune backstop releases them (the row
-//!   fails: not executed). The spend's outcome and the status name that
+//!   fails: not executed), or Platform answers a re-send with a definitive
+//!   rejection (the library releases them and fails the row,
+//!   `operations.rs:3286-3310`). The spend's outcome and the status name that
 //!   transition by Platform's hash of it, and the dispatch journal records
 //!   it against the activity; nothing here resends. Every pass goes through
 //!   [`guarded_pass`]: admitted only while the session is open (the
@@ -42,8 +44,12 @@
 //!   relock timer's, the console's), a revocation that drops background
 //!   leases (a vault operation's, a wallet's removal or unload) and the
 //!   close wait for its end ([`drain_passes`], which states the bound), so
-//!   no redrive ends after a lock completes (`LockProgress::Done` and the
-//!   async lock's return) or a close; the close then seals the coordinator
+//!   no redrive runs after a lock completes or a close returns. A lock
+//!   completes at its `LockProgress::Done`, which the async lock's return
+//!   also waits for; the synchronous lock (`lock_vault_sync`: dw-ffi's,
+//!   the console's, the relock timer's) returns after its own vault gate,
+//!   before the drain, so a pass admitted before it may still re-send
+//!   until `Done`. The close then seals the coordinator
 //!   (`Manager::shutdown`).
 //!   0.2: the library admits each send (`q15-hook`).
 //! - **Shields.** Core → Shielded is a top-up's two steps (`topup.rs`): an

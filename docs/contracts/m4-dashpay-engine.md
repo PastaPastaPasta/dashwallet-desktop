@@ -618,8 +618,10 @@ lock plus its fee bound, like a top-up.
 (§7 item 72), each begun from the call's `grant` or named by a lease id of that flow; any other flow's lease is
 `platform.grant_invalid`.
 
-**Sync and events.** The session runs the library's shielded sync loop while its Platform side runs (every 60 s, a pass
-skipped within 30 s of a pass that found nothing) and stops and drains it before `close_network` returns. A pass that
+**Sync and events.** The library's own shielded sync loop never runs. While the session's Platform side runs, its
+supervisor starts one guarded pass (below, "Unconfirmed spends") with the other loops and one every interval after
+(the library's `ShieldedSyncManager` interval, 60 s, and its cooldown: a pass within 30 s of one that found nothing is
+skipped); `close_network` drains a pass in flight before it returns. A pass that
 changes the account, a spend, and an applied shield signal `Platform{change: shielded}` (§6); hosts re-query
 `shielded_status` and `shielded_history`. The Orchard prover's key is built in the background when the Platform side
 starts on an active network (about 3.5 s of CPU, `docs/research/shielded-cost.md`); a spend that comes first builds it
@@ -629,15 +631,19 @@ inline.
 confirm returns `ShieldedSpendOutcome{state: pending, unresolved}`, never an error and never failed. The library keeps
 its notes reserved, its history row pending and its signed transition, which the sync pass re-sends byte for byte, at
 most 3 times. The scan resolves it: the row turns `confirmed` when the notes are seen spent (done), or `failed` when the
-prune backstop releases them (not executed). `unresolved` (and `shielded_status.unresolved_spends` until then) names
+prune backstop releases them (not executed). A sync pass resolves it the same way when Platform answers a re-send with
+a definitive rejection: the library releases the notes and marks the row `failed` (platform-wallet
+`operations.rs:3286-3310`, its `DefinitiveRejection`). `unresolved` (and `shielded_status.unresolved_spends` until then) names
 the row (`activity_id`), Platform's hash of the transition (`transition`, SHA-256 of its bytes) and the re-sends so far.
 The facade has no resend, and a host must not offer a retry or a new send of the same payment for a pending one. The
 re-sends run only inside the session, in the engine's own sync passes (the library's loop never runs): a pass is
 admitted only while the session is open and each wallet holding such a spend holds its background lease, with every
 such spend recorded first in the dispatch journal (its activity and transition hash); a spend holds the passes off
 from its library call until its record is written. A lock (async, synchronous or the relock timer's) and the close
-wait for a pass in flight to end, so no re-send ends after a lock completes or a close; the close then seals the
-coordinator. A re-send signs nothing: the bytes are those the spend's lease charged.
+wait for a pass in flight to end, so no re-send runs after a lock completes or a close returns; the close then seals
+the coordinator. A lock completes at its `LockProgress::Done`; the async `lock_vault` also returns only then, while
+the synchronous `lock_vault_sync` (dw-ffi's `Vault.lock`, the console's `walletlock`, the relock timer) returns once
+its own vault gate ran, before the drain, so a pass admitted earlier may still re-send until `Done`. A re-send signs nothing: the bytes are those the spend's lease charged.
 
 **Closing with an unresolved spend (DEC-1046).** At the pin, removing a wallet from platform-wallet's manager deletes its
 stored transitions and reservations (`remove_wallet` → `unregister_wallet` → `purge_wallet`, `wallet_lifecycle.rs:847`,
