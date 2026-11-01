@@ -1403,9 +1403,48 @@ where
     F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
 {
+    run_on_pool(session, wallet_id, false, body).await
+}
+
+/// [`on_pool`] for a call that signs (a send, an unshield, a shield or its
+/// "Check again"), admitted under the session's
+/// [`close_preflight`](super::runtime::PlatformRuntime::close_preflight):
+/// it waits out an in-app close's check, and finds the session closed if
+/// that close went ahead (E1 r2 R2-3). While it runs, that close is
+/// refused.
+pub(crate) async fn on_pool_signing<T, F, Fut>(
+    session: &Arc<NetworkSession>,
+    wallet_id: WalletId,
+    body: F,
+) -> Result<T, ShieldedError>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
+{
+    run_on_pool(session, wallet_id, true, body).await
+}
+
+async fn run_on_pool<T, F, Fut>(
+    session: &Arc<NetworkSession>,
+    wallet_id: WalletId,
+    signing: bool,
+    body: F,
+) -> Result<T, ShieldedError>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
+{
     let session = Arc::clone(session);
     let rt = session.rt.clone();
     rt.spawn(async move {
+        // Before the session's gate: a close holding it to write waits for
+        // the calls that entered, never for this one.
+        let _admitted = match signing {
+            true => Some(session.platform.close_preflight.read().await),
+            false => None,
+        };
         let _op = session.enter().await.map_err(PlatformError::from)?;
         session
             .require_wallet(&wallet_id)
@@ -1916,6 +1955,14 @@ pub(crate) enum PassHeld {
     /// written.
     Store(String),
     Journal(String),
+}
+
+/// A test's pause of an in-app close's check after its first wallet
+/// (`PlatformRuntime::close_check_pause`).
+#[cfg(test)]
+pub(crate) struct CheckPause {
+    pub(crate) reached: tokio::sync::oneshot::Sender<WalletId>,
+    pub(crate) resume: tokio::sync::oneshot::Receiver<()>,
 }
 
 /// A test's pause of a pass after its admission (`PlatformRuntime::pass_pause`).

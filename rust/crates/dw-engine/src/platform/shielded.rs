@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use super::dashpay::DashPay;
 use super::errors::ShieldedError;
 use super::flows::GrantRequest;
-use super::shielded_pool::{self as pool, on_pool};
+use super::shielded_pool::{self as pool, on_pool, on_pool_signing};
 
 /// The protocol version from which Platform takes shielded-pool
 /// transitions (`SHIELDED_POOL_INITIAL_PROTOCOL_VERSION`).
@@ -317,7 +317,7 @@ impl DashPay {
         grant: String,
     ) -> Result<ShieldOutcome, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool(&self.session, wallet, move |session, lib| async move {
+        on_pool_signing(&self.session, wallet, move |session, lib| async move {
             pool::shield(&session, wallet, &lib, duffs, &grant).await
         })
         .await
@@ -333,7 +333,7 @@ impl DashPay {
         grant: String,
     ) -> Result<ShieldOutcome, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool(&self.session, wallet, move |session, lib| async move {
+        on_pool_signing(&self.session, wallet, move |session, lib| async move {
             pool::resume(&session, wallet, &lib, &txid, &grant).await
         })
         .await
@@ -363,7 +363,7 @@ impl DashPay {
         grant: String,
     ) -> Result<ShieldedSpendOutcome, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool(&self.session, wallet, move |session, lib| async move {
+        on_pool_signing(&self.session, wallet, move |session, lib| async move {
             let what = (to.as_str(), credits);
             pool::send(&session, wallet, &lib, what, memo.as_deref(), &grant).await
         })
@@ -393,7 +393,7 @@ impl DashPay {
         grant: String,
     ) -> Result<ShieldedSpendOutcome, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool(&self.session, wallet, move |session, lib| async move {
+        on_pool_signing(&self.session, wallet, move |session, lib| async move {
             pool::unshield(&session, wallet, &lib, credits, to.as_deref(), &grant).await
         })
         .await

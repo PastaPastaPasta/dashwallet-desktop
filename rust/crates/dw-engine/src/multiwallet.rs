@@ -327,6 +327,9 @@ impl NetworkSession {
     pub async fn load_wallet(self: &Arc<Self>, id: WalletId) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            // A wallet loads with its stored shielded spends: not between an
+            // in-app close's check and its commit (E1 r2 R2-3).
+            let _admitted = this.platform.close_preflight.read().await;
             let _op = this.enter().await?;
             let _lifecycle = this.wallet_lifecycle.hold().await;
             let live = this.live()?;

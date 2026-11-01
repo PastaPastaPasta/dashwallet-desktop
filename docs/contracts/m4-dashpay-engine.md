@@ -650,7 +650,10 @@ stored transitions and reservations (`remove_wallet` → `unregister_wallet` →
 `coordinator.rs:878-902`, `file_store.rs:880-901`), and the library has no detach. So while a wallet holds such a spend:
 Close Wallet (`unload_wallet`) and an in-app network close or switch (`close_network`) are refused with the engine code
 `shielded_spend_unresolved`, "a shielded payment is still being confirmed; wait, or quit and reopen the app", and change
-nothing (dw-app keeps the network active and its drafts); a restore's rollback keeps the wallet. App quit (`shutdown`)
+nothing (dw-app keeps the network active and its drafts); a restore's rollback keeps the wallet. The close's check and
+its commit are one step: a signing shielded call (`shielded_send`, `unshield_to_core`, `shield_from_core`,
+`resume_shield`) or a wallet load that arrives meanwhile waits for it, then fails with the session closed if the close
+went ahead, and one already running refuses the close; so a close or switch that succeeds leaves no spend unresolved. App quit (`shutdown`)
 is never refused: it seals and drains as any close, then leaves that wallet loaded in the sealed manager, which runs
 nothing more, with its stores committed (wallet.sqlite writes commit inline, the shielded store committed the spend
 before it returned), and the next launch rehydrates the spend as pending, reservations and all. Removing the wallet (the

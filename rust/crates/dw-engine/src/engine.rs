@@ -156,15 +156,19 @@ impl Engine {
         self.handle
             .spawn(async move {
                 let mut sessions = shared.sessions.lock().await;
-                let Some(session) = sessions.get(&network) else {
+                let Some(session) = sessions.get(&network).cloned() else {
                     return Ok(false);
+                };
+                // From the check to the commit no signing shielded call
+                // starts and no wallet loads (E1 r2 R2-3); one running now
+                // refuses the close.
+                let Ok(_preflight) = session.platform.close_preflight.try_write() else {
+                    return Err(EngineError::ShieldedSpendUnresolved);
                 };
                 if session.holds_shielded_spends().await {
                     return Err(EngineError::ShieldedSpendUnresolved);
                 }
-                let Some(session) = sessions.remove(&network) else {
-                    return Ok(false);
-                };
+                sessions.remove(&network);
                 session.close().await;
                 Ok(true)
             })

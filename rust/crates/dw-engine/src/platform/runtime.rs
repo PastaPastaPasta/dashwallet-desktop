@@ -132,6 +132,17 @@ pub(crate) struct PlatformRuntime {
     /// runs meanwhile. Apart from `shielded_passes` so a lock's drain waits
     /// for the passes only, not for a spend's network call.
     pub(crate) shielded_spends: tokio::sync::RwLock<()>,
+    /// Held to read by each shielded call that signs (a send, an unshield,
+    /// a shield, its "Check again") from before it enters the session to
+    /// its end, and by a wallet's load; to write by an in-app close from
+    /// its check of the wallets to its commit (`Engine::close_network`,
+    /// E1 r2 R2-3). So no spend starts, and no wallet holding one loads,
+    /// between that check and the close.
+    pub(crate) close_preflight: tokio::sync::RwLock<()>,
+    /// A test's pause of the close's check after its first wallet, with
+    /// that wallet (`NetworkSession::holds_shielded_spends`).
+    #[cfg(test)]
+    pub(crate) close_check_pause: Mutex<Option<super::shielded_pool::CheckPause>>,
     /// Each wallet's shielded call lock (`shielded_pool::wallet_lock`).
     pub(crate) shielded_calls: std::sync::Mutex<
         std::collections::HashMap<WalletId, std::sync::Weak<tokio::sync::Mutex<()>>>,
@@ -406,6 +417,9 @@ impl PlatformRuntime {
             #[cfg(test)]
             pass_pause: Mutex::new(None),
             shielded_spends: tokio::sync::RwLock::new(()),
+            close_preflight: tokio::sync::RwLock::new(()),
+            #[cfg(test)]
+            close_check_pause: Mutex::new(None),
             shielded_calls: std::sync::Mutex::default(),
             shield_unknown: std::sync::Mutex::default(),
             key_work: Arc::default(),
@@ -717,7 +731,8 @@ impl NetworkSession {
     /// known, or has a shielded call in flight that may store one before
     /// the close's gate lets it end: an in-app close of the session is
     /// refused then (DEC-1046, `Engine::close_network`). `false` once
-    /// closed.
+    /// closed. Only under [`PlatformRuntime::close_preflight`] held to
+    /// write does the answer hold until the close commits.
     pub(crate) async fn holds_shielded_spends(&self) -> bool {
         let Ok(live) = self.live() else {
             return false;
@@ -730,6 +745,14 @@ impl NetworkSession {
                 || super::shielded_pool::holds_stored_spends(&live.manager, id).await
             {
                 return true;
+            }
+            #[cfg(test)]
+            {
+                let pause = guard(&self.platform.close_check_pause).take();
+                if let Some(pause) = pause {
+                    let _ = pause.reached.send(id);
+                    let _ = pause.resume.await;
+                }
             }
         }
         false

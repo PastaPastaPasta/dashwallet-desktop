@@ -25,6 +25,10 @@ use crate::{
     DashNetwork, Engine, EngineConfig, EngineError, ImportOptions, NetworkSession, WalletId,
 };
 
+/// A second wallet's recovery phrase (BIP-39's test vector).
+const OTHER_PHRASE: &str =
+    "legal winner thank year wave sausage worth useful legal winner thank yellow";
+
 /// Where the quitting child process keeps its data root.
 const QUIT_ROOT: &str = "DW_E1_QUIT_ROOT";
 
@@ -112,23 +116,26 @@ fn subwallet(wallet: WalletId) -> SubwalletId {
     SubwalletId::new(wallet.0, dw_vault::SHIELDED_ACCOUNT)
 }
 
+/// Stores [`spends`] for `wallet` as the library's spend calls do.
+async fn stash_spends(s: &Arc<NetworkSession>, wallet: WalletId) {
+    let m = s.manager().unwrap();
+    let coordinator = pool::coordinator(s, &m).await.unwrap();
+    let mut store = coordinator.store().write().await;
+    for r in spends() {
+        for n in &r.nullifiers {
+            assert!(store.mark_pending(subwallet(wallet), n).unwrap());
+            (store.set_pending_spend(subwallet(wallet), n, r.anchor, r.activity_id)).unwrap();
+        }
+        store.arm_redrive(subwallet(wallet), r).unwrap();
+    }
+}
+
 /// Stores [`spends`] for `wallet` and puts them on record in the dispatch
 /// journal (a pass's admission, with the background lease).
 fn store_spends(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) {
     let (s, m) = (Arc::clone(session), session.manager().unwrap());
     engine.block_on(async move {
-        let coordinator = pool::coordinator(&s, &m).await.unwrap();
-        {
-            let mut store = coordinator.store().write().await;
-            for r in spends() {
-                for n in &r.nullifiers {
-                    assert!(store.mark_pending(subwallet(wallet), n).unwrap());
-                    (store.set_pending_spend(subwallet(wallet), n, r.anchor, r.activity_id))
-                        .unwrap();
-                }
-                store.arm_redrive(subwallet(wallet), r).unwrap();
-            }
-        }
+        stash_spends(&s, wallet).await;
         s.ensure_background().await;
         assert!(pool::admit_pass(&s, &m).await.is_ok());
     });
@@ -304,6 +311,86 @@ fn a_close_waits_for_or_refuses_a_shielded_call_in_flight() {
     assert!(session.require_wallet(&wallet).is_ok(), "still loaded");
     assert_eq!(kept(&engine, &session, wallet), expected());
     assert!(session.leases.background(&wallet).is_some());
+}
+
+/// E1 r2 R2-3: an in-app close (a network switch's) checks the wallets,
+/// then commits; no signing shielded call may start in between. With two
+/// wallets the close pauses after its first wallet's check, and a send of
+/// that wallet starts then (a body that stores spends as the library's
+/// send does). It waits for the close and then finds the session closed:
+/// the close reports success with nothing left unresolved, the network
+/// reopens in this process (no wallet was kept loaded), and no spend was
+/// stored. A close refused instead would have to keep the session open
+/// with the spend; either way no switch reports success over a spend.
+#[test]
+fn a_spend_started_during_the_close_check_waits_and_finds_the_session_closed() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, first) = first_launch(&engine);
+    let second = engine
+        .block_on(session.import_wallet(
+            Zeroizing::new(OTHER_PHRASE.as_bytes().to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions {
+                birth_height: Some(0),
+                core_compat: false,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    let (reached_tx, reached) = tokio::sync::oneshot::channel();
+    let (resume, resume_rx) = tokio::sync::oneshot::channel();
+    *session.platform.close_check_pause.lock().unwrap() = Some(pool::CheckPause {
+        reached: reached_tx,
+        resume: resume_rx,
+    });
+    let ran = Arc::new(AtomicBool::new(false));
+    let (closed, called) = std::thread::scope(|scope| {
+        let closing = scope.spawn(|| engine.block_on(engine.close_network(DashNetwork::Regtest)));
+        let checked = engine.block_on(reached).unwrap();
+        assert!([first, second].contains(&checked));
+        // The checked wallet's send starts.
+        let (done, done_rx) = std::sync::mpsc::channel();
+        let (s, r) = (Arc::clone(&session), Arc::clone(&ran));
+        session.rt.spawn(async move {
+            let called = pool::on_pool_signing(&s, checked, move |s, _| async move {
+                r.store(true, Ordering::SeqCst);
+                stash_spends(&s, checked).await;
+                Ok(())
+            })
+            .await;
+            let _ = done.send(called);
+        });
+        // Long enough for the send to run, were it admitted.
+        let early = done_rx.recv_timeout(Duration::from_secs(3)).ok();
+        resume.send(()).unwrap();
+        let closed = closing.join().unwrap();
+        let called =
+            early.unwrap_or_else(|| done_rx.recv_timeout(Duration::from_secs(30)).unwrap());
+        (closed, called)
+    });
+    assert!(matches!(closed, Ok(true)), "{closed:?}");
+    assert!(
+        !ran.load(Ordering::SeqCst),
+        "no spend started after the check"
+    );
+    assert!(
+        called.is_err(),
+        "the send found the session closed: {called:?}"
+    );
+
+    // Nothing unresolved was left behind, and the network reopens.
+    let session = open(&engine);
+    let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+    let stored = engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m).await.unwrap();
+        let store = coordinator.store().read().await;
+        let mut stored = store.pending_redrives(subwallet(first)).unwrap();
+        stored.extend(store.pending_redrives(subwallet(second)).unwrap());
+        stored
+    });
+    assert!(stored.is_empty(), "{stored:?}");
 }
 
 /// The quitting half of the next test, run in a child process: the first
