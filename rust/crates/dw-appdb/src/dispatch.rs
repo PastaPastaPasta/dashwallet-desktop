@@ -2298,7 +2298,10 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 10, "through versions 2, 3, 4, 5, 6, 7, 8 and 9 to 10");
+        assert_eq!(
+            schema, 10,
+            "through versions 2, 3, 4, 5, 6, 7, 8 and 9 to 10"
+        );
         let old: bool = j
             .conn()
             .query_row(
