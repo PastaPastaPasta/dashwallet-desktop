@@ -294,9 +294,11 @@ const MIGRATE_V7: &str = "UPDATE meta SET v = 8 WHERE k = 'schema';";
 
 /// Version 9 (0.1 E1, DEC-1032): each shielded spend the library holds to
 /// re-send, by its activity row's id, with Platform's hash of the signed
-/// transition (SHA-256 of its bytes); the first write's stands.
+/// transition (SHA-256 of its bytes); the first write's stands. `IF NOT
+/// EXISTS`: a journal taken back to an older schema version by hand (as
+/// the migration tests do) may still hold it.
 const SHIELDED_REDRIVE: &str = "
-CREATE TABLE shielded_redrive (
+CREATE TABLE IF NOT EXISTS shielded_redrive (
   wallet     BLOB NOT NULL CHECK (length(wallet) = 32),
   activity   BLOB NOT NULL CHECK (length(activity) = 32),
   transition BLOB NOT NULL CHECK (length(transition) = 32),

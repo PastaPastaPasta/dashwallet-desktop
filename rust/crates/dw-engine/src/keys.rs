@@ -340,6 +340,9 @@ impl NetworkSession {
             };
             if mine && let Ok(_op) = s.try_enter() {
                 s.lock_now();
+                // As `lock_vault`: a shielded pass admitted before the
+                // lock ends first (bounded).
+                s.drain_shielded_pass().await;
             }
         });
         if let Some((_, old)) = slot.replace((generation, task.abort_handle())) {

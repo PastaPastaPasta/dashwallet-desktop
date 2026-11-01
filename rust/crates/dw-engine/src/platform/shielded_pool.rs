@@ -31,11 +31,19 @@
 //!   fails: not executed). The spend's outcome and the status name that
 //!   transition by Platform's hash of it, and the dispatch journal records
 //!   it against the activity; nothing here resends. Every pass goes through
-//!   [`guarded_pass`]: under the session's operation guard (the
-//!   supervisor's tick, or [`on_pool`]), only while each wallet holding such
-//!   a spend holds its background lease, and only once each is on record.
-//!   The library's own loop never runs; a lock and a stop quiesce a pass in
-//!   flight, and the close seals the coordinator (`Manager::shutdown`).
+//!   [`guarded_pass`]: admitted only while the session is open (the
+//!   supervisor's kick, or [`on_pool`]), only while each wallet holding such
+//!   a spend holds its background lease, and only once each is on record
+//!   (a spend holds the passes off from its library call until its record
+//!   is written, so none can find a spend stored mid-pass). The library's
+//!   own loop never runs. A pass admitted before a lock or a close may
+//!   finish after the leases drop, as a leased call admitted before a freeze
+//!   finishes in its drain: the lock (async, and the relock timer) and the
+//!   close wait for it up to [`SHIELDED_PASS_DRAIN`],
+//!   and the close then seals the coordinator (`Manager::shutdown`). The
+//!   library has no stop inside a pass, so one stuck longer is logged and
+//!   ends on its own; the synchronous lock does not wait (0.2: the library
+//!   admits each send, `q15-hook`).
 //! - **Shields.** Core → Shielded is a top-up's two steps (`topup.rs`): an
 //!   asset lock of the Core balance (funding type
 //!   `AssetLockShieldedAddressTopUp`, step `shield/<k>/funding`, held at
@@ -45,8 +53,8 @@
 //!   funding signer. A lock not applied pends (`pending_shields`) and
 //!   blocks a new shield until `resume_shield` applies it. As for top-ups
 //!   (`topup.rs`), Platform's "already consumed" proves nothing: such a
-//!   lock, and one of ours a restore read back from the chain, reads
-//!   `consumption_unknown` and pends until a proved apply or the user's
+//!   lock (this session's answer), and one of ours a restore read back from
+//!   the chain, reads `consumption_unknown` and pends until a proved apply or the user's
 //!   `resolve_shield`; a recovered lock no shield step signed is history.
 //!   Until the dispatch journal is read none of this can be told, so the
 //!   shield calls answer `platform.unavailable`. The lock spends at most
@@ -192,6 +200,11 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// The locks the wallet's shield steps signed (the dispatch journal's
     /// records); `None` until the journal is read.
     fn own_locks(&self) -> Option<HashSet<Txid>>;
+    /// The shield locks Platform answered "already consumed", unproved, for
+    /// in this session.
+    fn taken_locks(&self) -> HashSet<Txid>;
+    /// Records Platform's unproved "already consumed" for `txid`.
+    fn mark_taken(&self, txid: Txid);
     /// The wallet's locks the dispatch journal records settled; none when
     /// they cannot be read (the locks then pend, fail closed).
     fn settled_locks(&self) -> impl Future<Output = HashSet<Txid>> + Send;
@@ -644,13 +657,10 @@ async fn authority(
 
 /// The library's refusal of a spend as the facade's error: the pool's note
 /// floor (Platform's `InsufficientPoolNotesError`, which the library hands
-/// on as text) is its own kind.
-pub(crate) fn spend_error(e: PlatformWalletError, operation: &str) -> ShieldedError {
+/// on as text) is its own kind. An unconfirmed result is no refusal:
+/// `spend` keeps it pending.
+pub(crate) fn spend_error(e: PlatformWalletError) -> ShieldedError {
     match e {
-        PlatformWalletError::ShieldedSpendUnconfirmed { .. } => PlatformError::BroadcastUnknown {
-            artifact: format!("shielded/{operation}"),
-        }
-        .into(),
         PlatformWalletError::ShieldedInsufficientBalance {
             available,
             required,
@@ -708,6 +718,10 @@ async fn spend(
         To::Shielded(..) => "transfer",
         To::Core(_) => "withdraw",
     };
+    // No pass runs from here until this spend's record is written: one
+    // admitted meanwhile could find what the library stores on an unknown
+    // result and re-send it before `admit_pass` saw it (Q15).
+    let hold = hold_passes(session).await?;
     // The records before, to tell this spend's (spends of the wallet run
     // one at a time, under its lock).
     let before: HashSet<String> = (lib.unresolved().await?.into_iter())
@@ -729,6 +743,7 @@ async fn spend(
         .mark_platform(wallet, [PlatformChange::Shielded]);
     match sent {
         Ok(()) => {
+            drop(hold);
             // The change note is the library's once a pass finds it.
             lib.sync_now().await;
             Ok(Spent {
@@ -757,6 +772,7 @@ async fn spend(
                     if let Err(e) = lib.record(u).await {
                         tracing::warn!(error = %e, "could not record a shielded spend's transition");
                     }
+                    drop(hold);
                 }
                 None => tracing::warn!(
                     operation,
@@ -773,7 +789,7 @@ async fn spend(
             })
         }
         Err(SpendError::Lease(e)) => Err(PlatformError::from(e).into()),
-        Err(SpendError::Library(e)) => Err(spend_error(*e, operation)),
+        Err(SpendError::Library(e)) => Err(spend_error(*e)),
     }
 }
 
@@ -870,6 +886,7 @@ struct OpenShield {
 async fn open_shields(lib: &impl ShieldedLib) -> Result<Vec<OpenShield>, ShieldedError> {
     let ours = lib.own_locks().ok_or(PlatformError::Unavailable)?;
     let settled = lib.settled_locks().await;
+    let taken = lib.taken_locks();
     Ok((lib.shield_locks().await.into_iter())
         .filter(|l| !settled.contains(&l.outpoint.txid))
         .filter_map(|lock| {
@@ -880,7 +897,7 @@ async fn open_shields(lib: &impl ShieldedLib) -> Result<Vec<OpenShield>, Shielde
                     return None;
                 }
                 LockStatus::RecoveredFromChain => true,
-                _ => false,
+                _ => taken.contains(&lock.outpoint.txid),
             };
             Some(OpenShield {
                 lock,
@@ -1128,6 +1145,7 @@ async fn apply(
                 %outpoint,
                 "Platform says a shield's lock is already consumed, unproved; it stays pending"
             );
+            lib.mark_taken(outpoint.txid);
             ShieldState::ConsumptionUnknown
         }
         Err(e) => {
@@ -1476,6 +1494,18 @@ impl ShieldedLib for PwShielded {
         (self.pw.session.leases).shield_lock_txids(self.pw.wallet_id)
     }
 
+    fn taken_locks(&self) -> HashSet<Txid> {
+        (self.pw.session.platform.shield_taken.lock())
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    fn mark_taken(&self, txid: Txid) {
+        (self.pw.session.platform.shield_taken.lock())
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(txid);
+    }
+
     async fn settled_locks(&self) -> HashSet<Txid> {
         let wallet = self.pw.wallet_id;
         (self.pw.session.leases.top_ups_settled(wallet).await).unwrap_or_else(|e| {
@@ -1686,6 +1716,26 @@ pub(crate) async fn admit_pass(
 /// holding the session's pass lock from the admission to its end, so a
 /// lock's drain (`drain_shielded_pass`) waits for it and no pass admitted
 /// before the lock outlives it. `false` when it was held back.
+/// How long a lock or a close waits for a shielded pass in flight
+/// (`drain_shielded_pass`), as the library's own drain
+/// (`COORDINATOR_DRAIN_BUDGET`).
+pub(crate) const SHIELDED_PASS_DRAIN: Duration = Duration::from_secs(10);
+
+/// How long a spend waits for a pass in flight before it holds the passes
+/// off ([`hold_passes`]); a pass scanning a large pool takes seconds.
+const SPEND_PASS_WAIT: Duration = Duration::from_secs(60);
+
+/// Holds the shielded passes off, from a spend's library call until its
+/// record is written; `platform.unavailable` (retry) when a pass in flight
+/// does not end within [`SPEND_PASS_WAIT`].
+async fn hold_passes(
+    session: &NetworkSession,
+) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, ShieldedError> {
+    let passes = session.platform.shielded_passes.write();
+    (tokio::time::timeout(SPEND_PASS_WAIT, passes).await)
+        .map_err(|_| PlatformError::Unavailable.into())
+}
+
 pub(crate) async fn guarded_pass(session: &NetworkSession, manager: &Manager, force: bool) -> bool {
     let _pass = session.platform.shielded_passes.read().await;
     if let Err(held) = admit_pass(session, manager).await {

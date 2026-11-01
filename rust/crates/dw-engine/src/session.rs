@@ -840,6 +840,10 @@ impl NetworkSession {
         // E0-04 §8.5: revoke, drain and abort the flows before the gate,
         // which waits for the flows' operation guards.
         self.close_leases().await;
+        // A shielded pass admitted under the leases just dropped ends first
+        // (bounded), as the lock's (0.1 E1, DEC-1032); none is admitted for
+        // a wallet holding a stored spend from here.
+        self.drain_shielded_pass().await;
         // Registration flows waiting keyless for a proof hold no lease.
         self.platform.registrations.abort_all();
         let _closing = self.gate.close().await;

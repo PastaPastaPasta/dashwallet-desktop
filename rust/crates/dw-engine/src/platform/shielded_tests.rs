@@ -159,6 +159,11 @@ struct FakeShielded {
     /// What the next pass finds of the unconfirmed spends: `Confirmed`
     /// (their notes spent) or `Failed` (the prune backstop released them).
     scan_finds: Mutex<Option<Status>>,
+    /// Platform's unproved "already consumed" answers this session.
+    taken: Mutex<HashSet<Txid>>,
+    /// Asked during each spend's library call; its answers, in order.
+    probe: Mutex<Option<Box<dyn Fn() -> bool + Send>>>,
+    probed: Mutex<Vec<bool>>,
 }
 
 impl Default for FakeShielded {
@@ -193,6 +198,9 @@ impl Default for FakeShielded {
             recorded: Mutex::default(),
             rows: Mutex::default(),
             scan_finds: Mutex::new(None),
+            taken: Mutex::default(),
+            probe: Mutex::new(None),
+            probed: Mutex::default(),
         }
     }
 }
@@ -223,6 +231,9 @@ impl FakeShielded {
         memo: &[u8],
     ) -> Result<(), SpendError> {
         let keys = permit.shielded_keys()?;
+        if let Some(probe) = &*self.probe.lock().unwrap() {
+            self.probed.lock().unwrap().push(probe());
+        }
         // The 0-based index of this spend.
         let n = self.spent.lock().unwrap().len() as u8;
         self.spent.lock().unwrap().push(Spent {
@@ -353,6 +364,14 @@ impl ShieldedLib for FakeShielded {
 
     fn own_locks(&self) -> Option<HashSet<Txid>> {
         self.own.clone()
+    }
+
+    fn taken_locks(&self) -> HashSet<Txid> {
+        self.taken.lock().unwrap().clone()
+    }
+
+    fn mark_taken(&self, txid: Txid) {
+        self.taken.lock().unwrap().insert(txid);
     }
 
     async fn settled_locks(&self) -> HashSet<Txid> {
@@ -800,10 +819,9 @@ fn a_failed_spend_keeps_its_quote_and_maps_the_librarys_error() {
     }
     // Unconfirmed text is not the pool's floor.
     assert_eq!(
-        pool::spend_error(
-            PlatformWalletError::ShieldedBroadcastFailed("rejected".into()),
-            "withdraw"
-        )
+        pool::spend_error(PlatformWalletError::ShieldedBroadcastFailed(
+            "rejected".into()
+        ))
         .code(),
         PlatformError::from(PlatformWalletError::ShieldedBroadcastFailed(
             "rejected".into()
@@ -1028,6 +1046,13 @@ fn an_unconfirmed_spend_stays_pending_until_a_scan_resolves_it() {
         })
     };
 
+    // No pass can be admitted while a spend's library call runs (one could
+    // re-send what the library stores on an unknown result unchecked).
+    let s = Arc::clone(&fx.s);
+    *lib.probe.lock().unwrap() = Some(Box::new(move || {
+        s.platform.shielded_passes.try_read().is_err()
+    }));
+
     for (n, unshield, found, want) in [
         (
             0u8,
@@ -1051,6 +1076,15 @@ fn an_unconfirmed_spend_stays_pending_until_a_scan_resolves_it() {
         .unwrap();
         assert_eq!(out.state, ShieldedSpendState::Pending);
         assert_eq!(out.unresolved, Some(unresolved(n)));
+        assert_eq!(
+            lib.probed.lock().unwrap().last(),
+            Some(&true),
+            "passes held"
+        );
+        assert!(
+            fx.s.platform.shielded_passes.try_read().is_ok(),
+            "and let go"
+        );
         // On record in the journal against its activity.
         assert_eq!(lib.recorded.lock().unwrap().last(), Some(&unresolved(n)));
         // The quote stays charged; no pass ran for it.
@@ -1150,6 +1184,20 @@ fn a_shield_lock_of_unknown_consumption_pends_until_the_user_resolves_it() {
     .unwrap();
     assert_eq!(resumed.state, ShieldState::ConsumptionUnknown);
     assert!(lib.settles.lock().unwrap().is_empty(), "nothing settled");
+    // It pends as such, though the library's status of it is unchanged
+    // (no ChainLock proof promoted it), and the user may resolve it.
+    let pending = run(&fx, &lib, |_, lib| async move {
+        pool::status(&*lib).await.unwrap().pending_shields
+    });
+    assert!(pending[0].consumption_unknown, "{pending:?}");
+    run(&fx, &lib, move |_, lib| async move {
+        pool::resolve(wallet, &*lib, &txid(1).to_string()).await
+    })
+    .unwrap();
+    assert_eq!(
+        *lib.settles.lock().unwrap(),
+        [(txid(1), TopUpSettled::Resolved)]
+    );
 
     // The library then holds it `RecoveredFromChain`, as a restore reads
     // ours back; lock 6 is another install's.

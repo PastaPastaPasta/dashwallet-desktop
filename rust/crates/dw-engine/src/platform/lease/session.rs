@@ -21,9 +21,7 @@ use crate::platform::flows::{FlowKind, RevokeCause};
 use crate::platform::signers::VaultContactCrypto;
 use crate::{EngineError, NetworkSession, WalletId};
 
-/// How long the async lock waits for a shielded pass in flight
-/// (`drain_shielded_pass`).
-const SHIELDED_PASS_DRAIN: std::time::Duration = std::time::Duration::from_secs(10);
+use crate::platform::shielded_pool::SHIELDED_PASS_DRAIN;
 
 /// Which vault grant kinds a flow's lease may carry: a `PlatformOp`, plus a
 /// `Spend` for "Accept and pay"'s payment (§16.1); a contact payment's own
@@ -283,7 +281,9 @@ impl NetworkSession {
 
     /// Locks the vault (§8.1): revokes every lease and drops the background
     /// leases before the first await, runs this request's own vault gate,
-    /// and returns after the drain, within `max(H, T_gate)` of the call.
+    /// and returns after the drain, within `max(H, T_gate)` of the call,
+    /// then waits for a shielded pass in flight up to
+    /// [`SHIELDED_PASS_DRAIN`].
     /// Cancels a pending [`Self::relock_after`] timer.
     pub async fn lock_vault(self: &Arc<Self>) -> Result<LockReport, EngineError> {
         let _op = self.try_enter()?;
@@ -304,13 +304,13 @@ impl NetworkSession {
     /// admission to its end; once this write is had, the next pass is
     /// admitted only while each wallet holding such a spend holds its
     /// background lease again (`shielded_pool::admit_pass`).
-    async fn drain_shielded_pass(&self) {
+    pub(crate) async fn drain_shielded_pass(&self) {
         let passes = &self.platform.shielded_passes;
         if tokio::time::timeout(SHIELDED_PASS_DRAIN, passes.write())
             .await
             .is_err()
         {
-            tracing::warn!("a shielded sync pass did not end within the lock's drain");
+            tracing::warn!("a shielded sync pass did not end within the drain; it ends on its own");
         }
     }
 
@@ -329,7 +329,8 @@ impl NetworkSession {
     /// A lock without admission (the relock timer holds its own).
     pub(crate) fn lock_now(&self) -> VaultStatus {
         // This lock never waits: a shielded pass admitted before it may
-        // end after it returns (`drain_shielded_pass` is the async lock's).
+        // end after it returns (`drain_shielded_pass` is the async lock's,
+        // the relock timer's and the close's).
         // The next pass is held all the same (`shielded_pool::admit_pass`).
         self.leases
             .lock_sync(RevokeCause::Lock, || self.vault_gate())

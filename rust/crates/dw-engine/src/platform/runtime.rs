@@ -104,9 +104,13 @@ pub(crate) struct PlatformRuntime {
     /// The loops were started and not stopped since; read by passes that
     /// were scheduled earlier.
     pub(super) loops_on: Arc<AtomicBool>,
-    /// Held to read by each shielded pass from its admission to its end,
-    /// to write by a lock's drain (`shielded_pool::guarded_pass`, 0.1 E1).
+    /// Held to read by each shielded pass from its admission to its end;
+    /// to write by a spend from its library call to its record, and by the
+    /// drain of a lock or the close (`shielded_pool::guarded_pass`, 0.1 E1).
     pub(crate) shielded_passes: tokio::sync::RwLock<()>,
+    /// The shield locks Platform answered "already consumed", unproved,
+    /// for in this session (`shielded_pool::open_shields`).
+    pub(crate) shield_taken: std::sync::Mutex<std::collections::HashSet<dashcore::Txid>>,
     pub(super) key_work: Arc<KeyWork>,
     /// Wallets a restore has begun storing and has not committed or rolled
     /// back (review r2 M4).
@@ -371,6 +375,7 @@ impl PlatformRuntime {
             tasks: Mutex::new(HashMap::new()),
             loops_on: Arc::new(AtomicBool::new(false)),
             shielded_passes: tokio::sync::RwLock::new(()),
+            shield_taken: std::sync::Mutex::default(),
             key_work: Arc::default(),
             restoring: Mutex::new(HashMap::new()),
             events: AtomicU64::new(0),
