@@ -8,7 +8,7 @@ import { useUi } from "../../app/ui";
 import { dismissPrivateToast, showToast } from "../../components/toast";
 import { useDisplay, type Display } from "../../format/display";
 import { detailDate } from "../../format/tx";
-import { markReceivedRead, onReceived, useReceived, type ReceivedPayment } from "../../payments/received";
+import { exposedNow, markReceivedRead, onReceived, useReceived, type ReceivedPayment } from "../../payments/received";
 
 /** "Received 0.01 DASH"; discreet mode does not say how much. */
 export function receivedText(duffs: number, shown: Display, discreet: boolean): string {
@@ -42,7 +42,7 @@ function useExposed(el: HTMLElement | null): boolean {
       setExposed(false);
       return;
     }
-    const check = () => setExposed(el.isConnected && el.closest("[inert]") === null);
+    const check = () => setExposed(exposedNow(el));
     check();
     const watch = new MutationObserver(check);
     watch.observe(document.documentElement, { attributes: true, attributeFilter: ["inert"], subtree: true });
@@ -69,8 +69,10 @@ export function ReceivedSection({ walletId, network, limit, onOpen }: { walletId
   const exposed = useExposed(section);
   const shownIds = rows.map((p) => p.id).join(",");
   useEffect(() => {
-    if (!locked && exposed && shownIds !== "") markReceivedRead(walletId, shownIds.split(","));
-  }, [walletId, locked, exposed, shownIds]);
+    // `exposed` re-runs this when a cover closes; what authorizes the marking is the DOM now, since a
+    // row and a covering sheet can commit together, before the observer has told `exposed`.
+    if (!locked && exposed && shownIds !== "" && exposedNow(section)) markReceivedRead(walletId, shownIds.split(","));
+  }, [walletId, locked, exposed, section, shownIds]);
   if (payments.length === 0) return null;
   return (
     <section ref={setSection} className="bell-section" aria-labelledby={titleId} data-testid="bell-payments">

@@ -96,6 +96,14 @@ export function onReceived(f: (batch: ReceivedPayment[]) => void): () => void {
 }
 
 /** Marks the payments `ids` of `walletId` as seen: the rows a view showed, not the ones it left out. */
+/** Whether `el` is on screen for someone right now: connected, with no `inert` ancestor (the shell is
+ * inert behind a sheet, a dialog, the lock screen, onboarding). Read from the DOM at the moment of
+ * asking, never from a state an observer updates later: a row and a covering sheet can commit in one
+ * React batch, before the observer has run. */
+export function exposedNow(el: Pick<Element, "isConnected" | "closest"> | null): boolean {
+  return el !== null && el.isConnected && el.closest("[inert]") === null;
+}
+
 export function markReceivedRead(walletId: string, ids: readonly string[]) {
   const mark = new Set(ids);
   if (!list.some((p) => p.walletId === walletId && !p.read && mark.has(p.id))) return;

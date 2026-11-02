@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TxNoticeRow } from "../api/generated/TxNoticeRow";
-import { announceReceived, lookupPending, LOOKUP_TIMEOUT_MS, isReceivedPayment, markReceivedRead, onReceived, recordReceived, resetReceived, unreadReceived } from "./received";
+import { announceReceived, exposedNow, lookupPending, LOOKUP_TIMEOUT_MS, isReceivedPayment, markReceivedRead, onReceived, recordReceived, resetReceived, unreadReceived } from "./received";
 
 const row = (over: Partial<TxNoticeRow> = {}): TxNoticeRow => ({
   txid: "aa".repeat(32),
@@ -102,5 +102,24 @@ describe("DEC1058_noticeLookup", () => {
     markReceivedRead("w1", [`${"a1".repeat(32)}:0`]);
     // The other is still unread.
     expect(recordReceived("w1", [row({ txid: "b2".repeat(32) })])).toEqual([]);
+  });
+});
+
+describe("exposedNow (DEC-1058 r3 #3)", () => {
+  const el = (over: { isConnected?: boolean; inert?: boolean }) => ({ isConnected: over.isConnected ?? true, closest: (sel: string) => (sel === "[inert]" && over.inert ? {} : null) }) as unknown as Element;
+
+  it("is true only for a connected element with no inert ancestor, read at the moment it is asked", () => {
+    expect(exposedNow(el({}))).toBe(true);
+    expect(exposedNow(el({ inert: true }))).toBe(false);
+    expect(exposedNow(el({ isConnected: false }))).toBe(false);
+    expect(exposedNow(null)).toBe(false);
+  });
+
+  it("follows the element as it is covered, with no observer in between", () => {
+    let inert = false;
+    const live = { isConnected: true, closest: () => (inert ? {} : null) } as unknown as Element;
+    expect(exposedNow(live)).toBe(true);
+    inert = true;
+    expect(exposedNow(live)).toBe(false);
   });
 });
