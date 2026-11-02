@@ -127,3 +127,20 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 }
+
+test("DP5-01 a link delivered while the launch offer is still reading wins: no dialog over its claim screen", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  // The launch offer's stash read is out (it answers with the stash as it was when asked: one
+  // invitation), when the shell delivers a live invitation that opens its claim screen.
+  await page.goto(fixtureUrl("invitation-valid", "light", "&hold=stashed_links"));
+  await page.getByTestId("toolbar").waitFor();
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("stashed_links"))).toBe(true);
+  await page.evaluate((r) => window.__dwFixture!.deliverLinks([r]), INVITATION);
+  await expect(page.getByTestId("claim")).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.release("stashed_links"));
+  // The answer has been handled once a frame and a short wait have passed; read, not retried.
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 150))));
+  expect(await page.getByTestId("saved-links").count()).toBe(0);
+  await expect(page.getByTestId("claim")).toBeVisible();
+  expect(errors).toEqual([]);
+});

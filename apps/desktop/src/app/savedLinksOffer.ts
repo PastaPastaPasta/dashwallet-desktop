@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Backend } from "../api/backend";
-import { offerReady, offerTarget } from "./savedLinks";
+import { liveLinkCount, offerReady, offerTarget } from "./savedLinks";
 import { navigate, ui } from "./ui";
 
 export function useSavedLinksOffer(backend: Backend, s: { hasWallet: boolean; locked: boolean; covered: boolean }) {
@@ -29,10 +29,15 @@ export function useSavedLinksOffer(backend: Backend, s: { hasWallet: boolean; lo
     setPending(false);
     const afterOnboarding = welcome.current;
     welcome.current = false;
+    const liveBefore = liveLinkCount();
     backend.stashedLinks().then(
       (links) => {
         const target = offerTarget(links, afterOnboarding);
         if (target === null || !offerReady({ pending: true, ...now.current })) return;
+        // A live link applied while the read was out has opened its page (the claim screen, Pay,
+        // a contact), which `now` (refreshed after a commit) may not show yet: the dialog does not
+        // open over it. The stash still holds the link for the next offer.
+        if (liveLinkCount() !== liveBefore) return;
         if (target === "sheet") ui.set({ dialog: "savedLinks" });
         else navigate("joinDashPay", { invitation: { linkId: target.claim, entry: "welcome" } });
       },
