@@ -67,9 +67,9 @@ export function offerReady(s: { pending: boolean; hasWallet: boolean; locked: bo
   return s.pending && s.hasWallet && !s.locked && !s.covered;
 }
 
-/** How many live links (a link the shell delivered while the window runs) have been applied. The
- * launch offer's stash read takes it when it starts: a live link applied since has already opened
- * what it leads to, and the offer, which has been overtaken, opens nothing over it. */
+/** How many live links (a link the shell delivered while the window runs) have been applied. An
+ * offer takes it when it is armed: a live link applied since has already opened what it leads
+ * to, and the offer, which has been overtaken, opens nothing over it. */
 let liveLinks = 0;
 export const noteLiveLink = (): number => ++liveLinks;
 export const liveLinkCount = (): number => liveLinks;
