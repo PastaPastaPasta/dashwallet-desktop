@@ -166,3 +166,26 @@ test("DP5-01 a link delivered while the launch offer is still reading wins: no d
   await expect(page.getByTestId("claim")).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+test("DP5-01 a link delivered while locked at launch wins at unlock: its claim screen stays usable", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  // An existing wallet launched by an invitation link: the vault is locked, the claim screen
+  // opens behind the lock screen, and the unlock's offer finds the invitation saved.
+  await page.goto(fixtureUrl("locked", "light"));
+  await page.getByTestId("lock-screen").waitFor();
+  await deliver(page, [INVITATION]);
+  await expect.poll(() => world(page, (w) => w.stash.length)).toBe(1);
+  await expect(page.getByTestId("page-joinDashPay")).toBeAttached();
+  await page.getByTestId("lock-field").fill("demo");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("claim")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("stashed_links"))).toBe(true);
+  // The answer has been handled once a frame and a short wait have passed; read, not retried.
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 150))));
+  expect(await page.locator(".sheet-scrim").count()).toBe(0);
+  await page.getByTestId("claim-notNow").click({ timeout: 5_000 });
+  // Not now from the Join DashPay entry leaves the claim for Create username.
+  await expect(page.getByTestId("claim")).toHaveCount(0);
+  await expect(page.getByTestId("page-joinDashPay")).toBeVisible();
+  expect(errors).toEqual([]);
+});
