@@ -640,6 +640,12 @@ const SCENARIOS = {
     w.pending.shielded!.pendingShields = [{ txid: "c0ffee00".repeat(8), duffs: 50_000_000, proved: false, consumptionUnknown: false }];
     return w;
   },
+  /** A shield lock that may already be applied (`consumption_unknown`): "Checking", and Check again. */
+  "shielded-checking": (t) => {
+    const w = base(t);
+    w.pending.shielded!.pendingShields = [{ txid: "c0ffee01".repeat(8), duffs: 50_000_000, proved: true, consumptionUnknown: true }];
+    return w;
+  },
   /** Shielded is ready and holds nothing: Send and Move wait for a balance. */
   "shielded-empty": (t) => {
     const w = base(t);

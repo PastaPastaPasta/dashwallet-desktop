@@ -147,3 +147,33 @@ test.describe("item 8: closing a wallet that cannot close says why", () => {
     await expect(page.getByTestId("settings-wallets-error")).toHaveText("A wallet is still opening; close the network once it is open.");
   });
 });
+
+test.describe("item 9: a lock that may already be applied is 'Checking'", () => {
+  test("the card says Checking with the contract's words and offers Check again, and Add is not blocked", async ({ page }) => {
+    await open(page, "shielded-checking");
+    const row = page.getByTestId("shielded-checking");
+    await expect(row).toContainText("Checking");
+    await expect(row).toContainText("This amount may already be in your shielded balance; we can't confirm it yet.");
+    await expect(page.getByTestId("shielded-finish")).toHaveText("Check again");
+    await expect(page.getByTestId("shielded-unfinished")).toHaveCount(0);
+    // It blocks no new shield.
+    await expect(page.getByTestId("shielded-add")).toBeEnabled();
+    await page.getByTestId("shielded-add").click();
+    await page.getByTestId("shielded-amount").fill("0.001");
+    await page.getByTestId("shielded-next").click();
+    await page.getByTestId("shielded-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Added to Shielded");
+    await page.getByTestId("shielded-done").click();
+    await expect(row).toBeVisible();
+  });
+
+  test("Check again reads the same lock and clears it once it is proved", async ({ page }) => {
+    await open(page, "shielded-checking");
+    await page.getByTestId("shielded-finish").click();
+    await authorize(page);
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Added to Shielded");
+    await page.getByTestId("shielded-done").click();
+    await expect(page.getByTestId("shielded-checking")).toHaveCount(0);
+  });
+});

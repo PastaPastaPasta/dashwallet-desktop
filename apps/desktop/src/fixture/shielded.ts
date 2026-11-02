@@ -116,7 +116,9 @@ function shieldQuote(ctx: Ctx, walletId: string, duffs: number): ShieldQuote {
   // As the engine answers while the account is not established: the generic Platform refusal (pasta's preview, 03-…png).
   if (!s.ready) raise("platform.unavailable", "the fixture account is not established yet");
   if (duffs < MIN_SHIELD_DUFFS) raise(SHIELDED_CODES.belowMinimum, "below the minimum", { kind: "number", value: MIN_SHIELD_DUFFS });
-  if (s.pendingShields.length > 0) raise(SHIELDED_CODES.shieldPending, "an earlier shield is pending", { kind: "txid", txid: s.pendingShields[0].txid });
+  // A lock that may already be applied (`consumption_unknown`) blocks no new shield; any other pending one does.
+  const blocking = s.pendingShields.find((p) => !p.consumptionUnknown);
+  if (blocking) raise(SHIELDED_CODES.shieldPending, "an earlier shield is pending", { kind: "txid", txid: blocking.txid });
   const total = duffs + LOCK_FEE_DUFFS;
   return { duffs, feeDuffs: LOCK_FEE_DUFFS, totalDuffs: total, poolFeeCredits: String(POOL_FEE_CREDITS), credits: String(BigInt(duffs) * CREDITS_PER_DUFF - POOL_FEE_CREDITS), grant: { maxDuffs: total, maxCredits: "0" } };
 }

@@ -346,10 +346,16 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
             </p>
           )}
           {s.pendingShields.map((p) => (
-            <p key={p.txid} className="platform-card-text" data-testid="shielded-unfinished">
-              {C.card.unfinished(fmt.duffs(p.duffs))}{" "}
+            <p key={p.txid} className="platform-card-text" data-testid={p.consumptionUnknown ? "shielded-checking" : "shielded-unfinished"}>
+              {p.consumptionUnknown ? (
+                <>
+                  <strong>{C.done.checking.title}.</strong> {C.done.checking.text}
+                </>
+              ) : (
+                C.card.unfinished(fmt.duffs(p.duffs))
+              )}{" "}
               <DashButton variant="plainBlue" size="small" data-testid="shielded-finish" disabled={syncing || busy} why={reasons.finish} whyId={lineId(reasons.finish)} onClick={() => void flow.resume(p.txid)}>
-                {C.card.finish}
+                {p.consumptionUnknown ? C.card.checkAgain : C.card.finish}
               </DashButton>
             </p>
           ))}

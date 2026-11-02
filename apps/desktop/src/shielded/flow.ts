@@ -51,6 +51,8 @@ export const SHIELDED_COPY = {
     add: "Add to Shielded",
     out: "Move to Dash wallet",
     finish: "Finish",
+    /** A lock that may already be applied: the same outpoint is read again, never a new lock. */
+    checkAgain: "Check again",
     why: { empty: "Nothing in Shielded to send yet.", busy: "Another Shielded move is running." },
     unfinished: (amount: string) => `${amount} was locked to add to Shielded and is not applied yet.`,
   },
