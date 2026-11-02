@@ -11,16 +11,23 @@ import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
-import { hasPendingMove, moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type PlatformMoveFlow } from "../platform/move";
+import { hasPendingMove, moveBlock, moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
 import { GrantSheet } from "./tools/common";
 
-function ConfirmStep({ flow, walletId, credits, amount }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string }) {
+function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string; block: MoveBlock | null }) {
   const quote = usePlatformMoveQuote(walletId, true);
   const q = quote.data;
   const warning = q ? feeWarning(BigInt(q.feeCredits), BigInt(q.credits)) : null;
   return (
     <>
-      <p className="sheet-text">{C.message}</p>
+      {block === "pending" ? (
+        // A move turned up while this confirmation was open (a late Activity read): it is not offered again.
+        <p className="form-problem" role="alert" data-testid="platform-move-blocked">
+          {C.waiting.text}
+        </p>
+      ) : (
+        <p className="sheet-text">{C.message}</p>
+      )}
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="platform-move-quote-error">
           {moveErrorText(quote.error, credits)}
@@ -66,15 +73,28 @@ function ConfirmStep({ flow, walletId, credits, amount }: { flow: PlatformMoveFl
         <DashButton variant="tintedGray" size="large" data-testid="platform-move-cancel" disabled={flow.running} onClick={() => flow.close()}>
           {C.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="platform-move-go" why={quote.isError ? C.quoteFailed : flow.running ? C.running.title : C.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running} onClick={() => q && void flow.move(q.grant, q.to)}>
-          {C.go}
-        </DashButton>
+        {block === "pending" ? (
+          <DashButton variant="filledBlue" size="large" data-testid="platform-move-blocked-view" onClick={() => { flow.close(); navigate("activity"); }}>
+            {C.waiting.action}
+          </DashButton>
+        ) : (
+          <DashButton
+            variant="filledBlue"
+            size="large"
+            data-testid="platform-move-go"
+            why={block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : quote.isError ? C.quoteFailed : flow.running ? C.running.title : C.quoting}
+            disabled={block !== null || !q || quote.isError || quote.isFetching || flow.running}
+            onClick={() => block === null && q && void flow.move(q.grant, q.to)}
+          >
+            {C.go}
+          </DashButton>
+        )}
       </div>
     </>
   );
 }
 
-export function PlatformMoveSheet({ flow, walletId, network }: { flow: PlatformMoveFlow; walletId: string; network: NetworkInfo }) {
+export function PlatformMoveSheet({ flow, walletId, network, block }: { flow: PlatformMoveFlow; walletId: string; network: NetworkInfo; block: MoveBlock | null }) {
   useModel(flow);
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
@@ -86,7 +106,7 @@ export function PlatformMoveSheet({ flow, walletId, network }: { flow: PlatformM
     <>
       <Sheet title={C.title} width="small" testId="platform-move-sheet" onClose={() => flow.close()}>
         <div data-testid="platform-move-body" data-step={step}>
-          {step === "confirm" && <ConfirmStep flow={flow} walletId={walletId} credits={credits} amount={amount} />}
+          {step === "confirm" && <ConfirmStep flow={flow} walletId={walletId} credits={credits} amount={amount} block={block} />}
           {step === "running" && (
             <div role="status" className="topup-running">
               <p className="topup-title">
@@ -147,10 +167,13 @@ export function PlatformMoveCard({ walletId, network, platform }: { walletId: st
   // Activity settles a retained `pending` result: when it changes, when a move turns pending (the
   // rows read may already have shown it settled) and when the sheet closes.
   useEffect(() => flow.settle(activity.data), [flow, activity.data, flow.pending, flow.open]);
-  const sheet = <PlatformMoveSheet flow={flow} walletId={walletId} network={network} />;
   const funded = platform != null && platform > 0;
   // A move Platform has not confirmed: this session's result, or (after a restart) Activity's record.
+  // Until Activity has answered, a fresh Move is not offered either (and an open confirmation waits).
   const waiting = flow.pending || hasPendingMove(activity.data);
+  const block = moveBlock(waiting, activity);
+  const sheet = <PlatformMoveSheet flow={flow} walletId={walletId} network={network} block={block} />;
+  const holdReason = flow.running ? C.running.text : block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : null;
   if (!flow.open && !flow.running && !flow.unseen && !funded && !waiting) return sheet;
   return (
     <>
@@ -161,9 +184,17 @@ export function PlatformMoveCard({ walletId, network, platform }: { walletId: st
             {funded && <span data-testid="platform-card-amount">{discreet ? shown.masked() : shown.withUnit(platform)}. </span>}
             {waiting ? C.waiting.text : flow.unseen ? C.unseen : C.card.text}
           </p>
-          {flow.running && (
+          {holdReason && !waiting && (
             <p className="field-hint" id="platform-move-why" data-testid="platform-move-why">
-              {C.running.text}
+              {holdReason}
+              {block === "failed" && !flow.running && (
+                <>
+                  {" "}
+                  <DashButton variant="plainBlue" size="small" data-testid="platform-move-check-again" onClick={() => void activity.refetch()}>
+                    {C.check.again}
+                  </DashButton>
+                </>
+              )}
             </p>
           )}
         </div>
@@ -172,7 +203,7 @@ export function PlatformMoveCard({ walletId, network, platform }: { walletId: st
             {C.waiting.action}
           </DashButton>
         ) : (
-          <DashButton variant="tintedBlue" data-testid="platform-move" disabled={flow.running} why={C.running.text} whyId="platform-move-why" onClick={() => flow.begin()}>
+          <DashButton variant="tintedBlue" data-testid="platform-move" disabled={flow.running || block === "checking" || block === "failed"} why={holdReason} whyId="platform-move-why" onClick={() => flow.begin()}>
             {flow.running ? C.running.title : flow.unseen ? C.show : C.action}
           </DashButton>
         )}

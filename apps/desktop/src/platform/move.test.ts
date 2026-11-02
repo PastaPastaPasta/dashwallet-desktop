@@ -6,7 +6,7 @@ import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { hasPendingMove, moveCanRetry, moveErrorText, moveFor, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
+import { hasPendingMove, moveBlock, moveCanRetry, moveErrorText, moveFor, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
 
 const TO = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
 const OUTCOME: MoveToCoreOutcome = { id: "pm-1", credits: "40000000000", expectedDuffs: 39_998_000, to: TO, state: "done", feeCredits: "2000000" };
@@ -134,5 +134,14 @@ describe("Move to Dash wallet", () => {
     const { api } = setup();
     expect(moveFor(api, WALLET_A)).toBe(moveFor(api, WALLET_A));
     expect(moveFor(api, "other")).not.toBe(moveFor(api, WALLET_A));
+  });
+});
+
+describe("moveBlock", () => {
+  it("holds Move back while Activity is unread or failed, and names a pending move", () => {
+    expect(moveBlock(false, { isPending: true, isError: false })).toBe("checking");
+    expect(moveBlock(false, { isPending: false, isError: true })).toBe("failed");
+    expect(moveBlock(true, { isPending: false, isError: false })).toBe("pending");
+    expect(moveBlock(false, { isPending: false, isError: false })).toBeNull();
   });
 });

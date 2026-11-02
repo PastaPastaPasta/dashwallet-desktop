@@ -45,9 +45,23 @@ export const MOVE_COPY = {
     text: "A move to your Dash wallet is not confirmed yet. Do not move again until Activity shows that it went through.",
     action: "View in Activity",
   },
+  /** Before Move is offered, Activity must say no move is unfinished (after a relaunch the flow remembers nothing). */
+  check: { loading: "Checking for an unfinished move…", failed: "Could not check for an unfinished move.", again: "Check again" },
   show: "Show",
   close: "Close",
 } as const;
+
+/** What holds Move back: the Activity read has not answered (`checking`) or failed (`failed`), or it names
+ * a move Platform has not confirmed (`pending`). `null`: Move may be offered. */
+export type MoveBlock = "checking" | "failed" | "pending";
+
+/** The block from Activity's read state: `known` is false while it is loading or failed. */
+export function moveBlock(waiting: boolean, read: { isPending: boolean; isError: boolean }): MoveBlock | null {
+  if (waiting) return "pending";
+  if (read.isError) return "failed";
+  if (read.isPending) return "checking";
+  return null;
+}
 
 export type MoveStep = "confirm" | "running" | "done" | "refused";
 

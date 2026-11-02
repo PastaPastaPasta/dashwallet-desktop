@@ -1,0 +1,65 @@
+import { expect, test, type Page } from "@playwright/test";
+import { authorize, fixtureUrl } from "./helpers";
+
+// The 0.1 integration step (E1 shielded m4 v47 + E2 Platform addresses on main): the cases the
+// integration brief adds. Each test failed before its change.
+
+async function open(page: Page, scenario = "funded", extra = "") {
+  await page.goto(fixtureUrl(scenario, "light", extra));
+  await page.getByTestId("hero").waitFor();
+}
+
+const world = <T,>(page: Page, fn: (w: NonNullable<Window["__dwFixture"]>["world"]) => T) => page.evaluate(`(${fn.toString()})(window.__dwFixture.world)`) as Promise<T>;
+
+const refreshPlatform = (page: Page) =>
+  page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "identities" } }); })()`);
+
+test.describe("item 2: Move waits for Activity's check", () => {
+  test("after a relaunch, no Move is offered until Activity has answered, and then the pending move shows", async ({ page }) => {
+    // The first Activity read of every load is held: a read still out when the card shows.
+    await open(page, "funded", "&hold=platform_activity");
+    await page.evaluate(`window.__dwFixture.release("platform_activity")`);
+    await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "pending"));
+    await page.getByTestId("platform-move").click();
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
+    await page.getByTestId("platform-move-done").click();
+    await page.evaluate(() => window.__dwFixture!.relaunch());
+    await page.getByTestId("lock-field").waitFor();
+    await page.getByTestId("lock-field").fill("demo");
+    await page.keyboard.press("Enter");
+    await page.getByTestId("hero").waitFor();
+    await expect(page.getByTestId("platform-card")).toBeVisible();
+    // Read now, not retried: the button is there and disabled, with its reason beside it.
+    expect(await page.getByTestId("platform-move").isDisabled()).toBe(true);
+    expect(await page.getByTestId("platform-move-why").textContent()).toContain("Checking for an unfinished move");
+    await page.evaluate(`window.__dwFixture.release("platform_activity")`);
+    await expect(page.getByTestId("platform-card")).toContainText("Do not move again");
+    await expect(page.getByTestId("platform-move")).toHaveCount(0);
+  });
+
+  test("a failed Activity read holds Move back and can be tried again", async ({ page }) => {
+    await open(page, "funded", "&fail=platform_activity:none");
+    await expect(page.getByTestId("platform-move")).toBeDisabled();
+    await expect(page.getByTestId("platform-move-why")).toContainText("Could not check for an unfinished move.");
+    await expect(page.getByTestId("platform-move-check-again")).toBeVisible();
+  });
+
+  test("a pending move that turns up while the confirmation is open replaces Confirm with View in Activity", async ({ page }) => {
+    await open(page);
+    await page.getByTestId("platform-move").click();
+    await expect(page.getByTestId("platform-move-quote")).toBeVisible();
+    await expect(page.getByTestId("platform-move-go")).toBeEnabled();
+    await world(page, (w) => {
+      const p = w.pending.platform!;
+      p.activity = [{ id: "pm-9", kind: "moveToCore", state: "pending", credits: "40000000000", address: null, to: "y", expectedDuffs: null, feeCredits: null, at: 1 }, ...p.activity];
+    });
+    await refreshPlatform(page);
+    await expect(page.getByTestId("platform-move-blocked")).toContainText("Do not move again");
+    await expect(page.getByTestId("platform-move-go")).toHaveCount(0);
+    await page.getByTestId("platform-move-blocked-view").click();
+    await expect(page.getByTestId("platform-move-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("tx-list")).toBeVisible();
+  });
+});
