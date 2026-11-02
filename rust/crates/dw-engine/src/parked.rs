@@ -83,6 +83,8 @@ pub(crate) struct Rehomed {
     /// within [`REHOME_SEARCH`] and [`REHOME_MAX_INDEX`] (counted once).
     pub stranded: usize,
     pub stranded_duffs: u64,
+    /// [`REHOME_MAX_INDEX`] cut a pool's search short.
+    pub capped: bool,
 }
 
 impl Rehomed {
@@ -115,20 +117,12 @@ pub(crate) fn rehome_parked(wallet: &Wallet, info: &mut ManagedWalletInfo, searc
     if parked.is_empty() {
         return done;
     }
-    // Addresses no pool holds yet: look for them past each pool's end.
-    let mut wanted: HashMap<ScriptBuf, Address> = HashMap::new();
-    for (holder, outpoint) in &parked {
-        let utxo = &info.accounts.funds_account(holder).expect("listed").utxos[outpoint];
-        if owner(info, &accounts, &utxo.address).is_none() {
-            wanted.insert(utxo.txout.script_pubkey.clone(), utxo.address.clone());
-        }
-    }
-    let mut capped = false;
+    let mut wanted = searched_for(info, &accounts, &parked);
     for account in &accounts {
         if wanted.is_empty() {
             break;
         }
-        capped |= extend_to(wallet, info, account, &mut wanted, search);
+        done.capped |= extend_to(wallet, info, account, &mut wanted, search);
     }
     for (holder, outpoint) in parked {
         let utxo = info.accounts.funds_account(&holder).expect("listed").utxos[&outpoint].clone();
@@ -169,18 +163,27 @@ pub(crate) fn rehome_parked(wallet: &Wallet, info: &mut ManagedWalletInfo, searc
         }
         mark_used(wallet, info, &home, &utxo.address);
     }
-    if done.stranded > 0 {
-        tracing::warn!(
-            coins = done.stranded,
-            duffs = done.stranded_duffs,
-            search,
-            max_index = REHOME_MAX_INDEX,
-            capped,
-            "coins whose address no funds account derives within the search bounds stay where they were loaded"
-        );
-    }
     info.update_balance();
     done
+}
+
+/// The addresses of the `parked` coins to look for past the pools' ends:
+/// those no funds account holds yet. Not a contact's (those are evicted
+/// without a search, which a contact's address would run through every pool
+/// to the end of its window).
+fn searched_for(
+    info: &ManagedWalletInfo,
+    accounts: &[AccountType],
+    parked: &[(AccountType, OutPoint)],
+) -> HashMap<ScriptBuf, Address> {
+    let mut wanted = HashMap::new();
+    for (holder, outpoint) in parked {
+        let utxo = &info.accounts.funds_account(holder).expect("listed").utxos[outpoint];
+        if owner(info, accounts, &utxo.address).is_none() && !contact_owned(info, &utxo.address) {
+            wanted.insert(utxo.txout.script_pubkey.clone(), utxo.address.clone());
+        }
+    }
+    wanted
 }
 
 /// Keeps one copy of every outpoint that two or more funds accounts hold: the
@@ -248,6 +251,26 @@ pub(crate) fn reconcile_duplicates(info: &mut ManagedWalletInfo) -> (usize, u64)
         info.update_balance();
     }
     (dropped, duffs)
+}
+
+/// Whether two or more funds accounts hold one outpoint. Funds accounts
+/// derive from disjoint keys, so at least one copy of a duplicate sits in an
+/// account that does not derive its address: only those coins are looked
+/// up. Allocates nothing past the account list.
+fn has_duplicates(info: &ManagedWalletInfo) -> bool {
+    let accounts = funds_accounts(info);
+    accounts.iter().any(|holder| {
+        let a = info.accounts.funds_account(holder).expect("listed");
+        let owned = a.managed_account_type();
+        (a.utxos.values())
+            .filter(|u| !owned.contains_address(&u.address))
+            .any(|u| {
+                (accounts.iter().filter(|other| *other != holder)).any(|other| {
+                    (info.accounts.funds_account(other))
+                        .is_some_and(|o| o.utxos.contains_key(&u.outpoint))
+                })
+            })
+    })
 }
 
 /// The wallet's funds accounts, in key-wallet's order (BIP44, BIP32,
@@ -405,22 +428,48 @@ impl NetworkSession {
                 "re-homed coins loaded into an account that does not derive their address"
             );
         }
+        if done.stranded > 0 {
+            tracing::warn!(
+                wallet_id = %id,
+                coins = done.stranded,
+                duffs = done.stranded_duffs,
+                search = REHOME_SEARCH,
+                max_index = REHOME_MAX_INDEX,
+                capped = done.capped,
+                "coins whose address no funds account derives within the search bounds stay where they were loaded"
+            );
+        }
         done
     }
 
     /// Drops wallet `id`'s duplicate coins ([`reconcile_duplicates`]) after
     /// its block events, then publishes key-wallet's balance: it also undoes
     /// a doubled balance an event computed before an earlier reconcile.
+    /// Looks for duplicates under the read lock first, and takes the write
+    /// lock only when there are some (rare: a replay of a parked coin).
     pub(crate) async fn reconcile_parked_coins(&self, id: WalletId) {
         let Ok(manager) = self.manager() else {
             self.hub.reconcile_running(id);
             return;
         };
         let wm = manager.wallet_manager_arc();
+        {
+            let wm = wm.read().await;
+            // Only now: events apply under the write lock, so one applied
+            // while this waited is covered by this run, and one applied
+            // after it starts the next.
+            self.hub.reconcile_running(id);
+            let Some(info) = wm.get_wallet_info(&id.0) else {
+                return;
+            };
+            let core = &info.core_wallet;
+            if !has_duplicates(core) {
+                self.hub
+                    .publish_core_balance(id, &core.balance(), &core.account_balances());
+                return;
+            }
+        }
         let mut wm = wm.write().await;
-        // Only now: an event applied while this waited for the lock is
-        // covered by this run, and one applied after it starts the next.
-        self.hub.reconcile_running(id);
         let Some(info) = wm.get_wallet_info_mut(&id.0) else {
             return;
         };
@@ -867,6 +916,71 @@ mod tests {
         assert_eq!(info.balance.total(), 0);
     }
 
+    /// r1 Opus m2: a contact's coin is evicted without a search: its address
+    /// never enters the searched set (it would scan every pool to the end of
+    /// its window on every load).
+    #[test]
+    fn a_contacts_coin_is_not_searched_for() {
+        let (mut wallet, mut info) = wallet();
+        let contact = AccountType::DashpayExternalAccount {
+            index: 0,
+            user_identity_id: [1; 32],
+            friend_identity_id: [2; 32],
+        };
+        wallet.add_account(contact, None).unwrap();
+        info.add_managed_account(&wallet, contact).unwrap();
+        let theirs = (info
+            .accounts
+            .dashpay_external_accounts
+            .values()
+            .next()
+            .unwrap())
+        .managed_account_type()
+        .address_pools()[0]
+            .address_at_index(0)
+            .unwrap();
+        let mixed = coinjoin_address(&wallet, &info, 170);
+        let contact_op = park(&mut info, &pays(1, &theirs), &theirs);
+        let mixed_op = park(&mut info, &pays(2, &mixed), &mixed);
+        let parked = [(bip44(), contact_op), (bip44(), mixed_op)];
+
+        let wanted = searched_for(&info, &funds_accounts(&info), &parked);
+
+        assert_eq!(
+            wanted.into_values().collect::<Vec<_>>(),
+            [mixed],
+            "only the mixed coin's address is searched for"
+        );
+    }
+
+    /// r1 Opus m5: the read-lock check sees only true duplicates: never single
+    /// copies in CoinJoin or BIP44, nor a parked coin alone.
+    #[test]
+    fn has_duplicates_sees_only_one_outpoint_in_two_accounts() {
+        let (wallet, mut info) = wallet();
+        let plain = wallet_receive_address(&wallet, &mut info);
+        let mixed = coinjoin_address(&wallet, &info, 5);
+        let far = coinjoin_address(&wallet, &info, 170);
+        park(&mut info, &pays(1, &plain), &plain);
+        let mixed_op = park(&mut info, &pays(2, &mixed), &mixed);
+        let coin = info
+            .accounts
+            .funds_account_mut(&bip44())
+            .unwrap()
+            .utxos
+            .remove(&mixed_op);
+        (info.accounts.funds_account_mut(&cj()).unwrap().utxos).insert(mixed_op, coin.unwrap());
+        let far_op = park(&mut info, &pays(3, &far), &far);
+        assert!(!has_duplicates(&info), "single copies, one of them parked");
+
+        let copy = info.accounts.funds_account(&bip44()).unwrap().utxos[&far_op].clone();
+        (info.accounts.funds_account_mut(&cj()).unwrap().utxos).insert(far_op, copy);
+
+        assert!(has_duplicates(&info));
+        reconcile_duplicates(&mut info);
+        assert!(!has_duplicates(&info));
+    }
+
     /// Builds and signs a 1 DASH send from `source`.
     async fn send(
         wallet: &Wallet,
@@ -939,7 +1053,10 @@ mod tests {
         let tx = pays(1, &to);
         let outpoint = park(&mut info, &tx, &to);
         // The replay derives the CoinJoin pool up to the coin as it scans,
-        // the way SPV's gap extension does.
+        // the way SPV's gap extension does. (Real SPV reaches 170 only
+        // through used addresses in between; this stands in for them. The
+        // reconcile itself needs no extension: it keeps the copy in the
+        // account whose pools hold the address.)
         let ks = wallet.key_source_for_account(cj());
         let account = info.accounts.funds_account_mut(&cj()).unwrap();
         let pool = &mut account.managed_account_type_mut().address_pools_mut()[0];
@@ -1081,9 +1198,7 @@ mod tests {
             lock.err()
         );
 
-        let started = std::time::Instant::now();
         let done = rehome_parked(&wallet, &mut info, REHOME_SEARCH);
-        println!("re-homed {} coins in {:?}", done.moved, started.elapsed());
 
         assert_eq!(
             done,
@@ -1302,15 +1417,25 @@ mod tests {
     const PHRASE: &[u8] =
         b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
-    /// A real engine and regtest session (unreachable SPV peer and DAPI: no
-    /// network) with one imported wallet.
+    /// Unreachable SPV peer, DAPI and quorum service: no network.
+    fn offline() -> crate::SessionOptions {
+        crate::SessionOptions {
+            dapi_addresses: vec!["http://127.0.0.1:1".into()],
+            quorum_url: Some("http://127.0.0.1:1".into()),
+            spv_peers: vec!["127.0.0.1:1".into()],
+            ..Default::default()
+        }
+    }
+
+    /// A real engine and regtest session ([`offline`]) with one imported
+    /// wallet.
     fn engine_wallet() -> (
         tempfile::TempDir,
         crate::Engine,
         Arc<NetworkSession>,
         WalletId,
     ) {
-        use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, SessionOptions};
+        use crate::{DashNetwork, Engine, EngineConfig, ImportOptions};
         use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
         let dir = tempfile::tempdir().unwrap();
         let engine = Engine::new(
@@ -1327,15 +1452,7 @@ mod tests {
         )
         .unwrap();
         let session = engine
-            .block_on(engine.open_network(
-                DashNetwork::Regtest,
-                SessionOptions {
-                    dapi_addresses: vec!["http://127.0.0.1:1".into()],
-                    quorum_url: Some("http://127.0.0.1:1".into()),
-                    spv_peers: vec!["127.0.0.1:1".into()],
-                    ..Default::default()
-                },
-            ))
+            .block_on(engine.open_network(DashNetwork::Regtest, offline()))
             .unwrap();
         engine
             .block_on(session.vault_op(|v| v.create(None)))
@@ -1476,9 +1593,6 @@ mod tests {
     /// used and the gap is kept past it.
     #[test]
     fn a_real_load_marks_a_sparse_bip44_coin_used() {
-        use platform_wallet::changeset::{
-            CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
-        };
         let (_dir, engine, session, id) = engine_wallet();
         let (to, index) = engine.block_on(async {
             let manager = session.manager().unwrap();
@@ -1495,32 +1609,7 @@ mod tests {
                 .unwrap();
             (pool.address_at_index(index).unwrap(), index)
         });
-        let tx = pays(1, &to);
-        let mut coin = Utxo::new(
-            OutPoint::new(tx.txid(), 0),
-            tx.output[0].clone(),
-            to.clone(),
-            HEIGHT,
-            false,
-        );
-        coin.is_confirmed = true;
-        let live = session.live().unwrap();
-        let core = CoreChangeSet {
-            new_utxos: vec![coin],
-            last_processed_height: Some(HEIGHT + 300),
-            synced_height: Some(HEIGHT + 300),
-            ..Default::default()
-        };
-        live.persister
-            .store(
-                id.0,
-                PlatformWalletChangeSet {
-                    core: Some(core),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        live.persister.flush(id.0).unwrap();
+        store_coin(&session, id, confirmed_coin(&pays(1, &to), &to));
         engine.block_on(session.unload_wallet(id)).unwrap();
 
         engine.block_on(session.load_wallet(id)).unwrap();
@@ -1545,6 +1634,147 @@ mod tests {
                 "the gap is kept past it"
             );
             assert_eq!(info.balance.total(), VALUE);
+        });
+    }
+
+    /// r1 Opus m5: a reconcile that finds no duplicate takes no write lock
+    /// (it would block SPV's block processing on every height step), and still
+    /// publishes key-wallet's balance.
+    #[test]
+    fn a_reconcile_without_duplicates_needs_no_write_lock() {
+        let (_dir, engine, session, id) = engine_wallet();
+        engine.block_on(async {
+            let manager = session.manager().unwrap();
+            let wm = manager.wallet_manager_arc();
+            let reader = wm.read().await;
+
+            let ran = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                session.reconcile_parked_coins(id),
+            )
+            .await;
+
+            drop(reader);
+            assert!(ran.is_ok(), "it waited for the write lock");
+            assert_eq!(session.hub.wallet_state(&id).unwrap().balance.total(), 0);
+        });
+    }
+
+    /// Writes `coin` to wallet `id`'s store as SPV would: a new UTXO, with no
+    /// pool row for its address.
+    fn store_coin(session: &NetworkSession, id: WalletId, coin: Utxo) {
+        use platform_wallet::changeset::{
+            CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
+        };
+        let live = session.live().unwrap();
+        let core = CoreChangeSet {
+            new_utxos: vec![coin],
+            last_processed_height: Some(HEIGHT + 300),
+            synced_height: Some(HEIGHT + 300),
+            ..Default::default()
+        };
+        live.persister
+            .store(
+                id.0,
+                PlatformWalletChangeSet {
+                    core: Some(core),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        live.persister.flush(id.0).unwrap();
+    }
+
+    fn confirmed_coin(tx: &Transaction, to: &Address) -> Utxo {
+        let mut coin = Utxo::new(
+            OutPoint::new(tx.txid(), 0),
+            tx.output[0].clone(),
+            to.clone(),
+            HEIGHT,
+            false,
+        );
+        coin.is_confirmed = true;
+        coin
+    }
+
+    /// r1 Opus M1, the session-open hook: a CoinJoin coin past index 99 with
+    /// no pool row, stored, then the session closed and reopened offline.
+    /// The open re-homes it before SPV starts: CoinJoin holds it, once.
+    #[test]
+    fn a_reopened_session_rehomes_a_coinjoin_coin_past_99() {
+        let (_dir, engine, session, id) = engine_wallet();
+        let to = engine.block_on(async {
+            let manager = session.manager().unwrap();
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            let wallet = wm.get_wallet(&id.0).unwrap();
+            coinjoin_address(wallet, &wm.get_wallet_info(&id.0).unwrap().core_wallet, 150)
+        });
+        let tx = pays(1, &to);
+        store_coin(&session, id, confirmed_coin(&tx, &to));
+        drop(session);
+        assert!(
+            engine
+                .block_on(engine.close_network(crate::DashNetwork::Regtest))
+                .unwrap()
+        );
+
+        let session = engine
+            .block_on(engine.open_network(crate::DashNetwork::Regtest, offline()))
+            .unwrap();
+
+        engine.block_on(async {
+            let manager = session.manager().unwrap();
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+            assert_eq!(holders(info, &OutPoint::new(tx.txid(), 0)), [cj()]);
+            assert!(derives(info, &cj(), &to), "signable from CoinJoin");
+            assert_eq!(info.balance.total(), VALUE);
+        });
+        assert_eq!(
+            session.hub.wallet_state(&id).unwrap().balance.total(),
+            VALUE
+        );
+    }
+
+    /// r1 Opus M1, the block-event hook: a replay's duplicate, then a block
+    /// event through the hub. The attached reconcile runs on its own, drops
+    /// the parked copy and publishes the deduplicated balance.
+    #[test]
+    fn a_block_event_starts_the_attached_reconcile() {
+        let (_dir, engine, session, id) = engine_wallet();
+        let op = engine.block_on(async {
+            let manager = session.manager().unwrap();
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
+            let info = &mut info.core_wallet;
+            let to = coinjoin_address(wallet, info, 5);
+            let op = park(info, &pays(1, &to), &to);
+            let coin = info.accounts.funds_account(&bip44()).unwrap().utxos[&op].clone();
+            (info.accounts.funds_account_mut(&cj()).unwrap().utxos).insert(op, coin);
+            info.update_balance();
+            assert_eq!(info.balance.total(), 2 * VALUE);
+            op
+        });
+        let pw = engine
+            .block_on(session.manager().unwrap().get_wallet(&id.0))
+            .unwrap();
+
+        deliver(&session, &pw, id, 2 * VALUE);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while session.hub.wallet_state(&id).unwrap().balance.total() != VALUE {
+            assert!(std::time::Instant::now() < deadline, "no reconcile ran");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        engine.block_on(async {
+            let manager = session.manager().unwrap();
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+            assert_eq!(holders(info, &op), [cj()]);
         });
     }
 }
