@@ -60,7 +60,11 @@ test("DP5-01 a link opened before any wallet survives onboarding and opens once"
   await page.keyboard.press("Enter");
   await expect(sheet).toBeVisible();
   await expect(sheet.getByTestId("saved-link")).toHaveCount(2);
-  await expect(sheet.getByTestId("saved-link")).toContainText(["Payment request", "DashPay invitation"]);
+  // The sheet lists newest first by the second each link was saved (savedLinkRows), and the two
+  // deliveries above can fall in different seconds, so check both rows without fixing their order.
+  for (const kind of ["Payment request", "DashPay invitation"]) {
+    await expect(sheet.getByTestId("saved-link").filter({ hasText: kind })).toHaveCount(1);
+  }
   await axe(page);
 
   // The payment request opens Pay, prefilled, and leaves the stash.
