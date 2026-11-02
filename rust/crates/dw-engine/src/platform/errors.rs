@@ -13,6 +13,7 @@ use super::flows::{BudgetPurpose, RevokeCause};
 use super::identity::KeyPurpose;
 use super::names::UsernameRule;
 use super::profile::{Profile, ProfileField};
+pub use super::shielded::ShieldedSyncWait;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlatformError {
@@ -544,10 +545,11 @@ pub enum ShieldedError {
         protocol_version: u32,
         activation_version: u32,
     },
-    /// The account's ledger is not established yet (keys not bound, notes
-    /// neither restored nor scanned): a sync has to complete first.
-    #[error("the shielded balance is not synced yet")]
-    NotSynced,
+    /// Shielded is still syncing: what the call needs is not established
+    /// yet, and it clears on its own (`reason`, DEC-1058 #4). "Shielded is
+    /// still syncing; try again when it finishes."
+    #[error("shielded is still syncing ({reason})")]
+    NotSynced { reason: ShieldedSyncWait },
     /// `to` is not a shielded (or, for an unshield, Core) address of the
     /// network.
     #[error("not an address of this network: {detail}")]
@@ -596,10 +598,15 @@ pub enum ShieldedError {
 }
 
 impl ShieldedError {
+    /// `shielded.not_synced` waiting for `reason`.
+    pub(crate) fn not_synced(reason: ShieldedSyncWait) -> Self {
+        Self::NotSynced { reason }
+    }
+
     pub fn code(&self) -> &'static str {
         match self {
             Self::NotActive { .. } => "shielded.not_active",
-            Self::NotSynced => "shielded.not_synced",
+            Self::NotSynced { .. } => "shielded.not_synced",
             Self::InvalidAddress { .. } => "shielded.invalid_address",
             Self::InsufficientFunds { .. } => "shielded.insufficient_funds",
             Self::FundingInsufficient { .. } => "shielded.funding_insufficient",

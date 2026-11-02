@@ -105,7 +105,7 @@ use platform_wallet::wallet::shielded::{
 use platform_wallet::{AssetLockFundingType, PlatformWalletError};
 use sha2::{Digest, Sha256};
 
-use super::errors::{PlatformError, ShieldedError};
+use super::errors::{PlatformError, ShieldedError, ShieldedSyncWait as Wait};
 use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::lease::{CallPermit, FundingKey, Lease, LeaseError};
 use super::registration::{RegistrationWait, funding_cap, grant_cap};
@@ -256,6 +256,11 @@ pub(crate) trait ShieldedLib: Send + Sync {
     fn fee_bound(&self) -> impl Future<Output = Result<u64, PlatformError>> + Send;
     /// What holds a funding back (SPV behind, the bring-up not answered).
     fn funding_hold(&self) -> Option<RegistrationWait>;
+    /// Whether the wallet's DashPay bring-up ended with its discovery
+    /// failed (Platform did not answer), rather than still running.
+    fn startup_failed(&self) -> bool {
+        false
+    }
     fn funding_permit(
         &self,
         lease: &Lease,
@@ -369,13 +374,26 @@ fn rules_at(protocol_version: u32) -> Result<&'static PlatformVersion, ShieldedE
     Ok(super::protocol::platform_version(protocol_version)?)
 }
 
-/// The account's ledger, bound first; `shielded.not_synced` until it is
-/// established.
+/// The account's ledger, bound first; `shielded.not_synced{account}` until
+/// it is established.
 async fn ready_ledger(lib: &impl ShieldedLib) -> Result<Ledger, ShieldedError> {
     if !lib.bind().await? {
-        return Err(ShieldedError::NotSynced);
+        return Err(ShieldedError::not_synced(Wait::Account));
     }
-    lib.ledger().await?.ok_or(ShieldedError::NotSynced)
+    lib.ledger()
+        .await?
+        .ok_or(ShieldedError::not_synced(Wait::Account))
+}
+
+/// The refusal while the dispatch journal is not read: Shielded is still
+/// syncing (`journal`) while it loads; `platform.unavailable` once it was
+/// found unopenable or of a newer schema, which does not clear.
+fn journal_unread(session: &NetworkSession) -> ShieldedError {
+    if session.leases.journal_loading() {
+        ShieldedError::not_synced(Wait::Journal)
+    } else {
+        PlatformError::Unavailable.into()
+    }
 }
 
 // MARK: reads
@@ -458,7 +476,7 @@ pub(crate) async fn marked_status(
 /// runs only when the user confirmed it may still go through. Refused here,
 /// before any note is selected or a key leaves the vault. Until the
 /// dispatch journal is read no marker can be (a relaunch's), so every
-/// spend is `platform.unavailable` then, as a shield is; read failures
+/// spend waits then, as a shield does ([`journal_unread`]); read failures
 /// refuse too.
 async fn confirm_unrecorded(
     session: &NetworkSession,
@@ -466,7 +484,7 @@ async fn confirm_unrecorded(
     confirmed: bool,
 ) -> Result<(), ShieldedError> {
     if !session.leases.journal_ready() {
-        return Err(PlatformError::Unavailable.into());
+        return Err(journal_unread(session));
     }
     if confirmed {
         return Ok(());
@@ -485,9 +503,9 @@ pub(crate) async fn receive_address(
 ) -> Result<ShieldedAddress, ShieldedError> {
     gate(lib).await?;
     if !lib.bind().await? {
-        return Err(ShieldedError::NotSynced);
+        return Err(ShieldedError::not_synced(Wait::Account));
     }
-    let raw = lib.address().await.ok_or(ShieldedError::NotSynced)?;
+    let raw = (lib.address().await).ok_or(ShieldedError::not_synced(Wait::Account))?;
     let address = OrchardAddress::from_raw_bytes(&raw).map_err(internal)?;
     Ok(ShieldedAddress {
         address: address.to_bech32m_string(lib.network()),
@@ -742,8 +760,9 @@ pub(crate) fn spend_error(e: PlatformWalletError) -> ShieldedError {
             needed: required,
             available,
         },
-        // Retryable: the next sync moves the tree onto a recorded anchor.
-        PlatformWalletError::ShieldedNoRecordedAnchor(_) => ShieldedError::NotSynced,
+        // Retryable: the next sync moves the tree onto a recorded anchor
+        // (operations.rs:2736, "wait for the next shielded sync").
+        PlatformWalletError::ShieldedNoRecordedAnchor(_) => ShieldedError::not_synced(Wait::Tree),
         PlatformWalletError::ShieldedBroadcastFailed(ref text) => match pool_notes(text) {
             Some((notes, required)) => ShieldedError::PoolTooSmall { notes, required },
             None => PlatformError::from(e).into(),
@@ -1102,7 +1121,7 @@ async fn shield_plan(
 ) -> Result<ShieldQuote, ShieldedError> {
     let version = priced_gate(lib).await?;
     if !session.leases.journal_ready() {
-        return Err(PlatformError::Unavailable.into());
+        return Err(journal_unread(session));
     }
     let pool_fee = shield_pool_fee(version)?;
     let min = pool_fee / CREDITS_PER_DUFF + 1;
@@ -1161,12 +1180,23 @@ pub(crate) async fn shield_quote(
     shield_plan(session, lib, duffs).await
 }
 
-/// What holds a funding back, as the code the host sees (`topup.rs`).
-fn held(wait: RegistrationWait) -> PlatformError {
+/// What holds a shield's funding back, as the code the host sees: as a
+/// top-up's (`topup.rs`), except that the waits which clear on their own
+/// are Shielded still syncing (DEC-1058 #4): Core not caught up or
+/// Platform writes waiting for masternode sync (`Sync`, which a top-up
+/// reports `platform.context_unavailable`), and a DashPay bring-up still
+/// running (`Startup`, `platform.unavailable` for a top-up). A bring-up
+/// whose discovery failed stays `platform.unavailable`: Platform did not
+/// answer (the call has it run again).
+fn held(lib: &impl ShieldedLib, wait: RegistrationWait) -> ShieldedError {
     match wait {
-        RegistrationWait::Unlock => PlatformError::SignerUnavailable,
-        RegistrationWait::Network | RegistrationWait::Startup => PlatformError::Unavailable,
-        _ => PlatformError::ContextUnavailable,
+        RegistrationWait::Unlock => PlatformError::SignerUnavailable.into(),
+        RegistrationWait::Sync => ShieldedError::not_synced(Wait::Core),
+        RegistrationWait::Startup if !lib.startup_failed() => {
+            ShieldedError::not_synced(Wait::Startup)
+        }
+        RegistrationWait::Network | RegistrationWait::Startup => PlatformError::Unavailable.into(),
+        _ => PlatformError::ContextUnavailable.into(),
     }
 }
 
@@ -1212,10 +1242,10 @@ pub(crate) async fn shield(
         if wait == RegistrationWait::Startup {
             session.platform.retry_startup(wallet);
         }
-        return Err(held(wait).into());
+        return Err(held(lib, wait));
     }
     if !lib.bind().await? {
-        return Err(ShieldedError::NotSynced);
+        return Err(ShieldedError::not_synced(Wait::Account));
     }
     let lock = wallet_lock(session, wallet);
     let _shielding = lock.lock().await;
@@ -1379,7 +1409,10 @@ pub(crate) async fn resume(
         .parse()
         .map_err(|_| invalid("txid is not a hex txid"))?;
     if !lib.bind().await? {
-        return Err(ShieldedError::NotSynced);
+        return Err(ShieldedError::not_synced(Wait::Account));
+    }
+    if !session.leases.journal_ready() {
+        return Err(journal_unread(session));
     }
     let lock = wallet_lock(session, wallet);
     let _shielding = lock.lock().await;
@@ -1902,6 +1935,14 @@ impl ShieldedLib for PwShielded {
 
     fn funding_hold(&self) -> Option<RegistrationWait> {
         Reg::funding_hold(&self.pw)
+    }
+
+    fn startup_failed(&self) -> bool {
+        let startup = self.pw.session.dashpay_startup(&self.pw.wallet_id);
+        matches!(
+            startup.map(|s| s.startup),
+            Ok(super::startup::StartupStatus::DiscoveryFailed)
+        )
     }
 
     async fn funding_permit(

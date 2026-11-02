@@ -1588,6 +1588,13 @@ impl LeaseTable {
         self.with_j(|i, _| i.fence.journal == JournalState::Ready)
     }
 
+    /// Whether the dispatch journal is still to be read (the network just
+    /// opened), as opposed to read, or found unopenable or of a newer
+    /// schema (which does not clear).
+    pub(crate) fn journal_loading(&self) -> bool {
+        self.with_j(|i, _| i.fence.journal == JournalState::NotLoaded)
+    }
+
     /// [`Self::unresolved_lock_inputs`] of every wallet with a funding
     /// marker: what `broadcast_psbt`, which names no wallet, refuses.
     pub(crate) fn unresolved_lock_inputs_of_any(&self) -> HashSet<OutPoint> {

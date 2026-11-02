@@ -38,7 +38,7 @@ use platform_wallet::{
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use super::errors::{PlatformError, ShieldedError};
+use super::errors::{PlatformError, ShieldedError, ShieldedSyncWait};
 use super::flows::FlowKind;
 use super::lease::{CallPermit, FundingKey, Lease};
 use super::registration::RegistrationWait;
@@ -235,6 +235,10 @@ struct FakeShielded {
     /// The coin reads and the funding permits asked for.
     coin_reads: AtomicU32,
     permits: AtomicU32,
+    /// What holds a shield's funding back (`funding_hold`), and whether a
+    /// `Startup` hold is a failed discovery (`startup_failed`).
+    hold: Mutex<Option<RegistrationWait>>,
+    startup_failed: AtomicBool,
 }
 
 /// What a library call leaves of a lock's tracked row (`real_rows`), as
@@ -302,6 +306,8 @@ impl Default for FakeShielded {
             row_after: Mutex::default(),
             coin_reads: AtomicU32::new(0),
             permits: AtomicU32::new(0),
+            hold: Mutex::new(None),
+            startup_failed: AtomicBool::new(false),
         }
     }
 }
@@ -613,7 +619,11 @@ impl ShieldedLib for FakeShielded {
     }
 
     fn funding_hold(&self) -> Option<RegistrationWait> {
-        None
+        *self.hold.lock().unwrap()
+    }
+
+    fn startup_failed(&self) -> bool {
+        self.startup_failed.load(Ordering::SeqCst)
     }
 
     async fn funding_permit(
@@ -1099,7 +1109,9 @@ fn a_failed_spend_keeps_its_quote_and_maps_the_librarys_error() {
         (
             PlatformWalletError::ShieldedNoRecordedAnchor("tree moved".into()),
             false,
-            ShieldedError::NotSynced,
+            ShieldedError::NotSynced {
+                reason: ShieldedSyncWait::Tree,
+            },
         ),
         (
             PlatformWalletError::ShieldedInsufficientBalance {
@@ -1430,6 +1442,145 @@ fn an_unconfirmed_spend_stays_pending_until_a_scan_resolves_it() {
             "no second transition"
         );
     }
+}
+
+/// A refusal as the host reads it: `not_synced:<reason>`, or the code.
+fn wait_of<T: std::fmt::Debug>(r: Result<T, ShieldedError>) -> String {
+    match r {
+        Err(ShieldedError::NotSynced { reason }) => format!("not_synced:{reason}"),
+        Ok(_) => "ok".to_owned(),
+        Err(e) => e.code().to_owned(),
+    }
+}
+
+/// DEC-1058 #4: every refusal of a shield, a quote, a send or an unshield
+/// that waits for something still syncing is `shielded.not_synced` with
+/// what it waits for, never a Platform refusal ("Dash Platform did not
+/// answer"); what does not clear on its own keeps its code.
+/// - `account`: the account is not bound, or bound and not scanned yet.
+/// - `core` / `startup`: a shield's funding waits for Core (SPV not caught
+///   up, Platform writes waiting for masternode sync) or for the DashPay
+///   bring-up; a failed discovery is still `platform.unavailable`, a
+///   locked vault `platform.signer_unavailable`.
+/// - `journal`: the dispatch journal is not read yet; one that cannot be
+///   (unopenable, a newer schema) is still `platform.unavailable`.
+/// - `tree`: platform-wallet's `ShieldedNoRecordedAnchor` (the spend-error
+///   table in `a_failed_spend_keeps_its_quote_and_maps_the_librarys_error`).
+#[test]
+fn a_refusal_while_shielded_syncs_is_not_synced_with_what_it_waits_for() {
+    let fx = Fixture::new(0);
+    let wallet = fx.wallet;
+    let credits = NOTE / 2;
+    let txid = "11".repeat(32);
+    // The calls named, as the host makes them, each with its refusal.
+    let all = |fx: &Fixture, lib: &Arc<FakeShielded>, names: &[&str]| -> Vec<(String, String)> {
+        let grant = fx.grant(10 * NOTE);
+        let txid = txid.clone();
+        let names: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
+        run(fx, lib, move |s, lib| async move {
+            let lib = &*lib;
+            let mut out = Vec::new();
+            for name in names {
+                let wait = match name.as_str() {
+                    "send_quote" => wait_of(pool::send_quote(lib, &payee_text(), credits).await),
+                    "unshield_quote" => wait_of(pool::unshield_quote(lib, credits, None).await),
+                    "shield_quote" => wait_of(pool::shield_quote(&s, lib, 100_000).await),
+                    "shield" => wait_of(pool::shield(&s, wallet, lib, 100_000, &grant).await),
+                    "resume" => wait_of(pool::resume(&s, wallet, lib, &txid, &grant).await),
+                    "send" => {
+                        let to = (payee_text(), credits);
+                        wait_of(
+                            pool::send(&s, wallet, lib, (&to.0, to.1), None, &grant, false).await,
+                        )
+                    }
+                    "unshield" => {
+                        wait_of(pool::unshield(&s, wallet, lib, credits, None, &grant, false).await)
+                    }
+                    "address" => wait_of(pool::receive_address(lib).await),
+                    other => unreachable!("{other}"),
+                };
+                out.push((name, wait));
+            }
+            out
+        })
+    };
+    let expect = |names: &[&str], wait: &str| -> Vec<(String, String)> {
+        (names.iter())
+            .map(|n| ((*n).to_owned(), wait.to_owned()))
+            .collect()
+    };
+
+    // The account: not bound (a first bind needs the vault unlocked).
+    let unbound = Arc::new(FakeShielded {
+        bound: false,
+        ..FakeShielded::default()
+    });
+    let needs_account = [
+        "send_quote",
+        "unshield_quote",
+        "shield",
+        "resume",
+        "send",
+        "unshield",
+        "address",
+    ];
+    assert_eq!(
+        all(&fx, &unbound, &needs_account),
+        expect(&needs_account, "not_synced:account")
+    );
+    // Bound, not scanned yet: what reads the notes waits.
+    let unscanned = Arc::new(FakeShielded {
+        ledger: None,
+        ..FakeShielded::default()
+    });
+    let reads_notes = ["send_quote", "unshield_quote", "send", "unshield"];
+    assert_eq!(
+        all(&fx, &unscanned, &reads_notes),
+        expect(&reads_notes, "not_synced:account")
+    );
+
+    // A shield's funding hold.
+    let lib = Arc::new(FakeShielded::default());
+    for (hold, failed, want) in [
+        (RegistrationWait::Sync, false, "not_synced:core"),
+        (RegistrationWait::Startup, false, "not_synced:startup"),
+        (RegistrationWait::Startup, true, "platform.unavailable"),
+        (RegistrationWait::Network, false, "platform.unavailable"),
+        (
+            RegistrationWait::Unlock,
+            false,
+            "platform.signer_unavailable",
+        ),
+    ] {
+        *lib.hold.lock().unwrap() = Some(hold);
+        lib.startup_failed.store(failed, Ordering::SeqCst);
+        assert_eq!(
+            all(&fx, &lib, &["shield"]),
+            expect(&["shield"], want),
+            "{hold:?}"
+        );
+    }
+    *lib.hold.lock().unwrap() = None;
+    lib.startup_failed.store(false, Ordering::SeqCst);
+
+    // The dispatch journal: not read yet (the network just opened), then
+    // found unopenable.
+    let journaled = ["shield_quote", "shield", "resume", "send", "unshield"];
+    fx.engine.block_on(fx.s.leases.close_journal());
+    assert!(fx.s.leases.journal_loading());
+    assert_eq!(
+        all(&fx, &lib, &journaled),
+        expect(&journaled, "not_synced:journal")
+    );
+    fx.s.leases.load_journal(None, Vec::new(), Vec::new());
+    assert!(!fx.s.leases.journal_loading() && !fx.s.leases.journal_ready());
+    assert_eq!(
+        all(&fx, &lib, &journaled),
+        expect(&journaled, "platform.unavailable")
+    );
+    // Nothing reached the library's spend or funding calls.
+    assert!(lib.spent().is_empty() && unbound.spent().is_empty());
+    assert_eq!(lib.permits.load(Ordering::SeqCst), 0);
 }
 
 /// DEC-1057: a spend of unknown result whose record the library could not

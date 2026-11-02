@@ -150,7 +150,12 @@ impl From<ShieldedError> for AppError {
                     activation_version,
                 }),
             ),
-            S::NotSynced => (ShieldedCode::NotSynced, None),
+            S::NotSynced { reason } => (
+                ShieldedCode::NotSynced,
+                Some(ErrorData::Reason {
+                    reason: reason.as_str().into(),
+                }),
+            ),
             S::InvalidAddress { detail } => (
                 ShieldedCode::InvalidAddress,
                 Some(ErrorData::Reason { reason: detail }),
@@ -468,7 +473,8 @@ impl From<CreditsError> for AppError {
 #[cfg(test)]
 mod tests {
     use dw_engine::platform::{
-        BudgetPurpose, Eligibility, KeyPurpose, ProfileField, RevokeCause, UsernameRule,
+        BudgetPurpose, Eligibility, KeyPurpose, ProfileField, RevokeCause, ShieldedSyncWait,
+        UsernameRule,
     };
 
     use super::*;
@@ -630,7 +636,9 @@ mod tests {
                 protocol_version: 11,
                 activation_version: 12,
             },
-            ShieldedError::NotSynced,
+            ShieldedError::NotSynced {
+                reason: ShieldedSyncWait::Journal,
+            },
             ShieldedError::InvalidAddress { detail: s() },
             ShieldedError::InsufficientFunds {
                 needed: 2,

@@ -1075,7 +1075,9 @@ fn error_codes_match_the_contract() {
                 protocol_version: 0,
                 activation_version: 0,
             },
-            ShieldedError::NotSynced,
+            ShieldedError::NotSynced {
+                reason: ShieldedSyncWait::Account,
+            },
             ShieldedError::InvalidAddress { detail: s() },
             ShieldedError::InsufficientFunds {
                 needed: 0,
