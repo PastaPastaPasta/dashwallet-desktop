@@ -86,8 +86,9 @@ pub enum EngineEvent {
     },
     /// Transactions of the wallet seen for the first time, batched over
     /// 100 ms as dash-qt batches its popups (QT-031…033). Never sent for
-    /// status changes. `catch_up`: SPV was not caught up when the batch was
-    /// sent (dash-qt shows no popups during initial sync).
+    /// status changes. `catch_up`: SPV was more than a few blocks behind the
+    /// best header when the batch was sent (dash-qt shows no popups during
+    /// initial sync; a new block is no catch-up, DEC-1058 #6).
     NewTransactions {
         network: DashNetwork,
         wallet_id: WalletId,
@@ -443,6 +444,21 @@ impl SessionHub {
 
     pub(crate) fn emit(&self, event: EngineEvent) {
         self.sink.emit(event);
+    }
+
+    /// One `NewTransactions` per wallet of a flushed batch. `catch_up`
+    /// while SPV is more than a few blocks behind (DEC-1058 #6): a payment
+    /// in a new block arrives while dash-spv still processes that block.
+    pub(crate) fn emit_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>) {
+        let catch_up = !self.tracker().near_tip();
+        for (wallet_id, txids) in batches {
+            self.emit(EngineEvent::NewTransactions {
+                network: self.network.clone(),
+                wallet_id,
+                txids,
+                catch_up,
+            });
+        }
     }
 
     pub(crate) fn tracker(&self) -> std::sync::MutexGuard<'_, SyncTracker> {
@@ -914,15 +930,7 @@ impl PumpTarget for SessionPump {
     }
 
     fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>) {
-        let catch_up = !self.hub.tracker().caught_up();
-        for (wallet_id, txids) in batches {
-            self.hub.emit(EngineEvent::NewTransactions {
-                network: self.hub.network.clone(),
-                wallet_id,
-                txids,
-                catch_up,
-            });
-        }
+        self.hub.emit_new_txs(batches);
     }
 
     fn flush_platform(
@@ -971,6 +979,7 @@ impl PumpTarget for SessionPump {
 
 #[cfg(test)]
 mod tests {
+    use dash_spv::sync::SyncState;
     use dashcore::hashes::Hash;
     use dashcore::{BlockHash, OutPoint, Transaction, TxIn};
     use key_wallet::account::StandardAccountType;
@@ -1033,6 +1042,96 @@ mod tests {
             balance: WalletCoreBalance::new(balance, 0, 0, 0),
             account_balances: BTreeMap::new(),
         }
+    }
+
+    #[derive(Default)]
+    struct Recorded(Mutex<Vec<EngineEvent>>);
+
+    impl EventSink for Recorded {
+        fn emit(&self, event: EngineEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+
+    /// dash-spv's progress with `target` the best header and the filters
+    /// committed up to `filters_at`: filter headers, filters and blocks
+    /// `Syncing`, the state a new block leaves them in until it is processed
+    /// (pin filters/manager.rs:1097-1099, blocks/sync_manager.rs:169).
+    fn following(filters_at: u32, target: u32) -> SyncProgress {
+        use dash_spv::sync::{
+            BlockHeadersProgress, BlocksProgress, FilterHeadersProgress, FiltersProgress,
+            MasternodesProgress,
+        };
+        let mut headers = BlockHeadersProgress::default();
+        headers.update_target_height(target);
+        headers.update_tip_height(target);
+        headers.set_state(SyncState::Synced);
+        let mut filter_headers = FilterHeadersProgress::default();
+        filter_headers.update_target_height(target);
+        filter_headers.update_current_height(filters_at);
+        filter_headers.set_state(SyncState::Syncing);
+        let mut filters = FiltersProgress::default();
+        filters.update_target_height(target);
+        filters.update_committed_height(filters_at);
+        filters.set_state(SyncState::Syncing);
+        let mut blocks = BlocksProgress::default();
+        blocks.set_state(SyncState::Syncing);
+        // Incremental masternode updates stay `Synced` (pin masternodes/manager.rs:581).
+        let mut masternodes = MasternodesProgress::default();
+        masternodes.update_target_height(target);
+        masternodes.update_current_height(target);
+        masternodes.set_state(SyncState::Synced);
+        let mut p = SyncProgress::default();
+        p.update_headers(headers);
+        p.update_filter_headers(filter_headers);
+        p.update_filters(filters);
+        p.update_blocks(blocks);
+        p.update_masternodes(masternodes);
+        p
+    }
+
+    /// DEC-1058 #6: a payment first seen in a new block is no catch-up,
+    /// though dash-spv still reads `Syncing` while it processes that block;
+    /// one found far behind the tip is.
+    #[test]
+    fn a_payment_in_a_new_block_is_not_flagged_catch_up() {
+        let sink = Arc::new(Recorded::default());
+        let hub = SessionHub::new(
+            DashNetwork::Regtest,
+            Arc::clone(&sink) as Arc<dyn EventSink>,
+        );
+        hub.tracker().set_running(true);
+        let flag = |n: u8, filters_at: u32| {
+            hub.tracker().on_progress(&following(filters_at, 1_000));
+            let t = tx(n);
+            hub.apply_wallet_event(&WalletEvent::BlockProcessed {
+                wallet_id: W.0,
+                height: filters_at + 1,
+                chain_lock: None,
+                inserted: vec![in_block(&t, filters_at + 1)],
+                updated: Vec::new(),
+                matured: Vec::new(),
+                balance: WalletCoreBalance::new(1_000, 0, 0, 0),
+                account_balances: BTreeMap::new(),
+                addresses_derived: Vec::new(),
+            });
+            hub.emit_new_txs(hub.pump.take_new_txs());
+            let notices: Vec<_> = std::mem::take(&mut *sink.0.lock().unwrap())
+                .into_iter()
+                .filter_map(|e| match e {
+                    EngineEvent::NewTransactions {
+                        txids, catch_up, ..
+                    } => Some((txids, catch_up)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(notices.len(), 1, "one notice per batch");
+            assert_eq!(notices[0].0, [t.txid()]);
+            notices[0].1
+        };
+        assert!(!flag(1, 999), "the new tip block 1000 is no catch-up");
+        assert!(!flag(2, 997), "nor a few blocks behind");
+        assert!(flag(3, 500), "500 blocks behind is");
     }
 
     /// dash-spv truncated the wallet at a fork: the hub's history, heights and balance

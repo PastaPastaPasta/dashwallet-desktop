@@ -288,7 +288,7 @@ unless noted.
 
 | Event | When | Host reaction | Emitter |
 |---|---|---|---|
-| `NewTransactions { network, wallet_id, txids, catch_up }` | Transactions seen for the first time, batched over 100 ms (dash-qt). Never for status changes. `catch_up` = SPV not caught up (dash-qt shows nothing during initial sync; iOS sends one catch-up summary). | `tx_notices` → notifier: ≥ 100 rows in a batch become one summary ("Received and sent multiple transactions"); CoinJoin-internal rows are hidden unless "show CoinJoin popups" is on | R1 |
+| `NewTransactions { network, wallet_id, txids, catch_up }` | Transactions seen for the first time, batched over 100 ms (dash-qt). Never for status changes. `catch_up` = SPV more than 3 blocks (`TIP_SLACK`) behind the best header (dash-qt shows nothing during initial sync; iOS sends one catch-up summary). A payment in a new block is no catch-up, though dash-spv reads `Syncing` until that block is processed (DEC-1058 #6). | `tx_notices` → notifier: ≥ 100 rows in a batch become one summary ("Received and sent multiple transactions"); CoinJoin-internal rows are hidden unless "show CoinJoin popups" is on | R1 |
 | `WalletLoadChanged { network, wallet_id, loaded }` | `load_wallet` / `unload_wallet` | reload wallet list and load states | R1 |
 
 DashKit maps both. They are lifecycle events (queued, never dropped) because notifications cannot be

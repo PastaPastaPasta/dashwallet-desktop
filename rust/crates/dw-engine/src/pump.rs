@@ -195,6 +195,15 @@ impl EventPump {
         self.take(|p| std::mem::take(&mut p.news))
     }
 
+    /// The pending new-transaction batches, as a flush takes them (tests only).
+    #[cfg(test)]
+    pub(crate) fn take_new_txs(&self) -> BTreeMap<WalletId, Vec<Txid>> {
+        self.take(|p| {
+            p.new_txs_due = None;
+            std::mem::take(&mut p.new_txs)
+        })
+    }
+
     /// Takes the pending balance and history marks without delivering them.
     #[cfg(test)]
     pub(crate) fn take_wallet_marks(&self) -> (BTreeSet<WalletId>, BTreeMap<WalletId, TxidSet>) {

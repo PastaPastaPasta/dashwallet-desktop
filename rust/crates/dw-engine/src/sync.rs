@@ -191,6 +191,28 @@ fn caught_up(r: &Readings) -> bool {
     phases_done && blocks_idle
 }
 
+/// Blocks a phase may trail the best header and still follow the tip
+/// (DEC-1058 #6). A new block puts the filter phases and the block phase back
+/// in `Syncing` until it is processed (pin filters/manager.rs:1097-1099,
+/// blocks/sync_manager.rs:169); that is not a catch-up.
+pub(crate) const TIP_SLACK: u32 = 3;
+
+/// Whether dash-spv follows the tip: [`caught_up`], or every reported phase
+/// done or at most [`TIP_SLACK`] blocks behind the best header. Headers must
+/// have a target, as for [`caught_up`].
+fn near_tip(r: &Readings) -> bool {
+    if caught_up(r) {
+        return true;
+    }
+    let Some(target) = r.headers.map(|h| h.target).filter(|t| *t > 0) else {
+        return false;
+    };
+    [r.headers, r.filter_headers, r.filters, r.masternodes]
+        .into_iter()
+        .flatten()
+        .all(|p| p.done() || p.current.saturating_add(TIP_SLACK) >= target)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PeerEntry {
     connected_since: u64,
@@ -427,6 +449,12 @@ impl SyncTracker {
     /// SPV is running (started and not stopped).
     pub(crate) fn running(&self) -> bool {
         self.running
+    }
+
+    /// Running and following the tip ([`near_tip`]): what is found now is
+    /// news, not a catch-up.
+    pub(crate) fn near_tip(&self) -> bool {
+        self.running && near_tip(&self.readings)
     }
 
     pub(crate) fn snapshot(&self) -> SyncSnapshot {
@@ -672,6 +700,34 @@ mod tests {
         assert_eq!(s.phases[1].current_height, Some(400));
         assert_eq!(s.phases[1].target_height, Some(1000));
         assert!(s.seconds_since_progress.is_some());
+    }
+
+    /// DEC-1058 #6: a new block is no catch-up; a phase more than
+    /// `TIP_SLACK` behind, a missing header target or a stopped client is.
+    #[test]
+    fn near_tip_allows_a_few_blocks_of_slack() {
+        let mut t = running();
+        let mut p = SyncProgress::default();
+        p.update_headers(headers(SyncState::WaitForEvents, 0, 0));
+        t.on_progress(&p);
+        assert!(!t.near_tip(), "no header target yet");
+        p.update_headers(headers(SyncState::Synced, 1000, 1000));
+        p.update_filter_headers(filter_headers(SyncState::Syncing, 1000 - TIP_SLACK, 1000));
+        p.update_masternodes(masternodes(SyncState::Synced, 990, 1000));
+        t.on_progress(&p);
+        assert!(t.near_tip() && !t.caught_up(), "a phase within the slack");
+        p.update_filter_headers(filter_headers(SyncState::Syncing, 999 - TIP_SLACK, 1000));
+        t.on_progress(&p);
+        assert!(!t.near_tip(), "one block more is a catch-up");
+        p.update_filter_headers(filter_headers(SyncState::WaitForEvents, 1000, 1000));
+        p.update_masternodes(masternodes(SyncState::Syncing, 400, 1000));
+        t.on_progress(&p);
+        assert!(!t.near_tip(), "an initial masternode sync counts too");
+        p.update_masternodes(masternodes(SyncState::Synced, 1000, 1000));
+        t.on_progress(&p);
+        assert!(t.near_tip() && t.caught_up());
+        t.set_running(false);
+        assert!(!t.near_tip(), "a stopped client follows nothing");
     }
 
     #[test]
