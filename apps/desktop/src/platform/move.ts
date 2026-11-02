@@ -22,6 +22,8 @@ export const MOVE_COPY = {
   card: {
     title: "Platform addresses",
     text: "Your Platform balance is not in your Dash wallet yet. Move it there to spend it as Dash.",
+    /** A remainder that costs more to move than it is worth: it stays on Platform. */
+    dust: (amount: string) => `${amount} on your Platform addresses is too small to move.`,
   },
   title: "Move to Dash wallet",
   message: "Everything on your Platform addresses moves to your Dash wallet. Dash Platform pays it to the address below.",
@@ -34,7 +36,8 @@ export const MOVE_COPY = {
   running: { title: "Moving…", text: "Dash Platform confirms the move. You can close this: Activity shows it." },
   done: {
     title: "Moved",
-    text: (amount: string) => `About ${amount} is on its way to your Dash wallet. It shows in Activity once it arrives.`,
+    text: (amount: string, fee: string | null) =>
+      `About ${amount} is on its way to your Dash wallet.${fee === null ? "" : ` The network fee was ${fee}.`} It shows in Activity once it arrives.`,
   },
   pending: {
     title: "Not confirmed yet",

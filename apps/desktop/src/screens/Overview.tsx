@@ -197,7 +197,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
       <div className="page-column">
         <HomeDashPayCard walletId={walletId} network={network} />
         <ShieldedCard walletId={walletId} network={network} />
-        <PlatformMoveCard walletId={walletId} network={network} platform={pools.platform} />
+        <PlatformMoveCard walletId={walletId} network={network} platform={pools.platform} dustCredits={pools.platformDust} />
         <CoinJoinCard walletId={walletId} network={network} />
         {/* Who the wallet pays most is payment history: discreet mode hides it too (D8). */}
         {!discreet && <HomeFrequent walletId={walletId} />}

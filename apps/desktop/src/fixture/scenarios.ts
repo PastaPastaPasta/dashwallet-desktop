@@ -594,6 +594,18 @@ const SCENARIOS = {
     w.pending.shielded!.active = false;
     return w;
   },
+  /** Platform addresses holding only what is too small to move: Home counts none of it. */
+  "platform-dust": (t) => {
+    const w = base(t);
+    w.pending.platform!.addresses = [{ address: w.pending.platform!.addresses[0].address, credits: "1500000" }];
+    return w;
+  },
+  /** Movable Platform credits and a remainder on another address too small to move. */
+  "platform-partly-dust": (t) => {
+    const w = base(t);
+    w.pending.platform!.dust = "1500000";
+    return w;
+  },
   /** A wallet that starts one block short of the tip and has never been caught up. */
   "sync-one-behind": (t) => {
     const w = base(t);

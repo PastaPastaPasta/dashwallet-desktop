@@ -214,7 +214,10 @@ export function usePoolBalances(walletId: string) {
   const platform = usePlatformAddresses(walletId);
   return {
     shielded: shielded.isError ? null : shielded.data === undefined ? undefined : shieldedDuffs(shielded.data),
+    // What a move of everything would take (`movableCredits`): Home counts that, not a remainder too small to move.
     platform: platform.isError ? null : platform.data === undefined ? undefined : (platform.data?.duffs ?? null),
+    /** Credits on the Platform addresses that are too small to move (`credits - movableCredits`). */
+    platformDust: platform.data ? String(BigInt(platform.data.credits) - BigInt(platform.data.movableCredits)) : "0",
   };
 }
 

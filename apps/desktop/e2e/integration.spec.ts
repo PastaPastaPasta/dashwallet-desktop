@@ -63,3 +63,29 @@ test.describe("item 2: Move waits for Activity's check", () => {
     await expect(page.getByTestId("tx-list")).toBeVisible();
   });
 });
+
+test.describe("item 3: movable and dust, the fee actually taken", () => {
+  test("Platform addresses holding only dust: Home counts nothing, and no Move is offered", async ({ page }) => {
+    await open(page, "platform-dust");
+    await expect(page.getByTestId("breakdown-platform")).toContainText("0.00");
+    await expect(page.getByTestId("platform-card")).toContainText("is too small to move");
+    await expect(page.getByTestId("platform-move")).toHaveCount(0);
+    await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
+  });
+
+  test("a remainder too small to move is named beside the movable amount, and not counted", async ({ page }) => {
+    await open(page, "platform-partly-dust");
+    await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
+    await expect(page.getByTestId("platform-card-amount")).toContainText("0.4");
+    await expect(page.getByTestId("platform-card-dust")).toContainText("0.000015 tDASH");
+    await expect(page.getByTestId("platform-move")).toBeEnabled();
+  });
+
+  test("the move's outcome names the fee the engine took", async ({ page }) => {
+    await open(page);
+    await page.getByTestId("platform-move").click();
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-text")).toContainText("The network fee was 0.00002 tDASH.");
+  });
+});

@@ -30,6 +30,8 @@ export interface PlatformWorld {
   activity: PlatformActivity[];
   nextMove: MoveResult;
   syncedAt: number | null;
+  /** Credits on addresses too small to move: in `credits`, not in `movableCredits`. */
+  dust: string;
 }
 
 export interface PendingWorld {
@@ -53,6 +55,7 @@ export const newPlatformWorld = (): PlatformWorld => ({
     { id: "pa-1", kind: "incoming", state: "done", credits: "30000000000", address: ADDRESSES[0].address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 5 * 86_400 },
   ],
   nextMove: "done",
+  dust: "0",
   syncedAt: Math.floor(FIXTURE_NOW.getTime() / 1000) - 60,
 });
 
@@ -77,9 +80,12 @@ function networkView(world: Ctx["world"]): NetworkChoiceView {
 
 const total = (p: PlatformWorld) => p.addresses.reduce((n, a) => n + BigInt(a.credits), 0n);
 
+/** What a move of everything would take: nothing when it would be refused (it does not clear the fee). */
+const movable = (p: PlatformWorld) => (total(p) > MOVE_FEE_CREDITS ? total(p) : 0n);
+
 function balance(p: PlatformWorld): PlatformAddressBalance {
-  const credits = total(p);
-  return { credits: String(credits), movableCredits: String(credits), duffs: Number(credits / CREDITS_PER_DUFF), addresses: [...p.addresses].sort((a, b) => Number(BigInt(b.credits) - BigInt(a.credits))), syncedAt: p.syncedAt, syncing: false };
+  const credits = total(p) + BigInt(p.dust);
+  return { credits: String(credits), movableCredits: String(movable(p)), duffs: Number(movable(p) / CREDITS_PER_DUFF), addresses: [...p.addresses].sort((a, b) => Number(BigInt(b.credits) - BigInt(a.credits))), syncedAt: p.syncedAt, syncing: false };
 }
 
 /** The platform state of `world`, or the absent-command rejection. */

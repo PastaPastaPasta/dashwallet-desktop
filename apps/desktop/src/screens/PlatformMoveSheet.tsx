@@ -122,7 +122,9 @@ export function PlatformMoveSheet({ flow, walletId, network, block }: { flow: Pl
                 {outcome.state === "done" ? C.done.title : C.pending.title}
               </p>
               <p className="sheet-text" data-testid="platform-move-outcome-text">
-                {(outcome.state === "done" ? C.done : C.pending).text(amount(outcome.expectedDuffs ?? creditsToDuffs(outcome.credits)))}
+                {outcome.state === "done"
+                  ? C.done.text(amount(outcome.expectedDuffs ?? creditsToDuffs(outcome.credits)), outcome.feeCredits === null ? null : credits(outcome.feeCredits))
+                  : C.pending.text(amount(outcome.expectedDuffs ?? creditsToDuffs(outcome.credits)))}
               </p>
               <div className="sheet-actions">
                 <DashButton variant="filledBlue" size="large" data-testid="platform-move-done" onClick={() => flow.close()}>
@@ -157,7 +159,7 @@ export function PlatformMoveSheet({ flow, walletId, network, block }: { flow: Pl
 
 /** Home's Platform card: shown while the Platform addresses hold something, or a move's result
  * waits. `platform` is their balance in duffs (`null`/`undefined`: not known, no card). */
-export function PlatformMoveCard({ walletId, network, platform }: { walletId: string; network: NetworkInfo; platform: number | null | undefined }) {
+export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0" }: { walletId: string; network: NetworkInfo; platform: number | null | undefined; dustCredits?: string }) {
   const backend = useBackend();
   const flow = moveFor(backend, walletId);
   useModel(flow);
@@ -168,13 +170,15 @@ export function PlatformMoveCard({ walletId, network, platform }: { walletId: st
   // rows read may already have shown it settled) and when the sheet closes.
   useEffect(() => flow.settle(activity.data), [flow, activity.data, flow.pending, flow.open]);
   const funded = platform != null && platform > 0;
+  const dust = BigInt(dustCredits) > 0n;
+  const dustText = C.card.dust(discreet ? shown.masked() : `${shown.compact(creditsToDuffs(dustCredits))} ${shown.name}`);
   // A move Platform has not confirmed: this session's result, or (after a restart) Activity's record.
   // Until Activity has answered, a fresh Move is not offered either (and an open confirmation waits).
   const waiting = flow.pending || hasPendingMove(activity.data);
   const block = moveBlock(waiting, activity);
   const sheet = <PlatformMoveSheet flow={flow} walletId={walletId} network={network} block={block} />;
   const holdReason = flow.running ? C.running.text : block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : null;
-  if (!flow.open && !flow.running && !flow.unseen && !funded && !waiting) return sheet;
+  if (!flow.open && !flow.running && !flow.unseen && !funded && !waiting && !dust) return sheet;
   return (
     <>
       <section className="platform-card card-l1" data-testid="platform-card" aria-label={C.card.title}>
@@ -182,8 +186,13 @@ export function PlatformMoveCard({ walletId, network, platform }: { walletId: st
           <h2 className="platform-card-title">{C.card.title}</h2>
           <p className="platform-card-text">
             {funded && <span data-testid="platform-card-amount">{discreet ? shown.masked() : shown.withUnit(platform)}. </span>}
-            {waiting ? C.waiting.text : flow.unseen ? C.unseen : C.card.text}
+            {waiting ? C.waiting.text : flow.unseen ? C.unseen : funded ? C.card.text : dustText}
           </p>
+          {funded && dust && !waiting && (
+            <p className="platform-card-text" data-testid="platform-card-dust">
+              {dustText}
+            </p>
+          )}
           {holdReason && !waiting && (
             <p className="field-hint" id="platform-move-why" data-testid="platform-move-why">
               {holdReason}
@@ -202,11 +211,11 @@ export function PlatformMoveCard({ walletId, network, platform }: { walletId: st
           <DashButton variant="tintedBlue" data-testid="platform-move-view" onClick={() => navigate("activity")}>
             {C.waiting.action}
           </DashButton>
-        ) : (
+        ) : funded || flow.running || flow.unseen || flow.open ? (
           <DashButton variant="tintedBlue" data-testid="platform-move" disabled={flow.running || block === "checking" || block === "failed"} why={holdReason} whyId="platform-move-why" onClick={() => flow.begin()}>
             {flow.running ? C.running.title : flow.unseen ? C.show : C.action}
           </DashButton>
-        )}
+        ) : null}
       </section>
       {sheet}
     </>
