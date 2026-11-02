@@ -383,6 +383,25 @@ pub struct CountingFundingSigner {
     signer: VaultSigner,
     count: Arc<SignatureCount>,
     release: Arc<FundingRelease>,
+    /// At most this many inputs signed ([`Self::with_input_cap`]).
+    cap: Option<Arc<InputCap>>,
+}
+
+/// The input cap of one funding call's signer: the distinct sighashes it
+/// signed, at most `max`.
+#[derive(Debug)]
+struct InputCap {
+    max: usize,
+    signed: std::sync::Mutex<std::collections::HashSet<[u8; 32]>>,
+}
+
+impl InputCap {
+    /// Whether `sighash` may be signed: one already signed (an identical
+    /// retry) or a new one within the cap.
+    fn admits(&self, sighash: [u8; 32]) -> bool {
+        let mut signed = self.signed.lock().unwrap_or_else(|p| p.into_inner());
+        signed.contains(&sighash) || (signed.len() < self.max && signed.insert(sighash))
+    }
 }
 
 impl CountingFundingSigner {
@@ -395,7 +414,29 @@ impl CountingFundingSigner {
             signer,
             count,
             release,
+            cap: None,
         }
+    }
+
+    /// Signs at most `max` inputs: the first input past it is refused
+    /// before the vault is asked, and the call is abandoned
+    /// ([`SignatureCount::abandon`]), so it signs nothing more and no
+    /// complete transaction of it exists (a shield's lock, whose
+    /// InstantSend proof stops fitting a transition from about 65 inputs).
+    /// key-wallet's builder releases the build's reservation when its
+    /// signer fails (`build_signed_reserved`), and platform-wallet tracks
+    /// and sends nothing of a build that failed.
+    pub(crate) fn with_input_cap(mut self, max: usize) -> Self {
+        self.cap = Some(Arc::new(InputCap {
+            max,
+            signed: std::sync::Mutex::default(),
+        }));
+        self
+    }
+
+    /// Whether the input cap refused an input.
+    pub(crate) fn capped(&self) -> bool {
+        self.cap.is_some() && self.count.abandoned()
     }
 
     fn note<T>(&self, r: Result<T, SignerError>) -> Result<T, SignerError> {
@@ -419,6 +460,20 @@ impl key_wallet::Signer for CountingFundingSigner {
         path: &DerivationPath,
         sighash: [u8; 32],
     ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+        if self.count.abandoned() {
+            return Err(SignerError::PathNotAllowed(format!(
+                "{path}: the call's build was refused for its inputs"
+            )));
+        }
+        if let Some(cap) = &self.cap
+            && !cap.admits(sighash)
+        {
+            self.count.abandon();
+            return Err(SignerError::PathNotAllowed(format!(
+                "{path}: more than {} inputs",
+                cap.max
+            )));
+        }
         let Some(signing) = self.count.begin() else {
             return Err(SignerError::Locked);
         };

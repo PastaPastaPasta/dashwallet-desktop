@@ -63,7 +63,7 @@ mod profile;
 #[cfg(test)]
 mod profile_tests;
 mod profiles;
-mod protocol;
+pub(crate) mod protocol;
 pub(crate) mod provenance;
 mod recovery;
 #[cfg(test)]
@@ -79,6 +79,12 @@ mod reverify;
 pub(crate) mod runtime;
 #[cfg(test)]
 mod runtime_tests;
+mod shielded;
+#[cfg(test)]
+mod shielded_close_tests;
+pub(crate) mod shielded_pool;
+#[cfg(test)]
+mod shielded_tests;
 pub mod signers;
 mod startup;
 mod startup_status;
@@ -107,7 +113,7 @@ pub use credits::{
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{
     AvatarError, ContactError, CreditsError, IdentityError, InvitationError, NameError,
-    PlatformError, ProfileError, RegistrationError,
+    PlatformError, ProfileError, RegistrationError, ShieldedError,
 };
 pub use flows::{
     BudgetPurpose, BudgetView, DispatchResolution, DispatchResolved, DispatchState, FlowKind,
@@ -142,6 +148,12 @@ pub use registration::{
     FaucetLockKey, FinishReport, InitialProfile, RegistrationFailure, RegistrationFunding,
     RegistrationInvitation, RegistrationPhase, RegistrationQuote, RegistrationRequest,
     RegistrationStatus, RegistrationWait,
+};
+pub use shielded::{
+    PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote, ShieldState,
+    ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus, ShieldedAddress,
+    ShieldedDirection, ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedSpendState,
+    ShieldedStatus, UnrecordedSpend, UnresolvedSpend,
 };
 pub use signers::{
     CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultPlatformAddressSigner,

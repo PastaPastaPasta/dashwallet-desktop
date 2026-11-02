@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 44
+Contract-Version: 47
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -75,6 +75,7 @@ type is `pub(crate)`.
 | `platform_addresses.rs` | release 0.1, lane E2 | `platform_addresses`, `platform_activity`, `sync_platform_addresses`, `move_to_core_quote`, `move_to_core` |
 | `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_link`, `stashed_links`, `take_stashed_link`, `forget_stashed_link`, `stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
+| `shielded.rs` | 0.1 E1 (RELEASE-PLAN §1 "Shielded") | `shielded_status`, `shielded_sync`, `shielded_receive_address`, `shield_quote`, `shield_from_core`, `resume_shield`, `shielded_send_quote`, `shielded_send`, `unshield_quote`, `unshield_to_core`, `shielded_history` |
 | `errors.rs` | E0-05 (the mapping, §6) and each domain's owner | the error enums of §4 |
 
 ## 1. Conventions (changes to m1-engine.md §1)
@@ -591,6 +592,143 @@ moves the user's credits to the user's wallet; even so a move that may still exe
 two moves never both spend them (§7 item 69). A nonce another device's spend took reads as the move done (0.1 has
 one device per wallet). No external Platform send, no Platform receive address, no Max drain of the shielded
 pool (0.2).
+### 2.13 Shielded funds (`shielded.rs`; 0.1 E1, RELEASE-PLAN §1 "Shielded")
+
+The wallet's Orchard account 0 in Platform's shielded pool, over platform-wallet's `wallet::shielded` at the pin: the
+coordinator's sync and balance, `fund_from_asset_lock.rs` (Core → Shielded), `operations.rs` `transfer` (Shielded →
+Shielded) and `withdraw` (Shielded → Core). Keys are platform-wallet's own ZIP-32 derivation, `OrchardKeySet::from_seed`
+(seed, network, account 0): the spending key at `m_orchard/32'/coin'/0'` (coin 5 on mainnet, 1 elsewhere), as iOS
+derives it through the FFI. The viewing keys are bound to the library at the session's Platform start, or by the first
+shielded call that finds the account unbound, and persisted through the session's store (`shielded.sqlite` holds the
+network's note tree), so a restart rebinds without the seed; the spend authority is derived in the vault for one spend
+and dropped when it returns (§7 item 72).
+
+**The gate.** Every call except `shielded_status` first reads the network's protocol version (the SDK's proved version,
+refreshed by one proved read while it is below the activation) and refuses below `SHIELDED_ACTIVATION_VERSION` (12, the
+pin's `SHIELDED_POOL_INITIAL_PROTOCOL_VERSION`) with `shielded.not_active{protocol_version, activation_version}`; the
+UI shows "Shielded is not active on this network yet". `shielded_status` reports it as `active: false`. The engine reads
+it through the shared helper (`NetworkSession::protocol_version`, then `refresh_protocol_version` only below the
+activation: the SDK's version only rises, and its floor is 13 on mainnet and testnet at the pin).
+
+**Amounts.** What leaves Core is in duffs; what the pool holds and spends is in credits (1 duff = 1000 credits). A spend
+quotes its fee and asks for `PlatformOp{max_credits}` = credits + fee; a shield asks for `PlatformOp{max_duffs}` = the
+lock plus its fee bound, like a top-up.
+
+**Leases.** `shield_from_core` and `resume_shield` run under a `Shield` lease, the spends under a `ShieldedSpend` lease
+(§7 item 72), each begun from the call's `grant` or named by a lease id of that flow; any other flow's lease is
+`platform.grant_invalid`.
+
+**Sync and events.** The library's own shielded sync loop never runs. While the session's Platform side runs, its
+supervisor starts one guarded pass (below, "Unconfirmed spends") with the other loops and one every interval after
+(the library's `ShieldedSyncManager` interval, 60 s, and its cooldown: a pass within 30 s of one that found nothing is
+skipped); `close_network` drains a pass in flight before it returns. A pass that
+changes the account, a spend, and an applied shield signal `Platform{change: shielded}` (§6); hosts re-query
+`shielded_status` and `shielded_history`. The Orchard prover's key is built in the background when the Platform side
+starts on an active network (about 3.5 s of CPU, `docs/research/shielded-cost.md`); a spend that comes first builds it
+inline.
+
+**Unconfirmed spends (E0-04 Q15, ruling (c) for 0.1).** A send or an unshield whose broadcast the library could not
+confirm returns `ShieldedSpendOutcome{state: pending, unresolved}`, never an error and never failed. The library keeps
+its notes reserved, its history row pending (for the session: the shielded store keeps activity in memory,
+`file_store.rs:749-769`, so after a restart the row returns only when the scan re-derives it) and its signed transition, which the sync pass re-sends byte for byte, at
+most 3 times. The scan resolves it: the row turns `confirmed` when the notes are seen spent (done), or `failed` when the
+prune backstop releases them (not executed). A sync pass resolves it the same way when Platform answers a re-send with
+a definitive rejection: the library releases the notes and marks the row `failed` (platform-wallet
+`operations.rs:3286-3310`, its `DefinitiveRejection`). `unresolved` (and `shielded_status.unresolved_spends` until then) names
+the row (`activity_id`), Platform's hash of the transition (`transition`, SHA-256 of its bytes) and the re-sends so far.
+The facade has no resend, and a host must not offer a retry or a new send of the same payment for a pending one. The
+re-sends run only inside the session, in the engine's own sync passes (the library's loop never runs): a pass is
+admitted only while the session is open and each wallet holding such a spend holds its background lease, with every
+such spend recorded first in the dispatch journal (its activity and transition hash); a spend holds the passes off
+from its library call until its record is written. A lock (async, synchronous or the relock timer's) and the close
+wait for a pass in flight to end, so no re-send runs after a lock completes or a close returns; the close then seals
+the coordinator. A lock completes at its `LockProgress::Done`; the async `lock_vault` also returns only then, while
+the synchronous `lock_vault_sync` (dw-ffi's `Vault.lock`, the console's `walletlock`, the relock timer) returns once
+its own vault gate ran, before the drain, so a pass admitted earlier may still re-send until `Done`. A re-send signs nothing: the bytes are those the spend's lease charged.
+
+**Closing with an unresolved spend (DEC-1046).** At the pin, removing a wallet from platform-wallet's manager deletes its
+stored transitions and reservations (`remove_wallet` → `unregister_wallet` → `purge_wallet`, `wallet_lifecycle.rs:847`,
+`coordinator.rs:878-902`, `file_store.rs:880-901`), and the library has no detach. So while a wallet holds such a spend:
+Close Wallet (`unload_wallet`) and an in-app network close or switch (`close_network`) are refused with the engine code
+`shielded_spend_unresolved`, "a shielded payment is still being confirmed; wait, or quit and reopen the app", and change
+nothing (dw-app keeps the network active and its drafts); a restore's rollback keeps the wallet. The close's check and
+its commit are one step: a signing shielded call (`shielded_send`, `unshield_to_core`, `shield_from_core`,
+`resume_shield`) or a wallet load that arrives meanwhile waits for it, then fails with the session closed if the close
+went ahead; a signing call already running refuses the close, while a wallet load already running is waited for (up to
+30 s, then the close is refused with `wallet`, "a wallet is still opening; close the network once it is open"). The
+shielded store's first open, which rehydrates its stored spends (the supervisor's start, or the session's first
+shielded call), is admitted as a load is: one running is waited for, and one that starts after the check fails with
+`network_not_open`. So a close or switch that succeeds leaves no spend unresolved. App quit (`shutdown`)
+is never refused: it seals and drains as any close, then leaves that wallet loaded in the sealed manager, which runs
+nothing more. Its stores are committed (WAL), not closed: wallet.sqlite writes commit inline (the persister's
+`Immediate` mode), the close flushes the wallet once more (a failed flush is logged, not returned), and the library
+writes a spend's record to the shielded store before the spend returns, best-effort at the pin (`arm_redrive_record`,
+`operations.rs:2983`: a failed write is logged, and that spend then has no stored transition to re-send; the engine
+then keeps its own marker, below). The connections stay open until the process exits, so their last WAL
+checkpoint does not run; the WAL replays at the next open. The next launch rehydrates the spend as pending,
+reservations and all: its stored transition, decodable as the library's re-send decodes it, its `unresolved_spends`
+entry and its journal record (not its history row, above). dw-ffi, frozen in 0.1, reports `shielded_spend_unresolved`
+as `wallet` (`EngineError`) or `internal` (`WalletError`), with the same detail. Removing the wallet (the
+user's `remove_wallet`, under its wipe grant) deletes its spends with it. 0.2 replaces this with an upstream detach.
+
+**Unrecorded spends (DEC-1057).** When the library could not write a pending spend's record (its result unknown and no
+`unresolved` in the outcome), the spend's notes are reserved in memory only (`file_store.rs:572`, `mark_pending`) and
+read unspent once the session ends, though the payment may still go through. Before such a send or unshield returns,
+the engine writes its own marker in `dispatch.sqlite` (schema 10, `shielded_unrecorded` and
+`shielded_unrecorded_nullifier`; the whole file runs `synchronous=FULL`): the wallet, the spend's history row, its
+anchor and the nullifiers of the notes it spent, read from the library's reservations (`stale_pending_spends`). A
+marker whose write fails turns the outcome into `platform.broadcast_unknown{artifact: "shielded send"}` (or
+`"shielded unshield"`): the payment may still go through. A marked wallet counts as holding an unresolved spend: Close
+Wallet and a network close or switch are refused with `shielded_spend_unresolved` as above, and a restore's rollback
+keeps it. `shielded_status.unrecorded_spends` names each marker (`activity_id`, `since`). While one stands, every
+`shielded_send` and `unshield_to_core` of that wallet, in the session that wrote it or after a relaunch, needs
+`confirm_unrecorded: true`, else it is refused with `shielded.unrecorded_spend`, "a shielded payment from before the
+restart may still go through; confirm to send anyway", before any quote, note selection or key use. Shields
+(`shield_from_core`, `resume_shield`) are not gated. A marker clears only when the wallet's store receives a proved
+scan's `nullifiers_spent` covering every one of its nullifiers (spent notes found by the sync pass, or a later spend's
+proved result); a partial set clears nothing. The user's `remove_wallet` deletes it; nothing else does.
+
+**Shield locks.** A shield's asset lock spends at most 50 coins: an InstantSend proof carries the whole transaction and
+stops fitting a transition from about 65 inputs. An apply refused before the lock's credit key signed its transition
+is `NotApplied`: nothing reached Platform. A lock whose consumption is unknown ("Checking": the apply failed after its
+transition was signed, Platform answered "already consumed", which proves nothing, or a restore read one of the
+wallet's shield locks back from the chain) stays in `pending_shields` with `consumption_unknown`, recorded in
+`app.sqlite` across restarts, until a proved apply: the original call's, or `resume_shield` ("Check again"). Nothing
+else settles it: no unproved refusal, no missing record, no user's word (DEC-1045, SR1). It blocks no new shield, since
+it may never settle; a new shield funds a new lock from the Core balance, never that outpoint. The UI shows it as
+"Checking" with a detail such as "This amount may already be in your shielded balance; we can't confirm it yet", so
+nobody reads the amount as available twice. A resume ("Check again") signs a new bundle (the pin keeps no shield bytes
+to re-send) for the identical asset-lock outpoint, with any proof the library derives for that outpoint, and never takes
+a new lock, new funding or other coins (DEC-1045 (b) as widened by DEC-1051): the engine hands platform-wallet only
+`FromExistingAssetLock{out_point}` of the tracked lock. The proof need not be the first apply's. At the pin
+(`rs-platform-wallet/src/wallet/`) it is the tracked row's proof, upgraded to the outpoint's ChainLock proof once the
+lock is chain-locked locally (`asset_lock/orchestration.rs:701` → `sync/recovery.rs:1693` → `sync/proof.rs:443-455`); a
+ChainLock proof after the InstantSend wait timed out (`shielded/fund_from_asset_lock.rs:245-262`) or after Platform
+refused the InstantSend one (`:396-433`); the ChainLock proof persisted on an "already consumed" report, the row then
+`RecoveredFromChain` (`asset_lock/orchestration.rs:478-521`, `sync/tracking.rs:351`); or, after Platform refused a
+ChainLock proof, the record's InstantSend proof, another ChainLock proof, or none until the next resume derives one
+(`fund_from_asset_lock.rs:441-445` → `sync/tracking.rs:564-620`). Within one call the ChainLock-height retries sign
+fresh bundles of the same outpoint and proof (`:378`, `:416`). Safety rests on the outpoint: Platform executes at most
+one shield of it (rs-drive-abci `shield_from_asset_lock/transform_into_action/v1/mod.rs:126-138` →
+`asset_lock/proof/verify_is_not_spent/v0/mod.rs:30-55`). A recovered lock no shield step signed is
+history. Nothing stops a shield partway: no close or
+engine timeout drops the call between the lock and its apply, and a lock built and broadcast but not applied is found
+again after a restart (the step's signed-lock record, the library's tracked row, or SPV's recovery of it) and pends for
+`resume_shield`.
+
+| Call | Kind | Semantics | Errors |
+|---|---|---|---|
+| `shielded_status()` | async | `ShieldedStatus`: `active`, `protocol_version`, `activation_version`, then, when active, `ready` (keys bound and the ledger restored or scanned), `balance` (spendable credits), `pending` (credits of pending activity), `pending_shields` (empty until the dispatch journal is read), `unresolved_spends`, `synced_index` (the note-tree position scanned to), `last_sync_at`, `syncing` and `prover_ready`; and, active or not, `unrecorded_spends` (DEC-1057, above). Reads local state only: an inactive network is a status, not an error. `wallet_not_found` for a wallet the session does not hold. | `ShieldedError` |
+| `shielded_sync()` | async | Runs a pass of the wallet's notes now (bypassing the 30 s skip), then returns `shielded_status`. The gate; `platform.unavailable` while the Platform side is not running. | `ShieldedError` |
+| `shielded_receive_address()` | async | `ShieldedAddress{address, account}`: the account's default payment address, bech32m (`dash1z…`/`tdash1z…`, dpp `OrchardAddress::to_bech32m_string`), for "Receive" and its QR. The gate; `shielded.not_synced` until the keys are bound. | `ShieldedError` |
+| `shield_quote(duffs)` | async | `ShieldQuote`: the lock's fee bound and total in duffs, Platform's flat `pool_fee_credits` for the shield, the `credits` the balance gains, and the `grant` (`max_duffs` = total). The gate; `shielded.below_minimum{min}` for a lock whose credits do not clear the pool fee (`min` in duffs); `shielded.funding_insufficient{needed, available}` above the spendable Core balance; `shielded.coins_locked`; `shielded.too_many_inputs{inputs, max}` when the fewest coins that cover the lock are more than 50 ("combine coins first"); `shielded.shield_pending{txid}` while an earlier shield is not applied; `platform.unavailable` until the dispatch journal is read. | `ShieldedError` |
+| `shield_from_core(duffs, grant)` | async | Core → Shielded: the quote's refusals, then under the `Shield` lease an asset lock of `duffs` from the Core balance (funding type `AssetLockShieldedAddressTopUp`, step `shield/<k>/funding`, held at most once as a top-up's is), then Platform's ShieldFromAssetLock of the proved lock to the account's own address (the lock's credits less the pool fee). Returns `ShieldOutcome{txid, state}`: `Applied{balance}`, `ProofWaiting` (no InstantSend lock in its window), `NotApplied{error}` (refused before the transition was signed: nothing reached Platform) or `ConsumptionUnknown` (the apply may have executed, unproved: Platform said the lock is already consumed, or the apply failed after signing; "Checking", "This amount may already be in your shielded balance; we can't confirm it yet"); nothing is lost in the last three (`pending_shields`, `resume_shield`). A resume never moves a lock's funds twice: Platform takes a lock once. A `consumption_unknown` lock does not block a new shield; any other pending one is `shielded.shield_pending{txid}`. Held back as a top-up is while SPV is not caught up (`platform.context_unavailable`). A lock spends at most 50 coins: the quote refuses one whose fewest coins (largest first) are more, and the funding signer refuses the 51st input of the build key-wallet's coin selection makes, before anything is tracked or sent, its coins free and the step not left pending: `shielded.too_many_inputs{inputs, max}` (combine coins first; `inputs` is then `max + 1`, at least). A funding whose outcome is unknown is `platform.broadcast_unknown{artifact}` with its step. | `ShieldedError` |
+| `resume_shield(txid, grant)` | async | Applies the pending shield lock `txid` (waiting up to 30 s for its proof), the outcome as `shield_from_core`'s: for a `consumption_unknown` lock this is "Check again", on the same outpoint with any proof the library derives for it, never a new lock, new funding or other coins, and only a proved apply settles it. `invalid_argument` for a txid that is not a pending shield of the wallet; `platform.unavailable` until the dispatch journal is read. The grant needs `max_duffs` ≥ 1 (the lock's one-time key), none of which is spent: the lock's credit key signs a new bundle, so "Check again" asks for the same confirmation as any signing action. | `ShieldedError` |
+| `shielded_send_quote(to, credits)` | async | `ShieldedSpendQuote`: `credits`, Platform's `fee_credits` for the transfer, `total_credits` and the `grant` (`max_credits` = total). The gate; `shielded.invalid_address{detail}` for `to` that is not a shielded address of the network; `shielded.not_synced`; `shielded.below_minimum{min}` for 0; `shielded.insufficient_funds{needed, available}` above the spendable balance. | `ShieldedError` |
+| `shielded_send(to, credits, memo, grant, confirm_unrecorded)` | async | Shielded → Shielded: `invalid_argument` for a memo over 36 bytes and `shielded.invalid_address`, then `platform.unavailable` until the dispatch journal is read and `shielded.unrecorded_spend` while the wallet holds an unrecorded spend and `confirm_unrecorded` is false (DEC-1057, above), then the quote's refusals, then under the `ShieldedSpend` lease, quoted again once no sync pass can move the notes and charged that total (a fee above what the grant confirmed is `platform.grant_exceeded`, nothing signed), the library's `transfer` from account 0's notes to `to` (change to the account's own address), proved and broadcast, waiting for Platform's proved result. Returns `ShieldedSpendOutcome{credits, balance, to, state, unresolved}`: `state` `done`, or `pending` for a broadcast with no proved answer ("Unconfirmed spends" above; no retry). | `ShieldedError` |
+| `unshield_quote(credits, to)` | async | As `shielded_send_quote` for a withdrawal to Core: `to` a P2PKH or P2SH address of the network, or the wallet's next receive address when `None` (`shielded.invalid_address` otherwise), plus `expected_duffs`, what reaches the address. | `ShieldedError` |
+| `unshield_to_core(credits, to, grant, confirm_unrecorded)` | async | Shielded → Core: the journal and `confirm_unrecorded` gates as `shielded_send`'s, then the quote's refusals, then under the `ShieldedSpend` lease the library's `withdraw` to `to` at Core fee rate 1, as `shielded_send` otherwise. The duffs arrive when Platform's asset unlock is mined. Platform refuses a withdrawal from a pool holding fewer than its minimum of notes (250 in every version at the pin, `minimum_pool_notes_for_outgoing`); that refusal is `shielded.pool_too_small{notes, required}` ("Shielded withdrawals open once the network's shielded pool has enough activity. Try again later."). The engine does not check the floor first: mainnet and testnet are past it. | `ShieldedError` |
+| `shielded_history(offset, limit)` | async | The account's activity rows (`ShieldedActivity`), pending first, then by block height, newest first: kind, direction, credits, fee, counterparty (a shielded, Platform or Core address), memo, block height, status and when this device recorded it. `limit` above 500 is `invalid_argument`. The gate. | `ShieldedError` |
 
 ## 3. Surface (generated)
 
@@ -599,7 +737,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: ffead710e50a4b5028c601ef6d49ba6fd93f294d37671702bcd1d02316e03c73 version: 44 -->
+<!-- surface-sha256: 292cbd11a4c8f347f1aa7237d06e139887636100e8414d0021ee48821ae30987 version: 47 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1014,6 +1152,25 @@ impl CreditsError {
     pub fn code(&self) -> &'static str;
     pub fn platform(&self) -> Option<&PlatformError>;
 }
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ShieldedError {
+    NotActive { protocol_version: u32, activation_version: u32 },
+    NotSynced,
+    InvalidAddress { detail: String },
+    InsufficientFunds { needed: u64, available: u64 },
+    FundingInsufficient { needed: u64, available: u64 },
+    BelowMinimum { min: u64 },
+    CoinsLocked,
+    ShieldPending { txid: String },
+    TooManyInputs { inputs: u64, max: u64 },
+    PoolTooSmall { notes: u64, required: u64 },
+    UnrecordedSpend,
+    Platform(PlatformError),
+}
+impl ShieldedError {
+    pub fn code(&self) -> &'static str;
+    pub fn platform(&self) -> Option<&PlatformError>;
+}
 impl From<dash_sdk::Error> for PlatformError;
 impl From<platform_wallet::PlatformWalletError> for PlatformError;
 impl From<dw_vault::VaultError> for PlatformError;
@@ -1040,6 +1197,8 @@ pub enum FlowKind {
     Dissolution,
     Proposal,
     PlatformAddressMove,
+    Shield,
+    ShieldedSpend,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1726,6 +1885,145 @@ impl DashPay {
     pub async fn finish_asset_locks(&self, grant: String) -> Result<FinishReport, RegistrationError>;
     pub async fn prepare_faucet_lock(&self, grant: String) -> Result<FaucetLockKey, RegistrationError>;
 }
+// src/platform/shielded.rs
+pub const SHIELDED_ACTIVATION_VERSION: u32;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldedStatus {
+    pub active: bool,
+    pub protocol_version: u32,
+    pub activation_version: u32,
+    pub ready: bool,
+    pub balance: u64,
+    pub pending: u64,
+    pub pending_shields: Vec<PendingShield>,
+    pub unresolved_spends: Vec<UnresolvedSpend>,
+    pub unrecorded_spends: Vec<UnrecordedSpend>,
+    pub synced_index: Option<u64>,
+    pub last_sync_at: Option<u64>,
+    pub syncing: bool,
+    pub prover_ready: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldedAddress {
+    pub address: String,
+    pub account: u32,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldQuote {
+    pub duffs: u64,
+    pub fee_duffs: u64,
+    pub total_duffs: u64,
+    pub pool_fee_credits: u64,
+    pub credits: u64,
+    pub grant: GrantRequest,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ShieldState {
+    Applied { balance: u64 },
+    ProofWaiting,
+    NotApplied { error: String },
+    ConsumptionUnknown,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldOutcome {
+    pub txid: String,
+    pub state: ShieldState,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingShield {
+    pub txid: String,
+    pub duffs: u64,
+    pub proved: bool,
+    pub consumption_unknown: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldedSpendQuote {
+    pub credits: u64,
+    pub fee_credits: u64,
+    pub total_credits: u64,
+    pub expected_duffs: Option<u64>,
+    pub grant: GrantRequest,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedSpendState {
+    Done,
+    Pending,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnresolvedSpend {
+    pub activity_id: String,
+    pub transition: String,
+    pub attempts: u32,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnrecordedSpend {
+    pub activity_id: String,
+    pub since: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldedSpendOutcome {
+    pub credits: u64,
+    pub balance: u64,
+    pub to: String,
+    pub state: ShieldedSpendState,
+    pub unresolved: Option<UnresolvedSpend>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedActivityKind {
+    Shield,
+    ShieldFromCore,
+    Received,
+    Sent,
+    Unshield,
+    Withdrawal,
+    IdentityCreate,
+    IdentityTopUp,
+    Spend,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedDirection {
+    In,
+    Out,
+    SelfTransfer,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedActivityStatus {
+    Pending,
+    Confirmed,
+    Failed,
+    Unknown,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldedActivity {
+    pub id: String,
+    pub kind: ShieldedActivityKind,
+    pub direction: ShieldedDirection,
+    pub credits: u64,
+    pub fee_credits: Option<u64>,
+    pub counterparty: Option<String>,
+    pub memo: Option<String>,
+    pub block_height: Option<u64>,
+    pub status: ShieldedActivityStatus,
+    pub created_at: Option<u64>,
+}
+impl DashPay {
+    pub async fn shielded_status(&self) -> Result<ShieldedStatus, ShieldedError>;
+    pub async fn shielded_sync(&self) -> Result<ShieldedStatus, ShieldedError>;
+    pub async fn shielded_receive_address(&self) -> Result<ShieldedAddress, ShieldedError>;
+    pub async fn shield_quote(&self, duffs: u64) -> Result<ShieldQuote, ShieldedError>;
+    pub async fn shield_from_core(&self, duffs: u64, grant: String) -> Result<ShieldOutcome, ShieldedError>;
+    pub async fn resume_shield(&self, txid: String, grant: String) -> Result<ShieldOutcome, ShieldedError>;
+    pub async fn shielded_send_quote(&self, to: String, credits: u64) -> Result<ShieldedSpendQuote, ShieldedError>;
+    pub async fn shielded_send(&self, to: String, credits: u64, memo: Option<String>, grant: String, confirm_unrecorded: bool) -> Result<ShieldedSpendOutcome, ShieldedError>;
+    pub async fn unshield_quote(&self, credits: u64, to: Option<String>) -> Result<ShieldedSpendQuote, ShieldedError>;
+    pub async fn unshield_to_core(&self, credits: u64, to: Option<String>, grant: String, confirm_unrecorded: bool) -> Result<ShieldedSpendOutcome, ShieldedError>;
+    pub async fn shielded_history(&self, offset: u32, limit: u32) -> Result<Vec<ShieldedActivity>, ShieldedError>;
+}
 // src/platform/startup.rs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1820,6 +2118,8 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
 | `AvatarError` | `avatar.too_large`, `avatar.unsupported`, `avatar.fetch_failed`, `avatar.hash_mismatch`, `avatar.upload_unconfigured` |
 | `CreditsError` | `credits.funding_insufficient`, `credits.below_minimum`, `credits.coins_locked`, `credits.top_up_pending`, `credits.withdrawal_out_of_range`, `credits.withdrawal_landed`, `credits.move_pending` |
+| `CreditsError` | `credits.funding_insufficient`, `credits.below_minimum`, `credits.coins_locked`, `credits.top_up_pending`, `credits.withdrawal_out_of_range`, `credits.withdrawal_landed` |
+| `ShieldedError` | `shielded.not_active`, `shielded.not_synced`, `shielded.invalid_address`, `shielded.insufficient_funds`, `shielded.funding_insufficient`, `shielded.below_minimum`, `shielded.coins_locked`, `shielded.shield_pending`, `shielded.too_many_inputs`, `shielded.pool_too_small`, `shielded.unrecorded_spend` |
 
 - `PlatformError` carries the m1 common codes (`invalid_argument`, `network_not_open`, `wallet_not_found`, `storage`,
   `internal`), unprefixed as in m1 §4. m1's common `not_implemented` is `platform.not_implemented{call}` here, so a
@@ -3347,6 +3647,32 @@ renames or reshapes them takes the next version bump:
     shows that detail. A refusal at the signer (version 44) ends the funding step not sent: the transaction was
     never complete, so the journal records it `NotSent` (unless an earlier marker of the step leaves it unknown)
     and a retry with fewer coins needs no Repair.
+
+**From release 0.1, lane E1** (version 45):
+
+72. **Shielded funds (0.1 E1, version 45).** §2.13 adds the shielded calls on `DashPay`, their records,
+    `ShieldedError` and `PlatformChange::Shielded`. `FlowKind` gains `Shield` (Core → Shielded: one
+    `PlatformOp{max_duffs}` grant, the asset lock's funding signer exactly as a top-up's, with the vault's
+    `PlatformFunding` scope widened to the shielded top-up credit keys `m/9'/coin'/5'/5'/index`) and `ShieldedSpend`
+    (a shielded send or an unshield: one `PlatformOp{max_credits}` grant, charged the quote's total before the
+    spend key is derived). A `ShieldedSpend` lease issues the vault's new `ShieldedSpend` key scope instead of an
+    identity signer: the ZIP-32 Orchard spending authority of the wallet's account 0, derived inside the vault from
+    the seed and handed to the library's free spend functions for one call, never the seed or any secp256k1 key.
+    Like the identity-scan key (`ScanKey`), that key leaves the vault once issued (platform-wallet's spend functions
+    take the `OrchardKeySet` by reference), so the engine checks the grant's cap before deriving it. The viewing key
+    needs no grant: the vault derives it for the session's bind while unlocked or unencrypted, as the DashPay crypto
+    signer works, and the engine persists it through the session's store (platform-wallet's shielded changeset) so a
+    restart binds without the vault. A spend whose broadcast the library could not confirm is `pending` until the scan
+    resolves it, and the facade offers no resend (E0-04 Q15, ruling (c) for 0.1; §2.13 "Unconfirmed spends"). Shield
+    locks spend at most 50 coins, and one whose consumption is unknown pends ("Checking") until a proved apply, blocking
+    no new shield. Its "Check again" reuses the identical outpoint with any proof platform-wallet derives for it, never
+    a new lock, new funding or other coins (DEC-1051, widening DEC-1045 (b); the proof paths in §2.13 "Shield locks").
+73. **Unrecorded shielded spends (DEC-1057, version 47).** A spend of unknown result whose record platform-wallet could
+    not write is marked by the engine in `dispatch.sqlite` (schema 10) before the call returns, or the call is
+    `platform.broadcast_unknown`. The marker refuses Close Wallet and the network close or switch
+    (`shielded_spend_unresolved`), shows in `ShieldedStatus.unrecorded_spends` (`UnrecordedSpend`), and gates every
+    send and unshield of the wallet behind `confirm_unrecorded` (`shielded.unrecorded_spend`); it clears only when a
+    proved scan reports all its nullifiers spent, or with the user's removal (§2.13 "Unrecorded spends").
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

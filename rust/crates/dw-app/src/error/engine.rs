@@ -45,6 +45,7 @@ codes! {
         Internal = "internal",
         OutpointNotFound = "outpoint_not_found",
         StuckFunding = "stuck_funding",
+        ShieldedSpendUnresolved = "shielded_spend_unresolved",
     }
 }
 
@@ -165,6 +166,7 @@ impl From<EngineError> for AppError {
                 Some(ErrorData::Call { call }),
             ),
             E::SpvNotRunning => (EngineCode::SpvNotRunning.into(), None),
+            E::ShieldedSpendUnresolved => (EngineCode::ShieldedSpendUnresolved.into(), None),
             E::SpvRunning => (EngineCode::SpvRunning.into(), None),
             E::RescanInProgress => (EngineCode::RescanInProgress.into(), None),
             E::InvalidXpub(_) => (EngineCode::InvalidXpub.into(), None),
@@ -281,6 +283,7 @@ mod tests {
             E::Internal(s()),
             E::OutpointNotFound(dashcore::OutPoint::null()),
             E::StuckFunding(dw_engine::platform::lease::StuckFundingRefusal::NoMarker),
+            E::ShieldedSpendUnresolved,
         ];
         // Every code of `EngineCode` is one of these (the one-to-one check).
         let mut seen: Vec<&str> = Vec::new();

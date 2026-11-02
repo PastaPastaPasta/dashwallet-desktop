@@ -696,7 +696,16 @@ impl NetworkSession {
             if created {
                 let removed = async {
                     let live = self.live()?;
-                    let removal = self.platform.remove_from_manager(&live.manager, id).await;
+                    // A wallet holding a stored shielded spend stays (DEC-1046),
+                    // as does one with a marked spend (DEC-1057).
+                    let removal = (self.platform)
+                        .remove_from_manager(
+                            &self.leases,
+                            &live.manager,
+                            id,
+                            crate::platform::runtime::StoredSpends::Refuse,
+                        )
+                        .await;
                     // Again, now that it is out of the manager (or failed to
                     // leave it): a scan begun since the first forget passed
                     // the wallet check, and a names check begun since read
@@ -716,6 +725,13 @@ impl NetworkSession {
                     .await?
                 }
                 .await;
+                if let Err(EngineError::ShieldedSpendUnresolved) = removed {
+                    // It stays whole, its seed with it: without the seed it
+                    // would never hold a background lease again, and every
+                    // shielded pass of the network would be held back.
+                    tracing::warn!(wallet_id = %id, "a restored wallet holding a shielded spend stays");
+                    continue;
+                }
                 if let Err(e) = removed {
                     tracing::warn!(wallet_id = %id, error = %e, "could not roll back a restored wallet");
                 }

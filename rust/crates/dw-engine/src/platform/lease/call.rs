@@ -51,6 +51,7 @@ use std::sync::{Arc, Mutex};
 use dw_appdb::dispatch::StoredFundingKey;
 use dw_vault::SignerError;
 use platform_wallet::AssetLockFundingType;
+use platform_wallet::wallet::shielded::OrchardKeySet;
 use tokio::time::Instant;
 
 use super::budget::Charge;
@@ -200,6 +201,10 @@ pub struct SignatureCount {
     /// A lock the call signed was recorded: its funding signer signs no
     /// other sighash ([`Self::admits`]).
     recorded: AtomicBool,
+    /// The call's build was refused partway by its funding signer's input
+    /// cap ([`Self::abandon`]): no transaction of its signatures can be
+    /// complete, and its signers sign nothing more.
+    abandoned: AtomicBool,
 }
 
 /// One signature asked of the vault under a [`SignatureCount`] (counted in
@@ -298,6 +303,22 @@ impl SignatureCount {
         !sighashes.is_empty()
             && sighashes.iter().all(|s| signed.contains(s))
             && signed.iter().all(|s| sighashes.contains(s))
+    }
+
+    /// The funding signer refused an input of the call's build past its
+    /// cap (a shield's lock, at most 50 inputs) and signs nothing more for
+    /// the call. Each signature it released is `SIGHASH_ALL`, so it commits
+    /// to every input of that build, the refused one among them, whose
+    /// signature never exists: no transaction carrying any of them can be
+    /// valid, and the call's end reads `Cancelled` (unless an earlier call
+    /// of the step left a marker).
+    pub(crate) fn abandon(&self) {
+        self.abandoned.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether [`Self::abandon`] ran.
+    pub(crate) fn abandoned(&self) -> bool {
+        self.abandoned.load(Ordering::SeqCst)
     }
 
     pub(crate) fn note_locked(&self) {
@@ -817,6 +838,30 @@ impl CallPermit {
             .map_err(|_| LeaseError::Vault("platform address signer scope"))
     }
 
+    /// The Orchard key set of the lease's shielded spend key (0.1 E1),
+    /// counted into this permit as one released signature: the library's
+    /// spend proves and signs with the key set itself, so once it is out
+    /// the spend may be, and the permit keeps its quote. None once the
+    /// permit ended.
+    pub(crate) fn shielded_keys(&self) -> Result<OrchardKeySet, LeaseError> {
+        let key = self.lease.call_shielded_spend_key()?;
+        let count = self.signatures();
+        let Some(signing) = count.begin() else {
+            return Err(LeaseError::Locked);
+        };
+        match key.keys() {
+            Ok(keys) => {
+                signing.released();
+                Ok(keys)
+            }
+            Err(SignerError::Locked) => {
+                count.note_locked();
+                Err(LeaseError::Locked)
+            }
+            Err(_) => Err(LeaseError::Vault("shielded spend key")),
+        }
+    }
+
     /// The lease's funding signer for `create_funded_asset_lock_proof`,
     /// counting into this permit: every released signature and a `Locked`
     /// refusal, as [`Self::identity_signer`]'s, and nothing signed once the
@@ -901,8 +946,13 @@ impl CallPermit {
         let outcome = if ok {
             FlowOutcome::Sent
         } else if !self.started
-            || ((released == 0 || self.unsent.load(Ordering::SeqCst)) && !self.prior_marker)
+            || ((released == 0
+                || self.unsent.load(Ordering::SeqCst)
+                || self.signatures.abandoned())
+                && !self.prior_marker)
         {
+            // Nothing signed, or nothing that can complete a transaction
+            // (`abort_unsent`, `SignatureCount::abandon`).
             FlowOutcome::Cancelled
         } else {
             FlowOutcome::MaybeSent

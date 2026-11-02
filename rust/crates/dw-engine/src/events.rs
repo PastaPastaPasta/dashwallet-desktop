@@ -21,6 +21,7 @@ use key_wallet::transaction_checking::TransactionContext;
 use key_wallet::wallet::balance::WalletCoreBalance;
 use platform_wallet::PlatformEventHandler;
 use platform_wallet::events::WalletEvent;
+use platform_wallet::manager::shielded_sync::{ShieldedSyncPassSummary, WalletShieldedOutcome};
 
 use crate::history::HistoryStore;
 use crate::pump::{EventPump, PumpTarget, TxidSet};
@@ -203,6 +204,10 @@ pub enum PlatformChange {
     /// The wallet's Platform-address balances or their activity (a sync
     /// pass changed them, or a move to Core was recorded or settled).
     PlatformAddresses,
+    /// The wallet's shielded account: a sync pass, its balance or its
+    /// activity (m4 §2.13); hosts re-query `shielded_status` and
+    /// `shielded_history`.
+    Shielded,
 }
 
 /// Non-fatal conditions the UI may surface.
@@ -793,6 +798,25 @@ impl PlatformEventHandler for SessionHub {
             if outcome.is_ok() {
                 self.pump
                     .mark_platform(WalletId(*id), [PlatformChange::PlatformAddresses]);
+            }
+        }
+    }
+
+    /// A shielded sync pass that found notes or spends of a wallet's account
+    /// (not a cooldown skip) tells its hosts (m4 §2.13).
+    fn on_shielded_sync_completed(&self, summary: &ShieldedSyncPassSummary) {
+        for (id, outcome) in &summary.wallet_results {
+            if let WalletShieldedOutcome::Ok(pass) = outcome
+                && !pass.is_cooldown_skip
+                && (pass
+                    .notes_result
+                    .new_notes_per_account
+                    .values()
+                    .any(|n| *n > 0)
+                    || pass.newly_spent_per_account.values().any(|n| *n > 0))
+            {
+                self.pump
+                    .mark_platform(WalletId(*id), [PlatformChange::Shielded]);
             }
         }
     }

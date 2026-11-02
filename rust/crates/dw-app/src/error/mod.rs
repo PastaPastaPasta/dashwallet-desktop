@@ -36,7 +36,7 @@ pub use nested::{
 };
 pub use platform::{
     AvatarCode, ContactCode, CreditsCode, IdentityCode, InvitationCode, NameCode, PlatformCode,
-    ProfileCode, RegistrationCode,
+    ProfileCode, RegistrationCode, ShieldedCode,
 };
 
 /// Error returned by every command.
@@ -77,6 +77,7 @@ pub enum ErrorCode {
     Invitation(InvitationCode),
     Avatar(AvatarCode),
     Credits(CreditsCode),
+    Shielded(ShieldedCode),
     Governance(GovernanceCode),
 }
 
@@ -295,7 +296,8 @@ pub enum ErrorData {
     /// `tx_action_refused`: why the abandon or resend was refused.
     TxAction { refusal: TxActionRefusalName },
     /// `request_not_found`, `height_out_of_range`, `backup.unsupported_version`,
-    /// `psbt.too_large` (bytes): the number named.
+    /// `psbt.too_large` (bytes), `shielded.too_many_inputs` (the coins the
+    /// shield would spend; at most 50 fit): the number named.
     Number { value: u64 },
     /// `contact.details_too_long`: the details' DIP-15 encoding and its cap,
     /// in bytes.
@@ -308,6 +310,15 @@ pub enum ErrorData {
     KeysNetwork { mainnet: bool },
     /// `psbt.fee_rate_too_high`: the offending fee rate in duffs per kB.
     FeeRate { duffs_per_kb: u64 },
+    /// `shielded.not_active`: the network's protocol version and the one
+    /// the shielded pool needs.
+    Protocol {
+        protocol_version: u32,
+        activation_version: u32,
+    },
+    /// `shielded.pool_too_small`: the notes the network's shielded pool
+    /// holds and the number withdrawals need.
+    PoolNotes { notes: u64, required: u64 },
     /// `stuck_funding`: why Repair refused (E0-04 §6.5), and whether the
     /// same Repair may succeed later with nothing done by the user.
     StuckFunding {
@@ -473,6 +484,7 @@ into_code!(
     Invitation(InvitationCode),
     Avatar(AvatarCode),
     Credits(CreditsCode),
+    Shielded(ShieldedCode),
     Governance(GovernanceCode),
 );
 

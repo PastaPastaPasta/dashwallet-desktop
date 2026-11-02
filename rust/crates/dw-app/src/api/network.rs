@@ -236,9 +236,7 @@ commands! {
             active => {
                 if let Some(old) = active {
                     let old = old.network().clone();
-                    *slot = None;
-                    state.clear_handles();
-                    engine.close_network(old).await?;
+                    close_active(&state, &mut slot, engine.close_network(old).await)?;
                 }
                 let options = settings.over(&state.launch);
                 let s = engine.open_network(network.clone(), options).await?;
@@ -264,11 +262,10 @@ commands! {
     fn close_network(state) -> bool {
         let engine = &state.engine;
         let mut slot = state.session_slot().await;
-        let Some(session) = slot.take() else {
+        let Some(network) = slot.as_ref().map(|s| s.network().clone()) else {
             return Ok(false);
         };
-        state.clear_handles();
-        Ok(engine.close_network(session.network().clone()).await?)
+        close_active(&state, &mut slot, engine.close_network(network).await)
     }
 
     /// The active network, `null` before `openNetwork`.
@@ -302,6 +299,25 @@ commands! {
         let networks = state.engine.existing_networks().await?;
         Ok(networks.into_iter().map(Into::into).collect())
     }
+}
+
+/// The active session's close, as `close_network` returned it: the slot and
+/// the session's handles are dropped once it closed, or failed to. A
+/// refusal, which leaves the engine's session open
+/// (`shielded_spend_unresolved`, DEC-1046; `wallet` while a wallet is
+/// still opening, E1 r2), leaves both as they were: the session stays
+/// active, its drafts kept.
+pub(crate) fn close_active(
+    state: &crate::state::AppState,
+    slot: &mut Option<Arc<dw_engine::NetworkSession>>,
+    closed: Result<bool, dw_engine::EngineError>,
+) -> Result<bool, AppError> {
+    if closed.is_err() && slot.as_ref().is_some_and(|s| s.is_open()) {
+        return closed.map_err(Into::into);
+    }
+    *slot = None;
+    state.clear_handles();
+    Ok(closed?)
 }
 
 #[cfg(test)]

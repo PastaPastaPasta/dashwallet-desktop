@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IpcBackend } from "../api/tauri";
 import { installFixture, type FixtureHandle } from "../fixture";
 import { FIXTURE_PASSPHRASE as PASS, FIXTURE_WALLET_ID as A, SECOND_WALLET_ID as B, type ScenarioName } from "../fixture/scenarios";
-import { WRONG_PASSPHRASE } from "../onboarding/model";
+import { failureText, WRONG_PASSPHRASE } from "../onboarding/model";
 import { RemoveWalletModel, walletName, WalletsModel, WalletsText, WatchOnlyModel } from "./wallets";
 
 let fixture: FixtureHandle;
@@ -38,6 +38,12 @@ describe("wallets list", () => {
     // Its data stays: opening it again brings it back, on the startup list too.
     await model.open(B);
     expect(model.rows[1]).toMatchObject({ loaded: true, loadOnStartup: true, hasMnemonic: true });
+  });
+
+  it("E1_closeWalletSaysAShieldedPaymentIsStillBeingConfirmed", () => {
+    // DEC-1046: the engine refuses Close Wallet while a shielded payment's result is unknown.
+    const refused = { code: "shielded_spend_unresolved", message: "refused", data: null };
+    expect(failureText(refused)).toBe("A shielded payment is still being confirmed. Wait, or quit and reopen the app.");
   });
 
   it("QT101_theLastOpenWalletCannotBeClosed", async () => {
@@ -134,6 +140,13 @@ describe("remove wallet", () => {
     expect(WalletsText.removeQuestion("Main", false)).toMatch(/recovery phrase, or a backup or export you kept/);
     expect(WalletsText.removeQuestion("Watcher", true)).toMatch(/extended public key adds it again/);
     expect(WalletsText.removeQuestion("Watcher", true)).not.toMatch(/recovery phrase/);
+  });
+
+  it("E1_removalWarnsThatASentShieldedPaymentMayStillGoThroughAndItsRecordIsDeleted", () => {
+    const question = WalletsText.removeQuestion("Main", false);
+    expect(question).toMatch(/shielded payment it already sent may still go through/);
+    expect(question).toMatch(/its pending record is deleted with the wallet/);
+    expect(WalletsText.removeQuestion("Watcher", true)).not.toMatch(/shielded/);
   });
 
   it("IOS110_anUnencryptedVaultRemovesWithoutAPassphrase", async () => {

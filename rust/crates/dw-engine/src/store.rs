@@ -29,6 +29,10 @@ pub(crate) struct WalletStore {
     /// Wallets `load` leaves out.
     unloaded: RwLock<HashSet<RawWalletId>>,
     tap: Arc<ChangesetTap>,
+    /// The session's lease table, whose journal keeps the shielded spend
+    /// markers (DEC-1057): installed once the session is assembled (the
+    /// table is made after this store). Weak: the table outlives no store.
+    leases: std::sync::OnceLock<std::sync::Weak<crate::platform::lease::LeaseTable>>,
     /// Tests: a store the predicate matches fails (`LockPoisoned`) and
     /// reaches neither the SQLite persister nor the tap.
     #[cfg(test)]
@@ -48,9 +52,15 @@ impl WalletStore {
             inner,
             unloaded: RwLock::new(unloaded),
             tap,
+            leases: std::sync::OnceLock::new(),
             #[cfg(test)]
             fail_store: Default::default(),
         }
+    }
+
+    /// Installs the session's lease table (once; a second call is a no-op).
+    pub(crate) fn install_leases(&self, leases: &Arc<crate::platform::lease::LeaseTable>) {
+        let _ = self.leases.set(Arc::downgrade(leases));
     }
 
     pub(crate) fn is_unloaded(&self, id: &RawWalletId) -> bool {
@@ -120,7 +130,25 @@ impl PlatformWalletPersistence for WalletStore {
             self.tap.note_signed(WalletId(wallet_id), classified);
         }
         let core = changeset.core.is_some();
+        // The nullifiers a proved scan, or a spend's proved result, found
+        // spent (the library's only two sources: sync.rs:761-777,
+        // operations.rs:2847-2854): they clear the shielded spend markers
+        // once all of a marker's are (DEC-1057), after the persister took
+        // them.
+        let spent: Vec<[u8; 32]> = (changeset.shielded.as_ref())
+            .map(|cs| {
+                (cs.nullifiers_spent.iter())
+                    .filter(|(id, _)| id.wallet_id == wallet_id)
+                    .flat_map(|(_, nullifiers)| nullifiers.iter().copied())
+                    .collect()
+            })
+            .unwrap_or_default();
         self.inner.store(wallet_id, changeset)?;
+        if !spent.is_empty()
+            && let Some(leases) = self.leases.get().and_then(std::sync::Weak::upgrade)
+        {
+            leases.note_spent_nullifiers(WalletId(wallet_id), &spent);
+        }
         if core {
             self.tap.core_changed(WalletId(wallet_id));
         }

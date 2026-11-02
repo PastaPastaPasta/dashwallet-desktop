@@ -60,7 +60,7 @@ pub enum SignerScope {
     DashPayCrypto,
     /// Asset-lock funding (registration, top-up): signatures and public keys
     /// (no chain codes) of BIP44, BIP32 and DashPay-receiving addresses and
-    /// of the credit keys `m/9'/coin'/5'/{1',2',3'}/…`, plus the extended
+    /// of the credit keys `m/9'/coin'/5'/{1',2',3',5'}/…`, plus the extended
     /// public key of an identity's top-up account `m/9'/coin'/5'/2'/i'`
     /// (platform-wallet adds that account through the signer). The cap is
     /// bounded by the token ([`crate::Vault::platform_signer`] refuses a
@@ -95,6 +95,19 @@ pub enum SignerScope {
     /// what it signs; the engine checks it against the grant's cap first
     /// (MG-05 §2). No operator or platform-node key is in reach.
     MasternodeOwner,
+    /// The spend authority of the wallet's Orchard account 0 (0.1 E1,
+    /// `crate::shielded`): platform-wallet's ZIP-32 key set
+    /// `m_orchard/32'/coin'/0'`, derived from the seed for one shielded
+    /// spend and handed to the library, which takes no signer. No BIP32 key
+    /// of the wallet. Issued only by a `PlatformOp` grant whose
+    /// `max_credits` is not 0 ([`crate::Vault::shielded_spend_key`]).
+    ShieldedSpend,
+    /// The full viewing key of that account, no spend authority and no
+    /// BIP32 key: what the library binds to scan the pool and to show the
+    /// receive address. Grant-less, like `DashPayCrypto`, so issued only
+    /// while the full key needs no prompt
+    /// ([`crate::Vault::shielded_viewing_key`]).
+    ShieldedView,
 }
 
 /// What a derived key is used for.
@@ -198,6 +211,8 @@ impl SignerScope {
                     _ => false,
                 }
             }
+            // ZIP-32 starts from the seed ([`VaultSigner::with_seed`]).
+            SignerScope::ShieldedSpend | SignerScope::ShieldedView => false,
         }
     }
 
@@ -331,6 +346,28 @@ impl VaultSigner {
                 signer: self,
                 master,
             })
+        })
+    }
+
+    /// Runs `body` on the wallet's seed in one operation, under the same
+    /// gate and epoch rule as [`Self::run`]: for the Orchard keys of the
+    /// shielded scopes only, whose ZIP-32 derivation starts from the seed
+    /// rather than a BIP32 key. Any other scope is `PathNotAllowed`.
+    pub(crate) fn with_seed<T>(
+        &self,
+        body: impl FnOnce(&[u8]) -> Result<T, SignerError>,
+    ) -> Result<T, SignerError> {
+        if !matches!(
+            self.scope,
+            SignerScope::ShieldedSpend | SignerScope::ShieldedView
+        ) {
+            return Err(SignerError::PathNotAllowed("the seed".into()));
+        }
+        self.vault.gated(SignerError::Locked, |gate| {
+            let seed = self
+                .vault
+                .signing_seed(gate, &self.wallet_id, self.epoch, &self.key)?;
+            body(&seed[..])
         })
     }
 

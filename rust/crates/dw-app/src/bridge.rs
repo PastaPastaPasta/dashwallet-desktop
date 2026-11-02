@@ -245,6 +245,8 @@ pub enum PlatformChangeName {
     Startup,
     /// The wallet's Platform-address balances or their activity.
     PlatformAddresses,
+    /// The wallet's shielded account (`shielded_status`, `shielded_history`).
+    Shielded,
 }
 
 impl From<PlatformChange> for PlatformChangeName {
@@ -266,6 +268,7 @@ impl From<PlatformChange> for PlatformChangeName {
             },
             PlatformChange::Startup => Self::Startup,
             PlatformChange::PlatformAddresses => Self::PlatformAddresses,
+            PlatformChange::Shielded => Self::Shielded,
         }
     }
 }

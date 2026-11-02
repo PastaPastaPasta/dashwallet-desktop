@@ -3,7 +3,7 @@
 
 use dw_engine::platform::{
     AvatarError, ContactError, CreditsError, IdentityError, InvitationError, NameError,
-    PlatformError, ProfileError, RegistrationError,
+    PlatformError, ProfileError, RegistrationError, ShieldedError,
 };
 
 use super::{AppError, EngineCode, ErrorData, codes};
@@ -116,6 +116,80 @@ codes! {
         WithdrawalOutOfRange = "credits.withdrawal_out_of_range",
         WithdrawalLanded = "credits.withdrawal_landed",
         MovePending = "credits.move_pending",
+    }
+}
+
+codes! {
+    ShieldedCode {
+        NotActive = "shielded.not_active",
+        NotSynced = "shielded.not_synced",
+        InvalidAddress = "shielded.invalid_address",
+        InsufficientFunds = "shielded.insufficient_funds",
+        FundingInsufficient = "shielded.funding_insufficient",
+        BelowMinimum = "shielded.below_minimum",
+        CoinsLocked = "shielded.coins_locked",
+        ShieldPending = "shielded.shield_pending",
+        PoolTooSmall = "shielded.pool_too_small",
+        TooManyInputs = "shielded.too_many_inputs",
+        UnrecordedSpend = "shielded.unrecorded_spend",
+    }
+}
+
+impl From<ShieldedError> for AppError {
+    fn from(e: ShieldedError) -> Self {
+        use ShieldedError as S;
+        let message = e.to_string();
+        let (code, data) = match e {
+            S::NotActive {
+                protocol_version,
+                activation_version,
+            } => (
+                ShieldedCode::NotActive,
+                Some(ErrorData::Protocol {
+                    protocol_version,
+                    activation_version,
+                }),
+            ),
+            S::NotSynced => (ShieldedCode::NotSynced, None),
+            S::InvalidAddress { detail } => (
+                ShieldedCode::InvalidAddress,
+                Some(ErrorData::Reason { reason: detail }),
+            ),
+            S::InsufficientFunds { needed, available } => (
+                ShieldedCode::InsufficientFunds,
+                Some(ErrorData::Credits { needed, available }),
+            ),
+            S::FundingInsufficient { needed, available } => (
+                ShieldedCode::FundingInsufficient,
+                Some(ErrorData::Duffs {
+                    needed: Some(needed),
+                    available,
+                }),
+            ),
+            S::BelowMinimum { min } => (
+                ShieldedCode::BelowMinimum,
+                Some(ErrorData::Number { value: min }),
+            ),
+            S::CoinsLocked => (ShieldedCode::CoinsLocked, None),
+            S::ShieldPending { txid } => {
+                (ShieldedCode::ShieldPending, Some(ErrorData::Txid { txid }))
+            }
+            S::PoolTooSmall { notes, required } => (
+                ShieldedCode::PoolTooSmall,
+                Some(ErrorData::PoolNotes { notes, required }),
+            ),
+            S::TooManyInputs { inputs, .. } => (
+                ShieldedCode::TooManyInputs,
+                Some(ErrorData::Number { value: inputs }),
+            ),
+            S::UnrecordedSpend => (ShieldedCode::UnrecordedSpend, None),
+            S::Platform(e) => return e.into(),
+        };
+        AppError {
+            code: code.into(),
+            message,
+            data,
+        }
     }
 }
 
@@ -549,6 +623,38 @@ mod tests {
             CreditsError::Platform(PlatformError::Unavailable),
         ];
         for e in credits {
+            assert_eq!(AppError::from(e.clone()).code_str(), e.code());
+        }
+        let shielded = [
+            ShieldedError::NotActive {
+                protocol_version: 11,
+                activation_version: 12,
+            },
+            ShieldedError::NotSynced,
+            ShieldedError::InvalidAddress { detail: s() },
+            ShieldedError::InsufficientFunds {
+                needed: 2,
+                available: 1,
+            },
+            ShieldedError::FundingInsufficient {
+                needed: 2,
+                available: 1,
+            },
+            ShieldedError::BelowMinimum { min: 5 },
+            ShieldedError::CoinsLocked,
+            ShieldedError::ShieldPending { txid: s() },
+            ShieldedError::PoolTooSmall {
+                notes: 10,
+                required: 250,
+            },
+            ShieldedError::TooManyInputs {
+                inputs: 51,
+                max: 50,
+            },
+            ShieldedError::UnrecordedSpend,
+            ShieldedError::Platform(PlatformError::Unavailable),
+        ];
+        for e in shielded {
             assert_eq!(AppError::from(e.clone()).code_str(), e.code());
         }
     }

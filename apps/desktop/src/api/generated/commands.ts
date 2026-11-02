@@ -144,6 +144,13 @@ import type { ScreenScanMode } from "./ScreenScanMode";
 import type { SessionSettings } from "./SessionSettings";
 import type { ShellEvent } from "./ShellEvent";
 import type { ShellSync } from "./ShellSync";
+import type { ShieldOutcome } from "./ShieldOutcome";
+import type { ShieldQuote } from "./ShieldQuote";
+import type { ShieldedActivity } from "./ShieldedActivity";
+import type { ShieldedAddress } from "./ShieldedAddress";
+import type { ShieldedSpendOutcome } from "./ShieldedSpendOutcome";
+import type { ShieldedSpendQuote } from "./ShieldedSpendQuote";
+import type { ShieldedStatus } from "./ShieldedStatus";
 import type { SpvStateName } from "./SpvStateName";
 import type { StashedLinkInfo } from "./StashedLinkInfo";
 import type { StuckTopUpFunding } from "./StuckTopUpFunding";
@@ -1845,6 +1852,89 @@ export function setTrustedQuorumsOnly(on: boolean): Promise<null> {
 }
 
 /**
+ * The wallet's shielded account: whether the network takes shielded
+ * transitions, the balance, pending moves and sync.
+ */
+export function shieldedStatus(walletId: string): Promise<ShieldedStatus> {
+  return invoke<ShieldedStatus>("shielded_status", { walletId });
+}
+
+/**
+ * Runs a shielded sync pass now; returns the status after.
+ */
+export function shieldedSync(walletId: string): Promise<ShieldedStatus> {
+  return invoke<ShieldedStatus>("shielded_sync", { walletId });
+}
+
+/**
+ * The wallet's shielded receive address, for Receive and its QR.
+ */
+export function shieldedReceiveAddress(walletId: string): Promise<ShieldedAddress> {
+  return invoke<ShieldedAddress>("shielded_receive_address", { walletId });
+}
+
+/**
+ * What moving `duffs` of the Core balance into the pool costs and buys.
+ */
+export function shieldQuote(walletId: string, duffs: number): Promise<ShieldQuote> {
+  return invoke<ShieldQuote>("shield_quote", { walletId, duffs });
+}
+
+/**
+ * Core → Shielded: moves `duffs` of the Core balance into the pool
+ * under `grant`.
+ */
+export function shieldFromCore(walletId: string, duffs: number, grant: string): Promise<ShieldOutcome> {
+  return invoke<ShieldOutcome>("shield_from_core", { walletId, duffs, grant });
+}
+
+/**
+ * Applies the pending Core → Shielded lock `txid` under `grant`, or
+ * checks one of unknown consumption again ("Check again").
+ */
+export function resumeShield(walletId: string, txid: string, grant: string): Promise<ShieldOutcome> {
+  return invoke<ShieldOutcome>("resume_shield", { walletId, txid, grant });
+}
+
+/**
+ * What sending `credits` (a decimal string) to the shielded address
+ * `to` costs.
+ */
+export function shieldedSendQuote(walletId: string, to: string, credits: string): Promise<ShieldedSpendQuote> {
+  return invoke<ShieldedSpendQuote>("shielded_send_quote", { walletId, to, credits });
+}
+
+/**
+ * Shielded → Shielded: sends `credits` to `to` under `grant`.
+ */
+export function shieldedSend(walletId: string, to: string, credits: string, memo: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome> {
+  return invoke<ShieldedSpendOutcome>("shielded_send", { walletId, to, credits, memo, grant, confirmUnrecorded });
+}
+
+/**
+ * What moving `credits` back to Core costs (`to`: a Core address of the
+ * network, `null` for the wallet's next receive address).
+ */
+export function unshieldQuote(walletId: string, credits: string, to: string | null): Promise<ShieldedSpendQuote> {
+  return invoke<ShieldedSpendQuote>("unshield_quote", { walletId, credits, to });
+}
+
+/**
+ * Shielded → Core: withdraws `credits` to `to` under `grant`.
+ */
+export function unshieldToCore(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome> {
+  return invoke<ShieldedSpendOutcome>("unshield_to_core", { walletId, credits, to, grant, confirmUnrecorded });
+}
+
+/**
+ * The wallet's shielded history for Activity, pending first, then
+ * newest first (`limit` at most 500).
+ */
+export function shieldedHistory(walletId: string, offset: number, limit: number): Promise<Array<ShieldedActivity>> {
+  return invoke<Array<ShieldedActivity>>("shielded_history", { walletId, offset, limit });
+}
+
+/**
  * The contacts of `identity` in the sections `query` selects.
  */
 export function dashpayContacts(walletId: string, identity: string, query: ContactQueryArgs): Promise<ContactList> {
@@ -2660,6 +2750,17 @@ export type CommandArgs = {
   quorum_source: {  };
   trusted_quorums_only: {  };
   set_trusted_quorums_only: { on: boolean };
+  shielded_status: { walletId: string };
+  shielded_sync: { walletId: string };
+  shielded_receive_address: { walletId: string };
+  shield_quote: { walletId: string; duffs: number };
+  shield_from_core: { walletId: string; duffs: number; grant: string };
+  resume_shield: { walletId: string; txid: string; grant: string };
+  shielded_send_quote: { walletId: string; to: string; credits: string };
+  shielded_send: { walletId: string; to: string; credits: string; memo: string | null; grant: string; confirmUnrecorded: boolean };
+  unshield_quote: { walletId: string; credits: string; to: string | null };
+  unshield_to_core: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
+  shielded_history: { walletId: string; offset: number; limit: number };
   dashpay_contacts: { walletId: string; identity: string; query: ContactQueryArgs };
   dashpay_contact: { walletId: string; identity: string; contact: string };
   dashpay_pending_setup_count: { walletId: string };
@@ -2942,6 +3043,17 @@ export type CommandResults = {
   quorum_source: QuorumSource;
   trusted_quorums_only: boolean;
   set_trusted_quorums_only: null;
+  shielded_status: ShieldedStatus;
+  shielded_sync: ShieldedStatus;
+  shielded_receive_address: ShieldedAddress;
+  shield_quote: ShieldQuote;
+  shield_from_core: ShieldOutcome;
+  resume_shield: ShieldOutcome;
+  shielded_send_quote: ShieldedSpendQuote;
+  shielded_send: ShieldedSpendOutcome;
+  unshield_quote: ShieldedSpendQuote;
+  unshield_to_core: ShieldedSpendOutcome;
+  shielded_history: Array<ShieldedActivity>;
   dashpay_contacts: ContactList;
   dashpay_contact: ContactDetailInfo | null;
   dashpay_pending_setup_count: number;
@@ -3226,6 +3338,17 @@ export const COMMANDS: Record<CommandName, string> = {
   quorum_source: "identity",
   trusted_quorums_only: "identity",
   set_trusted_quorums_only: "identity",
+  shielded_status: "identity",
+  shielded_sync: "identity",
+  shielded_receive_address: "identity",
+  shield_quote: "identity",
+  shield_from_core: "identity",
+  resume_shield: "identity",
+  shielded_send_quote: "identity",
+  shielded_send: "identity",
+  unshield_quote: "identity",
+  unshield_to_core: "identity",
+  shielded_history: "identity",
   dashpay_contacts: "social",
   dashpay_contact: "social",
   dashpay_pending_setup_count: "social",
@@ -3353,6 +3476,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "internal",
   "outpoint_not_found",
   "stuck_funding",
+  "shielded_spend_unresolved",
   "vault.no_vault",
   "vault.already_exists",
   "vault.locked",
@@ -3521,6 +3645,17 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.withdrawal_out_of_range",
   "credits.withdrawal_landed",
   "credits.move_pending",
+  "shielded.not_active",
+  "shielded.not_synced",
+  "shielded.invalid_address",
+  "shielded.insufficient_funds",
+  "shielded.funding_insufficient",
+  "shielded.below_minimum",
+  "shielded.coins_locked",
+  "shielded.shield_pending",
+  "shielded.pool_too_small",
+  "shielded.too_many_inputs",
+  "shielded.unrecorded_spend",
   "governance.sync_disabled",
   "governance.not_synced",
   "governance.proposal_not_found",

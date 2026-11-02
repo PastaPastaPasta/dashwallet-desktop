@@ -139,6 +139,18 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.sync_platform_addresses",
     "DashPay.move_to_core_quote",
     "DashPay.move_to_core",
+    // 0.1 E1: shielded funds.
+    "DashPay.shielded_status",
+    "DashPay.shielded_sync",
+    "DashPay.shielded_receive_address",
+    "DashPay.shield_quote",
+    "DashPay.shield_from_core",
+    "DashPay.resume_shield",
+    "DashPay.shielded_send_quote",
+    "DashPay.shielded_send",
+    "DashPay.unshield_quote",
+    "DashPay.unshield_to_core",
+    "DashPay.shielded_history",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -157,6 +169,7 @@ const FACADE: &[&str] = &[
     "platform_addresses.rs",
     "profile.rs",
     "registration.rs",
+    "shielded.rs",
     "startup.rs",
 ];
 
@@ -180,8 +193,9 @@ const FACADE: &[&str] = &[
 /// pipeline's guard, decoder, cache and tests (DP4-02), the mobile
 /// wallets' dHash (DP4-03 D27), the Identities page's reads with their
 /// tests (DP6-01), the withdrawal with its network seam and tests (DP6-02),
-/// and the invitation checks with their tests (DP5-02), and the network's
-/// protocol version (release 0.1).
+/// the invitation checks with their tests (DP5-02), the network's
+/// protocol version (release 0.1), and the shielded funds' library side
+/// with its tests (0.1 E1).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -241,6 +255,9 @@ const NOT_FACADE: &[&str] = &[
     "registration_tests.rs",
     "runtime.rs",
     "runtime_tests.rs",
+    "shielded_close_tests.rs",
+    "shielded_pool.rs",
+    "shielded_tests.rs",
     "signers.rs",
     "startup_status.rs",
     "status.rs",
@@ -1050,6 +1067,36 @@ fn error_codes_match_the_contract() {
         ],
         CreditsError::code,
     );
+    check_domain(
+        &enums,
+        "ShieldedError",
+        &[
+            ShieldedError::NotActive {
+                protocol_version: 0,
+                activation_version: 0,
+            },
+            ShieldedError::NotSynced,
+            ShieldedError::InvalidAddress { detail: s() },
+            ShieldedError::InsufficientFunds {
+                needed: 0,
+                available: 0,
+            },
+            ShieldedError::FundingInsufficient {
+                needed: 0,
+                available: 0,
+            },
+            ShieldedError::BelowMinimum { min: 0 },
+            ShieldedError::CoinsLocked,
+            ShieldedError::ShieldPending { txid: s() },
+            ShieldedError::TooManyInputs { inputs: 0, max: 0 },
+            ShieldedError::PoolTooSmall {
+                notes: 0,
+                required: 0,
+            },
+            ShieldedError::UnrecordedSpend,
+        ],
+        ShieldedError::code,
+    );
 
     let mut checked = [
         "AvatarError",
@@ -1061,6 +1108,7 @@ fn error_codes_match_the_contract() {
         "PlatformError",
         "ProfileError",
         "RegistrationError",
+        "ShieldedError",
     ]
     .to_vec();
     checked.sort_unstable();
@@ -1188,7 +1236,8 @@ as_platform_via_accessor!(
     ContactError,
     InvitationError,
     AvatarError,
-    CreditsError
+    CreditsError,
+    ShieldedError
 );
 
 #[derive(Default)]
@@ -1477,6 +1526,22 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.move_to_core(WithdrawAmount::All, s(), s())
                 .await
                 .map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
+        // 0.1 E1: shielded funds refuse an unknown wallet.
+        for refused in [
+            dp.shielded_status().await.map(drop),
+            dp.shielded_sync().await.map(drop),
+            dp.shielded_receive_address().await.map(drop),
+            dp.shield_quote(1).await.map(drop),
+            dp.shield_from_core(1, s()).await.map(drop),
+            dp.resume_shield(s(), s()).await.map(drop),
+            dp.shielded_send_quote(s(), 1).await.map(drop),
+            dp.shielded_send(s(), 1, None, s(), false).await.map(drop),
+            dp.unshield_quote(1, None).await.map(drop),
+            dp.unshield_to_core(1, None, s(), false).await.map(drop),
+            dp.shielded_history(0, 10).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }

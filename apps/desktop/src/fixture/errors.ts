@@ -73,6 +73,8 @@ const SAMPLES: Samples = {
   wallet: { code: "backup.already_exists", data: { kind: "wallet", walletId: W } },
   keysNetwork: { code: "compat.network_mismatch", data: { kind: "keysNetwork", mainnet: true } },
   feeRate: { code: "psbt.fee_rate_too_high", data: { kind: "feeRate", duffsPerKb: 1_000_000 } },
+  protocol: { code: "shielded.not_active", data: { kind: "protocol", protocolVersion: 11, activationVersion: 12 } },
+  poolNotes: { code: "shielded.pool_too_small", data: { kind: "poolNotes", notes: 12, required: 250 } },
   stuckFunding: {
     code: "stuck_funding",
     data: { kind: "stuckFunding", refusal: { kind: "spendUnsettled", txid: TXID }, retryLater: true },

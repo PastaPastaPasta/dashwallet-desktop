@@ -2726,6 +2726,7 @@ dependencies = [
  "hex",
  "key-wallet",
  "platform-encryption",
+ "platform-wallet",
  "platform-wallet-storage",
  "serde",
  "serde_json",

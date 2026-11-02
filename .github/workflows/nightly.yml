@@ -2,8 +2,8 @@
 # - regtest: the dashd v24 regtest suites of regtest/README.md against a host-built dwcli;
 # - crossui-linux: scripts/crossui-linux-demo.sh (the SwiftCrossUI app driven through AT-SPI under
 #   Xvfb in Docker, M1 and M2 flows);
-# - shielded: the engine with its non-default `shielded` feature (E0-12), built, linted and its
-#   prover warm-up run, so the halo2 build cost stays out of PR CI but the feature does not rot;
+# - shielded: the Orchard prover warm-up in a cold process (E0-12); the pool itself is built and
+#   tested by PR CI since 0.1 turned it on;
 # - release-check: the release leg of dw-engine's tests/mg04b_release_check.rs (MG-04b D71), which
 #   PR CI, testing in debug only, never runs.
 #
@@ -140,11 +140,10 @@ jobs:
           path: regtest-logs/
           if-no-files-found: warn
 
-  # Blocking, unlike the demo below: the feature has no tests of its own yet, so a red build, lint
-  # or warm-up here means the pinned platform revision or our feature wiring broke. PR CI never
-  # builds the feature (docs/research/shielded-cost.md has the cost).
+  # Blocking, unlike the demo below: a red warm-up means the pinned platform revision's prover
+  # broke. PR CI builds and tests the shielded code (docs/research/shielded-cost.md has the cost).
   shielded:
-    name: Engine with shielded feature (E0-12)
+    name: Shielded prover warm-up (E0-12)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -161,19 +160,12 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
-      - name: Build (dw-engine, its examples and dwcli with the feature)
+      - name: Build the warm-up example
         working-directory: rust
-        run: |
-          cargo build -p dwcli --features dw-engine/shielded --locked
-          cargo build -p dw-engine --features shielded --example shielded_warmup --locked
-      - name: Clippy
-        if: ${{ !cancelled() }}
-        working-directory: rust
-        run: cargo clippy -p dw-engine --all-targets --features shielded --locked -- -D warnings
+        run: cargo build -p dw-engine --example shielded_warmup --locked
       # Builds the Halo 2 proving key in a cold process (about 3 s on agentbox, 30 s in the upstream
       # doc comment); no network.
       - name: Prover warm-up
-        if: ${{ !cancelled() }}
         working-directory: rust
         timeout-minutes: 15
         run: target/debug/examples/shielded_warmup
