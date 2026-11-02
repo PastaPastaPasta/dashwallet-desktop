@@ -116,6 +116,7 @@ export class WalletsModel extends Model {
     const row = this.rows.find((r) => r.walletId === walletId);
     if (!row || !this.canClose(row)) {
       this.error = WalletsText.openAnotherFirst;
+      this.#readFailed = false;
       this.changed();
       return false;
     }
@@ -134,6 +135,7 @@ export class WalletsModel extends Model {
     const name = walletName(text);
     if (name === null) {
       this.error = WalletsText.nameRule;
+      this.#readFailed = false;
       this.changed();
       return false;
     }
@@ -158,6 +160,7 @@ export class WalletsModel extends Model {
     // wallet still opening) must still be said once the list is read again.
     if (problem !== null) {
       this.error = problem;
+      this.#readFailed = false;
       this.changed();
     }
     return problem === null;

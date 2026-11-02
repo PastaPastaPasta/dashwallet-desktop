@@ -7,6 +7,7 @@ import { IpcBackend } from "../api/tauri";
 import { installFixture, type FixtureHandle } from "../fixture";
 import { FIXTURE_PASSPHRASE as PASS, FIXTURE_WALLET_ID as A, SECOND_WALLET_ID as B, type ScenarioName } from "../fixture/scenarios";
 import { failureText, WRONG_PASSPHRASE } from "../onboarding/model";
+import { appError } from "../onboarding/testWorld";
 import { RemoveWalletModel, walletName, WalletsModel, WalletsText, WatchOnlyModel } from "./wallets";
 
 let fixture: FixtureHandle;
@@ -59,6 +60,31 @@ describe("wallets list", () => {
     // The next call that works clears it.
     fixture.world.settings.unloadRefusal = null;
     expect(await model.close(B)).toBe(true);
+    expect(model.error).toBeNull();
+  });
+
+  it("a refusal or a guard message is not cleared by a later read, even after a failed one", async () => {
+    let fails = 1;
+    const api = {
+      walletLoadStates: () => b.walletLoadStates(),
+      listWallets: async () => {
+        if (fails-- > 0) throw appError("internal" as never);
+        return b.listWallets();
+      },
+      loadWallet: (id: string) => b.loadWallet(id),
+      unloadWallet: (id: string) => b.unloadWallet(id),
+      setLoadOnStartup: (id: string, on: boolean) => b.setLoadOnStartup(id, on),
+      renameWallet: (id: string, name: string) => b.renameWallet(id, name),
+    };
+    const model = new WalletsModel(api);
+    await model.load();
+    expect(model.error).not.toBeNull(); // the failed read's own error
+    await model.rename(A, ""); // a guard message of the model's own
+    expect(model.error).toBe(WalletsText.nameRule);
+    await model.load(); // a read that works, as every wallet event brings
+    expect(model.error).toBe(WalletsText.nameRule);
+    // The next action clears it.
+    await model.rename(A, "Main");
     expect(model.error).toBeNull();
   });
 

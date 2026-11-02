@@ -23,7 +23,8 @@ test.describe("payment toast privacy", () => {
     await open(page);
     await pay(page, 999_819);
     await expect(page.locator(".toast")).toHaveText("Received 0.00999819 tDASH");
-    await page.clock.pauseAt(new Date(Date.now() + 1000));
+    // From the page's own time, a little ahead: the jump takes as little of the toast's 3 s as it can.
+    await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 100));
     await page.getByTestId("toolbar-discreet").click();
     await expect(page.locator(".toast")).toHaveText("Received a payment");
     expect(await toastText(page)).not.toContain("0.00999819");

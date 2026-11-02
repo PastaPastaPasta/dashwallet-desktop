@@ -191,6 +191,10 @@ describe("DEC-1057: an unrecorded spend", () => {
     expect(api.unshieldToCore.mock.calls[1][4]).toBe(true);
   });
 
+  it("offers Back after that refusal, so a status that was stale can be read again and ask", () => {
+    expect(shieldedCanChange(appError("shielded.unrecorded_spend"))).toBe(true);
+  });
+
   it("says in words that an earlier payment may still go through when the engine refuses without it", () => {
     const text = shieldedErrorText(appError("shielded.unrecorded_spend"), credits, duffs, "send");
     expect(text).toBe("A shielded payment from before the restart may still go through. Confirm to send anyway.");

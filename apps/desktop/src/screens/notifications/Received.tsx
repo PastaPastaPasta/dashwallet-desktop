@@ -71,7 +71,14 @@ export function ReceivedSection({ walletId, network, limit, onOpen }: { walletId
   useEffect(() => {
     // `exposed` re-runs this when a cover closes; what authorizes the marking is the DOM now, since a
     // row and a covering sheet can commit together, before the observer has told `exposed`.
-    if (!locked && exposed && shownIds !== "" && exposedNow(section)) markReceivedRead(walletId, shownIds.split(","));
+    if (locked || !exposed || shownIds === "" || !exposedNow(section)) return;
+    // A sheet that opens into the layer covers the shell one render after it mounts: ask again once
+    // that has happened, so a row that committed with it is not marked read behind it.
+    const ids = shownIds.split(",");
+    const later = setTimeout(() => {
+      if (exposedNow(section)) markReceivedRead(walletId, ids);
+    }, 0);
+    return () => clearTimeout(later);
   }, [walletId, locked, exposed, section, shownIds]);
   if (payments.length === 0) return null;
   return (

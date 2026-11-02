@@ -179,7 +179,7 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
 
 /** Back is offered when another amount or address may pass. */
 export const shieldedCanChange = (e: unknown): boolean =>
-  [SHIELDED_CODES.invalidAddress, SHIELDED_CODES.insufficientFunds, SHIELDED_CODES.fundingInsufficient, SHIELDED_CODES.belowMinimum, "platform.grant_exceeded", "invalid_argument"].some((c) => isCode(e, c));
+  [SHIELDED_CODES.invalidAddress, SHIELDED_CODES.insufficientFunds, SHIELDED_CODES.fundingInsufficient, SHIELDED_CODES.belowMinimum, "platform.grant_exceeded", "invalid_argument", SHIELDED_CODES.unrecordedSpend].some((c) => isCode(e, c));
 
 const settledListeners = new Set<() => void>();
 

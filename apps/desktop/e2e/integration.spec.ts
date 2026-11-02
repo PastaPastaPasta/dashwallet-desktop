@@ -69,12 +69,12 @@ test.describe("item 3: movable and dust, the fee actually taken", () => {
   test("Platform addresses holding only dust: Home counts nothing, and no Move is offered", async ({ page }) => {
     await open(page, "platform-dust");
     await expect(page.getByTestId("breakdown-platform")).toContainText("0.00");
-    await expect(page.getByTestId("platform-card")).toContainText("is too small to move");
+    await expect(page.getByTestId("platform-card")).toContainText("cannot be moved to your Dash wallet right now");
     await expect(page.getByTestId("platform-move")).toHaveCount(0);
     await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
   });
 
-  test("a remainder too small to move is named beside the movable amount, and not counted", async ({ page }) => {
+  test("a remainder that cannot be moved is named beside the movable amount, and not counted", async ({ page }) => {
     await open(page, "platform-partly-dust");
     await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
     await expect(page.getByTestId("platform-card-amount")).toContainText("0.4");

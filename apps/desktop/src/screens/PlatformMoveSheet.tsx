@@ -218,7 +218,7 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
             {C.waiting.action}
           </DashButton>
         ) : funded || flow.running || flow.unseen || flow.open ? (
-          <DashButton variant="tintedBlue" data-testid="platform-move" disabled={flow.running || block === "checking" || block === "failed"} why={holdReason} whyId="platform-move-why" onClick={() => flow.begin()}>
+          <DashButton variant="tintedBlue" data-testid="platform-move" disabled={flow.running || (!flow.unseen && (block === "checking" || block === "failed"))} why={flow.unseen ? null : holdReason} whyId="platform-move-why" onClick={() => flow.begin()}>
             {flow.running ? C.running.title : flow.unseen ? C.show : C.action}
           </DashButton>
         ) : null}

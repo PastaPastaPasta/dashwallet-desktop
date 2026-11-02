@@ -22,8 +22,8 @@ export const MOVE_COPY = {
   card: {
     title: "Platform addresses",
     text: "Your Platform balance is not in your Dash wallet yet. Move it there to spend it as Dash.",
-    /** A remainder that costs more to move than it is worth: it stays on Platform. */
-    dust: (amount: string) => `${amount} on your Platform addresses is too small to move.`,
+    /** What one move cannot take (below the minimum input, beyond the inputs one transition takes, or the fee reserve): it stays on Platform. */
+    dust: (amount: string) => `${amount} on your Platform addresses cannot be moved to your Dash wallet right now.`,
   },
   title: "Move to Dash wallet",
   message: "Everything on your Platform addresses moves to your Dash wallet. Dash Platform pays it to the address below.",
