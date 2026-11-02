@@ -31,7 +31,7 @@ function setup(lock = { encrypted: false }) {
           answer = resolve;
         }),
     ),
-    unshieldToCore: vi.fn(async (_w: string, c: string, to: string | null, grant: string) => (calls.push(`out ${c} ${to} ${grant}`), SPEND)),
+    unshieldToCore: vi.fn(async (_w: string, c: string, to: string | null, grant: string, _confirm: boolean) => (calls.push(`out ${c} ${to} ${grant}`), SPEND)),
   };
   const flow = new ShieldedFlow(api, WALLET_A);
   return { flow, api, vault, calls, answer: (o: ShieldedSpendOutcome) => answer!(o) };
@@ -174,5 +174,25 @@ describe("shielded refusal copy", () => {
     for (const code of ["platform.unavailable", "platform.timeout", "platform.context_unavailable"]) expect(syncing(code, true)).toBe(SAID);
     // Not syncing: a real Platform outage keeps its own words.
     expect(syncing("platform.unavailable", false)).toBe("Dash Platform did not answer. Try again.");
+  });
+});
+
+describe("DEC-1057: an unrecorded spend", () => {
+  it("passes the user's confirmation to a send and a move, and not otherwise", async () => {
+    const { flow, api } = setup();
+    flow.begin("out");
+    flow.next({ kind: "out", credits: "10000000000" });
+    await flow.run(GRANT);
+    expect(api.unshieldToCore.mock.calls[0][4]).toBe(false);
+    flow.close();
+    flow.begin("out");
+    flow.next({ kind: "out", credits: "10000000000" });
+    await flow.run(GRANT, true);
+    expect(api.unshieldToCore.mock.calls[1][4]).toBe(true);
+  });
+
+  it("says in words that an earlier payment may still go through when the engine refuses without it", () => {
+    const text = shieldedErrorText(appError("shielded.unrecorded_spend"), credits, duffs, "send");
+    expect(text).toBe("A shielded payment from before the restart may still go through. Confirm to send anyway.");
   });
 });

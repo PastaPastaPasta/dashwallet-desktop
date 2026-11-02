@@ -646,6 +646,12 @@ const SCENARIOS = {
     w.pending.shielded!.pendingShields = [{ txid: "c0ffee01".repeat(8), duffs: 50_000_000, proved: true, consumptionUnknown: true }];
     return w;
   },
+  /** A spend of unknown result whose record was lost (DEC-1057): sends and moves need a confirmation. */
+  "shielded-unrecorded": (t) => {
+    const w = base(t);
+    w.pending.shielded!.unrecorded = [{ activityId: "sh-9", since: Math.floor(FIXTURE_NOW.getTime() / 1000) - 3600 }];
+    return w;
+  },
   /** Shielded is ready and holds nothing: Send and Move wait for a balance. */
   "shielded-empty": (t) => {
     const w = base(t);

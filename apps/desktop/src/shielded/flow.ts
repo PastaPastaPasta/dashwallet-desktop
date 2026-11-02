@@ -54,6 +54,8 @@ export const SHIELDED_COPY = {
     /** A lock that may already be applied: the same outpoint is read again, never a new lock. */
     checkAgain: "Check again",
     why: { empty: "Nothing in Shielded to send yet.", busy: "Another Shielded move is running." },
+    /** DEC-1057: a spend of unknown result whose record was lost. Shields are not held back. */
+    unrecorded: "A shielded payment from before a restart may still go through, and its record was lost. Sending or moving from Shielded asks you to confirm first.",
     unfinished: (amount: string) => `${amount} was locked to add to Shielded and is not applied yet.`,
   },
   titles: { add: "Add to Shielded", send: "Send from Shielded", out: "Move to Dash wallet", resume: "Add to Shielded", receive: "Receive in Shielded" },
@@ -105,6 +107,15 @@ export const SHIELDED_COPY = {
     unconfirmed: { title: "Not confirmed yet", text: "Your payment went out and Dash Platform has not confirmed it yet. Activity shows it as pending until it does. Do not send it again: the wallet checks it itself." },
     out: { title: "Moved", text: (amount: string) => `About ${amount} is on its way to your Dash wallet. It arrives when Dash Platform's withdrawal is mined.` },
   },
+  /** The confirmation a send or move from a wallet with an unrecorded spend needs (DEC-1057). */
+  unrecorded: {
+    title: "An earlier payment may still go through",
+    text: "A shielded payment from before the restart may still go through, and the wallet no longer has its record. If you go on, you may pay twice.",
+    go: { send: "Send anyway", out: "Move anyway" },
+    back: "Go back",
+    /** The engine's refusal when no confirmation came with the call. */
+    refused: "A shielded payment from before the restart may still go through. Confirm to send anyway.",
+  },
   close: "Close",
   show: "Show",
   unseen: "Your Shielded move has an update.",
@@ -149,6 +160,8 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
       return kind === "add" ? `Too small to add: the smallest amount is ${duffs(Number(d.value))}.` : `Too small: the smallest amount is ${credits(String(d.value))}.`;
     case SHIELDED_CODES.coinsLocked:
       return "Your Dash is reserved right now (for example by CoinJoin). Try again shortly.";
+    case SHIELDED_CODES.unrecordedSpend:
+      return SHIELDED_COPY.unrecorded.refused;
     case SHIELDED_CODES.tooManyInputs:
       return "That takes too many separate amounts at once. Consolidate your coins first, then try again.";
     case SHIELDED_CODES.shieldPending:
@@ -277,8 +290,9 @@ export class ShieldedFlow extends Model {
     await this.run({ maxDuffs: 1, maxCredits: "0" });
   }
 
-  /** Confirm: the quote's grant, then the call (one at a time). */
-  async run(grant: GrantRequest): Promise<void> {
+  /** Confirm: the quote's grant, then the call (one at a time). `confirmUnrecorded`: the user
+   * confirmed going on while the wallet holds a spend whose record was lost (DEC-1057). */
+  async run(grant: GrantRequest, confirmUnrecorded = false): Promise<void> {
     const request = this.request;
     if (this.running || request === null) return;
     let ran = false;
@@ -290,7 +304,7 @@ export class ShieldedFlow extends Model {
         ran = true;
         this.step = "running";
         this.changed();
-        return this.call(request, g.id);
+        return this.call(request, g.id, confirmUnrecorded);
       });
       if (got) {
         this.result = got.value;
@@ -311,16 +325,16 @@ export class ShieldedFlow extends Model {
     }
   }
 
-  private async call(r: ShieldedRequest, grant: string): Promise<ShieldedResult> {
+  private async call(r: ShieldedRequest, grant: string, confirmUnrecorded: boolean): Promise<ShieldedResult> {
     switch (r.kind) {
       case "add":
         return { kind: "shield", outcome: await this.api.shieldFromCore(this.walletId, r.duffs, grant) };
       case "resume":
         return { kind: "shield", outcome: await this.api.resumeShield(this.walletId, r.txid, grant) };
       case "send":
-        return { kind: "spend", outcome: await this.api.shieldedSend(this.walletId, r.to, r.credits, r.memo, grant, false) };
+        return { kind: "spend", outcome: await this.api.shieldedSend(this.walletId, r.to, r.credits, r.memo, grant, confirmUnrecorded) };
       case "out":
-        return { kind: "spend", outcome: await this.api.unshieldToCore(this.walletId, r.credits, null, grant, false) };
+        return { kind: "spend", outcome: await this.api.unshieldToCore(this.walletId, r.credits, null, grant, confirmUnrecorded) };
     }
   }
 }

@@ -126,6 +126,10 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
   const { duffs, credits } = fmt;
   const kind = flow.kind;
   const syncing = shieldedSyncing(status);
+  // DEC-1057: a send or move from a wallet with an unrecorded spend needs the user's confirmation
+  // first, and passes it to the engine; a shield does not.
+  const unrecorded = kind !== "add" && (status?.unrecordedSpends.length ?? 0) > 0;
+  const [asking, setAsking] = useState(false);
   // The fees against what is added or sent: for an add, the Core fee and the pool fee.
   const warning = !q ? null : q.kind === "add" ? feeWarning(BigInt(q.quote.feeDuffs) * CREDITS_PER_DUFF + BigInt(q.quote.poolFeeCredits), BigInt(q.quote.duffs) * CREDITS_PER_DUFF) : feeWarning(BigInt(q.quote.feeCredits), BigInt(q.quote.credits));
   return (
@@ -178,10 +182,33 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
         <DashButton variant="tintedGray" size="large" data-testid="shielded-back" disabled={flow.running} onClick={() => flow.back()}>
           {C.confirm.back}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" why={syncing ? SHIELDED_SYNCING_TEXT : quote.isError ? C.confirm.quoteFailed : flow.running ? C.running.title : C.confirm.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running || syncing} onClick={() => q && void flow.run(q.quote.grant)}>
+        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" why={syncing ? SHIELDED_SYNCING_TEXT : quote.isError ? C.confirm.quoteFailed : flow.running ? C.running.title : C.confirm.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running || syncing} onClick={() => q && (unrecorded ? setAsking(true) : void flow.run(q.quote.grant))}>
           {C.confirm.go}
         </DashButton>
       </div>
+      {asking && q && (
+        <Sheet title={C.unrecorded.title} width="small" testId="shielded-unrecorded-dialog" onClose={() => setAsking(false)}>
+          <p className="form-problem" role="alert" data-testid="shielded-unrecorded-text">
+            {C.unrecorded.text}
+          </p>
+          <div className="sheet-actions">
+            <DashButton variant="tintedGray" size="large" data-testid="shielded-unrecorded-back" onClick={() => setAsking(false)}>
+              {C.unrecorded.back}
+            </DashButton>
+            <DashButton
+              variant="filledBlue"
+              size="large"
+              data-testid="shielded-unrecorded-go"
+              onClick={() => {
+                setAsking(false);
+                void flow.run(q.quote.grant, true);
+              }}
+            >
+              {C.unrecorded.go[kind === "send" ? "send" : "out"]}
+            </DashButton>
+          </div>
+        </Sheet>
+      )}
     </>
   );
 }
@@ -338,6 +365,11 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
           {s.active && BigInt(s.pending) > 0n && (
             <p className="platform-card-text" data-testid="shielded-card-pending">
               {C.card.pending(fmt.credits(s.pending))}
+            </p>
+          )}
+          {s.unrecordedSpends.length > 0 && (
+            <p className="form-problem" role="alert" data-testid="shielded-unrecorded">
+              {C.card.unrecorded}
             </p>
           )}
           {s.active && s.unresolvedSpends.length > 0 && (

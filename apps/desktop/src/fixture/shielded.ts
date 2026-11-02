@@ -148,6 +148,12 @@ function endSpend(s: ShieldedWorld, total: bigint, row: Omit<ShieldedActivity, "
   return { state: "done", unresolved: null };
 }
 
+/** While the wallet holds an unrecorded spend, a send or unshield needs the user's confirmation (DEC-1057). */
+function gateUnrecorded(ctx: Ctx, walletId: string, call: string, confirmed: boolean): void {
+  const s = shieldedOf(ctx, walletId, call);
+  if (s.unrecorded.length > 0 && confirmed !== true) raise(SHIELDED_CODES.unrecordedSpend, "a shielded payment from before the restart may still go through; confirm to send anyway");
+}
+
 function sendQuote(ctx: Ctx, walletId: string, to: string, credits: string): ShieldedSpendQuote {
   if (!/^t?dash1z/.test(to.trim())) {
     shieldedOf(ctx, walletId, "shielded_send_quote");
@@ -198,7 +204,8 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
   shielded_send_quote: ({ walletId, to, credits }: { walletId: string; to: string; credits: string }, ctx: Ctx) => {
     return sendQuote(ctx, walletId, to, credits);
   },
-  shielded_send: ({ walletId, to, credits, memo, grant }: { walletId: string; to: string; credits: string; memo: string | null; grant: string }, ctx: Ctx): ShieldedSpendOutcome => {
+  shielded_send: ({ walletId, to, credits, memo, grant, confirmUnrecorded }: { walletId: string; to: string; credits: string; memo: string | null; grant: string; confirmUnrecorded: boolean }, ctx: Ctx): ShieldedSpendOutcome => {
+    gateUnrecorded(ctx, walletId, "shielded_send", confirmUnrecorded);
     if (memo !== null && new TextEncoder().encode(memo).length > 36) raise("invalid_argument", "memo too long", { kind: "reason", reason: "memo over 36 bytes" });
     const q = sendQuote(ctx, walletId, to, credits);
     const s = ctx.world.pending.shielded!;
@@ -207,7 +214,8 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     return { credits, balance: s.balance, to, ...end };
   },
   unshield_quote: ({ walletId, credits }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => spendQuote(ctx, walletId, credits, true, "unshield_quote"),
-  unshield_to_core: ({ walletId, credits, grant }: { walletId: string; credits: string; to: string | null; grant: string }, ctx: Ctx): ShieldedSpendOutcome => {
+  unshield_to_core: ({ walletId, credits, grant, confirmUnrecorded }: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean }, ctx: Ctx): ShieldedSpendOutcome => {
+    gateUnrecorded(ctx, walletId, "unshield_to_core", confirmUnrecorded);
     const q = spendQuote(ctx, walletId, credits, true, "unshield_to_core");
     const s = ctx.world.pending.shielded!;
     if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool too small", { kind: "poolNotes", notes: 120, required: 250 });

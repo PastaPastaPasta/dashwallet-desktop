@@ -177,3 +177,48 @@ test.describe("item 9: a lock that may already be applied is 'Checking'", () => 
     await expect(page.getByTestId("shielded-checking")).toHaveCount(0);
   });
 });
+
+test.describe("item 10: a wallet with an unrecorded spend asks before it sends (DEC-1057)", () => {
+  const toConfirm = async (page: Page, action: "send" | "out") => {
+    await page.getByTestId(`shielded-${action}`).click();
+    await page.getByTestId("shielded-amount").fill("0.5");
+    if (action === "send") await page.getByTestId("shielded-to").fill("tdash1zq0k8yv6m2e3x9n4c5w7a8s0d2f4g6h8j0k2l4m6n8p0q2r4s6t8u0v2w4x6y8z0a2c4e6g8j0m2");
+    await page.getByTestId("shielded-next").click();
+    await page.getByTestId("shielded-go").click();
+  };
+
+  test("the card warns, and a send needs the dialog's Send anyway, which the engine receives", async ({ page }) => {
+    await open(page, "shielded-unrecorded");
+    await expect(page.getByTestId("shielded-unrecorded")).toContainText("may still go through");
+    await toConfirm(page, "send");
+    await expect(page.getByTestId("shielded-unrecorded-dialog")).toBeVisible();
+    // Going back sends nothing.
+    await page.getByTestId("shielded-unrecorded-back").click();
+    await expect(page.getByTestId("shielded-unrecorded-dialog")).toHaveCount(0);
+    expect(await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "shielded_send").length)).toBe(0);
+    await page.getByTestId("shielded-go").click();
+    await page.getByTestId("shielded-unrecorded-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Sent");
+  });
+
+  test("a move to the Dash wallet asks the same, and its button says Move anyway", async ({ page }) => {
+    await open(page, "shielded-unrecorded");
+    await toConfirm(page, "out");
+    await expect(page.getByTestId("shielded-unrecorded-go")).toHaveText("Move anyway");
+    await page.getByTestId("shielded-unrecorded-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Moved");
+  });
+
+  test("a shield is not held back, and a send with no confirmation shows the engine's refusal text", async ({ page }) => {
+    await open(page, "shielded-unrecorded");
+    await page.getByTestId("shielded-add").click();
+    await page.getByTestId("shielded-amount").fill("0.001");
+    await page.getByTestId("shielded-next").click();
+    await page.getByTestId("shielded-go").click();
+    await expect(page.getByTestId("shielded-unrecorded-dialog")).toHaveCount(0);
+    await authorize(page);
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Added to Shielded");
+  });
+});
