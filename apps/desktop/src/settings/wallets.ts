@@ -61,6 +61,9 @@ export class WalletsModel extends Model {
   /** The wallet whose call runs. */
   busy: string | null = null;
   #seq = 0;
+  /** `error` is a failed read's: the next read that works clears it. An action's refusal is not
+   * cleared by a read (every wallet event reads the list again), only by the next action. */
+  #readFailed = false;
 
   constructor(private readonly api: ListApi) {
     super();
@@ -76,10 +79,12 @@ export class WalletsModel extends Model {
       this.rows = states
         ? states.map((s) => ({ ...s, hasMnemonic: open.get(s.walletId)?.hasMnemonic ?? null }))
         : summaries.map((s) => ({ walletId: s.walletId, name: s.name, loaded: true, loadOnStartup: true, watchOnly: s.watchOnly, hasMnemonic: s.hasMnemonic }));
-      this.error = null;
+      if (this.#readFailed) this.error = null;
+      this.#readFailed = false;
     } catch (e) {
       if (seq !== this.#seq) return;
       this.error = failureText(e);
+      this.#readFailed = true;
     }
     this.loading = false;
     this.changed();
@@ -139,17 +144,23 @@ export class WalletsModel extends Model {
     if (this.busy) return false;
     this.busy = walletId;
     this.error = null;
+    this.#readFailed = false;
     this.changed();
-    let ok = true;
+    let problem: string | null = null;
     try {
       await call();
     } catch (e) {
-      this.error = failureText(e);
-      ok = false;
+      problem = failureText(e);
     }
     this.busy = null;
     await this.load();
-    return ok;
+    // The reload clears `error` on success: a refusal (a shielded payment still being confirmed, a
+    // wallet still opening) must still be said once the list is read again.
+    if (problem !== null) {
+      this.error = problem;
+      this.changed();
+    }
+    return problem === null;
   }
 }
 

@@ -46,6 +46,22 @@ describe("wallets list", () => {
     expect(failureText(refused)).toBe("A shielded payment is still being confirmed. Wait, or quit and reopen the app.");
   });
 
+  it("a refused Close keeps its reason after the list is read again", async () => {
+    const model = new WalletsModel(b);
+    await model.load();
+    fixture.world.settings.unloadRefusal = "unresolved";
+    expect(await model.close(B)).toBe(false);
+    expect(model.error).toBe("A shielded payment is still being confirmed. Wait, or quit and reopen the app.");
+    expect(model.rows[1].loaded).toBe(true);
+    fixture.world.settings.unloadRefusal = "opening";
+    expect(await model.close(B)).toBe(false);
+    expect(model.error).toBe("A wallet is still opening; close the network once it is open.");
+    // The next call that works clears it.
+    fixture.world.settings.unloadRefusal = null;
+    expect(await model.close(B)).toBe(true);
+    expect(model.error).toBeNull();
+  });
+
   it("QT101_theLastOpenWalletCannotBeClosed", async () => {
     const model = new WalletsModel(b);
     await model.load();

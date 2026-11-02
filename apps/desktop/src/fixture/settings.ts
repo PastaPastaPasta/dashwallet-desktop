@@ -70,6 +70,9 @@ export interface SettingsWorld {
   /** Registered wallets `unload_wallet` closed: still in `World.wallets`, but every
    * wallet-scoped command answers `wallet_not_found` for them (`isClosed`). */
   closed: string[];
+  /** Why the next `unload_wallet` is refused (DEC-1046, E1 r2): a shielded payment is still being
+   * confirmed, or a wallet is still opening. `null`: it closes. */
+  unloadRefusal: "unresolved" | "opening" | null;
   /** Wallets left out of the load-on-startup list. */
   notAtStartup: string[];
   backups: BackupSummary[];
@@ -96,6 +99,7 @@ export function newSettingsWorld(): SettingsWorld {
   return {
     ui: { ...DEFAULT_UI_SETTINGS },
     closed: [],
+    unloadRefusal: null,
     notAtStartup: [],
     backups: [],
     keep: 5,
@@ -235,6 +239,8 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       const s = ctx.world.settings;
       if (s.closed.includes(walletId)) return null;
       wallet(ctx.world, walletId);
+      if (s.unloadRefusal === "unresolved") throw fail("shielded_spend_unresolved", "a shielded spend of this wallet is not resolved yet");
+      if (s.unloadRefusal === "opening") throw fail("wallet", "a wallet is still opening; close the network once it is open");
       s.closed = [...s.closed, walletId];
       ctx.emit({ kind: "walletLoadChanged", network: network(ctx.world), walletId, loaded: false });
       return null;

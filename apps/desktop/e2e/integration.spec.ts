@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { SECOND_WALLET_ID } from "../src/fixture/scenarios";
 import { authorize, fixtureUrl } from "./helpers";
 
 // The 0.1 integration step (E1 shielded m4 v47 + E2 Platform addresses on main): the cases the
@@ -123,5 +124,26 @@ test.describe("item 7: replaced moves, an unproved arrival, the 50-coin refusal"
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-refusal")).toHaveText("Your Platform addresses hold too many separate balances to move at once. Consolidate coins first.");
+  });
+});
+
+test.describe("item 8: closing a wallet that cannot close says why", () => {
+  const closeB = async (page: Page, refusal: string) => {
+    await open(page, "two-wallets");
+    await page.evaluate(`window.__dwFixture.shellCommand({ kind: "navigate", route: "settings" })`);
+    await page.getByTestId("settings-tabs-wallets").click();
+    await page.evaluate(`window.__dwFixture.world.settings.unloadRefusal = ${JSON.stringify(refusal)}`);
+    await page.getByTestId(`settings-wallet-${SECOND_WALLET_ID.slice(0, 8)}-close`).click();
+  };
+
+  test("an unresolved shielded payment: the text names it, and the wallet stays open", async ({ page }) => {
+    await closeB(page, "unresolved");
+    await expect(page.getByTestId("settings-wallets-error")).toHaveText("A shielded payment is still being confirmed. Wait, or quit and reopen the app.");
+    await expect(page.getByTestId(`settings-wallet-${SECOND_WALLET_ID.slice(0, 8)}-state`)).not.toHaveText("Closed");
+  });
+
+  test("a wallet still opening: the engine's detail, not 'Something went wrong'", async ({ page }) => {
+    await closeB(page, "opening");
+    await expect(page.getByTestId("settings-wallets-error")).toHaveText("A wallet is still opening; close the network once it is open.");
   });
 });

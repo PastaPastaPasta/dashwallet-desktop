@@ -87,9 +87,14 @@ const BY_CODE: Partial<Record<ErrorCode, string>> = {
   "compat.wrong_passphrase": "The passphrase does not open this wallet.dat.",
 };
 
+/** The engine's `wallet` code carries one reason a person can act on (E1 r2): a wallet is still
+ * opening. The code is generic otherwise, so only that detail is shown. */
+export const WALLET_OPENING_TEXT = "A wallet is still opening; close the network once it is open.";
+
 export function failureText(e: unknown): string {
   if (!isAppError(e)) return "Something went wrong.";
   if (e.code === "vault.throttled") return tryAgainIn(retryAfterSecs(e));
+  if (e.code === "wallet" && /still opening/i.test(e.message)) return WALLET_OPENING_TEXT;
   return BY_CODE[e.code] ?? `Something went wrong (${e.code}).`;
 }
 
