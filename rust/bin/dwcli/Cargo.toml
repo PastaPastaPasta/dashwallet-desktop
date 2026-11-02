@@ -36,6 +36,10 @@ zeroize = { workspace = true }
 # for a devnet's claim tests. Debug builds only (`main.rs` refuses it
 # otherwise), so no release or dist build has the command (DP5-02 D18).
 invitation-create-test = ["dw-engine/test-support"]
+# Release 0.1's testnet smoke: `platform-addr fund`, an asset lock from the
+# Core balance outside the lease and coin fence. Debug builds only (`main.rs`
+# refuses it otherwise).
+platform-addr-fund = ["dw-engine/test-fund"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Debug builds' fault injection (`-spawn-fail`) lowers RLIMIT_NPROC.

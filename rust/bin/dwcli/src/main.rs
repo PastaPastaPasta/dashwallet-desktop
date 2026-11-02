@@ -16,6 +16,8 @@ mod tools;
 // DP5-02 D18: the test-only invitation maker never reaches a release build.
 #[cfg(all(feature = "invitation-create-test", not(debug_assertions)))]
 compile_error!("the invitation-create-test feature is for debug builds only");
+#[cfg(all(feature = "platform-addr-fund", not(debug_assertions)))]
+compile_error!("the platform-addr-fund feature is for debug builds only");
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -90,6 +92,56 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum NetworkCmd {
+    /// The saved choice (`null` when none; the app then opens mainnet).
+    Get,
+    /// Save `mainnet` or `testnet`.
+    Set {
+        #[arg(value_parser = ["mainnet", "testnet"])]
+        network: String,
+    },
+}
+
+/// `dwcli network get|set`: one JSON line, no engine.
+fn network_cmd(root: &std::path::Path, cmd: &NetworkCmd) -> ExitCode {
+    use dw_engine::network_choice::{NetworkChoice, read_network_choice, write_network_choice};
+    let name = |c: NetworkChoice| match c {
+        NetworkChoice::Mainnet => "mainnet",
+        NetworkChoice::Testnet => "testnet",
+    };
+    let result = match cmd {
+        NetworkCmd::Get => Ok(read_network_choice(root).map(name)),
+        NetworkCmd::Set { network } => {
+            let choice = if network == "testnet" {
+                NetworkChoice::Testnet
+            } else {
+                NetworkChoice::Mainnet
+            };
+            std::fs::create_dir_all(root)
+                .map_err(EngineError::from)
+                .and_then(|()| write_network_choice(root, choice))
+                .map(|()| Some(name(choice)))
+        }
+    };
+    match result {
+        Ok(network) => {
+            println!(
+                "{}",
+                serde_json::json!({"ok": true, "result": {"network": network}})
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            println!(
+                "{}",
+                serde_json::json!({"ok": false, "error": {"code": e.code(), "message": e.to_string()}})
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// Create the network's vault: encrypted with --passphrase-file, or
     /// unencrypted (data key in the OS keyring) with --unencrypted.
@@ -126,6 +178,13 @@ enum Command {
     /// List wallets with names and balances (duffs; `unknown` before the
     /// first scan).
     List,
+    /// The network the desktop app opens (release 0.1), kept in the data
+    /// root's `network.json`; `set` takes effect at the app's next start.
+    /// Opens no network.
+    Network {
+        #[command(subcommand)]
+        cmd: NetworkCmd,
+    },
     /// Fetch and verify the DPNS contract from DAPI: checks the endpoints,
     /// TLS (`--ca-cert`), the quorum context and proofs. Needs no wallet.
     PlatformStatus,
@@ -554,6 +613,10 @@ fn run_command(
                 .map(|id| println!("wallet_id {id}"))
         }
         Command::List => print_wallets(&session),
+        // `cli_main` answers it before any engine opens.
+        Command::Network { .. } => Err(EngineError::InvalidArgument(
+            "`network` opens no session".into(),
+        )),
         Command::PlatformStatus => engine.block_on(session.platform_status()).map(|s| {
             println!(
                 "dpns_contract id={} version={} owner={}",
@@ -751,6 +814,9 @@ fn cli_main() -> ExitCode {
     };
     // `DWCLI_LOG=info,dash_spv=debug` (EnvFilter syntax) logs to stderr.
     log::init(&cli, matches!(cli.command, Command::Mn(_)));
+    if let Command::Network { cmd } = &cli.command {
+        return network_cmd(&cli.datadir, cmd);
+    }
     // `mn` commands print one JSON line whatever happens (MG-03 D26), and a
     // panic's payload never reaches stderr.
     if matches!(cli.command, Command::Mn(_)) {
@@ -855,6 +921,24 @@ mod tests {
                 network: DashNetwork::Regtest
             }),
             "SessionClosed"
+        );
+    }
+
+    #[test]
+    fn network_set_is_what_the_app_reads() {
+        let dir = dw_testutil::private_tempdir();
+        let root = dir.path().join("data");
+        assert_eq!(network_cmd(&root, &NetworkCmd::Get), ExitCode::SUCCESS);
+        let set = |n: &str| NetworkCmd::Set { network: n.into() };
+        assert_eq!(network_cmd(&root, &set("testnet")), ExitCode::SUCCESS);
+        assert_eq!(
+            dw_engine::network_choice::read_network_choice(&root),
+            Some(dw_engine::network_choice::NetworkChoice::Testnet)
+        );
+        assert_eq!(network_cmd(&root, &set("mainnet")), ExitCode::SUCCESS);
+        assert_eq!(
+            dw_engine::network_choice::read_network_choice(&root),
+            Some(dw_engine::network_choice::NetworkChoice::Mainnet)
         );
     }
 

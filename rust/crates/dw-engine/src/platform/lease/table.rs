@@ -10,7 +10,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
-use dw_vault::{KeyHold, VaultSigner, VoteSigner};
+use dw_vault::{KeyHold, ShieldedSpendKey, VaultSigner, VoteSigner};
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 use tokio::task::AbortHandle;
@@ -70,6 +70,11 @@ pub(crate) struct Signers {
     pub(crate) masternode: Option<VaultSigner>,
     /// The vote signer (MG-05 §3): no `VaultSigner`, so no transaction.
     pub(crate) vote: Option<VoteSigner>,
+    /// `PlatformAddress`: "Move to Dash wallet"'s DIP-17 payment keys.
+    pub(crate) platform_address: Option<VaultSigner>,
+    /// A `ShieldedSpend` lease's Orchard spend key (0.1 E1), in place of
+    /// the identity signer its `PlatformOp` grant would issue.
+    pub(crate) shielded: Option<ShieldedSpendKey>,
 }
 
 /// What a redemption produced (§4.1 step 2): the caps per purpose, the one
@@ -940,6 +945,29 @@ impl Lease {
         let signer = self.signer(BudgetPurpose::Credits, |s| s.identity.as_ref(), budget)?;
         VaultIdentitySigner::new(signer, identity_indices.iter().copied())
             .map_err(|_| LeaseError::Vault("identity signer scope"))
+    }
+
+    /// The Platform-address signer a call's permit hands out
+    /// (`PlatformAddress`, a `PlatformAddressMove` lease's only signer):
+    /// the permit's J step already charged the call's quote.
+    pub(crate) fn call_platform_address_signer(&self) -> Result<VaultSigner, LeaseError> {
+        self.signer(
+            BudgetPurpose::Credits,
+            |s| s.platform_address.as_ref(),
+            |e| e.credits.granted(),
+        )
+    }
+
+    /// The shielded spend key a call's permit hands out (0.1 E1): the
+    /// permit's J step already charged the call's quote, so the Credits
+    /// budget may be at 0.
+    pub(crate) fn call_shielded_spend_key(&self) -> Result<ShieldedSpendKey, LeaseError> {
+        self.with_entry(BudgetPurpose::Credits, |e| {
+            if !e.credits.granted() {
+                return Err(LeaseError::NeedsGrant(BudgetPurpose::Credits));
+            }
+            (e.signers.shielded.clone()).ok_or(LeaseError::NeedsGrant(BudgetPurpose::Credits))
+        })
     }
 
     /// The asset-lock funding signer (`PlatformFunding`, cap fixed at

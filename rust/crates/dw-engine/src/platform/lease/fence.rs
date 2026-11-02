@@ -36,8 +36,12 @@ use crate::platform::flows::{BudgetPurpose, DispatchResolution, DispatchResolved
 use crate::{EngineEvent, NoticeCode, WalletId};
 use dw_appdb::dispatch::{
     CallRows, Resolution, SelfSpendConflict, SelfSpendProvenance, StoredFundingKey, StoredOutPoint,
-    TopUpSettled,
+    TopUpSettled, UnrecordedSpend,
 };
+
+/// A shielded spend on record: `(activity, transition)`, the library's
+/// activity id and the SHA-256 of the transition it holds to re-send.
+pub(crate) type ShieldedRedrive = ([u8; 32], [u8; 32]);
 
 /// The durable medium of the journal (§6.2): `dispatch.sqlite`, or a fake
 /// with injected faults in tests. Every call is a short blocking write.
@@ -146,6 +150,53 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     /// The top-up locks of `wallet` recorded settled.
     fn top_ups_settled(&self, _wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
         Err("this journal keeps no settled top-ups".into())
+    }
+    /// Records the shielded spend `activity` the library holds to re-send
+    /// as transition `transition` (schema 9, 0.1 E1); the first record
+    /// stands.
+    fn record_shielded_redrive(
+        &self,
+        _wallet: &[u8; 32],
+        _activity: &[u8; 32],
+        _transition: &[u8; 32],
+    ) -> Result<(), String> {
+        Err("this journal keeps no shielded redrives".into())
+    }
+    /// The shielded spends of `wallet` on record, `(activity, transition)`.
+    #[cfg(test)]
+    fn shielded_redrives(&self, _wallet: &[u8; 32]) -> Result<Vec<ShieldedRedrive>, String> {
+        Err("this journal keeps no shielded redrives".into())
+    }
+    /// Marks the shielded spend `activity` of `wallet` of unknown result
+    /// the library kept no record of (schema 10, DEC-1057); the first
+    /// marker stands.
+    fn record_unrecorded_spend(
+        &self,
+        _wallet: &[u8; 32],
+        _activity: &[u8; 32],
+        _anchor: &[u8; 32],
+        _nullifiers: &[[u8; 32]],
+    ) -> Result<(), String> {
+        Err("this journal keeps no shielded spend markers".into())
+    }
+    /// The marked shielded spends of `wallet`; none in a journal that keeps
+    /// none.
+    fn unrecorded_spends(&self, _wallet: &[u8; 32]) -> Result<Vec<UnrecordedSpend>, String> {
+        Ok(Vec::new())
+    }
+    /// Flags `nullifiers` of `wallet` spent and clears each marker all of
+    /// whose are; returns their activities.
+    fn note_spent_nullifiers(
+        &self,
+        _wallet: &[u8; 32],
+        _nullifiers: &[[u8; 32]],
+    ) -> Result<Vec<[u8; 32]>, String> {
+        Ok(Vec::new())
+    }
+    /// The journal connection's `synchronous` pragma (2 = FULL).
+    #[cfg(test)]
+    fn synchronous(&self) -> Option<i64> {
+        None
     }
 }
 
@@ -309,6 +360,52 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
         (self.top_ups_settled(wallet))
             .map(|rows| rows.into_iter().map(|(txid, _)| txid).collect())
             .map_err(|e| e.to_string())
+    }
+
+    fn record_shielded_redrive(
+        &self,
+        wallet: &[u8; 32],
+        activity: &[u8; 32],
+        transition: &[u8; 32],
+    ) -> Result<(), String> {
+        (self.record_shielded_redrive(wallet, activity, transition, crate::events::unix_now()))
+            .map(drop)
+            .map_err(|e| e.to_string())
+    }
+
+    #[cfg(test)]
+    fn shielded_redrives(&self, wallet: &[u8; 32]) -> Result<Vec<ShieldedRedrive>, String> {
+        self.shielded_redrives(wallet).map_err(|e| e.to_string())
+    }
+
+    fn record_unrecorded_spend(
+        &self,
+        wallet: &[u8; 32],
+        activity: &[u8; 32],
+        anchor: &[u8; 32],
+        nullifiers: &[[u8; 32]],
+    ) -> Result<(), String> {
+        let now = crate::events::unix_now();
+        (self.record_unrecorded_spend(wallet, activity, anchor, nullifiers, now))
+            .map(drop)
+            .map_err(|e| e.to_string())
+    }
+
+    fn unrecorded_spends(&self, wallet: &[u8; 32]) -> Result<Vec<UnrecordedSpend>, String> {
+        self.unrecorded_spends(wallet).map_err(|e| e.to_string())
+    }
+
+    fn note_spent_nullifiers(
+        &self,
+        wallet: &[u8; 32],
+        nullifiers: &[[u8; 32]],
+    ) -> Result<Vec<[u8; 32]>, String> {
+        (self.note_spent_nullifiers(wallet, nullifiers)).map_err(|e| e.to_string())
+    }
+
+    #[cfg(test)]
+    fn synchronous(&self) -> Option<i64> {
+        self.pragmas().ok().map(|p| p.synchronous)
     }
 }
 
@@ -1257,7 +1354,9 @@ impl FenceState {
         for (s, _) in &gone {
             if id == ArtifactId::of_step(&wallet, s) {
                 let key = (wallet, s.clone());
-                // Only a call that released no signature writes a step's
+                // Only a call that released no signature, or whose build
+                // its signer abandoned (no complete transaction, no stored
+                // lock: `SignatureCount::abandon`), writes a step's
                 // `NotSent` row (`call.rs`), and a signed lock or a
                 // self-spend needs one: none is ever dropped here (review
                 // Opus O-9).

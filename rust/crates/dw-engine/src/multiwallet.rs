@@ -258,6 +258,8 @@ impl NetworkSession {
 
     /// dash-qt "Close Wallet": unloads a loaded wallet. Its data stays; its
     /// prepared, unsent payments lose their reservations. Idempotent.
+    /// `ShieldedSpendUnresolved` while it holds a shielded spend whose
+    /// result is not known (DEC-1046).
     pub async fn unload_wallet(self: &Arc<Self>, id: WalletId) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
@@ -268,6 +270,22 @@ impl NetworkSession {
                 return Ok(());
             }
             this.require_wallet(&id)?;
+            // A shielded call of the wallet in flight (a send, an unshield,
+            // a shield) ends first and none starts until the unload is
+            // done: a spend's library call outlives its permit's drain, and
+            // may store its transition up to its end.
+            let _shielded = crate::platform::shielded_pool::wallet_lock(&this, id)
+                .lock_owned()
+                .await;
+            // DEC-1046: unloading a wallet that holds a shielded spend of
+            // unknown result would delete its stored transition (no detach
+            // at the pin); refused before anything of it changes, and again
+            // at the removal (fail closed).
+            if crate::platform::shielded_pool::holds_unresolved(&this.leases, &live.manager, id)
+                .await
+            {
+                return Err(EngineError::ShieldedSpendUnresolved);
+            }
             // E0-04 §8.6: the wallet's leases end and its permits drain.
             let _barrier = this
                 .revoke_wallet(id, crate::platform::RevokeCause::WalletClosed)
@@ -277,8 +295,19 @@ impl NetworkSession {
             // Its discoveries end first, as for a removal: none may apply
             // what it finds to the wallet once it is loaded again.
             let _discoveries = this.platform.recovery.end_discoveries(id).await;
-            if let Err(e) = this.platform.remove_from_manager(&live.manager, id).await {
+            if let Err(e) = (this.platform)
+                .remove_from_manager(
+                    &this.leases,
+                    &live.manager,
+                    id,
+                    crate::platform::runtime::StoredSpends::Refuse,
+                )
+                .await
+            {
                 live.store.set_unloaded(id.0, false);
+                // The revocation dropped its background lease, without
+                // which every shielded pass of the network is held back.
+                this.spawn_ensure_background();
                 return Err(e);
             }
             this.hub.unload_wallet(&id);
@@ -301,12 +330,18 @@ impl NetworkSession {
     pub async fn load_wallet(self: &Arc<Self>, id: WalletId) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            // A wallet loads with its stored shielded spends: not between an
+            // in-app close's check and its commit (E1 r2 R2-3).
+            let _admitted = this.platform.wallet_loads.read().await;
             let _op = this.enter().await?;
             let _lifecycle = this.wallet_lifecycle.hold().await;
             let live = this.live()?;
             if !live.store.is_unloaded(&id.0) {
                 return this.require_wallet(&id);
             }
+            // The wallet joins the shielded passes' set: not while one is in
+            // flight (R1-3, `PlatformRuntime::shielded_passes`).
+            let passes = this.platform.shielded_passes.write().await;
             live.store.set_unloaded(id.0, false);
             if let Err(e) = live.manager.load_from_persistor().await {
                 live.store.set_unloaded(id.0, true);
@@ -316,6 +351,7 @@ impl NetworkSession {
                 live.store.set_unloaded(id.0, true);
                 return Err(EngineError::WalletNotFound(id.to_string()));
             }
+            drop(passes);
             this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;
             this.load_payment_locks(id).await;

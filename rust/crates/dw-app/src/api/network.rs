@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use dw_engine::network_choice::{self, NetworkChoice};
 use dw_engine::{DashNetwork, NetworkDataInfo, SessionOptions};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -111,6 +112,65 @@ impl SessionSettings {
     }
 }
 
+/// A network the user chooses between (the developer networks are launch
+/// flags only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ChosenNetwork {
+    Mainnet,
+    Testnet,
+}
+
+impl From<NetworkChoice> for ChosenNetwork {
+    fn from(c: NetworkChoice) -> Self {
+        match c {
+            NetworkChoice::Mainnet => ChosenNetwork::Mainnet,
+            NetworkChoice::Testnet => ChosenNetwork::Testnet,
+        }
+    }
+}
+
+impl From<ChosenNetwork> for NetworkChoice {
+    fn from(c: ChosenNetwork) -> Self {
+        match c {
+            ChosenNetwork::Mainnet => NetworkChoice::Mainnet,
+            ChosenNetwork::Testnet => NetworkChoice::Testnet,
+        }
+    }
+}
+
+/// The network choice of onboarding and Settings (release 0.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkChoiceView {
+    /// The saved choice; mainnet when none was saved.
+    pub chosen: ChosenNetwork,
+    /// A choice was saved (`false`: first run, onboarding may ask).
+    pub saved: bool,
+    /// The network this run opens by default (`launchInfo.network`).
+    pub launched: NetworkInfo,
+    /// `--network` named the launch network: the saved choice applies only
+    /// to a launch without it.
+    pub forced_by_flag: bool,
+    /// The choice takes effect at the next start (the app restarts to
+    /// switch).
+    pub restart_needed: bool,
+}
+
+impl NetworkChoiceView {
+    fn read(launch: &LaunchOptions, root: &std::path::Path) -> Self {
+        let saved = network_choice::read_network_choice(root);
+        let chosen = saved.unwrap_or_default();
+        NetworkChoiceView {
+            chosen: chosen.into(),
+            saved: saved.is_some(),
+            launched: NetworkInfo::from(&launch.network),
+            forced_by_flag: launch.network_given,
+            restart_needed: !launch.network_given && chosen.network() != launch.network,
+        }
+    }
+}
+
 /// The active network after `openNetwork`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -154,8 +214,9 @@ commands! {
     /// active one, opening it if needed and closing the network that was
     /// active, with its draft handles. When it is already active, the open
     /// session is kept and `settings` are ignored. Opening the launch
-    /// network of a `--sync` launch starts SPV; a failed start leaves the
-    /// network open, readable offline.
+    /// network starts SPV on mainnet and testnet unless the app was launched
+    /// with `--no-sync`, and on another network with `--sync`; a failed
+    /// start leaves the network open, readable offline.
     #[facade("Engine::open_network", "Engine::close_network")]
     fn open_network(
         state,
@@ -175,14 +236,12 @@ commands! {
             active => {
                 if let Some(old) = active {
                     let old = old.network().clone();
-                    *slot = None;
-                    state.clear_handles();
-                    engine.close_network(old).await?;
+                    close_active(&state, &mut slot, engine.close_network(old).await)?;
                 }
                 let options = settings.over(&state.launch);
                 let s = engine.open_network(network.clone(), options).await?;
                 *slot = Some(Arc::clone(&s));
-                if state.launch.sync
+                if state.launch.starts_spv()
                     && network == state.launch.network
                     && let Err(e) = s.start_spv().await
                 {
@@ -203,11 +262,10 @@ commands! {
     fn close_network(state) -> bool {
         let engine = &state.engine;
         let mut slot = state.session_slot().await;
-        let Some(session) = slot.take() else {
+        let Some(network) = slot.as_ref().map(|s| s.network().clone()) else {
             return Ok(false);
         };
-        state.clear_handles();
-        Ok(engine.close_network(session.network().clone()).await?)
+        close_active(&state, &mut slot, engine.close_network(network).await)
     }
 
     /// The active network, `null` before `openNetwork`.
@@ -220,12 +278,46 @@ commands! {
             .map(|s| NetworkInfo::from(s.network())))
     }
 
+    /// The saved network choice (mainnet or testnet) and whether the app
+    /// must restart to open it.
+    #[facade()]
+    fn get_network_choice(state) -> NetworkChoiceView {
+        Ok(NetworkChoiceView::read(&state.launch, &state.data_root))
+    }
+
+    /// Saves the network the app opens from the next start (onboarding,
+    /// Settings); the running session is left as it is.
+    #[facade()]
+    fn set_network_choice(state, network: ChosenNetwork) -> NetworkChoiceView {
+        network_choice::write_network_choice(&state.data_root, network.into())?;
+        Ok(NetworkChoiceView::read(&state.launch, &state.data_root))
+    }
+
     /// Every network with data under the data root, in network order.
     #[facade("Engine::existing_networks")]
     fn existing_networks(state) -> Vec<NetworkData> {
         let networks = state.engine.existing_networks().await?;
         Ok(networks.into_iter().map(Into::into).collect())
     }
+}
+
+/// The active session's close, as `close_network` returned it: the slot and
+/// the session's handles are dropped once it closed, or failed to. A
+/// refusal, which leaves the engine's session open
+/// (`shielded_spend_unresolved`, DEC-1046; `wallet` while a wallet is
+/// still opening, E1 r2), leaves both as they were: the session stays
+/// active, its drafts kept.
+pub(crate) fn close_active(
+    state: &crate::state::AppState,
+    slot: &mut Option<Arc<dw_engine::NetworkSession>>,
+    closed: Result<bool, dw_engine::EngineError>,
+) -> Result<bool, AppError> {
+    if closed.is_err() && slot.as_ref().is_some_and(|s| s.is_open()) {
+        return closed.map_err(Into::into);
+    }
+    *slot = None;
+    state.clear_handles();
+    Ok(closed?)
 }
 
 #[cfg(test)]

@@ -53,7 +53,7 @@ Status: **works** = implemented and tested through the FFI; **M0** = earlier wor
 |---|---|---|---|---|---|
 | `Engine(config, observer)` | sync ctor | Builds the tokio runtime and logging. | `EngineError` | QT-002 | M0 |
 | `Engine.open_network(network, options)` | async | Opens (or returns the open) session: data dir, SDK, `PlatformWalletManager<SqlitePersister>`, loads wallets. | `EngineError` | QT-002, IOS-106 | M0 |
-| `Engine.close_network(network)` / `shutdown()` | async | Stops SPV, drains persistence, releases the DB. | `EngineError` | QT-008 | M0 |
+| `Engine.close_network(network)` / `shutdown()` | async | Stops SPV, drains persistence, releases the DB. `close_network` (an in-app close or network switch) is refused with `shielded_spend_unresolved`, the session left open, while a wallet holds a shielded spend whose result is not known (m4 §2.13, DEC-1046); `shutdown` (app quit) is never refused and keeps such a wallet loaded, its stores committed (not closed; m4 §2.13), so its spends are pending at the next launch. | `EngineError` | QT-008 | M0 |
 | `Engine.network_dir(network)` | sync | Data directory ("Open data folder"). | — | QT-143 | M0 |
 | `NetworkSession.start_spv()` / `stop_spv()` / `spv_running()` | async/async/sync | dash-spv with masternode sync on. **E0-05 (DASHPAY §2.5, §3.2):** `start_spv` returns once the start is scheduled (measured 0.5–4 ms); an engine task first runs each wallet's DashPay bring-up (`start_wallet_subsystems`, every wallet at once: 3 s for a wallet created here, 20 s otherwise, counted from the start and bounding all of it, key acquisition included; skipped for a watch-only wallet and for one Platform proved within the last 7 days has no identity), then starts SPV whatever the outcome, then the `identity_sync`, `dashpay_sync` and `dpns_sync` loops. `SpvStateChanged{running: true}` reports the actual start; a dash-spv failure at that point is `Notice{SpvError}`. Idempotent while starting or running; configuration errors are still returned by the call. `stop_spv` cancels a running bring-up, waits for its blocking key work (at most 5 s) and quiesces the loops first; SPV is stopped either way, and work that did not end is returned as `sdk` ("SPV stopped, but this Platform work did not end: dashpay_sync, …"); the next start drains it again inside its task before its loops start (retried every 30 s), so `start_spv` itself never waits for it. Close cancels the bring-up, waits for its key work (at most 5 s; longer is an unclean close: `Notice{UncleanShutdown}`, marker kept) and lets the manager's shutdown drain the loops once (§2.1a item 6). A restore signals its wallets' bring-up only once it has committed, and until then no entry point (a start already listing wallets, an unlock, a wallet-added signal) admits one for them; a wallet refused meanwhile is brought up once the last restore marking it ends, unless that restore rolled it back. Removing or closing a wallet ends its bring-up. While SPV runs, a funding held on a bring-up that left the seed's identity indexes unanswered has it run again (20 s budget, backing off from 30 s to 10 minutes: m4 §7 item 46). `spv_running()` is true while starting; calls that need SPV running (`rescan`, `rotate_peers`, a broadcast) still fail with `sync.spv_not_running` / `send.no_peers` until `spv_state()` is `Running`. `SessionOptions.no_platform` (dwcli `--no-platform`; not in dw-ffi until E0-13) is for a chain without Platform such as a plain dashd regtest: no bring-up, no loops. | `EngineError` | QT-024/025 | M0, E0-05 |
 | `NetworkSession.spv_state()` | sync | `Stopped` \| `Starting` (bring-up or dash-spv start) \| `Running`. Not in dw-ffi until E0-13 (frozen Swift bindings). | — | DASHPAY §2.5 | E0-05 |
@@ -64,7 +64,9 @@ Status: **works** = implemented and tested through the FFI; **M0** = earlier wor
 **E0-04** (design `docs/design/E0-04-grants-leases.md`, approved, DEC-73; lands in its phase P2a). The engine's
 `NetworkSession::lock_vault()` becomes the lock every path runs: it revokes every flow lease, runs its own vault
 gate, drains the hand-offs already admitted (each to its deadline, H = 10 s) and returns a `LockReport`, within
-`max(H, T_gate)` of its call. It is engine-side (dwcli, tests); the chosen stack binds it in E0-13. dw-ffi keeps the
+`max(H, T_gate)` of its call; then, on an active shielded network, it also waits for a shielded sync pass in flight to
+end (0.1 E1, DEC-1032: its redrives must end before the lock completes), which the SDK's request settings bound
+(m4 §2.13; seconds on a reachable network). It is engine-side (dwcli, tests); the chosen stack binds it in E0-13. dw-ffi keeps the
 synchronous `Vault.lock()` (§2.2). The new events `LockProgress{Draining | Done(LockReport)}`, `LeaseChanged` and
 `DispatchResolved`, and the notices `DispatchRecordMissing`, `UnscopedDispatch` and `DispatchJournalUnavailable`,
 stay engine-side until E0-13, so §3 does not list them.
@@ -555,12 +557,12 @@ and `not_implemented` of these. Domain codes:
 | `MessageError` | `message.invalid_address`, `message.address_no_key`, `message.malformed_signature`, `message.pubkey_not_recovered`, `message.not_signed`, `message.address_not_mine`, `message.watch_only`, `message.vault_locked`, `message.grant_invalid` |
 | `UriError` | `uri.double_slash`, `uri.not_dash_uri`, `uri.unparsable`, `uri.bip70_unsupported`, `uri.invalid_address`, `uri.invalid_amount`, `uri.too_long_for_qr` |
 | `UnitsError` | `units.unparsable` |
-| `EngineError` (M0 calls) | `invalid_config`, `invalid_argument`, `network_not_open`, `storage_in_use`, `storage`, `wallet_not_found`, `invalid_mnemonic`, `wallet_already_exists`, `wallet`, `sdk`, `spv`, `io`, `not_implemented`, `internal` |
+| `EngineError` (M0 calls) | `invalid_config`, `invalid_argument`, `network_not_open`, `storage_in_use`, `storage`, `wallet_not_found`, `invalid_mnemonic`, `wallet_already_exists`, `wallet`, `sdk`, `spv`, `io`, `not_implemented`, `internal`, `shielded_spend_unresolved` (0.1 E1, DEC-1046: "a shielded payment is still being confirmed; wait, or quit and reopen the app"; not in the frozen dw-ffi, which reports it as `wallet`) |
 
 Each FFI error enum exports `code()` returning these strings (a method on the generated Swift type, e.g.
 `SendError.code()`); DashKit maps the generated Swift cases to the same strings (`DashKitError.code`,
 `ServiceErrorCode`) and may read `code()` instead. A dw-ffi test checks the `EngineError` row against its
-variants. Swift chooses dash-qt / iOS copy by code (QT-062,
+variants, less the codes the row marks "not in the frozen dw-ffi". Swift chooses dash-qt / iOS copy by code (QT-062,
 IOS-051). The send codes cover dash-qt's `SendCoinsReturn` statuses.
 
 `send.cancelled` joined `SendError` with DP3-01, for a contact payment that Lock refused before its hand-off (E0-04

@@ -37,6 +37,13 @@ fn install_poison_hook() {
     });
 }
 
+/// How long an in-app close waits for a wallet load in flight
+/// (`Engine::close_network`): a load reads local storage only.
+#[cfg(not(test))]
+const CLOSE_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(test)]
+pub(crate) const CLOSE_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Root data directory; each network lives in `<data_root>/<network>/`.
@@ -146,14 +153,47 @@ impl Engine {
     }
 
     /// Closes the session for `network`. Returns `false` when none was open.
+    /// It waits up to 30 s for a wallet load in flight, then
+    /// is refused with `wallet` ("a wallet is still opening").
+    /// `ShieldedSpendUnresolved`, the session left open, while one of its
+    /// wallets holds a shielded spend whose result is not known (DEC-1046):
+    /// the close would have to keep that wallet loaded, and the network
+    /// could not reopen in this process. [`Self::shutdown`] (app quit) is
+    /// never refused.
     pub async fn close_network(&self, network: DashNetwork) -> Result<bool, EngineError> {
         let shared = Arc::clone(&self.shared);
         self.handle
             .spawn(async move {
-                let mut sessions = shared.sessions.lock().await;
-                let Some(session) = sessions.remove(&network) else {
+                let Some(session) = shared.sessions.lock().await.get(&network).cloned() else {
                     return Ok(false);
                 };
+                // From the check to the commit no wallet loads and no
+                // signing shielded call starts (E1 r2 R2-3). A load in
+                // flight is waited for, briefly, without the sessions lock,
+                // so opens, lookups and quit go on meanwhile; a call running
+                // refuses the close.
+                let loads = session.platform.wallet_loads.write();
+                let Ok(_loads) = tokio::time::timeout(CLOSE_LOAD_WAIT, loads).await else {
+                    return Err(EngineError::Wallet(
+                        "a wallet is still opening; close the network once it is open".into(),
+                    ));
+                };
+                let mut sessions = shared.sessions.lock().await;
+                // Closed (quit) or reopened while it waited: nothing of this
+                // session is left to close.
+                if !sessions
+                    .get(&network)
+                    .is_some_and(|open| Arc::ptr_eq(open, &session))
+                {
+                    return Ok(false);
+                }
+                let Ok(_preflight) = session.platform.close_preflight.try_write() else {
+                    return Err(EngineError::ShieldedSpendUnresolved);
+                };
+                if session.holds_shielded_spends().await {
+                    return Err(EngineError::ShieldedSpendUnresolved);
+                }
+                sessions.remove(&network);
                 session.close().await;
                 Ok(true)
             })

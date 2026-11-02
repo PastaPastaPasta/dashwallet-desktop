@@ -38,6 +38,7 @@ pub mod masternode_keys;
 pub mod masternodes;
 mod multiwallet;
 mod network;
+pub mod network_choice;
 pub mod platform;
 mod pump;
 mod receive;

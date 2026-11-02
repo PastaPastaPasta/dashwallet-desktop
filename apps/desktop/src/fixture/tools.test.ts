@@ -74,6 +74,7 @@ describe("fixture DashPay card (DP6-03)", () => {
       ["identitySync", true],
       ["dashPaySync", true],
       ["dpnsSync", true],
+      ["platformAddressSync", true],
     ]);
     // A watch-only wallet's bring-up does not run (bringup.rs `admit`).
     clearMocks();

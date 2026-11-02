@@ -33,9 +33,9 @@ use super::registration_flow::{FundError, LockInfo, LockStatus, PwLib, Spendable
 use super::topup::{self, Applied, TopUpLib, top_up_step};
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
 
-const PHRASE: &str =
+pub(super) const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-const PASS: &[u8] = b"pass phrase";
+pub(super) const PASS: &[u8] = b"pass phrase";
 const COIN: u64 = 100_000_000;
 /// A top-up of 0.05 DASH.
 const DUFFS: u64 = 5_000_000;

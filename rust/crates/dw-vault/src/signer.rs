@@ -60,7 +60,7 @@ pub enum SignerScope {
     DashPayCrypto,
     /// Asset-lock funding (registration, top-up): signatures and public keys
     /// (no chain codes) of BIP44, BIP32 and DashPay-receiving addresses and
-    /// of the credit keys `m/9'/coin'/5'/{1',2',3'}/…`, plus the extended
+    /// of the credit keys `m/9'/coin'/5'/{1',2',3',5'}/…`, plus the extended
     /// public key of an identity's top-up account `m/9'/coin'/5'/2'/i'`
     /// (platform-wallet adds that account through the signer). The cap is
     /// bounded by the token ([`crate::Vault::platform_signer`] refuses a
@@ -68,6 +68,13 @@ pub enum SignerScope {
     /// cannot see the debit, so the engine checks it before the transaction
     /// leaves the process (E0-04 design §3.4, §4.2).
     PlatformFunding { max_duffs: u64 },
+    /// Platform-address spends (release 0.1, "Move to Dash wallet"):
+    /// signatures and public keys (no chain codes) of the DIP-17 payment
+    /// address keys `m/9'/coin'/17'/account'/key_class'/index` only. Like
+    /// `PlatformIdentity`, the vault signs state-transition bytes and cannot
+    /// see what they spend; the engine bounds the spend by the grant's
+    /// credits before it signs.
+    PlatformAddress,
     /// Governance votes (MG-05 §3, D1): the keychain voting keys
     /// `m/9'/coin'/3'/1'/i` and the `voting` key attached to a tracked
     /// masternode, for [`KeyUse::Vote`] only, which no [`VaultSigner`]
@@ -88,6 +95,19 @@ pub enum SignerScope {
     /// what it signs; the engine checks it against the grant's cap first
     /// (MG-05 §2). No operator or platform-node key is in reach.
     MasternodeOwner,
+    /// The spend authority of the wallet's Orchard account 0 (0.1 E1,
+    /// `crate::shielded`): platform-wallet's ZIP-32 key set
+    /// `m_orchard/32'/coin'/0'`, derived from the seed for one shielded
+    /// spend and handed to the library, which takes no signer. No BIP32 key
+    /// of the wallet. Issued only by a `PlatformOp` grant whose
+    /// `max_credits` is not 0 ([`crate::Vault::shielded_spend_key`]).
+    ShieldedSpend,
+    /// The full viewing key of that account, no spend authority and no
+    /// BIP32 key: what the library binds to scan the pool and to show the
+    /// receive address. Grant-less, like `DashPayCrypto`, so issued only
+    /// while the full key needs no prompt
+    /// ([`crate::Vault::shielded_viewing_key`]).
+    ShieldedView,
 }
 
 /// What a derived key is used for.
@@ -174,6 +194,9 @@ impl SignerScope {
                 KeyUse::ExtendedPublicKey => paths::is_identity_top_up_account(path, network),
                 _ => false,
             },
+            SignerScope::PlatformAddress => {
+                sign_or_public_key && paths::is_platform_payment_address(path, network)
+            }
             SignerScope::MasternodeVoting => {
                 key_use == KeyUse::Vote && paths::is_voting_key(path, network)
             }
@@ -188,6 +211,8 @@ impl SignerScope {
                     _ => false,
                 }
             }
+            // ZIP-32 starts from the seed ([`VaultSigner::with_seed`]).
+            SignerScope::ShieldedSpend | SignerScope::ShieldedView => false,
         }
     }
 
@@ -321,6 +346,28 @@ impl VaultSigner {
                 signer: self,
                 master,
             })
+        })
+    }
+
+    /// Runs `body` on the wallet's seed in one operation, under the same
+    /// gate and epoch rule as [`Self::run`]: for the Orchard keys of the
+    /// shielded scopes only, whose ZIP-32 derivation starts from the seed
+    /// rather than a BIP32 key. Any other scope is `PathNotAllowed`.
+    pub(crate) fn with_seed<T>(
+        &self,
+        body: impl FnOnce(&[u8]) -> Result<T, SignerError>,
+    ) -> Result<T, SignerError> {
+        if !matches!(
+            self.scope,
+            SignerScope::ShieldedSpend | SignerScope::ShieldedView
+        ) {
+            return Err(SignerError::PathNotAllowed("the seed".into()));
+        }
+        self.vault.gated(SignerError::Locked, |gate| {
+            let seed = self
+                .vault
+                .signing_seed(gate, &self.wallet_id, self.epoch, &self.key)?;
+            body(&seed[..])
         })
     }
 
@@ -672,6 +719,44 @@ mod tests {
         }
     }
 
+    /// Release 0.1: a Platform-address signer reaches the DIP-17 payment
+    /// keys and nothing else, and no other Platform scope reaches them.
+    #[test]
+    fn platform_address_signs_payment_address_keys_only() {
+        let s = SignerScope::PlatformAddress;
+        for ok in ["m/9'/1'/17'/0'/0'/0", "m/9'/1'/17'/0'/0'/19"] {
+            assert_eq!(uses(s, ok), vec![KeyUse::Sign, KeyUse::PublicKey], "{ok}");
+        }
+        for other in [
+            // Accounts and key classes the engine does not use.
+            "m/9'/1'/17'/1'/0'/0",
+            "m/9'/1'/17'/0'/1'/0",
+            "m/9'/1'/17'/2'/1'/19",
+            "m/9'/5'/17'/0'/0'/0",
+            "m/9'/1'/17'/0'/0'/0'",
+            "m/9'/1'/17'/0'/0/0",
+            "m/9'/1'/17'/0'/0'",
+            "m/9'/1'/17'/0'/0'/0/1",
+            "m/9'/1'/5'/0'/0'/0'/0'",
+            "m/9'/1'/5'/1'/0",
+            "m/44'/1'/0'/0/0",
+            "m",
+        ] {
+            assert!(uses(s, other).is_empty(), "{other}");
+        }
+        for other in [
+            SignerScope::CoinJoinOnly,
+            SignerScope::CoinJoinFunding,
+            SignerScope::PlatformIdentity,
+            SignerScope::DashPayCrypto,
+            SignerScope::PlatformFunding { max_duffs: 1 },
+            SignerScope::MasternodeVoting,
+            SignerScope::MasternodeOwner,
+        ] {
+            assert!(uses(other, "m/9'/1'/17'/0'/0'/0").is_empty(), "{other:?}");
+        }
+    }
+
     /// A voting key is reached for votes only (MG-05 D1), and no other scope
     /// but `Full` reaches it at all.
     #[test]
@@ -697,6 +782,7 @@ mod tests {
             SignerScope::PlatformIdentity,
             SignerScope::DashPayCrypto,
             SignerScope::PlatformFunding { max_duffs: 1 },
+            SignerScope::PlatformAddress,
             SignerScope::MasternodeOwner,
         ] {
             assert!(uses(other, "m/9'/1'/3'/1'/0").is_empty(), "{other:?}");
@@ -748,6 +834,7 @@ mod tests {
             SignerScope::PlatformIdentity,
             SignerScope::DashPayCrypto,
             SignerScope::PlatformFunding { max_duffs: 1 },
+            SignerScope::PlatformAddress,
             SignerScope::MasternodeVoting,
             SignerScope::Full,
         ] {

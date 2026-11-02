@@ -101,6 +101,18 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: reached through `Masternodes::untrack` and `detach_key` (MG-03 D8, MG-00 D22)",
     ),
     (
+        "Vault::shielded_viewing_key",
+        "internal: the engine binds the Orchard account's viewing key from it, prompt-free, at the Platform start or the first shielded call (m4 §2.13); never a host's",
+    ),
+    (
+        "Vault::shielded_spend_key",
+        "internal: reached through `DashPay::shielded_send` and `unshield_to_core`, which redeem their `ShieldedSpend` grant for one spend (m4 §2.13)",
+    ),
+    (
+        "Vault::shielded_spend_key_held",
+        "internal: the engine's shielded spends read the spend key under the call permit's key hold (m4 §2.13); never a host's",
+    ),
+    (
         "Vault::grant_identity_key_matches",
         "internal: the engine's contact-request writes ask it before they redeem a grant (DP2-02); the UI sees the refusal",
     ),

@@ -249,7 +249,16 @@ impl NetworkSession {
             return;
         }
         self.apply_cadence(&manager);
+        super::shielded_pool::start(&self, &manager, &wallets).await;
         let mut loops_pending = !self.start_loops(&manager).await;
+        // The shielded passes (0.1 E1, on an active network only,
+        // `shielded_pool::start`): the first with the loops, ahead of the
+        // names passes, then one every interval from the loop below.
+        let shielded = super::shielded_pool::runs_sync(&manager).await;
+        if shielded && !loops_pending {
+            self.kick_shielded_pass(&manager);
+        }
+        let mut shielded_due = tokio::time::Instant::now() + manager.shielded_sync().interval();
         if !self
             .names_passes(&manager, wallets, epoch, &mut cancel)
             .await
@@ -286,6 +295,17 @@ impl NetworkSession {
                 () = retry => {
                     let Some(this) = session.upgrade() else { return };
                     loops_pending = !this.start_loops(&manager).await;
+                    if shielded && !loops_pending {
+                        this.kick_shielded_pass(&manager);
+                        shielded_due = tokio::time::Instant::now() + manager.shielded_sync().interval();
+                    }
+                    continue;
+                }
+                // The shielded pass (0.1 E1), in the background.
+                () = tokio::time::sleep_until(shielded_due), if shielded => {
+                    let Some(this) = session.upgrade() else { return };
+                    this.kick_shielded_pass(&manager);
+                    shielded_due = tokio::time::Instant::now() + manager.shielded_sync().interval();
                     continue;
                 }
                 // The balance pass (DP1-06, `balances.rs`), in the
@@ -410,6 +430,24 @@ impl NetworkSession {
         true
     }
 
+    /// One shielded sync pass while the loops run
+    /// (`shielded_pool::guarded_pass`), started only while the session is
+    /// open. It runs past the operation guard, so a pass stuck on the
+    /// network cannot hold the close: the stop drains it with the other
+    /// loops (`undrained_loops`) and the close's `Manager::shutdown` drains
+    /// it and seals the coordinator, so no pass starts after the close; one
+    /// that outlives their budget is reported (`UncleanShutdown`). Nothing
+    /// drops it partway.
+    fn kick_shielded_pass(self: &Arc<Self>, manager: &Arc<Manager>) {
+        let (this, manager) = (Arc::clone(self), Arc::clone(manager));
+        self.rt.spawn(async move {
+            if !this.platform.loops_on.load(Ordering::Acquire) || this.enter().await.is_err() {
+                return;
+            }
+            super::shielded_pool::guarded_pass(&this, &manager, false).await;
+        });
+    }
+
     /// Starts the loops once no pass of an earlier start is in flight: a pass
     /// that outlived the last stop keeps its loop's admission shut until a
     /// quiesce succeeds (the library's rule). `false` while one still runs;
@@ -427,6 +465,7 @@ impl NetworkSession {
             manager.identity_sync_arc(),
             manager.dashpay_sync_arc(),
             manager.dpns_sync_arc(),
+            manager.platform_address_sync_arc(),
         );
         // `start` reaps a previous loop thread for up to a second and needs
         // the runtime's context; the blocking pool has both.
@@ -434,6 +473,9 @@ impl NetworkSession {
             loops.0.start();
             loops.1.start();
             loops.2.start();
+            loops.3.start();
+            // Not the shielded loop: the supervisor runs its passes
+            // (`kick_shielded_pass`, E0-04 Q15 / DEC-1032).
         })
         .await
         {
@@ -949,19 +991,24 @@ pub(super) fn read_bring_up_markers(
     ))
 }
 
-/// Quiesces the three loops; the names of those whose pass did not drain
-/// within the library's budget (review r1 M1: the library asks its caller to
-/// fail closed then).
+/// Quiesces the five loops (the shielded one runs on an active network
+/// only, and quiesces at once otherwise); the names of those whose pass did
+/// not drain within the library's budget (review r1 M1: the library asks
+/// its caller to fail closed then).
 async fn undrained_loops(manager: &Manager) -> Vec<&'static str> {
-    let (identity, dashpay, dpns) = tokio::join!(
+    let (identity, dashpay, dpns, addresses, shielded) = tokio::join!(
         manager.identity_sync().quiesce(),
         manager.dashpay_sync().quiesce(),
         manager.dpns_sync().quiesce(),
+        manager.platform_address_sync().quiesce(),
+        manager.shielded_sync().quiesce(),
     );
     [
         ("identity_sync", identity),
         ("dashpay_sync", dashpay),
         ("dpns_sync", dpns),
+        ("platform_address_sync", addresses),
+        ("shielded_sync", shielded),
     ]
     .into_iter()
     .filter_map(|(name, drained)| (!drained).then_some(name))

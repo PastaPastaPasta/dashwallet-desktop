@@ -330,7 +330,6 @@ fn app_builder<R: Runtime>(
                     .and_then(|root| settings::read(root).theme)
             });
             let window_size = launch.window_size;
-            let title = window_title(&launch.network);
             let handle = app.handle();
             let state = AppState::new(handle, launch, started, vault, || {
                 handle
@@ -338,6 +337,8 @@ fn app_builder<R: Runtime>(
                     .app_data_dir()
                     .map_err(|e| AppError::app(AppCode::DataDir, e.to_string()))
             })?;
+            // After the state: it resolves the saved network choice.
+            let title = window_title(&state.launch.network);
             app.manage(state);
             if let Some(window) = app.get_webview_window("main") {
                 window.set_title(&title)?;

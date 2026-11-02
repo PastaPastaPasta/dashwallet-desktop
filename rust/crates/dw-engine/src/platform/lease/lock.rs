@@ -161,10 +161,22 @@ impl LeaseTable {
     /// The async lock (§8.1): freeze now, then a spawned coordinator runs
     /// `gate` on the blocking pool and the drain, so a dropped caller
     /// cannot leave the barrier set. Returns once both are done.
+    #[cfg(test)]
     pub(crate) async fn lock(
         self: &Arc<Self>,
         cause: RevokeCause,
         gate: impl FnOnce() -> VaultStatus + Send + 'static,
+    ) -> LockReport {
+        self.lock_then(cause, gate, std::future::ready(())).await
+    }
+
+    /// [`Self::lock`], whose drain also awaits `then` before the lock
+    /// reports `Done` and returns (the session's shielded pass drain).
+    pub(crate) async fn lock_then(
+        self: &Arc<Self>,
+        cause: RevokeCause,
+        gate: impl FnOnce() -> VaultStatus + Send + 'static,
+        then: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> LockReport {
         let mut freeze = self.freeze(cause, Scope::All, true);
         let table = Arc::clone(self);
@@ -172,6 +184,7 @@ impl LeaseTable {
             let status = table.rt.spawn_blocking(gate).await;
             freeze.gate_done();
             freeze.drain().await;
+            then.await;
             freeze.finish(status.unwrap_or_else(|_| gate_panicked()))
         });
         coordinator.await.unwrap_or_else(|_| LockReport {
@@ -183,10 +196,22 @@ impl LeaseTable {
     /// The synchronous lock (§8.1, `Vault.lock()`): freeze, `gate` inline as
     /// this request's own gate, then a spawned drain; never block-waits.
     /// The drain's end arrives as `LockProgress::Done`.
+    #[cfg(test)]
     pub(crate) fn lock_sync(
         self: &Arc<Self>,
         cause: RevokeCause,
         gate: impl FnOnce() -> VaultStatus,
+    ) -> VaultStatus {
+        self.lock_sync_then(cause, gate, std::future::ready(()))
+    }
+
+    /// [`Self::lock_sync`], whose background drain also awaits `then`
+    /// before the lock reports `Done` (the session's shielded pass drain).
+    pub(crate) fn lock_sync_then(
+        self: &Arc<Self>,
+        cause: RevokeCause,
+        gate: impl FnOnce() -> VaultStatus,
+        then: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> VaultStatus {
         let mut freeze = self.freeze(cause, Scope::All, true);
         let status = gate();
@@ -194,6 +219,7 @@ impl LeaseTable {
         let report_status = status.clone();
         self.rt.spawn(async move {
             freeze.drain().await;
+            then.await;
             freeze.finish(report_status);
         });
         status

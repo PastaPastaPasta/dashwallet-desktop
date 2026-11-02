@@ -377,6 +377,13 @@ fn malformed_links_and_transactions() {
 
 #[test]
 fn contested_names_need_the_contested_lock() {
-    assert!(!Checked::contested_allowed(CONTESTED_LOCK_DUFFS - 1));
-    assert!(Checked::contested_allowed(CONTESTED_LOCK_DUFFS));
+    use dpp::version::PlatformVersion;
+    // 0.25 DASH at protocol version 13, 0.15 DASH from 14 (its contest fund
+    // fell from 0.2 to 0.1 DASH).
+    for (version, lock) in [(13, 25_000_000), (14, 15_000_000), (15, 15_000_000)] {
+        let v = PlatformVersion::get(version).unwrap();
+        assert_eq!(contested_lock_duffs(v), lock, "protocol version {version}");
+        assert!(!Checked::contested_allowed(lock - 1, v));
+        assert!(Checked::contested_allowed(lock, v));
+    }
 }

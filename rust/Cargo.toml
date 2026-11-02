@@ -27,10 +27,13 @@ publish = false
 # Cargo.lock was seeded from the platform checkout's lock at this revision so
 # the shared transitive graph (grovedb, rusqlite, tokio, ...) resolves to the
 # versions upstream builds and tests with.
-platform-wallet = { git = "https://github.com/PastaPastaPasta/platform", rev = "dc0c946307f7ac14a2b8e50479b178e67123cbc1", features = ["bls", "eddsa"] }
-# `sqlite` = SqlitePersister, `secrets` = vault/keyring primitives (WS-03).
-# `shielded` is deliberately off for M0 (halo2 build cost, DESIGN-opus G4).
-platform-wallet-storage = { git = "https://github.com/PastaPastaPasta/platform", rev = "dc0c946307f7ac14a2b8e50479b178e67123cbc1", default-features = false, features = ["sqlite", "secrets"] }
+# `shielded`: the Orchard pool (halo2, orchard, the commitment tree), on since
+# 0.1 ships shielded funds (RELEASE-PLAN §1; cost in docs/research/shielded-cost.md).
+# It turns on `dash-sdk/shielded` and `dpp/shielded-client` too.
+platform-wallet = { git = "https://github.com/PastaPastaPasta/platform", rev = "dc0c946307f7ac14a2b8e50479b178e67123cbc1", features = ["bls", "eddsa", "shielded"] }
+# `sqlite` = SqlitePersister, `secrets` = vault/keyring primitives (WS-03),
+# `shielded` = the persister's shielded tables.
+platform-wallet-storage = { git = "https://github.com/PastaPastaPasta/platform", rev = "dc0c946307f7ac14a2b8e50479b178e67123cbc1", default-features = false, features = ["sqlite", "secrets", "shielded"] }
 # Default features kept, as platform-wallet-ffi (the iOS build) does.
 dash-sdk = { git = "https://github.com/PastaPastaPasta/platform", rev = "dc0c946307f7ac14a2b8e50479b178e67123cbc1", features = ["wallet", "dashpay-contract", "dpns-contract"] }
 # `ed25519-dalek`: platform-wallet's masternode locator imports `dpp::ed25519_dalek`

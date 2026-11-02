@@ -51,7 +51,9 @@
 //! account) is not unique per step: every top-up of an identity carries
 //! the same one, and a `Consumed` row stays. A top-up's step (its marker
 //! under an `IdentityTopUp` key) therefore matches only its own signed
-//! locks ([`own_row`]; DP1-06, as §2a.6 foresaw): every lock a call of it
+//! locks ([`own_row`]; DP1-06, as §2a.6 foresaw), and so does a shield's
+//! (0.1 E1: every shield funds under the one `AssetLockShieldedAddressTopUp`
+//! key of account 0): every lock a call of it
 //! signed has its durable record before it can be stored or sent (§2a.7),
 //! so they are all of its rows, across restarts too. Any other step matches by
 //! its draft's own key and its marker's: the J step that marks it records
@@ -584,10 +586,10 @@ pub(crate) fn derive_funding(
     }
 }
 
-/// Whether tracked row `r` matches `step`: a top-up's (its marker under
-/// an `IdentityTopUp` key) by being one of its `signed` locks (module
-/// doc); else by the draft's own key, or by the marker's unless the row
-/// preceded the marker (`foreign`).
+/// Whether tracked row `r` matches `step`: a top-up's or a shield's (its
+/// marker under an [`signed_lock_key`]) by being one of its `signed` locks
+/// (module doc); else by the draft's own key, or by the marker's unless the
+/// row preceded the marker (`foreign`).
 fn matches_step(
     s: &Snapshot,
     step: &str,
@@ -596,14 +598,20 @@ fn matches_step(
     signed: &[SignedLock],
     r: &TrackedRow,
 ) -> bool {
-    if info
-        .funding
-        .is_some_and(|k| k.funding_type == AssetLockFundingType::IdentityTopUp)
-    {
+    if info.funding.is_some_and(|k| signed_lock_key(&k)) {
         return signed.iter().any(|l| l.txid == r.txid);
     }
     s.drafts.iter().any(|d| d.step == step && d.matches(&r.key))
         || (info.funding.as_ref() == Some(&r.key) && !foreign.is_some_and(|f| f.contains(&r.txid)))
+}
+
+/// A funding key many steps share, so a step's rows are its own signed
+/// locks (module doc): a top-up's, or a shield's.
+fn signed_lock_key(key: &FundingKey) -> bool {
+    matches!(
+        key.funding_type,
+        AssetLockFundingType::IdentityTopUp | AssetLockFundingType::AssetLockShieldedAddressTopUp
+    )
 }
 
 /// The first unattributed row (module doc) that may be `step`'s lock: of
@@ -1383,6 +1391,18 @@ impl LeaseTable {
         })
     }
 
+    /// The txids of the asset locks `wallet`'s shield funding steps
+    /// (`shield/<k>/funding`) signed: every lock a dw shield funded (0.1
+    /// E1). `None` until the dispatch journal is read.
+    pub(crate) fn shield_lock_txids(&self, wallet: WalletId) -> Option<HashSet<Txid>> {
+        self.with_j(|i, _| {
+            (i.fence.journal == JournalState::Ready).then(|| {
+                i.fence
+                    .signed_lock_txids_where(&wallet, |s| s.starts_with("shield/"))
+            })
+        })
+    }
+
     /// The top-up locks of `wallet` the journal records settled (schema 8,
     /// DP1-06): a proved apply or the user's word, kept as long as the
     /// journal keeps those locks' `signed_lock` rows (a wallet's removal
@@ -1407,6 +1427,118 @@ impl LeaseTable {
         let backend = self.journal.get().ok_or("the journal is closed")?;
         (self.rt)
             .spawn_blocking(move || backend.settle_top_up(&wallet.0, &txid.to_byte_array(), how))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Records the shielded spends `redrives` of `wallet` the library holds
+    /// to re-send, `(activity, transition)` (schema 9, 0.1 E1, DEC-1032);
+    /// each first record stands. On the blocking pool.
+    pub(crate) async fn record_shielded_redrives(
+        &self,
+        wallet: WalletId,
+        redrives: Vec<super::fence::ShieldedRedrive>,
+    ) -> Result<(), String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || {
+                (redrives.iter()).try_for_each(|(activity, transition)| {
+                    backend.record_shielded_redrive(&wallet.0, activity, transition)
+                })
+            })
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Marks the shielded spend `activity` of `wallet`, of unknown result
+    /// and with no record of the library's, built on `anchor` and spending
+    /// `nullifiers` (schema 10, DEC-1057), in dispatch.sqlite
+    /// (`synchronous=FULL`). On the blocking pool.
+    pub(crate) async fn record_unrecorded_spend(
+        &self,
+        wallet: WalletId,
+        activity: [u8; 32],
+        anchor: [u8; 32],
+        nullifiers: Vec<[u8; 32]>,
+    ) -> Result<(), String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || {
+                backend.record_unrecorded_spend(&wallet.0, &activity, &anchor, &nullifiers)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// The marked shielded spends of `wallet` (schema 10); none while the
+    /// journal is not open (nothing can be marked then). On the blocking
+    /// pool.
+    pub(crate) async fn unrecorded_spends(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<dw_appdb::dispatch::UnrecordedSpend>, String> {
+        let Some(backend) = self.journal.get() else {
+            return Ok(Vec::new());
+        };
+        (self.rt)
+            .spawn_blocking(move || backend.unrecorded_spends(&wallet.0))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Whether `wallet` has a marked shielded spend; `true` when the
+    /// markers cannot be read (fail closed).
+    pub(crate) async fn marks_unrecorded(&self, wallet: WalletId) -> bool {
+        match self.unrecorded_spends(wallet).await {
+            Ok(markers) => !markers.is_empty(),
+            Err(e) => {
+                tracing::warn!(wallet_id = %wallet, error = %e, "the shielded spend markers could not be read");
+                true
+            }
+        }
+    }
+
+    /// Flags `nullifiers` of `wallet` seen spent, from a proved scan or a
+    /// proved result as the persister accepted it, and clears each marker
+    /// all of whose are (DEC-1057). Synchronous: the persister's tap calls
+    /// it inline.
+    pub(crate) fn note_spent_nullifiers(&self, wallet: WalletId, nullifiers: &[[u8; 32]]) {
+        let Some(backend) = self.journal.get() else {
+            return;
+        };
+        match backend.note_spent_nullifiers(&wallet.0, nullifiers) {
+            Ok(cleared) => {
+                for activity in cleared {
+                    tracing::info!(
+                        wallet_id = %wallet,
+                        activity = %hex::encode(activity),
+                        "a marked shielded spend's notes are all spent"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(wallet_id = %wallet, error = %e, "the shielded spend markers were not updated");
+            }
+        }
+    }
+
+    /// The open journal's `synchronous` pragma (2 = FULL), which the
+    /// markers are written under.
+    #[cfg(test)]
+    pub(crate) fn journal_synchronous(&self) -> Option<i64> {
+        self.journal.get().and_then(|j| j.synchronous())
+    }
+
+    /// The shielded spends of `wallet` on record (schema 9),
+    /// `(activity, transition)`. On the blocking pool.
+    #[cfg(test)]
+    pub(crate) async fn shielded_redrives(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<super::fence::ShieldedRedrive>, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || backend.shielded_redrives(&wallet.0))
             .await
             .map_err(|e| e.to_string())?
     }
@@ -1761,13 +1893,14 @@ impl NetworkSession {
     ///
     /// Refused `invalid_argument` before anything is charged or marked
     /// (review M-3, M-4): a step that is no funding step; a top-up step
-    /// whose `key` is no `IdentityTopUp` key; a registration step whose
+    /// whose `key` is no `IdentityTopUp` key, or a shield step (0.1 E1)
+    /// whose `key` is no `AssetLockShieldedAddressTopUp` key; a registration step whose
     /// `key` is not its draft's own (`DraftKey`, from `app.sqlite`), or
     /// whose draft has no known key: a row under another key would be
     /// found by neither the marker nor the draft; and a `fence` of another
-    /// wallet. A top-up step needs no draft: its rows are its own signed
-    /// locks (module doc), and DP1-06 never calls a step again unless it
-    /// reads `None` or `NotSent` (`topup.rs`).
+    /// wallet. A top-up or shield step needs no draft: its rows are its own
+    /// signed locks (module doc), and neither flow calls a step again unless
+    /// it reads `None` or `NotSent` (`topup.rs`, `shielded_pool.rs`).
     pub async fn funding_call_permit(
         &self,
         lease: &Lease,
@@ -1784,10 +1917,22 @@ impl NetworkSession {
         if !is_funding_step(&step) {
             return refuse(format!("{step} is not a funding step"));
         }
-        let top_up = step.starts_with("topup/");
-        if top_up && key.funding_type != AssetLockFundingType::IdentityTopUp {
-            return refuse(format!("{key:?} is no top-up's funding key"));
+        let own_key = if step.starts_with("topup/") {
+            Some((AssetLockFundingType::IdentityTopUp, "top-up"))
+        } else if step.starts_with("shield/") {
+            Some((
+                AssetLockFundingType::AssetLockShieldedAddressTopUp,
+                "shield",
+            ))
+        } else {
+            None
+        };
+        if let Some((funding_type, flow)) = own_key
+            && key.funding_type != funding_type
+        {
+            return refuse(format!("{key:?} is no {flow}'s funding key"));
         }
+        let top_up = own_key.is_some();
         let wallet = lease.wallet();
         let fee_bound_worst = self.fee_bound_worst(wallet).await?;
         if !self.leases.refresh_funding(wallet).await {

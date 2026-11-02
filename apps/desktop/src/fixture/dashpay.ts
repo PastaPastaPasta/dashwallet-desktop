@@ -94,7 +94,7 @@ export function fixtureLoops(running: boolean): SyncLoopStatus[] {
     lastRunAt: now - ago,
     nextRunAt: running ? now - ago + every : null,
   });
-  return [loop("identitySync", 60, 40), loop("dashPaySync", 15, 5), loop("dpnsSync", 600, 120)];
+  return [loop("identitySync", 60, 40), loop("dashPaySync", 15, 5), loop("dpnsSync", 600, 120), loop("platformAddressSync", 60, 30)];
 }
 
 /** Whether an upload host is configured, the candidates `dashpay_prepare_avatar` made, and every

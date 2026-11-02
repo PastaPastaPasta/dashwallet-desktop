@@ -1507,3 +1507,48 @@ fn the_link_trace_command_refuses_without_the_option() {
         "app.not_selftest",
     );
 }
+
+/// E1 r2: a close the engine refused leaves its session open, and the app
+/// keeps it active with its handles, whichever the refusal
+/// (`shielded_spend_unresolved`, or `wallet` while a wallet is still
+/// opening); a close that ended the session drops both.
+#[test]
+fn a_refused_close_keeps_the_active_session() {
+    use tauri::Manager;
+    let demo = Demo::new();
+    demo.open();
+    let state = demo.app.state::<crate::state::AppState>();
+    let session = tauri::async_runtime::block_on(state.session()).unwrap();
+    let refusals = || {
+        [
+            dw_engine::EngineError::ShieldedSpendUnresolved,
+            dw_engine::EngineError::Wallet(
+                "a wallet is still opening; close the network once it is open".into(),
+            ),
+        ]
+    };
+    for (refusal, same) in refusals().into_iter().zip(refusals()) {
+        let code = crate::error::AppError::from(same).code;
+        let mut slot = Some(Arc::clone(&session));
+        let closed = crate::api::network::close_active(&state, &mut slot, Err(refusal));
+        assert_eq!(closed.unwrap_err().code, code);
+        assert!(slot.is_some(), "the session stays active");
+    }
+    assert!(tauri::async_runtime::block_on(state.session()).is_ok());
+
+    // Closed in the engine: a failure then still drops it.
+    assert!(
+        tauri::async_runtime::block_on(state.engine.close_network(DashNetwork::Regtest)).unwrap()
+    );
+    assert!(!session.is_open());
+    let mut slot = Some(session);
+    let closed = crate::api::network::close_active(
+        &state,
+        &mut slot,
+        Err(dw_engine::EngineError::Internal(
+            "the close task ended".into(),
+        )),
+    );
+    assert!(closed.is_err());
+    assert!(slot.is_none());
+}

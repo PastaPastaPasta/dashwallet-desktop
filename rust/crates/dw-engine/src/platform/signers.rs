@@ -3,6 +3,9 @@
 //!
 //! - [`VaultIdentitySigner`]: dpp `Signer<IdentityPublicKey>` for state
 //!   transitions, scope `PlatformIdentity`;
+//! - [`VaultPlatformAddressSigner`]: dpp `Signer<PlatformAddress>` for a
+//!   Platform-address spend ("Move to Dash wallet"), scope
+//!   `PlatformAddress`, counting into its call permit;
 //! - [`VaultContactCrypto`]: platform-wallet `ContactCryptoProvider` for the
 //!   DIP-15 contact crypto, scope `DashPayCrypto` (never signs);
 //! - [`VaultScanKey`]: platform-wallet `ScanKeyResolver` for the identity
@@ -38,7 +41,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dashcore::secp256k1::{PublicKey, SecretKey, ecdsa};
 use dpp::ProtocolError;
-use dpp::address_funds::AddressWitness;
+use dpp::address_funds::{AddressWitness, PlatformAddress};
 use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dpp::identity::signer::Signer;
 use dpp::identity::{IdentityPublicKey, KeyID, KeyType};
@@ -281,6 +284,86 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
     }
 }
 
+/// Platform-address signer (dpp `Signer<PlatformAddress>`) for the P2PKH
+/// addresses of `paths`, each at its DIP-17 path (release 0.1, "Move to
+/// Dash wallet"). The vault signs only once the key at the path hashes to
+/// the address ([`VaultSigner::sign_platform_address`]); every signature is
+/// counted into the call permit as [`VaultIdentitySigner`]'s are. A P2SH
+/// address, or one not in `paths`, is never signed for.
+#[derive(Debug, Clone)]
+pub struct VaultPlatformAddressSigner {
+    signer: VaultSigner,
+    paths: BTreeMap<[u8; 20], DerivationPath>,
+    count: Arc<SignatureCount>,
+}
+
+impl VaultPlatformAddressSigner {
+    /// `signer` must have scope `PlatformAddress`.
+    pub(crate) fn new(
+        signer: VaultSigner,
+        paths: BTreeMap<[u8; 20], DerivationPath>,
+        count: Arc<SignatureCount>,
+    ) -> Result<Self, EngineError> {
+        require_scope(&signer, SignerScope::PlatformAddress)?;
+        Ok(Self {
+            signer,
+            paths,
+            count,
+        })
+    }
+
+    fn path(&self, address: &PlatformAddress) -> Option<(&[u8; 20], &DerivationPath)> {
+        match address {
+            PlatformAddress::P2pkh(hash) => self.paths.get_key_value(hash),
+            PlatformAddress::P2sh(_) => None,
+        }
+    }
+}
+
+#[async_trait]
+impl Signer<PlatformAddress> for VaultPlatformAddressSigner {
+    async fn sign(
+        &self,
+        address: &PlatformAddress,
+        data: &[u8],
+    ) -> Result<BinaryData, ProtocolError> {
+        let Some((hash, path)) = self.path(address) else {
+            return Err(ProtocolError::ExternalSignerError(
+                "not an address of this wallet's Platform payment keys".into(),
+            ));
+        };
+        // Counted before the vault is asked, refused once the permit ended.
+        let Some(signing) = self.count.begin() else {
+            return Err(ProtocolError::ExternalSignerError(
+                SignerError::Locked.to_string(),
+            ));
+        };
+        match self.signer.sign_platform_address(path, hash, data) {
+            Ok(signature) => {
+                signing.released();
+                Ok(signature.to_vec().into())
+            }
+            Err(e) => {
+                self.count.observe_err(&e);
+                Err(ProtocolError::ExternalSignerError(e.to_string()))
+            }
+        }
+    }
+
+    async fn sign_create_witness(
+        &self,
+        address: &PlatformAddress,
+        data: &[u8],
+    ) -> Result<AddressWitness, ProtocolError> {
+        let signature = self.sign(address, data).await?;
+        Ok(AddressWitness::P2pkh { signature })
+    }
+
+    fn can_sign_with(&self, address: &PlatformAddress) -> bool {
+        self.path(address).is_some() && !self.count.closed()
+    }
+}
+
 /// The lease's `PlatformFunding` signer during one Mode B funding call
 /// (E0-04 §2a.3): it delegates every call to the vault signer and reports
 /// each released signature (its sighash kept, §2a.6), and any `Locked` refusal, to the
@@ -300,6 +383,25 @@ pub struct CountingFundingSigner {
     signer: VaultSigner,
     count: Arc<SignatureCount>,
     release: Arc<FundingRelease>,
+    /// At most this many inputs signed ([`Self::with_input_cap`]).
+    cap: Option<Arc<InputCap>>,
+}
+
+/// The input cap of one funding call's signer: the distinct sighashes it
+/// signed, at most `max`.
+#[derive(Debug)]
+struct InputCap {
+    max: usize,
+    signed: std::sync::Mutex<std::collections::HashSet<[u8; 32]>>,
+}
+
+impl InputCap {
+    /// Whether `sighash` may be signed: one already signed (an identical
+    /// retry) or a new one within the cap.
+    fn admits(&self, sighash: [u8; 32]) -> bool {
+        let mut signed = self.signed.lock().unwrap_or_else(|p| p.into_inner());
+        signed.contains(&sighash) || (signed.len() < self.max && signed.insert(sighash))
+    }
 }
 
 impl CountingFundingSigner {
@@ -312,7 +414,29 @@ impl CountingFundingSigner {
             signer,
             count,
             release,
+            cap: None,
         }
+    }
+
+    /// Signs at most `max` inputs: the first input past it is refused
+    /// before the vault is asked, and the call is abandoned
+    /// ([`SignatureCount::abandon`]), so it signs nothing more and no
+    /// complete transaction of it exists (a shield's lock, whose
+    /// InstantSend proof stops fitting a transition from about 65 inputs).
+    /// key-wallet's builder releases the build's reservation when its
+    /// signer fails (`build_signed_reserved`), and platform-wallet tracks
+    /// and sends nothing of a build that failed.
+    pub(crate) fn with_input_cap(mut self, max: usize) -> Self {
+        self.cap = Some(Arc::new(InputCap {
+            max,
+            signed: std::sync::Mutex::default(),
+        }));
+        self
+    }
+
+    /// Whether the input cap refused an input.
+    pub(crate) fn capped(&self) -> bool {
+        self.cap.is_some() && self.count.abandoned()
     }
 
     fn note<T>(&self, r: Result<T, SignerError>) -> Result<T, SignerError> {
@@ -336,6 +460,20 @@ impl key_wallet::Signer for CountingFundingSigner {
         path: &DerivationPath,
         sighash: [u8; 32],
     ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+        if self.count.abandoned() {
+            return Err(SignerError::PathNotAllowed(format!(
+                "{path}: the call's build was refused for its inputs"
+            )));
+        }
+        if let Some(cap) = &self.cap
+            && !cap.admits(sighash)
+        {
+            self.count.abandon();
+            return Err(SignerError::PathNotAllowed(format!(
+                "{path}: more than {} inputs",
+                cap.max
+            )));
+        }
         let Some(signing) = self.count.begin() else {
             return Err(SignerError::Locked);
         };

@@ -243,6 +243,10 @@ pub enum PlatformChangeName {
     /// The wallet's DashPay bring-up outcome (`dashpay_startup`, and with it
     /// `dashpay_status`).
     Startup,
+    /// The wallet's Platform-address balances or their activity.
+    PlatformAddresses,
+    /// The wallet's shielded account (`shielded_status`, `shielded_history`).
+    Shielded,
 }
 
 impl From<PlatformChange> for PlatformChangeName {
@@ -263,6 +267,8 @@ impl From<PlatformChange> for PlatformChangeName {
                 identity: cap_text(identity, MAX_ID_BYTES),
             },
             PlatformChange::Startup => Self::Startup,
+            PlatformChange::PlatformAddresses => Self::PlatformAddresses,
+            PlatformChange::Shielded => Self::Shielded,
         }
     }
 }

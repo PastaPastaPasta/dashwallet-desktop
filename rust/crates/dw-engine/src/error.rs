@@ -149,6 +149,12 @@ pub enum EngineError {
     /// the identity's code (`contact.*`, `platform.*`, `identity.*`).
     #[error("contact: {0}")]
     Contact(crate::platform::ContactError),
+    /// Close Wallet, or an in-app network close or switch, while a wallet
+    /// holds a shielded spend whose result is not known (DEC-1046, m4
+    /// §2.13): unloading it would delete the library's stored transition
+    /// and its reservations (platform-wallet has no detach at the pin).
+    #[error("a shielded payment is still being confirmed; wait, or quit and reopen the app")]
+    ShieldedSpendUnresolved,
 }
 
 impl EngineError {
@@ -199,6 +205,7 @@ impl EngineError {
             EngineError::Masternode(_) => "masternode",
             EngineError::StuckFunding(_) => "stuck_funding",
             EngineError::Contact(_) => "contact",
+            EngineError::ShieldedSpendUnresolved => "shielded_spend_unresolved",
         }
     }
 }

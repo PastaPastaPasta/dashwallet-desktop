@@ -15,12 +15,12 @@ use key_wallet::Network;
 use key_wallet::bip32::{ChildNumber, DerivationPath};
 use key_wallet::dip9::{
     DASHPAY_CONTACT_INFO_ENC_TO_USER_ID_CHILD, DASHPAY_CONTACT_INFO_PRIVATE_DATA_CHILD,
-    FEATURE_PURPOSE, FEATURE_PURPOSE_COINJOIN, FEATURE_PURPOSE_DASHPAY,
-    FEATURE_PURPOSE_DASHPAY_AUTO_ACCEPT, FEATURE_PURPOSE_IDENTITIES,
-    FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_AUTHENTICATION,
+    FEATURE_PURPOSE, FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_SHIELDED_ADDRESS_TOPUP,
+    FEATURE_PURPOSE_COINJOIN, FEATURE_PURPOSE_DASHPAY, FEATURE_PURPOSE_DASHPAY_AUTO_ACCEPT,
+    FEATURE_PURPOSE_IDENTITIES, FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_AUTHENTICATION,
     FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_INVITATIONS,
     FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_REGISTRATION,
-    FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP,
+    FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP, FEATURE_PURPOSE_PLATFORM_PAYMENT,
 };
 
 /// BIP44 purpose.
@@ -213,8 +213,9 @@ fn is_chain_and_index(p: &[ChildNumber]) -> bool {
 
 /// An asset-lock credit key under `m/9'/coin'/5'`: registration
 /// `1'/index`, top-up `2'/index` or `2'/identity'/index`, invitation
-/// `3'/index` (key-wallet `AccountType::Identity*`, whose pools use
-/// non-hardened indices). A hardened last step is refused, so no credit key
+/// `3'/index` (key-wallet `AccountType::Identity*`), shielded top-up
+/// `5'/index` (`AccountType::AssetLockShieldedAddressTopUp`, 0.1 E1's
+/// Core → Shielded), all of whose pools use non-hardened indices. A hardened last step is refused, so no credit key
 /// is ever the top-up account node itself
 /// ([`is_identity_top_up_account`]).
 ///
@@ -233,12 +234,27 @@ pub fn is_asset_lock_credit_key(path: &DerivationPath, network: Network) -> bool
     match (hardened_index(&p[3]), p.len()) {
         (Some(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_REGISTRATION), 5)
         | (Some(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP), 5)
-        | (Some(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_INVITATIONS), 5) => leaf,
+        | (Some(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_INVITATIONS), 5)
+        | (Some(FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_SHIELDED_ADDRESS_TOPUP), 5) => leaf,
         (Some(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP), 6) => {
             hardened_index(&p[4]).is_some() && leaf
         }
         _ => false,
     }
+}
+
+/// A DIP-17 Platform payment address key of account 0, key class 0
+/// (`m/9'/coin'/17'/0'/0'/index`, key-wallet `AccountType::PlatformPayment`,
+/// whose pool appends a non-hardened index): the one account the engine's
+/// Platform addresses use (release 0.1). Other accounts and key classes are
+/// not reached.
+pub fn is_platform_payment_address(path: &DerivationPath, network: Network) -> bool {
+    let p: &[ChildNumber] = path.as_ref();
+    p.len() == 6
+        && has_dip9_feature(p, network, FEATURE_PURPOSE_PLATFORM_PAYMENT)
+        && is_hardened(&p[3], 0)
+        && is_hardened(&p[4], 0)
+        && is_normal(&p[5])
 }
 
 /// The top-up account of one identity, `m/9'/coin'/5'/2'/identity'`
@@ -578,6 +594,7 @@ mod tests {
             "m/9'/1'/5'/2'/3",
             "m/9'/1'/5'/2'/0'/3",
             "m/9'/1'/5'/3'/2",
+            "m/9'/1'/5'/5'/0",
         ] {
             assert!(is_asset_lock_credit_key(&path(ok), t), "{ok}");
         }
@@ -585,6 +602,9 @@ mod tests {
             "m/9'/1'/5'/0'/0'",       // identity authentication
             "m/9'/1'/5'/0'/0'/0'/0'", // an identity key
             "m/9'/1'/5'/4'/0",        // address top-up (not in scope)
+            "m/9'/1'/5'/5'/0'",       // hardened leaf
+            "m/9'/1'/5'/5'/0/0",
+            "m/9'/1'/5'/5'",
             "m/9'/1'/5'/1'",
             "m/9'/1'/5'/1'/4'", // hardened leaf
             "m/9'/1'/5'/2'/0'", // the top-up account node

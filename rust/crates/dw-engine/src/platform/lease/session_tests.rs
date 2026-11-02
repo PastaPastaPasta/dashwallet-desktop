@@ -691,6 +691,84 @@ fn a_txdraft_under_a_lease_is_charged_fenced_and_refunded() {
     f.engine.block_on(d.prepare(g)).unwrap();
 }
 
+/// DEC-1032 check 2: a shielded pass admitted before a lock (held here as
+/// its read of the session's pass lock) ends before the lock completes:
+/// the synchronous lock's `Done`, and the async lock's `Done` and return,
+/// wait for it. A spend's network call is not waited for.
+#[test]
+fn a_lock_completes_only_after_a_shielded_pass_in_flight_ends() {
+    let f = fixture(true);
+    let passes = || Arc::clone(&f.session.platform.shielded_passes);
+    let pass = f.engine.block_on(passes().read_owned());
+    let status = f.session.lock_vault_sync().unwrap();
+    assert_eq!(status.state, LockState::Locked);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(f.rec.done().is_empty(), "Done before the pass ended");
+    drop(pass);
+    f.eventually("LockProgress::Done", || !f.rec.done().is_empty());
+
+    let pass = f.engine.block_on(passes().read_owned());
+    let s = Arc::clone(&f.session);
+    let (tx, rx) = std::sync::mpsc::channel();
+    f.session.rt.spawn(async move {
+        let _ = tx.send(s.lock_vault().await.map(drop));
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the async lock returned before the pass ended"
+    );
+    assert_eq!(f.rec.done().len(), 1, "its Done before the pass ended");
+    drop(pass);
+    rx.recv_timeout(Duration::from_secs(30)).unwrap().unwrap();
+    assert_eq!(f.rec.done().len(), 2);
+
+    // A spend's hold (its library call, on the network) is not waited for.
+    let spend = f
+        .engine
+        .block_on(f.session.platform.shielded_spends.write());
+    f.engine.block_on(f.session.lock_vault()).unwrap();
+    drop(spend);
+}
+
+/// Opus r1 n2: a wallet's revocation (its removal, Close Wallet) and a
+/// revoking vault operation drop background leases too, so they also end
+/// only after a shielded pass in flight ends.
+#[test]
+fn a_revocation_completes_only_after_a_shielded_pass_in_flight_ends() {
+    let f = fixture(true);
+    let passes = || Arc::clone(&f.session.platform.shielded_passes);
+    let wallet = f.wallet;
+    let pass = f.engine.block_on(passes().read_owned());
+    let s = Arc::clone(&f.session);
+    let (tx, rx) = std::sync::mpsc::channel();
+    f.session.rt.spawn(async move {
+        drop(s.revoke_wallet(wallet, RevokeCause::WalletClosed).await);
+        let _ = tx.send(());
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the wallet's revocation ended before the pass"
+    );
+    drop(pass);
+    rx.recv_timeout(Duration::from_secs(30)).unwrap();
+
+    let pass = f.engine.block_on(passes().read_owned());
+    let s = Arc::clone(&f.session);
+    let (tx, rx) = std::sync::mpsc::channel();
+    f.session.rt.spawn(async move {
+        let done = s
+            .revoking_vault_op(RevokeCause::PassphraseChange, |_| Ok(()))
+            .await;
+        let _ = tx.send(done);
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the vault operation returned before the pass ended"
+    );
+    drop(pass);
+    rx.recv_timeout(Duration::from_secs(30)).unwrap().unwrap();
+}
+
 #[test]
 fn the_synchronous_lock_returns_after_its_gate_and_done_carries_the_report() {
     let f = fixture(true);
@@ -1515,6 +1593,11 @@ fn mode_b_a_funding_permit_refuses_a_step_or_key_it_cannot_vouch_for() {
         key(T::IdentityRegistration, 4, 0),
         "is no top-up's funding key",
     );
+    refused(
+        "shield/0/funding",
+        key(T::IdentityTopUp, 0, 0),
+        "is no shield's funding key",
+    );
     refused("registration/999/funding", own, "has no funding key");
     for wrong in [
         key(T::IdentityRegistration, 5, 0),
@@ -1526,7 +1609,12 @@ fn mode_b_a_funding_permit_refuses_a_step_or_key_it_cannot_vouch_for() {
     let view = l.view().unwrap();
     assert!(!view.call_running && !view.funds_committed);
     assert!(view.budgets.iter().all(|b| b.spent == 0), "nothing charged");
-    for step in [step.as_str(), "topup/i/funding", "registration/999/funding"] {
+    for step in [
+        step.as_str(),
+        "topup/i/funding",
+        "shield/0/funding",
+        "registration/999/funding",
+    ] {
         assert_eq!(s.leases.call_step(f.wallet, step).funding, None, "{step}");
     }
     // The draft's own key: the permit.

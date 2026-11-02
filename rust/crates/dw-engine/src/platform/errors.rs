@@ -501,6 +501,11 @@ pub enum CreditsError {
     /// spent.
     #[error("the earlier withdrawal {artifact} went through; this one does not")]
     WithdrawalLanded { artifact: String },
+    /// An earlier "Move to Dash wallet" of the wallet, `id`, is still
+    /// pending (release 0.1, m4 §2.12): its outcome is read first, so its
+    /// credits are not spent twice.
+    #[error("the move {id} is still pending")]
+    MovePending { id: String },
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -514,6 +519,96 @@ impl CreditsError {
             Self::TopUpPending { .. } => "credits.top_up_pending",
             Self::WithdrawalOutOfRange { .. } => "credits.withdrawal_out_of_range",
             Self::WithdrawalLanded { .. } => "credits.withdrawal_landed",
+            Self::MovePending { .. } => "credits.move_pending",
+            Self::Platform(e) => e.code(),
+        }
+    }
+
+    pub fn platform(&self) -> Option<&PlatformError> {
+        match self {
+            Self::Platform(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+/// Shielded funds (m4 §2.13). Amounts in credits unless named duffs.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ShieldedError {
+    /// The network's protocol version is below the shielded pool's
+    /// activation: "Shielded is not active on this network yet".
+    #[error(
+        "shielded is not active on this network yet (protocol {protocol_version}, from {activation_version})"
+    )]
+    NotActive {
+        protocol_version: u32,
+        activation_version: u32,
+    },
+    /// The account's ledger is not established yet (keys not bound, notes
+    /// neither restored nor scanned): a sync has to complete first.
+    #[error("the shielded balance is not synced yet")]
+    NotSynced,
+    /// `to` is not a shielded (or, for an unshield, Core) address of the
+    /// network.
+    #[error("not an address of this network: {detail}")]
+    InvalidAddress { detail: String },
+    /// The spendable shielded balance does not cover the spend and its fee.
+    #[error("insufficient shielded funds: {needed} credits needed, {available} available")]
+    InsufficientFunds { needed: u64, available: u64 },
+    /// The Core balance does not cover the asset lock and its fee (duffs).
+    #[error("insufficient funds: {needed} duffs needed, {available} available")]
+    FundingInsufficient { needed: u64, available: u64 },
+    /// The amount does not clear Platform's fee: at least `min` (duffs for a
+    /// shield, credits for a spend).
+    #[error("below the minimum of {min}")]
+    BelowMinimum { min: u64 },
+    /// A coin the funding account holds back would be selected (as
+    /// `credits.coins_locked`).
+    #[error("a locked coin of the funding accounts blocks the asset lock")]
+    CoinsLocked,
+    /// An earlier Core → Shielded lock is not applied yet: `resume_shield`
+    /// applies `txid` rather than funding again.
+    #[error("the shield {txid} is not applied yet")]
+    ShieldPending { txid: String },
+    /// The shield's asset lock would spend `inputs` coins, more than
+    /// `max`: its InstantSend proof would not fit a transition (from about
+    /// 65 inputs), which would strand the lock. "Combine coins first."
+    #[error("the shield needs {inputs} coins; at most {max} fit one asset lock")]
+    TooManyInputs { inputs: u64, max: u64 },
+    /// Platform refused a withdrawal from the pool because the pool holds
+    /// fewer than `required` notes (`InsufficientPoolNotesError`): "Shielded
+    /// withdrawals open once the network's shielded pool has enough
+    /// activity. Try again later." Shielding and shielded sends are exempt.
+    #[error("the shielded pool holds {notes} notes; withdrawals need {required}")]
+    PoolTooSmall { notes: u64, required: u64 },
+    /// The wallet has a shielded payment of unknown result whose record
+    /// was lost (`ShieldedStatus::unrecorded_spends`, DEC-1057): it may
+    /// still go through, and its notes read unspent. A send or unshield
+    /// runs only when confirmed (`confirm_unrecorded`): "A shielded
+    /// payment from before the restart may still go through; confirm to
+    /// send anyway." Nothing was selected or signed.
+    #[error(
+        "a shielded payment from before the restart may still go through; confirm to send anyway"
+    )]
+    UnrecordedSpend,
+    #[error(transparent)]
+    Platform(#[from] PlatformError),
+}
+
+impl ShieldedError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotActive { .. } => "shielded.not_active",
+            Self::NotSynced => "shielded.not_synced",
+            Self::InvalidAddress { .. } => "shielded.invalid_address",
+            Self::InsufficientFunds { .. } => "shielded.insufficient_funds",
+            Self::FundingInsufficient { .. } => "shielded.funding_insufficient",
+            Self::BelowMinimum { .. } => "shielded.below_minimum",
+            Self::CoinsLocked => "shielded.coins_locked",
+            Self::ShieldPending { .. } => "shielded.shield_pending",
+            Self::PoolTooSmall { .. } => "shielded.pool_too_small",
+            Self::TooManyInputs { .. } => "shielded.too_many_inputs",
+            Self::UnrecordedSpend => "shielded.unrecorded_spend",
             Self::Platform(e) => e.code(),
         }
     }

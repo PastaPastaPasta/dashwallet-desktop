@@ -53,6 +53,17 @@ pub enum FlowKind {
     /// A governance proposal's fee transaction under a `Spend` grant
     /// (MG-06 D10, MG-00 D35 "Proposal").
     Proposal,
+    /// "Move to Dash wallet": a withdrawal from the wallet's Platform
+    /// addresses to its Core receive address under a `PlatformOp` grant
+    /// (m4 §7 item 67), signed with the payment-address keys alone.
+    PlatformAddressMove,
+    /// Core → Shielded (m4 §2.13): the asset lock under a `PlatformOp`
+    /// grant's `max_duffs`, then its ShieldFromAssetLock.
+    Shield,
+    /// A shielded send or an unshield to Core (m4 §2.13) under a
+    /// `PlatformOp` grant's `max_credits`: the vault's Orchard spend key
+    /// for the wallet's shielded account, and nothing else.
+    ShieldedSpend,
 }
 
 /// A lease's budgets (E0-04 §4.2).
@@ -350,10 +361,10 @@ impl DashPay {
     }
 }
 
-/// A Mode B funding step id (§2a.3): `registration/<draft>/funding` or
-/// `topup/<id>/funding`.
+/// A Mode B funding step id (§2a.3): `registration/<draft>/funding`,
+/// `topup/<id>/funding` or (0.1 E1) a shield's `shield/<k>/funding`.
 pub(crate) fn is_funding_step(step: &str) -> bool {
-    (step.starts_with("registration/") || step.starts_with("topup/"))
+    (step.starts_with("registration/") || step.starts_with("topup/") || step.starts_with("shield/"))
         && step.ends_with("/funding")
         && step.matches('/').count() == 2
 }
