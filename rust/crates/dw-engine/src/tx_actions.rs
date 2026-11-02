@@ -372,6 +372,8 @@ impl NetworkSession {
             .filter_map(|e| e.context.block_info().map(|b| b.height()))
             .min();
         if let Some(height) = rescan_from {
+            // What the rescan finds is catch-up (DEC-1058 #6).
+            self.hub.reset_tip_follow(wallet);
             let m = self.manager()?;
             tokio::task::spawn_blocking(move || {
                 m.spv_rescan_filters_blocking(&wallet.0, height.saturating_sub(1))

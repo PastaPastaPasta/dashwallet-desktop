@@ -51,13 +51,17 @@ impl TxidSet {
     }
 }
 
+/// New-transaction batches by wallet and catch-up flag, each in arrival
+/// order: one `NewTransactions` per key.
+pub(crate) type NewTxBatches = BTreeMap<(WalletId, bool), Vec<Txid>>;
+
 #[derive(Debug, Default)]
 struct Pending {
     sync: bool,
     balances: BTreeSet<WalletId>,
     history: BTreeMap<WalletId, TxidSet>,
     /// Transactions seen for the first time, in arrival order per wallet.
-    new_txs: BTreeMap<WalletId, Vec<Txid>>,
+    new_txs: NewTxBatches,
     /// When the current new-transaction batch is delivered.
     new_txs_due: Option<Instant>,
     platform: BTreeMap<WalletId, BTreeSet<PlatformChange>>,
@@ -83,7 +87,7 @@ pub(crate) trait PumpTarget: Send + Sync {
     fn flush_history(&self, changes: BTreeMap<WalletId, TxidSet>);
     /// One batch of first-seen transactions, [`NEW_TX_BATCH`] after the
     /// first of them.
-    fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>);
+    fn flush_new_txs(&self, batches: NewTxBatches);
     /// The changes first, then the news: a host that re-queries on a
     /// change already sees the rows the news names.
     fn flush_platform(
@@ -125,14 +129,18 @@ impl EventPump {
         });
     }
 
-    /// Transactions seen for the first time. The first mark of a batch
-    /// starts its [`NEW_TX_BATCH`] window.
-    pub(crate) fn mark_new_txs(&self, wallet: WalletId, txids: &[Txid]) {
+    /// Transactions seen for the first time, with whether they are
+    /// catch-up as classified when they were found (DEC-1058 #6), so a
+    /// later reading cannot turn a historical one into news. The first mark
+    /// of a batch starts its [`NEW_TX_BATCH`] window.
+    pub(crate) fn mark_new_txs(&self, wallet: WalletId, txids: &[Txid], catch_up: bool) {
         self.with_pending(|p| {
-            let list = p.new_txs.entry(wallet).or_default();
             for t in txids {
-                if !list.contains(t) {
-                    list.push(*t);
+                let seen = [false, true]
+                    .iter()
+                    .any(|c| p.new_txs.get(&(wallet, *c)).is_some_and(|l| l.contains(t)));
+                if !seen {
+                    p.new_txs.entry((wallet, catch_up)).or_default().push(*t);
                 }
             }
             if p.new_txs_due.is_none() {
@@ -197,7 +205,7 @@ impl EventPump {
 
     /// The pending new-transaction batches, as a flush takes them (tests only).
     #[cfg(test)]
-    pub(crate) fn take_new_txs(&self) -> BTreeMap<WalletId, Vec<Txid>> {
+    pub(crate) fn take_new_txs(&self) -> NewTxBatches {
         self.take(|p| {
             p.new_txs_due = None;
             std::mem::take(&mut p.new_txs)
@@ -383,7 +391,7 @@ mod tests {
                 .sum();
             self.push(format!("history={n}"));
         }
-        fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>) {
+        fn flush_new_txs(&self, batches: NewTxBatches) {
             let n: usize = batches.values().map(Vec::len).sum();
             self.push(format!("new={n}/{}", batches.len()));
         }
@@ -472,11 +480,11 @@ mod tests {
             tokio::spawn(async move { pump.run(&*rec, stop_rx).await })
         };
         let (a, b) = (WalletId([1; 32]), WalletId([2; 32]));
-        pump.mark_new_txs(a, &[txid(1)]);
+        pump.mark_new_txs(a, &[txid(1)], false);
         settle().await;
         tokio::time::advance(Duration::from_millis(40)).await;
-        pump.mark_new_txs(a, &[txid(2), txid(1)]);
-        pump.mark_new_txs(b, &[txid(3)]);
+        pump.mark_new_txs(a, &[txid(2), txid(1)], false);
+        pump.mark_new_txs(b, &[txid(3)], false);
         settle().await;
         tokio::time::advance(Duration::from_millis(40)).await;
         settle().await;
@@ -492,7 +500,7 @@ mod tests {
         assert_eq!(log[0].1, "new=3/2");
         assert!(log[0].0 >= 100 && log[0].0 < 120, "{log:?}");
         // A later transaction opens a new batch.
-        pump.mark_new_txs(a, &[txid(4)]);
+        pump.mark_new_txs(a, &[txid(4)], false);
         settle().await;
         tokio::time::advance(NEW_TX_BATCH).await;
         settle().await;

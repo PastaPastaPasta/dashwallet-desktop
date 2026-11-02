@@ -197,9 +197,19 @@ fn caught_up(r: &Readings) -> bool {
 /// blocks/sync_manager.rs:169); that is not a catch-up.
 pub(crate) const TIP_SLACK: u32 = 3;
 
-/// Whether dash-spv follows the tip: [`caught_up`], or every reported phase
-/// done or at most [`TIP_SLACK`] blocks behind the best header. Headers must
-/// have a target, as for [`caught_up`].
+/// How long [`TIP_SLACK`] holds after the best header last advanced
+/// (DEC-1058 #6). Dash targets a block every 2.5 min, so 30 min is 12 block
+/// intervals; a live chain goes that long without a block with odds of about
+/// e^-12. A best header that has not moved for longer is a stalled reading
+/// (no peer tells of newer blocks), not a tip being followed, and what is
+/// found then may be any age.
+pub(crate) const TIP_FOLLOW_WINDOW: Duration = Duration::from_secs(30 * 60);
+
+/// Whether the readings are within [`TIP_SLACK`] of the best header:
+/// [`caught_up`], or every reported phase done or at most `TIP_SLACK` blocks
+/// behind it. Headers must have a target, as for [`caught_up`]. Alone this
+/// says nothing of a first sync's last blocks; see
+/// [`SyncTracker::follows_tip`].
 fn near_tip(r: &Readings) -> bool {
     if caught_up(r) {
         return true;
@@ -233,6 +243,39 @@ pub(crate) struct SyncTracker {
     /// masternode-phase height they were read at.
     masternode_counts: Option<(crate::MasternodeCount, crate::MasternodeCount)>,
     masternode_counts_height: Option<u32>,
+    follow: TipFollow,
+}
+
+/// Which wallets may take [`TIP_SLACK`] (DEC-1058 #6): those that saw a
+/// strict caught-up reading since their sync generation began (a restore,
+/// load or rescan of the wallet; a start or stop of SPV, or deleted chain
+/// data, for every wallet).
+#[derive(Debug, Default)]
+struct TipFollow {
+    /// Orders the readings and the resets below.
+    seq: u64,
+    /// The last strict caught-up reading while running.
+    caught_up_at: Option<u64>,
+    /// Each wallet's last reset (none: since SPV started).
+    reset_at: BTreeMap<crate::WalletId, u64>,
+    /// When the best header last advanced.
+    header_advanced: Option<Instant>,
+}
+
+impl TipFollow {
+    fn next(&mut self) -> u64 {
+        self.seq += 1;
+        self.seq
+    }
+
+    fn eligible(&self, wallet: &crate::WalletId) -> bool {
+        let reset = self.reset_at.get(wallet).copied().unwrap_or(0);
+        self.caught_up_at.is_some_and(|at| at > reset)
+    }
+
+    fn header_fresh(&self) -> bool {
+        (self.header_advanced).is_some_and(|t| t.elapsed() < TIP_FOLLOW_WINDOW)
+    }
 }
 
 impl Default for SyncTracker {
@@ -247,6 +290,7 @@ impl Default for SyncTracker {
             stall_notified: false,
             masternode_counts: None,
             masternode_counts_height: None,
+            follow: TipFollow::default(),
         }
     }
 }
@@ -267,6 +311,8 @@ impl SyncTracker {
         self.running = running;
         self.last_progress = Instant::now();
         self.stall_notified = false;
+        // A new sync generation for every wallet (a restart).
+        self.follow = TipFollow::default();
         if running {
             // A fresh client reports its own progress; a verdict from the
             // previous run must not make it look caught up.
@@ -297,6 +343,12 @@ impl SyncTracker {
         if advanced || caught_up(&new) {
             self.last_progress = Instant::now();
             self.stall_notified = false;
+        }
+        if new.headers.map(|h| h.current) > self.readings.headers.map(|h| h.current) {
+            self.follow.header_advanced = Some(Instant::now());
+        }
+        if self.running && caught_up(&new) {
+            self.follow.caught_up_at = Some(self.follow.next());
         }
         self.readings = new;
         true
@@ -451,10 +503,24 @@ impl SyncTracker {
         self.running
     }
 
-    /// Running and following the tip ([`near_tip`]): what is found now is
-    /// news, not a catch-up.
-    pub(crate) fn near_tip(&self) -> bool {
-        self.running && near_tip(&self.readings)
+    /// Whether what `wallet` finds now is news rather than catch-up
+    /// (DEC-1058 #6): caught up, or within [`TIP_SLACK`] of the best header
+    /// (a new block in processing) once the wallet saw a caught-up reading in
+    /// its current sync generation and while the best header advanced within
+    /// [`TIP_FOLLOW_WINDOW`]. A first sync's last blocks are catch-up.
+    pub(crate) fn follows_tip(&self, wallet: &crate::WalletId) -> bool {
+        self.caught_up()
+            || (self.running
+                && self.follow.eligible(wallet)
+                && self.follow.header_fresh()
+                && near_tip(&self.readings))
+    }
+
+    /// Starts a new sync generation of `wallet` (restored, loaded or
+    /// rescanned): no [`TIP_SLACK`] until its next caught-up reading.
+    pub(crate) fn reset_follow(&mut self, wallet: crate::WalletId) {
+        let at = self.follow.next();
+        self.follow.reset_at.insert(wallet, at);
     }
 
     pub(crate) fn snapshot(&self) -> SyncSnapshot {
@@ -702,32 +768,82 @@ mod tests {
         assert!(s.seconds_since_progress.is_some());
     }
 
-    /// DEC-1058 #6: a new block is no catch-up; a phase more than
-    /// `TIP_SLACK` behind, a missing header target or a stopped client is.
+    /// DEC-1058 #6: the readings' slack. A phase within `TIP_SLACK` of the
+    /// best header is near it; one block more, a missing header target or an
+    /// initial masternode sync is not.
     #[test]
     fn near_tip_allows_a_few_blocks_of_slack() {
         let mut t = running();
         let mut p = SyncProgress::default();
         p.update_headers(headers(SyncState::WaitForEvents, 0, 0));
         t.on_progress(&p);
-        assert!(!t.near_tip(), "no header target yet");
+        assert!(!near_tip(&t.readings), "no header target yet");
         p.update_headers(headers(SyncState::Synced, 1000, 1000));
         p.update_filter_headers(filter_headers(SyncState::Syncing, 1000 - TIP_SLACK, 1000));
         p.update_masternodes(masternodes(SyncState::Synced, 990, 1000));
         t.on_progress(&p);
-        assert!(t.near_tip() && !t.caught_up(), "a phase within the slack");
+        assert!(
+            near_tip(&t.readings) && !t.caught_up(),
+            "a phase within the slack"
+        );
         p.update_filter_headers(filter_headers(SyncState::Syncing, 999 - TIP_SLACK, 1000));
         t.on_progress(&p);
-        assert!(!t.near_tip(), "one block more is a catch-up");
+        assert!(!near_tip(&t.readings), "one block more");
         p.update_filter_headers(filter_headers(SyncState::WaitForEvents, 1000, 1000));
         p.update_masternodes(masternodes(SyncState::Syncing, 400, 1000));
         t.on_progress(&p);
-        assert!(!t.near_tip(), "an initial masternode sync counts too");
-        p.update_masternodes(masternodes(SyncState::Synced, 1000, 1000));
-        t.on_progress(&p);
-        assert!(t.near_tip() && t.caught_up());
+        assert!(!near_tip(&t.readings), "an initial masternode sync");
+    }
+
+    /// DEC-1058 #6 (Sol r1): the slack is for a wallet that saw a caught-up
+    /// reading in its sync generation, while the best header moves. A first
+    /// sync's last blocks, a reset wallet, a restarted client and a stalled
+    /// best header take none.
+    #[test]
+    fn tip_slack_needs_a_caught_up_wallet_and_a_moving_header() {
+        let (w, other) = (crate::WalletId([1; 32]), crate::WalletId([2; 32]));
+        let at = |tip: u32, filters: u32| {
+            let mut p = SyncProgress::default();
+            p.update_headers(headers(SyncState::Synced, tip, tip));
+            let state = if filters == tip {
+                SyncState::Synced
+            } else {
+                SyncState::Syncing
+            };
+            p.update_filter_headers(filter_headers(state, filters, tip));
+            p.update_masternodes(masternodes(SyncState::Synced, tip, tip));
+            p
+        };
+        let mut t = running();
+        t.on_progress(&at(1000, 998));
+        assert!(
+            !t.follows_tip(&w),
+            "a first sync's last blocks are catch-up"
+        );
+        t.on_progress(&at(1000, 1000));
+        assert!(t.caught_up() && t.follows_tip(&w));
+        t.on_progress(&at(1001, 1000));
+        assert!(
+            !t.caught_up() && t.follows_tip(&w),
+            "a new block in processing"
+        );
+
+        t.reset_follow(w);
+        assert!(!t.follows_tip(&w), "a rescanned wallet waits for caught up");
+        assert!(t.follows_tip(&other), "the others keep following");
+        t.on_progress(&at(1001, 1001));
+        t.on_progress(&at(1002, 1001));
+        assert!(t.follows_tip(&w), "caught up again");
+
+        t.follow.header_advanced = Some(Instant::now() - TIP_FOLLOW_WINDOW);
+        assert!(!t.follows_tip(&w), "a best header stalled for the window");
+        t.on_progress(&at(1003, 1002));
+        assert!(t.follows_tip(&w), "the header moved again");
+
         t.set_running(false);
-        assert!(!t.near_tip(), "a stopped client follows nothing");
+        t.set_running(true);
+        t.on_progress(&at(1004, 1003));
+        assert!(!t.follows_tip(&w), "a restart is a new sync generation");
     }
 
     #[test]

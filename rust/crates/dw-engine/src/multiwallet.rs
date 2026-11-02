@@ -342,6 +342,8 @@ impl NetworkSession {
             // The wallet joins the shielded passes' set: not while one is in
             // flight (R1-3, `PlatformRuntime::shielded_passes`).
             let passes = this.platform.shielded_passes.write().await;
+            // Its scan resumes: what it finds is catch-up (DEC-1058 #6).
+            this.hub.reset_tip_follow(id);
             live.store.set_unloaded(id.0, false);
             if let Err(e) = live.manager.load_from_persistor().await {
                 live.store.set_unloaded(id.0, true);
@@ -507,6 +509,8 @@ impl NetworkSession {
                 }
                 return Err(EngineError::Storage(format!("watch-only registration: {e}")));
             }
+            // A new wallet's scan: what it finds is catch-up (DEC-1058 #6).
+            this.hub.reset_tip_follow(id);
             live.manager.load_from_persistor().await?;
             let wallet = live
                 .manager
