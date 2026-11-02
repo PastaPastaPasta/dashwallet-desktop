@@ -63,12 +63,16 @@ export interface RowDecor {
   tag?: string;
   /** The row opens nothing: it is not a button. */
   readOnly?: boolean;
+  /** Replaces the status chip with a neutral note (not a problem). */
+  note?: string;
+  /** The row shows no amount (it has none to show). */
+  hideAmount?: boolean;
 }
 
 function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext; onOpen: (row: TxRow) => void; decorate?: (row: TxRow) => RowDecor }) {
   const decor = decorate?.(row);
   const title = decor?.title ?? txTitle(row);
-  const chip = txChip(row.status);
+  const chip = decor?.note ?? txChip(row.status);
   const trailing = trailingStatus(row.status);
   const date = rowDate(row);
   const shown = shownAmount(row.amount, row.txType);
@@ -92,7 +96,7 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
       </span>
       <span className="tx-row-trailing">
         {trailing && <span className="tx-row-status">{trailing}</span>}
-        <AmountText className="tx-row-amount" text={amount} unitName={ctx.display.name} />
+        {!decor?.hideAmount && <AmountText className="tx-row-amount" text={amount} unitName={ctx.display.name} />}
       </span>
     </>
   );

@@ -38,11 +38,16 @@ export const MOVE_COPY = {
     title: "Moved",
     text: (amount: string, fee: string | null) =>
       `About ${amount} is on its way to your Dash wallet.${fee === null ? "" : ` The network fee was ${fee}.`} It shows in Activity once it arrives.`,
+    /** The engine proved the debit but not what arrives. */
+    debitOnly: (taken: string) => `${taken} left your Platform addresses. Activity shows what arrives in your Dash wallet.`,
   },
   pending: {
     title: "Not confirmed yet",
     text: (amount: string) => `Dash Platform has not said whether the move of about ${amount} went through. Activity shows it when it does. Do not move again until it does.`,
+    debitOnly: (taken: string) => `Dash Platform has not said whether the move of ${taken} went through. Activity shows it when it does. Do not move again until it does.`,
   },
+  /** A move the engine superseded with a retry: not a loss, and nothing to wait for. */
+  replaced: { title: "Replaced by a retry", text: "This move was replaced by a retry. Activity shows the retry." },
   unseen: "Your move has an update.",
   waiting: {
     text: "A move to your Dash wallet is not confirmed yet. Do not move again until Activity shows that it went through.",
@@ -68,6 +73,13 @@ export function moveBlock(waiting: boolean, read: { isPending: boolean; isError:
 
 export type MoveStep = "confirm" | "running" | "done" | "refused";
 
+/** An `invalid_argument` refusal says what is wrong in words a person can act on (for example
+ * "consolidate coins first"): show that detail, not the code. */
+export function invalidArgumentText(e: { message: string; data: { kind: string; reason?: string } | null }): string {
+  const detail = e.data?.kind === "reason" && e.data.reason ? e.data.reason : e.message;
+  return detail.trim() === "" ? "That was not accepted." : /[.!?]$/.test(detail) ? detail : `${detail}.`;
+}
+
 /** A move's refusal, by code. `credits` shows a credit figure as Dash. */
 export function moveErrorText(e: unknown, credits: (c: string) => string): string {
   if (!isAppError(e)) return failureText(e);
@@ -91,6 +103,8 @@ export function moveErrorText(e: unknown, credits: (c: string) => string): strin
       return "The cost went above what you approved. Try again.";
     case "platform.feature_off":
       return "Platform addresses are turned off.";
+    case "invalid_argument":
+      return invalidArgumentText(e);
     default:
       return `It stopped with ${e.code}.`;
   }

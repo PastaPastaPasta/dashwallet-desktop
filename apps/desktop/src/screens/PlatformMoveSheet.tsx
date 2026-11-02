@@ -119,12 +119,18 @@ export function PlatformMoveSheet({ flow, walletId, network, block }: { flow: Pl
           {step === "done" && outcome && (
             <div role="status">
               <p className="topup-title" data-testid="platform-move-outcome-title">
-                {outcome.state === "done" ? C.done.title : C.pending.title}
+                {outcome.state === "done" ? C.done.title : outcome.state === "replaced" ? C.replaced.title : C.pending.title}
               </p>
               <p className="sheet-text" data-testid="platform-move-outcome-text">
-                {outcome.state === "done"
-                  ? C.done.text(amount(outcome.expectedDuffs ?? creditsToDuffs(outcome.credits)), outcome.feeCredits === null ? null : credits(outcome.feeCredits))
-                  : C.pending.text(amount(outcome.expectedDuffs ?? creditsToDuffs(outcome.credits)))}
+                {outcome.state === "replaced"
+                  ? C.replaced.text
+                  : outcome.state === "done"
+                  ? outcome.expectedDuffs === null
+                    ? C.done.debitOnly(credits(outcome.credits))
+                    : C.done.text(amount(outcome.expectedDuffs), outcome.feeCredits === null ? null : credits(outcome.feeCredits))
+                  : outcome.expectedDuffs === null
+                    ? C.pending.debitOnly(credits(outcome.credits))
+                    : C.pending.text(amount(outcome.expectedDuffs))}
               </p>
               <div className="sheet-actions">
                 <DashButton variant="filledBlue" size="large" data-testid="platform-move-done" onClick={() => flow.close()}>

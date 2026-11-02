@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { TxRow } from "../api/generated/TxRow";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
-import { filterExtra, mergeActivity, platformRow, rowSource, shieldedRow, sourceRowTitle } from "./sourceRows";
+import { filterExtra, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, sourceRowTitle } from "./sourceRows";
 
 const act = (id: string, over: Partial<PlatformActivity> = {}): PlatformActivity => ({
   id,
@@ -66,6 +66,13 @@ describe("platform activity rows", () => {
   it("shows a pending move as pending and a failed one as a problem", () => {
     expect(platformRow(act("p", { state: "pending" })).status.kind).toBe("unconfirmed");
     expect(platformRow(act("f", { state: "failed" })).status.kind).toBe("notAccepted");
+  });
+
+  it("shows a replaced move as neither a problem nor an amount", () => {
+    const row = platformRow(act("r", { kind: "moveToCore", state: "replaced", expectedDuffs: null, to: null, address: null }));
+    expect(row).toMatchObject({ amount: 0, status: { kind: "confirmed" } });
+    expect([isReplacedRow(row), isReplacedRow(platformRow(act("d", { kind: "moveToCore" })))]).toEqual([true, false]);
+    expect(rowSource(row)).toBe("platform");
   });
 });
 

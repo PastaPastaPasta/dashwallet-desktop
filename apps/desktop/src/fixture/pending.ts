@@ -22,8 +22,9 @@ const CREDITS_PER_DUFF = 1000n;
 const MOVE_FEE_CREDITS = 2_000_000n;
 
 /** What the next `platform_move_to_core` comes to: Platform's proved answer, an answer that says
- * nothing (the move stays `pending`), or a refusal. */
-export type MoveResult = "done" | "pending" | "refused";
+ * nothing (the move stays `pending`), a refusal, a move whose debit is proved but not what
+ * arrives (`unproved`: `expectedDuffs` is null), or the refusal of too many separate coins. */
+export type MoveResult = "done" | "pending" | "refused" | "unproved" | "tooManyCoins";
 
 export interface PlatformWorld {
   addresses: { address: string; credits: string }[];
@@ -143,12 +144,14 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
       throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: q.credits, remaining: g.grant.purpose.maxCredits });
     useGrant(world, grant);
     if (p.nextMove === "refused") throw fail("platform.unavailable", "the fixture refuses the move");
+    if (p.nextMove === "tooManyCoins") throw fail("invalid_argument", "more than 50 separate balances", { kind: "reason", reason: "Your Platform addresses hold too many separate balances to move at once. Consolidate coins first" });
     const state = p.nextMove === "pending" ? "pending" : "done";
+    const expectedDuffs = p.nextMove === "unproved" ? null : q.expectedDuffs;
     const id = `pm-${p.activity.length + 1}`;
     const feeCredits = state === "done" ? q.feeCredits : null;
-    p.activity = [{ id, kind: "moveToCore", state, credits: q.credits, address: null, to: q.to, expectedDuffs: q.expectedDuffs, feeCredits, at: Math.floor(FIXTURE_NOW.getTime() / 1000) }, ...p.activity];
+    p.activity = [{ id, kind: "moveToCore", state, credits: q.credits, address: null, to: q.to, expectedDuffs, feeCredits, at: Math.floor(FIXTURE_NOW.getTime() / 1000) }, ...p.activity];
     // A move that is `done` has emptied the addresses it took from; a `pending` one has not been seen yet.
     if (state === "done") p.addresses = [];
-    return { id, credits: q.credits, expectedDuffs: q.expectedDuffs, to: q.to, state, feeCredits };
+    return { id, credits: q.credits, expectedDuffs, to: q.to, state, feeCredits };
   },
 };

@@ -143,6 +143,8 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
       return kind === "add" ? `Too small to add: the smallest amount is ${duffs(Number(d.value))}.` : `Too small: the smallest amount is ${credits(String(d.value))}.`;
     case SHIELDED_CODES.coinsLocked:
       return "Your Dash is reserved right now (for example by CoinJoin). Try again shortly.";
+    case SHIELDED_CODES.tooManyInputs:
+      return "That takes too many separate amounts at once. Consolidate your coins first, then try again.";
     case SHIELDED_CODES.shieldPending:
       return "An earlier add to Shielded is not finished. Finish it from the Shielded card first.";
     case "platform.context_unavailable":

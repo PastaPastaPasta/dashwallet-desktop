@@ -18,6 +18,8 @@ export const SourceRowText = {
   platformIncoming: "Received on Platform",
   platformOutgoing: "Sent from Platform",
   moveToCore: "Moved to Dash wallet",
+  /** A move the engine superseded with a retry: neither a loss nor a completed move. */
+  replaced: "Replaced by a retry",
   shieldedAdd: "Added to Shielded",
   shieldedToPlatform: "Moved to Platform",
   shieldedSentToPlatform: "Sent to Platform",
@@ -25,6 +27,11 @@ export const SourceRowText = {
   shieldedSent: "Sent from Shielded",
   shieldedPaid: "Paid from Shielded",
 };
+
+const REPLACED = ":replaced";
+
+/** A Platform move the engine replaced with a retry: it carries no amount and is never a loss. */
+export const isReplacedRow = (row: Pick<TxRow, "txid">): boolean => row.txid.endsWith(REPLACED);
 
 /** The source of a synthetic row; `null` for a Core transaction. */
 export function rowSource(row: Pick<TxRow, "txid">): RowSource | null {
@@ -53,9 +60,12 @@ const base = (txid: string, status: TxRow["status"], timestamp: number | null, a
  * (an internal move: no sign); a failed one is the "not accepted" problem row. */
 export function platformRow(a: PlatformActivity): TxRow {
   const move = a.kind === "moveToCore";
-  const amount = move ? (a.expectedDuffs ?? creditsToDuffs(a.credits)) : creditsToDuffs(a.credits);
+  const replaced = a.state === "replaced";
+  // A move with no proved arrival shows what left (`credits`), never an amount that "arrives".
+  const amount = replaced ? 0 : move ? (a.expectedDuffs ?? creditsToDuffs(a.credits)) : creditsToDuffs(a.credits);
+  const kind = a.state === "done" || replaced ? "confirmed" : a.state === "pending" ? "unconfirmed" : "notAccepted";
   return {
-    ...base(`platform:${a.kind}:${a.id}`, statusOf(a.state === "done" ? "confirmed" : a.state === "pending" ? "unconfirmed" : "notAccepted"), a.at, a.kind === "outgoing" ? -amount : amount),
+    ...base(`platform:${a.kind}:${a.id}${replaced ? REPLACED : ""}`, statusOf(kind), a.at, a.kind === "outgoing" ? -amount : amount),
     txType: move ? "platformTransfer" : a.kind === "incoming" ? "recvWithAddress" : "sendToAddress",
     category: move ? "platform" : a.kind === "incoming" ? "received" : "sent",
     address: move ? a.to : a.address,

@@ -89,3 +89,39 @@ test.describe("item 3: movable and dust, the fee actually taken", () => {
     await expect(page.getByTestId("platform-move-outcome-text")).toContainText("The network fee was 0.00002 tDASH.");
   });
 });
+
+test.describe("item 7: replaced moves, an unproved arrival, the 50-coin refusal", () => {
+  test("a replaced move reads 'Replaced by a retry': no amount, and not a problem", async ({ page }) => {
+    await open(page, "platform-replaced");
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    const rows = page.locator('[data-txid^="platform:moveToCore:pm-old"]');
+    await expect(rows).toHaveCount(1);
+    await expect(rows).toContainText("Replaced by a retry");
+    await expect(rows.locator(".tx-row-amount")).toHaveCount(0);
+    await expect(rows).not.toContainText("Not accepted");
+    await expect(rows.locator(".is-problem")).toHaveCount(0);
+    // The retry that did go through keeps its amount.
+    await expect(page.locator('[data-txid^="platform:moveToCore:pm-retry"] .tx-row-amount')).toHaveCount(1);
+  });
+
+  test("a move whose arrival is not proved shows what left Platform, and no 'arrives' amount", async ({ page }) => {
+    await open(page);
+    await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "unproved"));
+    await page.getByTestId("platform-move").click();
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    const text = page.getByTestId("platform-move-outcome-text");
+    await expect(text).toContainText("left your Platform addresses");
+    await expect(text).not.toContainText("on its way");
+  });
+
+  test("the 50-coin refusal shows the engine's own words", async ({ page }) => {
+    await open(page);
+    await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "tooManyCoins"));
+    await page.getByTestId("platform-move").click();
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-refusal")).toHaveText("Your Platform addresses hold too many separate balances to move at once. Consolidate coins first.");
+  });
+});

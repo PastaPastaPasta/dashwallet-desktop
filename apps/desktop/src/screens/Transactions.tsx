@@ -17,7 +17,7 @@ import { DashButton, Icon } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
-import { filterExtra, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, sourceRowTitle } from "../history/sourceRows";
+import { filterExtra, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, sourceRowTitle } from "../history/sourceRows";
 import { DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
 
 const PAGE_SIZE = 200;
@@ -26,7 +26,9 @@ const SEARCH_DEBOUNCE_MS = 250;
 /** A Platform or Shielded row among the Core ones: titled and tagged, and it opens nothing. */
 const decorateSource = (row: TxRow): RowDecor => {
   const source = rowSource(row);
-  return source ? { title: sourceRowTitle(row), tag: SOURCE_TAG[source], readOnly: true } : {};
+  if (!source) return {};
+  const replaced = isReplacedRow(row);
+  return { title: sourceRowTitle(row), tag: SOURCE_TAG[source], readOnly: true, ...(replaced ? { note: SourceRowText.replaced, hideAmount: true } : {}) };
 };
 
 const CATEGORIES: { id: string; title: string; categories: TxCategoryName[] }[] = [

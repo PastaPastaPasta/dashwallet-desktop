@@ -6,7 +6,7 @@ import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { hasPendingMove, moveBlock, moveCanRetry, moveErrorText, moveFor, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
+import { hasPendingMove, invalidArgumentText, moveBlock, moveCanRetry, moveErrorText, moveFor, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
 
 const TO = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
 const OUTCOME: MoveToCoreOutcome = { id: "pm-1", credits: "40000000000", expectedDuffs: 39_998_000, to: TO, state: "done", feeCredits: "2000000" };
@@ -143,5 +143,13 @@ describe("moveBlock", () => {
     expect(moveBlock(false, { isPending: false, isError: true })).toBe("failed");
     expect(moveBlock(true, { isPending: false, isError: false })).toBe("pending");
     expect(moveBlock(false, { isPending: false, isError: false })).toBeNull();
+  });
+});
+
+describe("invalidArgumentText", () => {
+  it("shows the engine's detail as a sentence, from the reason or the message", () => {
+    expect(invalidArgumentText({ message: "m", data: { kind: "reason", reason: "Consolidate coins first" } })).toBe("Consolidate coins first.");
+    expect(invalidArgumentText({ message: "Too many coins.", data: null })).toBe("Too many coins.");
+    expect(invalidArgumentText({ message: " ", data: null })).toBe("That was not accepted.");
   });
 });

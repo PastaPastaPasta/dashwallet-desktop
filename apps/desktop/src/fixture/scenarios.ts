@@ -606,6 +606,18 @@ const SCENARIOS = {
     w.pending.platform!.dust = "1500000";
     return w;
   },
+  /** A move the engine replaced with a retry (done), among the Platform activity. */
+  "platform-replaced": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [
+      { id: "pm-retry", kind: "moveToCore", state: "done", credits: "30000000000", address: null, to: p.activity[0].address, expectedDuffs: 29_998_000, feeCredits: "2000000", at: at - 3600 },
+      { id: "pm-old", kind: "moveToCore", state: "replaced", credits: "30000000000", address: null, to: null, expectedDuffs: null, feeCredits: null, at: at - 7200 },
+      ...p.activity,
+    ];
+    return w;
+  },
   /** A wallet that starts one block short of the tip and has never been caught up. */
   "sync-one-behind": (t) => {
     const w = base(t);
