@@ -2393,6 +2393,16 @@ mod tests {
     use super::*;
     use crate::{Cli, Command};
 
+    /// DEC-1058 #4: what Shielded is still syncing rides in the params.
+    #[test]
+    fn a_not_synced_refusal_names_what_it_waits_for() {
+        use dw_engine::platform::ShieldedSyncWait;
+        let e = ShieldedError::NotSynced {
+            reason: ShieldedSyncWait::Journal,
+        };
+        assert_eq!(shielded_params(&e), json!({"reason": "journal"}));
+    }
+
     /// D15 (Sol r1): an accept that went through and a payment that did
     /// not is a partial success, never a plain error.
     #[test]

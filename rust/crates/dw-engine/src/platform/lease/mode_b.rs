@@ -1588,9 +1588,9 @@ impl LeaseTable {
         self.with_j(|i, _| i.fence.journal == JournalState::Ready)
     }
 
-    /// Whether the dispatch journal is still to be read (the network just
-    /// opened), as opposed to read, or found unopenable or of a newer
-    /// schema (which does not clear).
+    /// Whether the dispatch journal is not read (before the session opens,
+    /// or after it closes), as opposed to read, or found unopenable or of a
+    /// newer schema (which does not clear).
     pub(crate) fn journal_loading(&self) -> bool {
         self.with_j(|i, _| i.fence.journal == JournalState::NotLoaded)
     }

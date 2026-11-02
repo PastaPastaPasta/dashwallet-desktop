@@ -683,6 +683,16 @@ mod tests {
                 "remaining": "7"
             })
         );
+        // DEC-1058 #4: what Shielded is still syncing.
+        let e = AppError::from(ShieldedError::NotSynced {
+            reason: ShieldedSyncWait::Core,
+        });
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["code"], "shielded.not_synced");
+        assert_eq!(
+            v["data"],
+            serde_json::json!({"kind": "reason", "reason": "core"})
+        );
         let e = AppError::from(NameError::Invalid {
             rules: vec![UsernameRule::NoEdgeHyphen],
         });

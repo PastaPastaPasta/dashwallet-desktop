@@ -204,14 +204,15 @@ pub enum ShieldedSyncWait {
     /// (platform-wallet's `ShieldedNoRecordedAnchor`, "wait for the next
     /// shielded sync"): the next sync pass moves it.
     Tree,
-    /// The dispatch journal is not read yet (just after the network
-    /// opened): the shield and spend records are kept there.
+    /// The dispatch journal, where the shield and spend records are kept,
+    /// is not read. A session reads it before it opens, so a host sees this
+    /// only from a closing one; fail-closed, never "Platform did not answer".
     Journal,
-    /// Core is not caught up, or Platform writes wait for masternode sync:
-    /// a shield's asset lock waits (as a top-up's does).
+    /// SPV runs and is not caught up, or Platform writes wait for
+    /// masternode sync: a shield's asset lock waits (as a top-up's does).
     Core,
-    /// The wallet's DashPay bring-up has not finished: a shield's funding
-    /// waits for it (as a top-up's does); the call has it run again.
+    /// The wallet's DashPay bring-up is running: a shield's funding waits
+    /// for it (as a top-up's does).
     Startup,
 }
 

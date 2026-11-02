@@ -235,10 +235,11 @@ struct FakeShielded {
     /// The coin reads and the funding permits asked for.
     coin_reads: AtomicU32,
     permits: AtomicU32,
-    /// What holds a shield's funding back (`funding_hold`), and whether a
-    /// `Startup` hold is a failed discovery (`startup_failed`).
+    /// What holds a shield's funding back (`funding_hold`), whether the
+    /// bring-up runs (`startup_running`) and whether SPV is stopped.
     hold: Mutex<Option<RegistrationWait>>,
-    startup_failed: AtomicBool,
+    startup_running: AtomicBool,
+    spv_stopped: AtomicBool,
 }
 
 /// What a library call leaves of a lock's tracked row (`real_rows`), as
@@ -307,7 +308,8 @@ impl Default for FakeShielded {
             coin_reads: AtomicU32::new(0),
             permits: AtomicU32::new(0),
             hold: Mutex::new(None),
-            startup_failed: AtomicBool::new(false),
+            startup_running: AtomicBool::new(false),
+            spv_stopped: AtomicBool::new(false),
         }
     }
 }
@@ -622,8 +624,12 @@ impl ShieldedLib for FakeShielded {
         *self.hold.lock().unwrap()
     }
 
-    fn startup_failed(&self) -> bool {
-        self.startup_failed.load(Ordering::SeqCst)
+    fn startup_running(&self) -> bool {
+        self.startup_running.load(Ordering::SeqCst)
+    }
+
+    fn spv_running(&self) -> bool {
+        !self.spv_stopped.load(Ordering::SeqCst)
     }
 
     async fn funding_permit(
@@ -1458,11 +1464,13 @@ fn wait_of<T: std::fmt::Debug>(r: Result<T, ShieldedError>) -> String {
 /// what it waits for, never a Platform refusal ("Dash Platform did not
 /// answer"); what does not clear on its own keeps its code.
 /// - `account`: the account is not bound, or bound and not scanned yet.
-/// - `core` / `startup`: a shield's funding waits for Core (SPV not caught
-///   up, Platform writes waiting for masternode sync) or for the DashPay
-///   bring-up; a failed discovery is still `platform.unavailable`, a
-///   locked vault `platform.signer_unavailable`.
-/// - `journal`: the dispatch journal is not read yet; one that cannot be
+/// - `core` / `startup`: a shield's funding waits for Core (SPV catching
+///   up, Platform writes waiting for masternode sync) or for a running
+///   DashPay bring-up. A stopped SPV is still `platform.context_unavailable`,
+///   a bring-up that ended without Platform's answers `platform.unavailable`,
+///   a locked vault `platform.signer_unavailable`.
+/// - `journal`: the dispatch journal is not read (the session reads it
+///   before it opens, so only a closing one, as here); one that cannot be
 ///   (unopenable, a newer schema) is still `platform.unavailable`.
 /// - `tree`: platform-wallet's `ShieldedNoRecordedAnchor` (the spend-error
 ///   table in `a_failed_spend_keeps_its_quote_and_maps_the_librarys_error`).
@@ -1541,30 +1549,50 @@ fn a_refusal_while_shielded_syncs_is_not_synced_with_what_it_waits_for() {
 
     // A shield's funding hold.
     let lib = Arc::new(FakeShielded::default());
-    for (hold, failed, want) in [
-        (RegistrationWait::Sync, false, "not_synced:core"),
-        (RegistrationWait::Startup, false, "not_synced:startup"),
-        (RegistrationWait::Startup, true, "platform.unavailable"),
-        (RegistrationWait::Network, false, "platform.unavailable"),
+    // (hold, bring-up running, SPV stopped, refusal)
+    for (hold, running, stopped, want) in [
+        (RegistrationWait::Sync, false, false, "not_synced:core"),
+        (
+            RegistrationWait::Sync,
+            false,
+            true,
+            "platform.context_unavailable",
+        ),
+        (RegistrationWait::Startup, true, false, "not_synced:startup"),
+        (
+            RegistrationWait::Startup,
+            false,
+            false,
+            "platform.unavailable",
+        ),
+        (
+            RegistrationWait::Network,
+            false,
+            false,
+            "platform.unavailable",
+        ),
         (
             RegistrationWait::Unlock,
+            false,
             false,
             "platform.signer_unavailable",
         ),
     ] {
         *lib.hold.lock().unwrap() = Some(hold);
-        lib.startup_failed.store(failed, Ordering::SeqCst);
+        lib.startup_running.store(running, Ordering::SeqCst);
+        lib.spv_stopped.store(stopped, Ordering::SeqCst);
         assert_eq!(
             all(&fx, &lib, &["shield"]),
             expect(&["shield"], want),
-            "{hold:?}"
+            "{hold:?} running {running} stopped {stopped}"
         );
     }
     *lib.hold.lock().unwrap() = None;
-    lib.startup_failed.store(false, Ordering::SeqCst);
+    lib.startup_running.store(false, Ordering::SeqCst);
+    lib.spv_stopped.store(false, Ordering::SeqCst);
 
-    // The dispatch journal: not read yet (the network just opened), then
-    // found unopenable.
+    // The dispatch journal: not read (closed, as a closing session's is),
+    // then found unopenable.
     let journaled = ["shield_quote", "shield", "resume", "send", "unshield"];
     fx.engine.block_on(fx.s.leases.close_journal());
     assert!(fx.s.leases.journal_loading());

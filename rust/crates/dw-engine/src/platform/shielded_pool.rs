@@ -256,10 +256,15 @@ pub(crate) trait ShieldedLib: Send + Sync {
     fn fee_bound(&self) -> impl Future<Output = Result<u64, PlatformError>> + Send;
     /// What holds a funding back (SPV behind, the bring-up not answered).
     fn funding_hold(&self) -> Option<RegistrationWait>;
-    /// Whether the wallet's DashPay bring-up ended with its discovery
-    /// failed (Platform did not answer), rather than still running.
-    fn startup_failed(&self) -> bool {
+    /// Whether the wallet's DashPay bring-up is running (not run yet, or
+    /// starting): a `Startup` hold that clears on its own.
+    fn startup_running(&self) -> bool {
         false
+    }
+    /// Whether SPV runs: a `Sync` hold of a stopped SPV does not clear on
+    /// its own.
+    fn spv_running(&self) -> bool {
+        true
     }
     fn funding_permit(
         &self,
@@ -385,9 +390,10 @@ async fn ready_ledger(lib: &impl ShieldedLib) -> Result<Ledger, ShieldedError> {
         .ok_or(ShieldedError::not_synced(Wait::Account))
 }
 
-/// The refusal while the dispatch journal is not read: Shielded is still
-/// syncing (`journal`) while it loads; `platform.unavailable` once it was
-/// found unopenable or of a newer schema, which does not clear.
+/// The refusal while the dispatch journal is not ready: `journal` while it
+/// is not read (only a closing session's: one reads it before it opens);
+/// `platform.unavailable` once it was found unopenable or of a newer
+/// schema, which does not clear.
 fn journal_unread(session: &NetworkSession) -> ShieldedError {
     if session.leases.journal_loading() {
         ShieldedError::not_synced(Wait::Journal)
@@ -1182,17 +1188,18 @@ pub(crate) async fn shield_quote(
 
 /// What holds a shield's funding back, as the code the host sees: as a
 /// top-up's (`topup.rs`), except that the waits which clear on their own
-/// are Shielded still syncing (DEC-1058 #4): Core not caught up or
-/// Platform writes waiting for masternode sync (`Sync`, which a top-up
-/// reports `platform.context_unavailable`), and a DashPay bring-up still
-/// running (`Startup`, `platform.unavailable` for a top-up). A bring-up
-/// whose discovery failed stays `platform.unavailable`: Platform did not
-/// answer (the call has it run again).
+/// are Shielded still syncing (DEC-1058 #4): Core catching up or Platform
+/// writes waiting for masternode sync while SPV runs (`Sync`, which a
+/// top-up reports `platform.context_unavailable`), and a DashPay bring-up
+/// that is running (`Startup`, `platform.unavailable` for a top-up). A
+/// bring-up that ended without Platform's answers (none, partial, or
+/// discovery failed locally) stays `platform.unavailable`: only a run again
+/// changes it, which the call asks for. Read before that run starts.
 fn held(lib: &impl ShieldedLib, wait: RegistrationWait) -> ShieldedError {
     match wait {
         RegistrationWait::Unlock => PlatformError::SignerUnavailable.into(),
-        RegistrationWait::Sync => ShieldedError::not_synced(Wait::Core),
-        RegistrationWait::Startup if !lib.startup_failed() => {
+        RegistrationWait::Sync if lib.spv_running() => ShieldedError::not_synced(Wait::Core),
+        RegistrationWait::Startup if lib.startup_running() => {
             ShieldedError::not_synced(Wait::Startup)
         }
         RegistrationWait::Network | RegistrationWait::Startup => PlatformError::Unavailable.into(),
@@ -1239,10 +1246,11 @@ pub(crate) async fn shield(
 ) -> Result<ShieldOutcome, ShieldedError> {
     gate(lib).await?;
     if let Some(wait) = lib.funding_hold() {
+        let refusal = held(lib, wait);
         if wait == RegistrationWait::Startup {
             session.platform.retry_startup(wallet);
         }
-        return Err(held(lib, wait));
+        return Err(refusal);
     }
     if !lib.bind().await? {
         return Err(ShieldedError::not_synced(Wait::Account));
@@ -1937,12 +1945,14 @@ impl ShieldedLib for PwShielded {
         Reg::funding_hold(&self.pw)
     }
 
-    fn startup_failed(&self) -> bool {
+    fn startup_running(&self) -> bool {
+        use super::startup::StartupStatus as S;
         let startup = self.pw.session.dashpay_startup(&self.pw.wallet_id);
-        matches!(
-            startup.map(|s| s.startup),
-            Ok(super::startup::StartupStatus::DiscoveryFailed)
-        )
+        matches!(startup.map(|s| s.startup), Ok(S::NotRun | S::Starting))
+    }
+
+    fn spv_running(&self) -> bool {
+        self.pw.session.hub.tracker().running()
     }
 
     async fn funding_permit(
