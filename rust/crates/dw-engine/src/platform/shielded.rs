@@ -198,7 +198,10 @@ pub struct UnresolvedSpend {
 pub enum ShieldedSyncWait {
     /// The account is not established: its viewing key is not bound (a
     /// first bind needs the vault unlocked) or its notes are neither
-    /// restored nor scanned (`ShieldedStatus::ready` false).
+    /// restored nor scanned (`ShieldedStatus::ready` false). For now also a
+    /// first bind the vault cannot serve (locked, mixing-only, watch-only),
+    /// which does not clear by itself: the user unlocks, or (watch-only) it
+    /// is not supported. Its own refusal comes in 0.1.x.
     Account,
     /// The note tree is not on an anchor Platform recorded yet
     /// (platform-wallet's `ShieldedNoRecordedAnchor`, "wait for the next

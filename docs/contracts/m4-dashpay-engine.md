@@ -692,7 +692,9 @@ proved result); a partial set clears nothing. The user's `remove_wallet` deletes
 a Platform failure, is `shielded.not_synced{reason}`, never a Platform refusal, so the UI shows "Shielded is still syncing; try again
 when it finishes", not "Dash Platform did not answer". `reason` (`ShieldedSyncWait`, the binding's `data.reason`):
 `account` (the viewing key is not bound, a first bind needing the vault unlocked, or the notes are neither restored nor
-scanned: `ShieldedStatus.ready` false); `tree` (a spend found no anchor Platform recorded for its notes, platform-wallet
+scanned: `ShieldedStatus.ready` false. **Exception, for now:** `account` is also returned when a first bind finds the
+vault locked or mixing-only, or the wallet watch-only, so that the viewing key cannot be read. That does not clear on its
+own: it needs the user to unlock, or (watch-only) is not supported. 0.1.x gives it a distinct refusal); `tree` (a spend found no anchor Platform recorded for its notes, platform-wallet
 `ShieldedNoRecordedAnchor`, `operations.rs:2736`, "wait for the next shielded sync"); `journal` (the dispatch journal is
 not read: shields, sends and unshields fail closed without it. A session reads it before it opens, so a host sees this
 only from a closing session; the DEC-1057 "until the journal is read" window does not reach hosts. One that cannot be
@@ -3705,7 +3707,8 @@ renames or reshapes them takes the next version bump:
     send and unshield of the wallet behind `confirm_unrecorded` (`shielded.unrecorded_spend`); it clears only when a
     proved scan reports all its nullifiers spent, or with the user's removal (§2.13 "Unrecorded spends").
 74. **Shielded still syncing (DEC-1058 #4, version 48).** `shielded.not_synced` carries `reason` (`ShieldedSyncWait`:
-    `account`, `tree`, `journal`, `core`, `startup`), and the refusals that wait for something still syncing use it
+    `account`, `tree`, `journal`, `core`, `startup`; `account` for now also covers a first bind a locked, mixing-only
+    or watch-only vault cannot serve, which needs the user and gets its own refusal in 0.1.x), and the refusals that wait for something still syncing use it
     instead of a Platform code: the dispatch journal not read (was `platform.unavailable` for shields, sends and
     unshields; only a closing session's) and a shield's funding held for a running SPV or a running DashPay bring-up
     (was `platform.context_unavailable` / `platform.unavailable`). §2.13 "Still syncing".

@@ -1459,11 +1459,16 @@ fn wait_of<T: std::fmt::Debug>(r: Result<T, ShieldedError>) -> String {
     }
 }
 
-/// DEC-1058 #4: every refusal of a shield, a quote, a send or an unshield
-/// that waits for something still syncing is `shielded.not_synced` with
-/// what it waits for, never a Platform refusal ("Dash Platform did not
-/// answer"); what does not clear on its own keeps its code.
-/// - `account`: the account is not bound, or bound and not scanned yet.
+/// DEC-1058 #4, at the pool layer with the fake library (not the host's
+/// session admission): the refusals of a shield, a quote, a send, an
+/// unshield, a resume and an address read that wait for something still
+/// syncing are `shielded.not_synced` with what it waits for, never a
+/// Platform refusal ("Dash Platform did not answer"); what does not clear on
+/// its own keeps its code.
+/// - `account`: the account is not bound, or bound and not scanned yet
+///   (the seven calls that bind; `shield_quote` reads no shielded account).
+///   For now this also covers a vault that cannot bind (locked,
+///   mixing-only, watch-only); 0.1.x gives that its own refusal.
 /// - `core` / `startup`: a shield's funding waits for Core (SPV catching
 ///   up, Platform writes waiting for masternode sync) or for a running
 ///   DashPay bring-up. A stopped SPV is still `platform.context_unavailable`,
@@ -1606,8 +1611,10 @@ fn a_refusal_while_shielded_syncs_is_not_synced_with_what_it_waits_for() {
         all(&fx, &lib, &journaled),
         expect(&journaled, "platform.unavailable")
     );
-    // Nothing reached the library's spend or funding calls.
-    assert!(lib.spent().is_empty() && unbound.spent().is_empty());
+    // These refusals stop before dispatch: no spend, and no funding permit
+    // of the shield. (A `tree` refusal comes later, after the spend's permit,
+    // with the quote kept charged: the spend-error table's test.)
+    assert!(lib.spent().is_empty() && unbound.spent().is_empty() && unscanned.spent().is_empty());
     assert_eq!(lib.permits.load(Ordering::SeqCst), 0);
 }
 
