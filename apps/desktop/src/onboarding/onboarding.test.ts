@@ -3,6 +3,7 @@
 // passphrase first and adds the wallet at the last correct chip).
 
 import { describe, expect, it, vi } from "vitest";
+import { failureText } from "./model";
 import { birthHeightFor } from "./birthHeight";
 import { OnboardingModel, OnboardingText } from "./onboarding";
 import { passphraseStrength, PassphraseText } from "./passphrase";
@@ -687,5 +688,14 @@ describe("onboarding view model: restore", () => {
     expect(passphraseStrength("lowercase")).toBe("weak");
     expect(passphraseStrength("Lower1234")).toBe("fair");
     expect(passphraseStrength("Correct-Horse-Battery-9-Staple")).toBe("strong");
+  });
+});
+
+describe("failureText: Close Wallet and the network close (DEC-1046)", () => {
+  it("names an unresolved shielded payment, and shows a wallet still opening in the engine's words", () => {
+    expect(failureText(appError("shielded_spend_unresolved"))).toBe("A shielded payment is still being confirmed. Wait, or quit and reopen the app.");
+    expect(failureText({ code: "wallet", message: "a wallet is still opening; close the network once it is open", data: null })).toBe("A wallet is still opening; close the network once it is open.");
+    // Any other `wallet` failure stays generic: the code is shared.
+    expect(failureText({ code: "wallet", message: "disk full", data: null })).toBe("Something went wrong (wallet).");
   });
 });

@@ -16,15 +16,19 @@ import { CopyValue, DetailRow } from "../components/detail";
 import { LoadingState } from "../components/history";
 import { QrCode } from "../components/qr";
 import { Sheet } from "../components/sheet";
-import { copyWithToast } from "../components/toast";
+import { CopyDashButton } from "../components/copy";
+import { useUi } from "../app/ui";
 import { useDisplay } from "../format/display";
+import { useHeldAddress } from "../payments/hold";
+import { useLookupPending, useReceived } from "../payments/received";
+import { receivedText } from "./notifications/Received";
 import { shortAddress } from "../format/tx";
 import { Page } from "./Routes";
 
 const QR_SIDE = 200;
 
 /** The QR of `text`, or why there is none (dash-qt "Resulting URI too long"). */
-function Qr({ text, label, testId }: { text: string | undefined; label: string; testId: string }) {
+export function Qr({ text, label, testId }: { text: string | undefined; label: string; testId: string }) {
   const qr = useQrMatrix(text);
   if (qr.data) return <QrCode matrix={qr.data} size={QR_SIDE} label={label} testId={testId} />;
   if (qr.isError)
@@ -47,13 +51,16 @@ function qrUsername(included: boolean | undefined, username: UseQueryResult<stri
   return username.data ?? last;
 }
 
-function AddressCard({ walletId }: { walletId: string }) {
+function AddressCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const b = useBackend();
   const current = useReceiveAddress(walletId);
   // "New address" issues one (dash-qt getNewDestination); it is shown until the page closes.
   const [fresh, setFresh] = useState<AddressInfo | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
-  const shown = fresh ?? current.data;
+  // A payment to the address on show is said first; the engine's next address follows (DEC-1058 #6).
+  const { shown, paid } = useHeldAddress(current.data, current.isSuccess && !current.isFetching, fresh, useReceived(walletId), useLookupPending(walletId));
+  const display = useDisplay(network);
+  const discreet = useUi((s) => s.discreet);
   // The QR carries the wallet's DashPay username as `user=` (DP3-03). The engine reads none
   // while names are updating (a busy identity store during sync), so the card keeps the last
   // name it showed for this wallet rather than dropping it (DP3-02 D25); a failed read is none.
@@ -98,17 +105,24 @@ function AddressCard({ walletId }: { walletId: string }) {
         <LoadingState testId="receive-loading" text="Loading address" />
       ) : (
         <>
-          <Qr text={uri.data} label={`QR code of ${shown.address}`} testId="receive-qr" />
+          {paid.length > 0 && (
+            <p className="receive-received" data-testid="receive-received">
+              <span aria-hidden="true">✓</span> {receivedText(paid.reduce((n, p) => n + p.duffs, 0), display, discreet)}
+            </p>
+          )}
+          <div className={paid.length > 0 ? "receive-qr is-used" : "receive-qr"}>
+            <Qr text={uri.data} label={`QR code of ${shown.address}`} testId="receive-qr" />
+          </div>
           <p className="address-full" data-testid="receive-address">
             {shown.address}
           </p>
           <div className="card-actions">
-            <DashButton variant="tintedBlue" data-testid="receive-copy-address" onClick={() => void copyWithToast(shown.address)}>
+            <CopyDashButton variant="tintedBlue" data-testid="receive-copy-address" text={shown.address}>
               Copy address
-            </DashButton>
-            <DashButton variant="tintedBlue" data-testid="receive-copy-uri" disabled={!uri.data} onClick={() => uri.data && void copyWithToast(uri.data)}>
+            </CopyDashButton>
+            <CopyDashButton variant="tintedBlue" data-testid="receive-copy-uri" disabled={!uri.data} why="The payment link is not ready yet." text={uri.data ?? null}>
               Copy link
-            </DashButton>
+            </CopyDashButton>
             <DashButton variant="plainBlue" data-testid="receive-new-address" onClick={() => void newAddress()}>
               New address
             </DashButton>
@@ -218,7 +232,7 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
         <DashButton variant="tintedGray" onClick={clear}>
           Clear
         </DashButton>
-        <DashButton type="submit" variant="filledBlue" data-testid="request-create" disabled={!ready}>
+        <DashButton type="submit" variant="filledBlue" data-testid="request-create" disabled={!ready} why="Enter an amount first.">
           Create request
         </DashButton>
       </div>
@@ -339,7 +353,7 @@ export function ReceivePage({ walletId, network }: { walletId: string; network: 
   return (
     <Page route="receive">
       <div className="receive-columns">
-        <AddressCard walletId={walletId} />
+        <AddressCard walletId={walletId} network={network} />
         <RequestForm walletId={walletId} network={network} onCreated={setShown} />
       </div>
       <RequestList walletId={walletId} network={network} onShow={setShown} />

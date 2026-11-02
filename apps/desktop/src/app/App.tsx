@@ -13,6 +13,7 @@ import { ForgotPassphraseSheet } from "../screens/ForgotPassphrase";
 import { LockScreen, UnlockSheet } from "../screens/LockScreen";
 import { Onboarding } from "../screens/Onboarding";
 import { Overview } from "../screens/Overview";
+import { PreReleaseNotice } from "../screens/PreReleaseNotice";
 import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
 import { CoinJoinPage } from "../screens/coinjoin/CoinJoinPage";
@@ -22,6 +23,8 @@ import { ContactsPage, PayPage, Placeholder } from "../screens/Routes";
 import { JoinDashPayPage } from "../screens/dashpay/JoinDashPay";
 import { MyProfilePage } from "../screens/dashpay/MyProfile";
 import { NotificationsPage, NotificationsPopover } from "../screens/notifications/Notifications";
+import { ReceivedToaster } from "../screens/notifications/Received";
+import { unreadReceived, useReceived } from "../payments/received";
 import { ToolsPage } from "../screens/tools/ToolsPage";
 import { SettingsPage } from "../screens/settings/SettingsPage";
 import { AboutSheet, OpenUriSheet } from "../screens/ShellDialogs";
@@ -39,6 +42,7 @@ import { useShellBridge } from "./shellBridge";
 import { openFailure, type OpenFailure } from "./openFailure";
 import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
+import { savePrefs } from "../settings/prefs";
 import { navigate, ui, useUi } from "./ui";
 
 const closeDialog = () => ui.set({ dialog: null, recoveryWallet: null });
@@ -114,6 +118,11 @@ function Shell() {
   const wiping = useUi((s) => s.wiping);
   const forgot = useUi((s) => s.forgotPassphrase);
   const secretShown = useUi((s) => s.secrets > 0);
+  // The first-run notice stays up until it is dismissed; the save that keeps it dismissed may
+  // fail (the notice then shows again next start), so it does not wait for it.
+  const noticeSaved = useUi((s) => s.prefs.preReleaseNoticeDismissed);
+  const [noticeClosed, setNoticeClosed] = useState(false);
+  const notice = !noticeSaved && !noticeClosed;
   const lock = useLockStatus();
   const sync = useSyncStatus();
   const wallets = useWallets();
@@ -172,6 +181,11 @@ function Shell() {
     savedLinks.trigger();
   };
 
+  const masternodesItem = useMasternodesItem(wallet?.walletId ?? null);
+  useEffect(() => {
+    if (route === "masternodes" && !masternodesItem.shown) navigate("home");
+  }, [route, masternodesItem.shown]);
+
   let content;
   if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts" || route === "notifications" || route === "joinDashPay" || route === "profile" || route === "coinJoin" || route === "masternodes") {
     if (wallets.isPending) content = <LoadingState testId="wallets-loading" text="Loading wallet…" />;
@@ -197,11 +211,14 @@ function Shell() {
     else if (route === "pay") content = <PayPage walletId={wallet.walletId} network={network} />;
     else if (route === "receive") content = <ReceivePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "contacts") content = <ContactsPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
-    else if (route === "notifications") content = <NotificationsPage key={wallet.walletId} walletId={wallet.walletId} />;
+    else if (route === "notifications") content = <NotificationsPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "joinDashPay") content = <JoinDashPayPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "profile") content = <MyProfilePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "coinJoin") content = <CoinJoinPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
-    else if (route === "masternodes") content = <MasternodesPage key={wallet.walletId} wallet={wallet} network={network} />;
+    // Hidden until Show Masternodes is on (the 0.1 release plan): the effect below sends a link
+    // or a menu that opened it home; Home shows meanwhile.
+    else if (route === "masternodes" && masternodesItem.shown) content = <MasternodesPage key={wallet.walletId} wallet={wallet} network={network} />;
+    else if (route === "masternodes") content = <Overview key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
   } else if (route === "tools") content = <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} />;
   else if (route === "settings") content = <SettingsPage network={network} />;
@@ -209,14 +226,16 @@ function Shell() {
 
   // The bell's popover once the main identity is known; before that the bell opens its page.
   const main = dashpay.main?.identity;
+  // The bell's badge: DashPay events not seen, and payments that arrived and were not.
+  const receivedUnread = unreadReceived(useReceived(wallet?.walletId));
+  const unread = receivedUnread > 0 ? (dashpay.unread ?? 0) + receivedUnread : dashpay.unread;
   const bellOwner = wallet && main ? `${wallet.walletId}:${main}` : undefined;
   const bellPanel =
     wallet && main
-      ? (id: string, close: () => void) => <NotificationsPopover key={bellOwner} walletId={wallet.walletId} identity={main} id={id} close={close} />
+      ? (id: string, close: () => void) => <NotificationsPopover key={bellOwner} walletId={wallet.walletId} identity={main} network={network} id={id} close={close} />
       : undefined;
   // A contested username still has its identity: Contacts, not Join DashPay (D11).
   const joined = !(dashpay.status?.kind === "noIdentity" || dashpay.status?.kind === "registering");
-  const masternodesItem = useMasternodesItem(wallet?.walletId ?? null);
   const sheet = !!(detail && wallet && !locked);
   const layered = useLayeredSheet();
   const savedLinks = useSavedLinksOffer(backend, {
@@ -227,7 +246,7 @@ function Shell() {
   const [layer, setLayer] = useState<HTMLDivElement | null>(null);
   const pictures = usePictureScopeValue(wallet?.walletId);
   // A dialog asked for while locked, onboarding, or behind a sheet is dropped, not kept for later.
-  const shown = locked || onboarding || sheet || layered ? null : dialog;
+  const shown = notice || locked || onboarding || sheet || layered ? null : dialog;
   useEffect(() => {
     if (dialog !== shown) closeDialog();
   }, [dialog, shown]);
@@ -235,14 +254,15 @@ function Shell() {
     // Whose avatars every list may show (DP4-03 D12): the window's wallet, others' only with
     // "Load contact pictures" on.
     <PictureScope.Provider value={pictures}>
+      <ReceivedToaster network={network} />
       {/* Behind a sheet or the lock screen the shell takes no focus and is hidden from assistive tech. */}
-      <div className="app-chrome" inert={locked || onboarding || forgot || sheet || layered || shown !== null}>
+      <div className="app-chrome" inert={notice || locked || onboarding || forgot || sheet || layered || shown !== null}>
         <SheetLayer.Provider value={layer}>
         <Toolbar
           wallets={wallets.data ?? []}
           wallet={wallet}
           chip={chipState(dashpay.status, dashpay.main, registration)}
-          unread={dashpay.unread}
+          unread={unread}
           canLock={canLock}
           onLock={lockNow}
           bellPanel={bellPanel}
@@ -264,17 +284,26 @@ function Shell() {
       </div>
       {/* Sheets opened inside the shell (Pay, Receive): above it, below onboarding and the lock
           screen, which cover it (U-02 D31). */}
-      <div className="sheet-layer" ref={setLayer} inert={locked || onboarding} />
+      <div className="sheet-layer" ref={setLayer} inert={notice || locked || onboarding} />
       {sheet && <TxDetailSheet key={`${wallet!.walletId}:${detail}`} walletId={wallet!.walletId} txid={detail!} network={network} />}
       {shown === "openUri" && <OpenUriSheet network={network.dirName} />}
       {shown === "about" && <AboutSheet launch={launch} />}
       {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={recoveryWallet ?? wallet?.walletId ?? null} onClose={closeDialog} />}
       {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
       {shown === "savedLinks" && <SavedLinksSheet onClose={closeDialog} />}
-      {onboarding && <Onboarding network={network} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
-      {locked && <LockScreen network={network} covered={forgot} onForgot={() => ui.set({ forgotPassphrase: true })} />}
+      {onboarding && <Onboarding network={network} inert={notice} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
+      {locked && <LockScreen network={network} covered={forgot || notice} onForgot={() => ui.set({ forgotPassphrase: true })} />}
       {/* Over the lock screen, and still open once the recovery unlocked the vault (U-02 D11). */}
-      {forgot && !onboarding && <ForgotPassphraseSheet onClose={closeForgot} />}
+      {forgot && !onboarding && !notice && <ForgotPassphraseSheet onClose={closeForgot} />}
+      {/* Over everything, the lock screen too: the first thing a new install shows. */}
+      {notice && (
+        <PreReleaseNotice
+          onDismiss={() => {
+            setNoticeClosed(true);
+            void savePrefs(backend, launch, { preReleaseNoticeDismissed: true }).catch(() => undefined);
+          }}
+        />
+      )}
     </PictureScope.Provider>
   );
 }

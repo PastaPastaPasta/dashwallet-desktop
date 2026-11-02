@@ -119,7 +119,7 @@ function FormStep({ flow, walletId, identity, costs, network }: { flow: Withdraw
         <DashButton variant="tintedGray" size="large" type="button" data-testid="withdraw-cancel" onClick={() => flow.close()}>
           {C.form.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" type="submit" data-testid="withdraw-next" disabled={!ready}>
+        <DashButton variant="filledBlue" size="large" type="submit" data-testid="withdraw-next" disabled={!ready} why="Enter an amount first.">
           {C.form.next}
         </DashButton>
       </div>

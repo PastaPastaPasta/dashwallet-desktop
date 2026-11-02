@@ -16,7 +16,7 @@ const SETTINGS_TABS: Tab<SettingsTab>[] = [
   { id: "general", title: "General" },
   { id: "security", title: "Security" },
   { id: "wallets", title: "Wallets" },
-  { id: "coinjoin", title: "CoinJoin" },
+  { id: "coinjoin", title: "CoinJoin (experimental)" },
   { id: "backups", title: "Backups" },
   { id: "advanced", title: "Advanced" },
   { id: "about", title: "About" },

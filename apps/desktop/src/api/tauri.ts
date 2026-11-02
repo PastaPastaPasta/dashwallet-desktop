@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
+import { orAbsent, orUnavailable } from "./pending";
 import * as cmd from "./generated/commands";
 import type { AppEvent, ShellEvent } from "./generated/commands";
 import type { AddressPurposeName } from "./generated/AddressPurposeName";
@@ -50,6 +51,26 @@ export class IpcBackend implements Backend {
   balance = (walletId: string) => cmd.balance(walletId);
   syncStatus = () => cmd.syncStatus();
   historyPage = cmd.historyPage;
+  exportHistoryCsv = cmd.exportHistoryCsv;
+  txNotices = cmd.txNotices;
+  // Against a dw-app without the command (api/pending.ts): the optional reads answer `null` (orAbsent),
+  // the calls that mean nothing without it fail with a message the screen shows (orUnavailable).
+  networkChoice = () => orAbsent(cmd.getNetworkChoice());
+  setNetworkChoice = (...a: Parameters<typeof cmd.setNetworkChoice>) => orUnavailable(cmd.setNetworkChoice(...a));
+  shieldedStatus = (walletId: string) => orAbsent(cmd.shieldedStatus(walletId));
+  shieldedReceiveAddress = (...a: Parameters<typeof cmd.shieldedReceiveAddress>) => orUnavailable(cmd.shieldedReceiveAddress(...a));
+  shieldQuote = (...a: Parameters<typeof cmd.shieldQuote>) => orUnavailable(cmd.shieldQuote(...a));
+  shieldFromCore = (...a: Parameters<typeof cmd.shieldFromCore>) => orUnavailable(cmd.shieldFromCore(...a));
+  resumeShield = (...a: Parameters<typeof cmd.resumeShield>) => orUnavailable(cmd.resumeShield(...a));
+  shieldedSendQuote = (...a: Parameters<typeof cmd.shieldedSendQuote>) => orUnavailable(cmd.shieldedSendQuote(...a));
+  shieldedSend = (...a: Parameters<typeof cmd.shieldedSend>) => orUnavailable(cmd.shieldedSend(...a));
+  unshieldQuote = (...a: Parameters<typeof cmd.unshieldQuote>) => orUnavailable(cmd.unshieldQuote(...a));
+  unshieldToCore = (...a: Parameters<typeof cmd.unshieldToCore>) => orUnavailable(cmd.unshieldToCore(...a));
+  shieldedHistory = (walletId: string, offset: number, limit: number) => orAbsent(cmd.shieldedHistory(walletId, offset, limit));
+  platformAddresses = (walletId: string) => orAbsent(cmd.platformAddresses(walletId));
+  platformActivity = (walletId: string) => orAbsent(cmd.platformActivity(walletId));
+  platformMoveToCoreQuote = (...a: Parameters<typeof cmd.platformMoveToCoreQuote>) => orUnavailable(cmd.platformMoveToCoreQuote(...a));
+  platformMoveToCore = (...a: Parameters<typeof cmd.platformMoveToCore>) => orUnavailable(cmd.platformMoveToCore(...a));
   txDetail = cmd.txDetail;
   txDetailExtras = cmd.txDetailExtras;
   setTxLabel = cmd.setTxLabel;

@@ -9,7 +9,7 @@ import { openFile } from "../../app/files";
 import { ui } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { LoadingState } from "../../components/history";
-import { showToast } from "../../components/toast";
+import { CopiedLabel, useCopy } from "../../components/copy";
 import { useModel } from "../../onboarding/model";
 import type { GrantModel } from "../../tools/grant";
 import { PsbtModel, SESSION_BROADCASTS } from "../../tools/psbt";
@@ -26,6 +26,7 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
   useModel(model.broadcasts);
   const [pasted, setPasted] = useState("");
   const id = useId();
+  const { copied, copy } = useCopy();
   // Pay's Create Unsigned leaves its PSBT here once (D18).
   useEffect(() => {
     const prefill = ui.get().psbtPrefill;
@@ -120,14 +121,10 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
               size="small"
               data-testid="psbt-copy"
               disabled={busy || !model.psbt}
-              onClick={() =>
-                void navigator.clipboard.writeText(model.psbt!).then(
-                  () => model.copied(),
-                  () => showToast("Could not copy"),
-                )
-              }
+              data-copied={copied || undefined}
+              onClick={() => void copy(model.psbt!).then((ok) => ok && model.copied())}
             >
-              Copy to Clipboard
+              {copied ? <CopiedLabel /> : "Copy to Clipboard"}
             </DashButton>
             <DashButton variant="tintedGray" size="small" data-testid="psbt-save" disabled={busy || !model.psbt} onClick={() => void model.save()}>
               Save…

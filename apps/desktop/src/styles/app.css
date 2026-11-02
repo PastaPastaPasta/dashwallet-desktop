@@ -229,6 +229,8 @@ button {
   border-right: 1px solid var(--dw-role-separator);
   background: var(--dw-role-canvas);
   overflow: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .sidebar-list {
@@ -238,6 +240,12 @@ button {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* Settings sits at the foot, whatever the height. */
+.sidebar-list.sidebar-foot {
+  margin-top: auto;
+  padding-top: var(--dw-space-sm);
 }
 
 .sidebar-item {
@@ -785,6 +793,20 @@ button {
   letter-spacing: 1.2px; /* UX-SPEC §2.2: tracking 1.2 */
 }
 
+.experimental-badge {
+  display: inline-block;
+  margin-inline-start: var(--dw-space-xs);
+  padding: 0 var(--dw-space-xs);
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-warning-tint);
+  color: var(--dw-role-warning);
+  font-size: var(--dw-type-caption2-size);
+  font-weight: 700;
+  line-height: var(--dw-type-caption2-line);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
 .network-capsule-slot {
   display: block;
   height: 19px; /* capsule height, so the hero never jumps on mainnet */
@@ -798,6 +820,15 @@ button {
   font-family: inherit;
   cursor: default;
   transition: filter var(--dw-motion-hover);
+}
+
+/* The reason a disabled button waits (DEC-1058): a line beside it, wrapping under it in a button row. */
+.dash-button-why {
+  flex: 1 0 100%;
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+  color: var(--dw-role-text-secondary);
 }
 
 .dash-button:hover:not(:disabled):not([aria-disabled="true"]) {
@@ -892,6 +923,23 @@ button {
   color: var(--dw-c-button-filled-white-content-disabled);
 }
 
+/* A disabled button stays readable in both themes (DEC-1058): the generated disabled tokens are
+ * 40 % ink, and in the dark theme dark ink on a dark card. Text takes the tertiary role colour
+ * (AA on both surfaces) on a neutral tint, whatever the style, and the cursor says "not here". */
+.dash-button:disabled:not(.dash-button-plainBlue):not(.dash-button-plainRed):not(.dash-button-plainWhite) {
+  background: var(--dw-c-button-tinted-gray-background);
+  color: var(--dw-role-text-tertiary);
+}
+
+.dash-button-plainBlue:disabled,
+.dash-button-plainRed:disabled {
+  color: var(--dw-role-text-tertiary);
+}
+
+.dash-button:disabled {
+  cursor: not-allowed;
+}
+
 .dash-button-plainWhite {
   background: transparent;
   color: var(--dw-c-button-plain-white-content);
@@ -971,6 +1019,10 @@ button {
   grid-template-columns: 1fr auto 1fr auto 1fr;
 }
 
+.hero-breakdown:has(> :nth-child(7)) {
+  grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+}
+
 .breakdown-cell {
   display: flex;
   align-items: center;
@@ -1012,7 +1064,8 @@ button {
 /* Narrow windows stack the strip's cells (UX-SPEC §4.5; the sidebar takes 220 of the 980). */
 @media (max-width: 979px) {
   .hero-breakdown,
-  .hero-breakdown:has(> :nth-child(5)) {
+  .hero-breakdown:has(> :nth-child(5)),
+  .hero-breakdown:has(> :nth-child(7)) {
     grid-template-columns: 1fr;
   }
   .breakdown-divider {
@@ -1171,6 +1224,10 @@ button {
 
 .tx-row:hover {
   background: var(--dw-role-accent-tint);
+}
+
+.tx-row.is-readonly:hover {
+  background: transparent;
 }
 
 .tx-row-icon {
@@ -2043,6 +2100,12 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: var(--dw-space-m);
+}
+
+.tx-intro-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
 }
 
 .segmented {
@@ -3851,6 +3914,57 @@ button.bell-row-open:focus-visible {
   margin-top: var(--dw-space-xs);
 }
 
+/* ------------------------------------------------------------------ Platform addresses */
+
+.platform-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.shielded-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.shielded-card-body,
+.platform-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+}
+
+.shielded-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--dw-space-xs);
+}
+
+.platform-card-title {
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.platform-card-text {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
 /* ------------------------------------------------------------------ CoinJoin (U-06) */
 
 .coinjoin-card,
@@ -5257,4 +5371,56 @@ button.bell-row-open:focus-visible {
 
 .mg-create-credential {
   max-width: 320px;
+}
+
+/* "Copied" on the copy button itself (DEC-1058 #3). */
+.copied-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  white-space: nowrap;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  color: var(--dw-role-text-link);
+}
+
+/* A payment arrived at the address on Receive (DEC-1058 #6). */
+.receive-received {
+  margin: 0;
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border-radius: var(--dw-radius-small);
+  background: var(--dw-role-success-tint);
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  text-align: center;
+}
+
+.receive-received span {
+  color: var(--dw-role-success);
+}
+
+.receive-qr {
+  display: flex;
+  justify-content: center;
+}
+
+.receive-qr.is-used {
+  opacity: 0.35;
+}
+
+/* "Most of this goes to fees" on a confirm sheet (DEC-1058 #8). */
+.fee-warning {
+  margin: 0;
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border-radius: var(--dw-radius-small);
+  background: var(--dw-role-warning-tint);
+  color: var(--dw-role-text-primary);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+/* "✓ Copied" in an icon copy button is a label, not a circle. */
+.copy-button[data-copied] {
+  padding: 0 var(--dw-space-xs);
+  border-radius: var(--dw-radius-small);
 }

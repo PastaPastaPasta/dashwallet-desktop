@@ -51,7 +51,7 @@ import { identitiesHandlers } from "./identities";
 import { isClosed, settingsHandlers } from "./settings";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
-import { BASE58, FIXTURE_NOW, historyPage, secs, txDetails } from "./wallet";
+import { BASE58, FIXTURE_NOW, historyCsv, historyPage, secs, txDetails } from "./wallet";
 
 export interface Ctx {
   world: World;
@@ -71,7 +71,7 @@ function stashIndex(w: World, linkId: string): number {
   return w.stash.findIndex((s) => s.info.id === linkId);
 }
 
-function wallet(w: World, walletId: string) {
+export function wallet(w: World, walletId: string) {
   const found = w.wallets.find((x) => x.summary.walletId === walletId);
   if (!found || isClosed(w, walletId)) throw fail("wallet_not_found", `wallet not found: ${walletId}`);
   return found;
@@ -253,12 +253,12 @@ function revokeGrants(w: World) {
 
 /** `Vault::check_grant`: the unused grant `id` of `walletId` and of one of `kinds`, if a key
  * can use it: its own, or the vault's. */
-function checkGrant(w: World, id: string, walletId: string, kinds: GrantPurposeSpec["kind"][]): FixtureGrant | null {
+export function checkGrant(w: World, id: string, walletId: string, kinds: GrantPurposeSpec["kind"][]): FixtureGrant | null {
   const g = w.grants.find((x) => x.grant.id === id && !x.used);
   return g && g.grant.walletId === walletId && kinds.includes(g.grant.purpose.kind) && (g.ownKey || !keyless(w)) ? g : null;
 }
 
-function useGrant(w: World, id: string) {
+export function useGrant(w: World, id: string) {
   for (const g of w.grants) if (g.grant.id === id) g.used = true;
 }
 
@@ -872,6 +872,21 @@ export const HANDLERS: Handlers = {
   import_wallet: ({ mnemonic, options }, ctx) => importWallet(ctx, mnemonic, options.name),
   sync_status: (_, { world }) => world.sync,
   history_page: ({ walletId, request }, { world }) => historyPage(wallet(world, walletId).rows, request),
+  export_history_csv: ({ walletId, filter, sort, unit, utcOffsetSecs }, { world }) => historyCsv(wallet(world, walletId).rows, filter, sort, unit, utcOffsetSecs),
+  // The rows a `newTransactions` event names, in dash-qt's popup shape.
+  tx_notices: ({ walletId, txids }, { world }) =>
+    wallet(world, walletId)
+      .rows.filter((r) => txids.includes(r.txid))
+      .map((r) => ({
+        txid: r.txid,
+        recordIndex: r.recordIndex,
+        amount: r.amount,
+        timestamp: r.timestamp,
+        txType: r.txType,
+        address: r.address,
+        label: r.label,
+        coinjoinInternal: r.txType === "coinJoinMixing" || r.txType === "coinJoinCollateralPayment" || r.txType === "coinJoinMakeCollaterals" || r.txType === "coinJoinCreateDenominations",
+      })),
   tx_detail: ({ walletId, txid }, { world }) => {
     const row = wallet(world, walletId).rows.find((r) => r.txid === txid);
     if (!row) throw fail("tx_not_found", `transaction not found: ${txid}`);

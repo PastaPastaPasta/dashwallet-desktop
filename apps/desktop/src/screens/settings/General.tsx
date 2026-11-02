@@ -11,10 +11,11 @@ import { useLaunch } from "../../app/App";
 import { DEFAULT_PREFS, useUi } from "../../app/ui";
 import { useTurnOnGovernance } from "../../governance/queries";
 import { DashButton } from "../../components/basics";
+import { NetworkPicker, useNetworkPicker } from "../../components/networkPicker";
 import { CopyValue, DetailRow } from "../../components/detail";
 import { QuestionSheet, Sheet } from "../../components/sheet";
 import { failureText } from "../../onboarding/model";
-import { DEFAULT_DUST, DIGIT_CHOICES, dustThreshold, OptionsText, UNIT_CHOICES } from "../../settings/options";
+import { DEFAULT_DUST, dustThreshold, OptionsText, UNIT_CHOICES } from "../../settings/options";
 import { savePrefs, settledPending } from "../../settings/prefs";
 import { SettingsDashPayCard } from "../dashpay/MyProfile";
 import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./parts";
@@ -102,24 +103,6 @@ export function GeneralTab() {
               </button>
             ))}
           </div>
-        </div>
-        <div className="settings-row">
-          <label className="settings-row-title" htmlFor={`${id}-digits`}>
-            Decimal digits on Home
-          </label>
-          <select
-            id={`${id}-digits`}
-            className="settings-select"
-            data-testid="settings-digits"
-            value={prefs.decimalDigits}
-            onChange={(e) => void save({ decimalDigits: Number(e.target.value) })}
-          >
-            {DIGIT_CHOICES.map((d) => (
-              <option key={d} value={d}>
-                {d}
-              </option>
-            ))}
-          </select>
         </div>
         <label className="checkbox-row">
           <input
@@ -264,10 +247,12 @@ function DustCard() {
   );
 }
 
-/** The window's network and data directory; switching is U-04b (D6). */
+/** The window's network and data directory, and the network the next start opens (the 0.1
+ * release plan; D6's switch without a restart is U-04b). */
 function NetworkCard() {
   const { network } = useLaunch();
   const node = useNodeInfo();
+  const picker = useNetworkPicker();
   return (
     <SettingsCard title="Network" testId="settings-network">
       <dl className="detail-list settings-details">
@@ -278,11 +263,7 @@ function NetworkCard() {
           {node.data ? <CopyValue value={node.data.dataDir} label="data directory" mono /> : pendingText(node)}
         </DetailRow>
       </dl>
-      <NotYetRow
-        testId="settings-switch-network"
-        title="Switch network"
-        why="it comes with U-04b. To open another network, start Dash Wallet with --network testnet, devnet-<name> or regtest."
-      />
+      <NetworkPicker state={picker} testId="settings-network-choice" />
     </SettingsCard>
   );
 }
@@ -303,7 +284,7 @@ function ShowMasternodesRow({ checked, save }: { checked: boolean; save: (patch:
         <input type="checkbox" data-testid="settings-show-masternodes" checked={checked} onChange={(e) => void change(e.target.checked)} />
         Show Masternodes
       </label>
-      <Hint>Shows Masternodes in the sidebar even without a masternode, a collateral or a proposal: to read and vote on proposals.</Hint>
+      <Hint>Shows Masternodes in the sidebar: to read and vote on proposals and to vote on usernames. It is off until you turn it on.</Hint>
       {ask && (
         <QuestionSheet
           title="Load governance data?"

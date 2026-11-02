@@ -656,17 +656,8 @@ export function badgeCount(mine: MyProposal[] | undefined, locale?: string): num
   return (mine ?? []).filter((p) => mineRow(p, locale).attention).length;
 }
 
-/** "A proposal in progress" for the sidebar (MG-00 D1, D3). */
+/** "A proposal in progress": a proposal that has not ended or failed. */
 export const inProgress = (p: MyProposal) => p.state.kind !== "expired" && p.state.kind !== "feeFailed";
-
-/** A masternode or evonode collateral's amount, in duffs (MG-00 D1 (2), D3). */
-const COLLATERALS = [1_000 * 100_000_000, 4_000 * 100_000_000];
-
-/** The sidebar item's visibility (D3): the setting, a proposal in progress, or a coin shaped
- * like a collateral. */
-export function masternodesShown(setting: boolean, mine: MyProposal[] | undefined, coinAmounts: number[] | undefined): boolean {
-  return setting || (mine ?? []).some(inProgress) || (coinAmounts ?? []).some((a) => COLLATERALS.includes(a));
-}
 
 // ---------------------------------------------------------------- list filters
 

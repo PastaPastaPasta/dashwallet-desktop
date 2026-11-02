@@ -34,6 +34,7 @@ import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
+import { newPendingWorld, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
@@ -112,6 +113,8 @@ export interface World {
   coinjoin: CoinJoinWorld;
   /** Governance: sync, proposals, voting masternodes and own proposals (governance.ts, MG-09). */
   governance: GovernanceWorld;
+  /** The commands dw-app does not have yet: network choice, shielded and Platform balances (pending.ts). */
+  pending: PendingWorld;
 }
 
 /** A vault grant: single use (`used` once redeemed or revoked); `ownKey` when it was issued
@@ -207,6 +210,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     scan: scanWorld(),
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
+    pending: newPendingWorld(),
   };
 }
 
@@ -547,6 +551,119 @@ function withInvitation(w: World, status?: InvitationStatus): World {
 const SCENARIOS = {
   /** The reference wallet: balance, a month of history, caught up, unlocked. */
   funded: (t) => base(t),
+  /** The first run: the pre-release notice is up (the other scenarios start past it). */
+  "pre-release-notice": (t) => {
+    const w = base(t);
+    w.settings.ui = { ...w.settings.ui, preReleaseNoticeDismissed: false };
+    return w;
+  },
+  /** The first run on a new install: no wallet, and the notice is up. */
+  "no-wallet-first-run": (t) => {
+    const w = base(t);
+    w.wallets = [];
+    w.phrases = {};
+    w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+    w.settings.ui = { ...w.settings.ui, preReleaseNoticeDismissed: false };
+    return w;
+  },
+  /** The first run after the vault exists but settings.json does not: locked, the notice is up. */
+  "locked-first-run": (t) => {
+    const w = buildWorld("locked", t);
+    w.settings.ui = { ...w.settings.ui, preReleaseNoticeDismissed: false };
+    return w;
+  },
+  /** No wallet yet, and Mainnet chosen while this window is on testnet: Welcome asks for a restart. */
+  "no-wallet-network-restart": (t) => {
+    const w = base(t);
+    w.wallets = [];
+    w.phrases = {};
+    w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+    w.pending.networkChoice = { chosen: "mainnet", saved: true };
+    return w;
+  },
+  /** The funded wallet when dw-app has no shielded or Platform command: Home shows "—" for both. */
+  "pools-absent": (t) => {
+    const w = base(t);
+    w.pending.shielded = null;
+    w.pending.platform = null;
+    return w;
+  },
+  /** The network does not take shielded transitions yet: Home says so, and the actions are gone. */
+  "shielded-inactive": (t) => {
+    const w = base(t);
+    w.pending.shielded!.active = false;
+    return w;
+  },
+  /** Platform addresses holding only what is too small to move: Home counts none of it. */
+  "platform-dust": (t) => {
+    const w = base(t);
+    w.pending.platform!.addresses = [{ address: w.pending.platform!.addresses[0].address, credits: "1500000" }];
+    return w;
+  },
+  /** Movable Platform credits and a remainder on another address too small to move. */
+  "platform-partly-dust": (t) => {
+    const w = base(t);
+    w.pending.platform!.dust = "1500000";
+    return w;
+  },
+  /** A move the engine replaced with a retry (done), among the Platform activity. */
+  "platform-replaced": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [
+      { id: "pm-retry", kind: "moveToCore", state: "done", credits: "30000000000", address: null, to: p.activity[0].address, expectedDuffs: 29_998_000, feeCredits: "2000000", at: at - 3600 },
+      { id: "pm-old", kind: "moveToCore", state: "replaced", credits: "30000000000", address: null, to: null, expectedDuffs: null, feeCredits: null, at: at - 7200 },
+      ...p.activity,
+    ];
+    return w;
+  },
+  /** A wallet that starts one block short of the tip and has never been caught up. */
+  "sync-one-behind": (t) => {
+    const w = base(t);
+    const s = w.sync;
+    w.sync = { ...s, caughtUp: false, activePhase: "filters", phases: s.phases.map((p) => ({ ...p, currentHeight: p.targetHeight! - 1, done: false })) };
+    return w;
+  },
+  /** Shielded is on and its account is not established yet: its actions wait and say why. */
+  "shielded-syncing": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    return w;
+  },
+  /** Shielded is not ready and an earlier shield is waiting to be finished. */
+  "shielded-syncing-pending": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.pendingShields = [{ txid: "c0ffee00".repeat(8), duffs: 50_000_000, proved: false, consumptionUnknown: false }];
+    return w;
+  },
+  /** A shield lock that may already be applied (`consumption_unknown`): "Checking", and Check again. */
+  "shielded-checking": (t) => {
+    const w = base(t);
+    w.pending.shielded!.pendingShields = [{ txid: "c0ffee01".repeat(8), duffs: 50_000_000, proved: true, consumptionUnknown: true }];
+    return w;
+  },
+  /** A spend of unknown result whose record was lost (DEC-1057): sends and moves need a confirmation. */
+  "shielded-unrecorded": (t) => {
+    const w = base(t);
+    w.pending.shielded!.unrecorded = [{ activityId: "sh-9", since: Math.floor(FIXTURE_NOW.getTime() / 1000) - 3600 }];
+    return w;
+  },
+  /** Shielded is ready and holds nothing: Send and Move wait for a balance. */
+  "shielded-empty": (t) => {
+    const w = base(t);
+    w.pending.shielded!.balance = "0";
+    return w;
+  },
+  /** Shielded has too few notes to withdraw from. */
+  "shielded-pool-small": (t) => {
+    const w = base(t);
+    w.pending.shielded!.poolTooSmall = true;
+    return w;
+  },
   /** A new wallet: no history, zero balance. */
   empty: (t) => base(t, "empty"),
   /** No wallet on the network yet, and no vault. */

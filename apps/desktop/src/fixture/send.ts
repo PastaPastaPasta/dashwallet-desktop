@@ -403,6 +403,43 @@ export interface SendDeps {
 const unknownHandle = (h: number) => fail("app.unknown_handle", `unknown handle: ${h}`);
 
 /** An address of the wallet's receiving chain: the same one for an index every run. */
+/** A payment of `duffs` to the wallet's current receiving address (or to `to`), as the engine reports one: the row,
+ * the address used (the next one is current from now on), `historyChanged` and `newTransactions`.
+ * Returns the paid address. */
+export function receivePayment(ctx: Ctx, walletId: string, duffs: number, to?: string): string {
+  const w = ctx.world.wallets.find((x) => x.summary.walletId === walletId)!;
+  const current = receiveAddress(w, w.receive.firstUnused, null).address;
+  const address = to ?? current;
+  const txid = (0xfeed0000 + w.rows.length).toString(16).padStart(64, "0");
+  w.rows = [
+    {
+      txid,
+      recordIndex: 0,
+      txType: "recvWithAddress",
+      category: "received",
+      status: { kind: "confirming", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null },
+      timestamp: secs(FIXTURE_NOW),
+      blockHeight: null,
+      amount: duffs,
+      fee: null,
+      address,
+      label: null,
+      countsTowardBalance: true,
+      involvesWatchOnly: false,
+    },
+    ...w.rows,
+  ];
+  // Only the engine's current address moves it on; an address issued by "New address" does not.
+  if (address === current) {
+    w.receive.firstUnused += 1;
+    w.receive.issued = Math.max(w.receive.issued, w.receive.firstUnused);
+  }
+  const network = ctx.world.launch.network.dirName;
+  ctx.emit({ kind: "historyChanged", network, walletId, txids: [txid] });
+  ctx.emit({ kind: "newTransactions", network, walletId, txids: [txid], count: 1, catchUp: false });
+  return address;
+}
+
 function receiveAddress(wallet: FixtureWallet, index: number, label: string | null): AddressInfo {
   const seed = parseInt(wallet.summary.walletId.slice(0, 6), 16) + index * 7919;
   return {

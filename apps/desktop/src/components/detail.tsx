@@ -1,8 +1,7 @@
 // Detail lists (UX-SPEC C11 DetailList): a label and its value, and a value with a copy button.
 
 import type { ReactNode } from "react";
-import { copyWithToast } from "./toast";
-import { Icon } from "./basics";
+import { CopyIconButton } from "./copy";
 
 export function DetailRow({ label, children, testId }: { label: string; children: ReactNode; testId?: string }) {
   return (
@@ -18,9 +17,7 @@ export function CopyValue({ value, label, mono = false, display }: { value: stri
   return (
     <span className="copy-value">
       <span className={mono ? "mono" : undefined}>{display ?? value}</span>
-      <button type="button" className="copy-button" aria-label={`Copy ${label}`} title={`Copy ${label}`} onClick={() => void copyWithToast(value)}>
-        <Icon id="copy" size={20} />
-      </button>
+      <CopyIconButton text={value} label={`Copy ${label}`} />
     </span>
   );
 }

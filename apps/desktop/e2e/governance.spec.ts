@@ -202,7 +202,7 @@ test("Mine: a slow Submit says Sending… and keeps the row (D17)", async ({ pag
   await expect(page.getByTestId("mine-chip-desktop-wallet-i18n")).toHaveText("Fee paid");
 });
 
-test("the sidebar shows Masternodes only with the setting or a proposal in progress", async ({ page }) => {
+test("the sidebar shows Masternodes only with the setting", async ({ page }) => {
   await page.goto(fixtureUrl("funded", "light"));
   await page.getByTestId("toolbar").waitFor();
   await expect(page.getByTestId("sidebar-masternodes")).toHaveCount(0);

@@ -13,7 +13,11 @@ import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
 import { onTopUpSettled } from "../dashpay/topup";
 import { onWithdrawSettled } from "../dashpay/withdraw";
+import { announceReceived } from "../payments/received";
+import { onMoveSettled } from "../platform/move";
+import { onShieldedSettled } from "../shielded/flow";
 import { keys } from "./queries";
+import { announceable, feedSync } from "./syncDisplay";
 
 /** DP1-09 D28: a status read while a sync pass held the wallet's state is `startupIncomplete` (the
  * engine's identity read was not live, so it proves nothing), and no Platform signal follows when
@@ -96,6 +100,7 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       return [keys.governanceAll];
     // No screen reads these yet (the notice and masternode views come with their tasks).
     // `masternodes` also follows a shared-masternode session change (mn-engine §6, MG-04b).
+    // `newTransactions` is announced above (payments/received.ts), not read as a query.
     case "newTransactions":
     case "notice":
     case "masternodes":
@@ -128,6 +133,18 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
   };
   const unsubscribe = await backend.onEvent((event) => {
     if (event.kind === "notice") console.warn("engine notice", event.code, event.detail);
+    // The engine's own reading, as it arrives: the display's (api/syncDisplay.ts) and what decides
+    // below. Not the query's, which only follows once its refetch is back.
+    if (event.kind === "sync") feedSync(backend, event.status);
+    // A payment that arrives while the app is open is announced (toast, bell, Receive); a batch the
+    // sync found on catching up is not news. The engine's `catchUp` is "SPV is not idle" at that
+    // moment, which a payment found in a new block can be too: so it is news when the engine's own
+    // latest reading says caught up, or a caught-up wallet is a few blocks short of it for a minute
+    // at most (`announceable`). A wallet that has not been caught up yet is catching up. The smoothed
+    // display never decides this.
+    if (event.kind === "newTransactions" && (!event.catchUp || announceable(backend))) {
+      void announceReceived(backend, event.walletId, event.txids);
+    }
     if (event.kind === "historyChanged" || (event.kind === "platform" && rereadsHistory(event.change.domain))) {
       // Refetch only the first page of each list: every history_page call re-reads the whole
       // history in the engine, and during sync events arrive up to 4 times a second (contacts
@@ -179,10 +196,15 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
   const stopTopUps = onTopUpSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
   // DP6-02: a withdrawal that ended moved the balance and the recent withdrawals.
   const stopWithdrawals = onWithdrawSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
+  // 0.1: a Platform-address move or a shielded call that ended moved the pools and Activity's rows.
+  const stopMoves = onMoveSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
+  const stopShielded = onShieldedSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
   return () => {
     stopReconcile();
     stopTopUps();
     stopWithdrawals();
+    stopMoves();
+    stopShielded();
     unsubscribe();
   };
 }

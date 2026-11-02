@@ -3,7 +3,7 @@
 // files as they are (type stripping); no other dependency.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { closeSync, openSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 export const env = (name: string, fallback?: string): string => {
@@ -37,6 +37,17 @@ export const tid = (id: string) => `[data-testid="${id}"]`;
 // The W3C web element identifier.
 const ELEMENT = "element-6066-11e4-a52e-4f735466cecf";
 
+/** The first-run pre-release notice covers the app until it is dismissed, so a run starts past it:
+ * the data root (`--datadir`) gets a settings file that has it dismissed, unless it has one. */
+function startPastNotice(capabilities: unknown) {
+  const args = (capabilities as { alwaysMatch?: { "tauri:options"?: { args?: string[] } } }).alwaysMatch?.["tauri:options"]?.args;
+  const i = args?.indexOf("--datadir") ?? -1;
+  const root = i >= 0 ? args?.[i + 1] : undefined;
+  if (!root || existsSync(join(root, "settings.json"))) return;
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  writeFileSync(join(root, "settings.json"), '{"preReleaseNoticeDismissed":true}\n');
+}
+
 export class WebDriver {
   base: string;
   out: string;
@@ -60,6 +71,7 @@ export class WebDriver {
   }
 
   async start(capabilities: unknown) {
+    startPastNotice(capabilities);
     const v = await this.call<{ sessionId: string }>("POST", "/session", { capabilities });
     this.session = v.sessionId;
   }

@@ -111,8 +111,12 @@ async function main() {
     if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
     step("unlocked the real vault; SPV syncs from the suite's controller node");
 
-    // No setting: Masternodes shows for the 1,000 DASH coin once SPV has seen it (D3).
-    await wd.waitFor(tid("sidebar-masternodes"), "Masternodes in the sidebar (the collateral-sized coin)", LOAD_WAIT_MS);
+    // Masternodes is hidden until Show Masternodes is on, whatever the wallet holds (the 0.1
+    // release plan): save the setting and reload, which reads it again.
+    const prefs = await invoke<Record<string, unknown>>("ui_settings");
+    await invoke("set_ui_settings", { settings: { ...prefs, showMasternodes: true } });
+    await wd.script("location.reload()");
+    await wd.waitFor(tid("sidebar-masternodes"), "Masternodes in the sidebar (Show Masternodes on)", LOAD_WAIT_MS);
     await wd.press(tid("sidebar-masternodes"));
     await wd.waitFor(tid("page-masternodes"), "the Masternodes page");
     // Governance data is off for a new network: Turn on writes MG-02's setting (D6).

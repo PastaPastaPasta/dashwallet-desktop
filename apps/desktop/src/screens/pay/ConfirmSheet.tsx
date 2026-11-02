@@ -20,6 +20,7 @@ import { DetailRow } from "../../components/detail";
 import { LoadingState } from "../../components/history";
 import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
+import { feeWarningText, payFeeWarning } from "../../format/feeWarning";
 import { Avatar } from "../contacts/Avatar";
 import { useActionToast } from "../contacts/afterAction";
 import { AcceptFailed, acceptFailedText, acceptUnderLease, acceptedText, type Payee } from "./contact";
@@ -127,6 +128,8 @@ export function ConfirmSheet({
   const fieldId = useId();
   const unit = shown.name;
   const { recipient, estimate, changeAddress, total } = confirmed;
+  // The fee against what the payee gets (after a subtract-fee share; the change is not in it).
+  const feeWarn = payFeeWarning(estimate.fee, estimate.totalSent);
   const toast = useActionToast(walletId);
 
   // A failed read of the policy counts as "on" (U-03 D3): the prompt waits only while it loads.
@@ -337,6 +340,11 @@ export function ConfirmSheet({
             <AmountText text={shown.full(total)} unitName={unit} glyph={false} />
           </DetailRow>
         </dl>
+        {feeWarn && (
+          <p className="fee-warning" role="alert" data-testid="pay-confirm-fee-warning">
+            {feeWarningText(feeWarn)}
+          </p>
+        )}
         {subtractsFee(recipient) && <p className="placeholder-note">The fee is subtracted from the amount: the payee receives the amount above.</p>}
         {changeAddress !== null && <p className="placeholder-note">The total includes the change: the custom change address may not belong to this wallet.</p>}
         {!policyKnown ? (
@@ -393,7 +401,7 @@ export function ConfirmSheet({
             </DashButton>
           )}
           {watchOnlyKnown === false && (
-            <DashButton key="send" type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || !waitKnown || retryAt !== null}>
+            <DashButton key="send" type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || !waitKnown || retryAt !== null} why={busy ? null : retryAt !== null ? "Wait a moment before trying again." : "Checking the network’s requirements…"}>
               {busy ? "Sending…" : contact?.acceptsToo ? "Accept and pay" : "Send"}
             </DashButton>
           )}

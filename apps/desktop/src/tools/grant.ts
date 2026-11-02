@@ -20,6 +20,10 @@ export function needsPassphrase(purpose: GrantPurposeSpec, lock: LockStatus, pay
   return lock.state !== "unlocked";
 }
 
+/** What the passphrase prompt says for a grant that moves money (a shield, a Shielded or Platform
+ * move, a withdrawal, a top-up): what a user thinks they are doing (DEC-1058 #8). */
+export const PAYMENT_PROMPT = "Enter your passphrase to authorize this payment.";
+
 export interface GrantRequest {
   purpose: GrantPurposeSpec;
   walletId: string | null;
@@ -28,6 +32,8 @@ export interface GrantRequest {
 export class GrantModel extends Model {
   /** The request waiting for the passphrase; `null` while none is. */
   pending: GrantRequest | null = null;
+  /** What the prompt says instead of its purpose's own words. */
+  prompt: string | null = null;
   readonly lock: LockModel;
   #answer: ((grant: AuthGrant | null) => void) | null = null;
   /** Set from the first moment of `obtain` to its end, so two requests never overlap. */

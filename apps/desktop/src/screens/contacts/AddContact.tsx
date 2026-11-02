@@ -10,7 +10,7 @@ import { useDebounced } from "../../app/useDebounced";
 import { Chip, DashButton, Icon } from "../../components/basics";
 import { CopyValue } from "../../components/detail";
 import { QrCode } from "../../components/qr";
-import { copyWithToast } from "../../components/toast";
+import { CopyDashButton } from "../../components/copy";
 import type { ActionOutcome, ContactActions } from "../../contacts/actions";
 import {
   ADD_TABS,
@@ -510,9 +510,9 @@ function MyQrTab({ walletId, identity }: { walletId: string; identity: string })
             {state.link}
           </p>
           <span className="add-contact-actions">
-            <DashButton variant="tintedBlue" size="small" data-testid="add-contact-copy-link" onClick={() => void copyWithToast(state.link)}>
+            <CopyDashButton variant="tintedBlue" size="small" data-testid="add-contact-copy-link" text={state.link}>
               Copy Link
-            </DashButton>
+            </CopyDashButton>
           </span>
         </>
       );

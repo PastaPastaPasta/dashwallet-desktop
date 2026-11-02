@@ -41,12 +41,12 @@ test.describe("General", () => {
     const errors = await settings(page, "general");
     await page.getByTestId("settings-unit-milliDash").click();
     await expect(page.getByTestId("settings-unit-milliDash")).toHaveAttribute("aria-pressed", "true");
-    await page.getByTestId("settings-digits").selectOption("4");
-    expect(await world(page, (w) => w.settings.ui)).toMatchObject({ unit: "milliDash", decimalDigits: 4 });
+    await expect(page.getByTestId("settings-digits")).toHaveCount(0);
+    expect(await world(page, (w) => w.settings.ui)).toMatchObject({ unit: "milliDash" });
     await expect(page.getByTestId("status-bar")).toContainText("mtDASH");
     await page.getByTestId("sidebar-home").click();
-    // Floored to four decimals of mDASH (five decimals): one digit cut, never rounded.
-    await expect(page.getByTestId("hero-amount")).toContainText(/^\d[\d ]*\.\d{4}\s?mtDASH$/);
+    // The exact amount: every decimal of mDASH (five), trailing zeros trimmed to two.
+    await expect(page.getByTestId("hero-amount")).toContainText(/^\d[\d ]*\.\d{2,5}\s?mtDASH$/);
     await page.getByTestId("sidebar-pay").click();
     await page.getByTestId("pay-tabs-address").click();
     await expect(page.getByText("Amount (mtDASH)")).toBeVisible();
@@ -116,7 +116,7 @@ test.describe("General", () => {
 
   test("rows without an engine say who brings them (D6, D7)", async ({ page }) => {
     await settings(page, "general");
-    await expect(page.getByTestId("settings-switch-network")).toContainText("U-04b");
+    await expect(page.getByTestId("settings-network-choice")).toBeVisible();
     await expect(page.getByTestId("settings-currency")).toContainText("MP-01");
     await expect(page.getByTestId("settings-proxy")).toContainText("Not available yet");
     await expect(page.getByTestId("settings-data-dir")).toContainText("/home/user/.local/share/dashwallet");

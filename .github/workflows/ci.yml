@@ -184,7 +184,7 @@ jobs:
   ui-playwright:
     name: UI tests (Playwright, axe)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     # The browsers and their libraries, pinned to @playwright/test in package.json (bump both).
     # No Rust and no engine: the renderer runs on the fixture backend.
     container:

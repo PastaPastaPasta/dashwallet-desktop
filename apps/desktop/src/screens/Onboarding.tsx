@@ -8,6 +8,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { useBackend } from "../api/queries";
 import { useSecretScreen } from "../app/ui";
 import { DashButton, DashLogo, NetworkCapsule } from "../components/basics";
+import { NetworkPicker, useNetworkPicker } from "../components/networkPicker";
 import { NewPassphraseForm, PassphrasePrompt } from "../components/passphrase";
 import { Bip39Field, noCopy, PhraseGrid, PhraseInput, ProtectionPending } from "../components/phrase";
 import { useModel } from "../onboarding/model";
@@ -27,10 +28,13 @@ const BACK_STEPS: ReadonlySet<OnboardingStep> = new Set([
 
 export function Onboarding({
   network,
+  inert = false,
   onCancel,
   onDone,
 }: {
   network: NetworkInfo;
+  /** Another screen (the first-run notice) is over it: no focus, hidden from assistive tech. */
+  inert?: boolean;
   /** Closes Add Wallet; `null` for the first wallet, which cannot be skipped. */
   onCancel: (() => void) | null;
   onDone: (walletId: string | null) => void;
@@ -59,7 +63,7 @@ export function Onboarding({
   }, [step, ready]);
 
   return (
-    <div className="onboarding" data-testid="onboarding">
+    <div className="onboarding" data-testid="onboarding" inert={inert}>
       <div className="onboarding-panel">
         <header className="onboarding-header">
           <span className="onboarding-header-side">
@@ -199,15 +203,22 @@ function Step({
 }
 
 function Welcome({ model, onCancel }: { model: OnboardingModel; onCancel: (() => void) | null }) {
+  // A wallet is made on the network this window runs on: with another one chosen, it waits for
+  // the restart that opens it. While a choice is being saved the view still shows the previous
+  // one, so it waits for the saved view too.
+  const picker = useNetworkPicker();
+  const wait = picker.restart || picker.loading || picker.saving;
   return (
     <>
       <Title>{onCancel ? "Add a wallet" : "Welcome to Dash Wallet"}</Title>
       <p className="onboarding-text">Create a new wallet, or restore one with its recovery phrase.</p>
+      {/* Without the command (a build before it) the first screen shows no picker. */}
+      {(picker.available || picker.loading) && <NetworkPicker state={picker} testId="onboarding-network" />}
       <div className="onboarding-actions">
-        <DashButton variant="filledBlue" size="large" fill disabled={model.busy} data-testid="onboarding-create" onClick={() => void model.startCreate()}>
+        <DashButton variant="filledBlue" size="large" fill disabled={model.busy || wait} data-testid="onboarding-create" onClick={() => void model.startCreate()}>
           Create a new wallet
         </DashButton>
-        <DashButton variant="plainBlue" size="large" fill disabled={model.busy} data-testid="onboarding-restore" onClick={() => void model.startRestore()}>
+        <DashButton variant="plainBlue" size="large" fill disabled={model.busy || wait} data-testid="onboarding-restore" onClick={() => void model.startRestore()}>
           Restore from recovery phrase
         </DashButton>
         {onCancel && (

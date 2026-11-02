@@ -47,7 +47,8 @@ const IDENTITY = "8tvHgfq4BLx3bRBcxSs7ZsjaTnAZDSmLhNpAgXyNomeR";
 for (const theme of THEMES) {
   for (const route of ROUTES) {
     test(`route ${route} ${theme}: renders, 0 serious axe issues`, async ({ page }, info) => {
-      const errors = await open(page, "dashpay-registered", theme);
+      // Masternodes is hidden until Show Masternodes is on: `governance` has it on.
+      const errors = await open(page, route === "masternodes" ? "governance" : "dashpay-registered", theme);
       await command(page, { kind: "navigate", route });
       await expect(page.getByTestId(`page-${route}`)).toBeVisible();
       await fontsReady(page);
@@ -64,10 +65,10 @@ for (const theme of THEMES) {
   }
 }
 
-test("the sidebar opens the DASHPAY sections in order, Explore hidden", async ({ page }) => {
+test("the sidebar opens the DASHPAY sections in order, Explore hidden, Settings last", async ({ page }) => {
   await open(page, "dashpay-registered");
   const ids = await page.getByTestId("sidebar").locator("button").evaluateAll((els) => els.map((e) => e.getAttribute("data-testid")));
-  expect(ids).toEqual(["sidebar-home", "sidebar-pay", "sidebar-receive", "sidebar-contacts", "sidebar-activity", "sidebar-coinJoin"]);
+  expect(ids).toEqual(["sidebar-home", "sidebar-pay", "sidebar-receive", "sidebar-contacts", "sidebar-activity", "sidebar-coinJoin", "sidebar-settings"]);
   for (const id of ids) {
     await page.getByTestId(id!).click();
     await expect(page.getByTestId(id!)).toHaveAttribute("aria-current", "page");

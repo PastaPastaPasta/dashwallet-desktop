@@ -7,6 +7,22 @@
 import type { AppError, AppEvent, ErrorCode } from "./generated/commands";
 import { ERROR_CODES } from "./generated/commands";
 import type { AuthGrant } from "./generated/AuthGrant";
+import type { CsvUnitName } from "./generated/CsvUnitName";
+import type { HistoryFilterRequest } from "./generated/HistoryFilterRequest";
+import type { HistorySortName } from "./generated/HistorySortName";
+import type { MoveToCoreOutcome } from "./generated/MoveToCoreOutcome";
+import type { MoveToCoreQuote } from "./generated/MoveToCoreQuote";
+import type { ChosenNetwork } from "./generated/ChosenNetwork";
+import type { NetworkChoiceView } from "./generated/NetworkChoiceView";
+import type { PlatformActivity } from "./generated/PlatformActivity";
+import type { PlatformAddressBalance } from "./generated/PlatformAddressBalance";
+import type { ShieldedActivity } from "./generated/ShieldedActivity";
+import type { ShieldedAddress } from "./generated/ShieldedAddress";
+import type { ShieldedSpendOutcome } from "./generated/ShieldedSpendOutcome";
+import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
+import type { ShieldedStatus } from "./generated/ShieldedStatus";
+import type { ShieldOutcome } from "./generated/ShieldOutcome";
+import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { Balances } from "./generated/Balances";
 import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { ContactList } from "./generated/ContactList";
@@ -37,6 +53,7 @@ import type { OpenedNetwork } from "./generated/OpenedNetwork";
 import type { RevealedMnemonic } from "./generated/RevealedMnemonic";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { TxDetails } from "./generated/TxDetails";
+import type { TxNoticeRow } from "./generated/TxNoticeRow";
 import type { VaultRecovery } from "./generated/VaultRecovery";
 import type { WalletSummary } from "./generated/WalletSummary";
 import type { AddressClass } from "./generated/AddressClass";
@@ -180,8 +197,46 @@ export interface Backend {
   recoverWithMnemonic(walletId: string, mnemonic: string, bip39Passphrase: string, newPassphrase: string): Promise<VaultRecovery>;
   dispatchStatus(walletId: string, artifact: string): Promise<DispatchStateName | null>;
   balance(walletId: string): Promise<Balances | null>;
+  // Lanes E1 and E2's commands; the optional reads answer `null` against a dw-app without them (api/pending.ts).
+  /** The network choice (`get_network_choice`, contract §8). */
+  networkChoice(): Promise<NetworkChoiceView | null>;
+  /** Saves the choice for the next start (`set_network_choice`); the window keeps its network. */
+  setNetworkChoice(network: ChosenNetwork): Promise<NetworkChoiceView>;
+  /** Where the wallet's shielded account stands (`shielded_status`, contract §2.13). */
+  shieldedStatus(walletId: string): Promise<ShieldedStatus | null>;
+  /** The account's receive address, for Receive and its QR. */
+  shieldedReceiveAddress(walletId: string): Promise<ShieldedAddress>;
+  /** Core → Shielded: what `duffs` cost and buy. */
+  shieldQuote(walletId: string, duffs: number): Promise<ShieldQuote>;
+  shieldFromCore(walletId: string, duffs: number, grant: string): Promise<ShieldOutcome>;
+  /** Applies a pending lock. */
+  resumeShield(walletId: string, txid: string, grant: string): Promise<ShieldOutcome>;
+  /** Shielded → Shielded; `credits` is a decimal string. */
+  shieldedSendQuote(walletId: string, to: string, credits: string): Promise<ShieldedSpendQuote>;
+  /** `confirmUnrecorded`: the user confirmed sending from a wallet with a lost-record spend (DEC-1057);
+   * without it the engine refuses with `shielded.unrecorded_spend`. */
+  shieldedSend(walletId: string, to: string, credits: string, memo: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome>;
+  /** Shielded → Core; `to` null: the wallet's next receive address. */
+  unshieldQuote(walletId: string, credits: string, to: string | null): Promise<ShieldedSpendQuote>;
+  unshieldToCore(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome>;
+  /** The account's activity, pending first (`offset`, `limit` ≤ 500). */
+  shieldedHistory(walletId: string, offset: number, limit: number): Promise<ShieldedActivity[] | null>;
+  /** The wallet's Platform addresses (`platform_addresses`, contract §2.12). */
+  platformAddresses(walletId: string): Promise<PlatformAddressBalance | null>;
+  /** Their activity, the newest first (`platform_activity`). */
+  platformActivity(walletId: string): Promise<PlatformActivity[] | null>;
+  /** What "Move to Dash wallet" takes and pays out (`platform_move_to_core_quote`). */
+  platformMoveToCoreQuote(walletId: string, amount: WithdrawAmount): Promise<MoveToCoreQuote>;
+  /** Moves the Platform addresses' credits to `to`, one of the wallet's own receive addresses (the
+   * quote's), under `grant`. */
+  platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, grant: string): Promise<MoveToCoreOutcome>;
   syncStatus(): Promise<SyncStatus>;
   historyPage(walletId: string, request: HistoryRequest): Promise<HistoryRows>;
+  /** dash-qt's CSV of the history `filter` and `sort` select (every field quoted, `\n` ends);
+   * `typeNames` empty: dash-qt's English type names. */
+  exportHistoryCsv(walletId: string, filter: HistoryFilterRequest, sort: HistorySortName, unit: CsvUnitName, typeNames: string[], utcOffsetSecs: number): Promise<string>;
+  /** Notification rows for the transactions a `newTransactions` event names (unknown txids are skipped). */
+  txNotices(walletId: string, txids: string[]): Promise<TxNoticeRow[]>;
   txDetail(walletId: string, txid: string): Promise<TxDetails>;
   /** Which actions the detail sheet offers (Abandon, Resend). */
   txDetailExtras(walletId: string, txid: string): Promise<TxDetailExtrasInfo>;
