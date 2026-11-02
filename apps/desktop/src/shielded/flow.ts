@@ -44,6 +44,8 @@ export const SHIELDED_COPY = {
     inactive: "Shielded is not active on this network yet.",
     syncing: "Shielded is syncing. Its balance shows when it has.",
     pending: (amount: string) => `${amount} is on its way.`,
+    /** A spend whose result is not confirmed: the wallet re-sends it itself, so it is never offered again. */
+    unresolved: "A payment is still being confirmed. Do not send it again: the wallet checks it itself.",
     receive: "Receive",
     send: "Send",
     add: "Add to Shielded",
@@ -97,6 +99,8 @@ export const SHIELDED_COPY = {
     checking: { title: "Checking", text: "This amount may already be in your shielded balance; we can't confirm it yet." },
     notApplied: { title: "Locked, not applied", text: (why: string) => `Your Dash is locked but Dash Platform did not add it yet (${why}). Finish it from the Shielded card: nothing is lost.` },
     send: { title: "Sent", text: (amount: string) => `${amount} was sent privately.` },
+    /** The spend went out and its result is not confirmed: pending, never failed, never offered for a resend. */
+    unconfirmed: { title: "Not confirmed yet", text: "Your payment went out and Dash Platform has not confirmed it yet. Activity shows it as pending until it does. Do not send it again: the wallet checks it itself." },
     out: { title: "Moved", text: (amount: string) => `About ${amount} is on its way to your Dash wallet. It arrives when Dash Platform's withdrawal is mined.` },
   },
   close: "Close",

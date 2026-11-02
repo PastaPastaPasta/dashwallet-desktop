@@ -197,6 +197,8 @@ function Outcome({ flow, fmt }: { flow: ShieldedFlow; fmt: ReturnType<typeof use
     else if (s.kind === "proofWaiting") ({ title, text } = C.done.waiting);
     else if (s.kind === "consumptionUnknown") ({ title, text } = C.done.checking);
     else ({ title, text } = { title: C.done.notApplied.title, text: C.done.notApplied.text(s.error) });
+  } else if (r.outcome.state === "pending") {
+    ({ title, text } = C.done.unconfirmed);
   } else if (flow.kind === "out") {
     ({ title } = C.done.out);
     text = C.done.out.text(fmt.credits(r.outcome.credits));
@@ -336,6 +338,11 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
           {s.active && BigInt(s.pending) > 0n && (
             <p className="platform-card-text" data-testid="shielded-card-pending">
               {C.card.pending(fmt.credits(s.pending))}
+            </p>
+          )}
+          {s.active && s.unresolvedSpends.length > 0 && (
+            <p className="platform-card-text" data-testid="shielded-unresolved">
+              {C.card.unresolved}
             </p>
           )}
           {s.pendingShields.map((p) => (

@@ -739,7 +739,7 @@ test.describe("Shielded", () => {
     });
   }
 
-  test("a spend with no proved answer says it may have been sent", async ({ page }) => {
+  test("a spend with no proved answer stays pending and is never offered again", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("hero").waitFor();
     await shielded(page, `(s) => (s.next = "unknown")`);
@@ -747,8 +747,17 @@ test.describe("Shielded", () => {
     await page.getByTestId("shielded-next").click();
     await page.getByTestId("shielded-go").click();
     await authorize(page);
-    await expect(page.getByTestId("shielded-refusal")).toContainText("It may have been sent");
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Not confirmed yet");
+    await expect(page.getByTestId("shielded-outcome-text")).toContainText("Do not send it again");
     await expect(page.getByTestId("shielded-refused-back")).toHaveCount(0);
+    await page.getByTestId("shielded-done").click();
+    // The card keeps saying so while the engine lists the spend, and Activity shows it pending.
+    await expect(page.getByTestId("shielded-unresolved")).toContainText("Do not send it again");
+    await page.getByTestId("sidebar-activity").click();
+    const row = page.locator('[data-txid^="shielded:withdrawal:"]').first();
+    await expect(row).toContainText("Pending");
+    await expect(row).not.toContainText("Not accepted");
+    await expect(page.locator('button[data-txid^="shielded:"]')).toHaveCount(0);
   });
 
   test("says Shielded is not active on this network yet, with no actions", async ({ page }) => {

@@ -10,7 +10,10 @@ import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
 import type { ShieldedAddress } from "../api/generated/ShieldedAddress";
 import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
 import type { ShieldedSpendQuote } from "../api/generated/ShieldedSpendQuote";
+import type { ShieldedSpendState } from "../api/generated/ShieldedSpendState";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
+import type { UnrecordedSpend } from "../api/generated/UnrecordedSpend";
+import type { UnresolvedSpend } from "../api/generated/UnresolvedSpend";
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
 import type { ShieldQuote } from "../api/generated/ShieldQuote";
 import { SHIELDED_CODES } from "../api/pending";
@@ -42,6 +45,10 @@ export interface ShieldedWorld {
   pendingShields: PendingShield[];
   activity: ShieldedActivity[];
   next: SpendResult;
+  /** Spends whose result is not confirmed (`pending`): the library re-sends them itself. */
+  unresolved: UnresolvedSpend[];
+  /** Spends of unknown result whose record was lost (DEC-1057). */
+  unrecorded: UnrecordedSpend[];
   /** How a shield ends: applied, or the lock waiting for its proof. */
   shield: "applied" | "proofWaiting";
   /** The pool has too few notes to withdraw from (`shielded.pool_too_small`). */
@@ -61,6 +68,8 @@ export const newShieldedWorld = (): ShieldedWorld => ({
     { id: "sh-1", kind: "shieldFromCore", direction: "selfTransfer", credits: "85000000000", feeCredits: "10000000", counterparty: null, memo: null, blockHeight: 1_200_000, status: "confirmed", createdAt: NOW - 6 * 86_400 },
   ],
   next: "done",
+  unresolved: [],
+  unrecorded: [],
   shield: "applied",
   poolTooSmall: false,
 });
@@ -81,7 +90,7 @@ function shieldedOf(ctx: Ctx, walletId: string, call: string, gated = true): Shi
 function status(s: ShieldedWorld): ShieldedStatus {
   if (!s.active) return { active: false, protocolVersion: 11, activationVersion: 12, ready: false, balance: "0", pending: "0", pendingShields: [], unresolvedSpends: [], unrecordedSpends: [], syncedIndex: null, lastSyncAt: null, syncing: false, proverReady: false };
   const pending = s.activity.filter((a) => a.status === "pending").reduce((n, a) => n + BigInt(a.credits), 0n);
-  return { active: true, protocolVersion: 13, activationVersion: 12, ready: s.ready, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: [], unrecordedSpends: [], syncedIndex: s.ready ? 4096 : null, lastSyncAt: s.ready ? NOW - 20 : null, syncing: !s.ready, proverReady: s.proverReady };
+  return { active: true, protocolVersion: 13, activationVersion: 12, ready: s.ready, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: s.unresolved, unrecordedSpends: s.unrecorded, syncedIndex: s.ready ? 4096 : null, lastSyncAt: s.ready ? NOW - 20 : null, syncing: !s.ready, proverReady: s.proverReady };
 }
 
 const ready = (s: ShieldedWorld) => {
@@ -122,15 +131,19 @@ function spendQuote(ctx: Ctx, walletId: string, credits: string, expected: boole
   return { credits, feeCredits: String(TRANSFER_FEE_CREDITS), totalCredits: String(total), expectedDuffs: expected ? Number(c / CREDITS_PER_DUFF) : null, grant: grantFor(total) };
 }
 
-/** A spend's end: refused, unknown (the notes stay reserved), or done with the balance debited. */
-function endSpend(s: ShieldedWorld, total: bigint, row: Omit<ShieldedActivity, "id" | "createdAt" | "blockHeight" | "status">): void {
+/** A spend's end: refused, `pending` (it went out and its result is not confirmed: the notes stay
+ * reserved, the row stays `pending` and the wallet re-sends it itself), or done with the balance debited. */
+function endSpend(s: ShieldedWorld, total: bigint, row: Omit<ShieldedActivity, "id" | "createdAt" | "blockHeight" | "status">): { state: ShieldedSpendState; unresolved: UnresolvedSpend | null } {
   if (s.next === "refused") raise("platform.unavailable", "the fixture refuses the spend");
   if (s.next === "unknown") {
-    addRow(s, { ...row, status: "unknown" });
-    raise("platform.broadcast_unknown", "broadcast unknown", { kind: "artifact", artifact: `sh-${s.activity.length}` });
+    addRow(s, { ...row, status: "pending" });
+    const unresolved = { activityId: s.activity[0].id, transition: `ab${String(s.activity.length).padStart(62, "0")}`, attempts: 1 };
+    s.unresolved = [...s.unresolved, unresolved];
+    return { state: "pending", unresolved };
   }
   s.balance = String(BigInt(s.balance) - total);
   addRow(s, { ...row, status: "confirmed" });
+  return { state: "done", unresolved: null };
 }
 
 function sendQuote(ctx: Ctx, walletId: string, to: string, credits: string): ShieldedSpendQuote {
@@ -188,8 +201,8 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     const q = sendQuote(ctx, walletId, to, credits);
     const s = ctx.world.pending.shielded!;
     spendGrant(ctx, walletId, grant, BigInt(q.totalCredits));
-    endSpend(s, BigInt(q.totalCredits), { kind: "sent", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo });
-    return { credits, balance: s.balance, to, state: "done", unresolved: null };
+    const end = endSpend(s, BigInt(q.totalCredits), { kind: "sent", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo });
+    return { credits, balance: s.balance, to, ...end };
   },
   unshield_quote: ({ walletId, credits }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => spendQuote(ctx, walletId, credits, true, "unshield_quote"),
   unshield_to_core: ({ walletId, credits, grant }: { walletId: string; credits: string; to: string | null; grant: string }, ctx: Ctx): ShieldedSpendOutcome => {
@@ -198,8 +211,8 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool too small", { kind: "poolNotes", notes: 120, required: 250 });
     spendGrant(ctx, walletId, grant, BigInt(q.totalCredits));
     const to = HANDLERS.current_receive_address!({ walletId }, ctx).address;
-    endSpend(s, BigInt(q.totalCredits), { kind: "withdrawal", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo: null });
-    return { credits, balance: s.balance, to, state: "done", unresolved: null };
+    const end = endSpend(s, BigInt(q.totalCredits), { kind: "withdrawal", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo: null });
+    return { credits, balance: s.balance, to, ...end };
   },
   shielded_history: ({ walletId, offset, limit }: { walletId: string; offset: number; limit: number }, ctx: Ctx) => {
     const s = shieldedOf(ctx, walletId, "shielded_history");
