@@ -192,6 +192,51 @@ pub struct UnresolvedSpend {
     pub attempts: u32,
 }
 
+/// What a `shielded.not_synced` waits for (DEC-1058 #4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedSyncWait {
+    /// The account is not established: its viewing key is not bound (a
+    /// first bind needs the vault unlocked) or its notes are neither
+    /// restored nor scanned (`ShieldedStatus::ready` false). For now also a
+    /// first bind the vault cannot serve (locked, mixing-only, watch-only),
+    /// which does not clear by itself: the user unlocks, or (watch-only) it
+    /// is not supported. Its own refusal comes in 0.1.x.
+    Account,
+    /// The note tree is not on an anchor Platform recorded yet
+    /// (platform-wallet's `ShieldedNoRecordedAnchor`, "wait for the next
+    /// shielded sync"): the next sync pass moves it.
+    Tree,
+    /// The dispatch journal, where the shield and spend records are kept,
+    /// is not read. A session reads it before it opens, so a host sees this
+    /// only from a closing one; fail-closed, never "Platform did not answer".
+    Journal,
+    /// SPV runs and is not caught up, or Platform writes wait for
+    /// masternode sync: a shield's asset lock waits (as a top-up's does).
+    Core,
+    /// The wallet's DashPay bring-up is running: a shield's funding waits
+    /// for it (as a top-up's does).
+    Startup,
+}
+
+impl ShieldedSyncWait {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Account => "account",
+            Self::Tree => "tree",
+            Self::Journal => "journal",
+            Self::Core => "core",
+            Self::Startup => "startup",
+        }
+    }
+}
+
+impl std::fmt::Display for ShieldedSyncWait {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A spend of unknown result whose record the library lost (DEC-1057),
 /// as the engine's marker keeps it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

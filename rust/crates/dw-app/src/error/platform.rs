@@ -150,7 +150,12 @@ impl From<ShieldedError> for AppError {
                     activation_version,
                 }),
             ),
-            S::NotSynced => (ShieldedCode::NotSynced, None),
+            S::NotSynced { reason } => (
+                ShieldedCode::NotSynced,
+                Some(ErrorData::Reason {
+                    reason: reason.as_str().into(),
+                }),
+            ),
             S::InvalidAddress { detail } => (
                 ShieldedCode::InvalidAddress,
                 Some(ErrorData::Reason { reason: detail }),
@@ -468,7 +473,8 @@ impl From<CreditsError> for AppError {
 #[cfg(test)]
 mod tests {
     use dw_engine::platform::{
-        BudgetPurpose, Eligibility, KeyPurpose, ProfileField, RevokeCause, UsernameRule,
+        BudgetPurpose, Eligibility, KeyPurpose, ProfileField, RevokeCause, ShieldedSyncWait,
+        UsernameRule,
     };
 
     use super::*;
@@ -630,7 +636,9 @@ mod tests {
                 protocol_version: 11,
                 activation_version: 12,
             },
-            ShieldedError::NotSynced,
+            ShieldedError::NotSynced {
+                reason: ShieldedSyncWait::Journal,
+            },
             ShieldedError::InvalidAddress { detail: s() },
             ShieldedError::InsufficientFunds {
                 needed: 2,
@@ -674,6 +682,16 @@ mod tests {
                 "needed": "30000000000000000",
                 "remaining": "7"
             })
+        );
+        // DEC-1058 #4: what Shielded is still syncing.
+        let e = AppError::from(ShieldedError::NotSynced {
+            reason: ShieldedSyncWait::Core,
+        });
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["code"], "shielded.not_synced");
+        assert_eq!(
+            v["data"],
+            serde_json::json!({"kind": "reason", "reason": "core"})
         );
         let e = AppError::from(NameError::Invalid {
             rules: vec![UsernameRule::NoEdgeHyphen],
