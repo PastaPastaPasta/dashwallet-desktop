@@ -14,7 +14,6 @@ import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { ThemeName } from "../api/generated/ThemeName";
 import { isErrorClass, sampleError, type ErrorClass } from "./errors";
-import { PENDING_COMMANDS } from "../api/pending";
 import { PENDING_HANDLERS } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
 import { restarted } from "./registration";
@@ -53,7 +52,7 @@ export interface FixtureHandle {
   fail(command: CommandName, cls: ErrorClass | null): void;
   /** Holds the next call of `command`: it answers from the world as it is when called, but only
    * once the returned function is called (a reply that arrives late). */
-  hold(command: CommandName | PendingCommand): () => void;
+  hold(command: CommandName): () => void;
   /** Every command called so far, in order. */
   readonly calls: string[];
   /** One step of `draft`'s registration run, where the network would answer (DP1-09);
@@ -69,9 +68,6 @@ export interface FixtureHandle {
   now: Date;
   readonly locale: string;
 }
-
-/** The wire name of a command dw-app does not generate yet (api/pending.ts). */
-type PendingCommand = (typeof PENDING_COMMANDS)[keyof typeof PENDING_COMMANDS];
 
 const notImplemented = (call: string): AppError => ({
   code: "platform.not_implemented",

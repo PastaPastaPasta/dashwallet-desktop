@@ -4,7 +4,10 @@
 import { createContext, useContext } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
-import { creditsToDuffs, type ShieldedSpendQuote, type ShieldedStatus, type ShieldQuote } from "./pending";
+import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
+import type { ShieldedStatus } from "./generated/ShieldedStatus";
+import type { ShieldQuote } from "./generated/ShieldQuote";
+import { creditsToDuffs } from "./pending";
 import { feedSync, rawSync, readTicket, useShownSync } from "./syncDisplay";
 import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";

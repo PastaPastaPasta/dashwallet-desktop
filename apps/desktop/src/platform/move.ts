@@ -9,7 +9,8 @@ import type { Backend } from "../api/backend";
 import { hasCode, isAppError } from "../api/backend";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { GrantRequest } from "../api/generated/GrantRequest";
-import type { MoveToCoreOutcome, PlatformActivity } from "../api/pending";
+import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
+import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import { platformOp } from "../dashpay/topup";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
@@ -170,8 +171,9 @@ export class PlatformMoveFlow extends Model {
     this.changed();
   }
 
-  /** Confirm & move: the quote's grant, then `platformMoveToCore` for everything (one call at a time). */
-  async move(grant: GrantRequest): Promise<void> {
+  /** Confirm & move: the quote's grant, then `platformMoveToCore` for everything to the quote's `to`, one
+   * of the wallet's own receiving addresses (one call at a time). */
+  async move(grant: GrantRequest, to: string): Promise<void> {
     if (this.running) return;
     let ran = false;
     this.running = true;
@@ -182,7 +184,7 @@ export class PlatformMoveFlow extends Model {
         ran = true;
         this.step = "running";
         this.changed();
-        return this.api.platformMoveToCore(this.walletId, { kind: "all" }, g.id);
+        return this.api.platformMoveToCore(this.walletId, { kind: "all" }, to, g.id);
       });
       if (got) {
         this.outcome = got.value;

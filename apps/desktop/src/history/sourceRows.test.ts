@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TxRow } from "../api/generated/TxRow";
-import type { PlatformActivity, ShieldedActivity } from "../api/pending";
+import type { PlatformActivity } from "../api/generated/PlatformActivity";
+import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
 import { filterExtra, mergeActivity, platformRow, rowSource, shieldedRow, sourceRowTitle } from "./sourceRows";
 
 const act = (id: string, over: Partial<PlatformActivity> = {}): PlatformActivity => ({
@@ -11,6 +12,7 @@ const act = (id: string, over: Partial<PlatformActivity> = {}): PlatformActivity
   address: "tdash1abc",
   to: null,
   expectedDuffs: null,
+  feeCredits: null,
   at: 1000,
   ...over,
 });

@@ -9,7 +9,7 @@
 // maps that case to `shielded.not_synced`, a platform refusal while the status says not ready is
 // shown as syncing (`syncingRefusal`).
 
-import type { ShieldedStatus } from "../api/pending";
+import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { SHIELDED_CODES } from "../api/pending";
 
 export const SHIELDED_SYNCING_TEXT = "Shielded is still syncing; try again when it finishes.";

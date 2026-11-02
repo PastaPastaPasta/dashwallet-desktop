@@ -66,7 +66,7 @@ function ConfirmStep({ flow, walletId, credits, amount }: { flow: PlatformMoveFl
         <DashButton variant="tintedGray" size="large" data-testid="platform-move-cancel" disabled={flow.running} onClick={() => flow.close()}>
           {C.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="platform-move-go" why={quote.isError ? C.quoteFailed : flow.running ? C.running.title : C.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running} onClick={() => q && void flow.move(q.grant)}>
+        <DashButton variant="filledBlue" size="large" data-testid="platform-move-go" why={quote.isError ? C.quoteFailed : flow.running ? C.running.title : C.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running} onClick={() => q && void flow.move(q.grant, q.to)}>
           {C.go}
         </DashButton>
       </div>
@@ -102,7 +102,7 @@ export function PlatformMoveSheet({ flow, walletId, network }: { flow: PlatformM
                 {outcome.state === "done" ? C.done.title : C.pending.title}
               </p>
               <p className="sheet-text" data-testid="platform-move-outcome-text">
-                {(outcome.state === "done" ? C.done : C.pending).text(amount(outcome.expectedDuffs))}
+                {(outcome.state === "done" ? C.done : C.pending).text(amount(outcome.expectedDuffs ?? creditsToDuffs(outcome.credits)))}
               </p>
               <div className="sheet-actions">
                 <DashButton variant="filledBlue" size="large" data-testid="platform-move-done" onClick={() => flow.close()}>

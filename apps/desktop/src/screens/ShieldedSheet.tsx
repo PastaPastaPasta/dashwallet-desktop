@@ -6,7 +6,8 @@
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { CREDITS_PER_DUFF, creditsToDuffs, SHIELDED_CODES, type ShieldedStatus } from "../api/pending";
+import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
+import { CREDITS_PER_DUFF, creditsToDuffs, SHIELDED_CODES } from "../api/pending";
 import { keys, shieldedDuffs, useBackend, useShieldedQuote, useShieldedStatus } from "../api/queries";
 import { useDebounced } from "../app/useDebounced";
 import { useUi } from "../app/ui";
@@ -194,6 +195,7 @@ function Outcome({ flow, fmt }: { flow: ShieldedFlow; fmt: ReturnType<typeof use
     const s = r.outcome.state;
     if (s.kind === "applied") ({ title, text } = { title: C.done.add.title, text: C.done.add.text(fmt.credits(s.balance)) });
     else if (s.kind === "proofWaiting") ({ title, text } = C.done.waiting);
+    else if (s.kind === "consumptionUnknown") ({ title, text } = C.done.checking);
     else ({ title, text } = { title: C.done.notApplied.title, text: C.done.notApplied.text(s.error) });
   } else if (flow.kind === "out") {
     ({ title } = C.done.out);

@@ -5,8 +5,15 @@
 // (`active`), makes the next spend end unknown or refused, or the pool too small to withdraw from.
 
 import type { AppError } from "../api/generated/AppError";
-import type { PendingShield, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedStatus, ShieldOutcome, ShieldQuote } from "../api/pending";
-import { PENDING_COMMANDS as PENDING, SHIELDED_CODES } from "../api/pending";
+import type { PendingShield } from "../api/generated/PendingShield";
+import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
+import type { ShieldedAddress } from "../api/generated/ShieldedAddress";
+import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
+import type { ShieldedSpendQuote } from "../api/generated/ShieldedSpendQuote";
+import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
+import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
+import type { ShieldQuote } from "../api/generated/ShieldQuote";
+import { SHIELDED_CODES } from "../api/pending";
 import { checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
 import { FIXTURE_NOW } from "./wallet";
 
@@ -72,9 +79,9 @@ function shieldedOf(ctx: Ctx, walletId: string, call: string, gated = true): Shi
 }
 
 function status(s: ShieldedWorld): ShieldedStatus {
-  if (!s.active) return { active: false, protocolVersion: 11, activationVersion: 12, ready: false, balance: "0", pending: "0", pendingShields: [], syncedIndex: null, lastSyncAt: null, syncing: false, proverReady: false };
+  if (!s.active) return { active: false, protocolVersion: 11, activationVersion: 12, ready: false, balance: "0", pending: "0", pendingShields: [], unresolvedSpends: [], unrecordedSpends: [], syncedIndex: null, lastSyncAt: null, syncing: false, proverReady: false };
   const pending = s.activity.filter((a) => a.status === "pending").reduce((n, a) => n + BigInt(a.credits), 0n);
-  return { active: true, protocolVersion: 13, activationVersion: 12, ready: s.ready, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, syncedIndex: s.ready ? 4096 : null, lastSyncAt: s.ready ? NOW - 20 : null, syncing: !s.ready, proverReady: s.proverReady };
+  return { active: true, protocolVersion: 13, activationVersion: 12, ready: s.ready, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: [], unrecordedSpends: [], syncedIndex: s.ready ? 4096 : null, lastSyncAt: s.ready ? NOW - 20 : null, syncing: !s.ready, proverReady: s.proverReady };
 }
 
 const ready = (s: ShieldedWorld) => {
@@ -96,7 +103,7 @@ function addRow(s: ShieldedWorld, row: Omit<ShieldedActivity, "id" | "createdAt"
 const grantFor = (credits: bigint) => ({ maxDuffs: 0, maxCredits: String(credits) });
 
 function shieldQuote(ctx: Ctx, walletId: string, duffs: number): ShieldQuote {
-  const s = shieldedOf(ctx, walletId, PENDING.shieldQuote);
+  const s = shieldedOf(ctx, walletId, "shield_quote");
   // As the engine answers while the account is not established: the generic Platform refusal (pasta's preview, 03-…png).
   if (!s.ready) raise("platform.unavailable", "the fixture account is not established yet");
   if (duffs < MIN_SHIELD_DUFFS) raise(SHIELDED_CODES.belowMinimum, "below the minimum", { kind: "number", value: MIN_SHIELD_DUFFS });
@@ -128,16 +135,16 @@ function endSpend(s: ShieldedWorld, total: bigint, row: Omit<ShieldedActivity, "
 
 function sendQuote(ctx: Ctx, walletId: string, to: string, credits: string): ShieldedSpendQuote {
   if (!/^t?dash1z/.test(to.trim())) {
-    shieldedOf(ctx, walletId, PENDING.shieldedSendQuote);
+    shieldedOf(ctx, walletId, "shielded_send_quote");
     raise(SHIELDED_CODES.invalidAddress, "not a shielded address", { kind: "reason", reason: "not a shielded address" });
   }
-  return spendQuote(ctx, walletId, credits, false, PENDING.shieldedSendQuote);
+  return spendQuote(ctx, walletId, credits, false, "shielded_send_quote");
 }
 
 function shieldEnd(s: ShieldedWorld, txid: string, duffs: number): ShieldOutcome {
   const credits = BigInt(duffs) * CREDITS_PER_DUFF - POOL_FEE_CREDITS;
   if (s.shield === "proofWaiting") {
-    s.pendingShields = [...s.pendingShields.filter((p) => p.txid !== txid), { txid, duffs, proved: false }];
+    s.pendingShields = [...s.pendingShields.filter((p) => p.txid !== txid), { txid, duffs, proved: false, consumptionUnknown: false }];
     return { txid, state: { kind: "proofWaiting" } };
   }
   s.pendingShields = s.pendingShields.filter((p) => p.txid !== txid);
@@ -147,14 +154,14 @@ function shieldEnd(s: ShieldedWorld, txid: string, duffs: number): ShieldOutcome
 }
 
 export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
-  [PENDING.shieldedStatus]: ({ walletId }: { walletId: string }, ctx: Ctx) => status(shieldedOf(ctx, walletId, PENDING.shieldedStatus, false)),
-  [PENDING.shieldedReceiveAddress]: ({ walletId }: { walletId: string }, ctx: Ctx): ShieldedAddress => {
-    const s = shieldedOf(ctx, walletId, PENDING.shieldedReceiveAddress);
+  shielded_status: ({ walletId }: { walletId: string }, ctx: Ctx) => status(shieldedOf(ctx, walletId, "shielded_status", false)),
+  shielded_receive_address: ({ walletId }: { walletId: string }, ctx: Ctx): ShieldedAddress => {
+    const s = shieldedOf(ctx, walletId, "shielded_receive_address");
     ready(s);
     return { address: s.address, account: 0 };
   },
-  [PENDING.shieldQuote]: ({ walletId, duffs }: { walletId: string; duffs: number }, ctx: Ctx) => shieldQuote(ctx, walletId, duffs),
-  [PENDING.shieldFromCore]: ({ walletId, duffs, grant }: { walletId: string; duffs: number; grant: string }, ctx: Ctx): ShieldOutcome => {
+  shield_quote: ({ walletId, duffs }: { walletId: string; duffs: number }, ctx: Ctx) => shieldQuote(ctx, walletId, duffs),
+  shield_from_core: ({ walletId, duffs, grant }: { walletId: string; duffs: number; grant: string }, ctx: Ctx): ShieldOutcome => {
     const q = shieldQuote(ctx, walletId, duffs);
     const s = ctx.world.pending.shielded!;
     const g = checkGrant(ctx.world, grant, walletId, ["platformOp"]);
@@ -163,8 +170,8 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     useGrant(ctx.world, grant);
     return shieldEnd(s, `lock${(s.activity.length + 1).toString(16).padStart(8, "0")}`, duffs);
   },
-  [PENDING.resumeShield]: ({ walletId, txid, grant }: { walletId: string; txid: string; grant: string }, ctx: Ctx): ShieldOutcome => {
-    const s = shieldedOf(ctx, walletId, PENDING.resumeShield);
+  resume_shield: ({ walletId, txid, grant }: { walletId: string; txid: string; grant: string }, ctx: Ctx): ShieldOutcome => {
+    const s = shieldedOf(ctx, walletId, "resume_shield");
     const pending = s.pendingShields.find((p) => p.txid === txid);
     if (!pending) return raise("invalid_argument", "not a pending shield", { kind: "reason", reason: "not a pending shield" });
     const g = checkGrant(ctx.world, grant, walletId, ["platformOp"]);
@@ -173,29 +180,29 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     s.shield = "applied";
     return shieldEnd(s, txid, pending.duffs);
   },
-  [PENDING.shieldedSendQuote]: ({ walletId, to, credits }: { walletId: string; to: string; credits: string }, ctx: Ctx) => {
+  shielded_send_quote: ({ walletId, to, credits }: { walletId: string; to: string; credits: string }, ctx: Ctx) => {
     return sendQuote(ctx, walletId, to, credits);
   },
-  [PENDING.shieldedSend]: ({ walletId, to, credits, memo, grant }: { walletId: string; to: string; credits: string; memo: string | null; grant: string }, ctx: Ctx): ShieldedSpendOutcome => {
+  shielded_send: ({ walletId, to, credits, memo, grant }: { walletId: string; to: string; credits: string; memo: string | null; grant: string }, ctx: Ctx): ShieldedSpendOutcome => {
     if (memo !== null && new TextEncoder().encode(memo).length > 36) raise("invalid_argument", "memo too long", { kind: "reason", reason: "memo over 36 bytes" });
     const q = sendQuote(ctx, walletId, to, credits);
     const s = ctx.world.pending.shielded!;
     spendGrant(ctx, walletId, grant, BigInt(q.totalCredits));
     endSpend(s, BigInt(q.totalCredits), { kind: "sent", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo });
-    return { credits, balance: s.balance, to };
+    return { credits, balance: s.balance, to, state: "done", unresolved: null };
   },
-  [PENDING.unshieldQuote]: ({ walletId, credits }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => spendQuote(ctx, walletId, credits, true, PENDING.unshieldQuote),
-  [PENDING.unshieldToCore]: ({ walletId, credits, grant }: { walletId: string; credits: string; to: string | null; grant: string }, ctx: Ctx): ShieldedSpendOutcome => {
-    const q = spendQuote(ctx, walletId, credits, true, PENDING.unshieldToCore);
+  unshield_quote: ({ walletId, credits }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => spendQuote(ctx, walletId, credits, true, "unshield_quote"),
+  unshield_to_core: ({ walletId, credits, grant }: { walletId: string; credits: string; to: string | null; grant: string }, ctx: Ctx): ShieldedSpendOutcome => {
+    const q = spendQuote(ctx, walletId, credits, true, "unshield_to_core");
     const s = ctx.world.pending.shielded!;
     if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool too small", { kind: "poolNotes", notes: 120, required: 250 });
     spendGrant(ctx, walletId, grant, BigInt(q.totalCredits));
     const to = HANDLERS.current_receive_address!({ walletId }, ctx).address;
     endSpend(s, BigInt(q.totalCredits), { kind: "withdrawal", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo: null });
-    return { credits, balance: s.balance, to };
+    return { credits, balance: s.balance, to, state: "done", unresolved: null };
   },
-  [PENDING.shieldedHistory]: ({ walletId, offset, limit }: { walletId: string; offset: number; limit: number }, ctx: Ctx) => {
-    const s = shieldedOf(ctx, walletId, PENDING.shieldedHistory);
+  shielded_history: ({ walletId, offset, limit }: { walletId: string; offset: number; limit: number }, ctx: Ctx) => {
+    const s = shieldedOf(ctx, walletId, "shielded_history");
     if (limit > 500) raise("invalid_argument", "limit over 500", { kind: "reason", reason: "limit over 500" });
     return s.activity.slice(offset, offset + limit);
   },

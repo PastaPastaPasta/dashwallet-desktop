@@ -16,3 +16,13 @@ describe("commands dw-app does not have yet", () => {
     expect(commandAbsent(null)).toBe(false);
   });
 });
+
+describe("integration of the shielded codes (m4 v47)", () => {
+  it("SHIELDED_CODES are all generated ShieldedCodes, and isAppError knows every one", async () => {
+    const { isAppError } = await import("./backend");
+    const { SHIELDED_CODES } = await import("./pending");
+    for (const code of Object.values(SHIELDED_CODES)) expect(isAppError({ code, message: "x", data: null }), code).toBe(true);
+    expect(Object.values(SHIELDED_CODES)).toContain("shielded.unrecorded_spend");
+    expect(isAppError({ code: "shielded.made_up", message: "x", data: null })).toBe(false);
+  });
+});

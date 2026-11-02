@@ -1,25 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
-import {
-  callPending,
-  callRequired,
-  PENDING_COMMANDS as PENDING,
-  type MoveToCoreOutcome,
-  type MoveToCoreQuote,
-  type NetworkChoice,
-  type NetworkChoiceView,
-  type PlatformActivity,
-  type PlatformAddressBalance,
-  type ShieldedActivity,
-  type ShieldedAddress,
-  type ShieldedSpendOutcome,
-  type ShieldedSpendQuote,
-  type ShieldedStatus,
-  type ShieldOutcome,
-  type ShieldQuote,
-} from "./pending";
-import type { WithdrawAmount } from "./generated/WithdrawAmount";
+import { orAbsent, orUnavailable } from "./pending";
 import * as cmd from "./generated/commands";
 import type { AppEvent, ShellEvent } from "./generated/commands";
 import type { AddressPurposeName } from "./generated/AddressPurposeName";
@@ -71,26 +53,24 @@ export class IpcBackend implements Backend {
   historyPage = cmd.historyPage;
   exportHistoryCsv = cmd.exportHistoryCsv;
   txNotices = cmd.txNotices;
-  // Not generated yet (api/pending.ts): swap each line for `cmd.<name>` when its command lands.
-  networkChoice = async () => (await callPending<NetworkChoiceView>(PENDING.getNetworkChoice))?.value ?? null;
-  setNetworkChoice = (network: NetworkChoice) => callRequired<NetworkChoiceView>(PENDING.setNetworkChoice, { network });
-  shieldedStatus = async (walletId: string) => (await callPending<ShieldedStatus>(PENDING.shieldedStatus, { walletId }))?.value ?? null;
-  shieldedReceiveAddress = (walletId: string) => callRequired<ShieldedAddress>(PENDING.shieldedReceiveAddress, { walletId });
-  shieldQuote = (walletId: string, duffs: number) => callRequired<ShieldQuote>(PENDING.shieldQuote, { walletId, duffs });
-  shieldFromCore = (walletId: string, duffs: number, grant: string) => callRequired<ShieldOutcome>(PENDING.shieldFromCore, { walletId, duffs, grant });
-  resumeShield = (walletId: string, txid: string, grant: string) => callRequired<ShieldOutcome>(PENDING.resumeShield, { walletId, txid, grant });
-  shieldedSendQuote = (walletId: string, to: string, credits: string) => callRequired<ShieldedSpendQuote>(PENDING.shieldedSendQuote, { walletId, to, credits });
-  shieldedSend = (walletId: string, to: string, credits: string, memo: string | null, grant: string) =>
-    callRequired<ShieldedSpendOutcome>(PENDING.shieldedSend, { walletId, to, credits, memo, grant });
-  unshieldQuote = (walletId: string, credits: string, to: string | null) => callRequired<ShieldedSpendQuote>(PENDING.unshieldQuote, { walletId, credits, to });
-  unshieldToCore = (walletId: string, credits: string, to: string | null, grant: string) =>
-    callRequired<ShieldedSpendOutcome>(PENDING.unshieldToCore, { walletId, credits, to, grant });
-  shieldedHistory = async (walletId: string, offset: number, limit: number) =>
-    (await callPending<ShieldedActivity[]>(PENDING.shieldedHistory, { walletId, offset, limit }))?.value ?? null;
-  platformAddresses = async (walletId: string) => (await callPending<PlatformAddressBalance>(PENDING.platformAddresses, { walletId }))?.value ?? null;
-  platformActivity = async (walletId: string) => (await callPending<PlatformActivity[]>(PENDING.platformActivity, { walletId }))?.value ?? null;
-  platformMoveToCoreQuote = (walletId: string, amount: WithdrawAmount) => callRequired<MoveToCoreQuote>(PENDING.platformMoveToCoreQuote, { walletId, amount });
-  platformMoveToCore = (walletId: string, amount: WithdrawAmount, grant: string) => callRequired<MoveToCoreOutcome>(PENDING.platformMoveToCore, { walletId, amount, grant });
+  // Against a dw-app without the command (api/pending.ts): the optional reads answer `null` (orAbsent),
+  // the calls that mean nothing without it fail with a message the screen shows (orUnavailable).
+  networkChoice = () => orAbsent(cmd.getNetworkChoice());
+  setNetworkChoice = (...a: Parameters<typeof cmd.setNetworkChoice>) => orUnavailable(cmd.setNetworkChoice(...a));
+  shieldedStatus = (walletId: string) => orAbsent(cmd.shieldedStatus(walletId));
+  shieldedReceiveAddress = (...a: Parameters<typeof cmd.shieldedReceiveAddress>) => orUnavailable(cmd.shieldedReceiveAddress(...a));
+  shieldQuote = (...a: Parameters<typeof cmd.shieldQuote>) => orUnavailable(cmd.shieldQuote(...a));
+  shieldFromCore = (...a: Parameters<typeof cmd.shieldFromCore>) => orUnavailable(cmd.shieldFromCore(...a));
+  resumeShield = (...a: Parameters<typeof cmd.resumeShield>) => orUnavailable(cmd.resumeShield(...a));
+  shieldedSendQuote = (...a: Parameters<typeof cmd.shieldedSendQuote>) => orUnavailable(cmd.shieldedSendQuote(...a));
+  shieldedSend = (...a: Parameters<typeof cmd.shieldedSend>) => orUnavailable(cmd.shieldedSend(...a));
+  unshieldQuote = (...a: Parameters<typeof cmd.unshieldQuote>) => orUnavailable(cmd.unshieldQuote(...a));
+  unshieldToCore = (...a: Parameters<typeof cmd.unshieldToCore>) => orUnavailable(cmd.unshieldToCore(...a));
+  shieldedHistory = (walletId: string, offset: number, limit: number) => orAbsent(cmd.shieldedHistory(walletId, offset, limit));
+  platformAddresses = (walletId: string) => orAbsent(cmd.platformAddresses(walletId));
+  platformActivity = (walletId: string) => orAbsent(cmd.platformActivity(walletId));
+  platformMoveToCoreQuote = (...a: Parameters<typeof cmd.platformMoveToCoreQuote>) => orUnavailable(cmd.platformMoveToCoreQuote(...a));
+  platformMoveToCore = (...a: Parameters<typeof cmd.platformMoveToCore>) => orUnavailable(cmd.platformMoveToCore(...a));
   txDetail = cmd.txDetail;
   txDetailExtras = cmd.txDetailExtras;
   setTxLabel = cmd.setTxLabel;

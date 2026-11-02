@@ -3,13 +3,14 @@
 // their words.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ShieldedSpendOutcome, ShieldOutcome } from "../api/pending";
+import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
+import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { onShieldedSettled, resetShielded, shieldedCanChange, shieldedErrorText, shieldedFor, ShieldedFlow } from "./flow";
 
 const TO = "tdash1zq0k8y";
-const SPEND: ShieldedSpendOutcome = { credits: "10000000000", balance: "114980000000", to: TO };
+const SPEND: ShieldedSpendOutcome = { credits: "10000000000", balance: "114980000000", to: TO, state: "done", unresolved: null };
 const APPLIED: ShieldOutcome = { txid: "lock1", state: { kind: "applied", balance: "130000000000" } };
 const GRANT = { maxDuffs: 0, maxCredits: "10020000000" };
 const credits = (c: string) => `${Number(BigInt(c) / 1000n) / 1e8} tDASH`;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ShieldedStatus } from "../api/pending";
+import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { shieldedSyncing, syncingRefusal } from "./syncing";
 
 const status = (over: Partial<ShieldedStatus>): ShieldedStatus =>

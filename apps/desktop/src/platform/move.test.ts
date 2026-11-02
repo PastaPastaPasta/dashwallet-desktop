@@ -2,13 +2,14 @@
 // can close while the call runs and reopens to its result; refusals say what to do.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MoveToCoreOutcome, PlatformActivity } from "../api/pending";
+import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
+import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { hasPendingMove, moveCanRetry, moveErrorText, moveFor, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
 
 const TO = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
-const OUTCOME: MoveToCoreOutcome = { id: "pm-1", credits: "40000000000", expectedDuffs: 39_998_000, to: TO, state: "done" };
+const OUTCOME: MoveToCoreOutcome = { id: "pm-1", credits: "40000000000", expectedDuffs: 39_998_000, to: TO, state: "done", feeCredits: "2000000" };
 const GRANT = { maxDuffs: 0, maxCredits: "40000000000" };
 const credits = (c: string) => `${Number(BigInt(c) / 1000n) / 1e8} tDASH`;
 
@@ -19,9 +20,9 @@ function setup(lock = { encrypted: false }) {
   const api = {
     ...vault.api,
     platformMoveToCore: vi.fn(
-      (_walletId: string, amount: { kind: string }, grant: string) =>
+      (_walletId: string, amount: { kind: string }, to: string, grant: string) =>
         new Promise<MoveToCoreOutcome>((resolve) => {
-          calls.push(`move ${amount.kind} ${grant}`);
+          calls.push(`move ${amount.kind} ${to} ${grant}`);
           answer = resolve;
         }),
     ),
@@ -39,12 +40,12 @@ describe("Move to Dash wallet", () => {
     const stop = onMoveSettled(settled);
     flow.begin();
     expect([flow.open, flow.step]).toEqual([true, "confirm"]);
-    const going = flow.move(GRANT);
+    const going = flow.move(GRANT, TO);
     await vi.waitFor(() => expect(flow.step).toBe("running"));
     expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "40000000000" }, walletId: WALLET_A });
     // One call at a time.
-    await flow.move(GRANT);
-    expect(calls).toEqual(["move all grant-1"]);
+    await flow.move(GRANT, TO);
+    expect(calls).toEqual([`move all ${TO} grant-1`]);
     flow.close();
     expect(flow.unseen).toBe(false);
     answer(OUTCOME);
@@ -62,9 +63,9 @@ describe("Move to Dash wallet", () => {
 
   it("keeps a pending result, and its warning, after the sheet is dismissed, until Activity shows the move settled", async () => {
     const { flow, answer } = setup();
-    const row = (state: PlatformActivity["state"]): PlatformActivity => ({ id: OUTCOME.id, kind: "moveToCore", state, credits: OUTCOME.credits, address: null, to: TO, expectedDuffs: OUTCOME.expectedDuffs, at: 1 });
+    const row = (state: PlatformActivity["state"]): PlatformActivity => ({ id: OUTCOME.id, kind: "moveToCore", state, credits: OUTCOME.credits, address: null, to: TO, expectedDuffs: OUTCOME.expectedDuffs, feeCredits: null, at: 1 });
     flow.begin();
-    const going = flow.move(GRANT);
+    const going = flow.move(GRANT, TO);
     await vi.waitFor(() => expect(flow.step).toBe("running"));
     answer({ ...OUTCOME, state: "pending" });
     await going;
@@ -87,7 +88,7 @@ describe("Move to Dash wallet", () => {
   });
 
   it("reads a pending move off Activity's rows", () => {
-    const base = { id: "pm-1", credits: "1", address: null, to: null, expectedDuffs: null, at: 1 } as const;
+    const base = { id: "pm-1", credits: "1", address: null, to: null, expectedDuffs: null, feeCredits: null, at: 1 } as const;
     expect(hasPendingMove([{ ...base, kind: "moveToCore", state: "pending" }])).toBe(true);
     expect(hasPendingMove([{ ...base, kind: "moveToCore", state: "done" }, { ...base, kind: "incoming", state: "pending" }])).toBe(false);
     expect(hasPendingMove(null)).toBe(false);
@@ -98,7 +99,7 @@ describe("Move to Dash wallet", () => {
     const settled = vi.fn();
     const stop = onMoveSettled(settled);
     flow.begin();
-    const going = flow.move(GRANT);
+    const going = flow.move(GRANT, TO);
     await vi.waitFor(() => expect(flow.grants.pending).not.toBeNull());
     flow.grants.cancel();
     await going;
@@ -111,12 +112,12 @@ describe("Move to Dash wallet", () => {
     const { flow, api } = setup();
     api.platformMoveToCore.mockRejectedValueOnce(appError("platform.grant_exceeded"));
     flow.begin();
-    await flow.move(GRANT);
+    await flow.move(GRANT, TO);
     expect([flow.step, moveCanRetry(flow.error)]).toEqual(["refused", true]);
     flow.back();
     expect([flow.step, flow.error]).toEqual(["confirm", null]);
     api.platformMoveToCore.mockRejectedValueOnce(appError("platform.broadcast_unknown", { kind: "artifact", artifact: "x" }));
-    await flow.move(GRANT);
+    await flow.move(GRANT, TO);
     // An unknown outcome is never offered again from here: the move could happen twice.
     expect([flow.step, moveCanRetry(flow.error)]).toEqual(["refused", false]);
   });

@@ -52,7 +52,7 @@ describe("fixture pending commands", () => {
     const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
     expect(quote).toMatchObject({ credits: "40000000000", feeCredits: "2000000", expectedDuffs: 39_998_000, grant: { maxCredits: "40000000000" } });
     expect(quote.to).toMatch(/^y/);
-    await expect(backend.platformMoveToCore(W, { kind: "all" }, "no-such-grant")).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, "no-such-grant")).rejects.toMatchObject({ code: "platform.grant_invalid" });
   });
 
   it("exports the history as dash-qt's CSV: one quoted line per record, the header first", async () => {

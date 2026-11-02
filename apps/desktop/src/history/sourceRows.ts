@@ -6,7 +6,9 @@
 // history.
 
 import type { TxRow } from "../api/generated/TxRow";
-import { creditsToDuffs, type PlatformActivity, type ShieldedActivity } from "../api/pending";
+import type { PlatformActivity } from "../api/generated/PlatformActivity";
+import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
+import { creditsToDuffs } from "../api/pending";
 
 export type RowSource = "platform" | "shielded";
 

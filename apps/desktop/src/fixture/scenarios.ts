@@ -613,7 +613,7 @@ const SCENARIOS = {
     const w = base(t);
     w.pending.shielded!.ready = false;
     w.pending.shielded!.balance = "0";
-    w.pending.shielded!.pendingShields = [{ txid: "c0ffee00".repeat(8), duffs: 50_000_000, proved: false }];
+    w.pending.shielded!.pendingShields = [{ txid: "c0ffee00".repeat(8), duffs: 50_000_000, proved: false, consumptionUnknown: false }];
     return w;
   },
   /** Shielded is ready and holds nothing: Send and Move wait for a balance. */

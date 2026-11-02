@@ -6,10 +6,12 @@
 // with `resume`. One flow per wallet, kept while the app runs, so the sheet can close while the call
 // runs and reopen to its result (as withdraw does).
 
-import type { Backend } from "../api/backend";
+import { isAppError, type Backend } from "../api/backend";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { GrantRequest } from "../api/generated/GrantRequest";
-import { SHIELDED_CODES, type ShieldedSpendOutcome, type ShieldOutcome } from "../api/pending";
+import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
+import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
+import { SHIELDED_CODES } from "../api/pending";
 import { platformOp } from "../dashpay/topup";
 import { failureText, Model } from "../onboarding/model";
 import { moveErrorText } from "../platform/move";
@@ -92,6 +94,7 @@ export const SHIELDED_COPY = {
   done: {
     add: { title: "Added to Shielded", text: (balance: string) => `Your Shielded balance is now ${balance}.` },
     waiting: { title: "Locked, not applied yet", text: "Your Dash is locked and waiting for the network's confirmation. Finish it from the Shielded card: nothing is lost." },
+    checking: { title: "Checking", text: "This amount may already be in your shielded balance; we can't confirm it yet." },
     notApplied: { title: "Locked, not applied", text: (why: string) => `Your Dash is locked but Dash Platform did not add it yet (${why}). Finish it from the Shielded card: nothing is lost.` },
     send: { title: "Sent", text: (amount: string) => `${amount} was sent privately.` },
     out: { title: "Moved", text: (amount: string) => `About ${amount} is on its way to your Dash wallet. It arrives when Dash Platform's withdrawal is mined.` },
@@ -107,12 +110,11 @@ export const SHIELDED_COPY = {
   },
 } as const;
 
-/** An error as dw-app sends it, whether or not this build's generated `ErrorCode` lists its code
- * (the shielded codes arrive with lane E1's bindings, which `isAppError` would refuse until then). */
+/** An error as dw-app sends it: its code (the generated `ErrorCode` lists the shielded ones) and data. */
 function errorLike(e: unknown): { code: string; data: Record<string, unknown> | null } | null {
-  if (typeof e !== "object" || e === null || typeof (e as { code?: unknown }).code !== "string" || typeof (e as { message?: unknown }).message !== "string") return null;
-  const data = (e as { data?: unknown }).data;
-  return { code: (e as { code: string }).code, data: typeof data === "object" && data !== null ? (data as Record<string, unknown>) : null };
+  if (!isAppError(e)) return null;
+  const data = e.data;
+  return { code: e.code, data: typeof data === "object" && data !== null ? (data as Record<string, unknown>) : null };
 }
 
 /** Whether `e` is the app error `code`. */
@@ -308,9 +310,9 @@ export class ShieldedFlow extends Model {
       case "resume":
         return { kind: "shield", outcome: await this.api.resumeShield(this.walletId, r.txid, grant) };
       case "send":
-        return { kind: "spend", outcome: await this.api.shieldedSend(this.walletId, r.to, r.credits, r.memo, grant) };
+        return { kind: "spend", outcome: await this.api.shieldedSend(this.walletId, r.to, r.credits, r.memo, grant, false) };
       case "out":
-        return { kind: "spend", outcome: await this.api.unshieldToCore(this.walletId, r.credits, null, grant) };
+        return { kind: "spend", outcome: await this.api.unshieldToCore(this.walletId, r.credits, null, grant, false) };
     }
   }
 }

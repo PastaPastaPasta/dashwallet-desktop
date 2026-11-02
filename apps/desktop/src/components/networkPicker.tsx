@@ -4,7 +4,7 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useId } from "react";
-import type { NetworkChoice } from "../api/pending";
+import type { ChosenNetwork } from "../api/generated/ChosenNetwork";
 import { errorMessage } from "../api/backend";
 import { keys, useBackend, useNetworkChoice } from "../api/queries";
 import { NETWORK_CHOICES, NetworkText } from "../network/choice";
@@ -14,7 +14,7 @@ export function useNetworkPicker() {
   const client = useQueryClient();
   const query = useNetworkChoice();
   const save = useMutation({
-    mutationFn: (choice: NetworkChoice) => backend.setNetworkChoice(choice),
+    mutationFn: (choice: ChosenNetwork) => backend.setNetworkChoice(choice),
     onSuccess: (view) => client.setQueryData(keys.networkChoice, view),
   });
   const view = query.data ?? null;
@@ -31,7 +31,7 @@ export function useNetworkPicker() {
     /** The network this window was started on by `--network` (it wins over the choice). */
     pinned: view?.forcedByFlag ? view.launched.kind : null,
     problem: save.isError ? `${NetworkText.notSaved} ${errorMessage(save.error)}` : null,
-    choose: (c: NetworkChoice) => save.mutate(c),
+    choose: (c: ChosenNetwork) => save.mutate(c),
   };
 }
 

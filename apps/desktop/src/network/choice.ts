@@ -3,9 +3,9 @@
 // network it was started on, so a different choice asks for a restart. The backend says which
 // (`NetworkChoiceView.restartNeeded`, `forcedByFlag`); this file holds the words.
 
-import type { NetworkChoice } from "../api/pending";
+import type { ChosenNetwork } from "../api/generated/ChosenNetwork";
 
-export const NETWORK_CHOICES: { choice: NetworkChoice; label: string }[] = [
+export const NETWORK_CHOICES: { choice: ChosenNetwork; label: string }[] = [
   { choice: "mainnet", label: "Mainnet" },
   { choice: "testnet", label: "Testnet" },
 ];
@@ -17,5 +17,5 @@ export const NetworkText = {
   notSaved: "The network choice could not be saved.",
   /** A window started with `--network regtest` or `devnet-<name>` is not on either choice. */
   pinned: (current: string) => `This window was started with --network ${current}, which wins until the next start without it.`,
-  restart: (choice: NetworkChoice) => `Restart Dash Wallet to use ${choice === "mainnet" ? "Mainnet" : "Testnet"}.`,
+  restart: (choice: ChosenNetwork) => `Restart Dash Wallet to use ${choice === "mainnet" ? "Mainnet" : "Testnet"}.`,
 };
