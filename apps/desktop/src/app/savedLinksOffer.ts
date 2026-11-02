@@ -15,15 +15,17 @@ export function useSavedLinksOffer(backend: Backend, s: { hasWallet: boolean; lo
   const welcome = useRef(false);
   /** Live links applied when the pending offer was armed (launch, onboarding done, an unlock). */
   const armedAt = useRef(liveLinkCount());
-  const arm = useCallback(() => {
-    armedAt.current = liveLinkCount();
+  const arm = useCallback((keep = false) => {
+    if (!keep) armedAt.current = liveLinkCount();
     setPending(true);
   }, []);
   const wasLocked = useRef(s.locked);
   useEffect(() => {
-    if (wasLocked.current && !s.locked) arm();
+    // An unlock with the offer still unanswered (a launch while locked) keeps its count: a live
+    // link applied while locked opened its page behind the lock screen and wins.
+    if (wasLocked.current && !s.locked) arm(pending);
     wasLocked.current = s.locked;
-  }, [s.locked, arm]);
+  }, [s.locked, pending, arm]);
   // What holds at the answer: the window may have locked or opened something meanwhile.
   const now = useRef(s);
   useEffect(() => {
