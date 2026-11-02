@@ -643,6 +643,80 @@ mod tests {
         tx.input.iter().map(|i| i.previous_output).collect()
     }
 
+    /// Load is idempotent: each load runs the re-home, and a second run on
+    /// the same wallet finds nothing to move and changes nothing (the coins
+    /// of each account, its pools and used marks, and the balance), whether
+    /// coins moved, were evicted or stayed.
+    #[test]
+    fn a_second_rehome_changes_nothing() {
+        let (mut wallet, mut info) = wallet();
+        let contact = AccountType::DashpayExternalAccount {
+            index: 0,
+            user_identity_id: [1; 32],
+            friend_identity_id: [2; 32],
+        };
+        wallet.add_account(contact, None).unwrap();
+        info.add_managed_account(&wallet, contact).unwrap();
+        let theirs = (info
+            .accounts
+            .dashpay_external_accounts
+            .values()
+            .next()
+            .unwrap())
+        .managed_account_type()
+        .address_pools()[0]
+            .address_at_index(0)
+            .unwrap();
+        park(&mut info, &pays(1, &theirs), &theirs);
+        let mixed = coinjoin_address(&wallet, &info, 170);
+        park(&mut info, &pays(2, &mixed), &mixed);
+        let far = coinjoin_address(&wallet, &info, 170 + 2 * REHOME_SEARCH);
+        park(&mut info, &pays(3, &far), &far);
+
+        let first = rehome_parked(&wallet, &mut info, REHOME_SEARCH);
+        assert_eq!((first.moved, first.evicted, first.stranded), (1, 1, 1));
+        let after_first = state(&info);
+        let second = rehome_parked(&wallet, &mut info, REHOME_SEARCH);
+
+        assert_eq!(
+            second,
+            Rehomed {
+                stranded: 1,
+                stranded_duffs: VALUE,
+                ..Rehomed::default()
+            },
+            "only the stranded coin is seen again"
+        );
+        assert!(!second.changed());
+        assert_eq!(state(&info), after_first);
+    }
+
+    /// Every funds account's coins and pools (generated and used indexes,
+    /// each address's used mark), and the wallet balance.
+    fn state(info: &ManagedWalletInfo) -> String {
+        let accounts: Vec<String> = (info.accounts.all_funding_accounts().into_iter())
+            .map(|a| {
+                let pools: Vec<_> = (a.managed_account_type().address_pools().into_iter())
+                    .map(|p| {
+                        let used: BTreeMap<u32, bool> = p
+                            .addresses
+                            .values()
+                            .map(|i| (i.index, i.is_used()))
+                            .collect();
+                        (p.highest_generated, p.highest_used, used)
+                    })
+                    .collect();
+                format!(
+                    "{:?} {:?} {:?}",
+                    a.managed_account_type().to_account_type(),
+                    a.utxos,
+                    pools
+                )
+            })
+            .collect();
+        format!("{accounts:?} {:?}", info.balance)
+    }
+
     /// The reconcile removes only a true duplicate: a coin one account holds
     /// (a CoinJoin coin, a BIP44 coin, or a parked one) is left as it is.
     #[test]
