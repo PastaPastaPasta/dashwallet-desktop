@@ -424,11 +424,6 @@ impl SyncTracker {
         self.running && caught_up(&self.readings)
     }
 
-    /// SPV is running (started and not stopped).
-    pub(crate) fn running(&self) -> bool {
-        self.running
-    }
-
     pub(crate) fn snapshot(&self) -> SyncSnapshot {
         let r = &self.readings;
         let row = |phase, reading: Option<PhaseReading>| SyncPhaseProgress {

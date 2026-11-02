@@ -1952,7 +1952,7 @@ impl ShieldedLib for PwShielded {
     }
 
     fn spv_running(&self) -> bool {
-        self.pw.session.hub.tracker().running()
+        self.pw.session.hub.tracker().snapshot().running
     }
 
     async fn funding_permit(
