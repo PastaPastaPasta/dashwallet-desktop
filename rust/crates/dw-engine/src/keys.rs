@@ -566,8 +566,6 @@ impl NetworkSession {
         }
 
         let default_name = self.next_default_name();
-        // A restore: its scan's finds are catch-up (DEC-1058 #6).
-        self.hub.reset_tip_follow(wallet_id);
         let registered = if registration_refused(self.data_dir()) {
             Err(EngineError::Internal("test: registration refused".into()))
         } else {

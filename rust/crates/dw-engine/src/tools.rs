@@ -373,8 +373,6 @@ impl NetworkSession {
                 self.refresh_wallet_state(&manager, id).await;
             }
             let checkpoint = from.saturating_sub(1);
-            // What the rescan finds is catch-up (DEC-1058 #6).
-            self.hub.reset_tip_follow(id);
             let m = Arc::clone(&manager);
             tokio::task::spawn_blocking(move || m.spv_rescan_filters_blocking(&id.0, checkpoint))
                 .await?;
