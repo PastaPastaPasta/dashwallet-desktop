@@ -17,15 +17,22 @@ async function open(page: Page, scenario = "funded") {
 
 test.describe("payment toast privacy", () => {
   test("a toast already on screen is masked when Discreet turns on", async ({ page }) => {
+    // The page's clock is ours: a toast lives 3 s, and under load the steps below can take longer
+    // than that of real time. Once it is on screen, time stops until the test lets it run.
+    await page.clock.install();
     await open(page);
     await pay(page, 999_819);
     await expect(page.locator(".toast")).toHaveText("Received 0.00999819 tDASH");
+    await page.clock.pauseAt(new Date(Date.now() + 1000));
     await page.getByTestId("toolbar-discreet").click();
     await expect(page.locator(".toast")).toHaveText("Received a payment");
     expect(await toastText(page)).not.toContain("0.00999819");
     // And back: the toast is the same one, not a new announcement.
     await page.getByTestId("toolbar-discreet").click();
     await expect(page.locator(".toast")).toHaveText("Received 0.00999819 tDASH");
+    // It goes when its time is up, and not before.
+    await page.clock.runFor(4000);
+    await expect(page.locator(".toast")).toHaveCount(0);
   });
 
   test("a toast on screen is dismissed when the wallet locks", async ({ page }) => {
