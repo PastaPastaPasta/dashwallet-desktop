@@ -58,9 +58,11 @@ pub(crate) const REHOME_SEARCH: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
 /// `MAX_REHYDRATION_DERIVATION_INDEX`, checked at `:609`). An absolute index,
 /// not a distance from the pool's loaded end, so a second load searches no
 /// further than the first. Per pool this bounds the derivations to
-/// `REHOME_MAX_INDEX + 1` and the addresses generated to that plus the
-/// pool's gap (the refill past a used address). Coins past it stay where
-/// they were loaded, counted once, and are logged.
+/// `REHOME_MAX_INDEX + 1`, and the addresses generated, the refill past a
+/// used address included, to the index itself: past it lie addresses no
+/// search covered, and holding them would let the next load claim a coin
+/// this one left. Coins past it stay where they were loaded, counted once,
+/// and are logged.
 pub(crate) const REHOME_MAX_INDEX: u32 = 10_000;
 
 /// What [`rehome_parked`] did.
@@ -83,7 +85,8 @@ pub(crate) struct Rehomed {
     /// within [`REHOME_SEARCH`] and [`REHOME_MAX_INDEX`] (counted once).
     pub stranded: usize,
     pub stranded_duffs: u64,
-    /// [`REHOME_MAX_INDEX`] cut a pool's search short.
+    /// [`REHOME_MAX_INDEX`] ended a pool's search while coins were still
+    /// unresolved (they may lie past it, or belong to no pool).
     pub capped: bool,
 }
 
@@ -117,6 +120,16 @@ pub(crate) fn rehome_parked(wallet: &Wallet, info: &mut ManagedWalletInfo, searc
     if parked.is_empty() {
         return done;
     }
+    // Coins whose address a pool already holds (a stored lookahead, the
+    // loader's refill) are used before the search, so it starts past their
+    // gap, as a later load's would.
+    for (holder, outpoint) in &parked {
+        let address = &info.accounts.funds_account(holder).expect("listed").utxos[outpoint].address;
+        if let Some(home) = owner(info, &accounts, address) {
+            let address = address.clone();
+            mark(info, &home, &address);
+        }
+    }
     let mut wanted = searched_for(info, &accounts, &parked);
     for account in &accounts {
         if wanted.is_empty() {
@@ -124,6 +137,10 @@ pub(crate) fn rehome_parked(wallet: &Wallet, info: &mut ManagedWalletInfo, searc
         }
         done.capped |= extend_to(wallet, info, account, &mut wanted, search);
     }
+    // Every coin is placed against the pools as the search left them: the
+    // loop only marks addresses used, and the gap refill waits until after
+    // it, so no refill makes a later coin's address (past the search) owned.
+    let mut touched: Vec<AccountType> = Vec::new();
     for (holder, outpoint) in parked {
         let utxo = info.accounts.funds_account(&holder).expect("listed").utxos[&outpoint].clone();
         let Some(home) = owner(info, &accounts, &utxo.address) else {
@@ -143,7 +160,8 @@ pub(crate) fn rehome_parked(wallet: &Wallet, info: &mut ManagedWalletInfo, searc
         };
         if home == holder {
             // Its own pool now holds it: it was only underived.
-            mark_used(wallet, info, &home, &utxo.address);
+            mark(info, &home, &utxo.address);
+            touched.push(home);
             done.marked += 1;
             continue;
         }
@@ -161,7 +179,13 @@ pub(crate) fn rehome_parked(wallet: &Wallet, info: &mut ManagedWalletInfo, searc
                 done.moved_duffs += utxo.value();
             }
         }
-        mark_used(wallet, info, &home, &utxo.address);
+        mark(info, &home, &utxo.address);
+        touched.push(home);
+    }
+    touched.sort();
+    touched.dedup();
+    for account in &touched {
+        refill(wallet, info, account);
     }
     info.update_balance();
     done
@@ -383,21 +407,32 @@ fn extend_to(
     capped
 }
 
-/// Marks `address` used in `account`'s pools and keeps their gap past it.
-fn mark_used(
-    wallet: &Wallet,
-    info: &mut ManagedWalletInfo,
-    account: &AccountType,
-    address: &Address,
-) {
+/// Marks `address` used in `account`'s pools (no address is generated).
+fn mark(info: &mut ManagedWalletInfo, account: &AccountType, address: &Address) {
+    if let Some(a) = info.accounts.funds_account_mut(account) {
+        a.managed_account_type_mut().mark_address_used(address);
+    }
+}
+
+/// Keeps the gap past the highest used address of each of `account`'s
+/// pools, as `maintain_gap_limit` does, but generates nothing past
+/// [`REHOME_MAX_INDEX`] (checked before allocating).
+fn refill(wallet: &Wallet, info: &mut ManagedWalletInfo, account: &AccountType) {
     let key_source = wallet.key_source_for_account(*account);
     let Some(a) = info.accounts.funds_account_mut(account) else {
         return;
     };
-    a.managed_account_type_mut().mark_address_used(address);
     if !matches!(key_source, KeySource::NoKeySource) {
         for pool in a.managed_account_type_mut().address_pools_mut() {
-            if let Err(e) = pool.maintain_gap_limit(&key_source) {
+            let Some(used) = pool.highest_used else {
+                continue;
+            };
+            let target = used.saturating_add(pool.gap_limit).min(REHOME_MAX_INDEX);
+            let next = pool.highest_generated.map_or(0, |h| h + 1);
+            if target < next {
+                continue;
+            }
+            if let Err(e) = pool.generate_addresses(target + 1 - next, &key_source, true) {
                 tracing::warn!(?account, error = %e, "could not keep a pool's gap past a re-homed coin");
             }
         }
@@ -1776,5 +1811,115 @@ mod tests {
             let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
             assert_eq!(holders(info, &op), [cj()]);
         });
+    }
+
+    /// One transaction paying `addresses` in output order, parked in BIP44:
+    /// same-txid outpoints iterate in `vout` order, so the order the re-home
+    /// sees the coins in is fixed.
+    fn park_batch(info: &mut ManagedWalletInfo, addresses: &[Address]) -> Vec<OutPoint> {
+        let mut tx = pays(1, &addresses[0]);
+        tx.output = (addresses.iter())
+            .map(|a| TxOut {
+                value: VALUE,
+                script_pubkey: a.script_pubkey(),
+            })
+            .collect();
+        let mut outpoints = Vec::new();
+        for (vout, address) in addresses.iter().enumerate() {
+            let outpoint = OutPoint::new(tx.txid(), vout as u32);
+            let mut coin = Utxo::new(
+                outpoint,
+                tx.output[vout].clone(),
+                address.clone(),
+                HEIGHT,
+                false,
+            );
+            coin.is_confirmed = true;
+            (info.accounts.funds_account_mut(&bip44()).unwrap().utxos).insert(outpoint, coin);
+            outpoints.push(outpoint);
+        }
+        info.update_balance();
+        outpoints
+    }
+
+    /// r2 Sol M1 (Sol's regression): a coin at the cap, then coins every 100
+    /// past it. Marking one used must not refill the pool to the next, and so
+    /// on: nothing is generated past [`REHOME_MAX_INDEX`] and the coins past
+    /// it stay parked, counted once.
+    #[test]
+    fn gap_refills_cannot_walk_past_rehome_max_index() {
+        let (wallet, mut info) = wallet();
+        let mut indexes: Vec<u32> = (1..=9).map(|k| 99 + 1000 * k).collect();
+        indexes.extend((0..=10).map(|k| REHOME_MAX_INDEX + k * 100));
+        let addresses = coinjoin_addresses(&wallet, &info, &indexes);
+        let outpoints = park_batch(&mut info, &addresses);
+
+        let done = rehome_parked(&wallet, &mut info, REHOME_SEARCH);
+
+        let pool = &info
+            .accounts
+            .funds_account(&cj())
+            .unwrap()
+            .managed_account_type()
+            .address_pools()[0];
+        assert!(
+            pool.highest_generated.unwrap() <= REHOME_MAX_INDEX + pool.gap_limit,
+            "highest_generated={:?}, highest_used={:?}, {done:?}",
+            pool.highest_generated,
+            pool.highest_used
+        );
+        assert_eq!((done.moved, done.stranded), (10, 10), "{done:?}");
+        for (index, outpoint) in indexes.iter().zip(&outpoints) {
+            let held = if *index > REHOME_MAX_INDEX {
+                bip44()
+            } else {
+                cj()
+            };
+            assert_eq!(holders(&info, outpoint), [held], "index {index}");
+        }
+        assert_eq!(info.balance.total(), 20 * VALUE);
+    }
+
+    /// r2 Sol M1 (Sol's regression): the coin past the cap first in output
+    /// order, then the one at it. A second call changes nothing.
+    #[test]
+    fn the_cap_tail_is_idempotent_in_reverse_output_order() {
+        let (wallet, mut info) = wallet();
+        let mut indexes = vec![REHOME_MAX_INDEX + 1, REHOME_MAX_INDEX];
+        indexes.extend((1..=9).map(|k| 99 + 1000 * k));
+        let addresses = coinjoin_addresses(&wallet, &info, &indexes);
+        park_batch(&mut info, &addresses);
+        let first = rehome_parked(&wallet, &mut info, REHOME_SEARCH);
+        let after_first = state(&info);
+
+        let second = rehome_parked(&wallet, &mut info, REHOME_SEARCH);
+
+        assert!(!second.changed(), "first={first:?}; second={second:?}");
+        assert_eq!(state(&info), after_first);
+    }
+
+    /// r2 Opus m1 (Opus's regression): a stored lookahead (applied before the
+    /// re-home) already holds one parked coin's address, unused. Marking it
+    /// used must not take a second call's search past the first's.
+    #[test]
+    fn a_coin_a_lookahead_holds_keeps_the_fixed_point() {
+        let (wallet, mut info) = wallet();
+        let ks = wallet.key_source_for_account(cj());
+        let account = info.accounts.funds_account_mut(&cj()).unwrap();
+        for pool in account.managed_account_type_mut().address_pools_mut() {
+            pool.set_gap_limit(1000, &ks).unwrap();
+        }
+        let addresses = coinjoin_addresses(&wallet, &info, &[500, 2300]);
+        let held = park(&mut info, &pays(1, &addresses[0]), &addresses[0]);
+        let tail = park(&mut info, &pays(2, &addresses[1]), &addresses[1]);
+        let first = rehome_parked(&wallet, &mut info, REHOME_SEARCH);
+        assert_eq!(holders(&info, &held), [cj()]);
+        let after_first = state(&info);
+
+        let second = rehome_parked(&wallet, &mut info, REHOME_SEARCH);
+
+        assert!(!second.changed(), "first={first:?}; second={second:?}");
+        assert_eq!(state(&info), after_first);
+        assert_eq!(holders(&info, &tail), [cj()], "the first call finds it");
     }
 }
