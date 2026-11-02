@@ -19,6 +19,9 @@ ignore = [
     { id = "RUSTSEC-2026-0367", reason = "zip 8 extract runs only in tenderdash-proto-compiler's build script on the pinned tenderdash archive; it requires zip ^8.5" },
     { id = "RUSTSEC-2026-0368", reason = "zip 8 extract runs only in tenderdash-proto-compiler's build script on the pinned tenderdash archive; it requires zip ^8.5" },
     { id = "RUSTSEC-2026-0369", reason = "zip 8 extract runs only in tenderdash-proto-compiler's build script on the pinned tenderdash archive; it requires zip ^8.5" },
+    # RUSTSEC-2026-0429 (added 2026-11-02): the same zip 8.6.0 copy. `extract()` aborts the process on a
+    # symlink entry declaring a huge size; patched only in 9.0.0. Same build-script-only path as above.
+    { id = "RUSTSEC-2026-0429", reason = "zip 8 extract runs only in tenderdash-proto-compiler's build script on the pinned tenderdash archive; it requires zip ^8.5" },
     # zvariant, zbus_names and zvariant_derive are unmaintained because zbus 6 absorbed them.
     # They come in with zbus 5, which dw-app and dw-desktop use for the session bus and the
     # screen-capture portal on Linux, and which tauri-plugin-single-instance requires (^5.9,
