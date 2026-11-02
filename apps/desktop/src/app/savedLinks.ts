@@ -67,6 +67,13 @@ export function offerReady(s: { pending: boolean; hasWallet: boolean; locked: bo
   return s.pending && s.hasWallet && !s.locked && !s.covered;
 }
 
+/** How many live links (a link the shell delivered while the window runs) have been applied. An
+ * offer takes it when it is armed: a live link applied since has already opened what it leads
+ * to, and the offer, which has been overtaken, opens nothing over it. */
+let liveLinks = 0;
+export const noteLiveLink = (): number => ++liveLinks;
+export const liveLinkCount = (): number => liveLinks;
+
 /** What an offer opens, `links` oldest first as `stashed_links` lists them: after onboarding the
  * newest invitation's claim screen (DP5-03 D2), else the "Links you opened" dialog; nothing
  * without links. */
