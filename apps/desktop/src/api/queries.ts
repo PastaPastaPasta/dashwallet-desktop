@@ -231,13 +231,21 @@ export function useNetworkChoice() {
  * one-block flap smoothed away (api/syncDisplay.ts). The query itself holds the raw reading. */
 export function useSyncStatus() {
   const b = useBackend();
+  const client = useQueryClient();
   const query = useQuery({
     queryKey: keys.sync,
     queryFn: async ({ signal }) => {
       const ticket = readTicket(b);
       const raw = await b.syncStatus();
       // A reply that was superseded or cancelled is not a reading: the query keeps the newest one.
-      if (signal.aborted || !feedSync(b, raw, Date.now(), ticket)) return rawSync(b) ?? raw;
+      if (signal.aborted) return rawSync(b) ?? raw;
+      if (!feedSync(b, raw, Date.now(), ticket)) {
+        // An engine event took the place of this read, and the event's snapshot may already be behind
+        // the engine's live state: while this read was still out, invalidating it started no second
+        // one. Once it has settled, read again, which begins after the event.
+        setTimeout(() => void client.invalidateQueries({ queryKey: keys.sync }), 0);
+        return rawSync(b) ?? raw;
+      }
       return raw;
     },
   });

@@ -135,6 +135,22 @@ test.describe("catch-up is not news", () => {
   });
 });
 
+test.describe("round 3: the first read at startup", () => {
+  const readsOfSync = (page: Page) => page.evaluate(`window.__dwFixture.calls.filter((c) => c === "sync_status").length`) as Promise<number>;
+
+  test("an event that supersedes the first read does not leave Not syncing: a fresh read follows", async ({ page }) => {
+    // The first sync_status call is held; its reply (running) is as of the call.
+    await page.goto(fixtureUrl("funded", "light", "&hold=sync_status"));
+    await page.getByTestId("status-bar").waitFor();
+    // A queued event carries a snapshot that is already behind the engine's live state.
+    await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "sync", network: f.world.launch.network.dirName, status: { ...f.world.sync, running: false, caughtUp: false } }); })()`);
+    await page.evaluate(`window.__dwFixture.release("sync_status")`);
+    // The engine is running: one more read, begun after the event, says so.
+    await expect(page.getByTestId("status-bar")).toContainText("Synced");
+    expect(await readsOfSync(page)).toBe(2);
+  });
+});
+
 test.describe("round 2: stale sync replies", () => {
   const emitCurrent = (page: Page) => page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "sync", network: f.world.launch.network.dirName, status: f.world.sync }); })()`);
   const readsOfSync = (page: Page) => page.evaluate(`window.__dwFixture.calls.filter((c) => c === "sync_status").length`) as Promise<number>;
