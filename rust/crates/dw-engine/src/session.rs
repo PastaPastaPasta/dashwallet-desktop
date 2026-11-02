@@ -581,6 +581,7 @@ impl NetworkSession {
         }
         session.leases.install_resumer(tracked);
         session.hub.attach_leases(&session.leases);
+        session.attach_reconcile();
         if let Ok(live) = session.live() {
             live.tap.watch_locks(&session.leases);
         }
@@ -616,7 +617,15 @@ impl NetworkSession {
         session.open_avatars(Arc::clone(&appdb)).await;
         session.apply_stored_lookaheads(&manager).await;
         for id in manager.list_wallet_ids_blocking() {
-            session.refresh_wallet_state(&manager, WalletId(id)).await;
+            // Before SPV starts: no block can replay a parked coin yet.
+            if session.rehome_parked_coins(&manager, WalletId(id)).await {
+                // platform-wallet's balance mirror counted any copy it dropped.
+                session
+                    .refresh_wallet_state_from_core(&manager, WalletId(id))
+                    .await;
+            } else {
+                session.refresh_wallet_state(&manager, WalletId(id)).await;
+            }
             session.load_identity_choices(WalletId(id)).await;
             session.load_payment_locks(WalletId(id)).await;
             // Each pass fetches the contacts' profiles (DP4-01 D12).
