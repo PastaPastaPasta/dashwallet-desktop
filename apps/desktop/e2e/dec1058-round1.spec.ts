@@ -177,7 +177,9 @@ test.describe("round 2: stale sync replies", () => {
     await page.clock.runFor(120_000);
     await expect(bar).toContainText("Syncing");
     await expect(bar).not.toContainText("Synced");
-    // And a catch-up batch is history, not news.
+    // The old reply did not restore a caught-up reading: once the notification allowance (10 minutes
+    // since the last one) has passed, a catch-up batch is history, not news.
+    await page.clock.runFor(10 * 60_000);
     await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [${JSON.stringify(txid)}], count: 1, catchUp: true }); })()`);
     await page.clock.runFor(500);
     expect(await page.evaluate(`window.__dwFixture.calls.filter((c) => c === "tx_notices").length`)).toBe(0);
