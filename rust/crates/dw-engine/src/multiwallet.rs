@@ -354,11 +354,8 @@ impl NetworkSession {
             drop(passes);
             // A block SPV replays before this is undone by the re-home (it
             // drops the copy) and by the block event's reconcile.
-            if this.rehome_parked_coins(&live.manager, id).await {
-                this.refresh_wallet_state_from_core(&live.manager, id).await;
-            } else {
-                this.refresh_wallet_state(&live.manager, id).await;
-            }
+            this.rehome_parked_coins(&live.manager, id).await;
+            this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;
             this.load_payment_locks(id).await;
             // Its contacts' profiles are fetched on its next pass (DP4-01 D12).

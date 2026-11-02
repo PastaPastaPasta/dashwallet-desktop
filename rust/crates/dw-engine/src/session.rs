@@ -13,7 +13,6 @@ use dash_spv::{ClientConfig, DevnetConfig};
 use dpp::version::PlatformVersion;
 use dw_appdb::{APP_DB_FILE, APP_DB_LOCK_FILE, AppDb};
 use dw_vault::{VAULT_DIR, Vault, VaultConfig};
-use key_wallet::wallet::balance::WalletCoreBalance;
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWalletManager;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
@@ -618,14 +617,8 @@ impl NetworkSession {
         session.apply_stored_lookaheads(&manager).await;
         for id in manager.list_wallet_ids_blocking() {
             // Before SPV starts: no block can replay a parked coin yet.
-            if session.rehome_parked_coins(&manager, WalletId(id)).await {
-                // platform-wallet's balance mirror counted any copy it dropped.
-                session
-                    .refresh_wallet_state_from_core(&manager, WalletId(id))
-                    .await;
-            } else {
-                session.refresh_wallet_state(&manager, WalletId(id)).await;
-            }
+            session.rehome_parked_coins(&manager, WalletId(id)).await;
+            session.refresh_wallet_state(&manager, WalletId(id)).await;
             session.load_identity_choices(WalletId(id)).await;
             session.load_payment_locks(WalletId(id)).await;
             // Each pass fetches the contacts' profiles (DP4-01 D12).
@@ -658,28 +651,12 @@ impl NetworkSession {
         *self.pump.lock().unwrap_or_else(|p| p.into_inner()) = Some(PumpTask { stop, task });
     }
 
-    /// Reads a wallet's balance and scan heights into the hub.
+    /// Reads a wallet's balance and scan heights into the hub, all from
+    /// key-wallet under one read lock. Never from platform-wallet's
+    /// event-fed balance mirror: no event follows the engine's own changes
+    /// to key-wallet state (the parked-coin re-home and reconcile, an
+    /// abandon), so the mirror can keep a total they undid.
     pub(crate) async fn refresh_wallet_state(&self, manager: &Manager, id: WalletId) {
-        let balance = manager.get_wallet(&id.0).await.map(|w| {
-            let b = w.balance();
-            WalletCoreBalance::new(b.confirmed(), b.unconfirmed(), b.immature(), b.locked())
-        });
-        self.store_wallet_state(manager, id, balance).await;
-    }
-
-    /// As [`Self::refresh_wallet_state`], with key-wallet's own balance
-    /// instead of platform-wallet's event-fed mirror (after the engine
-    /// changed key-wallet state directly, e.g. an abandon).
-    pub(crate) async fn refresh_wallet_state_from_core(&self, manager: &Manager, id: WalletId) {
-        self.store_wallet_state(manager, id, None).await;
-    }
-
-    async fn store_wallet_state(
-        &self,
-        manager: &Manager,
-        id: WalletId,
-        balance: Option<WalletCoreBalance>,
-    ) {
         let wm = manager.wallet_manager_arc();
         let wm = wm.read().await;
         let Some(info) = wm.get_wallet_info(&id.0) else {
@@ -695,7 +672,7 @@ impl NetworkSession {
                 birth_height: core.birth_height(),
                 synced_height: core.synced_height(),
                 processed_height: core.last_processed_height(),
-                balance: balance.unwrap_or_else(|| core.balance()),
+                balance: core.balance(),
                 accounts: core.account_balances(),
                 fully_mixed: self.hub.wallet_state(&id).and_then(|s| s.fully_mixed),
             },

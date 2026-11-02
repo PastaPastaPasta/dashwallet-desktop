@@ -18,7 +18,9 @@
 //! [`rehome_parked`] runs at load, before SPV can replay anything. It finds the
 //! funds account that derives each parked coin's address, extends that
 //! account's pool to it (from the account's own xpub, at most
-//! [`REHOME_SEARCH`] indexes past what it holds), and moves the coin there.
+//! [`REHOME_SEARCH`] indexes past what it holds or would generate, never
+//! past [`REHOME_MAX_INDEX`]), and moves the coin there, marking its address
+//! used.
 //! [`reconcile_duplicates`] is the safety net after block events: one copy
 //! per outpoint, in the account that owns the address. Neither persists
 //! anything (`core_utxos` has no account column).
@@ -37,9 +39,10 @@ use key_wallet::{ChildNumber, Wallet};
 use crate::WalletId;
 use crate::session::{Manager, NetworkSession};
 
-/// The re-home's search window: how many indexes past a pool's highest
-/// generated one (or past the last parked address it found there) it derives
-/// looking for a parked coin's address. It is key-wallet's largest gap limit
+/// The re-home's search window: how many indexes past the furthest one a
+/// pool holds or would generate keeping its gap (or past the gap refill of
+/// the last parked address it found there) it derives looking for a parked
+/// coin's address. It is key-wallet's largest gap limit
 /// (`gap_limit::MAX_GAP_LIMIT`, 1000, also the engine's `MAX_LOOKAHEAD`): a
 /// scan never derives more than a gap limit past the last used address, so
 /// any coin the scan itself found lies within one window of a used address.
@@ -48,6 +51,17 @@ use crate::session::{Manager, NetworkSession};
 /// stays (and is logged). The test bar's wallet needed about 70 past the
 /// CoinJoin window (index ~170 against 0..99).
 pub(crate) const REHOME_SEARCH: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
+
+/// The re-home's hard budget: no pool is searched, derived or extended past
+/// this child index. It is the pinned rehydrator's own discovery ceiling
+/// (platform-wallet-storage `rehydrate.rs:479`
+/// `MAX_REHYDRATION_DERIVATION_INDEX`, checked at `:609`). An absolute index,
+/// not a distance from the pool's loaded end, so a second load searches no
+/// further than the first. Per pool this bounds the derivations to
+/// `REHOME_MAX_INDEX + 1` and the addresses generated to that plus the
+/// pool's gap (the refill past a used address). Coins past it stay where
+/// they were loaded, counted once, and are logged.
+pub(crate) const REHOME_MAX_INDEX: u32 = 10_000;
 
 /// What [`rehome_parked`] did.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -62,15 +76,18 @@ pub(crate) struct Rehomed {
     /// DashPay contact's (`AccountType::is_contact_owned`): not the wallet's.
     pub evicted: usize,
     pub evicted_duffs: u64,
+    /// Coins found in the account that derives their address once its pool
+    /// was extended: they stay, their address marked used.
+    pub marked: usize,
     /// Coins that stay where they are: no funds account derives their address
-    /// within [`REHOME_SEARCH`] (counted once).
+    /// within [`REHOME_SEARCH`] and [`REHOME_MAX_INDEX`] (counted once).
     pub stranded: usize,
     pub stranded_duffs: u64,
 }
 
 impl Rehomed {
     pub(crate) fn changed(&self) -> bool {
-        self.moved + self.dropped + self.evicted > 0
+        self.moved + self.dropped + self.evicted + self.marked > 0
     }
 }
 
@@ -106,11 +123,12 @@ pub(crate) fn rehome_parked(wallet: &Wallet, info: &mut ManagedWalletInfo, searc
             wanted.insert(utxo.txout.script_pubkey.clone(), utxo.address.clone());
         }
     }
+    let mut capped = false;
     for account in &accounts {
         if wanted.is_empty() {
             break;
         }
-        extend_to(wallet, info, account, &mut wanted, search);
+        capped |= extend_to(wallet, info, account, &mut wanted, search);
     }
     for (holder, outpoint) in parked {
         let utxo = info.accounts.funds_account(&holder).expect("listed").utxos[&outpoint].clone();
@@ -131,6 +149,8 @@ pub(crate) fn rehome_parked(wallet: &Wallet, info: &mut ManagedWalletInfo, searc
         };
         if home == holder {
             // Its own pool now holds it: it was only underived.
+            mark_used(wallet, info, &home, &utxo.address);
+            done.marked += 1;
             continue;
         }
         info.accounts
@@ -154,7 +174,9 @@ pub(crate) fn rehome_parked(wallet: &Wallet, info: &mut ManagedWalletInfo, searc
             coins = done.stranded,
             duffs = done.stranded_duffs,
             search,
-            "coins whose address no funds account derives within the search bound stay where they were loaded"
+            max_index = REHOME_MAX_INDEX,
+            capped,
+            "coins whose address no funds account derives within the search bounds stay where they were loaded"
         );
     }
     info.update_balance();
@@ -258,24 +280,26 @@ fn owner(
 
 /// Looks for the `wanted` scripts in each address pool of `account`, deriving
 /// from the account's xpub (without storing) a window of `search` indexes,
-/// or the pool's gap limit if larger, past the pool's highest generated
-/// index and past each wanted address found. Then extends the pool up to the
-/// furthest one found. Found scripts leave `wanted`.
+/// or the pool's gap limit if larger, past the furthest index the pool holds
+/// or would generate keeping its gap, and past the gap refill of each wanted
+/// address found, never past [`REHOME_MAX_INDEX`]. Then extends the pool up
+/// to the furthest one found. Found scripts leave `wanted`. True when
+/// [`REHOME_MAX_INDEX`] cut a pool's search short.
 fn extend_to(
     wallet: &Wallet,
     info: &mut ManagedWalletInfo,
     account: &AccountType,
     wanted: &mut HashMap<ScriptBuf, Address>,
     search: u32,
-) {
+) -> bool {
     let key_source = wallet.key_source_for_account(*account);
     let KeySource::Public(xpub) = key_source else {
-        return;
+        return false;
     };
     let Some(a) = info.accounts.funds_account_mut(account) else {
-        return;
+        return false;
     };
-    let mut extended = false;
+    let (mut extended, mut capped) = (false, false);
     for pool in a.managed_account_type_mut().address_pools_mut() {
         if wanted.is_empty() {
             break;
@@ -289,11 +313,24 @@ fn extend_to(
         let Ok(branch) = branch else {
             continue;
         };
+        let gap = pool.gap_limit;
         // Never less than the pool's gap: marking a found address used then
         // generates no address the search skipped.
-        let window = search.max(pool.gap_limit);
+        let window = search.max(gap);
         let start = pool.highest_generated.map_or(0, |h| h + 1);
-        let (mut furthest, mut end) = (None, start.saturating_add(window));
+        // The furthest index keeping the gap past the pool's used addresses
+        // generates (`maintain_gap_limit`: highest used + gap), so where a
+        // later load's search would start. Searching a window past it, and
+        // past the gap refill of each address found, leaves a later load
+        // nothing more to find (a fixed point).
+        let mut reach = (pool.highest_generated)
+            .max(pool.highest_used.map(|u| u.saturating_add(gap)))
+            .unwrap_or(gap.saturating_sub(1));
+        // The hard budget: nothing past REHOME_MAX_INDEX, checked before
+        // any derivation or allocation.
+        let ceiling = REHOME_MAX_INDEX.saturating_add(1);
+        let horizon = |reach: u32| reach.saturating_add(1).saturating_add(window).min(ceiling);
+        let (mut furthest, mut end) = (None, horizon(reach));
         let mut index = start;
         // As a gap-limit scan: each address found opens another window.
         while index < end && !wanted.is_empty() {
@@ -303,10 +340,12 @@ fn extend_to(
             let address = Address::p2pkh(&dashcore::PublicKey::new(child.public_key), pool.network);
             if wanted.remove(&address.script_pubkey()).is_some() {
                 furthest = Some(index);
-                end = index.saturating_add(1).saturating_add(window);
+                reach = reach.max(index.saturating_add(gap));
+                end = horizon(reach);
             }
             index += 1;
         }
+        capped |= end == ceiling && index >= end && !wanted.is_empty();
         if let Some(furthest) = furthest {
             if let Err(e) = pool.generate_addresses(furthest + 1 - start, &key_source, true) {
                 tracing::warn!(?account, error = %e, "could not extend a pool to a parked coin");
@@ -318,6 +357,7 @@ fn extend_to(
     if extended {
         a.bump_monitor_revision();
     }
+    capped
 }
 
 /// Marks `address` used in `account`'s pools and keeps their gap past it.
@@ -345,12 +385,12 @@ fn mark_used(
 impl NetworkSession {
     /// Re-homes wallet `id`'s parked coins ([`rehome_parked`]). Runs after
     /// the wallet's stored state is loaded and before SPV can replay a block.
-    /// True when it changed the wallet's coins.
-    pub(crate) async fn rehome_parked_coins(&self, manager: &Manager, id: WalletId) -> bool {
+    /// Returns what it did.
+    pub(crate) async fn rehome_parked_coins(&self, manager: &Manager, id: WalletId) -> Rehomed {
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
         let Some((wallet, info)) = wm.get_wallet_and_info_mut(&id.0) else {
-            return false;
+            return Rehomed::default();
         };
         let done = rehome_parked(wallet, &mut info.core_wallet, REHOME_SEARCH);
         if done.changed() {
@@ -361,22 +401,26 @@ impl NetworkSession {
                 dropped = done.dropped,
                 evicted = done.evicted,
                 evicted_duffs = done.evicted_duffs,
+                marked = done.marked,
                 "re-homed coins loaded into an account that does not derive their address"
             );
         }
-        done.changed()
+        done
     }
 
     /// Drops wallet `id`'s duplicate coins ([`reconcile_duplicates`]) after
     /// its block events, then publishes key-wallet's balance: it also undoes
     /// a doubled balance an event computed before an earlier reconcile.
     pub(crate) async fn reconcile_parked_coins(&self, id: WalletId) {
-        self.hub.reconcile_running(id);
         let Ok(manager) = self.manager() else {
+            self.hub.reconcile_running(id);
             return;
         };
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
+        // Only now: an event applied while this waited for the lock is
+        // covered by this run, and one applied after it starts the next.
+        self.hub.reconcile_running(id);
         let Some(info) = wm.get_wallet_info_mut(&id.0) else {
             return;
         };
@@ -385,8 +429,8 @@ impl NetworkSession {
         if dropped > 0 {
             tracing::warn!(wallet_id = %id, dropped, duffs, "dropped coins two funds accounts held");
         }
-        // An event computed before this ran but applied after it starts
-        // another reconcile (the pending mark is cleared above).
+        // An event computed before this took the lock but applied after it
+        // starts another reconcile (the pending mark is cleared above).
         self.hub
             .publish_core_balance(id, &core.balance(), &core.account_balances());
     }
@@ -924,10 +968,11 @@ mod tests {
             .address_pools()[0];
         let (have, gap) = (pool.highest_generated.unwrap(), pool.gap_limit);
         // A window of one gap: `near` is its last index, `chained` the last of
-        // the window `near` opens, `far` one past the window `chained` opens.
+        // the window past `near`'s gap refill, `far` one past the window past
+        // `chained`'s.
         let near = coinjoin_address(&wallet, &info, have + gap);
-        let chained = coinjoin_address(&wallet, &info, have + 2 * gap);
-        let far = coinjoin_address(&wallet, &info, have + 3 * gap + 1);
+        let chained = coinjoin_address(&wallet, &info, have + 3 * gap);
+        let far = coinjoin_address(&wallet, &info, have + 5 * gap + 1);
         let (near_tx, chained_tx, far_tx) = (pays(1, &near), pays(4, &chained), pays(2, &far));
         let near_op = park(&mut info, &near_tx, &near);
         let chained_op = park(&mut info, &chained_tx, &chained);
@@ -1097,5 +1142,409 @@ mod tests {
         info.update_balance();
         assert_eq!(reconcile_duplicates(&mut info), (1, VALUE));
         assert_eq!(holders(&info, &outpoint), [bip44()]);
+    }
+
+    /// The CoinJoin account's external addresses at `indexes`, derived on one
+    /// copy of its pool.
+    fn coinjoin_addresses(
+        wallet: &Wallet,
+        info: &ManagedWalletInfo,
+        indexes: &[u32],
+    ) -> Vec<Address> {
+        let ks = wallet.key_source_for_account(cj());
+        let mut pool = info
+            .accounts
+            .funds_account(&cj())
+            .unwrap()
+            .managed_account_type()
+            .address_pools()[0]
+            .clone();
+        let top = *indexes.iter().max().unwrap();
+        let have = pool.highest_generated.unwrap_or(0);
+        if top > have {
+            pool.generate_addresses(top - have, &ks, true).unwrap();
+        }
+        indexes
+            .iter()
+            .map(|i| pool.address_at_index(*i).expect("derived"))
+            .collect()
+    }
+
+    /// r1 m1 (Sol): CoinJoin generated through 99, coins at 170 and 1220.
+    /// Marking 170 used keeps the gap through 270, so a later load's window
+    /// reaches 1270: the first call must already find 1220, and the second
+    /// then changes nothing.
+    #[test]
+    fn the_rehome_reaches_a_fixed_point_at_a_windows_tail() {
+        let (wallet, mut info) = wallet();
+        let [near, tail] =
+            <[Address; 2]>::try_from(coinjoin_addresses(&wallet, &info, &[170, 1220])).unwrap();
+        let near_op = park(&mut info, &pays(1, &near), &near);
+        let tail_op = park(&mut info, &pays(2, &tail), &tail);
+
+        let first = rehome_parked(&wallet, &mut info, REHOME_SEARCH);
+        assert_eq!((first.moved, first.stranded), (2, 0), "{first:?}");
+        assert_eq!(holders(&info, &near_op), [cj()]);
+        assert_eq!(holders(&info, &tail_op), [cj()]);
+        let after_first = state(&info);
+        let second = rehome_parked(&wallet, &mut info, REHOME_SEARCH);
+
+        assert!(!second.changed(), "{second:?}");
+        assert_eq!(state(&info), after_first);
+    }
+
+    /// r1 m2 (Sol): a coin whose own account derives it only past the pool's
+    /// end is not moved, but its address is marked used and the gap is kept
+    /// past it, as for a moved coin.
+    #[test]
+    fn a_coin_found_in_its_own_account_is_marked_used() {
+        let (wallet, mut info) = wallet();
+        let to = coinjoin_address(&wallet, &info, 170);
+        let op = park(&mut info, &pays(1, &to), &to);
+        let utxo = info
+            .accounts
+            .funds_account_mut(&bip44())
+            .unwrap()
+            .utxos
+            .remove(&op)
+            .unwrap();
+        info.accounts
+            .funds_account_mut(&cj())
+            .unwrap()
+            .utxos
+            .insert(op, utxo);
+        info.update_balance();
+
+        let done = rehome_parked(&wallet, &mut info, REHOME_SEARCH);
+
+        assert!(done.changed(), "the pool changed: {done:?}");
+        assert_eq!(holders(&info, &op), [cj()]);
+        let pool = &info
+            .accounts
+            .funds_account(&cj())
+            .unwrap()
+            .managed_account_type()
+            .address_pools()[0];
+        assert!(pool.address_info(&to).unwrap().is_used(), "{done:?}");
+        assert!(
+            pool.highest_generated.unwrap() >= 170 + pool.gap_limit,
+            "the gap is kept past it"
+        );
+        assert_eq!(info.balance.total(), VALUE);
+    }
+
+    /// r1 M2: a chain of coins, each within a window of the last, goes home
+    /// up to exactly [`REHOME_MAX_INDEX`]; no pool is derived or extended
+    /// past it.
+    #[test]
+    fn chained_coins_go_home_up_to_rehome_max_index() {
+        let (wallet, mut info) = wallet();
+        let mut indexes: Vec<u32> = (1..=9).map(|k| 99 + 1000 * k).collect();
+        indexes.push(REHOME_MAX_INDEX);
+        let addresses = coinjoin_addresses(&wallet, &info, &indexes);
+        let ops: Vec<OutPoint> = addresses
+            .iter()
+            .enumerate()
+            .map(|(n, a)| park(&mut info, &pays(n as u8, a), a))
+            .collect();
+
+        let done = rehome_parked(&wallet, &mut info, REHOME_SEARCH);
+
+        assert_eq!((done.moved, done.stranded), (10, 0), "{done:?}");
+        assert!(ops.iter().all(|op| holders(&info, op) == [cj()]));
+        let pool = &info
+            .accounts
+            .funds_account(&cj())
+            .unwrap()
+            .managed_account_type()
+            .address_pools()[0];
+        assert!(pool.highest_generated.unwrap() <= REHOME_MAX_INDEX + pool.gap_limit);
+    }
+
+    /// r1 M2: the same chain, its last coin one index past
+    /// [`REHOME_MAX_INDEX`]: that coin stays in BIP44, counted once, and the
+    /// pool is never searched past the ceiling.
+    #[test]
+    fn a_chained_coin_past_rehome_max_index_stays() {
+        let (wallet, mut info) = wallet();
+        let mut indexes: Vec<u32> = (1..=9).map(|k| 99 + 1000 * k).collect();
+        indexes.push(REHOME_MAX_INDEX + 1);
+        let addresses = coinjoin_addresses(&wallet, &info, &indexes);
+        let ops: Vec<OutPoint> = addresses
+            .iter()
+            .enumerate()
+            .map(|(n, a)| park(&mut info, &pays(n as u8, a), a))
+            .collect();
+
+        let done = rehome_parked(&wallet, &mut info, REHOME_SEARCH);
+
+        assert_eq!((done.moved, done.stranded), (9, 1), "{done:?}");
+        assert_eq!(holders(&info, ops.last().unwrap()), [bip44()]);
+        assert_eq!(info.balance.total(), 10 * VALUE, "each counted once");
+        let pool = &info
+            .accounts
+            .funds_account(&cj())
+            .unwrap()
+            .managed_account_type()
+            .address_pools()[0];
+        assert!(
+            pool.address_info(addresses.last().unwrap()).is_none(),
+            "never derived past the ceiling"
+        );
+    }
+
+    struct Silent;
+
+    impl crate::EventSink for Silent {
+        fn emit(&self, _: crate::EngineEvent) {}
+    }
+
+    const PHRASE: &[u8] =
+        b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    /// A real engine and regtest session (unreachable SPV peer and DAPI: no
+    /// network) with one imported wallet.
+    fn engine_wallet() -> (
+        tempfile::TempDir,
+        crate::Engine,
+        Arc<NetworkSession>,
+        WalletId,
+    ) {
+        use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, SessionOptions};
+        use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::new(
+            EngineConfig {
+                data_root: dir.path().join("data"),
+                worker_threads: Some(2),
+                vault: VaultConfig {
+                    kdf: KdfPolicy::Fixed(KdfParams::TEST),
+                    os_store: Arc::new(MemoryOsStore::new()),
+                    ..Default::default()
+                },
+            },
+            Arc::new(Silent),
+        )
+        .unwrap();
+        let session = engine
+            .block_on(engine.open_network(
+                DashNetwork::Regtest,
+                SessionOptions {
+                    dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                    quorum_url: Some("http://127.0.0.1:1".into()),
+                    spv_peers: vec!["127.0.0.1:1".into()],
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        engine
+            .block_on(session.vault_op(|v| v.create(None)))
+            .unwrap();
+        let id = engine
+            .block_on(session.import_wallet(
+                zeroize::Zeroizing::new(PHRASE.to_vec()),
+                zeroize::Zeroizing::new(Vec::new()),
+                ImportOptions {
+                    birth_height: Some(0),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        (dir, engine, session, id)
+    }
+
+    /// Delivers `balance` to platform-wallet's balance mirror of wallet `id`
+    /// and to the hub, as a block event does.
+    fn deliver(
+        session: &NetworkSession,
+        pw: &Arc<platform_wallet::PlatformWallet>,
+        id: WalletId,
+        balance: u64,
+    ) {
+        use dash_spv::EventHandler;
+        use key_wallet::wallet::balance::WalletCoreBalance;
+        let mirrors = Arc::new(Default::default());
+        let handler =
+            platform_wallet::wallet::core::BalanceUpdateHandler::new(Arc::clone(&mirrors));
+        mirrors.store(Arc::new(BTreeMap::from([(id.0, Arc::clone(pw))])));
+        let event = platform_wallet::events::WalletEvent::BlockProcessed {
+            wallet_id: id.0,
+            height: HEIGHT,
+            chain_lock: None,
+            inserted: vec![],
+            updated: vec![],
+            matured: vec![],
+            balance: WalletCoreBalance::new(balance, 0, 0, 0),
+            account_balances: BTreeMap::new(),
+            addresses_derived: vec![],
+        };
+        handler.on_wallet_event(&event);
+        session.hub.apply_wallet_event(&event);
+    }
+
+    /// r1 M1 (Sol): a replay's doubled balance reaches platform-wallet's
+    /// mirror; the reconcile corrects key-wallet and the hub; a later
+    /// refresh (set_birth_height, a cancelled rescan, a send) must not bring
+    /// the doubled total back.
+    #[test]
+    fn a_refresh_after_the_reconcile_keeps_the_deduplicated_total() {
+        let (_dir, engine, session, id) = engine_wallet();
+        engine.block_on(async {
+            let manager = session.manager().unwrap();
+            let pw = manager.get_wallet(&id.0).await.unwrap();
+            {
+                let wm = manager.wallet_manager_arc();
+                let mut wm = wm.write().await;
+                let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
+                let info = &mut info.core_wallet;
+                let to = coinjoin_address(wallet, info, 5);
+                let op = park(info, &pays(1, &to), &to);
+                let coin = info.accounts.funds_account(&bip44()).unwrap().utxos[&op].clone();
+                info.accounts
+                    .funds_account_mut(&cj())
+                    .unwrap()
+                    .utxos
+                    .insert(op, coin);
+                info.update_balance();
+                assert_eq!(info.balance.total(), 2 * VALUE);
+            }
+            deliver(&session, &pw, id, 2 * VALUE);
+            session.reconcile_parked_coins(id).await;
+            assert_eq!(
+                session.hub.wallet_state(&id).unwrap().balance.total(),
+                VALUE
+            );
+
+            session.refresh_wallet_state(&manager, id).await;
+
+            assert_eq!(
+                session.hub.wallet_state(&id).unwrap().balance.total(),
+                VALUE
+            );
+        });
+    }
+
+    /// r1 M1: the same after the load-time eviction of a contact's coin: the
+    /// mirror still counts it, and a refresh must not.
+    #[test]
+    fn a_refresh_after_a_contact_eviction_keeps_it_uncounted() {
+        let (_dir, engine, session, id) = engine_wallet();
+        engine.block_on(async {
+            let manager = session.manager().unwrap();
+            let pw = manager.get_wallet(&id.0).await.unwrap();
+            {
+                let wm = manager.wallet_manager_arc();
+                let mut wm = wm.write().await;
+                let info = &mut wm.get_wallet_info_mut(&id.0).unwrap().core_wallet;
+                let contact = AccountType::DashpayExternalAccount {
+                    index: 0,
+                    user_identity_id: [1; 32],
+                    friend_identity_id: [2; 32],
+                };
+                let other =
+                    Wallet::new_random(Network::Regtest, WalletAccountCreationOptions::Default)
+                        .unwrap();
+                let KeySource::Public(theirs) = other.key_source_for_account(bip44()) else {
+                    unreachable!()
+                };
+                info.add_managed_account_from_xpub(contact, theirs).unwrap();
+                let to = (info
+                    .accounts
+                    .dashpay_external_accounts
+                    .values()
+                    .next()
+                    .unwrap())
+                .managed_account_type()
+                .address_pools()[0]
+                    .address_at_index(0)
+                    .unwrap();
+                park(info, &pays(1, &to), &to);
+                assert_eq!(info.balance.total(), VALUE);
+            }
+            deliver(&session, &pw, id, VALUE);
+            session.rehome_parked_coins(&manager, id).await;
+
+            session.refresh_wallet_state(&manager, id).await;
+
+            assert_eq!(session.hub.wallet_state(&id).unwrap().balance.total(), 0);
+        });
+    }
+
+    /// r1 m2 (Sol), through the real hooks: a BIP44 coin past the stored
+    /// pool, written by the real persister, then `unload_wallet` and
+    /// `load_wallet` (the load hook runs the re-home): its address is marked
+    /// used and the gap is kept past it.
+    #[test]
+    fn a_real_load_marks_a_sparse_bip44_coin_used() {
+        use platform_wallet::changeset::{
+            CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
+        };
+        let (_dir, engine, session, id) = engine_wallet();
+        let (to, index) = engine.block_on(async {
+            let manager = session.manager().unwrap();
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            let wallet = wm.get_wallet(&id.0).unwrap();
+            let info = wm.get_wallet_info(&id.0).unwrap();
+            let mut pool = (info.core_wallet.accounts.funds_account(&bip44()).unwrap())
+                .managed_account_type()
+                .address_pools()[0]
+                .clone();
+            let index = pool.highest_generated.unwrap() + 50;
+            pool.generate_addresses(50, &wallet.key_source_for_account(bip44()), true)
+                .unwrap();
+            (pool.address_at_index(index).unwrap(), index)
+        });
+        let tx = pays(1, &to);
+        let mut coin = Utxo::new(
+            OutPoint::new(tx.txid(), 0),
+            tx.output[0].clone(),
+            to.clone(),
+            HEIGHT,
+            false,
+        );
+        coin.is_confirmed = true;
+        let live = session.live().unwrap();
+        let core = CoreChangeSet {
+            new_utxos: vec![coin],
+            last_processed_height: Some(HEIGHT + 300),
+            synced_height: Some(HEIGHT + 300),
+            ..Default::default()
+        };
+        live.persister
+            .store(
+                id.0,
+                PlatformWalletChangeSet {
+                    core: Some(core),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        live.persister.flush(id.0).unwrap();
+        engine.block_on(session.unload_wallet(id)).unwrap();
+
+        engine.block_on(session.load_wallet(id)).unwrap();
+
+        engine.block_on(async {
+            let manager = session.manager().unwrap();
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+            let pool = &info
+                .accounts
+                .funds_account(&bip44())
+                .unwrap()
+                .managed_account_type()
+                .address_pools()[0];
+            let at = pool
+                .address_info(&to)
+                .expect("the load's re-home derives it");
+            assert!(at.is_used(), "highest_used={:?}", pool.highest_used);
+            assert!(
+                pool.highest_generated.unwrap() >= index + pool.gap_limit,
+                "the gap is kept past it"
+            );
+            assert_eq!(info.balance.total(), VALUE);
+        });
     }
 }
