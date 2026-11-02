@@ -652,10 +652,12 @@ impl SessionHub {
                 account_balances,
                 ..
             } => {
-                if self.history.with_wallet(id, |h| h.upsert(record, now)) {
-                    self.pump.mark_new_txs(id, &[record.txid]);
+                if crate::history::is_wallets(record) {
+                    if self.history.with_wallet(id, |h| h.upsert(record, now)) {
+                        self.pump.mark_new_txs(id, &[record.txid]);
+                    }
+                    self.pump.mark_history(id, Some(&[record.txid]));
                 }
-                self.pump.mark_history(id, Some(&[record.txid]));
                 if self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
                 }
@@ -736,6 +738,7 @@ impl SessionHub {
                         .iter()
                         .chain(updated)
                         .chain(matured)
+                        .filter(|r| crate::history::is_wallets(r))
                         .map(|r| {
                             if h.upsert(r, now) {
                                 new.push(r.txid);
