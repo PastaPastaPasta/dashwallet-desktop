@@ -7,7 +7,7 @@
 // notifications: it decides whether a payment found "while catching up" is a new block's.
 
 import { useSyncExternalStore } from "react";
-import { NOT_SETTLED, SETTLE_MS, settleSync, type Settled } from "../format/sync";
+import { NEWS_MS, NOT_SETTLED, SETTLE_MS, settleSync, type Settled } from "../format/sync";
 import type { SyncStatus } from "./generated/SyncStatus";
 
 interface Entry {
@@ -70,19 +70,20 @@ export function feedSync(owner: object, raw: SyncStatus, now: number = Date.now(
   if (mine <= e.applied) return false;
   e.applied = mine;
   e.raw = raw;
-  e.news = settleSync(e.news, raw, now).settled;
+  e.news = settleSync(e.news, raw, now, NEWS_MS).settled;
   recompute(e, now);
   return true;
 }
 
 /** Whether a payment the engine calls catch-up is a new block's, to announce: the raw reading is
- * caught up, or has been at most a few blocks short of a caught-up one for less than `SETTLE_MS`.
+ * caught up, or has been at most a few blocks short of a caught-up one for less than `NEWS_MS` (longer
+ * than the display's hold: a slow block's payment is still news after the bar stopped holding).
  * Without a caught-up reading first (a wallet that starts near the tip), it is history. */
 export function announceable(owner: object, now: number = Date.now()): boolean {
   const e = entries.get(owner);
   if (!e?.raw) return false;
   if (e.raw.running && e.raw.caughtUp) return true;
-  return e.news.synced && e.news.heldSince !== null && now - e.news.heldSince < SETTLE_MS;
+  return e.news.synced && e.news.heldSince !== null && now - e.news.heldSince < NEWS_MS;
 }
 
 /** The status to show: the last reading, smoothed; `undefined` before the first. */

@@ -99,6 +99,33 @@ test.describe("catch-up is not news", () => {
     await expect(page.getByTestId("toolbar-bell-badge")).toHaveCount(0);
   });
 
+  test("a payment of a block the engine took over a minute on is still announced, though the bar stopped holding", async ({ page }) => {
+    await page.clock.install();
+    await open(page);
+    const txid = await unseen(page);
+    const bar = page.getByTestId("status-bar");
+    await syncEvent(page, 1);
+    await page.clock.runFor(61_000);
+    // The display no longer holds Synced for this block...
+    await expect(bar).toContainText("Syncing");
+    await catchUp(page, txid);
+    await page.clock.runFor(500);
+    // ...but the payment found in it is still news.
+    expect(await noticeCalls(page)).toBe(1);
+    await expect(page.locator(".toast")).toHaveText("Received 0.20 tDASH");
+  });
+
+  test("a payment found while far behind is history, however long since the last caught-up reading", async ({ page }) => {
+    await page.clock.install();
+    await open(page);
+    const txid = await unseen(page);
+    await syncEvent(page, 5000);
+    await page.clock.runFor(61_000);
+    await catchUp(page, txid);
+    await page.clock.runFor(500);
+    expect(await noticeCalls(page)).toBe(0);
+  });
+
   test("a catch-up batch while caught up is a new block: announced", async ({ page }) => {
     await open(page);
     const txid = await unseen(page);

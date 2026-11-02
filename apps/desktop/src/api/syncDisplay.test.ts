@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SETTLE_MS } from "../format/sync";
+import { NEWS_MS, SETTLE_MS } from "../format/sync";
 import type { SyncStatus } from "./generated/SyncStatus";
 import { announceable, feedSync, rawSync, readTicket, resetSync, shownSync } from "./syncDisplay";
 
@@ -85,12 +85,23 @@ describe("DEC1058_announceable", () => {
     expect(announceable(owner, 1000)).toBe(false);
   });
 
-  it("is true when caught up, and for a minute after a caught-up wallet is a block behind", () => {
+  it("is true when caught up, and for NEWS_MS after a caught-up wallet is a block behind, past the display's hold", () => {
     feedSync(owner, status(true), 0);
     expect(announceable(owner, 100)).toBe(true);
     feedSync(owner, status(false, 1), 1000);
     expect(announceable(owner, 1000 + SETTLE_MS - 1)).toBe(true);
-    expect(announceable(owner, 1000 + SETTLE_MS)).toBe(false);
+    // A payment of a block that took longer than the display holds for is still announced.
+    expect(announceable(owner, 1000 + SETTLE_MS + 1000)).toBe(true);
+    expect(announceable(owner, 1000 + NEWS_MS - 1)).toBe(true);
+    expect(announceable(owner, 1000 + NEWS_MS)).toBe(false);
+  });
+
+  it("keeps the display's own hold at SETTLE_MS", () => {
+    feedSync(owner, status(true), 0);
+    feedSync(owner, status(false, 1), 1000);
+    vi.setSystemTime(1000 + SETTLE_MS);
+    vi.advanceTimersByTime(SETTLE_MS);
+    expect(shownSync(owner)?.caughtUp).toBe(false);
   });
 
   it("is false when the wallet is far behind, even after being caught up", () => {

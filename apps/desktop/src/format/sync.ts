@@ -27,6 +27,11 @@ export const SETTLE_BLOCKS = 3;
 /** And a reading that is not caught up for longer than this is not a new block, whatever its gap. */
 export const SETTLE_MS = 60_000;
 
+/** What decides a payment's announcement is a longer allowance than the display's: a block that takes
+ * the engine minutes to process still has its payments announced (the status bar stops holding at
+ * `SETTLE_MS`, a new payment is still news for this long after the last caught-up reading). */
+export const NEWS_MS = 10 * 60_000;
+
 /** What `settleSync` remembers between readings. */
 export interface Settled {
   /** The last reading was caught up, or a new block that `settleSync` held at synced. */
@@ -46,11 +51,11 @@ function within(s: SyncStatus, blocks: number): boolean {
 /** `s` as the status bar should show it, and what to remember for the next reading. A new block makes
  * the engine report `caughtUp: false` for a moment with every phase a block from its target: while
  * the wallet was synced, it stays caught up if the phases are within `SETTLE_BLOCKS` and it has not
- * been so for `SETTLE_MS`. A real catch-up (far behind, or stuck) and `running: false` show as they are. */
-export function settleSync(prev: Settled, s: SyncStatus, now: number): { status: SyncStatus; settled: Settled } {
+ * been so for `windowMs` (`SETTLE_MS`). A real catch-up (far behind, or stuck) and `running: false` show as they are. */
+export function settleSync(prev: Settled, s: SyncStatus, now: number, windowMs: number = SETTLE_MS): { status: SyncStatus; settled: Settled } {
   if (s.running && s.caughtUp) return { status: s, settled: { synced: true, heldSince: null } };
   const heldSince = prev.heldSince ?? now;
-  if (prev.synced && s.running && within(s, SETTLE_BLOCKS) && now - heldSince < SETTLE_MS) {
+  if (prev.synced && s.running && within(s, SETTLE_BLOCKS) && now - heldSince < windowMs) {
     return { status: { ...s, caughtUp: true }, settled: { synced: true, heldSince } };
   }
   return { status: s, settled: NOT_SETTLED };
