@@ -330,7 +330,9 @@ export function coinjoinView({ status, readFailed, readError, amount, masked, to
   if (u?.kind === "insufficientFunds")
     return { ...facts, state: "tooLittle", title: CoinJoinText.notStarted, line: CoinJoinText.minimumBalance(amount(u.minDuffs)), action: action("start", true) };
   if (full) return { ...facts, state: "done", title: CoinJoinText.fullyMixed, action: action("start") };
-  return { ...facts, state: "off", title: CoinJoinText.notStarted, action: action("start") };
+  // After the user's own Stop the screen says so (0.1.x row 25); before any run, after a restart
+  // and after a Settings turn-off it is Not Started. No line, not on Home: it is not news.
+  return { ...facts, state: "off", title: status.stopReason === "userRequested" ? CoinJoinText.stopped : CoinJoinText.notStarted, action: action("start") };
 }
 
 /** What a screen reader hears when the view changes: the state, and why for a stop or a refusal.
