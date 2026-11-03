@@ -452,3 +452,96 @@ fn a_leased_first_settles_by_the_wallets_sightings_against_dashd() {
         "announced once, through the block"
     );
 }
+
+/// A wallet with one confirmed coin and an unconfirmed payment the engine
+/// broadcast itself, its txid resent: dashd holds the payment, and with one
+/// peer and no InstantSend quorum dash-spv sees no acceptance. The payment's
+/// own broadcast settles `broadcast_unknown`, and the resend of a txid
+/// dash-spv already tracks waits its full timeout (60 s) for an event that
+/// never comes, holding platform-wallet's SPV client read lock, which SPV's
+/// stop waits for (Nightly 11-02: dwcli's shutdown missed its 10 s deadline).
+fn resent_payment(dir: &Path, node: &Dashd) -> Fixture {
+    node.cli(&["createwallet", "miner"]);
+    node.mine(101);
+    let f = Fixture::new(dir, node);
+    let to = f.receive_address();
+    node.cli(&["-rpcwallet=miner", "sendtoaddress", &to, "1.0"]);
+    node.mine(1);
+    f.start_spv();
+    f.wait_scanned(node.height());
+
+    let payee = node.cli(&["-rpcwallet=miner", "getnewaddress"]);
+    let draft = f.session.new_tx_draft(f.wallet).unwrap();
+    draft
+        .set_recipients(vec![Recipient {
+            address: payee,
+            amount: COIN / 10,
+            subtract_fee_from_amount: false,
+            label: None,
+            message: None,
+        }])
+        .unwrap();
+    let grant = f.grant(GrantPurpose::Spend {
+        max_duffs: COIN / 2,
+    });
+    let prepared = f.engine.block_on(draft.prepare(grant)).unwrap();
+    let txid = prepared.summary().txid.clone();
+    match f.engine.block_on(draft.broadcast(prepared)) {
+        Err(EngineError::Send(SendFailure::BroadcastUnknown { .. })) => {}
+        other => panic!("one peer, no InstantSend: no acceptance is seen ({other:?})"),
+    }
+    assert!(node.in_mempool(&txid));
+    assert!(f.wallet_has(&txid));
+    let id = std::str::FromStr::from_str(&txid).unwrap();
+    f.engine
+        .block_on(f.session.resend_transaction(f.wallet, id))
+        .unwrap();
+    f
+}
+
+/// QT-091 against dashd: a resend's acceptance wait never holds the
+/// session's close, which returns well within 10 s.
+#[test]
+fn a_resends_acceptance_wait_does_not_hold_the_close() {
+    let Some(dashd) = std::env::var_os("DASHD_PATH").map(PathBuf::from) else {
+        eprintln!("skipped: DASHD_PATH is not set");
+        return;
+    };
+    let dir = dw_testutil::private_tempdir();
+    let node_dir = dir.path().join("dashd");
+    std::fs::create_dir(&node_dir).unwrap();
+    let node = Dashd::start(&dashd, &node_dir);
+    let f = resent_payment(dir.path(), &node);
+    let started = Instant::now();
+    assert!(
+        f.engine
+            .block_on(f.engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(10),
+        "the close waited for the resend's acceptance wait: {took:?}"
+    );
+}
+
+/// QT-091 against dashd: nor does it hold SPV's stop (Stop, Change peers).
+#[test]
+fn a_resends_acceptance_wait_does_not_hold_the_spv_stop() {
+    let Some(dashd) = std::env::var_os("DASHD_PATH").map(PathBuf::from) else {
+        eprintln!("skipped: DASHD_PATH is not set");
+        return;
+    };
+    let dir = dw_testutil::private_tempdir();
+    let node_dir = dir.path().join("dashd");
+    std::fs::create_dir(&node_dir).unwrap();
+    let node = Dashd::start(&dashd, &node_dir);
+    let f = resent_payment(dir.path(), &node);
+    let started = Instant::now();
+    f.engine.block_on(f.session.stop_spv()).unwrap();
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(10),
+        "SPV's stop waited for the resend's acceptance wait: {took:?}"
+    );
+}

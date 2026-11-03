@@ -242,6 +242,12 @@ pub struct NetworkSession {
     /// session, replaced by a later one, cancelled by `lock_vault` and
     /// `close`. (generation, task).
     pub(crate) relock: Mutex<Option<(u64, tokio::task::AbortHandle)>>,
+    /// The resends' acceptance waits (QT-091), aborted before SPV stops
+    /// (`stop_spv_inner`, and `close` before the manager's shutdown): each holds platform-wallet's SPV client read lock
+    /// for dash-spv's acceptance timeout (60 s), and SPV's stop waits for the
+    /// write lock (rs-platform-wallet spv/runtime.rs:321-330, :446). The
+    /// transaction is already handed to the network; only the wait ends.
+    pub(crate) resends: Mutex<Vec<tokio::task::AbortHandle>>,
     /// Mixing state, CoinJoin options and queues (M3, `coinjoin.rs`).
     pub(crate) coinjoin: crate::coinjoin::CoinJoinRuntime,
     /// The masternode follower and its event (MG-03, `masternodes/`).
@@ -537,6 +543,7 @@ impl NetworkSession {
             unclean_previous,
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
+            resends: Mutex::new(Vec::new()),
             coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
             masternodes,
             platform: crate::platform::runtime::PlatformRuntime::new(
@@ -806,6 +813,7 @@ impl NetworkSession {
 
     pub(crate) async fn stop_spv_inner(&self, manager: &Manager) -> Result<(), EngineError> {
         self.leases.spv_stopped();
+        self.abort_resends();
         let stopped = manager.spv().stop().await;
         self.hub.set_spv_running(false);
         self.sink.emit(EngineEvent::SpvStateChanged {
@@ -813,6 +821,16 @@ impl NetworkSession {
             running: false,
         });
         Ok(stopped?)
+    }
+
+    /// Ends the resends' acceptance waits, which would hold SPV's stop for
+    /// up to a minute ([`Self::resends`]). Their transactions are already
+    /// handed to the network, and the stop ends dash-spv's tracking anyway.
+    fn abort_resends(&self) {
+        let resends = std::mem::take(&mut *self.resends.lock().unwrap_or_else(|p| p.into_inner()));
+        for resend in resends {
+            resend.abort();
+        }
     }
 
     /// Closes the session: cancels a running bring-up, waits for admitted
@@ -860,6 +878,8 @@ impl NetworkSession {
         let taken = self.live.write().unwrap_or_else(|p| p.into_inner()).take();
         let Some(live) = taken else { return };
         let manager = live.manager;
+        // The gate is closed, so no resend starts after this.
+        self.abort_resends();
         let report = manager.shutdown().await;
         self.hub.set_spv_running(false);
         if report.all_clean() && keys_idle {
