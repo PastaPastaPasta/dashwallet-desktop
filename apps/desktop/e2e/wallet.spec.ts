@@ -24,6 +24,29 @@ async function fillPayment(page: Page, address: string, amount: string) {
   await page.getByTestId("pay-amount").fill(amount);
 }
 
+/** Normal coins 0.1 and 0.4, a fully mixed 0.100001, and a mixer that has some of each; the cached status is refreshed as the engine's event does. */
+async function seedMixing(page: Page) {
+  await world(page, (w) => {
+    const wallet = w.wallets[0];
+    const c = wallet.coins[0];
+    const coin = (vout: number, amount: number, extra: object) => ({ ...c, outpoint: { ...c.outpoint, vout }, amount, spendable: true, confirmations: 10, ...extra });
+    wallet.coins = [
+      coin(1, 10_000_000, { coinjoinDenominated: false, coinjoinRounds: null }),
+      coin(2, 40_000_000, { coinjoinDenominated: false, coinjoinRounds: null }),
+      coin(3, 10_000_100, { coinjoinDenominated: true, coinjoinRounds: 4 }),
+    ];
+    w.coinjoin.mixers[wallet.summary.walletId] = {
+      state: "idle",
+      stopReason: null,
+      status: { kind: "idle" },
+      progress: { overallPercent: 40, denominatedPercent: 100, partiallyMixedPercent: 60, mixedPercent: 10, averageRounds: 1.5 },
+      sessions: [],
+      queueSize: 0,
+    };
+  });
+  await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "coinJoin", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId }); })()`);
+}
+
 async function review(page: Page) {
   await expect(page.getByTestId("pay-continue")).toBeEnabled();
   await page.getByTestId("pay-continue").click();
@@ -424,10 +447,29 @@ test.describe("Pay", () => {
 
     await page.getByTestId("coin-choice-selected").check();
     await expect(page.getByText(/^Available/)).toHaveCount(0);
-    await page.getByRole("checkbox", { name: /^Use 0\.100001 / }).check();
-    await expect(page.getByText("Available (selected coins): 0.10000100 tDASH")).toBeVisible();
+    await page.getByRole("checkbox", { name: /^Use 0\.50 / }).check();
+    await expect(page.getByText("Available (selected coins): 0.50000000 tDASH")).toBeVisible();
     expect(await seriousAxeViolations(page)).toEqual([]);
+    // A CoinJoin coin is no Selected coin for the engine (`send.outpoint_unavailable`): no figure, the reason.
+    await page.getByRole("checkbox", { name: /^Use 0\.50 / }).uncheck();
+    await page.getByRole("checkbox", { name: /^Use 0\.100001 / }).check();
+    await expect(page.getByTestId("pay-problem")).toHaveText("A selected coin is spent, locked or no longer in the wallet. Choose the coins again.");
+    await expect(page.getByText(/^Available/)).toHaveCount(0);
 
+  });
+
+  test("a refusal under Selected coins gives no normal-payment or mixing advice (PAY-MIX r1)", async ({ page }) => {
+    await open(page);
+    await seedMixing(page);
+    await fillPayment(page, PAYEE, "0.2");
+    await page.getByTestId("pay-advanced").locator("summary").click();
+    // 0.5 of normal coins covers 0.2, so the status stays cached with its hints.
+    await expect(page.getByTestId("pay-continue")).toBeEnabled();
+    await page.getByTestId("coin-choice-selected").check();
+    await page.getByRole("checkbox", { name: /^Use 0\.10 / }).check();
+    const plain = "The amount exceeds your balance.";
+    await expect(page.locator(".field-error")).toHaveText(plain);
+    await expect(page.getByTestId("pay-problem")).toHaveText(plain);
   });
 
   test("an empty custom change address holds the payment", async ({ page }) => {

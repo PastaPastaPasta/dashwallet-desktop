@@ -279,6 +279,9 @@ function sourceCoins(wallet: FixtureWallet, source: CoinSource): Utxo[] {
   return pickCoins(coins, source).toSorted((a, b) => b.amount - a.amount);
 }
 
+/** A coin of a funding account (BIP44, BIP32, DashPay), as against the CoinJoin account's. */
+const isSendAccount = (u: Utxo) => !u.coinjoinDenominated && u.coinjoinRounds === null;
+
 /** The CoinJoin rounds that make a denomination fully mixed (the engine's default target). */
 const MIXED_ROUNDS = 4;
 const isFullyMixed = (u: Utxo) => u.coinjoinRounds !== null && u.coinjoinRounds >= MIXED_ROUNDS;
@@ -287,12 +290,14 @@ function pickCoins(coins: Utxo[], source: CoinSource): Utxo[] {
   switch (source.kind) {
     // A normal payment leaves the CoinJoin account's coins, mixed or still mixing, alone.
     case "any":
-      return coins.filter((u) => !u.coinjoinDenominated && u.coinjoinRounds === null);
+      return coins.filter(isSendAccount);
     case "fullyMixedOnly":
       return coins.filter(isFullyMixed);
     case "outpoints":
       return source.outpoints.map((o) => {
-        const u = coins.find((x) => sameOutpoint(x.outpoint, o));
+        // Selected coins are send-account coins only: a CoinJoin coin reads as unavailable
+        // (dw-engine coins.rs:626-630 collects them `send_account = false`; send/mod.rs:875-881).
+        const u = coins.find((x) => sameOutpoint(x.outpoint, o) && isSendAccount(x));
         if (!u) throw fail("send.outpoint_unavailable", "coin unavailable", { kind: "outpoint", txid: o.txid, vout: o.vout });
         return u;
       });

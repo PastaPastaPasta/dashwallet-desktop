@@ -110,8 +110,10 @@ describe("the engine's refusals", () => {
     expect(sendErrorText(over, "test", "DASH", { mixed: true, mixing: true })?.text).toBe(
       `${base} ${where} Coins still being mixed can be spent that way once mixing finishes.`,
     );
-    // Only mixing coins: no pointer, since nothing is fully mixed yet.
-    expect(sendErrorText(over, "test", "DASH", { mixed: false, mixing: true })?.text).toBe(`${base} Coins still being mixed can be spent once mixing finishes them.`);
+    // Only mixing coins: no pointer to switch now, since nothing is fully mixed yet; they stay apart.
+    expect(sendErrorText(over, "test", "DASH", { mixed: false, mixing: true })?.text).toBe(
+      `${base} Coins still being mixed stay apart from normal payments; once mixing finishes them, they can be spent with Fully mixed funds only (CoinJoin).`,
+    );
     // Without the engine's figure there is nothing to name.
     expect(sendErrorText(err("send.amount_exceeds_balance"), "test", "DASH", { mixed: true, mixing: false })?.text).toBe(plain);
   });

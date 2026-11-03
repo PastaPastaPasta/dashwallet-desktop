@@ -108,9 +108,12 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
     gcTime: 0,
   });
   // A normal payment leaves a mixing wallet's mixed and mixing coins alone: say where they are.
-  const mixing = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId), retry: false, enabled: spec?.source.kind === "any" });
+  const normal = spec?.source.kind === "any";
+  const mixing = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId), retry: false, enabled: normal });
+  // A disabled query keeps its cached data: the hints are for the normal source alone.
   const { fullyMixed = 0, denominated = 0 } = mixing.data?.balances ?? {};
-  const refusal = estimate.isError ? sendErrorText(estimate.error, chain, amountUnit, { mixed: fullyMixed > 0, mixing: denominated > fullyMixed }) : null;
+  const hints = normal ? { mixed: fullyMixed > 0, mixing: denominated > fullyMixed } : undefined;
+  const refusal = estimate.isError ? sendErrorText(estimate.error, chain, amountUnit, hints) : null;
   // A fully mixed payment refused as an absurd fee: offer Subtract fee with what it would send,
   // from the engine's own estimate of it (MX-FEE); a refusal of that too leaves the reason alone.
   const mixed = estimate.isError && spec ? mixedFeeText(estimate.error, spec, chain, amountUnit) : null;

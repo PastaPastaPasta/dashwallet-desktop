@@ -72,6 +72,39 @@ test("PAY-MIX Available and the over-balance refusal follow the coin source here
   expect(errors).toEqual([]);
 });
 
+test("PAY-MIX r1 a refusal under Selected coins gives no normal-payment or mixing advice", async ({ page }) => {
+  await openPay(page);
+  // Normal coins 0.1 and 0.4, a fully mixed 0.100001, a mixer with some of each.
+  await world(page, (w) => {
+    const wallet = w.wallets[0];
+    const c = wallet.coins[0];
+    const coin = (vout: number, amount: number, extra: object) => ({ ...c, outpoint: { ...c.outpoint, vout }, amount, spendable: true, confirmations: 10, ...extra });
+    wallet.coins = [
+      coin(1, 10_000_000, { coinjoinDenominated: false, coinjoinRounds: null }),
+      coin(2, 40_000_000, { coinjoinDenominated: false, coinjoinRounds: null }),
+      coin(3, 10_000_100, { coinjoinDenominated: true, coinjoinRounds: 4 }),
+    ];
+    w.coinjoin.mixers[wallet.summary.walletId] = {
+      state: "idle",
+      stopReason: null,
+      status: { kind: "idle" },
+      progress: { overallPercent: 40, denominatedPercent: 100, partiallyMixedPercent: 60, mixedPercent: 10, averageRounds: 1.5 },
+      sessions: [],
+      queueSize: 0,
+    };
+  });
+  await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "coinJoin", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId }); })()`);
+  await page.getByTestId("pay-frequent-chip").first().click();
+  await page.getByTestId("pay-amount").fill("0.2");
+  await page.getByTestId("pay-advanced").locator("summary").click();
+  await expect(page.getByTestId("pay-continue")).toBeEnabled();
+  await page.getByTestId("coin-choice-selected").check();
+  await page.getByRole("checkbox", { name: /^Use 0\.10 / }).check();
+  const plain = "The amount exceeds your balance.";
+  await expect(page.locator(".field-error")).toHaveText(plain);
+  await expect(page.getByTestId("pay-problem")).toHaveText(plain);
+});
+
 test("IOS-050 pays a frequent contact; the confirm sheet names them and Activity attributes it", async ({ page }) => {
   const errors = await openPay(page);
   await expect(page.getByTestId("pay-frequent-chip").locator(".pay-frequent-name")).toHaveText(["Bob Builder", "dave"]);

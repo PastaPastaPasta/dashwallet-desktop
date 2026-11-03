@@ -157,7 +157,7 @@ export const availableLabel = (coins: CoinChoice) => (coins === "mixed" ? "Avail
 /** The amount is over what a normal payment spends, on a wallet with mixed or mixing coins. */
 function overNormalFunds(spendable: string, { mixed, mixing }: MixHints): string {
   const text = `The amount exceeds the ${spendable} a normal payment can spend.`;
-  if (!mixed) return `${text} Coins still being mixed can be spent once mixing finishes them.`;
+  if (!mixed) return `${text} Coins still being mixed stay apart from normal payments; once mixing finishes them, they can be spent with Fully mixed funds only (CoinJoin).`;
   const where = `${text} To spend fully mixed coins, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).`;
   return mixing ? `${where} Coins still being mixed can be spent that way once mixing finishes.` : where;
 }
