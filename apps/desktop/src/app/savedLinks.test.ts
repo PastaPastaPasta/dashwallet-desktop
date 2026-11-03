@@ -35,6 +35,17 @@ describe("saved links", () => {
     expect(rows[0].when).toBe("Opened 1 minute ago");
   });
 
+  it("DP5-01 lists two links saved in distinct seconds newest first, whatever order the engine gives", () => {
+    const older = { id: "a".padStart(32, "0"), kind: "payment" as const, stashedAt: 1_800_000_000, expiresAt: 1_800_600_000 };
+    const newer = { id: "b".padStart(32, "0"), kind: "invitation" as const, stashedAt: 1_800_000_060, expiresAt: 1_802_600_000 };
+    const now = 1_800_000_120;
+    for (const given of [[older, newer], [newer, older]]) {
+      const rows = savedLinkRows(given, now);
+      expect(rows.map((r) => r.id)).toEqual([newer.id, older.id]);
+      expect(rows.map((r) => r.when)).toEqual(["Opened 1 minute ago", "Opened 2 minutes ago"]);
+    }
+  });
+
   it("DP5-01 offers once a wallet shows, unlocked, with nothing in front", () => {
     const ok = { pending: true, hasWallet: true, locked: false, covered: false };
     expect(offerReady(ok)).toBe(true);
