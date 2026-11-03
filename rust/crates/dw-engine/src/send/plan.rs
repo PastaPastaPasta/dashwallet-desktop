@@ -21,8 +21,8 @@
 //!   the fee;
 //! - with "subtract fee from amount" the recipients that ticked it pay the
 //!   size-based fee, split equally, the first of them paying the remainder;
-//!   a dust remainder that cannot become change goes to the fee on top and is
-//!   paid by the wallet;
+//!   a dust remainder that cannot become change goes to the fee first, and
+//!   they pay only the rest of it (Core's `to_reduce`);
 //! - selection for a subtract-fee payment targets the amounts alone, because
 //!   the fee comes out of them.
 
@@ -280,6 +280,9 @@ fn use_all(
 
     // Subtract-fee: the recipients pay the size-based fee; whatever the
     // inputs hold beyond the amounts is change, or fee when it is dust.
+    // A dust remainder already pays part of the fee, so the recipients pay
+    // only the rest (Dash Core v24 wallet/spend.cpp:1073), never less than
+    // nothing: a remainder above the fee stays fee, no amount is raised.
     let remainder = total_in
         .checked_sub(total_out)
         .ok_or(PlanError::AmountExceedsBalance {
@@ -288,7 +291,11 @@ fn use_all(
     let (fee_share, change, size) = if remainder > dust {
         (fee_with, Some(remainder), s.with_change)
     } else {
-        (fee_without, None, s.without_change)
+        (
+            fee_without.saturating_sub(remainder),
+            None,
+            s.without_change,
+        )
     };
     let payers: Vec<usize> = outputs
         .iter()
@@ -308,11 +315,7 @@ fn use_all(
             .ok_or(PlanError::AmountTooSmallAfterFee { index: i })?;
         amounts[i] = after;
     }
-    let fee = if change.is_some() {
-        fee_share
-    } else {
-        fee_share + remainder
-    };
+    let fee = fee_share + change.map_or(remainder, |_| 0);
     Ok(Plan {
         inputs,
         amounts,
@@ -580,6 +583,87 @@ mod tests {
         let outputs = [out(9, 700, true), out(8, 1_000_000, false)];
         let r = plan(InputChoice::Select(&coins), &outputs, rate1(), P2PKH, 1000);
         assert_eq!(r, Err(PlanError::AmountTooSmallAfterFee { index: 0 }));
+    }
+
+    /// Core (spend.cpp:1073): with no change, the surplus over the amounts
+    /// already counts toward the fee, so the payers bear only the rest.
+    /// Re-smoke 2: one 0.100001 coin paying 0.1 sent 0.09999808 + 292.
+    #[test]
+    fn subtract_fee_counts_a_dust_surplus_toward_the_fee() {
+        let coins = [coin(1, 10_000_100), coin(2, 10_000_100)];
+        let outputs = [out(9, 10_000_000, true)];
+        let p = plan(InputChoice::Select(&coins), &outputs, rate1(), P2PKH, 1000).unwrap();
+        assert_eq!(p.inputs.len(), 1);
+        assert_eq!(
+            (p.amounts.clone(), p.change, p.fee),
+            (vec![9_999_908], None, 192)
+        );
+        assert_builder_reproduces(&p, &outputs);
+    }
+
+    /// A surplus above the size fee is all fee: no payer is reduced, and
+    /// none is raised above its amount.
+    #[test]
+    fn subtract_fee_surplus_above_the_fee_reduces_nobody() {
+        let coins = [coin(1, 1_000_000)];
+        let outputs = [out(9, 999_700, true)];
+        let p = plan(InputChoice::UseAll(&coins), &outputs, rate1(), P2PKH, 1000).unwrap();
+        assert_eq!(
+            (p.amounts.clone(), p.change, p.fee),
+            (vec![999_700], None, 300)
+        );
+        assert_builder_reproduces(&p, &outputs);
+    }
+
+    #[test]
+    fn subtract_fee_payers_split_only_the_reduced_fee() {
+        // 226-byte fee less a 101-duff surplus: 125, the first payer takes
+        // the odd duff.
+        let coins = [coin(1, 10_000_101)];
+        let outputs = [out(9, 5_000_000, true), out(8, 5_000_000, true)];
+        let p = plan(InputChoice::UseAll(&coins), &outputs, rate1(), P2PKH, 1000).unwrap();
+        assert_eq!(
+            (p.amounts.clone(), p.change, p.fee),
+            (vec![4_999_937, 4_999_938], None, 226)
+        );
+        assert_builder_reproduces(&p, &outputs);
+    }
+
+    #[test]
+    fn subtract_fee_checks_dust_after_the_reduced_fee() {
+        // 226-byte fee less a 50-duff surplus: the payer pays 176.
+        let pay = |amount: u64| {
+            let coins = [coin(1, amount + 1_000_050)];
+            let outputs = [out(9, amount, true), out(8, 1_000_000, false)];
+            plan(InputChoice::UseAll(&coins), &outputs, rate1(), P2PKH, 1000)
+        };
+        assert_eq!(pay(722).unwrap().amounts, vec![546, 1_000_000]);
+        assert_eq!(
+            pay(721),
+            Err(PlanError::AmountTooSmallAfterFee { index: 0 })
+        );
+    }
+
+    /// Re-smoke 2 §3c: two fully mixed 0.100001 coins paying 0.1. Core
+    /// refuses it too (coinselection.cpp:467-472); with subtract fee one
+    /// coin pays it.
+    #[test]
+    fn fully_mixed_without_subtract_fee_is_an_absurd_fee() {
+        let coins = [coin(1, 10_000_100), coin(2, 10_000_100)];
+        let mixed = |subtract| {
+            let outputs = [out(9, 10_000_000, subtract)];
+            let p = plan(InputChoice::Select(&coins), &outputs, rate1(), P2PKH, 1000).unwrap();
+            super::super::finish(p, true, P2PKH)
+        };
+        assert_eq!(
+            mixed(false).unwrap_err().to_string(),
+            super::super::SendFailure::AbsurdFee { fee: 10_000_200 }.to_string()
+        );
+        let p = mixed(true).unwrap();
+        assert_eq!(
+            (p.inputs.len(), p.amounts, p.fee),
+            (1, vec![9_999_908], 192)
+        );
     }
 
     #[test]
