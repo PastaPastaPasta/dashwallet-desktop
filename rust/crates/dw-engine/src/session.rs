@@ -243,10 +243,10 @@ pub struct NetworkSession {
     /// `close`. (generation, task).
     pub(crate) relock: Mutex<Option<(u64, tokio::task::AbortHandle)>>,
     /// The resends' acceptance waits (QT-091), aborted before SPV stops
-    /// (`stop_spv_inner`, and `close` before the manager's shutdown): each holds platform-wallet's SPV client read lock
-    /// for dash-spv's acceptance timeout (60 s), and SPV's stop waits for the
-    /// write lock (rs-platform-wallet spv/runtime.rs:321-330, :446). The
-    /// transaction is already handed to the network; only the wait ends.
+    /// (`stop_spv_inner`, and `close` before the manager's shutdown): each
+    /// holds platform-wallet's SPV client read lock for dash-spv's acceptance
+    /// timeout (60 s), and SPV's stop waits for the write lock
+    /// (rs-platform-wallet spv/runtime.rs:321-330, :446).
     pub(crate) resends: Mutex<Vec<tokio::task::AbortHandle>>,
     /// Mixing state, CoinJoin options and queues (M3, `coinjoin.rs`).
     pub(crate) coinjoin: crate::coinjoin::CoinJoinRuntime,
@@ -823,9 +823,10 @@ impl NetworkSession {
         Ok(stopped?)
     }
 
-    /// Ends the resends' acceptance waits, which would hold SPV's stop for
-    /// up to a minute ([`Self::resends`]). Their transactions are already
-    /// handed to the network, and the stop ends dash-spv's tracking anyway.
+    /// Ends the resends' acceptance waits ([`Self::resends`]). Nothing is
+    /// lost: dash-spv sent the bytes before the wait, which only maps its
+    /// verdict to a log line, and the wallet keeps the transaction
+    /// unconfirmed, to be resent.
     fn abort_resends(&self) {
         let resends = std::mem::take(&mut *self.resends.lock().unwrap_or_else(|p| p.into_inner()));
         for resend in resends {
