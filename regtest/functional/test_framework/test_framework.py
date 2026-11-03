@@ -2503,6 +2503,15 @@ class DashTestFramework(BitcoinTestFramework):
 
         self.log.info("quorumIndex 1: Waiting for phase 6 (finalization)")
         self.wait_for_quorum_phase(q_1, 6, expected_members, None, 0, mninfos_online, llmq_type_name)
+
+        self.log.info("Waiting final commitments")
+        self.wait_for_quorum_commitment(q_0, mninfos_online, llmq_type=llmq_type)
+        self.wait_for_quorum_commitment(q_1, mninfos_online, llmq_type=llmq_type)
+
+        self.log.info("Waiting final commitments on mining node")
+        self.wait_for_quorum_commitments_on_miner(q_0, mninfos_online)
+        self.wait_for_quorum_commitments_on_miner(q_1, mninfos_online)
+
         self.log.info("Mining final commitments")
         self.bump_mocktime(1)
         self.nodes[0].getblocktemplate() # this calls CreateNewBlock

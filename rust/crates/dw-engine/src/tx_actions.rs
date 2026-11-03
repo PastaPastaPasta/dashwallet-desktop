@@ -424,6 +424,11 @@ impl NetworkSession {
                 }
                 outcome
             });
+            {
+                let mut resends = this.resends.lock().unwrap_or_else(|p| p.into_inner());
+                resends.retain(|r| !r.is_finished());
+                resends.push(task.abort_handle());
+            }
             match tokio::time::timeout(RESEND_HANDOFF, &mut task).await {
                 Ok(Ok(Err(platform_wallet::PlatformWalletError::TransactionBroadcast(_)))) => {
                     return Err(EngineError::NoPeers);
