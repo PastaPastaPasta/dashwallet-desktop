@@ -198,7 +198,7 @@ export function PayFooter({
   offer,
 }: {
   problem: string | null;
-  /** Subtract fee would send this amount; its button turns it on (MX-FEE). */
+  /** Subtract fee would send this amount; its button turns it on (MX-FEE). Pass it only for settled fields. */
   offer?: { amount: number; accept: () => void } | null;
   /** The form has no address or amount to estimate yet (as against an estimate still being worked out). */
   incomplete: boolean;
@@ -213,17 +213,20 @@ export function PayFooter({
     <div className="pay-footer" data-testid="pay-footer">
       <div className="pay-footer-text" aria-live="polite">
         {problem ? (
-          <span className="form-problem" id="pay-reason" data-testid="pay-problem">
-            {problem}
+          <>
+            <span className="form-problem" id="pay-reason" data-testid="pay-problem">
+              {problem}
+            </span>
+            {/* Outside #pay-reason, so Review's description stays the reason alone. */}
             {offer && (
-              <>
+              <span className="form-problem" data-testid="pay-offer">
                 {" "}With Subtract fee it would send <AmountText text={shown.full(offer.amount)} unitName={shown.name} glyph={false} />.{" "}
                 <DashButton variant="tintedBlue" size="small" data-testid="pay-subtract-offer" onClick={offer.accept}>
                   Turn on Subtract fee
                 </DashButton>
-              </>
+              </span>
             )}
-          </span>
+          </>
         ) : fee !== null ? (
           <span className="pay-fee-line" id="pay-reason" data-testid="pay-fee-line">
             Network fee <AmountText text={shown.full(fee)} unitName={shown.name} glyph={false} />

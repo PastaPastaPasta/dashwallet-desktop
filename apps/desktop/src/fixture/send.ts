@@ -336,8 +336,9 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
   let base = feeWith(inputs.length, true);
   let change: number | null = sum - pay - (subtract ? 0 : base);
   let rest = 0;
-  // Change below dust is not made: the transaction is smaller and the rest goes to the fee.
-  if (change < DUST) {
+  // Change at or below dust is not made (as plan.rs: change only when the rest is above dust): the
+  // transaction is smaller and the rest goes to the fee.
+  if (change <= DUST) {
     base = feeWith(inputs.length, false);
     rest = sum - pay - (subtract ? 0 : base);
     if (rest < 0) {

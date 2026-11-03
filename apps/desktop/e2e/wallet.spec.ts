@@ -350,9 +350,17 @@ test.describe("Pay", () => {
     await page.getByTestId("pay-advanced").locator("summary").click();
     await page.getByTestId("coin-choice-mixed").check();
     await expect(page.getByTestId("pay-problem")).toHaveText(
-      /^Fully mixed coins are spent in whole denominations, so the 0\.10000200 tDASH left over would go to fees\. With Subtract fee it would send 0\.09999908 tDASH\./,
+      "Fully mixed coins are spent in whole denominations, so the 0.10000200 tDASH left over would go to fees.",
     );
+    await expect(page.getByTestId("pay-offer")).toHaveText(/^\s*With Subtract fee it would send 0\.09999908 tDASH\./);
     await expect(page.getByTestId("pay-continue")).toBeDisabled();
+    // Review's description is the reason alone, not the offer (r1 Opus nit 2), and the state passes axe.
+    await expect(page.getByTestId("pay-continue")).toHaveAccessibleDescription(/^Fully mixed coins .* would go to fees\.$/);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    // While a changed amount is still being read, the old quote is not offered (r1 Sol minor).
+    await page.getByTestId("pay-amount").fill("0.05");
+    expect(await page.getByTestId("pay-subtract-offer").count()).toBe(0);
+    await page.getByTestId("pay-amount").fill("0.1");
     await page.getByTestId("pay-subtract-offer").click();
     await expect(page.getByTestId("pay-subtract-fee")).toBeChecked();
     await expect(page.getByTestId("pay-fee-line")).toContainText("0.00000192");
