@@ -9,7 +9,7 @@ import { keys, useBackend } from "../../api/queries";
 import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton } from "../../components/basics";
 import type { useDisplay } from "../../format/display";
-import { changePolicy, coinSource, feeMode, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type Confirmed, type Outcome, type PayRecipient } from "./model";
+import { availableLabel, changePolicy, coinSource, DEFAULT_ADVANCED, feeMode, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayRecipient } from "./model";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 /** How long a field stays unchanged before it is checked and the draft estimated (U-03 D5). */
@@ -78,10 +78,26 @@ export function useAmountField(shown: Shown, initial: string) {
   return { text, setText, duffs, error, settled: checked === typed };
 }
 
+/** What the chosen coin source can spend (the engine's `maxSpendable`), for "Available"; `undefined`
+ * while it loads or when "Selected coins" has none yet. Under the coin keys, so coin events refresh it. */
+export function useAvailable(walletId: string, advanced: Advanced): number | undefined {
+  const b = useBackend();
+  const source = coinSource(advanced);
+  const none = advanced.coins === "selected" && advanced.selected.length === 0;
+  const available = useQuery({
+    queryKey: [...keys.coinsAll(walletId), "available", source] as const,
+    queryFn: () => b.maxSpendable(walletId, source, feeMode(advanced) ?? feeMode(DEFAULT_ADVANCED)!),
+    enabled: !none,
+    retry: false,
+  });
+  return none ? undefined : available.data;
+}
+
 /** The draft's live estimate of `spec` and what its refusal says: on a field, or under the form
  * (`general`, with what holds the payment back besides). `hold`: estimate nothing (locked, or the
  * form says why not). */
 export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec | null, advanced: Advanced, hold: boolean, shown: Shown) {
+  const b = useBackend();
   const { chain, amountUnit } = shown;
   // Under the wallet's coin keys: a payment or new coins refresh the estimate (events.ts).
   const estimate = useQuery({
@@ -91,7 +107,13 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
     retry: false,
     gcTime: 0,
   });
-  const refusal = estimate.isError ? sendErrorText(estimate.error, chain, amountUnit) : null;
+  // A normal payment leaves a mixing wallet's mixed and mixing coins alone: say where they are.
+  const normal = spec?.source.kind === "any";
+  const mixing = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId), retry: false, enabled: normal });
+  // A disabled query keeps its cached data: the hints are for the normal source alone.
+  const { fullyMixed = 0, denominated = 0 } = mixing.data?.balances ?? {};
+  const hints = normal ? { mixed: fullyMixed > 0, mixing: denominated > fullyMixed } : undefined;
+  const refusal = estimate.isError ? sendErrorText(estimate.error, chain, amountUnit, hints) : null;
   // A fully mixed payment refused as an absurd fee: offer Subtract fee with what it would send,
   // from the engine's own estimate of it (MX-FEE); a refusal of that too leaves the reason alone.
   const mixed = estimate.isError && spec ? mixedFeeText(estimate.error, spec, chain, amountUnit) : null;
@@ -105,7 +127,8 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
   });
   let general: string | null = null;
   if (mixed) general = mixed;
-  else if (estimate.isError) general = refusal ? (refusal.field ? null : refusal.text) : errorMessage(estimate.error);
+  // A refusal of a field shows under it and here too: Review's reason is the footer's.
+  else if (estimate.isError) general = refusal ? refusal.text : errorMessage(estimate.error);
   else if (advanced.coins === "selected" && advanced.selected.length === 0) general = "Choose the coins to pay with.";
   else if (!feeMode(advanced)) general = "Enter a custom fee rate.";
   else if (advanced.changeAddress !== null && advanced.changeAddress.trim() === "") general = "Enter the custom change address.";
@@ -138,6 +161,7 @@ export function AmountFields({
   max,
   error,
   available,
+  coins,
   subtractFee,
   onSubtractFee,
   inputRef,
@@ -147,6 +171,8 @@ export function AmountFields({
   max: ReturnType<typeof useMax>;
   error: string | null;
   available: number | undefined;
+  /** The coin source `available` counts. */
+  coins: CoinChoice;
   subtractFee: boolean;
   onSubtractFee: (on: boolean) => void;
   inputRef?: Ref<HTMLInputElement>;
@@ -156,7 +182,7 @@ export function AmountFields({
       <FormField
         label={`Amount (${shown.name})`}
         error={amount.error ?? error ?? max.error}
-        hint={available !== undefined && <>Available: {shown.full(available)} {shown.name}</>}
+        hint={available !== undefined && <>{availableLabel(coins)}: {shown.full(available)} {shown.name}</>}
       >
         {(p) => (
           <span className="amount-entry">
