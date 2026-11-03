@@ -1473,6 +1473,29 @@ fn files_go_through_the_dialog_the_user_answers() {
     assert_eq!(saved, json!(collapsed.to_str().unwrap()));
     assert_eq!(std::fs::read(&collapsed).unwrap(), b"a,b");
     assert!(!doubled.exists());
+    // The dialog asked nothing about `history.csv.csv`, which was not there: collapsing onto the
+    // `history.csv` that is there would replace it without the OS's question, so the path stays.
+    choose(Some(&doubled));
+    let saved = demo.ok(
+        "save_file_as",
+        json!({ "purpose": "historyCsv", "suggestedName": "Dash Wallet history 2026-11-03.csv", "data": "eCx5" }),
+    );
+    assert_eq!(saved, json!(doubled.to_str().unwrap()));
+    assert_eq!(std::fs::read(&collapsed).unwrap(), b"a,b");
+    assert_eq!(std::fs::read(&doubled).unwrap(), b"x,y");
+    // The same through the dialog-alone command the engine's writers use.
+    let backup = dir.path().join("a.dwbackup");
+    std::fs::write(&backup, b"keep").unwrap();
+    let backup_doubled = dir.path().join("a.dwbackup.dwbackup");
+    choose(Some(&backup_doubled));
+    assert_eq!(
+        demo.ok(
+            "choose_file_path",
+            json!({ "purpose": "walletBackup", "save": true, "suggestedName": "a.dwbackup" })
+        ),
+        json!(backup_doubled.to_str().unwrap())
+    );
+    assert_eq!(std::fs::read(&backup).unwrap(), b"keep");
     let asked = asked.lock().unwrap();
     let seen: Vec<_> = asked
         .iter()
@@ -1490,6 +1513,12 @@ fn files_go_through_the_dialog_the_user_answers() {
                 true,
                 Some("Dash Wallet history 2026-11-03.csv")
             ),
+            (
+                FilePurpose::HistoryCsv,
+                true,
+                Some("Dash Wallet history 2026-11-03.csv")
+            ),
+            (FilePurpose::WalletBackup, true, Some("a.dwbackup")),
         ],
         "a bad payload is refused before any dialog"
     );

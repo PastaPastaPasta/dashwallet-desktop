@@ -102,9 +102,23 @@ async fn choose(
         .await
         .map_err(|e| AppError::app(AppCode::FileDialog, e))?;
     Ok(match chosen {
-        Some(path) if save => Some(collapse_doubled_extension(path, purpose.spec().extensions)),
+        Some(path) if save => Some(collapse_unless_taken(path, purpose.spec().extensions)),
         other => other,
     })
+}
+
+/// `collapse_doubled_extension`, but only onto a path that is not there. The dialog asked its
+/// overwrite question about the doubled name, which does not exist; collapsing onto a file that
+/// does would replace it without that question (and `choose_file_path`'s writers, such as a
+/// `.dwbackup`, would too). Then the dialog's own path stands. We accept the race between this
+/// check and the write: a file that appears in between is replaced, as with any save.
+fn collapse_unless_taken(path: PathBuf, extensions: &[&str]) -> PathBuf {
+    let collapsed = collapse_doubled_extension(path.clone(), extensions);
+    // `symlink_metadata`: a dangling symlink is a file the user would be asked about, too.
+    match std::fs::symlink_metadata(&collapsed) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => collapsed,
+        _ => path,
+    }
 }
 
 /// `name.csv.csv` -> `name.csv`. The save dialog selects only the stem of the suggested name, so a
@@ -236,6 +250,25 @@ mod tests {
         assert_eq!(fix("/h/.csv.csv", &["csv"]), PathBuf::from("/h/.csv.csv"));
         assert_eq!(fix("/h/a.csv.csv", &["psbt"]), PathBuf::from("/h/a.csv.csv"));
         assert_eq!(fix("/h/a.dat.dat", &["dwbackup", "txt", "dat"]), PathBuf::from("/h/a.dat"));
+    }
+
+    #[test]
+    fn a_doubled_extension_is_collapsed_only_onto_a_free_name() {
+        let dir = dw_testutil::private_tempdir();
+        let doubled = dir.path().join("x.csv.csv");
+        let single = dir.path().join("x.csv");
+        assert_eq!(collapse_unless_taken(doubled.clone(), &["csv"]), single);
+        // A file there: the dialog never asked about it, so its path stands.
+        std::fs::write(&single, b"keep").unwrap();
+        assert_eq!(collapse_unless_taken(doubled.clone(), &["csv"]), doubled);
+        assert_eq!(std::fs::read(&single).unwrap(), b"keep");
+        // A dangling symlink counts as taken.
+        std::fs::remove_file(&single).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.path().join("nowhere"), &single).unwrap();
+            assert_eq!(collapse_unless_taken(doubled.clone(), &["csv"]), doubled);
+        }
     }
 
     #[test]
