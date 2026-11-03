@@ -36,8 +36,12 @@ async function axe(page: Page) {
 test("DP5-01 a link opened before any wallet survives onboarding and opens once", async ({ page }) => {
   const errors = await open(page, "no-wallet-vault");
   await page.getByTestId("onboarding-welcome").waitFor();
+  // The fixture stamps each stashed link with the page's Date.now() in whole seconds. Pin it so the
+  // payment (first) and the invitation (second) are saved a minute apart, with no wall-clock wait.
+  await page.clock.setFixedTime(new Date("2026-11-01T12:00:00Z"));
   await deliver(page, [PAY]);
   await expect(toast(page)).toHaveText("Link saved. It opens once your wallet is set up.");
+  await page.clock.setFixedTime(new Date("2026-11-01T12:01:00Z"));
   await deliver(page, [INVITATION]);
   await expect(toast(page)).toHaveText("Invitation saved. It is waiting for you once your wallet is set up.");
   expect(await world(page, (w) => w.stash.map((s) => s.info.kind))).toEqual(["payment", "invitation"]);
@@ -60,11 +64,13 @@ test("DP5-01 a link opened before any wallet survives onboarding and opens once"
   await page.keyboard.press("Enter");
   await expect(sheet).toBeVisible();
   await expect(sheet.getByTestId("saved-link")).toHaveCount(2);
-  // The sheet lists newest first by the second each link was saved (savedLinkRows), and the two
-  // deliveries above can fall in different seconds, so check both rows without fixing their order.
+  // Each kind is listed exactly once ...
   for (const kind of ["Payment request", "DashPay invitation"]) {
     await expect(sheet.getByTestId("saved-link").filter({ hasText: kind })).toHaveCount(1);
   }
+  // ... and newest first (savedLinkRows): the invitation, saved a minute after the payment, is first.
+  await expect(sheet.getByTestId("saved-link").nth(0)).toContainText("DashPay invitation");
+  await expect(sheet.getByTestId("saved-link").nth(1)).toContainText("Payment request");
   await axe(page);
 
   // The payment request opens Pay, prefilled, and leaves the stash.
