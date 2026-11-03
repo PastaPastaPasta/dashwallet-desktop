@@ -28,7 +28,7 @@ describe("Export CSV", () => {
     );
     expect(path).toBe("/home/user/h.csv");
     expect(calls).toEqual([["w1", { categories: ["received"], text: "alice", minAmount: 5 }, "oldestFirst", "milliDash", [], utcOffsetSecs(new Date(2026, 10, 1))]]);
-    expect(saved).toEqual([["csv", "Dash Wallet history 2026-11-01.csv", btoa('"a"\n')]]);
+    expect(saved).toEqual([["historyCsv", "Dash Wallet history 2026-11-01.csv", btoa('"a"\n')]]);
   });
 
   it("answers null when the dialog is cancelled", async () => {

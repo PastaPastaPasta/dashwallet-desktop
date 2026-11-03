@@ -29,5 +29,5 @@ export async function exportHistory(
 ): Promise<string | null> {
   const { sort, ...request } = filter;
   const csv = await b.exportHistoryCsv(walletId, request, sort, unit, [], utcOffsetSecs(now));
-  return saveText(b, "csv", csvFileName(now), csv);
+  return saveText(b, "historyCsv", csvFileName(now), csv);
 }
