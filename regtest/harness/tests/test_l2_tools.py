@@ -141,9 +141,8 @@ def test_abandon_never_relayed_releases_inputs_and_resend_reaches_dashd(main, re
 
     Abandon: a payment B from the wallet's 2 DASH coin is broadcast by the engine, and dashd
     refuses it: the test lowered B's fee in dashd's eyes beforehand (`prioritisetransaction`,
-    which dashd's relay-fee check honours), so B is "min relay fee not met" on every relay,
-    including the re-sends of later sessions. With no reject message on the p2p network,
-    dash-spv reports no verdict. B is in the wallet as unconfirmed and has never been relayed.
+    which dashd's relay-fee check honours), so B is "min relay fee not met" on every relay.
+    With no reject message on the p2p network, dash-spv reports no verdict. B is in the wallet as unconfirmed and has never been relayed.
     Abandoning it marks it Abandoned and the coin is spendable again once the abandon's rescan
     passes the coin's block. B's txid is known before its broadcast because the build is
     deterministic (same coin, recipients, fee and change address; lock time 0; RFC 6979).
@@ -152,10 +151,10 @@ def test_abandon_never_relayed_releases_inputs_and_resend_reaches_dashd(main, re
     so the wallet would see a conflicting spend and refuse B (test_mempool_spend_makes_the_coin_unavailable).
 
     Resend: a payment C from the released coin, left unmined (no verdict), is resent; dashd
-    receives another `tx` message from the SPV peer, and C confirms once mined. platform-wallet
-    also re-sends unconfirmed own transactions when a session loads and dash-spv sends a txid
-    once per session, so the dashd log cannot tell the resend's message from that re-dispatch:
-    the test proves the call succeeds with a connected peer and the transaction reaches dashd."""
+    receives another `tx` message from the SPV peer, and C confirms once mined. The resend runs
+    in a process of its own, whose dash-spv has not sent C yet (it sends a txid once per
+    session), and the SQLite backend stages no unconfirmed sends for platform-wallet's load
+    replay, so that message is the resend's."""
     height = tip(regtest_node)
     main.sync(height)
     coins = main.utxos()
