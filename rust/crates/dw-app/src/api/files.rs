@@ -96,11 +96,47 @@ async fn choose(
         save,
         suggested_name: suggested_name.and_then(|n| bare_file_name(&n)),
     };
-    state
+    let chosen = state
         .shell
         .choose(request)
         .await
-        .map_err(|e| AppError::app(AppCode::FileDialog, e))
+        .map_err(|e| AppError::app(AppCode::FileDialog, e))?;
+    Ok(match chosen {
+        Some(path) if save => Some(collapse_unless_taken(path, purpose.spec().extensions)),
+        other => other,
+    })
+}
+
+/// `collapse_doubled_extension`, but only onto a path that is not there. The dialog asked its
+/// overwrite question about the doubled name, which does not exist; collapsing onto a file that
+/// does would replace it without that question (and `choose_file_path`'s writers, such as a
+/// `.dwbackup`, would too). Then the dialog's own path stands. We accept the race between this
+/// check and the write: a file that appears in between is replaced, as with any save.
+fn collapse_unless_taken(path: PathBuf, extensions: &[&str]) -> PathBuf {
+    let collapsed = collapse_doubled_extension(path.clone(), extensions);
+    // `symlink_metadata`: a dangling symlink is a file the user would be asked about, too.
+    match std::fs::symlink_metadata(&collapsed) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => collapsed,
+        _ => path,
+    }
+}
+
+/// `name.csv.csv` -> `name.csv`. The save dialog selects only the stem of the suggested name, so a
+/// name typed over it with its extension ends up with the extension twice (0.1.x row 27). Only the
+/// purpose's own extensions, only an exact repeat, and never down to an empty stem.
+fn collapse_doubled_extension(path: PathBuf, extensions: &[&str]) -> PathBuf {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return path;
+    };
+    for ext in extensions {
+        let doubled = format!(".{ext}.{ext}");
+        let lower = name.to_ascii_lowercase();
+        if lower.ends_with(&doubled) && name.len() > doubled.len() {
+            // ASCII-lowercasing keeps byte offsets, so the cut is on a char boundary.
+            return path.with_file_name(&name[..name.len() - ext.len() - 1]);
+        }
+    }
+    path
 }
 
 /// The renderer's suggestion as a bare file name: no directory part (either
@@ -200,6 +236,40 @@ fn write_owner_only(path: &Path, data: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_doubled_extension_is_collapsed() {
+        let fix = |p: &str, e: &[&str]| collapse_doubled_extension(PathBuf::from(p), e);
+        assert_eq!(fix("/h/w1-history.csv.csv", &["csv"]), PathBuf::from("/h/w1-history.csv"));
+        assert_eq!(fix("/h/Dash Wallet history.CSV.csv", &["csv"]), PathBuf::from("/h/Dash Wallet history.CSV"));
+        assert_eq!(fix("/h/a.b.csv.csv", &["csv"]), PathBuf::from("/h/a.b.csv"));
+        // Left alone: one extension, a different one, a repeat that is not exact, no stem.
+        assert_eq!(fix("/h/a.csv", &["csv"]), PathBuf::from("/h/a.csv"));
+        assert_eq!(fix("/h/a.txt.csv", &["csv"]), PathBuf::from("/h/a.txt.csv"));
+        assert_eq!(fix("/h/a.csv.csv.bak", &["csv"]), PathBuf::from("/h/a.csv.csv.bak"));
+        assert_eq!(fix("/h/.csv.csv", &["csv"]), PathBuf::from("/h/.csv.csv"));
+        assert_eq!(fix("/h/a.csv.csv", &["psbt"]), PathBuf::from("/h/a.csv.csv"));
+        assert_eq!(fix("/h/a.dat.dat", &["dwbackup", "txt", "dat"]), PathBuf::from("/h/a.dat"));
+    }
+
+    #[test]
+    fn a_doubled_extension_is_collapsed_only_onto_a_free_name() {
+        let dir = dw_testutil::private_tempdir();
+        let doubled = dir.path().join("x.csv.csv");
+        let single = dir.path().join("x.csv");
+        assert_eq!(collapse_unless_taken(doubled.clone(), &["csv"]), single);
+        // A file there: the dialog never asked about it, so its path stands.
+        std::fs::write(&single, b"keep").unwrap();
+        assert_eq!(collapse_unless_taken(doubled.clone(), &["csv"]), doubled);
+        assert_eq!(std::fs::read(&single).unwrap(), b"keep");
+        // A dangling symlink counts as taken.
+        std::fs::remove_file(&single).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.path().join("nowhere"), &single).unwrap();
+            assert_eq!(collapse_unless_taken(doubled.clone(), &["csv"]), doubled);
+        }
+    }
 
     #[test]
     fn files_are_read_below_their_limit_only() {
