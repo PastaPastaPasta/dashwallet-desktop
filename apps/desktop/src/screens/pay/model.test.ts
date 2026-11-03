@@ -18,7 +18,9 @@ import {
   outpointKey,
   outpointOf,
   recipientOf,
+  mixedFeeText,
   sendErrorText,
+  withSubtractFee,
 } from "./model";
 
 const err = (code: AppError["code"], data: AppError["data"] = null): AppError => ({ code, message: code, data });
@@ -93,6 +95,18 @@ describe("the engine's refusals", () => {
     expect(sendErrorText(err("send.absurd_fee"), "test")).toEqual({ text: "The fee is absurdly high.", field: null });
     expect(sendErrorText(err("wallet_not_found"), "test")).toBeNull();
     expect(sendErrorText(new Error("x"), "test")).toBeNull();
+  });
+
+  it("says why a fully mixed payment's fee is absurd: no change, the rest is fee (MX-FEE)", () => {
+    const mixed = { recipient, source: { kind: "fullyMixedOnly" } } as const;
+    const absurd = err("send.absurd_fee", { kind: "fee", fee: 10_000_200, available: null });
+    expect(mixedFeeText(absurd, mixed, "test")).toBe("Fully mixed coins are spent in whole denominations, so the 0.10000200 tDASH left over would go to fees.");
+    expect(mixedFeeText(err("send.absurd_fee"), mixed, "test")).toBe("Fully mixed coins are spent in whole denominations, so what is left over would go to fees.");
+    // Not for other coins, a payment already subtracting the fee, or another refusal.
+    expect(mixedFeeText(absurd, { ...mixed, source: { kind: "any" } }, "test")).toBeNull();
+    expect(mixedFeeText(absurd, { ...mixed, recipient: withSubtractFee(recipient) }, "test")).toBeNull();
+    expect(mixedFeeText(err("send.dust_amount"), mixed, "test")).toBeNull();
+    expect(withSubtractFee(recipient)).toEqual({ ...recipient, subtractFeeFromAmount: true });
   });
 
   it("is not sent only when the engine released a first attempt (E0-13 D8)", () => {

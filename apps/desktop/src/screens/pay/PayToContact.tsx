@@ -240,7 +240,7 @@ function ContactForm({
   const recipient: ContactRecipient | null =
     typeof duffs === "number" && duffs > 0 ? { identity, contact, amount: duffs, subtractFee, note: note.trim() || null } : null;
   const spec = draftSpec(recipient, advanced);
-  const { estimate, general, fieldError, ready: estimated } = useEstimate(walletId, draft, spec, advanced, locked || held, shown);
+  const { estimate, general, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked || held, shown);
   const ready = estimated && amount.settled;
   const max = useMax(walletId, advanced, shown, (text) => {
     amount.setText(text);
@@ -310,7 +310,7 @@ function ContactForm({
               </FormField>
             </section>
             <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" ? duffs : null} />
-            <PayFooter problem={general} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
+            <PayFooter problem={general} offer={offer === null || !amount.settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
           </>
         )}
       </form>

@@ -101,6 +101,19 @@ describe("fixture send engine", () => {
     expect(await cmd.draftEstimate(99).catch((e) => e)).toMatchObject({ code: "app.unknown_handle" });
   });
 
+  it("pays a fully mixed spend's rest as fee, and a dust rest pays a subtracted fee first (MX-FEE)", async () => {
+    const main = fixture.world.wallets[0];
+    const coin = main.coins[0];
+    main.coins.push(...[1, 2].map((vout) => ({ ...coin, outpoint: { ...coin.outpoint, vout: 90 + vout }, amount: 10_000_100, coinjoinRounds: 4 })));
+    const mixed = async (r: Recipient) => {
+      const d = await draftFor(r);
+      await cmd.draftSetSource(d, { kind: "fullyMixedOnly" });
+      return cmd.draftEstimate(d).catch((e: cmd.AppError) => e);
+    };
+    expect(await mixed(pay(10_000_000))).toMatchObject({ code: "send.absurd_fee", data: { kind: "fee", fee: 10_000_200 } });
+    expect(await mixed(pay(10_000_000, { subtractFeeFromAmount: true }))).toEqual({ fee: 192, sizeBytes: 192, inputCount: 1, change: null, totalSent: 9_999_908 });
+  });
+
   it("requires a passphrase for a spend grant while every payment needs authentication", async () => {
     await expect(cmd.authorize({ kind: "spend", maxDuffs: 1 }, W, { kind: "unencrypted" })).rejects.toMatchObject({ code: "vault.credential_required" });
     await expect(cmd.authorize({ kind: "platformOp", maxDuffs: 1, maxCredits: "1" }, W, { kind: "unencrypted" })).rejects.toMatchObject({

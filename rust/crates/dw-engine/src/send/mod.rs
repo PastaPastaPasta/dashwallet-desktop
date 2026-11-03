@@ -834,6 +834,20 @@ impl NetworkSession {
     }
 }
 
+/// The CoinJoin source's rule, then the fee cap. dash-qt's CoinJoin page
+/// makes no change output, so the rest is fee (`CoinType::ONLY_FULLY_MIXED`,
+/// Dash Core v24.0.0-rc.6 8d195f18 wallet/spend.cpp:995-999).
+fn finish(mut plan: Plan, coinjoin: bool, change_len: usize) -> Result<Plan, SendFailure> {
+    if coinjoin && let Some(change) = plan.change.take() {
+        plan.fee += change;
+        plan.estimated_size -= plan::output_size(change_len);
+    }
+    if plan.fee > MAX_TX_FEE {
+        return Err(SendFailure::AbsurdFee { fee: plan.fee });
+    }
+    Ok(plan)
+}
+
 /// The coins `source` offers to a build. Coin control may also take an
 /// `exempt` coin that only a tracked asset lock reserves; automatic
 /// selection never does.
@@ -998,7 +1012,7 @@ impl TxDraft {
             CoinSource::Outpoints(_) => InputChoice::UseAll(&coins),
             _ => InputChoice::Select(&coins),
         };
-        let mut plan =
+        let plan =
             plan::plan(choice, &outputs, state.fee, change_len, height).map_err(|e| match e {
                 // The CoinJoin page's own message (dash-qt "Insufficient
                 // mixed funds").
@@ -1010,15 +1024,7 @@ impl TxDraft {
                 }
                 e => SendFailure::from(e),
             })?;
-        if coinjoin && let Some(change) = plan.change.take() {
-            // dash-qt's CoinJoin page: no change output, the rest is fee
-            // (`CoinType::ONLY_FULLY_MIXED`, wallet/spend.cpp:980-995).
-            plan.fee += change;
-            plan.estimated_size -= plan::output_size(change_len);
-        }
-        if plan.fee > MAX_TX_FEE {
-            return Err(SendFailure::AbsurdFee { fee: plan.fee }.into());
-        }
+        let plan = finish(plan, coinjoin, change_len)?;
         let resolved = Resolved {
             plan,
             recipients: state.recipients,
