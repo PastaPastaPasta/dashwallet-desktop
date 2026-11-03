@@ -361,7 +361,7 @@ test.describe("Export CSV", () => {
     await expect(page.getByTestId("tx-export-result")).toContainText("Exported to ");
     const saved = await world(page, (w) => w.tools.files.saved);
     expect(saved).toHaveLength(1);
-    expect(saved[0].purpose).toBe("csv");
+    expect(saved[0].purpose).toBe("historyCsv");
     expect(saved[0].path).toMatch(/Dash Wallet history \d{4}-\d{2}-\d{2}\.csv$/);
     const csv = await page.evaluate((b64) => atob(b64), saved[0].data);
     expect(csv.split("\n")[0]).toBe('"Confirmed","Date","Type","Label","Address","Amount (DASH)","ID"');

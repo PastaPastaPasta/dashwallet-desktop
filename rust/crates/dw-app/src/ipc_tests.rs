@@ -1462,6 +1462,17 @@ fn files_go_through_the_dialog_the_user_answers() {
         ),
         json!(out.to_str().unwrap())
     );
+    // Activity's export: its own purpose, and a typed extension the dialog doubled is collapsed.
+    let doubled = dir.path().join("history.csv.csv");
+    choose(Some(&doubled));
+    let saved = demo.ok(
+        "save_file_as",
+        json!({ "purpose": "historyCsv", "suggestedName": "Dash Wallet history 2026-11-03.csv", "data": "YSxi" }),
+    );
+    let collapsed = dir.path().join("history.csv");
+    assert_eq!(saved, json!(collapsed.to_str().unwrap()));
+    assert_eq!(std::fs::read(&collapsed).unwrap(), b"a,b");
+    assert!(!doubled.exists());
     let asked = asked.lock().unwrap();
     let seen: Vec<_> = asked
         .iter()
@@ -1474,6 +1485,11 @@ fn files_go_through_the_dialog_the_user_answers() {
             (FilePurpose::Psbt, false, None),
             (FilePurpose::Csv, true, Some("Addresses.csv")),
             (FilePurpose::WalletBackup, true, Some("Everyday.dwbackup")),
+            (
+                FilePurpose::HistoryCsv,
+                true,
+                Some("Dash Wallet history 2026-11-03.csv")
+            ),
         ],
         "a bad payload is refused before any dialog"
     );

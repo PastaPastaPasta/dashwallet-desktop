@@ -150,6 +150,10 @@ test("acceptance: mixing starts and stops from the page", async ({ page }) => {
   await page.getByTestId("coinjoin-action").click();
   await page.getByTestId("coinjoin-stop-confirm").click();
   await expect(status(page)).toHaveAttribute("data-state", "off");
+  // 0.1.x row 25: the user's own Stop reads "Mixing stopped", not "Not Started".
+  await expect(page.getByTestId("coinjoin-status-title")).toHaveText("Mixing stopped");
+  await expect(page.getByTestId("coinjoin-status-line")).toHaveCount(0);
+  await expect(page.getByTestId("coinjoin-action")).toHaveText("Start Mixing");
   expect(await calls(page)).toEqual(["start_mixing", "stop_mixing"]);
   expect(await page.evaluate((w) => window.__dwFixture!.world.coinjoin.mixers[w].stopReason, FIXTURE_WALLET_ID)).toBe("userRequested");
   expect(errors).toEqual([]);

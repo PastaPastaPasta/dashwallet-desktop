@@ -19,6 +19,9 @@ pub enum FilePurpose {
     Psbt,
     /// The address book's export (QT-095).
     Csv,
+    /// Activity's export (QT-093): its own save title, so the dialog does not read
+    /// "Export Address List" (0.1.x row 27).
+    HistoryCsv,
     /// A `.dwbackup` the engine writes (U-04).
     WalletBackup,
     /// A wallet file to import: `.dwbackup`, `dumpwallet`, `wallet.dat` (U-04).
@@ -66,6 +69,13 @@ impl FilePurpose {
                 extensions: &["csv"],
                 max_bytes: MAX_OTHER_BYTES,
             },
+            FilePurpose::HistoryCsv => PurposeSpec {
+                open_title: "Open Activity Export",
+                save_title: "Export Activity",
+                filter: "Comma separated file",
+                extensions: &["csv"],
+                max_bytes: MAX_OTHER_BYTES,
+            },
             FilePurpose::WalletBackup => PurposeSpec {
                 open_title: "Open Wallet Backup",
                 save_title: "Back Up Wallet",
@@ -105,6 +115,16 @@ impl FilePurpose {
     }
 }
 
+/// Where a save dialog opens: Documents, else the home folder, else where the OS would. Without
+/// one, GTK opens in the process's working directory, which in the AppImage is its read-only
+/// mount (0.1.x row 27). A folder that is not there counts as none.
+pub fn default_save_directory(
+    documents: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    [documents, home].into_iter().flatten().find(|d| d.is_dir())
+}
+
 /// One dialog to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileRequest {
@@ -141,6 +161,14 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) {
         if let Some(name) = &request.suggested_name {
             dialog = dialog.set_file_name(name);
         }
+        if request.save {
+            let paths = app.path();
+            if let Some(dir) =
+                default_save_directory(paths.document_dir().ok(), paths.home_dir().ok())
+            {
+                dialog = dialog.set_directory(dir);
+            }
+        }
         if let Some(window) = app.get_webview_window("main") {
             dialog = dialog.set_parent(&window);
         }
@@ -156,4 +184,39 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) {
         }
         rx
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activity_export_has_its_own_title() {
+        let spec = FilePurpose::HistoryCsv.spec();
+        assert_eq!(spec.save_title, "Export Activity");
+        assert_eq!(spec.extensions, ["csv"]);
+        // The address book's export keeps dash-qt's title.
+        assert_eq!(FilePurpose::Csv.spec().save_title, "Export Address List");
+    }
+
+    #[test]
+    fn save_dialogs_open_in_documents_then_home() {
+        let tmp = dw_testutil::private_tempdir();
+        let docs = tmp.path().join("Documents");
+        let home = tmp.path().join("home");
+        let gone = tmp.path().join("gone");
+        std::fs::create_dir(&docs).unwrap();
+        std::fs::create_dir(&home).unwrap();
+        assert_eq!(
+            default_save_directory(Some(docs.clone()), Some(home.clone())),
+            Some(docs)
+        );
+        assert_eq!(
+            default_save_directory(Some(gone.clone()), Some(home.clone())),
+            Some(home.clone())
+        );
+        assert_eq!(default_save_directory(None, Some(home.clone())), Some(home));
+        assert_eq!(default_save_directory(Some(gone.clone()), Some(gone)), None);
+        assert_eq!(default_save_directory(None, None), None);
+    }
 }
