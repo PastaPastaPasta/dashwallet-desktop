@@ -339,6 +339,37 @@ test.describe("Pay", () => {
     expect(cap).toEqual({ kind: "spend", maxDuffs: debit });
   });
 
+  test("a fully mixed payment refused as an absurd fee offers Subtract fee (MX-FEE)", async ({ page }) => {
+    await open(page);
+    // Re-smoke 2 §3c: two fully mixed 0.100001 coins; 0.1 without Subtract fee leaves 0.100002 as fee.
+    await world(page, (w) => {
+      const c = w.wallets[0].coins[0];
+      w.wallets[0].coins.push(...[91, 92].map((vout) => ({ ...c, outpoint: { ...c.outpoint, vout }, amount: 10_000_100, coinjoinRounds: 4 })));
+    });
+    await fillPayment(page, PAYEE, "0.1");
+    await page.getByTestId("pay-advanced").locator("summary").click();
+    await page.getByTestId("coin-choice-mixed").check();
+    await expect(page.getByTestId("pay-problem")).toHaveText(
+      /^Fully mixed coins are spent in whole denominations, so the 0\.10000200 tDASH left over would go to fees\. With Subtract fee it would send 0\.09999908 tDASH\./,
+    );
+    await expect(page.getByTestId("pay-continue")).toBeDisabled();
+    await page.getByTestId("pay-subtract-offer").click();
+    await expect(page.getByTestId("pay-subtract-fee")).toBeChecked();
+    await expect(page.getByTestId("pay-fee-line")).toContainText("0.00000192");
+    await review(page);
+
+    // When Subtract fee is refused too (one 1.00001 coin paying 0.5 burns the rest either way), only the reason.
+    await page.getByTestId("pay-confirm-cancel").click();
+    await world(page, (w) => {
+      w.wallets[0].coins = w.wallets[0].coins.filter((u) => u.outpoint.vout !== 92);
+      w.wallets[0].coins.find((u) => u.outpoint.vout === 91)!.amount = 100_001_000;
+    });
+    await page.getByTestId("pay-amount").fill("0.5");
+    await page.getByTestId("pay-subtract-fee").uncheck();
+    await expect(page.getByTestId("pay-problem")).toHaveText("Fully mixed coins are spent in whole denominations, so the 0.50001000 tDASH left over would go to fees.");
+    await expect(page.getByTestId("pay-subtract-offer")).toHaveCount(0);
+  });
+
   test("an empty custom change address holds the payment", async ({ page }) => {
     await open(page);
     await fillPayment(page, PAYEE, "0.5");

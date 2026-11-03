@@ -346,8 +346,12 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
     }
     change = null;
   }
-  const fee = base + rest;
-  const totalSent = subtract ? pay - base : pay;
+  // A dust rest pays the fee first; subtract-fee recipients pay only what it leaves (plan.rs).
+  const reduce = subtract ? Math.max(0, base - rest) : 0;
+  let fee = (subtract ? reduce : base) + rest;
+  const totalSent = pay - reduce;
+  // A fully mixed spend makes no change: the rest is fee (dw-engine `send::finish`).
+  if (d.source.kind === "fullyMixedOnly" && change !== null) [fee, change] = [fee + change, null];
   if (subtract && totalSent < DUST) throw fail("send.amount_too_small_after_fee", "amount too small after the fee", { kind: "recipient", index: 0 });
   if (fee > MAX_TX_FEE) throw fail("send.absurd_fee", "absurd fee", { kind: "fee", fee, available: null });
   return { fee, sizeBytes: sizeOf(inputs.length, outputs + (change === null ? 0 : 1)), inputCount: inputs.length, change, totalSent, inputs };

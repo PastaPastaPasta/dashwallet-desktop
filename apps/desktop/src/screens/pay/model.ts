@@ -103,6 +103,17 @@ export const isContact = (r: PayRecipient): r is ContactRecipient => "contact" i
 
 export const subtractsFee = (r: PayRecipient) => (isContact(r) ? r.subtractFee : r.subtractFeeFromAmount);
 
+export const withSubtractFee = (r: PayRecipient): PayRecipient => (isContact(r) ? { ...r, subtractFee: true } : { ...r, subtractFeeFromAmount: true });
+
+/** Why a fully mixed payment without Subtract fee is refused as an absurd fee (MX-FEE): a CoinJoin
+ * spend makes no change (Dash Core v24 `ONLY_FULLY_MIXED`), so what the coins hold beyond the
+ * amount is fee; `null` for any other refusal or payment. */
+export function mixedFeeText(e: unknown, spec: { recipient: PayRecipient; source: CoinSource }, chain: Chain, unit: Unit = "DASH"): string | null {
+  if (spec.source.kind !== "fullyMixedOnly" || subtractsFee(spec.recipient) || !hasCode(e, "send.absurd_fee")) return null;
+  const fee = e.data?.kind === "fee" ? `the ${formatWithUnit(unit, e.data.fee, false, "standard", chain)} ` : "what is ";
+  return `Fully mixed coins are spent in whole denominations, so ${fee}left over would go to fees.`;
+}
+
 export function recipientOf(input: PayInput): Recipient {
   return {
     address: input.address,

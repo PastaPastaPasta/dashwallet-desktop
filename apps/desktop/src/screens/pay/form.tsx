@@ -9,7 +9,7 @@ import { keys, useBackend } from "../../api/queries";
 import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton } from "../../components/basics";
 import type { useDisplay } from "../../format/display";
-import { changePolicy, coinSource, feeMode, sendErrorText, type Advanced, type Confirmed, type Outcome, type PayRecipient } from "./model";
+import { changePolicy, coinSource, feeMode, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type Confirmed, type Outcome, type PayRecipient } from "./model";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 /** How long a field stays unchanged before it is checked and the draft estimated (U-03 D5). */
@@ -92,14 +92,26 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
     gcTime: 0,
   });
   const refusal = estimate.isError ? sendErrorText(estimate.error, chain, amountUnit) : null;
+  // A fully mixed payment refused as an absurd fee: offer Subtract fee with what it would send,
+  // from the engine's own estimate of it (MX-FEE); a refusal of that too leaves the reason alone.
+  const mixed = estimate.isError && spec ? mixedFeeText(estimate.error, spec, chain, amountUnit) : null;
+  const subtracted = mixed && spec ? { ...spec, recipient: withSubtractFee(spec.recipient) } : null;
+  const offer = useQuery({
+    queryKey: [...keys.coinsAll(walletId), "estimate", subtracted] as const,
+    queryFn: () => draft.estimate(subtracted!),
+    enabled: !!subtracted && !hold,
+    retry: false,
+    gcTime: 0,
+  });
   let general: string | null = null;
-  if (estimate.isError) general = refusal ? (refusal.field ? null : refusal.text) : errorMessage(estimate.error);
+  if (mixed) general = mixed;
+  else if (estimate.isError) general = refusal ? (refusal.field ? null : refusal.text) : errorMessage(estimate.error);
   else if (advanced.coins === "selected" && advanced.selected.length === 0) general = "Choose the coins to pay with.";
   else if (!feeMode(advanced)) general = "Enter a custom fee rate.";
   else if (advanced.changeAddress !== null && advanced.changeAddress.trim() === "") general = "Enter the custom change address.";
   const fieldError = (f: "address" | "amount") => (refusal?.field === f ? refusal.text : null);
   const ready = !!spec && estimate.isSuccess && !estimate.isFetching && !hold;
-  return { estimate, general, fieldError, ready };
+  return { estimate, general, fieldError, ready, offer: subtracted && offer.isSuccess ? offer.data.totalSent : null };
 }
 
 /** Max (U-03): everything the chosen coins can pay, the fee subtracted from it. */
@@ -183,8 +195,11 @@ export function PayFooter({
   ready,
   incomplete,
   reviewRef,
+  offer,
 }: {
   problem: string | null;
+  /** Subtract fee would send this amount; its button turns it on (MX-FEE). */
+  offer?: { amount: number; accept: () => void } | null;
   /** The form has no address or amount to estimate yet (as against an estimate still being worked out). */
   incomplete: boolean;
   /** The estimate's fee, when there is one for the current form. */
@@ -200,6 +215,14 @@ export function PayFooter({
         {problem ? (
           <span className="form-problem" id="pay-reason" data-testid="pay-problem">
             {problem}
+            {offer && (
+              <>
+                {" "}With Subtract fee it would send <AmountText text={shown.full(offer.amount)} unitName={shown.name} glyph={false} />.{" "}
+                <DashButton variant="tintedBlue" size="small" data-testid="pay-subtract-offer" onClick={offer.accept}>
+                  Turn on Subtract fee
+                </DashButton>
+              </>
+            )}
           </span>
         ) : fee !== null ? (
           <span className="pay-fee-line" id="pay-reason" data-testid="pay-fee-line">
