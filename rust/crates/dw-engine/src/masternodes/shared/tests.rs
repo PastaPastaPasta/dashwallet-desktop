@@ -2892,15 +2892,46 @@ fn replay_refusal<T: std::fmt::Debug>(r: Result<T, MasternodesError>) -> bool {
     r.is_err_and(|e| matches!(e.engine(), Some(crate::EngineError::RescanInProgress)))
 }
 
-/// 0.1.x-bal §1: a shared masternode's start reserves no coins while a
-/// replay runs.
+/// 0.1.x-bal §1: a shared masternode's start and join reserve no coins
+/// while a replay runs, and a refused call, however often, issues no
+/// address (it is refused before `own_row`).
 #[test]
 fn test_QT_126_a_replay_holds_a_starts_coins() {
     let f = fx(2, true);
     f.credit(0, 1, 501 * COIN);
+    f.credit(1, 2, 500 * COIN + 50_000);
+    let issued = |w: usize| {
+        let book = f
+            .session
+            .address_book(f.wallets[w], Some(crate::BookPurpose::Receive), None);
+        f.run(book).unwrap().len()
+    };
     f.replaying(0);
     let req = || request(&[("A", 500), ("B", 500)], FEE);
-    assert!(replay_refusal(start(&f, 0, req())));
+    let before = issued(0);
+    for _ in 0..2 {
+        assert!(replay_refusal(start(&f, 0, req())));
+    }
+    assert_eq!(issued(0), before, "a refused start issues no address");
     f.checkpoint(0, 1_000);
-    start(&f, 0, req()).unwrap();
+    let id = start(&f, 0, req()).unwrap().session.id;
+    f.imported(1, &f.message(0, &id));
+    f.replaying(1);
+    let before = issued(1);
+    let join = || {
+        f.run(f.mn().join_shared(
+            f.wallets[1],
+            id.clone(),
+            crate::masternodes::JoinSharedRequest {
+                share_index: Some(1),
+                reward: RewardChoice::NewAddress,
+            },
+        ))
+    };
+    for _ in 0..2 {
+        assert!(replay_refusal(join()));
+    }
+    assert_eq!(issued(1), before, "a refused join issues no address");
+    f.checkpoint(1, 1_000);
+    join().unwrap();
 }

@@ -2251,6 +2251,84 @@ fn a_replay_refuses_spends_until_it_reaches_its_target() {
     f.engine.block_on(draft.prepare(grant())).unwrap();
 }
 
+/// The prepare of `draft` on the runtime, for a test to interleave with.
+fn spawn_prepare(
+    f: &Fixture,
+    draft: &Arc<TxDraft>,
+) -> tokio::task::JoinHandle<Result<Arc<PreparedTx>, EngineError>> {
+    let (draft, grant) = (Arc::clone(draft), f.spend_grant(10_000_000 + FEE_ROOM));
+    f.session
+        .rt
+        .spawn(async move { draft.prepare(grant).await })
+}
+
+/// A rewind while the payment waits for the coin fence (another spender
+/// holds it) is seen: the guard reads the checkpoint under the fence.
+#[test]
+fn a_rewind_while_a_payment_waits_for_the_fence_refuses_it() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let fence = f.engine.block_on(f.session.coin_fence(f.wallet)).unwrap();
+    let prepare = spawn_prepare(&f, &draft);
+    eventually("the prepare waits for the fence", || {
+        f.session.coin_fences.users(f.wallet) == 2
+    });
+    f.checkpoint(500);
+    drop(fence);
+    assert!(replaying(f.engine.block_on(prepare).unwrap()));
+}
+
+/// A rewind after the payment read its coins, before it signs them: the
+/// guard's second reading refuses it.
+#[test]
+fn a_rewind_after_the_coin_read_refuses_the_payment() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.coin_fences.pause_prepare.lock().unwrap() = Some(Arc::clone(&pause));
+    let prepare = spawn_prepare(&f, &draft);
+    eventually("the prepare's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    f.checkpoint(500);
+    pause.release.notify_one();
+    assert!(replaying(f.engine.block_on(prepare).unwrap()));
+    assert!(
+        f.session.spends.snapshot(&f.wallet).is_empty(),
+        "nothing reserved"
+    );
+}
+
+/// The hub hears of a checkpoint late (a lagging event subscriber loses
+/// events): the guard raises the target to the checkpoint it reads, so a
+/// rewind below that is a replay.
+#[test]
+fn the_guard_raises_the_target_to_a_checkpoint_the_hub_missed() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.checkpoint(1_200);
+    let guard = |floor| f.engine.block_on(f.session.replay_guard(f.wallet, floor));
+    assert_eq!(guard(0).unwrap(), 1_200);
+    assert_eq!(
+        f.session.hub.wallet_state(&f.wallet).unwrap().scan_target,
+        1_200
+    );
+    f.checkpoint(1_100);
+    assert!(replaying(guard(0)));
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    assert!(replaying(
+        f.engine
+            .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+    ));
+    f.checkpoint(1_200);
+    assert!(replaying(guard(1_300)), "below the floor");
+}
+
 /// A user rescan holds spends. Cancelling it puts the checkpoint back but
 /// leaves what the partial replay re-credited above where it stopped, so
 /// spends stay held until a rewind to there or below has replayed back to the
@@ -2277,6 +2355,11 @@ fn a_user_rescan_holds_spends_and_its_cancel_keeps_them_held() {
                 .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM))),
         )
     };
+    // Cancelled right after its start: a batch may have applied blocks it
+    // had not committed yet.
+    rescan(400);
+    assert!(f.engine.block_on(f.session.cancel_rescan()).unwrap());
+    assert!(held(), "cancelled before any batch committed");
     rescan(400);
     assert!(held());
     f.advance(700);
@@ -2356,4 +2439,37 @@ fn a_coin_our_unconfirmed_transaction_spends_is_held() {
     // A spender in a block holds it, whatever the abandon flag says.
     entry(&|e| (e.context, e.abandoned) = (block.clone(), true));
     assert_eq!(f.reserved(), vec![coin, other]);
+}
+
+/// Core marks the descendants of a conflicted transaction conflicted too
+/// (`RecursiveUpdateTxState`): A spends P, B spends A's output and our coin
+/// Q, both out of a block; then R spends P in a block. A and B are only in
+/// dw's stored history (key-wallet holds neither, so no sweep removes
+/// them): Q is free to spend and to fund an asset lock.
+#[test]
+fn a_conflicted_transactions_descendant_frees_its_other_inputs() {
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    let f = fixture(false);
+    let q = f.credit(1, COIN);
+    let p = OutPoint::new(Txid::from_byte_array([0x61; 32]), 0);
+    let a = f.own_spend(0x62, &[p], TransactionContext::Mempool);
+    f.own_spend(0x63, &[OutPoint::new(a, 0), q], TransactionContext::Mempool);
+    assert_eq!(f.reserved(), vec![q], "B holds Q while A stands");
+    let block = TransactionContext::InBlock(BlockInfo::new(7, dashcore::BlockHash::all_zeros(), 9));
+    f.own_spend(0x64, &[p], block);
+    assert_eq!(f.reserved(), Vec::<OutPoint>::new());
+    let held = f.engine.block_on(async {
+        let fence = f.session.coin_fence(f.wallet).await.unwrap();
+        let snapshot = f.session.fenced_coins(&fence).await.unwrap();
+        snapshot.held_funding_coins().count()
+    });
+    assert_eq!(held, 0, "an asset lock may fund from Q");
+    let prepared = f
+        .engine
+        .block_on(
+            f.draft(vec![pay(FOREIGN, 10_000_000)])
+                .prepare(f.spend_grant(10_000_000 + FEE_ROOM)),
+        )
+        .unwrap();
+    assert_eq!(prepared.summary().inputs[0].outpoint, q);
 }

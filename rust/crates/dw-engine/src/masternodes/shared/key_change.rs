@@ -663,7 +663,7 @@ impl NetworkSession {
         let ctx = super::v24_context(self, wallet).await?;
         // The fence from the coin read to the row's write (D68).
         let fence = self.coin_fence(wallet).await?;
-        self.replay_guard(wallet).await?;
+        let guarded = self.replay_guard(wallet, 0).await?;
         self.check_no_pending_maintenance(wallet, hash, None)
             .await?;
         let reg = self.registered(wallet, hash, &ctx).await?;
@@ -706,6 +706,7 @@ impl NetworkSession {
         let coins = self
             .protx_candidates(&fence, &w, &HashSet::new(), None)
             .await?;
+        self.replay_guard(wallet, guarded).await?;
         let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
         let size = payload_bytes(&key_change::placeholder(&mn, keys)).len();
         let funding = plan_funding(&utxos, &[], size, CHANGE_LEN).map_err(EngineError::from)?;

@@ -246,18 +246,44 @@ impl NetworkSession {
     /// platform-wallet's DIP-15 backfill after an unlock or in its DashPay
     /// sync loop) lowers key-wallet's filter checkpoint, and outputs spent
     /// above it read unspent until their spends replay. The checkpoint is
-    /// read live, so a rewind the engine did not make counts from its first
-    /// moment; it is done back at the highest checkpoint seen
+    /// read live; the replay is done back at the highest checkpoint seen
     /// (`WalletState::scan_target`: dash-spv advances it only past applied
-    /// blocks). A rewind that lands after SPV advanced the checkpoint but
-    /// before the hub heard of it leaves the target one filter batch low.
-    pub(crate) async fn replay_guard(&self, wallet_id: WalletId) -> Result<(), EngineError> {
+    /// blocks), raised here to every live read, since the hub hears of a
+    /// checkpoint late (a batch committed before a rewind, events a lagging
+    /// subscriber of key-wallet's broadcast lost). Returns the checkpoint;
+    /// called again with it as `floor` once the coins are selected, a rewind
+    /// since refuses too. A rewind replayed back above `floor` by then is not
+    /// seen: the network rejects what such a build spends twice.
+    pub(crate) async fn replay_guard(
+        &self,
+        wallet_id: WalletId,
+        floor: u32,
+    ) -> Result<u32, EngineError> {
         let wallet = self.wallet(&wallet_id).await?;
-        let live = wallet.state().await.core_wallet.synced_height();
-        match self.hub.wallet_state(&wallet_id) {
-            Some(s) if s.replaying_at(live) => Err(EngineError::RescanInProgress),
-            _ => Ok(()),
+        // The hub is written under the read lock, so a fork's truncation
+        // (under the write lock) lowers the target after this raise.
+        let state = wallet.state().await;
+        let live = state.core_wallet.synced_height();
+        let refused = self.hub.update_wallet_state(wallet_id, |s| {
+            s.scan_target = s.scan_target.max(live);
+            live < floor || s.replaying_at(live)
+        });
+        if refused {
+            return Err(EngineError::RescanInProgress);
         }
+        Ok(live)
+    }
+
+    /// `select` between [`Self::replay_guard`] and its second call.
+    pub(crate) async fn replay_guarded<T, E: From<EngineError>>(
+        &self,
+        wallet_id: WalletId,
+        select: impl Future<Output = Result<T, E>>,
+    ) -> Result<T, E> {
+        let guarded = self.replay_guard(wallet_id, 0).await?;
+        let selected = select.await?;
+        self.replay_guard(wallet_id, guarded).await?;
+        Ok(selected)
     }
 
     /// Whether a rescan the engine started is still running.

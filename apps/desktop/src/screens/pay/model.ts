@@ -4,6 +4,7 @@
 // DashPay contact (DP3-06) shares all of it; its own parts are in contact.ts.
 
 import { hasCode, isAppError, retryAfterSecs } from "../../api/backend";
+import { RESCAN_RUNNING } from "../../app/rescan";
 import type { AddressClass } from "../../api/generated/AddressClass";
 import type { AppError } from "../../api/generated/AppError";
 import type { ChangePolicy } from "../../api/generated/ChangePolicy";
@@ -221,7 +222,7 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
     case "send.no_peers":
       return { text: "No connection to the Dash network. The payment was not sent.", field: null };
     case "rescan_in_progress":
-      return { text: "The wallet is rescanning. Wait until it has finished, then try again.", field: null };
+      return { text: RESCAN_RUNNING, field: null };
     case "send.broadcast_rejected":
       return {
         text: `The network rejected the transaction${e.data?.kind === "reason" ? `: ${e.data.reason}` : ""}. The payment was not sent.`,

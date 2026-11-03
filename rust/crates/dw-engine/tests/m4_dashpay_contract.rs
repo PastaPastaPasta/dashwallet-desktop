@@ -937,6 +937,7 @@ fn error_codes_match_the_contract() {
             PlatformError::InvalidArgument { detail: s() },
             PlatformError::NetworkNotOpen,
             PlatformError::WalletNotFound,
+            PlatformError::RescanInProgress,
             PlatformError::Storage { detail: s() },
             PlatformError::Internal { detail: s() },
         ],

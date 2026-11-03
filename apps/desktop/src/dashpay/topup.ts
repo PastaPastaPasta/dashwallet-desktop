@@ -5,6 +5,7 @@
 
 import type { Backend } from "../api/backend";
 import { hasCode, isAppError } from "../api/backend";
+import { RESCAN_INTERRUPTED } from "../app/rescan";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { CostTable } from "../api/generated/CostTable";
 import type { GrantRequest } from "../api/generated/GrantRequest";
@@ -118,6 +119,8 @@ export function topUpErrorText(e: unknown, amount: (duffs: number) => string, di
       return "The payment is still being sent. Try again in a minute.";
     case "platform.context_unavailable":
       return "Waiting for the network to sync and verify this identity. Try again shortly.";
+    case "rescan_in_progress":
+      return RESCAN_INTERRUPTED;
     case "platform.trust_mismatch":
       return "This identity's data could not be verified against the network. Nothing was paid.";
     case "platform.unavailable":

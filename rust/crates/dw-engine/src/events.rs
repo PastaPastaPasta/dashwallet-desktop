@@ -322,6 +322,19 @@ impl WalletState {
         }
     }
 
+    /// key-wallet's fields of `read` (`refresh_wallet_state`), merged
+    /// under the hub's lock: the target and the cancel hold stay this
+    /// state's, so an advance or a fork applied since the read stands.
+    pub fn take_core(&mut self, read: WalletState) {
+        self.note_rewind(read.synced_height);
+        *self = WalletState {
+            scan_target: self.scan_target.max(read.synced_height),
+            replay_cancelled: self.replay_cancelled,
+            fully_mixed: self.fully_mixed,
+            ..read
+        };
+    }
+
     /// Balances are known once the scan has processed the birth block
     /// (review M-3): before that a zero would be a guess.
     pub fn balances(&self) -> Option<WalletBalances> {
@@ -531,6 +544,7 @@ impl SessionHub {
             .cloned()
     }
 
+    #[cfg(test)]
     pub(crate) fn set_wallet_state(&self, id: WalletId, state: WalletState) {
         self.wallets
             .write()
@@ -538,11 +552,13 @@ impl SessionHub {
             .insert(id, state);
     }
 
-    pub(crate) fn update_wallet_state(&self, id: WalletId, f: impl FnOnce(&mut WalletState)) {
+    pub(crate) fn update_wallet_state<R>(
+        &self,
+        id: WalletId,
+        f: impl FnOnce(&mut WalletState) -> R,
+    ) -> R {
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
-        if let Some(state) = map.get_mut(&id) {
-            f(state);
-        }
+        f(map.entry(id).or_default())
     }
 
     pub(crate) fn name_of(&self, id: &WalletId) -> Option<WalletName> {
@@ -1286,5 +1302,38 @@ mod tests {
         assert!(replaying(), "block 81 stays unreplayed");
         hub.update_wallet_state(W, |s| s.note_rewind(80));
         assert!(!replaying());
+    }
+
+    /// 0.1.x-bal §1 (Sol r1 M2): `refresh_wallet_state` reads key-wallet,
+    /// then merges the read into the hub under one lock. An advance or a
+    /// fork truncation the hub applies between the read and the merge
+    /// stands: the merge never writes back a target from before them.
+    #[test]
+    fn a_refresh_keeps_an_advance_or_a_fork_applied_after_its_read() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        let advanced = |height| WalletEvent::SyncHeightAdvanced {
+            wallet_id: W.0,
+            height,
+        };
+        let read = |synced_height| WalletState {
+            synced_height,
+            ..WalletState::default()
+        };
+        let target = || hub.wallet_state(&W).unwrap().scan_target;
+        hub.apply_wallet_event(&advanced(1_000));
+        // Read during a replay (500); an advance to 1200 from before the
+        // rewind lands, then the merge.
+        let r = read(500);
+        hub.apply_wallet_event(&advanced(1_200));
+        hub.update_wallet_state(W, |s| s.take_core(r));
+        assert_eq!(target(), 1_200);
+        assert!(hub.wallet_state(&W).unwrap().replaying_at(500));
+        // Read after a fork truncated the checkpoint to 900; its event lands,
+        // then the merge.
+        let r = read(900);
+        hub.apply_wallet_event(&truncated(900, Vec::new(), Vec::new(), 0));
+        hub.update_wallet_state(W, |s| s.take_core(r));
+        assert_eq!(target(), 900);
+        assert!(!hub.wallet_state(&W).unwrap().replaying_at(900));
     }
 }

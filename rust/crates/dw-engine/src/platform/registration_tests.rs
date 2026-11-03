@@ -433,9 +433,9 @@ struct World {
     profiles: BTreeMap<String, ProfileRecord>,
     /// `register_name` fails with this (MJ-1).
     name_error: Option<NameError>,
-    /// A replay runs (0.1.x-bal §1): `funding_permit` is refused as
-    /// `PwLib::fence` refuses it.
-    replaying: bool,
+    /// A replay's refusal (0.1.x-bal §1), `funding_permit`'s as
+    /// `PwLib::fence`'s.
+    replay: Option<PlatformError>,
     /// Publishing a profile fails with this (MJ-1).
     profile_error: Option<PlatformError>,
     /// With `profile_error`: the put landed all the same (an earlier put
@@ -661,8 +661,8 @@ impl RegistrationLib for Fake {
         Ok(self.w().spendable)
     }
 
-    async fn replaying(&self) -> bool {
-        self.w().replaying
+    async fn replay_refusal(&self) -> Option<PlatformError> {
+        self.w().replay.clone()
     }
 
     fn funding_hold(&self) -> Option<RegistrationWait> {
@@ -683,8 +683,8 @@ impl RegistrationLib for Fake {
         key: FundingKey,
         lock_duffs: u64,
     ) -> Result<CallPermit, FundError> {
-        if self.w().replaying {
-            return Err(FundError::Refused(PlatformError::ContextUnavailable));
+        if let Some(e) = self.w().replay.clone() {
+            return Err(FundError::Refused(e));
         }
         if self.permit_hold.load(Ordering::SeqCst) {
             self.hung.store(true, Ordering::SeqCst);
@@ -1623,7 +1623,7 @@ fn a_funding_refused_during_a_replay_waits_for_sync() {
         let f = fixture(false);
         let lib = f.fake();
         let draft = f.insert(core_row(PLAIN));
-        lib.w().replaying = true;
+        lib.w().replay = Some(PlatformError::ContextUnavailable);
         lib.w().spendable.protected = protected;
         let g = f.grant(COIN, 10 * COIN * 1000, Credential::None);
         let lease = f
@@ -1634,12 +1634,44 @@ fn a_funding_refused_during_a_replay_waits_for_sync() {
             )
             .unwrap();
         f.spawn(&lib, draft, Some(lease));
-        eventually("the funding waits", || {
-            f.status(&lib, draft).waiting.is_some()
+        // The call sets `InstantSend` before the refused permit.
+        eventually("the funding waits for sync", || {
+            f.status(&lib, draft).waiting == Some(RegistrationWait::Sync)
         });
-        assert_eq!(f.status(&lib, draft).waiting, Some(RegistrationWait::Sync));
         assert_eq!((f.row(draft).error, lib.w().funds), (None, 0));
-        (lib.w().replaying, lib.w().spendable.protected) = (false, 0);
+        (lib.w().replay, lib.w().spendable.protected) = (None, 0);
+        f.settle(draft);
+        assert_eq!(phase(&f.row(draft)), Phase::Done);
+    }
+}
+
+/// 0.1.x-bal §1: a rescan the user stopped part way holds the funding
+/// until a rescan runs again, which nothing waits for: the step fails
+/// `rescan_in_progress` (retryable), also with held coins, and funds once
+/// the rescan has run.
+#[test]
+fn a_funding_after_a_cancelled_rescan_fails_until_it_runs_again() {
+    for protected in [0, 1] {
+        let f = fixture(false);
+        let lib = f.fake();
+        let draft = f.insert(core_row(PLAIN));
+        lib.w().replay = Some(PlatformError::RescanInProgress);
+        lib.w().spendable.protected = protected;
+        let g = f.grant(COIN, 10 * COIN * 1000, Credential::None);
+        let lease = (f.engine)
+            .block_on(
+                f.session
+                    .begin_lease(f.wallet, FlowKind::Registration, &[g]),
+            )
+            .unwrap();
+        f.drive(&lib, draft, Some(lease), false);
+        let status = f.status(&lib, draft);
+        assert_eq!(status.waiting, None);
+        assert_eq!(status.failure.unwrap().code, "rescan_in_progress");
+        assert_eq!(lib.w().funds, 0);
+        (lib.w().replay, lib.w().spendable.protected) = (None, 0);
+        let g = f.grant(COIN, 10 * COIN * 1000, Credential::None);
+        resume(&f, &lib, draft, Some(g));
         f.settle(draft);
         assert_eq!(phase(&f.row(draft)), Phase::Done);
     }
@@ -2791,10 +2823,20 @@ fn a_replay_outranks_a_held_coin() {
     let fence = || f.engine.block_on(lib.fence()).map(drop);
     assert_eq!(fence(), Err(FundError::CoinsLocked));
     checkpoint(500);
-    assert!(f.engine.block_on(lib.replaying()));
+    assert_eq!(
+        f.engine.block_on(lib.replay_refusal()),
+        Some(PlatformError::ContextUnavailable)
+    );
     assert_eq!(
         fence(),
         Err(FundError::Refused(PlatformError::ContextUnavailable))
+    );
+    // A cancelled rescan's hold: refused, not a wait.
+    checkpoint(1_000);
+    (f.session.hub).update_wallet_state(f.wallet, |s| s.replay_cancelled = Some(500));
+    assert_eq!(
+        fence(),
+        Err(FundError::Refused(PlatformError::RescanInProgress))
     );
 }
 

@@ -3388,6 +3388,39 @@ fn mode_b_the_coinjoin_pass_spends_nothing_while_the_journal_is_not_read() {
     assert_eq!(pass(), None, "the pass spends nothing");
 }
 
+/// RG round 1 G: the automatic CoinJoin pass (and the mixing session,
+/// whose inputs come through it) selects nothing during a replay.
+#[test]
+fn the_coinjoin_pass_selects_nothing_during_a_replay() {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let f = fixture(false);
+    f.credit(4, COIN);
+    let s = &f.session;
+    let w = f.engine.block_on(s.wallet(&f.wallet)).unwrap();
+    let checkpoint = |height: u32| {
+        (f.engine).block_on(async { w.state_mut().await.core_wallet.update_synced_height(height) })
+    };
+    let pass = || {
+        f.engine
+            .block_on(s.on_runtime({
+                let (s, w) = (s.clone(), f.wallet);
+                async move {
+                    let fence = s.coin_fence(w).await?;
+                    s.pass_view(&fence).await
+                }
+            }))
+            .unwrap()
+            .is_some()
+    };
+    f.refresh();
+    checkpoint(1_000);
+    assert!(pass());
+    checkpoint(500);
+    assert!(!pass(), "a replay selects nothing");
+    checkpoint(1_000);
+    assert!(pass());
+}
+
 /// Review Opus closure C-2: a permit that ends while its signer's first
 /// release write is in flight: the write lands, the signer sees the end
 /// and refuses `Locked`, and the vault signs nothing.

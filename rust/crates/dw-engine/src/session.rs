@@ -666,20 +666,15 @@ impl NetworkSession {
         if let Some(cl) = &core.metadata.last_applied_chain_lock {
             self.hub.note_chainlock(cl.block_height, cl.block_hash);
         }
-        let mut old = self.hub.wallet_state(&id).unwrap_or_default();
-        old.note_rewind(core.synced_height());
-        self.hub.set_wallet_state(
-            id,
-            WalletState {
-                birth_height: core.birth_height(),
-                synced_height: core.synced_height(),
-                processed_height: core.last_processed_height(),
-                balance: core.balance(),
-                accounts: core.account_balances(),
-                scan_target: old.scan_target.max(core.synced_height()),
-                ..old
-            },
-        );
+        let read = WalletState {
+            birth_height: core.birth_height(),
+            synced_height: core.synced_height(),
+            processed_height: core.last_processed_height(),
+            balance: core.balance(),
+            accounts: core.account_balances(),
+            ..WalletState::default()
+        };
+        self.hub.update_wallet_state(id, |s| s.take_core(read));
     }
 
     pub fn network(&self) -> &DashNetwork {

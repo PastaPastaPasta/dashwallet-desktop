@@ -84,6 +84,9 @@ pub enum PlatformError {
     NetworkNotOpen,
     #[error("wallet not found")]
     WalletNotFound,
+    /// A rescan the user stopped part way must run again (0.1.x-bal §1).
+    #[error("a rescan is in progress")]
+    RescanInProgress,
     #[error("storage error: {detail}")]
     Storage { detail: String },
     #[error("internal error: {detail}")]
@@ -116,6 +119,7 @@ impl PlatformError {
             Self::InvalidArgument { .. } => "invalid_argument",
             Self::NetworkNotOpen => "network_not_open",
             Self::WalletNotFound => "wallet_not_found",
+            Self::RescanInProgress => "rescan_in_progress",
             Self::Storage { .. } => "storage",
             Self::Internal { .. } => "internal",
         }
@@ -787,6 +791,7 @@ impl From<crate::EngineError> for PlatformError {
             }
             E::NetworkNotOpen(_) => Self::NetworkNotOpen,
             E::WalletNotFound(_) => Self::WalletNotFound,
+            E::RescanInProgress => Self::RescanInProgress,
             e @ (E::Storage(_) | E::StorageInUse(_) | E::StorageTooNew(_) | E::Io(_)) => {
                 Self::Storage {
                     detail: e.to_string(),
@@ -821,6 +826,7 @@ mod mapping_tests {
                 "network_not_open",
             ),
             (EngineError::WalletNotFound("w".into()), "wallet_not_found"),
+            (EngineError::RescanInProgress, "rescan_in_progress"),
             (EngineError::Storage("disk".into()), "storage"),
             (
                 EngineError::InsufficientCredits {

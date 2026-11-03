@@ -40,6 +40,8 @@ const SCAN_EXTRA = process.env.DW_E2E_SCAN_EXTRA ? resolve(process.env.DW_E2E_SC
 const DASHPAY_TIMEOUT_MS = Number(env("DW_E2E_DASHPAY_TIMEOUT_MS", "1200000"));
 /** The wallet's sync to a spendable balance, then the broadcast and its InstantSend lock. */
 const SEND_TIMEOUT_MS = Number(env("DW_E2E_SEND_TIMEOUT_MS", "900000"));
+/** Sends refused while a replay runs, retried a minute apart (0.1.x-bal §1). */
+const RESCAN_RETRIES = Number(env("DW_E2E_RESCAN_RETRIES", "10"));
 const LEDGER = join(FIXTURE, "DP3-06.json");
 const NETWORK = ["--network", "testnet"];
 
@@ -200,12 +202,15 @@ async function run(
     await wd.screenshot("2-form");
     step(`form: ${payeeName}, ${AMOUNT} DASH, note "${NOTE}"${banner ? `, banner note "${banner.text}"` : ""}`);
 
-    await wd.press(tid("pay-continue"));
-    const payTo = await poll(TIMEOUT_MS, "the confirm sheet", async () => (await textOf(tid("pay-confirm-contact"))) || undefined);
-    if (!payTo.includes(USERNAME)) throw new Error(`the confirm sheet pays ${payTo}, not ${USERNAME}`);
-    if (await wd.find(tid("pay-confirm-unsigned"))) throw new Error("the confirm sheet offers an unsigned transaction for a contact");
-    out.confirm = await textOf(tid("pay-confirm-facts"));
-    await wd.fill(tid("pay-confirm-passphrase"), passphrase);
+    const confirm = async () => {
+      await wd.press(tid("pay-continue"));
+      const payTo = await poll(TIMEOUT_MS, "the confirm sheet", async () => (await textOf(tid("pay-confirm-contact"))) || undefined);
+      if (!payTo.includes(USERNAME)) throw new Error(`the confirm sheet pays ${payTo}, not ${USERNAME}`);
+      if (await wd.find(tid("pay-confirm-unsigned"))) throw new Error("the confirm sheet offers an unsigned transaction for a contact");
+      out.confirm = await textOf(tid("pay-confirm-facts"));
+      await wd.fill(tid("pay-confirm-passphrase"), passphrase);
+    };
+    await confirm();
     await wd.screenshot("3-confirm");
     step(`confirm: ${out.confirm}`);
 
@@ -213,13 +218,28 @@ async function run(
     const ledger: Ledger = { ...base, state: "sending", at: new Date().toISOString() };
     writeLedger(ledger);
     try {
-      await wd.press(tid("pay-confirm-send"));
-      let kind = await poll(SEND_TIMEOUT_MS, "the payment's result", async () => {
-        for (const k of ["sent", "unknown", "failed"]) if (await wd.find(tid(`pay-result-${k}`))) return k;
-        const error = await textOf(tid("pay-confirm-error"));
-        if (error) throw new Error(`the confirm sheet refused: ${error}`);
-        return undefined;
-      });
+      const send = async () => {
+        await wd.press(tid("pay-confirm-send"));
+        return poll(SEND_TIMEOUT_MS, "the payment's result", async () => {
+          for (const k of ["sent", "unknown", "failed"]) if (await wd.find(tid(`pay-result-${k}`))) return k;
+          const error = await textOf(tid("pay-confirm-error"));
+          if (error) throw new Error(`the confirm sheet refused: ${error}`);
+          return undefined;
+        });
+      };
+      let kind = await send();
+      // A replay of the filter scan (the DashPay accounts' backfill after the unlock) refuses the
+      // payment before anything is signed (`rescan_in_progress`): back to the payment and Send
+      // again once it has had time to finish, at most RESCAN_RETRIES times.
+      const rescanning = async () => /rescan/i.test(await textOf(tid("pay-result-text")));
+      for (let attempt = 1; kind === "failed" && attempt <= RESCAN_RETRIES && (await rescanning()); attempt++) {
+        step(`result: refused while the wallet rescans; Send again (${attempt})`);
+        await wd.screenshot(`4-result-rescan-${attempt}`);
+        await new Promise((r) => setTimeout(r, 60_000));
+        await wd.press(tid("pay-result-back"));
+        await confirm();
+        kind = await send();
+      }
       await wd.screenshot("4-result");
       const retries = () => wd.script<number>(`return Number(document.querySelector('[data-retries]')?.dataset.retries ?? -1)`);
       // "Status unknown" (the network did not answer in time) offers Try again, which broadcasts the

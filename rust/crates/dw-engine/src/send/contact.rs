@@ -133,6 +133,7 @@ impl TxDraft {
         #[cfg(test)]
         session.platform.money_gate.reached(Point::Gated).await;
         let fence = session.coin_fence(wallet_id).await?;
+        let guarded = session.replay_guard(wallet_id, 0).await?;
         let given = (session.lease_for(&wallet_id, &grant_id))
             .transpose()
             .map_err(|e| lease_failure(e, 0))?;
@@ -201,6 +202,7 @@ impl TxDraft {
             signer,
             Some(charge),
             fence,
+            guarded,
         )
         .await
     }

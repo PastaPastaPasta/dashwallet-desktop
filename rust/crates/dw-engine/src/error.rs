@@ -62,7 +62,8 @@ pub enum EngineError {
     /// The call needs the SPV client stopped (`reset_chain_data`).
     #[error("spv is running")]
     SpvRunning,
-    /// A rescan the engine started is still running.
+    /// A replay is running, or a cancelled one was not finished: the wallet
+    /// checkpoint is below the highest one seen (`replay_guard`).
     #[error("a rescan is in progress")]
     RescanInProgress,
     /// Not a BIP44 account-level extended public key of this network.
