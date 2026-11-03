@@ -114,6 +114,19 @@ describe("fixture send engine", () => {
     expect(await mixed(pay(10_000_000, { subtractFeeFromAmount: true }))).toEqual({ fee: 192, sizeBytes: 192, inputCount: 1, change: null, totalSent: 9_999_908 });
   });
 
+  it("lists only a send account's coins for Selected coins, as the engine does (coins.rs:626-630, send/mod.rs:875-881)", async () => {
+    const main = fixture.world.wallets[0];
+    const coin = main.coins[0];
+    const mixed = { ...coin, outpoint: { ...coin.outpoint, vout: 95 }, amount: 10_000_100, coinjoinDenominated: true, coinjoinRounds: 4 };
+    main.coins.push(mixed);
+    const fee = { kind: "recommended", targetBlocks: 6 } as const;
+    expect(await cmd.maxSpendable(W, { kind: "outpoints", outpoints: [coin.outpoint] }, fee)).toBe(coin.amount);
+    expect(await cmd.maxSpendable(W, { kind: "outpoints", outpoints: [mixed.outpoint] }, fee).catch((e) => e)).toMatchObject({
+      code: "send.outpoint_unavailable",
+      data: { kind: "outpoint", txid: mixed.outpoint.txid, vout: 95 },
+    });
+  });
+
   it("requires a passphrase for a spend grant while every payment needs authentication", async () => {
     await expect(cmd.authorize({ kind: "spend", maxDuffs: 1 }, W, { kind: "unencrypted" })).rejects.toMatchObject({ code: "vault.credential_required" });
     await expect(cmd.authorize({ kind: "platformOp", maxDuffs: 1, maxCredits: "1" }, W, { kind: "unencrypted" })).rejects.toMatchObject({

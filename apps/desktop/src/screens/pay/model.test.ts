@@ -6,6 +6,7 @@ import type { PsbtAnalysis } from "../../api/generated/PsbtAnalysis";
 import {
   addressProblem,
   authRefusal,
+  availableLabel,
   broadcastFailure,
   changePolicy,
   coinSource,
@@ -95,6 +96,32 @@ describe("the engine's refusals", () => {
     expect(sendErrorText(err("send.absurd_fee"), "test")).toEqual({ text: "The fee is absurdly high.", field: null });
     expect(sendErrorText(err("wallet_not_found"), "test")).toBeNull();
     expect(sendErrorText(new Error("x"), "test")).toBeNull();
+  });
+
+  it("names what a normal payment can spend when the amount is over it, and where mixed coins are", () => {
+    const over = err("send.amount_exceeds_balance", { kind: "duffs", needed: null, available: 65_276_809 });
+    const plain = "The amount exceeds your balance.";
+    const base = "The amount exceeds the 0.65276809 tDASH a normal payment can spend.";
+    const where = "To spend fully mixed coins, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).";
+    // No mixing or mixed coins, or another source: the refusal keeps its plain text.
+    expect(sendErrorText(over, "test", "DASH")?.text).toBe(plain);
+    expect(sendErrorText(over, "test", "DASH", { mixed: false, mixing: false })?.text).toBe(plain);
+    expect(sendErrorText(over, "test", "DASH", { mixed: true, mixing: false })).toEqual({ text: `${base} ${where}`, field: "amount" });
+    expect(sendErrorText(over, "test", "DASH", { mixed: true, mixing: true })?.text).toBe(
+      `${base} ${where} Coins still being mixed can be spent that way once mixing finishes.`,
+    );
+    // Only mixing coins: no pointer to switch now, since nothing is fully mixed yet; they stay apart.
+    expect(sendErrorText(over, "test", "DASH", { mixed: false, mixing: true })?.text).toBe(
+      `${base} Coins still being mixed stay apart from normal payments; once mixing finishes them, they can be spent with Fully mixed funds only (CoinJoin).`,
+    );
+    // Without the engine's figure there is nothing to name.
+    expect(sendErrorText(err("send.amount_exceeds_balance"), "test", "DASH", { mixed: true, mixing: false })?.text).toBe(plain);
+  });
+
+  it("labels Available with the coin source it counts", () => {
+    expect(availableLabel("any")).toBe("Available");
+    expect(availableLabel("mixed")).toBe("Available (fully mixed)");
+    expect(availableLabel("selected")).toBe("Available (selected coins)");
   });
 
   it("says why a fully mixed payment's fee is absurd: no change, the rest is fee (MX-FEE)", () => {
