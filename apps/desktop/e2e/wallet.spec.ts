@@ -71,11 +71,12 @@ test.describe("Pay", () => {
     await expect(page.getByTestId("pay-continue")).toBeEnabled();
 
     await page.getByTestId("pay-amount").fill("0.000001");
-    await expect(page.getByText("below the dust threshold")).toBeVisible();
+    await expect(page.locator(".field-error", { hasText: "below the dust threshold" })).toBeVisible();
+    await expect(page.getByTestId("pay-problem")).toContainText("below the dust threshold");
     await expect(page.getByTestId("pay-continue")).toBeDisabled();
 
     await page.getByTestId("pay-amount").fill("500");
-    await expect(page.getByText("The amount exceeds your balance.")).toBeVisible();
+    await expect(page.locator(".field-error", { hasText: "The amount exceeds your balance." })).toBeVisible();
 
     await page.getByTestId("pay-amount").fill("1.2.3");
     await expect(page.getByText("Enter an amount in DASH")).toBeVisible();
@@ -304,7 +305,7 @@ test.describe("Pay", () => {
 
     await page.getByTestId("coin-choice-mixed").check();
     await expect(page.getByTestId("pay-amount")).toHaveAttribute("aria-invalid", "true");
-    await expect(page.getByText(/^Not enough fully mixed funds: 0\.00.* available\.$/)).toBeVisible();
+    await expect(page.locator(".field-error", { hasText: /^Not enough fully mixed funds: 0\.00.* available\.$/ })).toBeVisible();
 
     await page.getByTestId("coin-choice-selected").check();
     await expect(page.getByTestId("pay-problem")).toHaveText("Choose the coins to pay with.");
@@ -376,6 +377,57 @@ test.describe("Pay", () => {
     await page.getByTestId("pay-subtract-fee").uncheck();
     await expect(page.getByTestId("pay-problem")).toHaveText("Fully mixed coins are spent in whole denominations, so the 0.50001000 tDASH left over would go to fees.");
     await expect(page.getByTestId("pay-subtract-offer")).toHaveCount(0);
+  });
+
+  test("Available counts what the coin source can spend, and the over-balance refusal says so (PAY-MIX)", async ({ page }) => {
+    await open(page);
+    // Re-smoke 2 §3b on W1: unmixed 0.5, partly mixed 1.00001 (mixing), fully mixed 0.100001.
+    await world(page, (w) => {
+      const wallet = w.wallets[0];
+      const c = wallet.coins[0];
+      const coin = (vout: number, amount: number, extra: object) => ({ ...c, outpoint: { ...c.outpoint, vout }, amount, spendable: true, confirmations: 10, ...extra });
+      wallet.coins = [
+        coin(1, 50_000_000, { coinjoinDenominated: false, coinjoinRounds: null }),
+        coin(2, 100_001_000, { coinjoinDenominated: true, coinjoinRounds: 1 }),
+        coin(3, 10_000_100, { coinjoinDenominated: true, coinjoinRounds: 4 }),
+      ];
+      w.coinjoin.mixers[wallet.summary.walletId] = {
+        state: "idle",
+        stopReason: null,
+        status: { kind: "idle" },
+        progress: { overallPercent: 40, denominatedPercent: 100, partiallyMixedPercent: 60, mixedPercent: 10, averageRounds: 1.5 },
+        sessions: [],
+        queueSize: 0,
+      };
+    });
+    // The mixer changed under Home's cached status: say so, as the engine's event does.
+    await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "coinJoin", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId }); })()`);
+    await fillPayment(page, PAYEE, "0.8");
+    // The normal source: unmixed coins only (not the 1.60001100 the wallet holds).
+    await expect(page.getByText("Available: 0.50000000 tDASH")).toBeVisible();
+    const reason =
+      "The amount exceeds the 0.50000000 tDASH a normal payment can spend. To spend fully mixed coins, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin). Coins still being mixed can be spent that way once mixing finishes.";
+    await expect(page.locator(".field-error")).toHaveText(reason);
+    // The footer says why Review is off, instead of "Checking the payment…".
+    await expect(page.getByTestId("pay-problem")).toHaveText(reason);
+    await expect(page.getByTestId("pay-incomplete")).toHaveCount(0);
+    await expect(page.getByTestId("pay-continue")).toBeDisabled();
+    await expect(page.getByTestId("pay-continue")).toHaveAccessibleDescription(reason);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+
+    await page.getByTestId("pay-advanced").locator("summary").click();
+    await page.getByTestId("coin-choice-mixed").check();
+    await expect(page.getByTestId("pay-problem")).toHaveText("Not enough fully mixed funds: 0.10000100 tDASH available.");
+    // A refusal replaces the hint under the amount; within the funds it is back.
+    await page.getByTestId("pay-amount").fill("0.05");
+    await expect(page.getByText("Available (fully mixed): 0.10000100 tDASH")).toBeVisible();
+
+    await page.getByTestId("coin-choice-selected").check();
+    await expect(page.getByText(/^Available/)).toHaveCount(0);
+    await page.getByRole("checkbox", { name: /^Use 0\.100001 / }).check();
+    await expect(page.getByText("Available (selected coins): 0.10000100 tDASH")).toBeVisible();
+    expect(await seriousAxeViolations(page)).toEqual([]);
+
   });
 
   test("an empty custom change address holds the payment", async ({ page }) => {

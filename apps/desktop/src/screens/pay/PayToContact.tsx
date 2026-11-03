@@ -9,7 +9,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
 import type { ContactRecipient } from "../../api/generated/ContactRecipient";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { keys, useBalance, useLockStatus, useWallets } from "../../api/queries";
+import { keys, useLockStatus, useWallets } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon } from "../../components/basics";
@@ -25,7 +25,7 @@ import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, resolveText, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
-import { AmountFields, draftSpec, FormField, PayFooter, useAmountField, useEstimate, useMax, type Phase } from "./form";
+import { AmountFields, draftSpec, FormField, PayFooter, useAmountField, useAvailable, useEstimate, useMax, type Phase } from "./form";
 import { confirmedOf, DEFAULT_ADVANCED, type Advanced, type Outcome } from "./model";
 import { ResultSheet } from "./ResultSheet";
 import { useDraft } from "./useDraft";
@@ -197,7 +197,6 @@ function ContactForm({
   const lockState = useLockStatus().data?.state;
   const locked = lockState === "locked";
   const draft = useDraft(walletId, locked);
-  const balance = useBalance(walletId);
   const watchOnly = useWallets().data?.find((w) => w.walletId === walletId)?.watchOnly;
   const detail = useContactDetail(walletId, identity, contact);
   const hasKeys = useHasKeys(walletId, identity);
@@ -240,6 +239,7 @@ function ContactForm({
   const recipient: ContactRecipient | null =
     typeof duffs === "number" && duffs > 0 ? { identity, contact, amount: duffs, subtractFee, note: note.trim() || null } : null;
   const spec = draftSpec(recipient, advanced);
+  const available = useAvailable(walletId, advanced);
   const { estimate, general, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked || held, shown);
   const ready = estimated && amount.settled;
   const max = useMax(walletId, advanced, shown, (text) => {
@@ -300,7 +300,8 @@ function ContactForm({
                 amount={amount}
                 max={max}
                 error={fieldError("amount")}
-                available={balance.data?.confirmed}
+                available={available}
+            coins={advanced.coins}
                 subtractFee={subtractFee}
                 onSubtractFee={setSubtractFee}
                 inputRef={amountField}

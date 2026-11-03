@@ -279,12 +279,17 @@ function sourceCoins(wallet: FixtureWallet, source: CoinSource): Utxo[] {
   return pickCoins(coins, source).toSorted((a, b) => b.amount - a.amount);
 }
 
+/** The CoinJoin rounds that make a denomination fully mixed (the engine's default target). */
+const MIXED_ROUNDS = 4;
+const isFullyMixed = (u: Utxo) => u.coinjoinRounds !== null && u.coinjoinRounds >= MIXED_ROUNDS;
+
 function pickCoins(coins: Utxo[], source: CoinSource): Utxo[] {
   switch (source.kind) {
+    // A normal payment leaves the CoinJoin account's coins, mixed or still mixing, alone.
     case "any":
-      return coins;
+      return coins.filter((u) => !u.coinjoinDenominated && u.coinjoinRounds === null);
     case "fullyMixedOnly":
-      return coins.filter((u) => u.coinjoinRounds !== null);
+      return coins.filter(isFullyMixed);
     case "outpoints":
       return source.outpoints.map((o) => {
         const u = coins.find((x) => sameOutpoint(x.outpoint, o));
@@ -572,7 +577,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       wallet(world, walletId).coins.filter(
         (u) =>
           (filter.includeLocked || !u.userLocked) &&
-          (!filter.fullyMixedOnly || u.coinjoinRounds !== null) &&
+          (!filter.fullyMixedOnly || isFullyMixed(u)) &&
           (filter.minConfirmations === null || u.confirmations >= filter.minConfirmations),
       ),
     coin_selection_summary: ({ walletId, outpoints, payAmounts, fee, allChangeToFee }, { world }) => {

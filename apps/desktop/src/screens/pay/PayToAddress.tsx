@@ -5,7 +5,7 @@
 import { useCallback, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { keys, useBackend, useBalance, useLockStatus } from "../../api/queries";
+import { keys, useBackend, useLockStatus } from "../../api/queries";
 import { navigate, ui, type PayPrefill } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton } from "../../components/basics";
@@ -13,7 +13,7 @@ import { AddressBookPicker } from "../tools/AddressBook";
 import { useDisplay } from "../../format/display";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
-import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAmountField, useEstimate, useMax, type Phase } from "./form";
+import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAmountField, useAvailable, useEstimate, useMax, type Phase } from "./form";
 import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, type Advanced, type Outcome } from "./model";
 import { ResultSheet } from "./ResultSheet";
 import { useDraft } from "./useDraft";
@@ -35,7 +35,6 @@ export function PayToAddress({
   const shown = useDisplay(network);
   const locked = useLockStatus().data?.state === "locked";
   const draft = useDraft(walletId, locked);
-  const balance = useBalance(walletId);
 
   const [address, setAddress] = useState(prefill?.address ?? "");
   const amount = useAmountField(shown, prefill?.amount ? shown.full(prefill.amount) : "");
@@ -78,6 +77,7 @@ export function PayToAddress({
       ? recipientOf({ address: checkedAddr, amount: duffs, subtractFee, label, message })
       : null;
   const spec = draftSpec(recipient, advanced);
+  const available = useAvailable(walletId, advanced);
 
   const { estimate, general: generalError, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked, shown);
   const ready = estimated && settled;
@@ -150,7 +150,8 @@ export function PayToAddress({
             amount={amount}
             max={max}
             error={fieldError("amount")}
-            available={balance.data?.confirmed}
+            available={available}
+            coins={advanced.coins}
             subtractFee={subtractFee}
             onSubtractFee={setSubtractFee}
           />
