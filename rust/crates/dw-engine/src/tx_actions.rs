@@ -378,9 +378,7 @@ impl NetworkSession {
             })
             .await?;
         }
-        // platform-wallet's balance mirror is only refreshed by wallet
-        // events, so the hub reads key-wallet's recomputed balance.
-        self.refresh_wallet_state_from_core(manager, wallet).await;
+        self.refresh_wallet_state(manager, wallet).await;
         let changed: Vec<Txid> = abandoned.iter().copied().collect();
         self.hub.pump.mark_history(wallet, Some(&changed));
         self.hub.pump.mark_balances(wallet);

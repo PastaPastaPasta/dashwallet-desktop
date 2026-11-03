@@ -352,6 +352,9 @@ impl NetworkSession {
                 return Err(EngineError::WalletNotFound(id.to_string()));
             }
             drop(passes);
+            // A block SPV replays before this is undone by the re-home (it
+            // drops the copy) and by the block event's reconcile.
+            this.rehome_parked_coins(&live.manager, id).await;
             this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;
             this.load_payment_locks(id).await;

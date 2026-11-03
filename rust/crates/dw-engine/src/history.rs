@@ -296,11 +296,23 @@ pub(crate) struct WalletHistory {
     pub txs: HashMap<Txid, TxEntry>,
 }
 
+/// Whether `record` is the wallet's own. A DashPay contact's account
+/// (`AccountType::is_contact_owned`, key-wallet `account_type.rs:257-300`)
+/// watches the contact's coins: its records (the contact spending what we
+/// paid them, or the output side of our payment) are never the wallet's
+/// activity. Our payment to a contact shows from the paying account's record.
+pub(crate) fn is_wallets(record: &TransactionRecord) -> bool {
+    !record.account_type.is_contact_owned()
+}
+
 impl WalletHistory {
     /// Merges a platform-wallet record. `seen_at` is set as the first-seen
     /// time when the transaction is new to the store. Returns whether it was
-    /// new.
+    /// new; a contact's record ([`is_wallets`]) is skipped (false).
     pub fn upsert(&mut self, record: &TransactionRecord, seen_at: Option<u64>) -> bool {
+        if !is_wallets(record) {
+            return false;
+        }
         let new = !self.txs.contains_key(&record.txid);
         let entry = self.txs.entry(record.txid).or_insert_with(|| TxEntry {
             tx: record.transaction.clone(),
@@ -1192,7 +1204,9 @@ pub(crate) fn detail_of(
 mod tests {
     use dashcore::hashes::Hash;
     use dashcore::{BlockHash, OutPoint, PubkeyHash, ScriptBuf, TxIn, TxOut, Witness};
-    use key_wallet::transaction_checking::BlockInfo;
+    use key_wallet::account::{AccountType, StandardAccountType};
+    use key_wallet::managed_account::transaction_record::{InputDetail, TransactionDirection};
+    use key_wallet::transaction_checking::{BlockInfo, TransactionType};
 
     use super::*;
 
@@ -1328,6 +1342,106 @@ mod tests {
         assert_eq!(status.confirmations, 1);
         assert!(records[0].counts_toward_balance);
         assert_eq!(records[0].timestamp, Some(1_700_000_000));
+    }
+
+    fn record(
+        t: &Transaction,
+        account: AccountType,
+        inputs: Vec<InputDetail>,
+        net: i64,
+    ) -> TransactionRecord {
+        TransactionRecord::new(
+            t.clone(),
+            account,
+            in_block(20, 2),
+            TransactionType::Standard,
+            TransactionDirection::Outgoing,
+            inputs,
+            Vec::new(),
+            net,
+        )
+    }
+
+    /// TB-RESMOKE r-4-18/19: a contact spends the output we paid them, which
+    /// their account (watched, never ours) records with the spent coin as
+    /// its input. That is not the wallet's activity. Our payment to them
+    /// shows once, from the paying account's record, net of its fee, and
+    /// the CSV export lists the same.
+    #[test]
+    fn a_contacts_records_stay_out_of_activity() {
+        let bip44 = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+        let contact = AccountType::DashpayExternalAccount {
+            index: 0,
+            user_identity_id: [1; 32],
+            friend_identity_id: [2; 32],
+        };
+        let theirs = hash_addr(70);
+        let mut h = WalletHistory::default();
+        let fund = tx(vec![foreign_input(7)], vec![out(1_000_000, &hash_addr(1))]);
+        assert!(h.upsert(&record(&fund, bip44, Vec::new(), 1_000_000), None));
+        let pay = tx(
+            vec![input(fund.txid(), 0)],
+            vec![out(250_000, &theirs), out(749_000, &hash_addr(9))],
+        );
+        let ours = InputDetail {
+            index: 0,
+            value: 1_000_000,
+            address: hash_addr(1),
+        };
+        assert!(h.upsert(&record(&pay, bip44, vec![ours], -251_000), None));
+        assert!(!h.upsert(&record(&pay, contact, Vec::new(), 250_000), None));
+        let spend = tx(
+            vec![input(pay.txid(), 0)],
+            vec![out(249_000, &hash_addr(80))],
+        );
+        let their_coin = InputDetail {
+            index: 0,
+            value: 250_000,
+            address: theirs,
+        };
+        assert!(!h.upsert(&record(&spend, contact, vec![their_coin], -250_000), None));
+
+        assert!(
+            !h.txs.contains_key(&spend.txid()),
+            "no Activity entry for the contact's spend"
+        );
+        let mut f = Fixture::new();
+        f.history = h.txs;
+        let view = f.view(20);
+        let mut rows: Vec<TxRecord> = (f.history.iter())
+            .flat_map(|(id, e)| records_of(id, e, &view, &Labels::default()).0)
+            .collect();
+        rows.sort_by_key(|r| r.amount);
+        let paid: Vec<&TxRecord> = rows
+            .iter()
+            .filter(|r| r.txid == pay.txid().to_string())
+            .collect();
+        assert_eq!(paid.len(), 1, "our payment shows once");
+        assert_eq!(
+            (paid[0].amount, paid[0].fee),
+            (-251_000, Some(1_000)),
+            "net of its fee"
+        );
+        assert_eq!(rows.len(), 2, "the funding and the payment");
+
+        let csv = crate::csv_export::write_csv(
+            &rows,
+            false,
+            dw_units::Unit::Duffs,
+            dw_units::Chain::Test,
+            &[],
+            0,
+        );
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 3, "a header and the same two rows: {csv}");
+        assert!(
+            lines[1].contains("\"-251000\"") && lines[1].contains(&pay.txid().to_string()),
+            "{csv}"
+        );
+        assert!(!csv.contains(&spend.txid().to_string()));
     }
 
     #[test]
