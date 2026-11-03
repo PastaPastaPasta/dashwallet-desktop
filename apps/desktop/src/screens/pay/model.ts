@@ -202,6 +202,8 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH"): { 
       return { text: "Its coins were spent meanwhile. Review the payment again.", field: null };
     case "send.no_peers":
       return { text: "No connection to the Dash network. The payment was not sent.", field: null };
+    case "rescan_in_progress":
+      return { text: "The wallet is rescanning. Wait until it has finished, then try again.", field: null };
     case "send.broadcast_rejected":
       return {
         text: `The network rejected the transaction${e.data?.kind === "reason" ? `: ${e.data.reason}` : ""}. The payment was not sent.`,

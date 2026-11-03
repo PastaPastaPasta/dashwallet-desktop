@@ -93,6 +93,11 @@ describe("the engine's refusals", () => {
       "The total exceeds your balance when the 0.00000374 tDASH transaction fee is included.",
     );
     expect(sendErrorText(err("send.absurd_fee"), "test")).toEqual({ text: "The fee is absurdly high.", field: null });
+    // 0.1.x-bal §1: the engine refuses a payment while a replay runs.
+    expect(sendErrorText(err("rescan_in_progress"), "test")).toEqual({
+      text: "The wallet is rescanning. Wait until it has finished, then try again.",
+      field: null,
+    });
     expect(sendErrorText(err("wallet_not_found"), "test")).toBeNull();
     expect(sendErrorText(new Error("x"), "test")).toBeNull();
   });

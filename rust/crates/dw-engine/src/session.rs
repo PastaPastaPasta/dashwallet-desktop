@@ -666,6 +666,8 @@ impl NetworkSession {
         if let Some(cl) = &core.metadata.last_applied_chain_lock {
             self.hub.note_chainlock(cl.block_height, cl.block_hash);
         }
+        let mut old = self.hub.wallet_state(&id).unwrap_or_default();
+        old.note_rewind(core.synced_height());
         self.hub.set_wallet_state(
             id,
             WalletState {
@@ -674,7 +676,8 @@ impl NetworkSession {
                 processed_height: core.last_processed_height(),
                 balance: core.balance(),
                 accounts: core.account_balances(),
-                fully_mixed: self.hub.wallet_state(&id).and_then(|s| s.fully_mixed),
+                scan_target: old.scan_target.max(core.synced_height()),
+                ..old
             },
         );
     }

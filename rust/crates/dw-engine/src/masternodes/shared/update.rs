@@ -214,6 +214,7 @@ impl NetworkSession {
         // The fence from the reward address and the coins to the row's
         // write and its hand-off (BL-352's order).
         let fence = self.coin_fence(wallet).await?;
+        self.replay_guard(wallet).await?;
         self.check_no_pending_maintenance(wallet, hash, None)
             .await?;
         let mut plan = self

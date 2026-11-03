@@ -133,6 +133,7 @@ impl Masternodes {
             // The fence from the keys to the row's write (BL-352, as MG-04b
             // D63): another call can't take the same keys or coins.
             let fence = s.coin_fence(wallet).await?;
+            s.replay_guard(wallet).await?;
             let ctx = s.protx_context(wallet).await?;
             let reg = s.resolve_registration(wallet, &request, &ctx, true).await?;
             let lease = s
@@ -289,6 +290,7 @@ impl Masternodes {
             build::check_request(&request, s.network.core_network())?;
             // The fence from the keys to the row's write (BL-352).
             let fence = s.coin_fence(wallet).await?;
+            s.replay_guard(wallet).await?;
             let ctx = s.protx_context(wallet).await?;
             let reg = s.resolve_registration(wallet, &request, &ctx, true).await?;
             let id = ops::new_id();
@@ -438,6 +440,7 @@ impl Masternodes {
                 .map_err(|e| EngineError::Internal(format!("stored ProTx terms: {e}")))?;
             let reg = build::registration_of(&terms, s.network.core_network())?;
             let fence = s.coin_fence(wallet).await?;
+            s.replay_guard(wallet).await?;
             // The old inputs leave the row's locks first, so the new plan
             // may take the ones still unspent (its own holds don't count
             // against it); one another row holds stays locked (BL-346).
@@ -559,6 +562,7 @@ impl Masternodes {
             let updating = s.masternodes.update_lock().await;
             // The fence from the keys to the row's write (BL-352).
             let fence = s.coin_fence(wallet).await?;
+            s.replay_guard(wallet).await?;
             let ctx = s.protx_context(wallet).await?;
             let up = s.resolve_update(wallet, &request, &ctx, true).await?;
             let lease = s

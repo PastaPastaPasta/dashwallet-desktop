@@ -2141,3 +2141,219 @@ fn a_data_output_takes_only_automatic_change() {
         Err(EngineError::InvalidArgument(_))
     ));
 }
+
+// ---- 0.1.x-bal §1: the replay window ----------------------------------------
+
+impl Fixture {
+    /// Sets key-wallet's filter checkpoint, as a rewind does
+    /// (`reconcile_dashpay_rescan`, `spv_rescan_filters_blocking`).
+    fn checkpoint(&self, height: u32) {
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        let (session, id) = (Arc::clone(&self.session), self.wallet);
+        let inner = Arc::clone(&session);
+        self.engine
+            .block_on(session.on_runtime(async move {
+                let wallet = inner.wallet(&id).await?;
+                wallet
+                    .state_mut()
+                    .await
+                    .core_wallet
+                    .update_synced_height(height);
+                Ok(())
+            }))
+            .unwrap();
+    }
+
+    /// dash-spv committed a filter batch up to `height`: the checkpoint
+    /// advances and the hub hears of it.
+    fn advance(&self, height: u32) {
+        self.checkpoint(height);
+        (self.session.hub).apply_wallet_event(
+            &platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+                wallet_id: self.wallet.0,
+                height,
+            },
+        );
+    }
+
+    /// The wallet's own transaction `seed`, spending `inputs`, in `context`.
+    fn own_spend(
+        &self,
+        seed: u8,
+        inputs: &[OutPoint],
+        context: key_wallet::transaction_checking::TransactionContext,
+    ) -> Txid {
+        let tx = Transaction {
+            version: 1,
+            lock_time: u32::from(seed),
+            input: (inputs.iter())
+                .map(|o| dashcore::TxIn {
+                    previous_output: *o,
+                    ..Default::default()
+                })
+                .collect(),
+            output: Vec::new(),
+            special_transaction_payload: None,
+        };
+        let txid = tx.txid();
+        self.session.hub.history.with_wallet(self.wallet, |h| {
+            h.txs.insert(
+                txid,
+                crate::history::TxEntry {
+                    tx,
+                    context,
+                    instant_locked: false,
+                    first_seen: None,
+                    own_inputs: Default::default(),
+                    abandoned: false,
+                },
+            )
+        });
+        txid
+    }
+
+    fn max(&self) -> u64 {
+        self.engine
+            .block_on(self.session.max_spendable(
+                self.wallet,
+                CoinSource::Any,
+                FeeMode::Recommended { target_blocks: 6 },
+            ))
+            .unwrap()
+    }
+}
+
+fn replaying<T: std::fmt::Debug>(r: Result<T, EngineError>) -> bool {
+    matches!(r, Err(EngineError::RescanInProgress))
+}
+
+/// A rewind of the filter checkpoint (here platform-wallet's DIP-15 backfill,
+/// which no event announces) refuses a payment and an unsigned PSBT at once,
+/// until the replay is back at the highest checkpoint seen; the estimate and
+/// "Use available balance" still answer.
+#[test]
+fn a_replay_refuses_spends_until_it_reaches_its_target() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let grant = || f.spend_grant(10_000_000 + FEE_ROOM);
+    f.checkpoint(500);
+    assert!(replaying(f.engine.block_on(draft.prepare(grant()))));
+    assert!(replaying(f.engine.block_on(draft.create_unsigned())));
+    assert_eq!(f.engine.block_on(draft.estimate()).unwrap().input_count, 1);
+    assert_eq!(f.max(), COIN);
+    f.advance(999);
+    assert!(replaying(f.engine.block_on(draft.prepare(grant()))));
+    f.advance(1_000);
+    // (The unsigned PSBT then wants the coin's funding transaction.)
+    assert!(!replaying(f.engine.block_on(draft.create_unsigned())));
+    f.engine.block_on(draft.prepare(grant())).unwrap();
+}
+
+/// A user rescan holds spends. Cancelling it puts the checkpoint back but
+/// leaves what the partial replay re-credited above where it stopped, so
+/// spends stay held until a rewind to there or below has replayed back to the
+/// target; a later replay from above that point does not release them. Each
+/// replay below ends in one filter batch, so the hub hears only its end.
+#[test]
+fn a_user_rescan_holds_spends_and_its_cancel_keeps_them_held() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    let rescan = |from| {
+        let (s, id) = (Arc::clone(&f.session), f.wallet);
+        f.engine
+            .block_on(
+                (f.session)
+                    .on_runtime(async move { s.start_rescan(vec![id], from, |_| from).await }),
+            )
+            .unwrap();
+    };
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let held = || {
+        replaying(
+            f.engine
+                .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM))),
+        )
+    };
+    rescan(400);
+    assert!(held());
+    f.advance(700);
+    assert!(f.engine.block_on(f.session.cancel_rescan()).unwrap());
+    assert!(held(), "blocks 701-1000 are not replayed");
+    rescan(800);
+    f.advance(1_000);
+    assert!(held(), "blocks 701-799 are still not replayed");
+    // A second cancel, stopped further on, keeps the first one's point.
+    rescan(800);
+    f.advance(900);
+    assert!(f.engine.block_on(f.session.cancel_rescan()).unwrap());
+    rescan(850);
+    f.advance(1_000);
+    assert!(held(), "blocks 701-849 are still not replayed");
+    rescan(701);
+    assert!(held());
+    f.advance(1_000);
+    (f.engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM))))
+    .unwrap();
+}
+
+/// The §1 residual: a replay re-credits a coin whose spend was stored while
+/// the spender was unconfirmed or InstantSend-locked at close, and no block
+/// spends it again until the spender is mined. Dash Core counts it spent
+/// (`CWallet::IsSpent`): selection skips it and an asset-lock funding is
+/// held back; an abandoned or conflicted spender frees it.
+#[test]
+fn a_coin_our_unconfirmed_transaction_spends_is_held() {
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    let f = fixture(false);
+    let coin = f.credit(1, COIN);
+    let other = f.credit(2, COIN / 2);
+    assert_eq!(f.max(), COIN + COIN / 2);
+    let spender = f.own_spend(0x51, &[coin], TransactionContext::Mempool);
+    assert_eq!(f.max(), COIN / 2);
+    assert_eq!(f.reserved(), vec![coin]);
+    let held = f.engine.block_on(async {
+        let fence = f.session.coin_fence(f.wallet).await.unwrap();
+        let snapshot = f.session.fenced_coins(&fence).await.unwrap();
+        snapshot
+            .held_funding_coins()
+            .map(|h| h.outpoint)
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(held, vec![coin], "the asset-lock builder can't exclude it");
+    let p = f
+        .engine
+        .block_on(
+            f.draft(vec![pay(FOREIGN, 10_000_000)])
+                .prepare(f.spend_grant(10_000_000 + FEE_ROOM)),
+        )
+        .unwrap();
+    assert_eq!(p.summary().inputs[0].outpoint, other);
+
+    let entry = |change: &dyn Fn(&mut crate::history::TxEntry)| {
+        (f.session.hub.history).with_wallet(f.wallet, |h| change(h.txs.get_mut(&spender).unwrap()))
+    };
+    // InstantSend-locked, then abandoned: the lock wins (`status_of`).
+    entry(&|e| (e.instant_locked, e.abandoned) = (true, true));
+    assert_eq!(f.reserved(), vec![coin, other]);
+    entry(&|e| e.instant_locked = false);
+    assert_eq!(f.reserved(), vec![other], "an abandoned spender frees it");
+    entry(&|e| e.abandoned = false);
+    // Conflicted: a transaction in a block spends another of its inputs.
+    let rival = OutPoint::new(Txid::from_byte_array([0x52; 32]), 0);
+    entry(&|e| {
+        e.tx.input.push(dashcore::TxIn {
+            previous_output: rival,
+            ..Default::default()
+        })
+    });
+    let block = TransactionContext::InBlock(BlockInfo::new(7, dashcore::BlockHash::all_zeros(), 9));
+    f.own_spend(0x53, &[rival], block.clone());
+    assert_eq!(f.reserved(), vec![other], "a conflicted spender frees it");
+    // A spender in a block holds it, whatever the abandon flag says.
+    entry(&|e| (e.context, e.abandoned) = (block.clone(), true));
+    assert_eq!(f.reserved(), vec![coin, other]);
+}

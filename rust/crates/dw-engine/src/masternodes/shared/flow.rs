@@ -357,6 +357,7 @@ impl NetworkSession {
         reuse: Option<&str>,
     ) -> Result<(Selected, Option<RecordedChange>), MasternodesError> {
         let w = self.wallet(&fence.wallet_id()).await?;
+        self.replay_guard(fence.wallet_id()).await?;
         let candidates = self.shared_candidates(fence, &w, id, also).await?;
         self.shared_selection(&w, candidates, target, reuse).await
     }

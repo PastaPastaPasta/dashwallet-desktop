@@ -2699,3 +2699,57 @@ fn mg04_a_refresh_reuses_its_own_unspent_input() {
         "the refreshed plan spends the same coin"
     );
 }
+
+/// 0.1.x-bal §1: while a replay runs (the filter checkpoint rewound below
+/// the highest seen), a ProTx selects no fee inputs. A registration, an
+/// external registration's plan and a registrar update are refused, and
+/// their fee quotes still answer.
+#[test]
+fn mg04_a_replay_holds_protx_fee_inputs() {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let f = fx(Library::Accept);
+    let (_, op) = f.registered();
+    let hash = op.pro_tx_hash.clone().unwrap();
+    f.credit(3, MASTERNODE_COLLATERAL + COIN);
+    let w = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
+    let checkpoint = |height: u32| {
+        (f.engine).block_on(async { w.state_mut().await.core_wallet.update_synced_height(height) })
+    };
+    checkpoint(1_000);
+    (f.session.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+        wallet_id: f.wallet.0,
+        height: 1_000,
+    });
+    checkpoint(500);
+    let replaying = |r: Result<ProTxOperation, MasternodesError>| {
+        r.is_err_and(|e| matches!(e.engine(), Some(crate::EngineError::RescanInProgress)))
+    };
+    // Each on its own service: the registered node holds 1.2.3.4.
+    let fund_new = RegistrationRequest {
+        service: "1.2.3.5".into(),
+        ..request(CollateralChoice::FundNew)
+    };
+    f.fee_of(&fund_new);
+    assert!(replaying(f.register(fund_new, f.grant(COIN))));
+    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes(EXTERNAL_KEY).unwrap();
+    let public = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let external = RegistrationRequest {
+        service: "1.2.3.6".into(),
+        ..request(CollateralChoice::External {
+            outpoint: format!("{}-1", Txid::from_byte_array([0x77; 32])),
+            address: dashcore::Address::p2pkh(&public, dashcore::Network::Regtest).to_string(),
+        })
+    };
+    let prepare = || {
+        (f.engine).block_on(
+            f.mn()
+                .prepare_external_registration(f.wallet, external.clone()),
+        )
+    };
+    assert!(replaying(prepare()));
+    let preview = f.preview_update(keep(&hash)).unwrap();
+    assert!(replaying(f.update(keep(&hash), f.grant(preview.fee))));
+    checkpoint(1_000);
+    f.update(keep(&hash), f.grant(preview.fee)).unwrap();
+    prepare().unwrap();
+}

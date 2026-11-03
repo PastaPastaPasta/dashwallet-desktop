@@ -2293,6 +2293,7 @@ impl NetworkSession {
             // Held from the coin read through every chunk's signing and
             // reservation; released before the broadcasts (`coins.rs`).
             let fence = this.coin_fence(wallet_id).await?;
+            this.replay_guard(wallet_id).await?;
             let (coins, chunks) = this.sweep_coins(&fence).await?;
             if chunks.is_empty() {
                 return Err(CoinJoinFailure::NothingToMove.into());

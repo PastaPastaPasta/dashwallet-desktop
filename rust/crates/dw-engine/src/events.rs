@@ -294,9 +294,34 @@ pub(crate) struct WalletState {
     /// Fully mixed CoinJoin balance by the QT-043 rule, once the CoinJoin
     /// view of the wallet was computed (`coinjoin.rs`).
     pub fully_mixed: Option<u64>,
+    /// The highest filter checkpoint seen (lowered only by a fork): a
+    /// replay that rewound the checkpoint is done once it is back here.
+    pub scan_target: u32,
+    /// The checkpoint a replay `cancel_rescan` stopped had reached: what it
+    /// re-credited above it stays in memory (and stored) until a rewind to
+    /// it or below replays those blocks (`note_rewind`). Held for this
+    /// session only.
+    pub replay_cancelled: Option<u32>,
 }
 
 impl WalletState {
+    /// Whether spends wait for a replay at filter checkpoint `checkpoint`
+    /// (`NetworkSession::replay_guard`).
+    pub fn replaying_at(&self, checkpoint: u32) -> bool {
+        checkpoint < self.scan_target || self.replay_cancelled.is_some()
+    }
+
+    /// The engine rewound the checkpoint to `checkpoint`; the live check
+    /// holds spends from there to the target.
+    pub fn note_rewind(&mut self, checkpoint: u32) {
+        if self
+            .replay_cancelled
+            .is_some_and(|reached| checkpoint <= reached)
+        {
+            self.replay_cancelled = None;
+        }
+    }
+
     /// Balances are known once the scan has processed the birth block
     /// (review M-3): before that a zero would be a guess.
     pub fn balances(&self) -> Option<WalletBalances> {
@@ -513,6 +538,13 @@ impl SessionHub {
             .insert(id, state);
     }
 
+    pub(crate) fn update_wallet_state(&self, id: WalletId, f: impl FnOnce(&mut WalletState)) {
+        let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        if let Some(state) = map.get_mut(&id) {
+            f(state);
+        }
+    }
+
     pub(crate) fn name_of(&self, id: &WalletId) -> Option<WalletName> {
         self.names
             .read()
@@ -614,6 +646,7 @@ impl SessionHub {
         let known_before = state.balances().is_some();
         if let Some(h) = synced {
             state.synced_height = h;
+            state.scan_target = state.scan_target.max(h);
         }
         if let Some(h) = processed {
             state.processed_height = state.processed_height.max(h);
@@ -628,6 +661,7 @@ impl SessionHub {
         let state = map.entry(id).or_default();
         let known_before = state.balances().is_some();
         state.synced_height = state.synced_height.min(height);
+        state.scan_target = state.scan_target.min(height);
         state.processed_height = state.processed_height.min(height);
         known_before != state.balances().is_some()
     }
@@ -1217,5 +1251,40 @@ mod tests {
         hub.apply_wallet_event(&truncated(0, Vec::new(), Vec::new(), 2_000));
         assert!(hub.wallet_state(&W).unwrap().balances().is_none());
         assert!(hub.pump.take_wallet_marks().0.contains(&W));
+    }
+
+    /// 0.1.x-bal §1: a replay's target is the highest filter checkpoint the
+    /// hub saw. A replay (lower `SyncHeightAdvanced` heights) keeps it, a
+    /// fork lowers it, and a cancelled replay holds spends until a rewind
+    /// to where it stopped.
+    #[test]
+    fn the_replay_target_is_the_highest_checkpoint_seen() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        let advanced = |height| WalletEvent::SyncHeightAdvanced {
+            wallet_id: W.0,
+            height,
+        };
+        let state = || hub.wallet_state(&W).unwrap();
+        let replaying = || state().replaying_at(state().synced_height);
+        hub.apply_wallet_event(&advanced(110));
+        assert_eq!(state().scan_target, 110);
+        assert!(!replaying());
+        hub.apply_wallet_event(&advanced(50));
+        assert_eq!(state().scan_target, 110);
+        assert!(replaying());
+        assert!(state().replaying_at(109) && !state().replaying_at(110));
+        hub.apply_wallet_event(&truncated(105, Vec::new(), Vec::new(), 0));
+        assert_eq!(state().scan_target, 105);
+        hub.apply_wallet_event(&advanced(105));
+        assert!(!replaying());
+
+        hub.update_wallet_state(W, |s| s.replay_cancelled = Some(80));
+        assert!(replaying());
+        hub.apply_wallet_event(&advanced(106));
+        assert!(replaying(), "no rewind since the cancel");
+        hub.update_wallet_state(W, |s| s.note_rewind(81));
+        assert!(replaying(), "block 81 stays unreplayed");
+        hub.update_wallet_state(W, |s| s.note_rewind(80));
+        assert!(!replaying());
     }
 }

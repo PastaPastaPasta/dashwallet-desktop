@@ -3723,3 +3723,35 @@ fn close_waits_for_a_funding_refresh_that_holds_the_wallet() {
             .any(|w| w.wallet_id == f.wallet)
     );
 }
+
+/// 0.1.x-bal §1: "Move mixed coins" signs nothing while a replay runs (the
+/// filter checkpoint rewound below the highest seen); its plan still
+/// answers.
+#[test]
+fn a_mixed_sweep_is_refused_while_a_replay_runs() {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let f = fixture(false);
+    f.credit_coinjoin(3, COIN);
+    let s = &f.session;
+    let w = f.engine.block_on(s.wallet(&f.wallet)).unwrap();
+    let checkpoint = |height: u32| {
+        (f.engine).block_on(async { w.state_mut().await.core_wallet.update_synced_height(height) })
+    };
+    checkpoint(1_000);
+    (s.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+        wallet_id: f.wallet.0,
+        height: 1_000,
+    });
+    checkpoint(500);
+    let sweep = crate::coinjoin::SweepDestination::Wallet;
+    let plan = f.engine.block_on(s.mixed_coins_sweep_plan(f.wallet, sweep));
+    assert_eq!(plan.unwrap().total, COIN);
+    let moved = || {
+        f.engine
+            .block_on(s.move_mixed_coins(f.wallet, sweep, "no grant".into()))
+    };
+    assert!(matches!(moved(), Err(EngineError::RescanInProgress)));
+    checkpoint(1_000);
+    let e = moved().unwrap_err();
+    assert!(!matches!(e, EngineError::RescanInProgress), "{e:?}");
+}

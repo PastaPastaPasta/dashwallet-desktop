@@ -262,6 +262,11 @@ pub(crate) trait RegistrationLib: Send + Sync {
     /// The wallet's identities: (index, base58 id).
     fn identities(&self) -> impl Future<Output = Vec<(u32, String)>> + Send;
     fn spendable(&self) -> impl Future<Output = Result<Spendable, PlatformError>> + Send;
+    /// Whether a replay runs, read live (0.1.x-bal §1): its re-credited coins
+    /// read held, which is no `CoinsLocked`.
+    fn replaying(&self) -> impl Future<Output = bool> + Send {
+        async { false }
+    }
     /// What holds a funding (§3.4 Restore rule 1, §2.2 rule 5's hold):
     /// `None` once SPV has synced and the wallet's DashPay bring-up (DP1-05's
     /// same-seed discovery; the library's asset-lock reconstruction runs
@@ -2185,6 +2190,9 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             ));
         }
         if spendable.protected > 0 {
+            if self.lib.replaying().await {
+                return Ok(Step::Wait(RegistrationWait::Sync));
+            }
             return Ok(Step::Fail(RegistrationError::CoinsLocked.code(), true));
         }
         if spendable.duffs < needed {
@@ -2292,10 +2300,11 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             )) if artifact == step => self.maybe_sent().await,
             // P2b's gate named another tracked lock the catch-up has not
             // resent yet (`FundingBlock::Row`, by its txid): nothing of the
-            // step's is out, and the funding waits for the catch-up.
-            Err(FundError::Refused(PlatformError::WillBeSent { .. })) => {
-                Ok(Step::Wait(RegistrationWait::Sync))
-            }
+            // step's is out, and the funding waits for the catch-up. A
+            // replay (`fence`) waits as well.
+            Err(FundError::Refused(
+                PlatformError::WillBeSent { .. } | PlatformError::ContextUnavailable,
+            )) => Ok(Step::Wait(RegistrationWait::Sync)),
             Err(FundError::Refused(e)) => Ok(self.failed(&e)),
             Err(FundError::CoinsLocked) => {
                 Ok(Step::Fail(RegistrationError::CoinsLocked.code(), true))
@@ -3250,6 +3259,10 @@ impl PwLib {
             .coin_fence(self.wallet_id)
             .await
             .map_err(refused)?;
+        // The builder would select a coin a replay re-credited (0.1.x-bal §1).
+        if self.replaying().await {
+            return Err(FundError::Refused(PlatformError::ContextUnavailable));
+        }
         let snapshot = self.session.fenced_coins(&fence).await.map_err(refused)?;
         if spendable_of(&snapshot).protected > 0 {
             return Err(FundError::CoinsLocked);
@@ -3350,6 +3363,11 @@ impl RegistrationLib for PwLib {
         Ok(spendable_of(&snapshot))
     }
 
+    async fn replaying(&self) -> bool {
+        let guard = self.session.replay_guard(self.wallet_id).await;
+        matches!(guard, Err(crate::EngineError::RescanInProgress))
+    }
+
     fn funding_hold(&self) -> Option<RegistrationWait> {
         let synced = self
             .session
@@ -3358,7 +3376,9 @@ impl RegistrationLib for PwLib {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .caught_up();
-        if !synced {
+        // A replay as the hub saw it; `fence` reads it live (0.1.x-bal §1).
+        let state = self.session.hub.wallet_state(&self.wallet_id);
+        if !synced || state.is_some_and(|s| s.replaying_at(s.synced_height)) {
             return Some(RegistrationWait::Sync);
         }
         self.claim_hold()

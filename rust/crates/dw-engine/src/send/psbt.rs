@@ -248,6 +248,7 @@ impl TxDraft {
                 // Held to the end: building reserves nothing, but the plan
                 // reads the coins (and dust locks them) under it.
                 let fence = session.coin_fence(this.wallet_id).await?;
+                session.replay_guard(this.wallet_id).await?;
                 let r = this.resolve(&fence).await?;
                 let wallet = session.wallet(&this.wallet_id).await?;
                 let change = match (&r.change, r.plan.change) {

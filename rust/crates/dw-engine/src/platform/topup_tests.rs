@@ -2031,3 +2031,61 @@ fn the_funding_hold_waits_for_platform_writes() {
     session.trust.note_masternodes_synced();
     assert_ne!(hold(), Some(RegistrationWait::Sync));
 }
+
+/// 0.1.x-bal §1: registration, top-up and shield fund their asset locks
+/// through `PwLib`, so a replay holds them. `fence` reads the filter
+/// checkpoint live: a rewind no event announced yet (platform-wallet's DIP-15
+/// backfill) refuses at once. `funding_hold` follows the hub, which hears of
+/// it with the replay's first batch. Both release at the target.
+#[test]
+fn a_replay_holds_asset_lock_funding_until_it_reaches_its_target() {
+    use dash_spv::sync::{BlockHeadersProgress, SyncProgress, SyncState};
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    use platform_wallet::events::WalletEvent;
+
+    let f = fixture(false);
+    let session = Arc::clone(&f.session);
+    let mut headers = BlockHeadersProgress::default();
+    headers.update_target_height(1000);
+    headers.update_tip_height(1000);
+    headers.set_state(SyncState::Synced);
+    let mut progress = SyncProgress::default();
+    progress.update_headers(headers);
+    {
+        let mut tracker = session.hub.tracker.lock().unwrap();
+        tracker.set_running(true);
+        tracker.on_progress(&progress);
+    }
+    let (_, lib) = f.engine.block_on(PwLib::open(&session, f.wallet)).unwrap();
+    let checkpoint = |height: u32| {
+        (f.engine).block_on(async {
+            lib.wallet
+                .state_mut()
+                .await
+                .core_wallet
+                .update_synced_height(height)
+        })
+    };
+    let advance = |height: u32| {
+        checkpoint(height);
+        (session.hub).apply_wallet_event(&WalletEvent::SyncHeightAdvanced {
+            wallet_id: f.wallet.0,
+            height,
+        });
+    };
+    let held = || TopUpLib::funding_hold(&lib) == Some(RegistrationWait::Sync);
+    let refused = || {
+        matches!(
+            f.engine.block_on(lib.fence()),
+            Err(FundError::Refused(PlatformError::ContextUnavailable))
+        )
+    };
+    advance(1_000);
+    assert!(!held() && !refused());
+    checkpoint(500);
+    assert!(refused(), "the live checkpoint");
+    advance(600);
+    assert!(held() && refused());
+    advance(1_000);
+    assert!(!held() && !refused());
+}

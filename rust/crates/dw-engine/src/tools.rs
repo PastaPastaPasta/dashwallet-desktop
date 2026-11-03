@@ -241,6 +241,25 @@ impl NetworkSession {
         }))
     }
 
+    /// Refuses a spend of `wallet_id`'s coins while a replay runs
+    /// (0.1.x-bal §1). A rescan of any kind (the user's, an abandon's,
+    /// platform-wallet's DIP-15 backfill after an unlock or in its DashPay
+    /// sync loop) lowers key-wallet's filter checkpoint, and outputs spent
+    /// above it read unspent until their spends replay. The checkpoint is
+    /// read live, so a rewind the engine did not make counts from its first
+    /// moment; it is done back at the highest checkpoint seen
+    /// (`WalletState::scan_target`: dash-spv advances it only past applied
+    /// blocks). A rewind that lands after SPV advanced the checkpoint but
+    /// before the hub heard of it leaves the target one filter batch low.
+    pub(crate) async fn replay_guard(&self, wallet_id: WalletId) -> Result<(), EngineError> {
+        let wallet = self.wallet(&wallet_id).await?;
+        let live = wallet.state().await.core_wallet.synced_height();
+        match self.hub.wallet_state(&wallet_id) {
+            Some(s) if s.replaying_at(live) => Err(EngineError::RescanInProgress),
+            _ => Ok(()),
+        }
+    }
+
     /// Whether a rescan the engine started is still running.
     pub(crate) fn rescan_running(&self) -> bool {
         let mut guard = self.hub.rescan();
@@ -272,6 +291,13 @@ impl NetworkSession {
                     let current = info.core_wallet.synced_height();
                     if current < w.resume_height {
                         info.core_wallet.update_synced_height(w.resume_height);
+                        // Under the lock that moved the checkpoint, so no
+                        // spend reads it without the hold; the lowest of
+                        // two cancels.
+                        (this.hub).update_wallet_state(*id, |s| {
+                            s.replay_cancelled =
+                                Some(s.replay_cancelled.map_or(current, |r| r.min(current)));
+                        });
                     }
                 }
             }
@@ -376,6 +402,7 @@ impl NetworkSession {
             let m = Arc::clone(&manager);
             tokio::task::spawn_blocking(move || m.spv_rescan_filters_blocking(&id.0, checkpoint))
                 .await?;
+            (self.hub).update_wallet_state(id, |s| s.note_rewind(checkpoint));
             self.hub.pump.mark_history(id, None);
         }
         if !state.wallets.is_empty() {

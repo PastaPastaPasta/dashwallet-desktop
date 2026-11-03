@@ -14,11 +14,11 @@
 //! transactions, and `Other` for mixed debit transactions.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::RwLock;
 
 use dashcore::blockdata::transaction::special_transaction::TransactionType as SpecialType;
-use dashcore::{Address, Network, ScriptBuf, Transaction, Txid};
+use dashcore::{Address, Network, OutPoint, ScriptBuf, Transaction, Txid};
 use key_wallet::managed_account::transaction_record::TransactionRecord;
 use key_wallet::transaction_checking::TransactionContext;
 
@@ -289,6 +289,31 @@ fn merge_context(old: &TransactionContext, new: &TransactionContext) -> Transact
         (TransactionContext::InstantSend(_), TransactionContext::Mempool) => old.clone(),
         _ => new.clone(),
     }
+}
+
+/// The outpoints the wallet's transactions spend by Dash Core's
+/// `CWallet::IsSpent` (v24.0.0-rc.6 8d195f18 wallet/wallet.cpp:755-770): the
+/// spender is in a block, or out of one (depth 0, :4072-4082) and not
+/// abandoned. A conflicted spender (depth < 0) does not count; the store has
+/// no conflict state, so a spender out of a block counts as conflicted when
+/// another transaction in a block spends one of its inputs (its descendants,
+/// which Core's `MarkConflicted` also marks, are not followed).
+pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint> {
+    let mined = |e: &TxEntry| e.context.block_info().is_some();
+    let in_block: HashMap<OutPoint, Txid> = (txs.iter().filter(|(_, e)| mined(e)))
+        .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, *t)))
+        .collect();
+    // As `status_of`: an InstantSend lock outranks the abandon.
+    let abandoned = |e: &TxEntry| {
+        e.abandoned && !e.instant_locked && !matches!(e.context, TransactionContext::InstantSend(_))
+    };
+    let conflicted = |t: &Txid, e: &TxEntry| {
+        (e.tx.input.iter()).any(|i| in_block.get(&i.previous_output).is_some_and(|b| b != t))
+    };
+    (txs.iter())
+        .filter(|(t, e)| mined(e) || !(abandoned(e) || conflicted(t, e)))
+        .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
+        .collect()
 }
 
 #[derive(Debug, Default)]

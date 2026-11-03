@@ -663,6 +663,7 @@ impl NetworkSession {
         let ctx = super::v24_context(self, wallet).await?;
         // The fence from the coin read to the row's write (D68).
         let fence = self.coin_fence(wallet).await?;
+        self.replay_guard(wallet).await?;
         self.check_no_pending_maintenance(wallet, hash, None)
             .await?;
         let reg = self.registered(wallet, hash, &ctx).await?;

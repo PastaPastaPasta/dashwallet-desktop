@@ -1090,6 +1090,7 @@ impl TxDraft {
         self: &Arc<Self>,
         grant_id: String,
     ) -> Result<Arc<PreparedTx>, EngineError> {
+        self.session.replay_guard(self.wallet_id).await?;
         let contact = self.state().contact;
         if let Some(pair) = contact {
             return self.prepare_contact(grant_id, pair).await;
