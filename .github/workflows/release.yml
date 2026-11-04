@@ -304,6 +304,11 @@ jobs:
         env:
           DW_BUILD_VERSION: ${{ env.VERSION }}
         run: pnpm tauri build --bundles appimage,deb
+      # The engine reads DW_BUILD_VERSION at compile time to decide the test-build warning; a lost
+      # stamp would make every release warn. A dev or rc VERSION is unique to the run, so this
+      # catches a broken pass-through on the next main push, before any tag.
+      - name: The binary carries this run's build version
+        run: grep -aqF "$VERSION" rust/target/release/dash-wallet || { echo "::error::build version $VERSION is not in dash-wallet" >&2; exit 1; }
       - name: Stage the bundles
         run: |
           appimage=$(ci/github/release-stage.sh "$RUNNER_TEMP/dist" "$VERSION" linux-x86_64.AppImage 'release/bundle/appimage/*.AppImage')

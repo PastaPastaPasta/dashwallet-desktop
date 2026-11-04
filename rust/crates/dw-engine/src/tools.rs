@@ -140,11 +140,12 @@ pub(crate) const BUILD_VERSION: &str = match option_env!("DW_BUILD_VERSION") {
     _ => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
 };
 
-/// Whether a build version is a test build (`-rc`, `-dev`), for dash-qt's "This is a pre-release
-/// test build" warning. dash-qt shows it only when CLIENT_VERSION_IS_RELEASE is false, and a
-/// tagged X.Y.Z, 0.x included, is a release.
+/// Whether a build version is a test build, for dash-qt's "This is a pre-release test build"
+/// warning. dash-qt shows it only when CLIENT_VERSION_IS_RELEASE is false. Only a build stamped
+/// exactly this crate's X.Y.Z (a tagged vX.Y.Z, 0.x included) is a release; `-rc`, `-dev`, a
+/// dry-run or odd tag (`0.1`, `0.2.0rc1`) and an unstamped build all warn.
 pub(crate) fn is_test_build(version: &str) -> bool {
-    version.contains('-')
+    version != ENGINE_VERSION
 }
 
 impl NetworkSession {
@@ -597,10 +598,13 @@ mod tests {
 
     #[test]
     fn test_qt_040_test_build_rule() {
-        assert!(!is_test_build("0.1.0"));
-        assert!(!is_test_build("1.2.3"));
-        assert!(is_test_build("0.1.0-rc.1"));
-        assert!(is_test_build("0.1.0-dev.57.g1a2b3c4"));
+        assert!(!is_test_build(ENGINE_VERSION));
+        for v in ["-rc.1", "-dev.57.g1a2b3c4", "-dev", ".1", "rc1"] {
+            assert!(is_test_build(&format!("{ENGINE_VERSION}{v}")), "{v}");
+        }
+        for v in ["", "0.1", "0.0.0-rel1", "foo", "9.9.9"] {
+            assert!(is_test_build(v), "{v}");
+        }
         if option_env!("DW_BUILD_VERSION").is_none() {
             assert_eq!(BUILD_VERSION, concat!(env!("CARGO_PKG_VERSION"), "-dev"));
         }
