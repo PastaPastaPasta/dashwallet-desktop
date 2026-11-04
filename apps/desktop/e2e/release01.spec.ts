@@ -252,7 +252,7 @@ test.describe("first-run notice", () => {
       const errors = await open(page, "pre-release-notice", theme);
       const notice = page.getByTestId("pre-release-notice");
       await expect(notice).toBeVisible();
-      await expect(notice).toContainText("Dash Wallet 0.1 is a pre-release");
+      await expect(notice).toContainText("Dash Wallet 0.1 is an early release");
       await expect(notice).toContainText("It has had no security review; use small amounts.");
       await expect(page.getByTestId("pre-release-dismiss")).toBeFocused();
       expect(await seriousAxeViolations(page)).toEqual([]);

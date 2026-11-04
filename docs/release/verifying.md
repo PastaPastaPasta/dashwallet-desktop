@@ -4,7 +4,7 @@ Every file the release workflow publishes carries a GitHub build attestation: a 
 GitHub Actions for this repository, that the file was built by `.github/workflows/release.yml` from a given
 commit. This replaces PGP signatures; there is no signing key until 1.0.
 
-It proves **where and from what the file was built**, not that the code is safe. The app is a pre-release with
+It proves **where and from what the file was built**, not that the code is safe. The app is an early release with
 no security review: use small amounts only.
 
 ## Check a file
