@@ -266,6 +266,11 @@ impl NetworkSession {
         let live = state.core_wallet.synced_height();
         let refused = self.hub.update_wallet_state(wallet_id, |s| {
             s.scan_target = s.scan_target.max(live);
+            // A cancel sets its hold under the write lock, above which it
+            // leaves the checkpoint: a read at or below it is a later rewind,
+            // whose replay covers what the cancel skipped. A stale batch
+            // event could not tell, so `update_heights` does not do this.
+            s.note_rewind(live);
             match s.replay_cancelled {
                 Some(_) => Some(EngineError::RescanInterrupted),
                 None => {

@@ -2387,6 +2387,41 @@ fn a_user_rescan_holds_spends_and_its_cancel_keeps_them_held() {
     .unwrap();
 }
 
+/// After a cancel, a rewind the hub never hears of (a fork, DIP-15 or an
+/// abandon) to at or below where the rescan stopped replays what it
+/// skipped: spends wait for that replay, then go through without a rescan.
+#[test]
+fn a_hidden_rewind_below_a_cancelled_rescan_ends_its_hold() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    let (s, id) = (Arc::clone(&f.session), f.wallet);
+    f.engine
+        .block_on(
+            (f.session).on_runtime(async move { s.start_rescan(vec![id], 400, |_| 400).await }),
+        )
+        .unwrap();
+    f.advance(700);
+    assert!(f.engine.block_on(f.session.cancel_rescan()).unwrap());
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepare = || {
+        f.engine
+            .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+    };
+    let refusal = || prepare().err().map(|e| e.code());
+    let (running, stopped) = (Some("rescan_in_progress"), Some("rescan_interrupted"));
+    f.checkpoint(701);
+    assert_eq!(refusal(), stopped, "a replay from 702 skips block 701");
+    f.checkpoint(1_000);
+    assert_eq!(refusal(), stopped, "block 701 is still not replayed");
+    f.checkpoint(700);
+    assert_eq!(refusal(), running, "a replay from 701 covers it");
+    f.checkpoint(999);
+    assert_eq!(refusal(), running);
+    f.checkpoint(1_000);
+    prepare().unwrap();
+}
+
 /// The §1 residual: a replay re-credits a coin whose spend was stored while
 /// the spender was unconfirmed or InstantSend-locked at close, and no block
 /// spends it again until the spender is mined. Dash Core counts it spent
