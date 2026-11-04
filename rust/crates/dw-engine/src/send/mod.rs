@@ -1100,6 +1100,7 @@ impl TxDraft {
             return Err(SendFailure::WatchOnly.into());
         }
         let fence = session.coin_fence(wallet_id).await?;
+        let guarded = session.replay_guard(wallet_id, 0).await?;
         let lease = session
             .lease_for(&wallet_id, &grant_id)
             .transpose()
@@ -1111,7 +1112,7 @@ impl TxDraft {
             lease
                 .check_tx_signer(purpose)
                 .map_err(|e| lease_failure(e, 0))?;
-            return self.prepare_leased(lease.clone(), purpose, fence).await;
+            return (self.prepare_leased(lease.clone(), purpose, fence, guarded)).await;
         }
         // No key to sign with (locked or mixing-only vault, and the grant
         // does not carry its own key) fails before the plan. A grant that is
@@ -1151,6 +1152,7 @@ impl TxDraft {
             signer,
             None,
             fence,
+            guarded,
         )
         .await
     }
@@ -1165,6 +1167,7 @@ impl TxDraft {
         lease: Lease,
         purpose: crate::platform::BudgetPurpose,
         fence: CoinFence,
+        guarded: u32,
     ) -> Result<Arc<PreparedTx>, EngineError> {
         let r = self.resolve(&fence).await?;
         let wallet = self.session.wallet(&self.wallet_id).await?;
@@ -1188,6 +1191,7 @@ impl TxDraft {
             signer,
             Some(charge),
             fence,
+            guarded,
         )
         .await
     }
@@ -1241,8 +1245,11 @@ impl TxDraft {
         signer: dw_vault::VaultSigner,
         charge: Option<SpendCharge>,
         fence: CoinFence,
+        guarded: u32,
     ) -> Result<Arc<PreparedTx>, EngineError> {
         self.session.coin_fences.prepare_pause_point().await;
+        // The coins are read: a rewind since the guard refuses them.
+        (self.session).replay_guard(self.wallet_id, guarded).await?;
         let session = &self.session;
         let wallet_id = self.wallet_id;
         let network = self.network();

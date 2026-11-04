@@ -786,16 +786,21 @@ impl NetworkSession {
         self.spends.retain_unspent(&wallet_id, &unspent);
         let reserved = self.spends.snapshot(&wallet_id);
         let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
+        // A replay re-credits a coin whose spender is still unconfirmed at
+        // close until a block spends it (0.1.x-bal §1): held as Core holds it.
+        let spent = (self.hub.history).read(&wallet_id, crate::history::spent_outpoints);
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
             let lock = locked.get(&lock_key(&o));
             coin.user_locked = lock.is_some();
             coin.dust_locked = lock == Some(&LockReason::Dust);
-            let spend_reserved = reserved.contains(&o);
             let lock_reserved = lock_inputs.contains(&o);
             coin.unresolved_lock = !lock_reserved && unresolved.contains(&o);
-            coin.lock_input = !spend_reserved && (lock_reserved || coin.unresolved_lock);
-            coin.reserved = spend_reserved || lock_reserved || coin.unresolved_lock;
+            // A lock's own input stays held as the lock's.
+            let lock_held = lock_reserved || coin.unresolved_lock;
+            let spend_reserved = reserved.contains(&o) || (spent.contains(&o) && !lock_held);
+            coin.lock_input = !spend_reserved && lock_held;
+            coin.reserved = spend_reserved || lock_held;
         }
         Ok(snapshot)
     }

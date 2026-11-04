@@ -241,6 +241,58 @@ impl NetworkSession {
         }))
     }
 
+    /// Refuses a spend of `wallet_id`'s coins while a replay runs
+    /// (0.1.x-bal §1). A rescan of any kind (the user's, an abandon's,
+    /// platform-wallet's DIP-15 backfill after an unlock or in its DashPay
+    /// sync loop) lowers key-wallet's filter checkpoint, and outputs spent
+    /// above it read unspent until their spends replay. The checkpoint is
+    /// read live; the replay is done back at the highest checkpoint seen
+    /// (`WalletState::scan_target`: dash-spv advances it only past applied
+    /// blocks), raised here to every live read, since the hub hears of a
+    /// checkpoint late (a batch committed before a rewind, events a lagging
+    /// subscriber of key-wallet's broadcast lost). Returns the checkpoint;
+    /// called again with it as `floor` once the coins are selected, a rewind
+    /// since refuses too. A rewind replayed back above `floor` by then is not
+    /// seen: the network rejects what such a build spends twice.
+    pub(crate) async fn replay_guard(
+        &self,
+        wallet_id: WalletId,
+        floor: u32,
+    ) -> Result<u32, EngineError> {
+        let wallet = self.wallet(&wallet_id).await?;
+        // The hub is written under the read lock, so a fork's truncation
+        // (under the write lock) lowers the target after this raise.
+        let state = wallet.state().await;
+        let live = state.core_wallet.synced_height();
+        let refused = self.hub.update_wallet_state(wallet_id, |s| {
+            s.scan_target = s.scan_target.max(live);
+            // A cancel sets its hold under the write lock, above which it
+            // leaves the checkpoint: a read at or below it is a later rewind,
+            // whose replay covers what the cancel skipped. A stale batch
+            // event could not tell, so `update_heights` does not do this.
+            s.note_rewind(live);
+            match s.replay_cancelled {
+                Some(_) => Some(EngineError::RescanInterrupted),
+                None => {
+                    (live < floor || s.replaying_at(live)).then_some(EngineError::RescanInProgress)
+                }
+            }
+        });
+        refused.map_or(Ok(live), Err)
+    }
+
+    /// `select` between [`Self::replay_guard`] and its second call.
+    pub(crate) async fn replay_guarded<T, E: From<EngineError>>(
+        &self,
+        wallet_id: WalletId,
+        select: impl Future<Output = Result<T, E>>,
+    ) -> Result<T, E> {
+        let guarded = self.replay_guard(wallet_id, 0).await?;
+        let selected = select.await?;
+        self.replay_guard(wallet_id, guarded).await?;
+        Ok(selected)
+    }
+
     /// Whether a rescan the engine started is still running.
     pub(crate) fn rescan_running(&self) -> bool {
         let mut guard = self.hub.rescan();
@@ -272,6 +324,13 @@ impl NetworkSession {
                     let current = info.core_wallet.synced_height();
                     if current < w.resume_height {
                         info.core_wallet.update_synced_height(w.resume_height);
+                        // Under the lock that moved the checkpoint, so no
+                        // spend reads it without the hold; the lowest of
+                        // two cancels.
+                        (this.hub).update_wallet_state(*id, |s| {
+                            s.replay_cancelled =
+                                Some(s.replay_cancelled.map_or(current, |r| r.min(current)));
+                        });
                     }
                 }
             }
@@ -376,6 +435,7 @@ impl NetworkSession {
             let m = Arc::clone(&manager);
             tokio::task::spawn_blocking(move || m.spv_rescan_filters_blocking(&id.0, checkpoint))
                 .await?;
+            (self.hub).update_wallet_state(id, |s| s.note_rewind(checkpoint));
             self.hub.pump.mark_history(id, None);
         }
         if !state.wallets.is_empty() {

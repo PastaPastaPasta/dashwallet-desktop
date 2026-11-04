@@ -815,3 +815,15 @@ fn test_QT_127_a_key_change_survives_a_restart() {
     assert!(reserved.iter().all(|o| f.locked(0).contains(o)));
     assert_eq!(f.message(0, &id), a.message.text);
 }
+
+/// 0.1.x-bal §1: a key change picks no fee inputs, and takes no operator
+/// key, while a replay runs.
+#[test]
+fn test_QT_127_a_replay_holds_a_key_changes_fee_inputs() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    f.replaying(0);
+    assert!(super::replay_refusal(start(&f, 0, rotate(txid), 0)));
+    f.checkpoint(0, 1_000);
+    start(&f, 0, rotate(txid), 0).unwrap();
+}

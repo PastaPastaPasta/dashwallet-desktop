@@ -3460,6 +3460,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "spv_not_running",
   "spv_running",
   "rescan_in_progress",
+  "rescan_interrupted",
   "invalid_xpub",
   "tx_action_refused",
   "no_peers",

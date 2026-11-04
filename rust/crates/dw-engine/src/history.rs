@@ -14,11 +14,11 @@
 //! transactions, and `Other` for mixed debit transactions.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::RwLock;
 
 use dashcore::blockdata::transaction::special_transaction::TransactionType as SpecialType;
-use dashcore::{Address, Network, ScriptBuf, Transaction, Txid};
+use dashcore::{Address, Network, OutPoint, ScriptBuf, Transaction, Txid};
 use key_wallet::managed_account::transaction_record::TransactionRecord;
 use key_wallet::transaction_checking::TransactionContext;
 
@@ -289,6 +289,48 @@ fn merge_context(old: &TransactionContext, new: &TransactionContext) -> Transact
         (TransactionContext::InstantSend(_), TransactionContext::Mempool) => old.clone(),
         _ => new.clone(),
     }
+}
+
+/// The outpoints the wallet's transactions spend by Dash Core's
+/// `CWallet::IsSpent` (v24.0.0-rc.6 8d195f18 wallet/wallet.cpp:755-770): the
+/// spender is in a block, or out of one (depth 0, :4072-4082) and not
+/// abandoned. A conflicted spender (depth < 0) does not count. The store has
+/// no conflict state: a spender out of a block is conflicted when another
+/// transaction in a block spends one of its inputs, and so are its
+/// descendants out of a block, as `MarkConflicted` marks them through
+/// `RecursiveUpdateTxState` (:1388-1458). A block spending one of its
+/// inputs that is not the wallet's is not seen (BIP158 filters match the
+/// wallet's scripts only): such a spender holds its other inputs until it
+/// is abandoned.
+pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint> {
+    let mined = |e: &TxEntry| e.context.block_info().is_some();
+    let in_block: HashMap<OutPoint, Txid> = (txs.iter().filter(|(_, e)| mined(e)))
+        .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, *t)))
+        .collect();
+    // As `status_of`: an InstantSend lock outranks the abandon.
+    let abandoned = |e: &TxEntry| {
+        e.abandoned && !e.instant_locked && !matches!(e.context, TransactionContext::InstantSend(_))
+    };
+    let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
+    let mut todo = Vec::new();
+    for (t, e) in txs.iter().filter(|(_, e)| !mined(e)) {
+        for i in &e.tx.input {
+            children.entry(i.previous_output.txid).or_default().push(*t);
+            if in_block.get(&i.previous_output).is_some_and(|b| b != t) {
+                todo.push(*t);
+            }
+        }
+    }
+    let mut conflicted = HashSet::new();
+    while let Some(t) = todo.pop() {
+        if conflicted.insert(t) {
+            todo.extend(children.get(&t).into_iter().flatten());
+        }
+    }
+    (txs.iter())
+        .filter(|(t, e)| mined(e) || !(abandoned(e) || conflicted.contains(*t)))
+        .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
+        .collect()
 }
 
 #[derive(Debug, Default)]

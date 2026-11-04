@@ -223,6 +223,7 @@ impl From<dw_engine::EngineError> for WalletError {
             | E::SpvNotRunning
             | E::SpvRunning
             | E::RescanInProgress
+            | E::RescanInterrupted
             | E::TxActionRefused(_)
             | E::NoPeers
             | E::TxNotFound(_)

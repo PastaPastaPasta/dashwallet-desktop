@@ -642,3 +642,28 @@ fn test_QT_127_a_reward_change_holds_dissolve_until_buried_and_after_a_reorg() {
     assert_eq!(f.net.sent().len(), 3);
     assert_eq!(f.net.sent()[2].txid(), f.net.sent()[1].txid());
 }
+
+/// 0.1.x-bal §1: a reward change selects no fee inputs while a replay runs;
+/// its quote still answers.
+#[test]
+fn test_QT_127_a_replay_holds_a_reward_changes_fee_inputs() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    f.credit(0, 9, COIN);
+    f.replaying(0);
+    let req = UpdateShareRequest {
+        pro_tx_hash: txid.to_string(),
+        share_index: 0,
+        reward: RewardChoice::NewAddress,
+    };
+    (f.run(f.mn().preview_update_share(f.wallets[0], req.clone()))).unwrap();
+    let update = || {
+        f.run(
+            f.mn()
+                .update_share(f.wallets[0], req.clone(), f.grant(0, COIN)),
+        )
+    };
+    assert!(super::replay_refusal(update()));
+    f.checkpoint(0, 1_000);
+    update().unwrap();
+}

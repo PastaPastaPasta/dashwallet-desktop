@@ -256,6 +256,7 @@ describe("D4 steps and D5 failure copy", () => {
     expect(failureText(failure("registration.funding_insufficient"), amount)).toBe("Not enough Dash to pay for the username.");
     expect(failureText(failure("registration.islock_timeout"), amount)).toBe("The network did not confirm the payment in time.");
     expect(failureText(failure("platform.timeout"), amount)).toBe("The Dash network did not answer.");
+    expect(failureText(failure("rescan_interrupted"), amount)).toBe("The last rescan was interrupted. Finish it in Repair ▸ Rescan before sending.");
     // Credits are not Dash: no amounts for them.
     expect(failureText(failure("platform.insufficient_credits", { needed: "5", available: "1" }), amount)).toBe("The identity's credits do not cover the username.");
     expect(failureText(failure("platform.grant_exceeded"), amount)).toBe("The cost went above what you approved.");

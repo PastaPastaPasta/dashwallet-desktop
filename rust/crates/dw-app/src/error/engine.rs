@@ -29,6 +29,7 @@ codes! {
         SpvNotRunning = "spv_not_running",
         SpvRunning = "spv_running",
         RescanInProgress = "rescan_in_progress",
+        RescanInterrupted = "rescan_interrupted",
         InvalidXpub = "invalid_xpub",
         TxActionRefused = "tx_action_refused",
         NoPeers = "no_peers",
@@ -169,6 +170,7 @@ impl From<EngineError> for AppError {
             E::ShieldedSpendUnresolved => (EngineCode::ShieldedSpendUnresolved.into(), None),
             E::SpvRunning => (EngineCode::SpvRunning.into(), None),
             E::RescanInProgress => (EngineCode::RescanInProgress.into(), None),
+            E::RescanInterrupted => (EngineCode::RescanInterrupted.into(), None),
             E::InvalidXpub(_) => (EngineCode::InvalidXpub.into(), None),
             E::TxActionRefused(refusal) => (
                 EngineCode::TxActionRefused.into(),
@@ -267,6 +269,7 @@ mod tests {
             E::SpvNotRunning,
             E::SpvRunning,
             E::RescanInProgress,
+            E::RescanInterrupted,
             E::InvalidXpub(s()),
             E::TxActionRefused(TxActionRefusal::Confirmed),
             E::NoPeers,

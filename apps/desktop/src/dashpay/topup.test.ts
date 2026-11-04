@@ -119,6 +119,7 @@ describe("the top-up sheet (IOS-069, AND-078)", () => {
     expect(topUpErrorText(appError("platform.context_unavailable"), amount)).toBe("Waiting for the network to sync and verify this identity. Try again shortly.");
     expect(topUpErrorText(appError("platform.trust_mismatch"), amount)).toBe("This identity's data could not be verified against the network. Nothing was paid.");
     expect(topUpErrorText(appError("platform.will_be_sent"), amount)).toBe("The payment is still being sent. Try again in a minute.");
+    expect(topUpErrorText(appError("rescan_interrupted"), amount)).toBe("The last rescan was interrupted. Finish it in Repair ▸ Rescan before sending.");
   });
 
   it("review r3 R3-m2: a refusal with a detail shows the detail (the 50-coin bound and its advice)", () => {

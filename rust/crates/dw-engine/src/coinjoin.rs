@@ -939,9 +939,10 @@ impl NetworkSession {
         })
     }
 
-    /// [`Self::mix_view`] for an unattended spender (the automatic pass):
-    /// `None` while the dispatch journal is not read, whose signed locks'
-    /// inputs (O-2) would read free (review Opus closure C-1).
+    /// [`Self::mix_view`] for an unattended spender (the automatic pass, a
+    /// mixing session's inputs): `None` while the dispatch journal is not
+    /// read, whose signed locks' inputs (O-2) would read free (review Opus
+    /// closure C-1), or while a replay runs (0.1.x-bal §1).
     pub(crate) async fn pass_view(
         &self,
         fence: &CoinFence,
@@ -949,7 +950,12 @@ impl NetworkSession {
         if !self.leases.journal_ready() {
             return Ok(None);
         }
-        self.mix_view(fence).await.map(Some)
+        let view = (self.replay_guarded(fence.wallet_id(), self.mix_view(fence))).await;
+        if let Err(EngineError::RescanInProgress | EngineError::RescanInterrupted) = view {
+            self.set_mix_status(fence.wallet_id(), StatusCode::SyncInProgress);
+            return Ok(None);
+        }
+        view.map(Some)
     }
 
     /// [`Self::mix_view`] under a fence taken for the read only: for
@@ -2293,7 +2299,8 @@ impl NetworkSession {
             // Held from the coin read through every chunk's signing and
             // reservation; released before the broadcasts (`coins.rs`).
             let fence = this.coin_fence(wallet_id).await?;
-            let (coins, chunks) = this.sweep_coins(&fence).await?;
+            let (coins, chunks) =
+                (this.replay_guarded(wallet_id, this.sweep_coins(&fence))).await?;
             if chunks.is_empty() {
                 return Err(CoinJoinFailure::NothingToMove.into());
             }

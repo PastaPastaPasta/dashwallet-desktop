@@ -3388,6 +3388,46 @@ fn mode_b_the_coinjoin_pass_spends_nothing_while_the_journal_is_not_read() {
     assert_eq!(pass(), None, "the pass spends nothing");
 }
 
+/// RG round 1 G: the automatic CoinJoin pass (and the mixing session,
+/// whose inputs come through it) selects nothing during a replay.
+#[test]
+fn the_coinjoin_pass_selects_nothing_during_a_replay() {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let f = fixture(false);
+    f.credit(4, COIN);
+    let s = &f.session;
+    let w = f.engine.block_on(s.wallet(&f.wallet)).unwrap();
+    let checkpoint = |height: u32| {
+        (f.engine).block_on(async { w.state_mut().await.core_wallet.update_synced_height(height) })
+    };
+    let pass = || {
+        f.engine
+            .block_on(s.on_runtime({
+                let (s, w) = (s.clone(), f.wallet);
+                async move {
+                    let fence = s.coin_fence(w).await?;
+                    s.pass_view(&fence).await
+                }
+            }))
+            .unwrap()
+            .is_some()
+    };
+    f.refresh();
+    checkpoint(1_000);
+    assert!(pass());
+    checkpoint(500);
+    assert!(!pass(), "a replay selects nothing");
+    checkpoint(1_000);
+    assert!(pass());
+    // A rescan stopped part way: nothing either, and no error for the pass.
+    let (s2, id) = (Arc::clone(s), f.wallet);
+    (f.engine)
+        .block_on(s.on_runtime(async move { s2.start_rescan(vec![id], 400, |_| 400).await }))
+        .unwrap();
+    assert!(f.engine.block_on(s.cancel_rescan()).unwrap());
+    assert!(!pass(), "a stopped rescan selects nothing");
+}
+
 /// Review Opus closure C-2: a permit that ends while its signer's first
 /// release write is in flight: the write lands, the signer sees the end
 /// and refuses `Locked`, and the vault signs nothing.
@@ -3722,4 +3762,36 @@ fn close_waits_for_a_funding_refresh_that_holds_the_wallet() {
             .iter()
             .any(|w| w.wallet_id == f.wallet)
     );
+}
+
+/// 0.1.x-bal §1: "Move mixed coins" signs nothing while a replay runs (the
+/// filter checkpoint rewound below the highest seen); its plan still
+/// answers.
+#[test]
+fn a_mixed_sweep_is_refused_while_a_replay_runs() {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let f = fixture(false);
+    f.credit_coinjoin(3, COIN);
+    let s = &f.session;
+    let w = f.engine.block_on(s.wallet(&f.wallet)).unwrap();
+    let checkpoint = |height: u32| {
+        (f.engine).block_on(async { w.state_mut().await.core_wallet.update_synced_height(height) })
+    };
+    checkpoint(1_000);
+    (s.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+        wallet_id: f.wallet.0,
+        height: 1_000,
+    });
+    checkpoint(500);
+    let sweep = crate::coinjoin::SweepDestination::Wallet;
+    let plan = f.engine.block_on(s.mixed_coins_sweep_plan(f.wallet, sweep));
+    assert_eq!(plan.unwrap().total, COIN);
+    let moved = || {
+        f.engine
+            .block_on(s.move_mixed_coins(f.wallet, sweep, "no grant".into()))
+    };
+    assert!(matches!(moved(), Err(EngineError::RescanInProgress)));
+    checkpoint(1_000);
+    let e = moved().unwrap_err();
+    assert!(!matches!(e, EngineError::RescanInProgress), "{e:?}");
 }

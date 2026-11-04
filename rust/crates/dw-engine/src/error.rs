@@ -62,9 +62,14 @@ pub enum EngineError {
     /// The call needs the SPV client stopped (`reset_chain_data`).
     #[error("spv is running")]
     SpvRunning,
-    /// A rescan the engine started is still running.
+    /// A rescan runs (`start_rescan`), or a spend meets a replay of the
+    /// filter scan: the wallet checkpoint is below the highest one seen
+    /// (`replay_guard`).
     #[error("a rescan is in progress")]
     RescanInProgress,
+    /// A rescan the user stopped part way must run again before a spend.
+    #[error("a rescan was interrupted")]
+    RescanInterrupted,
     /// Not a BIP44 account-level extended public key of this network.
     #[error("invalid xpub: {0}")]
     InvalidXpub(String),
@@ -179,6 +184,7 @@ impl EngineError {
             EngineError::SpvNotRunning => "spv_not_running",
             EngineError::SpvRunning => "spv_running",
             EngineError::RescanInProgress => "rescan_in_progress",
+            EngineError::RescanInterrupted => "rescan_interrupted",
             EngineError::InvalidXpub(_) => "invalid_xpub",
             EngineError::TxActionRefused(_) => "tx_action_refused",
             EngineError::NoPeers => "no_peers",
