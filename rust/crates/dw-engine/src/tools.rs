@@ -132,10 +132,19 @@ impl RescanState {
     }
 }
 
-/// Whether this engine build is a pre-release (0.x or a `-` suffix), for
-/// dash-qt's "This is a pre-release test build" warning.
-pub(crate) fn is_prerelease(version: &str) -> bool {
-    version.starts_with("0.") || version.contains('-')
+/// The version this build was released as. The release workflow passes its run's version as
+/// `DW_BUILD_VERSION` (`0.1.0`, `0.1.0-rc.1`, `0.1.0-dev.57.g1a2b3c4`); a build without it (local,
+/// tests, Nightly) is a dev build.
+pub(crate) const BUILD_VERSION: &str = match option_env!("DW_BUILD_VERSION") {
+    Some(v) if !v.is_empty() => v,
+    _ => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
+};
+
+/// Whether a build version is a test build (`-rc`, `-dev`), for dash-qt's "This is a pre-release
+/// test build" warning. dash-qt shows it only when CLIENT_VERSION_IS_RELEASE is false, and a
+/// tagged X.Y.Z, 0.x included, is a release.
+pub(crate) fn is_test_build(version: &str) -> bool {
+    version.contains('-')
 }
 
 impl NetworkSession {
@@ -214,10 +223,10 @@ impl NetworkSession {
                 detail: "the trusted quorum service has not answered yet".into(),
             });
         }
-        if is_prerelease(ENGINE_VERSION) {
+        if is_test_build(BUILD_VERSION) {
             out.push(EngineWarning {
                 code: WarningCode::PrereleaseBuild,
-                detail: format!("engine version {ENGINE_VERSION}"),
+                detail: format!("build version {BUILD_VERSION}"),
             });
         }
         out.sort_by_key(|w| w.code);
@@ -587,10 +596,14 @@ mod tests {
     }
 
     #[test]
-    fn test_qt_040_prerelease_rule() {
-        assert!(is_prerelease("0.1.0"));
-        assert!(is_prerelease("1.0.0-rc.1"));
-        assert!(!is_prerelease("1.2.3"));
+    fn test_qt_040_test_build_rule() {
+        assert!(!is_test_build("0.1.0"));
+        assert!(!is_test_build("1.2.3"));
+        assert!(is_test_build("0.1.0-rc.1"));
+        assert!(is_test_build("0.1.0-dev.57.g1a2b3c4"));
+        if option_env!("DW_BUILD_VERSION").is_none() {
+            assert_eq!(BUILD_VERSION, concat!(env!("CARGO_PKG_VERSION"), "-dev"));
+        }
     }
 
     #[test]

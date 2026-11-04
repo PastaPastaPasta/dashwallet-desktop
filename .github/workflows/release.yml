@@ -138,6 +138,8 @@ jobs:
       # signingIdentity "-" in tauri.conf.json: ad-hoc signed, no notarization.
       - name: pnpm tauri build (universal-apple-darwin, dmg)
         working-directory: apps/desktop
+        env:
+          DW_BUILD_VERSION: ${{ env.VERSION }}
         run: pnpm tauri build --target universal-apple-darwin --bundles dmg
       - name: Stage the dmg
         run: |
@@ -215,6 +217,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: pnpm tauri build (nsis)
         working-directory: apps/desktop
+        env:
+          DW_BUILD_VERSION: ${{ env.VERSION }}
         run: pnpm tauri build --bundles nsis
       - name: Stage the installer
         run: |
@@ -297,6 +301,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: pnpm tauri build (appimage, deb)
         working-directory: apps/desktop
+        env:
+          DW_BUILD_VERSION: ${{ env.VERSION }}
         run: pnpm tauri build --bundles appimage,deb
       - name: Stage the bundles
         run: |
