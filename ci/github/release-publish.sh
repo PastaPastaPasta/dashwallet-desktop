@@ -15,7 +15,7 @@
 # that is not a release tag, 1 for the rest):
 #   push to refs/heads/main      an immutable prerelease v<version>-dev.<run>+<short sha> with the run's
 #                                files, and the rolling prerelease `continuous` with stable names;
-#   push of a tag vX.Y.Z[-rc.N]  that tag's release (a prerelease: every 0.x and every -rc is one),
+#   push of a tag vX.Y.Z[-rc.N]  that tag's release: a full release for vX.Y.Z, a prerelease for -rc.N;
 #                                notes from docs/release/<X.Y.Z>-notes.md when it exists.
 # A commit that is not on origin/main never publishes, whatever the trigger or the tag says.
 #
@@ -165,9 +165,12 @@ publish)
     if complete_release "$tag" 5; then
       echo "release-publish: release $tag exists and is complete; leaving it as it is"
     else
-      # The tag exists (it triggered this run); a prerelease until 1.0.
+      # The tag exists (it triggered this run). A version (vX.Y.Z) is a full release, and GitHub picks
+      # Latest by version; a release candidate (-rc.N) is a prerelease, never Latest.
+      flavour=()
+      [[ "$version" != *-rc.* ]] || flavour=(--prerelease --latest=false)
       w gh release create "$tag" "${files[@]}" "$DIST/SHA256SUMS" --repo "$repo" --verify-tag \
-        --prerelease --latest=false --title "Dash Wallet Desktop $version" "${notes[@]}"
+        "${flavour[@]}" --title "Dash Wallet Desktop $version" "${notes[@]}"
     fi
     exit 0
   fi

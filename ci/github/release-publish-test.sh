@@ -224,6 +224,20 @@ check "main: immutable prerelease $tag, at the commit, a prerelease, not latest"
 check "main: no draft, no delete" '! log_has "--draft" && ! log_has "DELETE"'
 check "main: creates continuous" 'log_has "release create continuous "'
 
+# --- push of a release tag: a version is a full release, a release candidate a prerelease
+tag_bundles() { # the four bundles under version $1, alone in their own dist
+  rm -rf "$work/tagdist"; mkdir -p "$work/tagdist"
+  for f in "$dist"/dash-wallet-"$ver"-*; do cp "$f" "$work/tagdist/$(basename "${f/$ver/$1}")"; done
+  (cd "$work/tagdist" && sha256sum dash-wallet-* > SHA256SUMS); }
+tag_bundles 0.1.0; fs_reset
+DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0: a full release, not a prerelease, Latest left to GitHub" \
+  '[[ $status -eq 0 ]] && log_has "release create v0.1.0 " && ! log_has "--prerelease" && ! log_has "--latest"'
+tag_bundles 0.1.0-rc.1; fs_reset
+DIST=$work/tagdist run push refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
+check "tag v0.1.0-rc.1: a prerelease, not Latest" \
+  '[[ $status -eq 0 ]] && log_has "release create v0.1.0-rc.1 " && log_has "--prerelease" && log_has "--latest=false"'
+
 # --- push to main again: the per-run release exists, continuous exists at the older commit
 seed_old
 FAKE_RELEASES="$tag" run push refs/heads/main "$c2" "$ver"
