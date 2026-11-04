@@ -587,7 +587,6 @@ impl NetworkSession {
         }
         session.leases.install_resumer(tracked);
         session.hub.attach_leases(&session.leases);
-        session.attach_reconcile();
         if let Ok(live) = session.live() {
             live.tap.watch_locks(&session.leases);
         }
@@ -623,8 +622,6 @@ impl NetworkSession {
         session.open_avatars(Arc::clone(&appdb)).await;
         session.apply_stored_lookaheads(&manager).await;
         for id in manager.list_wallet_ids_blocking() {
-            // Before SPV starts: no block can replay a parked coin yet.
-            session.rehome_parked_coins(&manager, WalletId(id)).await;
             session.refresh_wallet_state(&manager, WalletId(id)).await;
             session.load_identity_choices(WalletId(id)).await;
             session.load_payment_locks(WalletId(id)).await;
@@ -661,8 +658,8 @@ impl NetworkSession {
     /// Reads a wallet's balance and scan heights into the hub, all from
     /// key-wallet under one read lock. Never from platform-wallet's
     /// event-fed balance mirror: no event follows the engine's own changes
-    /// to key-wallet state (the parked-coin re-home and reconcile, an
-    /// abandon), so the mirror can keep a total they undid.
+    /// to key-wallet state (an abandon, the coins re-placed after a stored
+    /// lookahead), so the mirror can keep a total they undid.
     pub(crate) async fn refresh_wallet_state(&self, manager: &Manager, id: WalletId) {
         let wm = manager.wallet_manager_arc();
         let wm = wm.read().await;

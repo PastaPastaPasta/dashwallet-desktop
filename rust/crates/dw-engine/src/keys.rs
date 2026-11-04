@@ -660,24 +660,31 @@ impl NetworkSession {
     /// Applies the stored lookahead of every wallet that has one (session
     /// open). Failures are logged; the wallet keeps the default gap.
     pub(crate) async fn apply_stored_lookaheads(&self, manager: &crate::session::Manager) {
-        let Ok(live) = self.live() else { return };
         for id in manager.list_wallet_ids_blocking() {
-            let key = hex::encode(id);
-            let appdb = std::sync::Arc::clone(&live.appdb);
-            let stored =
-                tokio::task::spawn_blocking(move || appdb.setting(&key, LOOKAHEAD_SETTING))
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .flatten()
-                    .and_then(|v| v.parse::<u32>().ok())
-                    .filter(|g| (1..=MAX_LOOKAHEAD).contains(g));
-            let (Some(gap), Some(wallet)) = (stored, manager.get_wallet(&id).await) else {
-                continue;
-            };
-            if let Err(e) = apply_lookahead(&wallet, gap).await {
-                tracing::warn!(wallet_id = %hex::encode(id), error = %e, "could not apply the stored lookahead");
-            }
+            self.apply_stored_lookahead(manager, WalletId(id)).await;
+        }
+    }
+
+    /// Applies wallet `id`'s stored lookahead, if any, and restores the coins
+    /// only its gap reaches into the accounts that derive them.
+    pub(crate) async fn apply_stored_lookahead(
+        &self,
+        manager: &crate::session::Manager,
+        id: WalletId,
+    ) {
+        let Ok(live) = self.live() else { return };
+        let key = id.to_string();
+        let appdb = std::sync::Arc::clone(&live.appdb);
+        let stored = tokio::task::spawn_blocking(move || appdb.setting(&key, LOOKAHEAD_SETTING))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|g| (1..=MAX_LOOKAHEAD).contains(g));
+        let Some(gap) = stored else { return };
+        if let Err(e) = raise_lookahead(manager, id, gap).await {
+            tracing::warn!(wallet_id = %id, error = %e, "could not apply the stored lookahead");
         }
     }
 
@@ -787,4 +794,60 @@ impl NetworkSession {
         })
         .await
     }
+}
+
+/// Raises open wallet `id`'s BIP44 and CoinJoin lookahead to `gap`, then
+/// restores the coins only the larger gap reaches into the accounts that
+/// derive them, before anything replays them. Callers refresh the hub.
+pub(crate) async fn raise_lookahead(
+    manager: &crate::session::Manager,
+    id: WalletId,
+    gap: u32,
+) -> Result<(), EngineError> {
+    let wallet = (manager.get_wallet(&id.0).await)
+        .ok_or_else(|| EngineError::WalletNotFound(id.to_string()))?;
+    apply_lookahead(&wallet, gap).await?;
+    restore_underived_coins(manager, id).await;
+    Ok(())
+}
+
+/// Restores again, with the gap limits a lookahead raised after the load (a
+/// stored one, the recovery scan's), every coin a funds account of wallet
+/// `id` holds without deriving its address. The load restores each coin with
+/// the default gap limits, so one only the larger gap reaches is left where
+/// its pool row put it, or in the first funds account; a replay with the
+/// larger gap would then credit it to its own account as well. Coins still
+/// out of reach stay. Callers refresh the hub.
+async fn restore_underived_coins(manager: &crate::session::Manager, id: WalletId) {
+    use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let wm = manager.wallet_manager_arc();
+    let mut wm = wm.write().await;
+    let Some((wallet, info)) = wm.get_wallet_and_info_mut(&id.0) else {
+        return;
+    };
+    let core = &mut info.core_wallet;
+    let underived: Vec<key_wallet::Utxo> = (core.accounts.all_funding_accounts().into_iter())
+        .flat_map(|a| {
+            let pools = a.managed_account_type();
+            (a.utxos.values()).filter(move |u| !pools.contains_address(&u.address))
+        })
+        .cloned()
+        .collect();
+    if underived.is_empty() {
+        return;
+    }
+    let count = underived.len();
+    match core.restore_utxos(wallet, underived) {
+        Ok(unmatched) => tracing::info!(
+            wallet_id = %id,
+            restored = count - unmatched.len(),
+            unmatched = unmatched.len(),
+            "restored coins the stored lookahead reaches"
+        ),
+        Err(e) => {
+            tracing::warn!(wallet_id = %id, error = %e, "could not restore coins past the default gap")
+        }
+    }
+    core.update_balance();
 }

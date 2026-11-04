@@ -8,7 +8,7 @@
 //! `HistoryChanged` at most 4 times a second per domain and always delivers
 //! the last change of a burst (reviews H2, M4).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -398,11 +398,6 @@ pub(crate) struct SessionHub {
     /// transition (E0-04 H6 part 2), and its dispatch fence hears the
     /// wallet's positive network evidence (BL-76, [`Self::note_seen`]).
     leases: std::sync::OnceLock<std::sync::Weak<crate::platform::lease::LeaseTable>>,
-    /// Starts the duplicate-coin reconcile of a wallet after its block
-    /// events (`parked`); unset in hub-only tests.
-    reconcile: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
-    /// The wallets with a reconcile started and not yet running.
-    reconcile_pending: Mutex<HashSet<WalletId>>,
     /// Tests: holds the next first-seen write before it runs.
     #[cfg(test)]
     pub(crate) pause_seen: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -423,8 +418,6 @@ impl SessionHub {
             announced: Mutex::new(HashMap::new()),
             trust: OnceLock::new(),
             leases: std::sync::OnceLock::new(),
-            reconcile: OnceLock::new(),
-            reconcile_pending: Mutex::new(HashSet::new()),
             #[cfg(test)]
             pause_seen: Mutex::new(None),
         }
@@ -438,48 +431,6 @@ impl SessionHub {
 
     fn lease_table(&self) -> Option<Arc<crate::platform::lease::LeaseTable>> {
         self.leases.get().and_then(std::sync::Weak::upgrade)
-    }
-
-    /// Sets what starts a wallet's duplicate-coin reconcile (once).
-    pub(crate) fn attach_reconcile(&self, start: Box<dyn Fn(WalletId) + Send + Sync>) {
-        let _ = self.reconcile.set(start);
-    }
-
-    /// Starts wallet `id`'s reconcile unless one is started and not yet
-    /// running: events during a run start the next one.
-    fn schedule_reconcile(&self, id: WalletId) {
-        let Some(start) = self.reconcile.get() else {
-            return;
-        };
-        if self
-            .reconcile_pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(id)
-        {
-            start(id);
-        }
-    }
-
-    /// A reconcile of wallet `id` begins: later events start another.
-    pub(crate) fn reconcile_running(&self, id: WalletId) {
-        self.reconcile_pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&id);
-    }
-
-    /// Publishes key-wallet's own balances for wallet `id` (after the engine
-    /// changed its coins) and announces them when they differ.
-    pub(crate) fn publish_core_balance(
-        &self,
-        id: WalletId,
-        balance: &WalletCoreBalance,
-        accounts: &BTreeMap<AccountType, WalletCoreBalance>,
-    ) {
-        if self.update_balance(id, balance, accounts) {
-            self.pump.mark_balances(id);
-        }
     }
 
     /// BL-76 (E0-04 H12, §4.6): `txids` carry positive network evidence
@@ -811,7 +762,6 @@ impl SessionHub {
                 // In this block: inserted, or confirmed now. A matured
                 // record's block was evidence already.
                 self.note_seen(id, inserted.iter().chain(updated).map(|r| r.txid));
-                self.schedule_reconcile(id);
             }
             WalletEvent::SyncHeightAdvanced { height, .. } => {
                 if self.update_heights(id, Some(*height), Some(*height)) {
@@ -823,7 +773,6 @@ impl SessionHub {
                     self.pump.mark_sync();
                 }
                 self.mark_young(id);
-                self.schedule_reconcile(id);
             }
             WalletEvent::ChainLockProcessed {
                 chain_lock,
@@ -1137,80 +1086,6 @@ mod tests {
             balance: WalletCoreBalance::new(balance, 0, 0, 0),
             account_balances: BTreeMap::new(),
         }
-    }
-
-    /// A wallet's block events start its duplicate-coin reconcile (`parked`)
-    /// once per run: while one is started and not yet running, more events
-    /// start nothing; once it runs, the next event starts another.
-    #[test]
-    fn block_events_start_one_reconcile_at_a_time() {
-        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
-        let started = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&started);
-        hub.attach_reconcile(Box::new(move |id| seen.lock().unwrap().push(id)));
-        let block = |height| WalletEvent::BlockProcessed {
-            wallet_id: W.0,
-            height,
-            chain_lock: None,
-            inserted: Vec::new(),
-            updated: Vec::new(),
-            matured: Vec::new(),
-            balance: WalletCoreBalance::new(1_000, 0, 0, 0),
-            account_balances: BTreeMap::new(),
-            addresses_derived: Vec::new(),
-        };
-        let advanced = |height| WalletEvent::SyncHeightAdvanced {
-            wallet_id: W.0,
-            height,
-        };
-        let other = WalletId([8; 32]);
-
-        hub.apply_wallet_event(&block(100));
-        hub.apply_wallet_event(&advanced(100));
-        hub.apply_wallet_event(&WalletEvent::SyncHeightAdvanced {
-            wallet_id: other.0,
-            height: 100,
-        });
-        assert_eq!(*started.lock().unwrap(), [W, other]);
-
-        hub.reconcile_running(W);
-        hub.apply_wallet_event(&advanced(101));
-        assert_eq!(*started.lock().unwrap(), [W, other, W]);
-    }
-
-    /// The reconcile's balance replaces an event's doubled one, and is
-    /// announced.
-    #[test]
-    fn the_reconciled_balance_replaces_an_events() {
-        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
-        hub.apply_wallet_event(&WalletEvent::SyncHeightAdvanced {
-            wallet_id: W.0,
-            height: 100,
-        });
-        hub.apply_wallet_event(&WalletEvent::BlockProcessed {
-            wallet_id: W.0,
-            height: 100,
-            chain_lock: None,
-            inserted: Vec::new(),
-            updated: Vec::new(),
-            matured: Vec::new(),
-            balance: WalletCoreBalance::new(2_000, 0, 0, 0),
-            account_balances: BTreeMap::new(),
-            addresses_derived: Vec::new(),
-        });
-        hub.pump.take_wallet_marks();
-
-        hub.publish_core_balance(W, &WalletCoreBalance::new(1_000, 0, 0, 0), &BTreeMap::new());
-        assert_eq!(
-            hub.wallet_state(&W).unwrap().balances().unwrap().confirmed,
-            1_000
-        );
-        assert!(hub.pump.take_wallet_marks().0.contains(&W));
-        hub.publish_core_balance(W, &WalletCoreBalance::new(1_000, 0, 0, 0), &BTreeMap::new());
-        assert!(
-            !hub.pump.take_wallet_marks().0.contains(&W),
-            "unchanged: not announced"
-        );
     }
 
     /// dash-spv truncated the wallet at a fork: the hub's history, heights and balance

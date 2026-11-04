@@ -2165,8 +2165,10 @@ impl NetworkSession {
                         "another rescan is running".into(),
                     ));
                 }
-                let wallet = this.wallet(&wallet_id).await?;
-                crate::keys::apply_lookahead(&wallet, RECOVERY_LOOKAHEAD).await?;
+                // Re-places the coins the load left outside their account:
+                // the rescan with the larger gap would credit them again.
+                crate::keys::raise_lookahead(&manager, wallet_id, RECOVERY_LOOKAHEAD).await?;
+                this.refresh_wallet_state(&manager, wallet_id).await;
                 // Kept for later sessions, as a restore's lookahead is.
                 this.store_lookahead(wallet_id, RECOVERY_LOOKAHEAD).await;
                 let birth = this
