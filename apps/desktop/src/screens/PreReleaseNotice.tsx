@@ -1,11 +1,11 @@
-// The first-run pre-release notice (0.1 release plan): one screen over the app, dismissed once
+// The first-run early-release notice (0.1 release plan): one screen over the app, dismissed once
 // and then kept dismissed in the settings file (`preReleaseNoticeDismissed`). It is the same
 // window onboarding uses, so it reads as the first step.
 
 import { DashButton, DashLogo } from "../components/basics";
 
 export const PreReleaseText = {
-  title: "Dash Wallet 0.1 is a pre-release",
+  title: "Dash Wallet 0.1 is an early release",
   body: "It has had no security review; use small amounts.",
   dismiss: "I understand",
 };
