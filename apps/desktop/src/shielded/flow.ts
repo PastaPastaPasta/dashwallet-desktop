@@ -169,7 +169,7 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
       return "An earlier add to Shielded is not finished. Finish it from the Shielded card first.";
     case "platform.context_unavailable":
       return "Waiting for the network to sync before Shielded can be used. Try again shortly.";
-    case "rescan_in_progress":
+    case "rescan_interrupted":
       return RESCAN_INTERRUPTED;
     case "platform.trust_mismatch":
       return "Your Shielded account could not be verified against the network. Nothing was moved.";

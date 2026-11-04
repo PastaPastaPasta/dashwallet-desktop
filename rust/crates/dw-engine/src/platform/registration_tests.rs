@@ -1647,7 +1647,7 @@ fn a_funding_refused_during_a_replay_waits_for_sync() {
 
 /// 0.1.x-bal §1: a rescan the user stopped part way holds the funding
 /// until a rescan runs again, which nothing waits for: the step fails
-/// `rescan_in_progress` (retryable), also with held coins, and funds once
+/// `rescan_interrupted` (retryable), also with held coins, and funds once
 /// the rescan has run.
 #[test]
 fn a_funding_after_a_cancelled_rescan_fails_until_it_runs_again() {
@@ -1655,7 +1655,7 @@ fn a_funding_after_a_cancelled_rescan_fails_until_it_runs_again() {
         let f = fixture(false);
         let lib = f.fake();
         let draft = f.insert(core_row(PLAIN));
-        lib.w().replay = Some(PlatformError::RescanInProgress);
+        lib.w().replay = Some(PlatformError::RescanInterrupted);
         lib.w().spendable.protected = protected;
         let g = f.grant(COIN, 10 * COIN * 1000, Credential::None);
         let lease = (f.engine)
@@ -1667,7 +1667,7 @@ fn a_funding_after_a_cancelled_rescan_fails_until_it_runs_again() {
         f.drive(&lib, draft, Some(lease), false);
         let status = f.status(&lib, draft);
         assert_eq!(status.waiting, None);
-        assert_eq!(status.failure.unwrap().code, "rescan_in_progress");
+        assert_eq!(status.failure.unwrap().code, "rescan_interrupted");
         assert_eq!(lib.w().funds, 0);
         (lib.w().replay, lib.w().spendable.protected) = (None, 0);
         let g = f.grant(COIN, 10 * COIN * 1000, Credential::None);
@@ -2836,7 +2836,7 @@ fn a_replay_outranks_a_held_coin() {
     (f.session.hub).update_wallet_state(f.wallet, |s| s.replay_cancelled = Some(500));
     assert_eq!(
         fence(),
-        Err(FundError::Refused(PlatformError::RescanInProgress))
+        Err(FundError::Refused(PlatformError::RescanInterrupted))
     );
 }
 

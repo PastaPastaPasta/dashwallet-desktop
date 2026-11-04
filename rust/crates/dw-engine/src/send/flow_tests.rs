@@ -2349,34 +2349,38 @@ fn a_user_rescan_holds_spends_and_its_cancel_keeps_them_held() {
             .unwrap();
     };
     let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
-    let held = || {
-        replaying(
-            f.engine
-                .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM))),
-        )
+    // The refusal's code: the stopped rescan's (interrupted) is held until
+    // a rescan runs again; a running one is a replay (in progress).
+    let refusal = || {
+        let prepared = f
+            .engine
+            .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)));
+        prepared.err().map(|e| e.code())
     };
+    let (running, stopped) = (Some("rescan_in_progress"), Some("rescan_interrupted"));
     // Cancelled right after its start: a batch may have applied blocks it
     // had not committed yet.
     rescan(400);
     assert!(f.engine.block_on(f.session.cancel_rescan()).unwrap());
-    assert!(held(), "cancelled before any batch committed");
+    assert_eq!(refusal(), stopped, "cancelled before any batch committed");
     rescan(400);
-    assert!(held());
+    assert_eq!(refusal(), running);
     f.advance(700);
     assert!(f.engine.block_on(f.session.cancel_rescan()).unwrap());
-    assert!(held(), "blocks 701-1000 are not replayed");
+    assert_eq!(refusal(), stopped, "blocks 701-1000 are not replayed");
     rescan(800);
     f.advance(1_000);
-    assert!(held(), "blocks 701-799 are still not replayed");
+    assert_eq!(refusal(), stopped, "blocks 701-799 are still not replayed");
     // A second cancel, stopped further on, keeps the first one's point.
     rescan(800);
     f.advance(900);
     assert!(f.engine.block_on(f.session.cancel_rescan()).unwrap());
     rescan(850);
+    assert_eq!(refusal(), stopped, "a rescan from above the hold runs");
     f.advance(1_000);
-    assert!(held(), "blocks 701-849 are still not replayed");
+    assert_eq!(refusal(), stopped, "blocks 701-849 are still not replayed");
     rescan(701);
-    assert!(held());
+    assert_eq!(refusal(), running);
     f.advance(1_000);
     (f.engine
         .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM))))

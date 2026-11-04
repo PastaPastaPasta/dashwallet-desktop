@@ -95,8 +95,12 @@ describe("the engine's refusals", () => {
     );
     expect(sendErrorText(err("send.absurd_fee"), "test")).toEqual({ text: "The fee is absurdly high.", field: null });
     // 0.1.x-bal §1: the engine refuses a payment while a replay runs.
-    expect(sendErrorText(err("rescan_in_progress"), "test")).toEqual({
-      text: "The wallet is rescanning. Wait until it has finished, then try again.",
+    // A replay ends by itself and needs no Repair; a stopped rescan does.
+    const running = sendErrorText(err("rescan_in_progress"), "test");
+    expect(running).toEqual({ text: "The wallet is catching up with the network. You can send once it has finished.", field: null });
+    expect(running?.text).not.toMatch(/Repair|Rescan/);
+    expect(sendErrorText(err("rescan_interrupted"), "test")).toEqual({
+      text: "The last rescan was interrupted. Finish it in Repair ▸ Rescan before sending.",
       field: null,
     });
     expect(sendErrorText(err("wallet_not_found"), "test")).toBeNull();

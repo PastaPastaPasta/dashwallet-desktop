@@ -201,7 +201,7 @@ export function failureText(failure: RegistrationFailure, amount: (duffs: number
       return "The network did not confirm the payment in time.";
     case "registration.not_synced":
       return "The wallet had not finished syncing.";
-    case "rescan_in_progress":
+    case "rescan_interrupted":
       return RESCAN_INTERRUPTED;
     // A funding budget below the lock and its fee; Continue asks for a new approval.
     case "platform.grant_exceeded":

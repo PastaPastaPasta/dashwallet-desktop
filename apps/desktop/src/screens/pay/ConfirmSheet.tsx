@@ -14,7 +14,6 @@ import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useBackend, useLockStatus, usePaymentAuthentication, useWallets } from "../../api/queries";
-import { rescanAware } from "../../app/rescan";
 import { navigate } from "../../app/ui";
 import { AmountText, DashButton } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
@@ -224,7 +223,7 @@ export function ConfirmSheet({
     } catch (e) {
       if (grant) void b.revokeGrant(grant.id).catch(() => null);
       endLease();
-      notSent(await rescanAware(e, failureText(e, chain, amountUnit), () => b.rescanProgress()));
+      notSent(failureText(e, chain, amountUnit));
       return;
     }
     const { draft: d, prepared } = held;
@@ -263,7 +262,7 @@ export function ConfirmSheet({
       psbt = await draft.createUnsigned(spec);
     } catch (e) {
       setBusy(false);
-      setError(await rescanAware(e, failureText(e, chain), () => b.rescanProgress()));
+      setError(failureText(e, chain));
       return;
     }
     // The engine planned again: the PSBT leaves the sheet only if it is the payment shown, and one

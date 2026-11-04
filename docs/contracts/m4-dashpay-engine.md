@@ -756,7 +756,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 671062c8e29a160f1bb4fb9c68ae9b8319cebb4eaa076eeebcdd3f227f3b5e5f version: 49 -->
+<!-- surface-sha256: e81999a2cb051cf0560054d80e6c7f41a3f50adbedf4b23bf411123038f983ba version: 49 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1052,7 +1052,7 @@ pub enum PlatformError {
     InvalidArgument { detail: String },
     NetworkNotOpen,
     WalletNotFound,
-    RescanInProgress,
+    RescanInterrupted,
     Storage { detail: String },
     Internal { detail: String },
 }
@@ -2143,7 +2143,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 
 | Error enum | Codes |
 |---|---|
-| `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `rescan_in_progress`, `storage`, `internal` |
+| `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `rescan_interrupted`, `storage`, `internal` |
 | `IdentityError` | `identity.not_found`, `identity.keys_missing` |
 | `ProfileError` | `profile.conflict`, `profile.empty`, `profile.too_long`, `profile.unsupported_contract` |
 | `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled`, `registration.not_synced`, `registration.funding_unknown_recent` |
@@ -2157,8 +2157,9 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 
 - `PlatformError` carries the m1 common codes (`invalid_argument`, `network_not_open`, `wallet_not_found`, `storage`,
   `internal`), unprefixed as in m1 §4. m1's common `not_implemented` is `platform.not_implemented{call}` here, so a
-  host's code table (`ServiceErrorCode`) needs both. It also carries m1's `rescan_in_progress` (Contract-Version 49,
-  0.1.x-bal §1): asset-lock funding after a rescan the user stopped part way, refused until a rescan runs again.
+  host's code table (`ServiceErrorCode`) needs both. It also carries the engine's `rescan_interrupted` (Contract-Version 49,
+  0.1.x-bal §1): asset-lock funding after a rescan the user stopped part way, refused until a rescan runs again. A
+  replay that runs is `platform.context_unavailable`, a wait for sync.
 - `IdentityError` is reached through `PlatformError::Identity`, so every domain can return `identity.*`.
 - `ProfileError` is reached through `PlatformError::Profile` (DP4-01): `profile.too_long{field, length, max}` is a
   text past the contract's `maxLength` (`field` is `display_name` or `public_message`, `length` and `max` in

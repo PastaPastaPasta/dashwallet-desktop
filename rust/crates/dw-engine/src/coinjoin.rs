@@ -951,7 +951,7 @@ impl NetworkSession {
             return Ok(None);
         }
         let view = (self.replay_guarded(fence.wallet_id(), self.mix_view(fence))).await;
-        if let Err(EngineError::RescanInProgress) = view {
+        if let Err(EngineError::RescanInProgress | EngineError::RescanInterrupted) = view {
             self.set_mix_status(fence.wallet_id(), StatusCode::SyncInProgress);
             return Ok(None);
         }

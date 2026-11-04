@@ -266,12 +266,14 @@ impl NetworkSession {
         let live = state.core_wallet.synced_height();
         let refused = self.hub.update_wallet_state(wallet_id, |s| {
             s.scan_target = s.scan_target.max(live);
-            live < floor || s.replaying_at(live)
+            match s.replay_cancelled {
+                Some(_) => Some(EngineError::RescanInterrupted),
+                None => {
+                    (live < floor || s.replaying_at(live)).then_some(EngineError::RescanInProgress)
+                }
+            }
         });
-        if refused {
-            return Err(EngineError::RescanInProgress);
-        }
-        Ok(live)
+        refused.map_or(Ok(live), Err)
     }
 
     /// `select` between [`Self::replay_guard`] and its second call.

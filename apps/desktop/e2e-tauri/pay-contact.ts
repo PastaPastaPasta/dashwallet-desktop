@@ -229,9 +229,9 @@ async function run(
       };
       let kind = await send();
       // A replay of the filter scan (the DashPay accounts' backfill after the unlock) refuses the
-      // payment before anything is signed (`rescan_in_progress`): back to the payment and Send
-      // again once it has had time to finish, at most RESCAN_RETRIES times.
-      const rescanning = async () => /rescan/i.test(await textOf(tid("pay-result-text")));
+      // payment before anything is signed (`rescan_in_progress`, "catching up"): back to the payment
+      // and Send again once it has had time to finish, at most RESCAN_RETRIES times.
+      const rescanning = async () => /catching up with the network/.test(await textOf(tid("pay-result-text")));
       for (let attempt = 1; kind === "failed" && attempt <= RESCAN_RETRIES && (await rescanning()); attempt++) {
         step(`result: refused while the wallet rescans; Send again (${attempt})`);
         await wd.screenshot(`4-result-rescan-${attempt}`);

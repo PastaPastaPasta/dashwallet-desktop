@@ -3419,6 +3419,13 @@ fn the_coinjoin_pass_selects_nothing_during_a_replay() {
     assert!(!pass(), "a replay selects nothing");
     checkpoint(1_000);
     assert!(pass());
+    // A rescan stopped part way: nothing either, and no error for the pass.
+    let (s2, id) = (Arc::clone(s), f.wallet);
+    (f.engine)
+        .block_on(s.on_runtime(async move { s2.start_rescan(vec![id], 400, |_| 400).await }))
+        .unwrap();
+    assert!(f.engine.block_on(s.cancel_rescan()).unwrap());
+    assert!(!pass(), "a stopped rescan selects nothing");
 }
 
 /// Review Opus closure C-2: a permit that ends while its signer's first

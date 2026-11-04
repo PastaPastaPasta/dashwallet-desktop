@@ -264,7 +264,7 @@ pub(crate) trait RegistrationLib: Send + Sync {
     fn spendable(&self) -> impl Future<Output = Result<Spendable, PlatformError>> + Send;
     /// A replay read live (0.1.x-bal §1), whose re-credits read held (no
     /// `CoinsLocked`): `ContextUnavailable` while one runs (a sync wait),
-    /// `RescanInProgress` while a rescan the user stopped must run again.
+    /// `RescanInterrupted` while a rescan the user stopped must run again.
     fn replay_refusal(&self) -> impl Future<Output = Option<PlatformError>> + Send {
         async { None }
     }
@@ -3378,18 +3378,11 @@ impl RegistrationLib for PwLib {
     }
 
     async fn replay_refusal(&self) -> Option<PlatformError> {
-        let Err(crate::EngineError::RescanInProgress) =
-            self.session.replay_guard(self.wallet_id, 0).await
-        else {
-            return None;
-        };
-        let held = (self.session.hub.wallet_state(&self.wallet_id))
-            .is_some_and(|s| s.replay_cancelled.is_some());
-        Some(if held {
-            PlatformError::RescanInProgress
-        } else {
-            PlatformError::ContextUnavailable
-        })
+        match self.session.replay_guard(self.wallet_id, 0).await {
+            Err(crate::EngineError::RescanInProgress) => Some(PlatformError::ContextUnavailable),
+            Err(crate::EngineError::RescanInterrupted) => Some(PlatformError::RescanInterrupted),
+            _ => None,
+        }
     }
 
     fn funding_hold(&self) -> Option<RegistrationWait> {

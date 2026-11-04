@@ -119,7 +119,7 @@ export function topUpErrorText(e: unknown, amount: (duffs: number) => string, di
       return "The payment is still being sent. Try again in a minute.";
     case "platform.context_unavailable":
       return "Waiting for the network to sync and verify this identity. Try again shortly.";
-    case "rescan_in_progress":
+    case "rescan_interrupted":
       return RESCAN_INTERRUPTED;
     case "platform.trust_mismatch":
       return "This identity's data could not be verified against the network. Nothing was paid.";

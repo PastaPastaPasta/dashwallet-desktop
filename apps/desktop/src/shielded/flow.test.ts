@@ -149,7 +149,7 @@ describe("the shielded flow", () => {
 describe("shielded refusal copy", () => {
   const text = (code: string, data: unknown = null) => shieldedErrorText(appError(code as never, data as never), credits, duffs);
   it("gives not_active and pool_too_small their own words", () => {
-    expect(text("rescan_in_progress")).toBe("The last rescan was interrupted. Finish it in Repair ▸ Rescan before sending.");
+    expect(text("rescan_interrupted")).toBe("The last rescan was interrupted. Finish it in Repair ▸ Rescan before sending.");
     expect(text("shielded.not_active", { kind: "protocol", protocolVersion: 11, activationVersion: 12 })).toBe("Shielded is not active on this network yet.");
     expect(text("shielded.pool_too_small", { kind: "poolNotes", notes: 120, required: 250 })).toBe(
       "Shielded withdrawals open once the network's shielded pool has enough activity. Try again later.",

@@ -2091,7 +2091,7 @@ fn a_replay_holds_asset_lock_funding_until_it_reaches_its_target() {
 
     // A rescan cancelled right after its start (a batch may have applied
     // blocks it had not committed): no wait for sync, which nothing would
-    // end, but `rescan_in_progress` until a rescan runs again.
+    // end, but `rescan_interrupted` until a rescan runs again.
     let rescan = |from: u32| {
         let (s, id) = (Arc::clone(&session), f.wallet);
         (f.engine)
@@ -2105,7 +2105,7 @@ fn a_replay_holds_asset_lock_funding_until_it_reaches_its_target() {
     assert!(!held(), "no wait for sync");
     assert!(matches!(
         f.engine.block_on(lib.fence()),
-        Err(FundError::Refused(PlatformError::RescanInProgress))
+        Err(FundError::Refused(PlatformError::RescanInterrupted))
     ));
     rescan(400);
     advance(1_000);
