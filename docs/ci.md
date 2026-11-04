@@ -286,7 +286,8 @@ out the full history, runs `ci/github/release-publish.sh` and publishes:
   missing or new `<name>`, delete stray `<name>.new` and `txn.json`, set the tag and notes to the commit of the assets,
   or re-run the publish job. The tag moves after the assets and never backwards (an older run finishing late leaves
   `continuous` alone, after repairing).
-- push of a tag `vX.Y.Z[-rc.N]` (on `main`): a prerelease with the run's files (notes from
+- push of a tag `vX.Y.Z[-rc.N]` (on `main`): a full release for `vX.Y.Z` (GitHub marks the highest version
+  Latest), a prerelease for `-rc.N`, with the run's files (notes from
   `docs/release/X.Y.Z-notes.md`), nothing rolling. `v0.0.0-rel<N>` dry-run tags only build.
 - `actions/attest-build-provenance` runs before the release is written, on every file (the four bundles and both
   `SHA256SUMS`); the stable-named copies have the same bytes, so one attestation covers both.

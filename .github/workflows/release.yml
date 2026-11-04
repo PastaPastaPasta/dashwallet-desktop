@@ -23,7 +23,7 @@
 # ci/github/release-publish-test.sh tests it on every run):
 #   push to main          an immutable prerelease v<version>-dev.<run>+<short sha> and the rolling
 #                         prerelease `continuous` (stable asset names, replaced in place);
-#   push of a tag vX.Y.Z[-rc.N]  that tag's prerelease (v0.1.0 is made here, from the tag);
+#   push of a tag vX.Y.Z[-rc.N]  that tag's release: full for vX.Y.Z, a prerelease for -rc.N;
 #   anything else         builds and uploads CI artifacts only: other branches, pull requests (forks
 #                         included) and workflow_dispatch. They never reach the publish job.
 # Every published file and both SHA256SUMS are attested with actions/attest-build-provenance
@@ -353,7 +353,7 @@ jobs:
 
   # The only job with write permissions. Reached by a push to main or to a v* tag only.
   publish:
-    name: Publish (prerelease, continuous, attestations)
+    name: Publish (releases, continuous, attestations)
     needs: [decide, checksums, script-tests]
     # Two independent conditions: the trigger, and the decide job's verdict.
     if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && needs.decide.outputs.publish == 'true' }}

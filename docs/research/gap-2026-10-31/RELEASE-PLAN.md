@@ -37,7 +37,7 @@ mixing) complete.
 
 ## 1. Version 0.1 — "usable DashPay desktop wallet" — GitHub release Tue 2026-11-03
 
-Minimally tested, functional. Pre-release label, no security review, says so on first run.
+Minimally tested, functional. A full GitHub release; no security review, and the app says so on first run.
 
 ### In scope
 
@@ -68,7 +68,7 @@ mixed→Shielded (all 0.2); auto-update; notarization; Windows code signing; har
 
 - **Version** 0.1.0 everywhere (Tauri conf, Cargo, About). Tag `v0.1.0` on `main`.
 - **Repo hygiene:** set the GitHub default branch to `main` (it is `m3/r2-governance`); rewrite README for the Tauri
-  app (install, unsigned-binary instructions, verification, scope, "pre-release, small amounts only").
+  app (install, unsigned-binary instructions, verification, scope, "no security review, small amounts only").
 - **Artifacts, built by GitHub Actions on the tag** (PK-01/PK-02 minimal):
   - macOS: universal `.dmg`, ad-hoc signed, **not notarized**. Release notes: right-click ▸ Open, or
     `xattr -dr com.apple.quarantine "/Applications/Dash Wallet.app"`.
@@ -79,7 +79,8 @@ mixed→Shielded (all 0.2); auto-update; notarization; Windows code signing; har
   artifact and `SHA256SUMS` with GitHub build provenance; nothing is signed by hand, no key is in the repo or the
   README, and `docs/release/signing-key-temporary.asc` is replaced by `docs/release/verifying.md`. The temporary
   key stays unused in the secret store.
-- **Release** as a normal GitHub release marked *pre-release*, with notes: scope, known limitations
+- **Release** as a full GitHub release (every version is one; only the `continuous` and dev preview builds
+  are prereleases), with notes: scope, known limitations
   (no security review, shielded availability depends on the network's protocol version, mixing experimental,
   English only), how to verify (`gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop`, DEC-1058; was
   `gpg --verify SHA256SUMS.asc`).
@@ -114,7 +115,7 @@ shielded send, usernames, contacts, ~~signed checksums~~ attested artifacts (DEC
 ## 2. Versions after 0.1
 
 Dates are targets for four agent lanes; the manager re-plans with evidence. Each version: an attested GitHub
-pre-release (DEC-1058; no PGP until 1.0), a short test bar, parity.md updated.
+full release (DEC-1058; no PGP until 1.0; DEC-1166: every version is a full release), a short test bar, parity.md updated.
 
 ### 0.2 — Platform & shielded complete, privacy bridge (target ~2026-11-14)
 
