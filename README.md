@@ -5,7 +5,7 @@ A desktop Dash wallet for macOS, Windows and Linux, replacing dash-qt. It is a
 dashpay/platform's `platform-wallet`: Core wallet, DashPay (usernames, contacts, invitations) and
 Platform on one recovery phrase.
 
-> **Pre-release. No security review has been done. Use small amounts only.**
+> **This is an early release. No security review has been done. Use small amounts only.**
 > The binaries are attested by GitHub but not code-signed by Apple or Microsoft. Keep a written copy of your recovery phrase and do not hold more than you can afford to lose.
 
 ## What is in 0.1
