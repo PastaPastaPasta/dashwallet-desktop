@@ -141,6 +141,8 @@ export class IpcBackend implements Backend {
   coinjoinStatus = cmd.coinjoinStatus;
   startMixing = cmd.startMixing;
   stopMixing = cmd.stopMixing;
+  mixedCoinsSweepPlan = cmd.mixedCoinsSweepPlan;
+  moveMixedCoins = cmd.moveMixedCoins;
   dashpayStatus = cmd.dashpayStatus;
   identities = cmd.identities;
   dashpayUnreadCount = cmd.dashpayUnreadCount;

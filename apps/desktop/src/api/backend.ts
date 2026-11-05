@@ -63,6 +63,9 @@ import type { ChangePolicy } from "./generated/ChangePolicy";
 import type { CoinJoinLimits } from "./generated/CoinJoinLimits";
 import type { CoinJoinSettings } from "./generated/CoinJoinSettings";
 import type { CoinJoinStatus } from "./generated/CoinJoinStatus";
+import type { MixedCoinsDestination } from "./generated/MixedCoinsDestination";
+import type { MixedCoinsSweepPlan } from "./generated/MixedCoinsSweepPlan";
+import type { MixedCoinsSweepResult } from "./generated/MixedCoinsSweepResult";
 import type { CoinSelectionSummary } from "./generated/CoinSelectionSummary";
 import type { CoinSource } from "./generated/CoinSource";
 import type { FeeMode } from "./generated/FeeMode";
@@ -330,6 +333,9 @@ export interface Backend {
   coinjoinStatus(walletId: string): Promise<CoinJoinStatus>;
   startMixing(walletId: string): Promise<null>;
   stopMixing(walletId: string): Promise<null>;
+  /** "Move mixed coins" (IOS-057): the CoinJoin account's chunks and mixed split; refused while mixing. */
+  mixedCoinsSweepPlan(walletId: string, destination: MixedCoinsDestination): Promise<MixedCoinsSweepPlan>;
+  moveMixedCoins(walletId: string, destination: MixedCoinsDestination, grantId: string): Promise<MixedCoinsSweepResult>;
   dashpayStatus(walletId: string): Promise<DashPayStatus>;
   identities(walletId: string): Promise<IdentitySummary[]>;
   dashpayUnreadCount(walletId: string, identity: string): Promise<number>;

@@ -4068,7 +4068,8 @@ button.bell-row-open:focus-visible {
 }
 
 .coinjoin-notes,
-.coinjoin-levels {
+.coinjoin-levels,
+.coinjoin-move {
   display: flex;
   flex-direction: column;
   gap: var(--dw-space-xs);
@@ -4082,6 +4083,11 @@ button.bell-row-open:focus-visible {
   color: var(--dw-role-text-secondary);
   font-size: var(--dw-type-footnote-size);
   line-height: var(--dw-type-footnote-line);
+}
+
+.coinjoin-move > .dash-button {
+  align-self: flex-start;
+  margin-top: var(--dw-space-xs);
 }
 
 .coinjoin-level-group {
