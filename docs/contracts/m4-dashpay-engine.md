@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 52
+Contract-Version: 53
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -221,7 +221,7 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 | `registration_resume_grant(draft)` | async | An invitation claim row's resume grant (item 64): no duffs, and the credits of the steps it has left (the identity's creation while it has no identity, the name until it is registered, a pending profile, and the request while one is asked), from the row alone: never from `invitation_status`, which reads `Claimed` once the row's own claim landed. Another row is `invalid_argument`. | `RegistrationError` |
 | `resume_registration(draft, grant)` | async | Advances a parked flow; it acts on any state (§4.1). `grant` is required exactly when the row's `waiting` is `Unlock` or `Authorize`, and ignored otherwise. | `RegistrationError` |
 | `discard_registration(draft)` | async | Refused (`invalid_argument`) while the row is committed by the registration ledger (§2.2): it holds a lock not yet consumed, a funding step of its own may still deliver a lock, or its funding call runs; and for a row this build cannot read. A `Done` row, or one whose identity exists with nothing of its funding outstanding, may be discarded although its `funds_committed` reads `true`; so may a `Cancelled` one (`registration.funded_elsewhere`, `registration.funding_cancelled`). An invitation's claim row (item 64) is refused too, unless `Done` without a failure: once its identity is recorded (its name is not registered yet), and once its identity step has released a signature (the step reads `Marked` or `Sent`), unless a refusal proved the claim did not land (`invitation.already_has_identity` or `invitation.claimed`, failed for good); and one failed for good with `invitation.already_has_identity` while the wallet holds no identity (item 64, D24). | `RegistrationError` |
-| `finish_asset_locks(grant)` | async | Tools ▸ Repair "Finish transfers": resumes tracked asset locks that no flow finished. Not gated by the journal: it resumes committed locks and builds none. It also applies the wallet's proved top-up locks (DP1-06, §2.8 `resume_top_up`), which needs a grant with `max_duffs` ≥ 1 (none spent); without one they count as `still_pending`. `FinishReport` sums registrations, top-ups and, last, the unfinished transfers (§2.14): every kind's unfinished lock that is `ready` or `checking` is finished once, one at a time and in txid order, under this call's lease (`confirming` and `notActive` ones count `still_pending`, not tried; one found finished when read again, by another finish meanwhile, counts in no field); `by_kind` holds a `TransfersReport{kind, resumed, completed, still_pending}` for each kind that had any, and `unread` names each kind whose transfers could not be read (the dispatch journal unread, its side not open), none of whose locks is counted. `already_used` is reserved for the advisory marker and 0 in this version. The call is admitted as a signing call (as `resume_shield` is): an in-app close is refused while it runs, and its shields run last, one apply at a time, so the Join page's "Finish transfers" returns after them. Platform's unproved "already consumed" for a pending top-up lock counts it `resumed` and `still_pending` (it stays pending); for a settled one (historical or resolved, §7 item 44) it counts in none of the fields. | `RegistrationError` |
+| `finish_asset_locks(grant)` | async | Tools ▸ Repair "Finish transfers": resumes tracked asset locks that no flow finished. Not gated by the journal: it resumes committed locks and builds none. It also applies the wallet's proved top-up locks (DP1-06, §2.8 `resume_top_up`), which needs a grant with `max_duffs` ≥ 1 (none spent); without one they count as `still_pending`. `FinishReport` sums registrations, top-ups and, last, the unfinished transfers (§2.14): every kind's unfinished lock that is `ready` or `checking` is finished once, one at a time and in txid order, under this call's lease (`confirming`, `notActive`, `unsupported` and `tooSmall` ones count `still_pending`, not tried; one found finished when read again, by another finish meanwhile, counts in no field); `by_kind` holds a `TransfersReport{kind, resumed, completed, still_pending}` for each kind that had any, and `unread` names each kind whose transfers could not be read (the dispatch journal unread, its side not open), none of whose locks is counted. `already_used` is reserved for the advisory marker and 0 in this version. The whole call is admitted as a signing call (as `resume_shield` is), registrations and top-ups included: an in-app close is refused while any of it runs (a change from 0.1, where its registrations and top-ups did not hold a close back). Its shields run last, one apply at a time, so the Join page's "Finish transfers" returns after them: each can take an Orchard proof, Platform's broadcast-and-wait and, when Platform refuses the lock's InstantSend proof, up to 300 s for a ChainLock proof; Join shows only its busy button meanwhile, no per-lock progress. Platform's unproved "already consumed" for a pending top-up lock counts it `resumed` and `still_pending` (it stays pending); for a settled one (historical or resolved, §7 item 44) it counts in none of the fields. | `RegistrationError` |
 | `prepare_faucet_lock(grant)` | async | Developer builds only. Derives a fresh registration asset-lock key (`m/9'/c'/5'/1'/…`) and returns its id and compressed public key for the faucet's `POST /api/asset-lock-proof` (§5). Outside developer builds: `platform.feature_off{feature: "faucet"}`. | `RegistrationError` |
 
 **Done (DP1-02, Contract-Version 14, item 40; its review rounds added `registration.coins_locked` (Sol r1, DEC-171),
@@ -752,15 +752,23 @@ again after a restart (the step's signed-lock record, the library's tracked row,
 
 ### 2.14 Unfinished transfers (`unfinished.rs`; 0.2 RECOVERY)
 
-The wallet's funding asset locks whose Platform side is not known to have happened: Core → Shielded locks (funding type
-`AssetLockShieldedAddressTopUp`, 5) in this version; Core → Platform address locks (type 4) join as a second kind. A lock
-is listed while the library tracks it (`list_tracked_locks`) and it is neither the library's proved `Consumed` nor
-settled in the dispatch journal (`top_up_settled`; the journal's records are by txid, so for a lock transaction whose
-several credit outputs the wallet's pools pay, each lock stands on the library's row alone and a finish writes no
-txid record). It is **this device's** (`origin: thisDevice`) when one of the
-kind's funding steps signed it (the journal's `signed_lock` rows), else **restored** (`restored`): an earlier install's
-or another device's of the same seed, which platform-wallet's restore scan rebuilt from the chain (`RecoveredFromChain`,
-with its ChainLock proof). 0.1's `pending_shields` lists only this device's; a restored shield lock was history there.
+Funding asset locks whose credit output pays one of the wallet's funding keys and whose Platform side is not known to
+have happened: Core → Shielded locks (funding type `AssetLockShieldedAddressTopUp`, 5) in this version; Core → Platform
+address locks (type 4) join as a second kind. The restore scan matches a credit output's script to the wallet's funding
+pools only, so a third party's lock paying one of those keys is listed too (finishing it credits the wallet). A lock is
+listed while the library tracks it (`list_tracked_locks`) and it is neither the library's proved `Consumed` nor recorded
+settled. It is **this device's** (`origin: thisDevice`) when one of the kind's funding steps signed it (the journal's
+`signed_lock` rows) and it is alone in its transaction, else **restored** (`restored`): an earlier install's or another
+device's of the same seed, which platform-wallet's restore scan rebuilt from the chain (`RecoveredFromChain`, with its
+ChainLock proof). 0.1's `pending_shields` lists this device's shield locks too, so a host shows this device's from
+there and the restored ones from here (it filters by `origin`; the Home card shows `restored` only).
+
+**Evidence by outpoint.** One lock transaction can carry several credit outputs, of one funding type or of several,
+each a lock of its own. Every record a finish writes is by outpoint, in the wallet's local scope of `app.sqlite`
+(`recovery.<kind>.settled.<txid>:<vout>`, `recovery.<kind>.unknown.<txid>:<vout>`), kept across restarts. 0.1's records
+by txid (the journal's `top_up_settled`, `shielded.shield_unknown.<txid>`) are still written for a lock alone in its
+transaction, so 0.1's pending shields agree, and are read for a lock only when its transaction's payload has no other
+credit output (a txid record of a top-up output never hides a shield output of the same transaction).
 
 For these funding types nothing the wallet can read says whether Platform already took a lock (no query of spent
 outpoints; the library keeps a restored lock "consumption unknown"). A lock is unfinished until an apply is tried, and
@@ -768,28 +776,43 @@ trying is safe: Platform executes at most one apply of an outpoint (rs-drive-abc
 `common/asset_lock/proof/verify_is_not_spent`). Only Platform's proved execution finishes a lock. Its "already
 consumed" for the exact outpoint (`PlatformWalletError::AssetLockAlreadyConsumed`, the library's typed
 `IdentityAssetLockTransactionOutPointAlreadyConsumedError` matched to the outpoint) is unauthenticated and settles
-nothing; neither does a failure after the lock's credit key signed. Both leave the lock `checking`. Balances come only
-from proved reads.
+nothing; neither does any failure after the lock's credit key signed, whatever the kind's apply returns. Both leave the
+lock `checking`. Balances come only from proved reads.
 
-**States** (`UnfinishedState`). `confirming`: no InstantSend or ChainLock proof yet. `ready`: proved, and not tried or
-refused before its signature. `checking`: the apply may have executed, unproved (marked as 0.1's "consumption unknown"
-is, kept across restarts), or a lock of this device's the library recovered from the chain. `reportedUsed` (and
-`LockFinish::reportedUsed`): reserved for the advisory marker (Q1), never set in this version. `notActive`: the kind is
-not active on the network, by the protocol version as last proved (the list makes no Platform query and binds
-nothing).
+**States** (`UnfinishedState`). `confirming`: the library's row holds no proof, whatever its status (a restore files
+another device's lock still in flight as `InstantSendLocked` with none; a `RecoveredFromChain` row without one reads
+`confirming` too). `ready`: proved, and not tried or refused
+before its signature. `checking`: the apply may have executed, unproved (recorded by outpoint, kept across restarts), or
+a lock of this device's the library recovered from the chain, whatever its value. `unsupported`: can't be finished in this version, a
+credit output other than its transaction's first (`vout` ≠ 0): at the pinned platform-wallet the apply re-derives the
+credit key of the payload's first output (`sync/recovery.rs:1848`), so the narrowed signer would refuse it; never
+offered a finish. `tooSmall`: worth less than the Platform fee its apply pays (for a shield, the pool fee of 0.1's
+shield quote, at the version the SDK holds), so the apply would leave nothing and refuses it with the kind's code
+(`shielded.below_minimum` for a shield); never offered a finish.
+`reportedUsed` (and `LockFinish::reportedUsed`): reserved for the advisory marker (Q1), never set in
+this version. `notActive`: the kind is not active on the network, by the protocol version the SDK holds (the list makes
+no Platform query and binds nothing; until a proved read raises it, that is the network's floor).
 
 **Finishing** (`LockFinish`). Under the kind's per-wallet lock (a shield's, so a finish and a shield never interleave),
-the lock is read again: one finished meanwhile is `applied` with no apply. A lock with no proof is `proofWaiting`, a
-kind that is not active or not ready is `notApplied{error}` with the refusal's code alone (`shielded.not_active`,
-`shielded.not_synced`; the host asks `shielded_status` for the detail), both before any lease is begun, so the grant is
-kept. Otherwise, under a lease of the kind's
-flow (`Shield` for type 5) begun from `grant` or named by it, one call permit and the lease's funding signer narrowed
-to the lock's credit key (the script of the lock payload's `credit_outputs[vout]`; any other key's signature is
-refused) sign the kind's `FromExistingAssetLock` of the same outpoint: never a new lock, new funding or other coins,
-and no proof wait. The grant needs `max_duffs` ≥ 1 (the lock's one-time key), none of which is spent. The result:
-`applied` (proved; the lock is settled in the journal, and a shield's note is the library's once a pass finds it),
-`checking` (above), or `notApplied{error}` (refused before the signature: nothing reached Platform). Repair's "Finish transfers" (`finish_asset_locks`, §2.2) runs the same finish over every unfinished lock,
-under its own lease.
+the lock is read again: one finished meanwhile is `applied` with no apply. Before any lease is begun, so the grant is
+kept: a lock with no proof is `proofWaiting`; an `unsupported` one is `notApplied{error: "platform.not_implemented"}`; a
+`tooSmall` one, or a `checking` one worth less than that minimum, is `notApplied{error}` with the kind's code
+(`shielded.below_minimum`); a kind that is not active or not ready is
+`notApplied{error}` with the refusal's code alone (`shielded.not_active`, `shielded.not_synced`; the host asks
+`shielded_status` for the detail); and a grant with no `max_duffs` is refused
+(`platform.needs_grant`) unredeemed. Otherwise, under a lease of the kind's flow (`Shield` for type 5) begun from `grant`
+or named by it, one call permit and the lease's funding signer narrowed to the lock's credit key (the script of the lock
+payload's `credit_outputs[vout]`; any other key's signature is refused) sign the kind's `FromExistingAssetLock` of the
+same outpoint: never a new lock, new funding or other coins, and no wait for a missing proof (the library's bounded
+InstantSend → ChainLock fallback, 300 s for a shield, still runs when Platform refuses the InstantSend proof). The grant
+needs `max_duffs` ≥ 1 (the lock's one-time key), none of which is spent. A refusal inside the apply before its
+signature (the library's own checks, the prover, a call permit refused) comes after the lease, so the grant it redeemed
+is spent; it moves nothing and debits no budget. The call permit counts the narrowed signer's signatures and none is
+signed once it ended: a call that signed nothing ends `Cancelled`, one that failed after a signature `MaybeSent`, and a
+call the library returned Ok `Sent` (the lease's call records, `LeaseView`). The result: `applied` (proved; the lock is recorded settled, and a
+shield's note is the library's once a pass finds it), `checking` (above), or `notApplied{error}` (refused before the
+signature: nothing reached Platform). Repair's "Finish transfers" (`finish_asset_locks`, §2.2) runs the same finish
+over every unfinished lock, under its own lease.
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
@@ -803,7 +826,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 4a29e7b4fcd50b6a44369a130fb6ceefea5d7dd9635bcf8c5adcc7e56c144ddf version: 52 -->
+<!-- surface-sha256: 32618cbd751a11cebd64bfc85d49bc27e0c3fc36aafa6909ee5b77254cdfbe32 version: 53 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2203,6 +2226,8 @@ pub enum UnfinishedState {
     Checking,
     ReportedUsed,
     NotActive,
+    Unsupported,
+    TooSmall,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnfinishedLock {
@@ -2437,7 +2462,8 @@ The shapes are in §3. What they mean, where the name does not say:
 
 - **`UnfinishedLock`, `LockFinish`** (§2.14). `origin` says who signed the lock's funding (`thisDevice`) or that a
   restore read it back (`restored`); nothing in a lock says whether Platform already took it, so `checking` is not a
-  failure: "This amount may already be in your balance; we can't confirm it yet."
+  failure: "This amount may already be in your balance; we can't confirm it yet." `unsupported`: "Can't be finished in
+  this version"; `tooSmall`: "Too small to finish: worth less than the Platform fee" (neither is offered a Finish).
 - **`DashPayStatus.NoIdentity{reason}`.** `None` means the user can join. `WatchOnly`: the wallet has no keys
   ("This wallet can't use DashPay because it has no keys"). `WaitingForSync`: Core or masternode sync has not finished,
   so Join is disabled (F1, DASHPAY §2.2 rule 5).

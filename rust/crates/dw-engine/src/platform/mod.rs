@@ -96,6 +96,8 @@ pub(crate) mod trust;
 #[cfg(test)]
 mod trust_tests;
 mod unfinished;
+#[cfg(test)]
+mod unfinished_conformance;
 pub(crate) mod unfinished_locks;
 #[cfg(test)]
 mod unfinished_locks_tests;

@@ -1,9 +1,10 @@
-//! Unfinished transfers (0.2 recovery; m4-dashpay-engine §2.14): the
-//! wallet's funding asset locks whose Platform side is not known to have
-//! happened, Core → Shielded (funding type 5) for now, its own and those a
-//! restore read back from the chain, and finishing one on the same
-//! outpoint. Only Platform's proved execution finishes a lock; nothing here
-//! funds, builds a lock or changes a balance.
+//! Unfinished transfers (0.2 recovery; m4-dashpay-engine §2.14): funding
+//! asset locks whose credit output pays one of the wallet's funding keys
+//! and whose Platform side is not known to have happened, Core → Shielded
+//! (funding type 5) for now, its own and those a restore read back from the
+//! chain, and finishing one on the same outpoint. Only Platform's proved
+//! execution finishes a lock; nothing here funds, builds a lock or changes
+//! a balance.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -61,10 +62,17 @@ pub enum UnfinishedState {
     ReportedUsed,
     /// The kind is not active on this network's Platform yet.
     NotActive,
+    /// Can't be finished in this version: a credit output other than its
+    /// transaction's first (`vout` ≠ 0), whose key the pinned library's
+    /// apply does not re-derive. Never offered a finish.
+    Unsupported,
+    /// Too small to finish: worth less than the Platform fee its apply
+    /// pays, so the apply would leave nothing. Never offered a finish.
+    TooSmall,
 }
 
-/// A funding lock the wallet funded whose Platform side is not known to
-/// have happened.
+/// A funding lock paying one of the wallet's funding keys whose Platform
+/// side is not known to have happened.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnfinishedLock {
     pub txid: String,
@@ -105,7 +113,8 @@ pub struct TransfersReport {
     pub resumed: u32,
     /// Proved applied.
     pub completed: u32,
-    /// Still unfinished: confirming, not active, refused, or checking.
+    /// Still unfinished: confirming, not active, not finishable in this
+    /// version, too small, refused, or checking.
     pub still_pending: u32,
 }
 
@@ -197,13 +206,18 @@ pub(crate) async fn finish_all(
 }
 
 /// The lease `grant` names (a `flow` lease of this wallet), or a new one
-/// redeemed from it.
-async fn authority(
+/// redeemed from it. A grant with no funding budget is refused before it is
+/// redeemed (the funding signer needs one), so it is kept.
+pub(super) async fn authority(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
     grant: &str,
     flow: FlowKind,
 ) -> Result<Lease, PlatformError> {
+    let funding = super::flows::BudgetPurpose::Funding;
+    if super::registration::grant_cap(session, wallet, grant, funding).await? == 0 {
+        return Err(PlatformError::NeedsGrant { purpose: funding });
+    }
     match session.lease_for(&wallet, grant) {
         Some(lease) => {
             let lease = lease?;

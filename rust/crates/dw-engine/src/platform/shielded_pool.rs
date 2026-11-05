@@ -214,6 +214,11 @@ pub(crate) trait ShieldedLib: Send + Sync {
 
     /// The wallet's tracked `AssetLockShieldedAddressTopUp` locks.
     fn shield_locks(&self) -> impl Future<Output = Vec<LockInfo>> + Send;
+    /// [`Self::shield_locks`] with what a finish of one reads of its row
+    /// and transaction (`unfinished_locks::KindLock`).
+    fn shield_lock_rows(
+        &self,
+    ) -> impl Future<Output = Vec<super::unfinished_locks::KindLock>> + Send;
     /// The locks the wallet's shield steps signed (the dispatch journal's
     /// records); `None` until the journal is read.
     fn own_locks(&self) -> Option<HashSet<Txid>>;
@@ -1926,6 +1931,13 @@ impl ShieldedLib for PwShielded {
     }
 
     async fn shield_locks(&self) -> Vec<LockInfo> {
+        (self.shield_lock_rows().await.into_iter())
+            .map(|l| l.info)
+            .collect()
+    }
+
+    async fn shield_lock_rows(&self) -> Vec<super::unfinished_locks::KindLock> {
+        use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
         (self
             .pw
             .wallet
@@ -1934,13 +1946,20 @@ impl ShieldedLib for PwShielded {
             .await
             .into_iter())
         .filter(|l| l.funding_type == AssetLockFundingType::AssetLockShieldedAddressTopUp)
-        .map(|l| LockInfo {
-            outpoint: l.out_point,
-            registration: false,
-            identity_index: l.identity_index,
-            account: l.account_index,
-            amount: l.amount,
-            status: lock_status(&l.status),
+        .map(|l| super::unfinished_locks::KindLock {
+            info: LockInfo {
+                outpoint: l.out_point,
+                registration: false,
+                identity_index: l.identity_index,
+                account: l.account_index,
+                amount: l.amount,
+                status: lock_status(&l.status),
+            },
+            proof: l.proof.is_some(),
+            credit_outputs: match &l.transaction.special_transaction_payload {
+                Some(TransactionPayload::AssetLockPayloadType(p)) => p.credit_outputs.len(),
+                _ => 0,
+            },
         })
         .collect()
     }

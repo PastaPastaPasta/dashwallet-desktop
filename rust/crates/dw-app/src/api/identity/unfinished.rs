@@ -55,10 +55,16 @@ pub enum UnfinishedState {
     ReportedUsed,
     /// The kind is not active on this network yet.
     NotActive,
+    /// Can't be finished in this version (a credit output other than its
+    /// transaction's first). Never offered a finish.
+    Unsupported,
+    /// Worth less than the Platform fee its finish pays. Never offered a
+    /// finish.
+    TooSmall,
 }
 
 mirror_enum!(engine::UnfinishedState => UnfinishedState {
-    Confirming, Ready, Checking, ReportedUsed, NotActive
+    Confirming, Ready, Checking, ReportedUsed, NotActive, Unsupported, TooSmall
 });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
