@@ -176,6 +176,9 @@ function stamped(w: World): World {
   return w;
 }
 
+/** `w` on Mainnet with a fresh USD price, as the `fiat` scenario. */
+export const withPrices = (w: World): World => priced(w, {});
+
 export function ratesScenarios<T>(base: (t: T) => World) {
   return {
     /** Mainnet with a fresh USD price: the hero, the breakdown and the rows show fiat. */

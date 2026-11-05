@@ -8,6 +8,7 @@ import { errorMessage } from "../../api/backend";
 import { keys, useBackend } from "../../api/queries";
 import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton } from "../../components/basics";
+import { FiatSecondary, FiatToggle, useFiatEntry } from "../../fiat/entry";
 import type { useDisplay } from "../../format/display";
 import { availableLabel, changePolicy, coinSource, DEFAULT_ADVANCED, feeMode, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayRecipient } from "./model";
 import type { DraftApi, DraftSpec } from "./useDraft";
@@ -154,7 +155,8 @@ export function useMax(walletId: string, advanced: Advanced, shown: Shown, set: 
   return { run, error, disabled: !fee };
 }
 
-/** The amount with Max, then Subtract fee (U-03). `error`: the estimate's refusal of the amount. */
+/** The amount with Max, then Subtract fee (U-03), and the fiat toggle with the other unit under it
+ * (MP-01). `error`: the estimate's refusal of the amount. */
 export function AmountFields({
   shown,
   amount,
@@ -177,12 +179,20 @@ export function AmountFields({
   onSubtractFee: (on: boolean) => void;
   inputRef?: Ref<HTMLInputElement>;
 }) {
+  const fiat = useFiatEntry(shown, amount);
   return (
     <>
       <FormField
-        label={`Amount (${shown.name})`}
-        error={amount.error ?? error ?? max.error}
-        hint={available !== undefined && <>{availableLabel(coins)}: {shown.full(available)} {shown.name}</>}
+        label={`Amount (${fiat.unitName})`}
+        error={fiat.error ?? amount.error ?? error ?? max.error}
+        hint={
+          (available !== undefined || fiat.toggle.shown) && (
+            <>
+              <FiatSecondary entry={fiat} duffs={amount.duffs} testId="pay-amount-other" />
+              {available !== undefined && <>{availableLabel(coins)}: {shown.full(available)} {shown.name}</>}
+            </>
+          )
+        }
       >
         {(p) => (
           <span className="amount-entry">
@@ -190,12 +200,13 @@ export function AmountFields({
               {...p}
               ref={inputRef}
               data-testid="pay-amount"
-              value={amount.text}
+              value={fiat.value}
               inputMode="decimal"
               autoComplete="off"
-              placeholder={shown.placeholder}
-              onChange={(e) => amount.setText(e.target.value)}
+              placeholder={fiat.placeholder}
+              onChange={(e) => fiat.onChange(e.target.value)}
             />
+            <FiatToggle entry={fiat} shown={shown} testId="pay-amount-toggle" />
             <DashButton variant="tintedBlue" size="small" data-testid="pay-max" onClick={() => void max.run()} disabled={max.disabled}>
               Max
             </DashButton>

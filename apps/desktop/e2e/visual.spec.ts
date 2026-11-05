@@ -198,6 +198,33 @@ for (const theme of THEMES) {
       await shoot(page, `activity-fiat-${mode}`, theme);
     });
   }
+  // Pay to an address with 10.00 typed in USD, its Confirm with the values, and a Receive request in USD.
+  for (const view of ["pay-fiat", "pay-confirm-fiat", "receive-fiat"] as const) {
+    test(`visual ${view} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl("fiat", theme));
+      await page.getByTestId("hero").waitFor();
+      const where = view === "receive-fiat" ? "request" : "pay";
+      if (where === "pay") {
+        await page.getByTestId("sidebar-pay").click();
+        await page.getByTestId("pay-tabs-address").click();
+        await page.getByTestId("pay-address").fill("XXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd");
+      } else {
+        await page.getByTestId("sidebar-receive").click();
+      }
+      await page.getByTestId(`${where}-amount-toggle`).click();
+      await page.getByTestId(`${where}-amount`).fill(where === "pay" ? "10.00" : "25.50");
+      await page.getByTestId(`${where}-amount-other`).waitFor();
+      if (view === "pay-confirm-fiat") {
+        await page.getByTestId("pay-continue").and(page.locator(":enabled")).waitFor();
+        await page.getByTestId("pay-continue").click();
+        await page.getByTestId("pay-confirm-passphrase").waitFor();
+      } else if (where === "pay") {
+        await page.getByTestId("pay-fee-line").waitFor();
+      }
+      await page.mouse.move(0, 0);
+      await shoot(page, view, theme);
+    });
+  }
   test(`visual tx-detail-fiat ${theme}`, async ({ page }) => {
     await page.goto(fixtureUrl("fiat", theme));
     await page.getByTestId("hero").waitFor();

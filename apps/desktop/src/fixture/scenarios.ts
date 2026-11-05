@@ -37,7 +37,7 @@ import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./se
 import { newPendingWorld, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
-import { newRatesWorld, onMainnet, ratesScenarios, type RatesWorld } from "./rates";
+import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { buildRows, caughtUp, FIXTURE_NOW, FUNDED_BALANCES, makeIds, prng, secs, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
@@ -1144,6 +1144,8 @@ const SCENARIOS = {
   ...ratesScenarios(base),
   /** A new install on Mainnet: onboarding's last step carries the price disclosure. */
   "fiat-first-run": (t): World => onMainnet(buildWorld("no-wallet", t)),
+  /** `dashpay-registered` with prices: paying a contact with the fiat toggle. */
+  "fiat-contacts": (t): World => withPrices(buildWorld("dashpay-registered", t)),
 } satisfies Record<string, (theme: ThemeName | null) => World>;
 
 export type ScenarioName = keyof typeof SCENARIOS;

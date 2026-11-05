@@ -1875,6 +1875,32 @@ button {
   min-width: 0;
 }
 
+/* MP-01: the fiat toggle keeps its width, and the other unit sits under the field. */
+.amount-toggle {
+  flex: none;
+  white-space: nowrap;
+}
+
+.amount-secondary {
+  display: block;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+  font-variant-numeric: tabular-nums;
+}
+
+.field-hint > .field-hint {
+  display: block;
+}
+
+.confirm-fiat {
+  display: block;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
 .coin-control-body {
   display: flex;
   flex-direction: column;
