@@ -58,7 +58,9 @@ public final class MixedCoinsViewModel {
                 addresses: report.coinJoinAddressesScanned + report.bip44AddressesScanned,
                 balance: amountText(report.coinJoinBalance), transactions: report.newTransactions)
         case .moved(let result):
-            guard let code = result.failureCode else { return L10n.CoinJoin.moved(amountText(result.moved)) }
+            // What arrives, the fee apart (R5).
+            let fee = result.fee > .zero ? amountText(result.fee) : nil
+            guard let code = result.failureCode else { return L10n.CoinJoin.moved(amountText(result.received), fee: fee) }
             let reason =
                 if code == .coinjoinBroadcastUnknown, let txid = result.unknownTxid {
                     L10n.CoinJoin.chunkUnknown(txid)
@@ -66,7 +68,7 @@ public final class MixedCoinsViewModel {
                     ErrorText.m3(ServiceError(code: code), amount: amountText.callAsFunction)
                 }
             return L10n.CoinJoin.movedPartially(
-                moved: amountText(result.moved), remaining: amountText(result.remaining), reason: reason)
+                moved: amountText(result.received), fee: fee, remaining: amountText(result.remaining), reason: reason)
         default:
             return nil
         }

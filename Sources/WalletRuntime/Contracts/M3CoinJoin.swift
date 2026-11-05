@@ -289,7 +289,12 @@ public struct MixedCoinsSweepPlan: Sendable, Hashable {
 /// A sweep may stop part-way (iOS "may partially succeed").
 public struct MixedCoinsSweepResult: Sendable, Hashable {
     public let txids: [String]
+    /// What left the CoinJoin balance: `received + fee`.
     public let moved: Amount
+    /// Of `moved`, what arrives at the destination.
+    public let received: Amount
+    /// Of `moved`, the network fees.
+    public let fee: Amount
     public let remaining: Amount
     /// Engine code of the error that stopped the sweep; `nil` = complete.
     public let failureCode: ServiceErrorCode?
@@ -298,10 +303,13 @@ public struct MixedCoinsSweepResult: Sendable, Hashable {
     public let unknownTxid: String?
 
     public init(
-        txids: [String], moved: Amount, remaining: Amount, failureCode: ServiceErrorCode?, unknownTxid: String? = nil
+        txids: [String], moved: Amount, remaining: Amount, failureCode: ServiceErrorCode?, unknownTxid: String? = nil,
+        fee: Amount = .zero
     ) {
         self.txids = txids
         self.moved = moved
+        self.fee = fee
+        self.received = Amount(duffs: moved.duffs - fee.duffs)
         self.remaining = remaining
         self.failureCode = failureCode
         self.unknownTxid = unknownTxid

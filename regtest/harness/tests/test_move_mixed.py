@@ -124,7 +124,7 @@ def test_consolidation_keeps_the_value_in_the_coinjoin_account(dw, regtest_node,
     assert [c["inputs"] for c in chunks] == [str(COINS)], chunks
 
     out, mined = sweep_in_background(
-        dw, regtest_node, "consolidate-mixed", dw.wallet, "--sync-height", str(height)
+        dw, regtest_node, "consolidate-mixed", dw.wallet, "--sync-height", str(height), "--yes"
     )
     moved = fields(dw.line("moved", out))
     assert (moved["remaining"], moved["failure"]) == ("0", "-"), out

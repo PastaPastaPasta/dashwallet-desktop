@@ -322,7 +322,9 @@ struct CoinJoinViewModelTests {
             chunks: [MixedCoinsChunk(inputs: 40, amount: Amount(duffs: 2_00000000), fee: Amount(duffs: 6_000))])
         m3.coinJoin.sweepPlan.withLock { $0 = plan }
         m3.coinJoin.moveResult.withLock {
-            $0 = MixedCoinsSweepResult(txids: [txid(9)], moved: Amount(duffs: 1_99994000), remaining: .zero, failureCode: nil)
+            $0 = MixedCoinsSweepResult(
+                txids: [txid(9)], moved: Amount(duffs: 2_00000000), remaining: .zero, failureCode: nil,
+                fee: Amount(duffs: 6_000))
         }
         let model = makeMixed()
         #expect(model.showsMoveBanner)
@@ -330,7 +332,7 @@ struct CoinJoinViewModelTests {
         #expect(model.planText == "2.00000000 tDASH in 1 transaction, fee 0.00006000 tDASH")
         await model.move()
         #expect(m3.coinJoin.moveGrants.current.first?.purpose == .spend(max: Amount(duffs: 2_00000000)))
-        #expect(model.resultText == "Moved 1.99994000 tDASH to your wallet.")
+        #expect(model.resultText == "Moved 1.99994000 tDASH to your wallet. Network fee: 0.00006000 tDASH.")
         #expect(m2.desktopPreferences.desktop.m3.coinJoinWithdrawals[walletA.hex] == [txid(9)])
     }
 

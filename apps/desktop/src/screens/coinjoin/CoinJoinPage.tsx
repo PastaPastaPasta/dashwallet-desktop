@@ -7,7 +7,7 @@ import { useId, useState } from "react";
 import type { CoinJoinStatus } from "../../api/generated/CoinJoinStatus";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useBackend, useLockStatus } from "../../api/queries";
-import { MOVE_COPY, moveMixedFor } from "../../coinjoin/move";
+import { MOVE_COPY, moveMixedFor, showsMoveCard } from "../../coinjoin/move";
 import { navigate, useUi } from "../../app/ui";
 import { DashButton, ExperimentalBadge, Icon } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
@@ -82,10 +82,8 @@ function MoveMixedCard({ walletId, network, status }: { walletId: string; networ
   const flow = moveMixedFor(b, walletId);
   useModel(flow);
   const id = useId();
-  // Shown while the wallet holds mixing's coins, or a move runs or waits to be seen; the plan
-  // itself says what there is to move.
-  const holds = status.balances.denominated > 0 || status.balances.fullyMixed > 0;
-  if (status.unavailable?.kind === "watchOnly" || !(holds || flow.open || flow.running || flow.step === "done")) return null;
+  // The plan itself says what there is to move.
+  if (!showsMoveCard(status, flow)) return null;
   return (
     <section className="coinjoin-move card-l1" data-testid="coinjoin-move" aria-labelledby={`${id}-title`}>
       <h2 className="card-title" id={`${id}-title`}>

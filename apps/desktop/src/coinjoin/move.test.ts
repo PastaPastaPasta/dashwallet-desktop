@@ -10,7 +10,8 @@ import { installFixture } from "../fixture/index";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W, type ScenarioName } from "../fixture/scenarios";
 import { appError } from "../onboarding/testWorld";
 import type { MixedCoinsSweepPlan } from "../api/generated/MixedCoinsSweepPlan";
-import { canRetry, MoveMixedFlow, type MoveMixedApi, moveErrorText, MOVE_COPY, planFee, planReceives, resultText } from "./move";
+import type { CoinJoinStatus } from "../api/generated/CoinJoinStatus";
+import { canRetry, MoveMixedFlow, type MoveMixedApi, moveErrorText, MOVE_COPY, planFee, planReceives, resetMoveMixed, resultText, showsMoveCard } from "./move";
 
 const until = async (cond: () => boolean) => {
   for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 0));
@@ -55,8 +56,9 @@ describe("Move mixed coins to the wallet", () => {
     await move();
     expect(flow.step).toBe("done");
     const r = flow.result!;
-    expect(r).toMatchObject({ moved: plan.total, remaining: 0, failureCode: null, unknownTxid: null });
-    expect(resultText(r, amount)).toMatchObject({ kind: "done", title: MOVE_COPY.done.title });
+    expect(r).toMatchObject({ moved: plan.total, received: planReceives(plan), fee: planFee(plan), remaining: 0, failureCode: null, unknownTxid: null });
+    // What arrives, the fee apart (R5).
+    expect(resultText(r, amount)).toEqual({ kind: "done", title: MOVE_COPY.done.title, text: MOVE_COPY.done.text(amount(planReceives(plan)), amount(planFee(plan))) });
     // The CoinJoin account is empty: a new plan has nothing to move.
     await expect(cmd.mixedCoinsSweepPlan(W, "wallet")).rejects.toMatchObject({ code: "coinjoin.nothing_to_move" });
   });
@@ -87,7 +89,8 @@ describe("Move mixed coins to the wallet", () => {
     expect(r.failureCode).toBe("coinjoin.broadcast_rejected");
     expect(r.txids).toHaveLength(1);
     expect(r.moved + r.remaining).toBe(flow.plan!.total);
-    expect(resultText(r, amount)).toMatchObject({ kind: "partial", text: MOVE_COPY.partial.text(amount(r.moved), amount(r.remaining)) });
+    expect(r.received + r.fee).toBe(r.moved);
+    expect(resultText(r, amount)).toMatchObject({ kind: "partial", text: MOVE_COPY.partial.text(amount(r.received), amount(r.fee), amount(r.remaining)) });
 
     // Try again plans what stayed.
     flow.again();
@@ -232,5 +235,26 @@ describe("Move mixed coins, the flow's edges", () => {
     expect([f.open, f.step, plan.mock.calls.length]).toEqual([true, "refused", 1]);
     f.close();
     expect(f.step).toBe("plan");
+  });
+});
+
+// Opus m6 / Sol R4: the card follows the CoinJoin account's free coins, not its denominations.
+describe("the move card", () => {
+  const status = (coinjoinAccount: number, extra: Partial<CoinJoinStatus["balances"]> = {}) =>
+    ({ unavailable: null, balances: { anonymizable: 0, denominated: 0, normalizedAnonymized: 0, fullyMixed: 0, coinjoinAccount, ...extra } }) as unknown as CoinJoinStatus;
+  const idle = { open: false, running: false, step: "plan" as const };
+
+  it("shows for a collateral alone, a consolidated output, and after a restart", () => {
+    expect(showsMoveCard(status(40_000), idle)).toBe(true);
+    expect(showsMoveCard(status(3_000_000_000), idle)).toBe(true);
+    // A fresh app: no flow kept, the account's coins are what counts.
+    resetMoveMixed();
+    expect(showsMoveCard(status(3_000_000_000), new MoveMixedFlow({} as MoveMixedApi, W))).toBe(true);
+  });
+
+  it("hides when the account holds nothing free, unless a move runs or its result waits", () => {
+    expect(showsMoveCard(status(0, { denominated: 0 }), idle)).toBe(false);
+    expect(showsMoveCard(status(0), { ...idle, step: "done" })).toBe(true);
+    expect(showsMoveCard({ ...status(40_000), unavailable: { kind: "watchOnly" } } as CoinJoinStatus, idle)).toBe(false);
   });
 });

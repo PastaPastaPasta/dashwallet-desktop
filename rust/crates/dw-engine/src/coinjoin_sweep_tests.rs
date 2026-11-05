@@ -69,6 +69,9 @@ fn hook(f: &Fixture, max_inputs: usize, outcomes: &[Outcome]) -> Arc<Wire> {
     *f.session.coinjoin.sweep_hooks.lock().unwrap() = Hooks {
         broadcast: Some(broadcast),
         max_inputs: Some(max_inputs),
+        // Any round of two coins or more is worth it here; the shield
+        // lock's real cap has its own test.
+        lock_inputs: Some(1),
         ..Hooks::default()
     };
     wire
@@ -695,6 +698,42 @@ fn an_unseen_chunk_stays_held_past_the_old_expiry_across_a_reopen() {
     }
     advance(&f, 1_000);
     assert!(f.session.spends.snapshot(&f.wallet).is_empty(), "a restart");
+    // Opus m7: every spender reads the record, not only the next move: a
+    // send of a held coin and mixing's view of it.
+    let held_coin = sent[0].input[0].previous_output;
+    let send = f.draft_to("yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n".into(), COIN / 2);
+    send.set_source(crate::send::CoinSource::Outpoints(vec![held_coin]))
+        .unwrap();
+    assert!(
+        matches!(
+            f.engine.block_on(send.estimate()),
+            Err(EngineError::Send(crate::send::SendFailure::OutpointUnavailable(o))) if o == held_coin
+        ),
+        "a send may not take a held coin"
+    );
+    let session = Arc::clone(&f.session);
+    let id = f.wallet;
+    let view = (f.engine)
+        .block_on(session.on_runtime({
+            let s = Arc::clone(&session);
+            async move {
+                let fence = s.coin_fence(id).await?;
+                s.mix_view(&fence).await
+            }
+        }))
+        .unwrap();
+    let held = inputs(&sent);
+    for c in view
+        .coins
+        .iter()
+        .filter(|c| held.contains(&c.coin.utxo.outpoint))
+    {
+        assert!(
+            c.coin.reserved,
+            "mixing reads {} reserved",
+            c.coin.utxo.outpoint
+        );
+    }
     let wire = hook(&f, 2, &[]);
     let second = move_to_wallet(&f).unwrap();
     assert_eq!(second.failure_code, None);
@@ -1065,4 +1104,54 @@ fn a_move_refuses_coins_other_than_the_confirmed_plans() {
         assert_eq!(done.failure_code, None);
         assert_eq!(inputs(&wire.txs()).len(), 3, "the three coins");
     }
+}
+
+/// Opus m4: a consolidation that buys the drain nothing is refused before
+/// anything is signed: the coins fit one shield lock (50 inputs), or its
+/// chunks would leave as many coins as it takes.
+#[test]
+fn a_pointless_consolidation_is_refused() {
+    let f = fixture(false);
+    for n in 1..=6 {
+        f.credit_coinjoin(n, COIN);
+    }
+    let nothing = |r: Result<SweepResult, EngineError>| {
+        assert!(
+            matches!(
+                r,
+                Err(EngineError::CoinJoin(CoinJoinFailure::NothingToMove))
+            ),
+            "{r:?}"
+        );
+    };
+    let wire = hook(&f, 500, &[]);
+    f.session.coinjoin.sweep_hooks.lock().unwrap().lock_inputs = None;
+    let plan = (f.engine).block_on(f.session.mixed_coins_consolidation_plan(f.wallet));
+    assert!(plan.is_err(), "six coins fit one shield lock: {plan:?}");
+    nothing(consolidate(&f));
+    // Over the lock's cap, but one coin per chunk: no fewer coins.
+    hook(&f, 1, &[]);
+    nothing(consolidate(&f));
+    assert!(wire.txs().is_empty());
+    // Over the cap, and fewer coins after: it runs.
+    let wire = hook(&f, 3, &[]);
+    assert_eq!(consolidate(&f).unwrap().failure_code, None);
+    assert_eq!(wire.txs().len(), 2);
+}
+
+/// Sol R5: a move reports what arrives and the fee apart; `moved` is their
+/// sum, the coins' value that left the account.
+#[test]
+fn a_moves_result_says_what_arrives_and_the_fee() {
+    let f = fixture(false);
+    for n in 1..=4 {
+        f.credit_coinjoin(n, COIN);
+    }
+    let wire = hook(&f, 2, &[Outcome::Sent, Outcome::Rejected]);
+    let r = move_to_wallet(&f).unwrap();
+    let sent = &wire.txs()[0];
+    let paid: u64 = sent.output.iter().map(|o| o.value).sum();
+    assert_eq!((r.moved, r.received), (2 * COIN, paid));
+    assert_eq!(r.fee, 2 * COIN - paid);
+    assert!(r.fee > 0);
 }

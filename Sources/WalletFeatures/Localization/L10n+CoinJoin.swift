@@ -188,9 +188,12 @@ extension L10n {
         public static let moveButton = "Move"
         public static let later = "Later"
         public static let moving = "Moving mixed coins…"
-        public static func moved(_ amount: String) -> String { "Moved \(amount) to your wallet." }
-        public static func movedPartially(moved: String, remaining: String, reason: String) -> String {
-            "Moved \(moved); \(remaining) could not be moved yet: \(reason) You can try again later."
+        public static func moved(_ amount: String, fee: String? = nil) -> String {
+            "Moved \(amount) to your wallet." + (fee.map { " Network fee: \($0)." } ?? "")
+        }
+        public static func movedPartially(moved: String, fee: String? = nil, remaining: String, reason: String) -> String {
+            "Moved \(moved)" + (fee.map { " (network fee \($0))" } ?? "")
+                + "; \(remaining) could not be moved yet: \(reason) You can try again later."
         }
         public static func chunkUnknown(_ txid: String) -> String {
             "It is not known whether the network received transaction \(txid). Its coins stay reserved until they show as spent; check Transactions before moving again."

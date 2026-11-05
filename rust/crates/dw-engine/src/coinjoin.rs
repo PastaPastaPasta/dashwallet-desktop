@@ -164,6 +164,10 @@ pub struct CoinJoinBalances {
     pub denominated: u64,
     pub normalized_anonymized: u64,
     pub fully_mixed: u64,
+    /// Every free coin of the CoinJoin account, mixed or not (collaterals,
+    /// change, a consolidated output): what "Move mixed coins" is offered
+    /// for.
+    pub coinjoin_account: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -274,7 +278,13 @@ pub struct ConsolidationPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SweepResult {
     pub txids: Vec<String>,
+    /// What left the CoinJoin account in the chunks the network took:
+    /// `received + fee`.
     pub moved: u64,
+    /// Of `moved`, what their outputs pay.
+    pub received: u64,
+    /// Of `moved`, their fees.
+    pub fee: u64,
     pub remaining: u64,
     pub failure_code: Option<String>,
     /// With `coinjoin.broadcast_unknown`: the chunk that may be on the
@@ -820,12 +830,17 @@ fn compute_balances(
         .map(|c| c.value())
         .sum();
     let average = progress::average_rounds(&capped.iter().map(|(_, r)| *r).collect::<Vec<_>>());
+    let coinjoin_account = (view.coins.iter())
+        .filter(|c| c.coin.coinjoin_account && c.free())
+        .map(|c| c.value())
+        .sum();
     (
         CoinJoinBalances {
             anonymizable,
             denominated,
             normalized_anonymized,
             fully_mixed,
+            coinjoin_account,
         },
         average,
     )
@@ -2457,6 +2472,12 @@ impl NetworkSession {
                 dw_coinjoin::recovery::plan_consolidation(&values, fee, max_inputs)
             }
         };
+        // A consolidation pays for itself only when the drain needs it: more
+        // coins than one shield lock takes, and fewer coins after it (m4).
+        let taken: usize = chunks.iter().map(|c| c.coins.len()).sum();
+        let pointless = target == SweepTarget::CoinJoin
+            && (taken <= shield_lock_inputs(self) || chunks.len() >= taken);
+        let chunks = if pointless { Vec::new() } else { chunks };
         let swept: usize = chunks.iter().map(|c| c.coins.len()).sum();
         Ok(SweepCoins {
             coins_after: (account.len() - swept + chunks.len()) as u32,
@@ -2595,7 +2616,9 @@ impl NetworkSession {
     /// The consolidation round before a move to Shielded (iOS #1221): the
     /// CoinJoin account's confirmed coins in the fewest chunks of at most 500
     /// inputs, each to one fresh address of the same CoinJoin account.
-    /// Reads coins only. Refused while the wallet mixes.
+    /// Reads coins only. Refused while the wallet mixes, and as pointless
+    /// (`NothingToMove`) when the coins fit one shield lock or the chunks
+    /// would not leave fewer coins.
     pub async fn mixed_coins_consolidation_plan(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -2827,6 +2850,8 @@ impl NetworkSession {
             let mut result = SweepResult {
                 txids: Vec::new(),
                 moved: 0,
+                received: 0,
+                fee: 0,
                 remaining: total,
                 failure_code: None,
                 unknown_txid: None,
@@ -2834,6 +2859,8 @@ impl NetworkSession {
             // Every chunk is signed and reserved under the fence, then
             // broadcast in order; the first failure stops the sweep.
             let mut signed: Vec<(Transaction, u64)> = Vec::with_capacity(picked.chunks.len());
+            // Each signed chunk's fee, by index.
+            let mut fees: Vec<u64> = Vec::with_capacity(picked.chunks.len());
             // A consolidation's reserved CoinJoin address, per signed chunk.
             let mut addresses: Vec<Address> = Vec::new();
             let mut sign_failure = None;
@@ -2905,6 +2932,7 @@ impl NetworkSession {
                     tx.input.iter().map(|i| i.previous_output),
                 );
                 signed.push((tx, chunk.amount + chunk.fee));
+                fees.push(chunk.fee);
                 if target == SweepTarget::CoinJoin {
                     addresses.push(dest);
                 }
@@ -2928,6 +2956,8 @@ impl NetworkSession {
                         this.hub.note_announced(txid);
                         result.txids.push(txid.to_string());
                         result.moved += value;
+                        result.fee += fees[n];
+                        result.received += value - fees[n];
                         result.remaining -= value;
                     }
                     Err(e) => {
@@ -3215,6 +3245,8 @@ pub(crate) mod sweep_test_hooks {
     pub(crate) struct Hooks {
         pub(crate) broadcast: Option<Broadcast>,
         pub(crate) max_inputs: Option<usize>,
+        /// The shield lock's input cap a consolidation must exceed.
+        pub(crate) lock_inputs: Option<usize>,
         /// A sweep waits here once it read its coins, under the fence.
         pub(crate) after_read: Option<Arc<crate::coins::TestPause>>,
         /// A sweep waits here before broadcasting chunk `n`.
@@ -3238,6 +3270,16 @@ fn sweep_hooks(session: &NetworkSession) -> sweep_test_hooks::Hooks {
     (session.coinjoin.sweep_hooks.lock())
         .unwrap_or_else(|p| p.into_inner())
         .clone()
+}
+
+/// The inputs one shield asset lock takes: a consolidation of fewer coins
+/// buys the drain nothing.
+fn shield_lock_inputs(_session: &NetworkSession) -> usize {
+    #[cfg(test)]
+    if let Some(max) = sweep_hooks(_session).lock_inputs {
+        return max;
+    }
+    crate::platform::shielded_pool::MAX_LOCK_INPUTS
 }
 
 /// Inputs per sweep chunk.
@@ -3790,6 +3832,35 @@ mod tests {
         // A's coin plus the not-fully-mixed denominations (B and C groups).
         assert_eq!(b.anonymizable, 50_000_000 + d + d);
         assert_eq!(average, 2.0);
+        // Every free coin of the CoinJoin account, the collateral too.
+        assert_eq!(b.coinjoin_account, 3 * d + 40_000);
+    }
+
+    /// Opus m6 / Sol R4: the move card's balance counts what the plan
+    /// moves even when no denomination is left: a collateral alone, or a
+    /// consolidated output. A held coin is not counted.
+    #[test]
+    fn the_account_balance_counts_collaterals_and_consolidated_coins() {
+        let collateral = coin(1, 40_000, true, rounds::ROUNDS_COLLATERAL, false, B);
+        let (b, _) = compute_balances(&[collateral], dashcore::Network::Testnet, 4);
+        assert_eq!(
+            (b.denominated, b.fully_mixed, b.coinjoin_account),
+            (0, 0, 40_000)
+        );
+        let consolidated = coin(2, 3_000_000_000, true, 0, false, C);
+        let (b, _) = compute_balances(
+            std::slice::from_ref(&consolidated),
+            dashcore::Network::Testnet,
+            4,
+        );
+        assert_eq!(
+            (b.denominated, b.fully_mixed, b.coinjoin_account),
+            (0, 0, 3_000_000_000)
+        );
+        let mut held = consolidated;
+        held.coin.reserved = true;
+        let (b, _) = compute_balances(&[held], dashcore::Network::Testnet, 4);
+        assert_eq!(b.coinjoin_account, 0);
     }
 
     /// Q4: the plan names how much of the move is fully mixed; the rest of

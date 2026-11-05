@@ -9,6 +9,7 @@
 import type { Backend } from "../api/backend";
 import { hasCode } from "../api/backend";
 import type { AuthGrant } from "../api/generated/AuthGrant";
+import type { CoinJoinStatus } from "../api/generated/CoinJoinStatus";
 import type { MixedCoinsSweepPlan } from "../api/generated/MixedCoinsSweepPlan";
 import type { MixedCoinsResendState } from "../api/generated/MixedCoinsResendState";
 import type { MixedCoinsSweepResult } from "../api/generated/MixedCoinsSweepResult";
@@ -51,11 +52,12 @@ export const MOVE_COPY = {
   },
   done: {
     title: "Coins moved",
-    text: (moved: string) => `${moved} is on its way to your wallet's main balance.`,
+    text: (received: string, fee: string) => `${received} is on its way to your wallet's main balance. Network fee: ${fee}.`,
   },
   partial: {
     title: "Not everything moved",
-    text: (moved: string, remaining: string) => `${moved} moved; ${remaining} stayed in your CoinJoin balance. Try again to move the rest.`,
+    text: (received: string, fee: string, remaining: string) =>
+      `${received} is on its way to your wallet's main balance (network fee ${fee}); ${remaining} stayed in your CoinJoin balance. Try again to move the rest.`,
   },
   unknown: "One transaction may have reached the network. Its coins stay reserved until the wallet sees it; the rest stayed in your CoinJoin balance. Try again sends the same transaction again.",
   resent: {
@@ -99,10 +101,15 @@ const STOP_RETRY_MS = 250;
 
 /** The outcome of a move that ran: complete, partial, or with a chunk of unknown outcome. */
 export function resultText(r: MixedCoinsSweepResult, amount: (duffs: number) => string): { title: string; text: string; kind: "done" | "partial" | "unknown" } {
-  if (r.failureCode === null) return { kind: "done", title: MOVE_COPY.done.title, text: MOVE_COPY.done.text(amount(r.moved)) };
+  if (r.failureCode === null) return { kind: "done", title: MOVE_COPY.done.title, text: MOVE_COPY.done.text(amount(r.received), amount(r.fee)) };
   if (r.unknownTxid !== null) return { kind: "unknown", title: MOVE_COPY.partial.title, text: MOVE_COPY.unknown };
-  return { kind: "partial", title: MOVE_COPY.partial.title, text: MOVE_COPY.partial.text(amount(r.moved), amount(r.remaining)) };
+  return { kind: "partial", title: MOVE_COPY.partial.title, text: MOVE_COPY.partial.text(amount(r.received), amount(r.fee), amount(r.remaining)) };
 }
+
+/** The move card shows while the CoinJoin account holds a free coin, mixed or not (collaterals, change, a
+ * consolidated output), and while a move runs or its result waits to be seen. */
+export const showsMoveCard = (s: CoinJoinStatus, flow: Pick<MoveMixedFlow, "open" | "running" | "step">) =>
+  s.unavailable?.kind !== "watchOnly" && (s.balances.coinjoinAccount > 0 || flow.open || flow.running || flow.step === "done");
 
 export class MoveMixedFlow extends Model {
   open = false;

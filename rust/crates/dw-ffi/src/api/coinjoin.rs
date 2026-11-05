@@ -323,7 +323,12 @@ pub struct MixedCoinsSweepPlan {
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct MixedCoinsSweepResult {
     pub txids: Vec<String>,
+    /// What left the CoinJoin account in the chunks sent: `received + fee`.
     pub moved: u64,
+    /// Of `moved`, what arrives at the destination.
+    pub received: u64,
+    /// Of `moved`, the network fees.
+    pub fee: u64,
     pub remaining: u64,
     /// Code of the error that stopped the sweep, `None` when complete.
     pub failure_code: Option<String>,
@@ -764,6 +769,8 @@ impl NetworkSession {
         Ok(MixedCoinsSweepResult {
             txids: r.txids,
             moved: r.moved,
+            received: r.received,
+            fee: r.fee,
             remaining: r.remaining,
             failure_code: r.failure_code,
             unknown_txid: r.unknown_txid,

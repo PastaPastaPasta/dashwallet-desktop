@@ -96,7 +96,13 @@ export function coinjoinStatusOf(world: World, w: FixtureWallet): CoinJoinStatus
     state: m.state,
     stopReason: m.state === "idle" ? m.stopReason : null,
     unavailable: unavailableOf(settings, w),
-    balances: { anonymizable: total - fullyMixed, denominated: Math.floor((total * m.progress.denominatedPercent) / 100), normalizedAnonymized: fullyMixed, fullyMixed },
+    balances: {
+      anonymizable: total - fullyMixed,
+      denominated: Math.floor((total * m.progress.denominatedPercent) / 100),
+      normalizedAnonymized: fullyMixed,
+      fullyMixed,
+      coinjoinAccount: w.coins.filter((u) => u.coinjoinRounds !== null && !u.reserved).reduce((n, u) => n + u.amount, 0),
+    },
     progress: m.progress,
     amountAndRounds: { amount: amount === 0 ? target : amount, rounds: settings.rounds, insufficientInputs: total > 0 && total < target },
     submittedDenominations: m.sessions.flatMap((s) => (s.denomination === null ? [] : [s.denomination])),
@@ -205,6 +211,7 @@ export function coinjoinHandlers({ wallet, grant, useGrant }: CoinJoinDeps): Han
       useGrant(world, grantId);
       const txidList: string[] = [];
       let moved = 0;
+      let fee = 0;
       let failureCode: string | null = null;
       let unknownTxid: string | null = null;
       for (const [i, c] of chunks.entries()) {
@@ -229,10 +236,11 @@ export function coinjoinHandlers({ wallet, grant, useGrant }: CoinJoinDeps): Han
         }
         txidList.push(txid);
         moved += c.chunk.amount + c.chunk.fee;
+        fee += c.chunk.fee;
       }
       changed(ctx, walletId);
       ctx.emit({ kind: "balances", network: world.launch.network.dirName, walletId, balances: w.summary.balances });
-      return { txids: txidList, moved, remaining: total - moved, failureCode, unknownTxid };
+      return { txids: txidList, moved, received: moved - fee, fee, remaining: total - moved, failureCode, unknownTxid };
     },
     // The engine sends a recorded chunk's bytes again; the fixture's network never answers.
     resend_mixed_coins: ({ walletId, txid }, { world }): MixedCoinsResend[] => {

@@ -298,6 +298,9 @@ pub struct CoinJoinBalances {
     /// Fully mixed by the QT-043 rule: the panel's "CoinJoin Balance" and
     /// what the CoinJoin send page may spend.
     pub fully_mixed: u64,
+    /// Every free coin of the CoinJoin account, mixed or not: the move card
+    /// shows while it is above zero.
+    pub coinjoin_account: u64,
 }
 
 impl From<EngineBalances> for CoinJoinBalances {
@@ -307,12 +310,14 @@ impl From<EngineBalances> for CoinJoinBalances {
             denominated,
             normalized_anonymized,
             fully_mixed,
+            coinjoin_account,
         } = b;
         CoinJoinBalances {
             anonymizable,
             denominated,
             normalized_anonymized,
             fully_mixed,
+            coinjoin_account,
         }
     }
 }
@@ -627,7 +632,13 @@ impl From<ConsolidationPlan> for MixedCoinsConsolidationPlan {
 #[serde(rename_all = "camelCase")]
 pub struct MixedCoinsSweepResult {
     pub txids: Vec<String>,
+    /// What left the CoinJoin account in the transactions sent:
+    /// `received + fee`.
     pub moved: u64,
+    /// Of `moved`, what arrives at the destination.
+    pub received: u64,
+    /// Of `moved`, the network fees.
+    pub fee: u64,
     pub remaining: u64,
     /// The code of the error that stopped the sweep; `null` when complete.
     pub failure_code: Option<String>,
@@ -676,6 +687,8 @@ impl From<SweepResult> for MixedCoinsSweepResult {
         let SweepResult {
             txids,
             moved,
+            received,
+            fee,
             remaining,
             failure_code,
             unknown_txid,
@@ -683,6 +696,8 @@ impl From<SweepResult> for MixedCoinsSweepResult {
         MixedCoinsSweepResult {
             txids,
             moved,
+            received,
+            fee,
             remaining,
             failure_code,
             unknown_txid,

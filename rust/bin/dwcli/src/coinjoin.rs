@@ -96,6 +96,9 @@ pub enum CoinJoinCommand {
         plan_only: bool,
         #[arg(long)]
         sync_height: Option<u32>,
+        /// Combine the coins: they lose some of their mixing privacy.
+        #[arg(long)]
+        yes: bool,
     },
     /// Test only (`mix-shield-test`, debug builds): `count` fresh addresses
     /// of the CoinJoin account, one `cjaddress <address>` line each.
@@ -427,6 +430,7 @@ pub fn run(
             wallet,
             plan_only,
             sync_height,
+            yes,
         } => {
             let id = wallet_id(&wallet)?;
             if let Some(h) = sync_height {
@@ -451,6 +455,10 @@ pub fn run(
                 );
             }
             if !plan_only {
+                println!("{COMBINED_PRIVACY}");
+                if !yes {
+                    return Err("pass --yes to combine them".into());
+                }
                 let grant = session
                     .vault()
                     .authorize(
@@ -489,6 +497,9 @@ fn print_sweep(r: &SweepResult) {
         r.failure_code.as_deref().unwrap_or("-")
     );
 }
+
+/// The sentence "Move mixed coins" shows before coins are combined on-chain.
+const COMBINED_PRIVACY: &str = "These coins are combined on-chain, so the fully mixed amount loses some of its mixing privacy.";
 
 #[cfg(test)]
 mod tests {

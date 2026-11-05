@@ -257,6 +257,9 @@ public struct MixedCoinsPlan: Sendable, Hashable {
 public struct MixedCoinsOutcome: Sendable, Hashable {
     public let txids: [String]
     public let moved: Amount
+    /// Of `moved`, what arrives; the rest is `fee`.
+    public let received: Amount
+    public let fee: Amount
     public let remaining: Amount
     public let failureCode: String?
     /// With `coinjoin.broadcast_unknown`: the chunk that may be on the network.
@@ -379,6 +382,7 @@ extension EngineClient {
         }
         return MixedCoinsOutcome(
             txids: r.txids, moved: Amount(duffs: Int64(clamping: r.moved)),
+            received: Amount(duffs: Int64(clamping: r.received)), fee: Amount(duffs: Int64(clamping: r.fee)),
             remaining: Amount(duffs: Int64(clamping: r.remaining)), failureCode: r.failureCode,
             unknownTxid: r.unknownTxid)
     }

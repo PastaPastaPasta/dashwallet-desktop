@@ -9090,7 +9090,18 @@ public func FfiConverterTypeMixedCoinsSweepPlan_lower(_ value: MixedCoinsSweepPl
  */
 public struct MixedCoinsSweepResult: Equatable, Hashable {
     public let txids: [String]
+    /**
+     * What left the CoinJoin account in the chunks sent: `received + fee`.
+     */
     public let moved: UInt64
+    /**
+     * Of `moved`, what arrives at the destination.
+     */
+    public let received: UInt64
+    /**
+     * Of `moved`, the network fees.
+     */
+    public let fee: UInt64
     public let remaining: UInt64
     /**
      * Code of the error that stopped the sweep, `None` when complete.
@@ -9105,7 +9116,16 @@ public struct MixedCoinsSweepResult: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(txids: [String], moved: UInt64, remaining: UInt64, 
+    public init(txids: [String], 
+        /**
+         * What left the CoinJoin account in the chunks sent: `received + fee`.
+         */moved: UInt64, 
+        /**
+         * Of `moved`, what arrives at the destination.
+         */received: UInt64, 
+        /**
+         * Of `moved`, the network fees.
+         */fee: UInt64, remaining: UInt64, 
         /**
          * Code of the error that stopped the sweep, `None` when complete.
          */failureCode: String?, 
@@ -9116,6 +9136,8 @@ public struct MixedCoinsSweepResult: Equatable, Hashable {
          */unknownTxid: String?) {
         self.txids = txids
         self.moved = moved
+        self.received = received
+        self.fee = fee
         self.remaining = remaining
         self.failureCode = failureCode
         self.unknownTxid = unknownTxid
@@ -9139,6 +9161,8 @@ public struct FfiConverterTypeMixedCoinsSweepResult: FfiConverterRustBuffer {
             try MixedCoinsSweepResult(
                 txids: FfiConverterSequenceString.read(from: &buf), 
                 moved: FfiConverterUInt64.read(from: &buf), 
+                received: FfiConverterUInt64.read(from: &buf), 
+                fee: FfiConverterUInt64.read(from: &buf), 
                 remaining: FfiConverterUInt64.read(from: &buf), 
                 failureCode: FfiConverterOptionString.read(from: &buf), 
                 unknownTxid: FfiConverterOptionString.read(from: &buf)
@@ -9148,6 +9172,8 @@ public struct FfiConverterTypeMixedCoinsSweepResult: FfiConverterRustBuffer {
     public static func write(_ value: MixedCoinsSweepResult, into buf: inout [UInt8]) {
         FfiConverterSequenceString.write(value.txids, into: &buf)
         FfiConverterUInt64.write(value.moved, into: &buf)
+        FfiConverterUInt64.write(value.received, into: &buf)
+        FfiConverterUInt64.write(value.fee, into: &buf)
         FfiConverterUInt64.write(value.remaining, into: &buf)
         FfiConverterOptionString.write(value.failureCode, into: &buf)
         FfiConverterOptionString.write(value.unknownTxid, into: &buf)
