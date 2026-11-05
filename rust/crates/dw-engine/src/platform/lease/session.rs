@@ -47,6 +47,7 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         | FlowKind::EnableDashPayKeys
         | FlowKind::PlatformAddressMove
         | FlowKind::Shield
+        | FlowKind::ShieldDrain
         | FlowKind::ShieldedSpend => &[GrantKind::PlatformOp],
     }
 }
@@ -141,6 +142,17 @@ pub(crate) fn issue(
                 if max_credits > 0 {
                     out.signers.platform_address =
                         Some(scoped(SignerScope::PlatformAddress).map_err(issuing)?);
+                }
+            }
+            GrantPurpose::PlatformOp { max_duffs, .. } if flow == FlowKind::ShieldDrain => {
+                // "Move mixed coins" to Shielded: the drain's inputs and the
+                // lock's credit key alone; no other input, no identity key,
+                // no contact crypto, no credits.
+                out.funding = max_duffs;
+                if max_duffs > 0 {
+                    out.signers.funding = Some(
+                        scoped(SignerScope::ShieldDrainFunding { max_duffs }).map_err(issuing)?,
+                    );
                 }
             }
             GrantPurpose::PlatformOp {

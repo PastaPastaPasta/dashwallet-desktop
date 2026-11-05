@@ -68,6 +68,29 @@ pub enum SignerScope {
     /// cannot see the debit, so the engine checks it before the transaction
     /// leaves the process (E0-04 design §3.4, §4.2).
     PlatformFunding { max_duffs: u64 },
+    /// "Move mixed coins" to Shielded (0.2 MIX-SHIELD): the drain of the
+    /// CoinJoin account into one Core → Shielded asset lock and that
+    /// lock's apply. Signatures and public keys (no chain codes) of the
+    /// address keys of CoinJoin account 0 `m/9'/coin'/4'/0'/{0,1}/index`
+    /// (the lock's inputs) and of the shielded top-up credit keys
+    /// `m/9'/coin'/5'/5'/index` (the lock's one-time key), nothing else: no
+    /// BIP44, BIP32 or DashPay input, no other credit key, no identity,
+    /// Orchard or masternode key, no `signmessage`. Capped by the token like
+    /// `PlatformFunding`; the engine bounds the drain's inputs by
+    /// `max_duffs` before it signs and issues this scope only for a
+    /// `ShieldDrain` lease.
+    ///
+    /// Threat note: the vault signs sighashes and cannot see a transaction's
+    /// outputs, so a leaked signer of this scope (one that outlived its lease
+    /// or reached other code) can spend every coin of the wallet's CoinJoin
+    /// account to any script, and sign a Shielded lock's proof, sending a
+    /// pending Core → Shielded lock's credits to any Orchard address. It
+    /// reaches no other coin or key. A mixing-only unlock's `CoinJoinOnly`
+    /// signer already reaches the same CoinJoin keys, and `PlatformFunding`
+    /// the same credit keys, so the scope adds no key either lacks; it ends
+    /// with its lease (lock, close, passphrase change) like every lease
+    /// signer.
+    ShieldDrainFunding { max_duffs: u64 },
     /// Platform-address spends (release 0.1, "Move to Dash wallet"):
     /// signatures and public keys (no chain codes) of the DIP-17 payment
     /// address keys `m/9'/coin'/17'/account'/key_class'/index` only. Like
@@ -140,10 +163,12 @@ pub(crate) enum KeyUse {
 }
 
 impl SignerScope {
-    /// The funding cap of [`SignerScope::PlatformFunding`].
+    /// The funding cap of [`SignerScope::PlatformFunding`] and
+    /// [`SignerScope::ShieldDrainFunding`].
     pub fn max_duffs(&self) -> Option<u64> {
         match self {
-            SignerScope::PlatformFunding { max_duffs } => Some(*max_duffs),
+            SignerScope::PlatformFunding { max_duffs }
+            | SignerScope::ShieldDrainFunding { max_duffs } => Some(*max_duffs),
             _ => None,
         }
     }
@@ -194,6 +219,11 @@ impl SignerScope {
                 KeyUse::ExtendedPublicKey => paths::is_identity_top_up_account(path, network),
                 _ => false,
             },
+            SignerScope::ShieldDrainFunding { .. } => {
+                sign_or_public_key
+                    && (paths::is_coinjoin_address(path, network)
+                        || paths::is_shielded_top_up_credit_key(path, network))
+            }
             SignerScope::PlatformAddress => {
                 sign_or_public_key && paths::is_platform_payment_address(path, network)
             }
@@ -717,6 +747,64 @@ mod tests {
         ] {
             assert!(uses(s, other).is_empty(), "{other}");
         }
+    }
+
+    /// 0.2 MIX-SHIELD: the drain scope signs CoinJoin account 0's address
+    /// keys and the shielded top-up credit keys, nothing else; BIP44,
+    /// identity, other-account and other credit keys are refused, and no
+    /// signature or chain code beyond `Sign`/`PublicKey`.
+    #[test]
+    fn shield_drain_funding_signs_coinjoin_inputs_and_shielded_credit_keys_only() {
+        let s = SignerScope::ShieldDrainFunding { max_duffs: 7 };
+        assert_eq!(s.max_duffs(), Some(7));
+        for ok in [
+            "m/9'/1'/4'/0'/0/0",
+            "m/9'/1'/4'/0'/1/99",
+            "m/9'/1'/5'/5'/0",
+            "m/9'/1'/5'/5'/12",
+        ] {
+            assert_eq!(uses(s, ok), vec![KeyUse::Sign, KeyUse::PublicKey], "{ok}");
+        }
+        for other in [
+            // BIP44, BIP32 and DashPay inputs.
+            "m/44'/1'/0'/0/0",
+            "m/44'/1'/1'/1/3",
+            "m/0'/1/3",
+            "m/9'/1'/15'/0'/0",
+            // Other CoinJoin accounts, the account nodes, hardened children.
+            "m/9'/1'/4'/1'/0/0",
+            "m/9'/1'/4'/0'",
+            "m/9'/1'/4'/0'/0",
+            "m/9'/1'/4'/0'/0/0'",
+            "m/9'/1'/4'/0'/2/0",
+            // Other credit keys, the shielded top-up account node.
+            "m/9'/1'/5'/1'/0",
+            "m/9'/1'/5'/2'/0",
+            "m/9'/1'/5'/2'/0'/1",
+            "m/9'/1'/5'/2'/0'",
+            "m/9'/1'/5'/3'/2",
+            "m/9'/1'/5'/5'",
+            "m/9'/1'/5'/5'/0'",
+            // Identity, Platform-address, provider keys.
+            "m/9'/1'/5'/0'/0'/0'/0'",
+            "m/9'/1'/17'/0'/0'/0",
+            "m/9'/1'/3'/1'/0",
+            "m/9'/1'/3'/2'/0",
+            // Another network's coin type.
+            "m/9'/5'/4'/0'/0/0",
+            "m/9'/5'/5'/5'/0",
+            "m",
+        ] {
+            assert!(uses(s, other).is_empty(), "{other}");
+        }
+        // PlatformFunding still refuses CoinJoin inputs.
+        assert!(
+            uses(
+                SignerScope::PlatformFunding { max_duffs: 7 },
+                "m/9'/1'/4'/0'/0/0"
+            )
+            .is_empty()
+        );
     }
 
     /// Release 0.1: a Platform-address signer reaches the DIP-17 payment

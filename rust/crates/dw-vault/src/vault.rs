@@ -2172,6 +2172,7 @@ impl Vault {
             SignerScope::PlatformIdentity
                 | SignerScope::DashPayCrypto
                 | SignerScope::PlatformFunding { .. }
+                | SignerScope::ShieldDrainFunding { .. }
                 | SignerScope::PlatformAddress
         ) {
             return Err(VaultError::InvalidArgument(format!(
@@ -2186,7 +2187,8 @@ impl Vault {
             return Err(VaultError::GrantPurposeMismatch);
         };
         let granted = match scope {
-            SignerScope::PlatformFunding { max_duffs: wanted } => {
+            SignerScope::PlatformFunding { max_duffs: wanted }
+            | SignerScope::ShieldDrainFunding { max_duffs: wanted } => {
                 max_duffs != 0 && wanted <= max_duffs
             }
             SignerScope::PlatformIdentity | SignerScope::PlatformAddress => max_credits != 0,

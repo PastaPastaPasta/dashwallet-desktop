@@ -175,8 +175,8 @@ same seed).
 signers from it instead (one token may issue several; a token with its own key only through its hold,
 `platform_signer_held`, below), and each refuses every path and use outside its scope
 before reading the seed. The token's caps bound the scopes (E0-04 design §3.4; `vault.grant_purpose_mismatch`
-otherwise): `PlatformFunding{max_duffs}` needs a token `max_duffs` that is not 0 and at least the scope's (the
-engine asks for the funding budget left), `PlatformIdentity` a token `max_credits` that is not 0, and
+otherwise): `PlatformFunding{max_duffs}` and `ShieldDrainFunding{max_duffs}` need a token `max_duffs` that is not 0 and at
+least the scope's (the engine asks for the funding budget left), `PlatformIdentity` a token `max_credits` that is not 0, and
 `DashPayCrypto` comes with any `PlatformOp`. The identity-scan key (`Vault::scan_key`, below), which is the master
 key, has its own grant, `IdentityScan`: `scan_key` refuses a `PlatformOp` token (`vault.grant_purpose_mismatch`),
 so a capped flow token cannot release it (E0-04 design §3.2).
@@ -200,6 +200,7 @@ grant as `SignMessage` (D15).
 | `PlatformIdentity` | sign, public key (no chain code) | DIP-13 ECDSA identity keys `m/9'/coin'/5'/0'/0'/i'/k'` |
 | `DashPayCrypto` | never signs. Public keys; ECDH and the account-reference mask; contactInfo AES keys; export of the auto-accept key | xpubs of `m/9'/coin'/15'/a'/<user>/<friend>` (DIP-14 256-bit children), `m/9'/coin'/16'/expiry'` and `m/44'/coin'/0'`; ECDH and mask with identity keys; contactInfo `…/k'/65536'\|65537'/n'` under an identity key; export of `m/9'/coin'/16'/expiry'` only |
 | `PlatformFunding{max_duffs}` | sign, public key (no chain code); one extended public key | BIP44 and BIP32 addresses, DIP-15 receiving addresses, asset-lock credit keys `m/9'/coin'/5'/{1',2',3'}/…` with a non-hardened last step; the xpub of an identity's top-up account `m/9'/coin'/5'/2'/i'`. The vault signs sighashes and cannot check the debit, so the cap is enforced in two places (E0-04 design §3.4, §3.6): capped by the token (`platform_signer` refuses a `max_duffs` above the token's, E0-04 P1); the debit is checked at `register` (Mode A) or against the worst-case fee bound before the library call (Mode B), engine-side (E0-04 P2). No engine flow builds one yet (registration is DP1-02). |
+| `ShieldDrainFunding{max_duffs}` | sign, public key (no chain code) | address keys of CoinJoin account 0 `m/9'/coin'/4'/0'/{0,1}/i` and shielded top-up credit keys `m/9'/coin'/5'/5'/i` (non-hardened `i`), nothing else. "Move mixed coins" to Shielded (0.2 MIX-SHIELD): issued only for a `ShieldDrain` lease (`FlowKind::ShieldDrain`), which issues no other signer; capped by the token like `PlatformFunding`, and the engine refuses a drain whose inputs sum above the cap before it signs. **Threat note:** the vault cannot see what it signs, so a leaked signer spends every CoinJoin-account coin to any script and can apply a pending Core → Shielded lock to any Orchard address; it reaches no BIP44, BIP32, DashPay, identity, Orchard spend, Platform-address or masternode key, and adds no key the mixing-only `CoinJoinOnly` and the `PlatformFunding` scopes do not already reach. It ends with its lease. |
 
 `Vault::dashpay_crypto_signer` (the background crypto signer) needs no grant. It is issued only while the full
 key needs no prompt (`Unencrypted`, or `Unlocked` with scope Full), and refused while `Locked` (`vault.locked`)

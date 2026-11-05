@@ -3802,3 +3802,96 @@ fn a_mixed_sweep_is_refused_while_a_replay_runs() {
     let e = moved().unwrap_err();
     assert!(!matches!(e, EngineError::RescanInProgress), "{e:?}");
 }
+
+/// 0.2 MIX-SHIELD: a `ShieldDrain` lease issues the drain scope alone (no
+/// contact crypto, no identity key, no credits) from a `PlatformOp` grant's
+/// duffs; it signs CoinJoin account 0's inputs and the shielded credit key
+/// and nothing else; it ends with its lease.
+#[test]
+fn a_shield_drain_lease_signs_coinjoin_inputs_and_its_credit_key_only_while_it_holds() {
+    use key_wallet::Signer as _;
+    use std::str::FromStr;
+    let p = |s: &str| key_wallet::DerivationPath::from_str(s).unwrap();
+
+    let f = fixture(true);
+    let g = f.grant(
+        GrantPurpose::PlatformOp {
+            max_duffs: 5 * COIN,
+            max_credits: 1_000,
+        },
+        Credential::Passphrase(PASS),
+    );
+    let l = f.lease(FlowKind::ShieldDrain, &[g]).unwrap();
+    let signer = l.uncounted_funding_signer().unwrap();
+    assert_eq!(
+        signer.scope(),
+        dw_vault::SignerScope::ShieldDrainFunding {
+            max_duffs: 5 * COIN
+        }
+    );
+    assert!(l.identity_signer(&[0]).is_err());
+    assert!(l.contact_crypto().is_err());
+    assert_eq!(l.tx_purpose(), None);
+    let sign = |path: &str| f.engine.block_on(signer.sign_ecdsa(&p(path), [1; 32]));
+    sign("m/9'/1'/4'/0'/0/0").unwrap();
+    sign("m/9'/1'/4'/0'/1/3").unwrap();
+    sign("m/9'/1'/5'/5'/0").unwrap();
+    for refused in [
+        "m/44'/1'/0'/0/0",
+        "m/9'/1'/4'/1'/0/0",
+        "m/9'/1'/5'/1'/0",
+        "m/9'/1'/5'/2'/0'/0",
+        "m/9'/1'/5'/0'/0'/0'/0'",
+        "m/9'/1'/17'/0'/0'/0",
+    ] {
+        assert!(
+            matches!(sign(refused), Err(dw_vault::SignerError::PathNotAllowed(_))),
+            "{refused}"
+        );
+    }
+
+    // Only a `PlatformOp` grant with duffs funds it.
+    for wrong in [
+        f.grant(GrantPurpose::Spend { max_duffs: COIN }, Credential::None),
+        f.grant(GrantPurpose::Governance, Credential::None),
+    ] {
+        assert_eq!(
+            f.lease(FlowKind::ShieldDrain, &[wrong]).unwrap_err(),
+            LeaseError::Invalid
+        );
+    }
+    let no_duffs = f
+        .lease(FlowKind::ShieldDrain, &[f.platform_op(0, 1_000)])
+        .unwrap();
+    assert!(no_duffs.uncounted_funding_signer().is_err());
+
+    // The lease ends: it issues no signer again, and the vault-key signer
+    // it gave out stops at the vault's next epoch (E0-04 §3.5).
+    f.session.end_flow(l.id_string()).unwrap();
+    assert!(l.uncounted_funding_signer().is_err());
+    f.session.lock_vault_sync().unwrap();
+    assert!(matches!(
+        sign("m/9'/1'/4'/0'/0/0"),
+        Err(dw_vault::SignerError::Locked)
+    ));
+
+    // On a locked vault the lease holds the grant's own key: its signer
+    // stops the moment the lease ends.
+    let g = f.grant(
+        GrantPurpose::PlatformOp {
+            max_duffs: COIN,
+            max_credits: 0,
+        },
+        Credential::Passphrase(PASS),
+    );
+    let l = f.lease(FlowKind::ShieldDrain, &[g]).unwrap();
+    assert!(l.view().unwrap().own_key);
+    let held = l.uncounted_funding_signer().unwrap();
+    let sign = |path: &str| f.engine.block_on(held.sign_ecdsa(&p(path), [1; 32]));
+    sign("m/9'/1'/4'/0'/0/0").unwrap();
+    f.session.end_flow(l.id_string()).unwrap();
+    assert!(matches!(
+        sign("m/9'/1'/4'/0'/0/0"),
+        Err(dw_vault::SignerError::Locked)
+    ));
+}

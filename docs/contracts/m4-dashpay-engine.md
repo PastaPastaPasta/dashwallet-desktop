@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 49
+Contract-Version: 50
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -756,7 +756,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: e81999a2cb051cf0560054d80e6c7f41a3f50adbedf4b23bf411123038f983ba version: 49 -->
+<!-- surface-sha256: 2d395c65cecdc06ebff9080275605fa493cd1c7a39962d66161f9116a42cf6e3 version: 50 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1220,6 +1220,7 @@ pub enum FlowKind {
     PlatformAddressMove,
     Shield,
     ShieldedSpend,
+    ShieldDrain,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -3715,6 +3716,11 @@ renames or reshapes them takes the next version bump:
     instead of a Platform code: the dispatch journal not read (was `platform.unavailable` for shields, sends and
     unshields; only a closing session's) and a shield's funding held for a running SPV or a running DashPay bring-up
     (was `platform.context_unavailable` / `platform.unavailable`). §2.13 "Still syncing".
+75. **The CoinJoin drain lease (0.2 MIX-SHIELD, version 50).** `FlowKind` gains `ShieldDrain` ("Move mixed coins" to
+    Shielded): a lease of it takes one `PlatformOp` grant and issues only its duffs' funding signer, the vault scope
+    `ShieldDrainFunding{max_duffs}` (m1 §scopes: CoinJoin account 0's address keys and the shielded top-up credit keys,
+    nothing else); no contact crypto, identity key or credits. A call checks the lease's flow, so only the drain reads
+    that signer. `dw-app`'s `FlowKindName` mirrors it as `shieldDrain`.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

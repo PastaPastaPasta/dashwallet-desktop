@@ -87,6 +87,23 @@ fn platform_signer_scopes_are_capped_by_the_token() {
     v.platform_signer(&w, &t, SignerScope::PlatformIdentity)
         .unwrap();
 
+    // The drain scope (0.2 MIX-SHIELD) has the same cap.
+    let drain = |max_duffs| SignerScope::ShieldDrainFunding { max_duffs };
+    let t = token(&v, platform_op(1_000, 5), Credential::None);
+    for wanted in [1, 1_000] {
+        assert_eq!(
+            v.platform_signer(&w, &t, drain(wanted)).unwrap().scope(),
+            drain(wanted)
+        );
+    }
+    for wanted in [1_001, u64::MAX] {
+        assert_eq!(
+            v.platform_signer(&w, &t, drain(wanted)).map(drop),
+            mismatch,
+            "{wanted}"
+        );
+    }
+
     // `max_duffs = 0`: no funding signer at all.
     let t = token(&v, platform_op(0, 5), Credential::None);
     for wanted in [0, 1] {
@@ -94,6 +111,7 @@ fn platform_signer_scopes_are_capped_by_the_token() {
             v.platform_signer(&w, &t, funding(wanted)).map(drop),
             mismatch
         );
+        assert_eq!(v.platform_signer(&w, &t, drain(wanted)).map(drop), mismatch);
     }
     v.platform_signer(&w, &t, SignerScope::PlatformIdentity)
         .unwrap();

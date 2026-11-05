@@ -19,6 +19,8 @@ use key_wallet::bip32::{ChildNumber, DerivationPath};
 use key_wallet::{ExtendedPubKeySigner, Network, Signer};
 
 const FUNDING: SignerScope = SignerScope::PlatformFunding { max_duffs: 100_000 };
+/// "Move mixed coins" to Shielded (0.2 MIX-SHIELD).
+const DRAIN: SignerScope = SignerScope::ShieldDrainFunding { max_duffs: 100_000 };
 /// A `PlatformOp` grant that covers [`FUNDING`] and identity signatures.
 const PLATFORM_OP: GrantPurpose = GrantPurpose::PlatformOp {
     max_duffs: 100_000,
@@ -217,6 +219,15 @@ fn all_paths(coin: u32, other: u32) -> Vec<(&'static str, DerivationPath)> {
         // A BIP32 account numbered 44' is a BIP32 account, not BIP44.
         ("bip32 address of account 44'", c("m/44'/0/0")),
         ("coinjoin address", c("m/9'/{c}'/4'/0'/0/1")),
+        ("coinjoin internal address", c("m/9'/{c}'/4'/0'/1/7")),
+        ("coinjoin account 1 address", c("m/9'/{c}'/4'/1'/0/1")),
+        ("coinjoin account", c("m/9'/{c}'/4'/0'")),
+        ("coinjoin address, hardened", c("m/9'/{c}'/4'/0'/0/1'")),
+        (
+            "coinjoin address leaf 2^31",
+            with_step(c("m/9'/{c}'/4'/0'/0/1"), -1, normal(top)),
+        ),
+        ("coinjoin address other network", c("m/9'/{o}'/4'/0'/0/1")),
         ("identity key", c("m/9'/{c}'/5'/0'/0'/1'/4'")),
         (
             "identity key id 2^31|4",
@@ -261,6 +272,10 @@ fn all_paths(coin: u32, other: u32) -> Vec<(&'static str, DerivationPath)> {
         ),
         ("invitation credit key", c("m/9'/{c}'/5'/3'/2")),
         ("address top-up credit key", c("m/9'/{c}'/5'/4'/2")),
+        ("shielded credit key", c("m/9'/{c}'/5'/5'/2")),
+        ("shielded credit key, hardened", c("m/9'/{c}'/5'/5'/2'")),
+        ("shielded top-up account", c("m/9'/{c}'/5'/5'")),
+        ("shielded credit key other network", c("m/9'/{o}'/5'/5'/2")),
         ("receiving account", receiving(coin, &[])),
         ("receiving account other network", receiving(other, &[])),
         (
@@ -314,7 +329,12 @@ fn expected(scope: SignerScope, name: &str) -> Uses {
             | "registration credit key"
             | "top-up credit key"
             | "invitation credit key"
+            | "shielded credit key"
             | "receiving address",
+        ) => sign_public_key,
+        (
+            SignerScope::ShieldDrainFunding { .. },
+            "coinjoin address" | "coinjoin internal address" | "shielded credit key",
         ) => sign_public_key,
         (SignerScope::PlatformFunding { .. }, "top-up account") => Uses { xpub: true, ..NONE },
         (SignerScope::DashPayCrypto, "bip44 account 0" | "receiving account") => public,
@@ -338,6 +358,7 @@ async fn check_platform_matrix(v: &Vault, coin: u32, other: u32) {
         SignerScope::PlatformIdentity,
         SignerScope::DashPayCrypto,
         FUNDING,
+        DRAIN,
     ] {
         let s = platform_signer(v, scope);
         for (name, p) in all_paths(coin, other) {
@@ -403,7 +424,9 @@ async fn coinjoin_scopes_get_no_platform_operation() {
         ..NONE
     };
     for (name, p) in all_paths(1, 5) {
-        let coinjoin = name == "coinjoin address";
+        // Every path in the CoinJoin branch of this network, the account
+        // node and other accounts included.
+        let coinjoin = name.starts_with("coinjoin") && !name.ends_with("other network");
         let bip44 = name.starts_with("bip44 address");
         assert_eq!(uses(&mixing, &p).await, mixing_uses(coinjoin), "{name}");
         // CoinJoinFunding keeps its old rule, `m/44'/coin'/account'/…` with
@@ -441,6 +464,7 @@ async fn platform_grants_issue_scoped_signers_only() {
         SignerScope::PlatformIdentity,
         SignerScope::DashPayCrypto,
         FUNDING,
+        DRAIN,
     ] {
         assert_eq!(
             v.platform_signer(&wallet(1), &token, scope)
@@ -877,4 +901,55 @@ async fn a_grant_tells_whether_the_vault_holds_an_identity_key_without_being_use
         .platform_signer_held(&wallet(1), &hold, &tokens[0], SignerScope::PlatformIdentity)
         .unwrap();
     assert!(identity.identity_key_matches(&key, &held).unwrap());
+}
+
+/// 0.2 MIX-SHIELD: a drain signer signs a CoinJoin input and the shielded
+/// credit key, refuses a BIP44 input, and stops when the vault locks; a
+/// mixing-only unlock issues none.
+#[tokio::test]
+async fn a_shield_drain_signer_ends_with_the_unlock() {
+    let fx = Fixture::new();
+    let v = fx.open();
+    v.create(Some(PASS)).unwrap();
+    v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
+    let grant = v
+        .authorize(PLATFORM_OP, Some(&wallet(1)), Credential::Passphrase(PASS))
+        .unwrap();
+    let mut tokens = [v
+        .redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&wallet(1)))
+        .unwrap()];
+    let hold = v.hold_key(&mut tokens).unwrap();
+    let s = match &hold {
+        Some(hold) => v.platform_signer_held(&wallet(1), hold, &tokens[0], DRAIN),
+        None => v.platform_signer(&wallet(1), &tokens[0], DRAIN),
+    }
+    .unwrap();
+    assert_eq!(s.scope(), DRAIN);
+    s.sign_ecdsa(&path("m/9'/1'/4'/0'/0/1"), [1; 32])
+        .await
+        .unwrap();
+    s.sign_ecdsa(&path("m/9'/1'/5'/5'/0"), [1; 32])
+        .await
+        .unwrap();
+    assert!(refused(
+        s.sign_ecdsa(&path("m/44'/1'/0'/0/0"), [1; 32]).await
+    ));
+    assert!(refused(
+        s.sign_ecdsa(&path("m/9'/1'/5'/1'/0"), [1; 32]).await
+    ));
+
+    v.lock();
+    assert_eq!(
+        s.sign_ecdsa(&path("m/9'/1'/4'/0'/0/1"), [1; 32])
+            .await
+            .unwrap_err(),
+        SignerError::Locked
+    );
+    v.unlock(PASS, UnlockScope::MixingOnly).unwrap();
+    assert_eq!(
+        s.sign_ecdsa(&path("m/9'/1'/4'/0'/0/1"), [1; 32])
+            .await
+            .unwrap_err(),
+        SignerError::Locked
+    );
 }
