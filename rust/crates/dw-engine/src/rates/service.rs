@@ -74,6 +74,9 @@ struct Inner {
     /// Raised each time prices are turned off: an attempt started before
     /// keeps nothing it brings, even if prices are on again when it lands.
     off_epoch: u64,
+    /// An Off neither saved nor its file removed: retried on each pass of
+    /// the task until it lands (rates-engine §1).
+    persist_pending: bool,
 }
 
 pub(crate) struct RatesHub {
@@ -127,6 +130,7 @@ impl RatesHub {
                 next_due: None,
                 announced: None,
                 off_epoch: 0,
+                persist_pending: false,
             }),
             attempt: tokio::sync::Mutex::new(()),
             wake: Arc::new(Notify::new()),
@@ -204,7 +208,9 @@ impl RatesHub {
     ///
     /// Off takes effect even when `rates.json` cannot be written: the file
     /// is then removed, so a restart cannot bring the old prices back (it
-    /// reads as never disclosed), and the storage error is returned.
+    /// reads as never disclosed), and the storage error is returned. When
+    /// the removal fails too, the Off is saved on a later pass of the task
+    /// ([`Self::retry_persist`]).
     pub(crate) fn set_settings(&self, settings: RatesSettings) -> Result<RatesView, RatesError> {
         if let Some(c) = settings.currency.as_deref()
             && !is_code(c)
@@ -223,8 +229,13 @@ impl RatesHub {
                 inner.failures = 0;
                 inner.next_due = None;
                 let saved = self.write(&inner.stored);
-                if saved.is_err() {
-                    let _ = std::fs::remove_file(&self.path);
+                inner.persist_pending = false;
+                if let Err(e) = &saved
+                    && let Err(gone) = std::fs::remove_file(&self.path)
+                    && gone.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(error = %e, remove = %gone, "rates: Off not saved yet, retrying");
+                    inner.persist_pending = true;
                 }
                 saved
             } else {
@@ -234,6 +245,7 @@ impl RatesHub {
                 };
                 self.write(&next)?;
                 inner.stored = next;
+                inner.persist_pending = false;
                 Ok(())
             }
         };
@@ -352,6 +364,23 @@ impl RatesHub {
         self.changed();
     }
 
+    /// Saves an Off that could not be saved (or its file removed) when it
+    /// was made; a no-op otherwise.
+    fn retry_persist(&self) {
+        let mut inner = self.lock();
+        if !inner.persist_pending {
+            return;
+        }
+        let gone = || match std::fs::remove_file(&self.path) {
+            Ok(()) => true,
+            Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+        };
+        if self.write(&inner.stored).is_ok() || gone() {
+            inner.persist_pending = false;
+            tracing::info!("rates: the Off is saved");
+        }
+    }
+
     fn write(&self, stored: &Stored) -> Result<(), RatesError> {
         let json =
             serde_json::to_vec_pretty(stored).map_err(|e| RatesError::Storage(e.to_string()))?;
@@ -397,6 +426,7 @@ impl RatesHub {
 async fn run(hub: std::sync::Weak<RatesHub>) {
     loop {
         let Some(h) = hub.upgrade() else { return };
+        h.retry_persist();
         let (wait, due) = h.next_wait();
         if due {
             h.attempt().await;

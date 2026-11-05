@@ -53,7 +53,12 @@ price and attempt, in memory and in `rates.json`, keeping only the settings; on 
 `unavailable(neverFetched)` until a new fetch. The transactions' price stamps (§6) are history and stay.
 Off takes effect even when `rates.json` cannot be written: the file is then removed, so a restart reads
 prices as never disclosed (no request until the disclosure is shown again), and `rates.storage` is
-returned.
+returned. The removal fails safe but drops the settings with the file: the currency choice is lost, and
+the next start offers the locale's currency again with the disclosure. When the removal fails as well
+(a read-only data folder, a file another program holds), the failure is logged and the Off is saved, or
+the file removed, on the rates task's next pass that can (about once a minute while prices are off).
+Remaining gap: if the app stops before any retry lands, the old file is read at the next start, with
+prices on.
 
 **Schedule.** One attempt as soon as requests are allowed (after a restart: 5 minutes ± 20 % after the
 last attempt), then every 5 minutes ± 20 %. After a failed attempt: 1, 2, then 4 minutes, each ± 20 %. "Update now" is

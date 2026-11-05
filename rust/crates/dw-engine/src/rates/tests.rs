@@ -992,6 +992,66 @@ fn off_takes_effect_when_rates_json_cannot_be_written() {
     assert_eq!(v.rate, None);
 }
 
+/// Review round 2, m1: when neither the Off's write nor the removal of
+/// the old file succeeds, the failure is logged and the Off is saved on a
+/// later pass of the task, once the folder can be written again.
+#[cfg(unix)]
+#[test]
+fn an_off_that_can_be_neither_saved_nor_removed_is_saved_on_a_later_tick() {
+    use std::os::unix::fs::PermissionsExt;
+    let rig = Rig::with(vec![usd("49.0967", T0)], vec![Err("unused")], |c| {
+        RatesConfig {
+            tick: Duration::from_millis(5),
+            ..c
+        }
+    });
+    rig.on();
+    block_on(rig.hub.attempt());
+    assert!(stored_file(&rig).settings.enabled);
+    let mode =
+        |m: u32| std::fs::set_permissions(&rig.root, std::fs::Permissions::from_mode(m)).unwrap();
+    // Read-only: no temporary file, no rename, no removal.
+    mode(0o500);
+    if std::fs::write(rig.root.join("probe"), b"").is_ok() {
+        mode(0o700);
+        eprintln!("skipped: the folder stays writable (run as root)");
+        return;
+    }
+    let res = rig.rates().set_settings(settings(false, Some("USD"), true));
+    assert_eq!(res.map_err(|e| e.code()), Err("rates.storage"));
+    assert_eq!(
+        rig.rates().status().state,
+        RateState::Off(RatesOff::Disabled)
+    );
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.spawn(super::service::run_for_tests(Arc::downgrade(&rig.hub)));
+    std::thread::sleep(Duration::from_millis(100));
+    // The gap while the folder stays read-only: the old file is still there.
+    assert!(
+        stored_file(&rig).settings.enabled,
+        "not saved while read-only"
+    );
+    mode(0o700);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let file = stored_file(&rig);
+        if !file.settings.enabled {
+            assert!(file.rates.is_empty(), "no cached price");
+            assert_eq!(file.settings, settings(false, Some("USD"), true));
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the Off was never saved"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(rig.requests(), 1, "no request since the Off");
+}
+
 /// Review nit 5: after the fallback answered, a CTX row with an earlier
 /// provider time is refused, the fallback's being newer, but the attempt
 /// did not fail.
