@@ -587,8 +587,9 @@ pub(crate) fn derive_funding(
     }
 }
 
-/// Whether tracked row `r` matches `step`: a top-up's or a shield's (its
-/// marker under an [`signed_lock_key`]) by being one of its `signed` locks
+/// Whether tracked row `r` matches `step`: a top-up's, a shield's or a
+/// Platform address fund's (its marker under a [`signed_lock_key`]) by
+/// being one of its `signed` locks
 /// (module doc); else by the draft's own key, or by the marker's unless the
 /// row preceded the marker (`foreign`).
 fn matches_step(

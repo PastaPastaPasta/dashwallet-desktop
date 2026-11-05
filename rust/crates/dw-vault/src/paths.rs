@@ -222,6 +222,12 @@ fn is_chain_and_index(p: &[ChildNumber]) -> bool {
 /// is ever the top-up account node itself
 /// ([`is_identity_top_up_account`]).
 ///
+/// The wallet holds the `4'` and `5'` account xpubs (platform-wallet builds
+/// those locks from them), so no scope may ever `KeyUse::Export` one of
+/// these keys: a non-hardened child private key next to its account xpub
+/// reveals the account xpriv. A credit key only signs and gives its
+/// public key.
+///
 /// Before invitation creation (roadmap X3) exports an invitation key:
 /// platform-wallet documents it as hardened (`m/9'/coin'/5'/3'/index'`,
 /// `contact_requests.rs:66-71`), while this shape signs non-hardened ones.
@@ -465,7 +471,7 @@ mod tests {
         let bip32: Shape = |p, _| is_bip32_address(p);
         let identity: Shape = |p, n| identity_auth_key(p, n).is_some();
         // (shape, a matching path, the dynamic steps, hardened?)
-        let cases: [(&str, Shape, DerivationPath, &[usize], bool); 15] = [
+        let cases: [(&str, Shape, DerivationPath, &[usize], bool); 17] = [
             (
                 "identity",
                 identity,
@@ -528,6 +534,20 @@ mod tests {
                 "credit key leaf",
                 is_asset_lock_credit_key,
                 path("m/9'/1'/5'/1'/4"),
+                &[4],
+                false,
+            ),
+            (
+                "address top-up credit key leaf",
+                is_asset_lock_credit_key,
+                path("m/9'/1'/5'/4'/4"),
+                &[4],
+                false,
+            ),
+            (
+                "shielded top-up credit key leaf",
+                is_asset_lock_credit_key,
+                path("m/9'/1'/5'/5'/4"),
                 &[4],
                 false,
             ),
@@ -629,6 +649,23 @@ mod tests {
             "m/9'/1'/4'/1'/0",
         ] {
             assert!(!is_asset_lock_credit_key(&path(bad), t), "{bad}");
+        }
+        // A subfeature step past 31 bits aliases none of the asset-lock pools.
+        for sub in [1, 2, 3, 4, 5] {
+            let aliased: DerivationPath = vec![
+                ChildNumber::Hardened { index: 9 },
+                ChildNumber::Hardened { index: 1 },
+                ChildNumber::Hardened { index: 5 },
+                ChildNumber::Hardened {
+                    index: INDEX_LIMIT | sub,
+                },
+                ChildNumber::Normal { index: 0 },
+            ]
+            .into();
+            assert!(
+                !is_asset_lock_credit_key(&aliased, t),
+                "{sub}' past 31 bits"
+            );
         }
         assert!(is_identity_top_up_account(&path("m/9'/1'/5'/2'/0'"), t));
         for bad in [

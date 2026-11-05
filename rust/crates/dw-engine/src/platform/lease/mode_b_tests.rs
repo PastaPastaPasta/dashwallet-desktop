@@ -1017,8 +1017,8 @@ async fn a_top_up_step_reads_only_its_own_signed_locks_across_a_restart() {
 /// answers for the second, across a restart too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_second_fund_does_not_adopt_the_first_funds_lock() {
-    const A: &str = "fund/a/funding";
-    const B: &str = "fund/b/funding";
+    const A: &str = "paddr/a/funding";
+    const B: &str = "paddr/b/funding";
     let key = FundingKey {
         funding_type: AssetLockFundingType::AssetLockAddressTopUp,
         identity_index: 0,
