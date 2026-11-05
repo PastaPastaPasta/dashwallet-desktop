@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 49
+Contract-Version: 50
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -76,6 +76,7 @@ type is `pub(crate)`.
 | `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_link`, `stashed_links`, `take_stashed_link`, `forget_stashed_link`, `stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
 | `shielded.rs` | 0.1 E1 (RELEASE-PLAN §1 "Shielded") | `shielded_status`, `shielded_sync`, `shielded_receive_address`, `shield_quote`, `shield_from_core`, `resume_shield`, `shielded_send_quote`, `shielded_send`, `unshield_quote`, `unshield_to_core`, `shielded_history` |
+| `unfinished.rs` | 0.2 RECOVERY | `unfinished_transfers`, `finish_transfer` |
 | `errors.rs` | E0-05 (the mapping, §6) and each domain's owner | the error enums of §4 |
 
 ## 1. Conventions (changes to m1-engine.md §1)
@@ -749,6 +750,51 @@ again after a restart (the step's signed-lock record, the library's tracked row,
 | `unshield_to_core(credits, to, grant, confirm_unrecorded)` | async | Shielded → Core: the journal and `confirm_unrecorded` gates as `shielded_send`'s, then the quote's refusals, then under the `ShieldedSpend` lease the library's `withdraw` to `to` at Core fee rate 1, as `shielded_send` otherwise. The duffs arrive when Platform's asset unlock is mined. Platform refuses a withdrawal from a pool holding fewer than its minimum of notes (250 in every version at the pin, `minimum_pool_notes_for_outgoing`); that refusal is `shielded.pool_too_small{notes, required}` ("Shielded withdrawals open once the network's shielded pool has enough activity. Try again later."). The engine does not check the floor first: mainnet and testnet are past it. | `ShieldedError` |
 | `shielded_history(offset, limit)` | async | The account's activity rows (`ShieldedActivity`), pending first, then by block height, newest first: kind, direction, credits, fee, counterparty (a shielded, Platform or Core address), memo, block height, status and when this device recorded it. `limit` above 500 is `invalid_argument`. The gate. | `ShieldedError` |
 
+### 2.14 Unfinished transfers (`unfinished.rs`; 0.2 RECOVERY)
+
+The wallet's funding asset locks whose Platform side is not known to have happened: Core → Shielded locks (funding type
+`AssetLockShieldedAddressTopUp`, 5) in this version; Core → Platform address locks (type 4) join as a second kind. A lock
+is listed while the library tracks it (`list_tracked_locks`) and it is neither the library's proved `Consumed` nor
+settled in the dispatch journal (`top_up_settled`; the journal's records are by txid, so for a lock transaction whose
+several credit outputs the wallet's pools pay, each lock stands on the library's row alone and a finish writes no
+txid record). It is **this device's** (`origin: thisDevice`) when one of the
+kind's funding steps signed it (the journal's `signed_lock` rows), else **restored** (`restored`): an earlier install's
+or another device's of the same seed, which platform-wallet's restore scan rebuilt from the chain (`RecoveredFromChain`,
+with its ChainLock proof). 0.1's `pending_shields` lists only this device's; a restored shield lock was history there.
+
+For these funding types nothing the wallet can read says whether Platform already took a lock (no query of spent
+outpoints; the library keeps a restored lock "consumption unknown"). A lock is unfinished until an apply is tried, and
+trying is safe: Platform executes at most one apply of an outpoint (rs-drive-abci
+`common/asset_lock/proof/verify_is_not_spent`). Only Platform's proved execution finishes a lock. Its "already
+consumed" for the exact outpoint (`PlatformWalletError::AssetLockAlreadyConsumed`, the library's typed
+`IdentityAssetLockTransactionOutPointAlreadyConsumedError` matched to the outpoint) is unauthenticated and settles
+nothing; neither does a failure after the lock's credit key signed. Both leave the lock `checking`. Balances come only
+from proved reads.
+
+**States** (`UnfinishedState`). `confirming`: no InstantSend or ChainLock proof yet. `ready`: proved, and not tried or
+refused before its signature. `checking`: the apply may have executed, unproved (marked as 0.1's "consumption unknown"
+is, kept across restarts), or a lock of this device's the library recovered from the chain. `reportedUsed` (and
+`LockFinish::reportedUsed`): reserved for the advisory marker (Q1), never set in this version. `notActive`: the kind is
+not active on the network, by the protocol version as last proved (the list makes no Platform query and binds
+nothing).
+
+**Finishing** (`LockFinish`). Under the kind's per-wallet lock (a shield's, so a finish and a shield never interleave),
+the lock is read again: one finished meanwhile is `applied` with no apply. A lock with no proof is `proofWaiting`, a
+kind that is not active or not ready is `notApplied{error}` with the refusal's code alone (`shielded.not_active`,
+`shielded.not_synced`; the host asks `shielded_status` for the detail), both before any lease is begun, so the grant is
+kept. Otherwise, under a lease of the kind's
+flow (`Shield` for type 5) begun from `grant` or named by it, one call permit and the lease's funding signer narrowed
+to the lock's credit key (the script of the lock payload's `credit_outputs[vout]`; any other key's signature is
+refused) sign the kind's `FromExistingAssetLock` of the same outpoint: never a new lock, new funding or other coins,
+and no proof wait. The grant needs `max_duffs` ≥ 1 (the lock's one-time key), none of which is spent. The result:
+`applied` (proved; the lock is settled in the journal, and a shield's note is the library's once a pass finds it),
+`checking` (above), or `notApplied{error}` (refused before the signature: nothing reached Platform).
+
+| Call | Kind | Semantics | Errors |
+|---|---|---|---|
+| `unfinished_transfers()` | async | `UnfinishedTransfers{locks, complete}`: the wallet's unfinished locks by txid, then output, each `UnfinishedLock{txid, vout, kind, duffs, origin, state}` (`duffs`: the credit output's value). `complete` is false while SPV or the wallet's bring-up (with it a restore's scan) have not caught up: a restored lock may still be missing. Reads local state only. `platform.unavailable` while the dispatch journal is not read (own and restored cannot be told apart; it clears once the session reads it); `wallet_not_found` for a wallet the session does not hold. | `PlatformError` |
+| `finish_transfer(kind, txid, vout, grant)` | async | Finishes the unfinished lock of `kind` at `txid`:`vout`, as above. `invalid_argument` for a txid that is not hex or an outpoint no tracked lock of `kind` has (every type-4 outpoint in this version); `platform.unavailable` while the dispatch journal is not read or the lock's transaction is not tracked; the lease's refusals (`platform.grant_invalid` for a lease of another flow). | `PlatformError` |
+
 ## 3. Surface (generated)
 
 The exact public surface: records, enums, error enums, signatures and the headers of every trait impl, with the
@@ -756,7 +802,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: e81999a2cb051cf0560054d80e6c7f41a3f50adbedf4b23bf411123038f983ba version: 49 -->
+<!-- surface-sha256: 40d82c39c845fd3967f01b5568d4baa6d3951a2dc6f080b73ef8871b9b876eff version: 50 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2132,6 +2178,55 @@ impl DashPay {
     pub fn sync_status(&self) -> Result<DashPaySyncStatus, PlatformError>;
     pub async fn sync_now(&self) -> Result<SyncPassReport, PlatformError>;
 }
+// src/platform/unfinished.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LockKindId {
+    Shielded,
+    PlatformAddress,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LockOrigin {
+    ThisDevice,
+    Restored,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UnfinishedState {
+    Confirming,
+    Ready,
+    Checking,
+    ReportedUsed,
+    NotActive,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnfinishedLock {
+    pub txid: String,
+    pub vout: u32,
+    pub kind: LockKindId,
+    pub duffs: u64,
+    pub origin: LockOrigin,
+    pub state: UnfinishedState,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LockFinish {
+    Applied,
+    ReportedUsed,
+    Checking,
+    ProofWaiting,
+    NotApplied { error: String },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnfinishedTransfers {
+    pub locks: Vec<UnfinishedLock>,
+    pub complete: bool,
+}
+impl DashPay {
+    pub async fn unfinished_transfers(&self) -> Result<UnfinishedTransfers, PlatformError>;
+    pub async fn finish_transfer(&self, kind: LockKindId, txid: String, vout: u32, grant: String) -> Result<LockFinish, PlatformError>;
+}
 ```
 
 <!-- END GENERATED: dashpay-surface -->
@@ -2329,6 +2424,9 @@ anything else in this contract reads differently, this subsection wins.
 
 The shapes are in §3. What they mean, where the name does not say:
 
+- **`UnfinishedLock`, `LockFinish`** (§2.14). `origin` says who signed the lock's funding (`thisDevice`) or that a
+  restore read it back (`restored`); nothing in a lock says whether Platform already took it, so `checking` is not a
+  failure: "This amount may already be in your balance; we can't confirm it yet."
 - **`DashPayStatus.NoIdentity{reason}`.** `None` means the user can join. `WatchOnly`: the wallet has no keys
   ("This wallet can't use DashPay because it has no keys"). `WaitingForSync`: Core or masternode sync has not finished,
   so Join is disabled (F1, DASHPAY §2.2 rule 5).

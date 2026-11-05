@@ -54,6 +54,8 @@ use super::shielded_pool::{
 use super::withdrawal::{Rules, expected_duffs};
 use crate::{DashNetwork, ImportOptions, NetworkSession};
 
+mod unfinished;
+
 const LATEST: u32 = 15;
 const NOTE: u64 = 300_000_000;
 /// Lane V's reference: iOS and Android show this shielded address for
@@ -699,6 +701,11 @@ impl ShieldedLib for FakeShielded {
 
     async fn wait_proof(&self, _: OutPoint, _: Duration) -> Result<(), FundError> {
         Err(FundError::Refused(PlatformError::Unavailable))
+    }
+
+    async fn credit_script(&self, _: OutPoint) -> Option<dashcore::ScriptBuf> {
+        // The fake's apply signs nothing.
+        Some(dashcore::ScriptBuf::new())
     }
 
     async fn apply<S>(&self, outpoint: OutPoint, _: &S) -> Result<Applied, PlatformError> {

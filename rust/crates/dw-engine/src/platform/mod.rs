@@ -95,9 +95,11 @@ mod topup_tests;
 pub(crate) mod trust;
 #[cfg(test)]
 mod trust_tests;
+mod unfinished;
 pub(crate) mod unfinished_locks;
 #[cfg(test)]
 mod unfinished_locks_tests;
+mod unfinished_shields;
 mod users;
 #[cfg(test)]
 mod users_tests;
@@ -168,3 +170,6 @@ pub use startup::{
 };
 pub use startup_status::{DashPayStartup, PlatformCadence, SpvState};
 pub use status::PlatformStatus;
+pub use unfinished::{
+    LockFinish, LockKindId, LockOrigin, UnfinishedLock, UnfinishedState, UnfinishedTransfers,
+};

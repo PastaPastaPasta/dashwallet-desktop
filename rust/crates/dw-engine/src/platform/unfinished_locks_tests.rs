@@ -3,18 +3,21 @@
 //! and detection over a scripted kind.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
+use key_wallet::bip32::DerivationPath;
 use platform_wallet::{AssetLockFundingType, PlatformWalletError};
 
 use super::errors::PlatformError;
 use super::flows::FlowKind;
+use super::lease::Lease;
 use super::registration_flow::{LockInfo, LockStatus};
 use super::unfinished_locks::{
-    ApplyReply, Evidence, LockKeySigner, LockKind, LockKindId, LockOrigin, Readiness,
-    UnfinishedState, classify, detect, reply_from,
+    ApplyReply, Evidence, LockFinish, LockKeySigner, LockKind, LockKindId, LockOrigin, Readiness,
+    UnfinishedState, classify, detect, finish, reply_from,
 };
 
 fn lock(n: u8, status: LockStatus) -> LockInfo {
@@ -33,6 +36,7 @@ struct Ev {
     own: HashSet<Txid>,
     settled: HashSet<Txid>,
     unknown: HashSet<Txid>,
+    shared: HashSet<Txid>,
     used: HashSet<OutPoint>,
     readiness: Readiness,
 }
@@ -43,6 +47,7 @@ impl Default for Ev {
             own: HashSet::new(),
             settled: HashSet::new(),
             unknown: HashSet::new(),
+            shared: HashSet::new(),
             used: HashSet::new(),
             readiness: Readiness::Ready,
         }
@@ -55,6 +60,7 @@ impl Ev {
             own: &self.own,
             settled: &self.settled,
             unknown: &self.unknown,
+            shared: &self.shared,
             reported_used: &self.used,
             readiness: &self.readiness,
         };
@@ -279,6 +285,14 @@ struct FakeKind {
     own: Option<HashSet<Txid>>,
     settled: HashSet<Txid>,
     unknown: Mutex<HashSet<Txid>>,
+    /// What holds an apply back (`Readiness::Held`).
+    held: Option<String>,
+    /// The tracked credit script of every lock.
+    script: Option<dashcore::ScriptBuf>,
+    /// The keys an apply asks its signer for, and whether each signed.
+    signs: Vec<DerivationPath>,
+    signed: Mutex<Vec<bool>>,
+    applies: AtomicU32,
 }
 
 impl LockKind for FakeKind {
@@ -311,7 +325,11 @@ impl LockKind for FakeKind {
     }
 
     async fn readiness(&self) -> Readiness {
-        Readiness::Ready
+        self.held.clone().map_or(Readiness::Ready, Readiness::Held)
+    }
+
+    fn not_active(&self) -> Option<String> {
+        None
     }
 
     fn caught_up(&self) -> bool {
@@ -323,11 +341,22 @@ impl LockKind for FakeKind {
     }
 
     async fn credit_script(&self, _: OutPoint) -> Option<dashcore::ScriptBuf> {
-        None
+        self.script.clone()
     }
 
-    async fn apply(&self, _: OutPoint, _: &LockKeySigner<'_>) -> Result<ApplyReply, PlatformError> {
-        unreachable!("detection applies nothing")
+    /// Signs as the library's transition does, with every key of `signs`.
+    async fn apply(
+        &self,
+        _: OutPoint,
+        signer: &LockKeySigner<'_>,
+    ) -> Result<ApplyReply, PlatformError> {
+        use key_wallet::Signer as _;
+        self.applies.fetch_add(1, Ordering::SeqCst);
+        for path in &self.signs {
+            let signed = signer.sign_ecdsa(path, [7; 32]).await.is_ok();
+            self.signed.lock().unwrap().push(signed);
+        }
+        Ok(ApplyReply::Done)
     }
 
     async fn settle(&self, _: Txid) {}
@@ -396,7 +425,6 @@ fn a_finish_signs_with_the_lock_key_only() {
     use std::str::FromStr;
 
     use key_wallet::Signer as _;
-    use key_wallet::bip32::DerivationPath;
 
     let fx = super::requests::tests::Fixture::new(0);
     let grant = (fx.s.vault)
@@ -456,4 +484,146 @@ fn a_shield_apply_reads_already_consumed_only_for_its_own_lock() {
         Applied::Unknown
     );
     assert!(applied_from(Err(consumed(other)), at, false).is_err());
+}
+
+/// A lock transaction with two credit outputs the wallet's pools pay is
+/// two tracked locks of one txid: the journal's txid records (settled,
+/// unknown) say nothing of either, so each stands on its own row.
+#[test]
+fn a_txid_of_two_locks_is_told_apart_by_outpoint() {
+    let first = lock(1, LockStatus::ChainLocked);
+    let second = LockInfo {
+        outpoint: OutPoint::new(first.outpoint.txid, 1),
+        ..first.clone()
+    };
+    let txid = HashSet::from([first.outpoint.txid]);
+    let ev = Ev {
+        settled: txid.clone(),
+        unknown: txid.clone(),
+        shared: txid.clone(),
+        ..Ev::default()
+    };
+    for l in [&first, &second] {
+        assert_eq!(
+            ev.state(l),
+            Some((LockOrigin::Restored, UnfinishedState::Ready))
+        );
+    }
+    let consumed = LockInfo {
+        status: LockStatus::Consumed,
+        ..first.clone()
+    };
+    assert_eq!(ev.state(&consumed), None, "the library's row finishes one");
+
+    let kind = FakeKind {
+        locks: vec![second.clone(), first.clone()],
+        own: Some(HashSet::new()),
+        settled: txid,
+        ..FakeKind::default()
+    };
+    let listed = block_on(detect(&kind, &HashSet::new())).unwrap();
+    let vouts: Vec<_> = listed.iter().map(|u| u.vout).collect();
+    assert_eq!(vouts, [0, 1]);
+}
+
+/// The refusals before a lease: a kind held back, and a lock whose
+/// transaction is not tracked. Neither asks for the lease.
+#[test]
+fn a_finish_held_back_or_untracked_asks_for_no_lease() {
+    let at = lock(1, LockStatus::ChainLocked);
+    let asked = AtomicBool::new(false);
+    let lease = || async {
+        asked.store(true, Ordering::SeqCst);
+        Err::<Lease, _>(PlatformError::Unavailable)
+    };
+    let held = FakeKind {
+        locks: vec![at.clone()],
+        own: Some(HashSet::new()),
+        held: Some("shielded.not_synced".into()),
+        script: Some(dashcore::ScriptBuf::new()),
+        ..FakeKind::default()
+    };
+    assert_eq!(
+        block_on(finish(&held, at.outpoint, lease)).unwrap(),
+        LockFinish::NotApplied {
+            error: "shielded.not_synced".into()
+        }
+    );
+    let untracked = FakeKind {
+        locks: vec![at.clone()],
+        own: Some(HashSet::new()),
+        ..FakeKind::default()
+    };
+    let lease = || async {
+        asked.store(true, Ordering::SeqCst);
+        Err::<Lease, _>(PlatformError::Unavailable)
+    };
+    assert_eq!(
+        block_on(finish(&untracked, at.outpoint, lease)).unwrap_err(),
+        PlatformError::Unavailable
+    );
+    assert!(!asked.load(Ordering::SeqCst), "no lease asked for");
+    assert_eq!(held.applies.load(Ordering::SeqCst), 0);
+    assert_eq!(untracked.applies.load(Ordering::SeqCst), 0);
+}
+
+/// Q2 end to end: the runner hands the kind's apply a signer that signs
+/// with the lock's credit key (the script the lock's payload names) and
+/// refuses the funding scope's other keys, a Core address key and another
+/// lock's credit key, under a real `Shield` lease of the vault.
+#[test]
+fn the_finish_path_signs_with_the_lock_key_only() {
+    use std::str::FromStr;
+
+    use key_wallet::Signer as _;
+
+    let fx = super::requests::tests::Fixture::new(0);
+    let grant = || {
+        (fx.s.vault)
+            .authorize(
+                dw_vault::GrantPurpose::PlatformOp {
+                    max_duffs: 1,
+                    max_credits: 0,
+                },
+                Some(&fx.wallet.0),
+                dw_vault::Credential::None,
+            )
+            .unwrap()
+            .id
+    };
+    let (probe, used) = (grant(), grant());
+    let (s, wallet) = (Arc::clone(&fx.s), fx.wallet);
+    let path = |p: &str| DerivationPath::from_str(p).unwrap();
+    let (lock_key, other_lock, core) = (
+        path("m/9'/1'/5'/5'/0"),
+        path("m/9'/1'/5'/5'/1"),
+        path("m/44'/1'/0'/0/0"),
+    );
+    let at = lock(1, LockStatus::ChainLocked);
+    let (finished, signed) = fx.engine.block_on(async move {
+        let script = {
+            let lease = (s.begin_lease(wallet, FlowKind::Shield, &[probe]).await).unwrap();
+            let funding = lease.uncounted_funding_signer().unwrap();
+            let key = funding.public_key(&lock_key).await.unwrap();
+            dashcore::ScriptBuf::new_p2pkh(&dashcore::PublicKey::new(key).pubkey_hash())
+        };
+        let kind = FakeKind {
+            locks: vec![at.clone()],
+            own: Some(HashSet::new()),
+            script: Some(script),
+            signs: vec![core, other_lock, lock_key],
+            ..FakeKind::default()
+        };
+        let lease = || async move {
+            Ok::<_, PlatformError>(s.begin_lease(wallet, FlowKind::Shield, &[used]).await?)
+        };
+        let finished = finish(&kind, at.outpoint, lease).await;
+        (finished, kind.signed.lock().unwrap().clone())
+    });
+    assert_eq!(finished.unwrap(), LockFinish::Applied);
+    assert_eq!(
+        signed,
+        [false, false, true],
+        "only the lock's credit key signs"
+    );
 }

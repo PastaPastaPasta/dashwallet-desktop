@@ -41,10 +41,10 @@ use clap::{Args, Parser, Subcommand};
 use dw_engine::platform::{
     ActivityFilter, AvatarChange, AvatarError, AvatarSize, AvatarSource, BearerSecret,
     ContactError, ContactQuery, ContactSection, ContactSort, CreditsError, DashPay, FlowKind,
-    GrantAction, GrantRequest, IdentityError, InitialProfile, InvitationError, NameError,
-    PlatformError, PrivateDetails, ProfileBaseline, ProfileEdit, ProfileError, RegistrationError,
-    RegistrationFunding, RegistrationRequest, RegistrationWait, ScannedCode, ShieldedError,
-    WithdrawAmount, check_username,
+    GrantAction, GrantRequest, IdentityError, InitialProfile, InvitationError, LockKindId,
+    NameError, PlatformError, PrivateDetails, ProfileBaseline, ProfileEdit, ProfileError,
+    RegistrationError, RegistrationFunding, RegistrationRequest, RegistrationWait, ScannedCode,
+    ShieldedError, WithdrawAmount, check_username,
 };
 use dw_engine::{
     ContactRecipient, Engine, EngineError, NetworkSession, PreparedTx, SendFailure, TASK_PANICKED,
@@ -141,6 +141,22 @@ pub enum DashPayCommand {
         #[command(subcommand)]
         cmd: ShieldedCmd,
     },
+}
+
+/// An unfinished transfer's kind.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
+pub enum TransferKind {
+    Shielded,
+    PlatformAddress,
+}
+
+impl From<TransferKind> for LockKindId {
+    fn from(k: TransferKind) -> Self {
+        match k {
+            TransferKind::Shielded => LockKindId::Shielded,
+            TransferKind::PlatformAddress => LockKindId::PlatformAddress,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -366,6 +382,18 @@ pub enum IdentityCmd {
     FinishAssetLocks {
         #[command(flatten)]
         caps: Caps,
+    },
+    /// The wallet's unfinished transfers: Core -> Shielded locks whose
+    /// Platform side is not known to have happened, its own and restored.
+    UnfinishedTransfers,
+    /// Finish one unfinished transfer on the same lock (only a proved
+    /// apply finishes it).
+    FinishTransfer {
+        txid: String,
+        #[arg(long, default_value_t = 0)]
+        vout: u32,
+        #[arg(long, value_enum, default_value_t = TransferKind::Shielded)]
+        kind: TransferKind,
     },
     /// Derive an asset-lock key for the faucet (developer builds).
     FaucetKey {
@@ -1848,6 +1876,19 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
             let grant = ctx.platform_op(&dp, caps.into())?;
             out(ctx.block_on(dp.finish_asset_locks(grant))?)
         }
+        IdentityCmd::UnfinishedTransfers => out(ctx.block_on(dp.unfinished_transfers())?),
+        IdentityCmd::FinishTransfer { txid, vout, kind } => {
+            // As `shielded shield-resume`: the lock's key signs, which a
+            // funding budget unlocks; it spends none.
+            let grant = ctx.platform_op(
+                &dp,
+                GrantRequest {
+                    max_duffs: 1,
+                    max_credits: 0,
+                },
+            )?;
+            out(ctx.block_on(dp.finish_transfer(kind.into(), txid, vout, grant))?)
+        }
         IdentityCmd::FaucetKey { caps } => {
             let grant = ctx.platform_op(&dp, caps.into())?;
             out(ctx.block_on(dp.prepare_faucet_lock(grant))?)
@@ -2539,6 +2580,14 @@ mod tests {
             r#"{"ok":false,"error":{"code":"platform.feature_off","message":"feature off: faucet","params":{"feature":"faucet"}}}"#,
         ),
         (
+            "identity unfinished-transfers",
+            r#"{"ok":true,"result":{"locks":[],"complete":false}}"#,
+        ),
+        (
+            "identity finish-transfer ab12",
+            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: txid is not a hex txid","params":{"detail":"txid is not a hex txid"}}}"#,
+        ),
+        (
             "dashpay dispatch-status ab12",
             r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a txid, transition hash or step id","params":{"detail":"not a txid, transition hash or step id"}}}"#,
         ),
@@ -2763,6 +2812,11 @@ mod tests {
             "DashPay.finish_asset_locks",
         ),
         ("identity faucet-key", "DashPay.prepare_faucet_lock"),
+        (
+            "identity unfinished-transfers",
+            "DashPay.unfinished_transfers",
+        ),
+        ("identity finish-transfer ab12", "DashPay.finish_transfer"),
         (
             "identity top-up --identity I --duffs 100000",
             "DashPay.top_up_quote",

@@ -30,8 +30,6 @@
 //!   lock's credit key signed may have executed. Neither settles a lock or
 //!   changes a balance; balances come only from proved reads.
 
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
@@ -42,28 +40,26 @@ use dashcore::{OutPoint, ScriptBuf, Txid};
 use dw_vault::{SignerError, VaultSigner};
 use key_wallet::bip32::{DerivationPath, ExtendedPubKey};
 use platform_wallet::{AssetLockFundingType, PlatformWalletError};
-use serde::{Deserialize, Serialize};
 
 use super::errors::PlatformError;
 use super::flows::FlowKind;
+use super::lease::Lease;
 use super::registration_flow::{LockInfo, LockStatus};
-
-/// A kind of funding lock whose apply moves the lock's value to the
-/// wallet's own Platform-side balance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum LockKindId {
-    /// `AssetLockShieldedAddressTopUp` (type 5): to the wallet's shielded
-    /// account 0.
-    Shielded,
-    /// `AssetLockAddressTopUp` (type 4): to one of the wallet's own
-    /// Platform payment addresses.
-    PlatformAddress,
-}
+pub(crate) use super::unfinished::{
+    LockFinish, LockKindId, LockOrigin, UnfinishedLock, UnfinishedState,
+};
 
 impl LockKindId {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "type 4's kind (slice 5) uses it")
+    )]
     pub(crate) const ALL: [Self; 2] = [Self::Shielded, Self::PlatformAddress];
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "type 4's kind (slice 5) uses it")
+    )]
     pub(crate) fn funding_type(self) -> AssetLockFundingType {
         match self {
             Self::Shielded => AssetLockFundingType::AssetLockShieldedAddressTopUp,
@@ -74,72 +70,23 @@ impl LockKindId {
     /// The kind of a funding type; `None` for the identity types, which
     /// their own flows finish (registration, top-up), and for invitation
     /// vouchers and unbound top-ups, whose destination a lock does not name.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "type 4's kind (slice 5) uses it")
+    )]
     pub(crate) fn of(funding_type: AssetLockFundingType) -> Option<Self> {
         Self::ALL
             .into_iter()
             .find(|k| k.funding_type() == funding_type)
     }
-}
 
-/// Where an unfinished lock came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum LockOrigin {
-    /// One of the kind's funding steps on this install signed it.
-    ThisDevice,
-    /// No funding step here signed it: a restore read it back from the
-    /// chain (an earlier install's, or another device's).
-    Restored,
-}
-
-/// What an unfinished lock waits for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum UnfinishedState {
-    /// No InstantSend or ChainLock proof yet: nothing to apply.
-    Confirming,
-    /// Proved and not tried, or tried and refused before its signature.
-    Ready,
-    /// An apply may have executed, unproved: it failed after its signature,
-    /// or Platform answered "already consumed" for a lock of this device's.
-    Checking,
-    /// Platform answered "already consumed" for this restored lock,
-    /// unproved: listed apart, and checked again on request.
-    ReportedUsed,
-    /// The kind is not active on this network's Platform yet.
-    NotActive,
-}
-
-/// A funding lock the wallet funded whose Platform side is not known to
-/// have happened.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UnfinishedLock {
-    pub txid: String,
-    /// The credit output's index in the lock's payload.
-    pub vout: u32,
-    pub kind: LockKindId,
-    /// The credit output's value.
-    pub duffs: u64,
-    pub origin: LockOrigin,
-    pub state: UnfinishedState,
-}
-
-/// How finishing one lock ended.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum LockFinish {
-    /// Platform's proved execution: the lock is settled.
-    Applied,
-    /// Platform answered "already consumed" for this restored lock,
-    /// unproved: nothing settled, nothing counted.
-    ReportedUsed,
-    /// The apply may have executed, unproved.
-    Checking,
-    /// The lock has no proof yet.
-    ProofWaiting,
-    /// Refused before the lock's credit key signed anything: nothing reached
-    /// Platform. `error` is the refusal's code.
-    NotApplied { error: String },
+    /// The call permit's label of the kind's apply.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Shielded => "shield",
+            Self::PlatformAddress => "address_fund",
+        }
+    }
 }
 
 /// How a kind's apply ended without an error.
@@ -160,6 +107,10 @@ pub(crate) enum ApplyReply {
 /// `AssetLockAlreadyConsumed` naming `outpoint` is `AlreadyConsumed`;
 /// one naming another outpoint, a timeout or any other failure is
 /// `Unknown` after a signature and the refusal before one.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "type 4's kind (slice 5) uses it")
+)]
 pub(crate) fn reply_from(
     result: Result<(), PlatformWalletError>,
     outpoint: OutPoint,
@@ -211,6 +162,9 @@ pub(crate) trait LockKind: Send + Sync {
     /// Whether an apply may run now: the protocol-version gate, the
     /// destination account bound, the kind's sync.
     fn readiness(&self) -> impl Future<Output = Readiness> + Send;
+    /// The refusal's code while the kind is not active on the network, as
+    /// last proved: a local read (no Platform query, no bind), for a list.
+    fn not_active(&self) -> Option<String>;
     /// Whether SPV and the wallet's bring-up (with it the library's
     /// restore scan) have caught up, so the tracked rows hold every lock the
     /// chain has: until then a list may be partial.
@@ -260,6 +214,10 @@ impl<'a> LockKeySigner<'a> {
     }
 
     /// Whether it returned a signature: nothing can reach Platform before.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "type 4's kind (slice 5) uses it")
+    )]
     pub(crate) fn signed(&self) -> bool {
         self.signed.load(Ordering::SeqCst)
     }
@@ -314,6 +272,11 @@ pub(crate) struct Evidence<'a> {
     pub(crate) own: &'a HashSet<Txid>,
     pub(crate) settled: &'a HashSet<Txid>,
     pub(crate) unknown: &'a HashSet<Txid>,
+    /// The txids of more than one tracked lock of the kind (a lock
+    /// transaction with several credit outputs the wallet's pools pay):
+    /// `settled` and `unknown`, kept by txid, say nothing of one of them,
+    /// which only the library's own row (per outpoint) finishes.
+    pub(crate) shared: &'a HashSet<Txid>,
     /// The restored locks Platform reported already consumed.
     pub(crate) reported_used: &'a HashSet<OutPoint>,
     pub(crate) readiness: &'a Readiness,
@@ -323,7 +286,8 @@ pub(crate) struct Evidence<'a> {
 /// finished (the library's proved `Consumed`, or settled in the journal).
 pub(crate) fn classify(kind: LockKindId, lock: &LockInfo, ev: &Evidence) -> Option<UnfinishedLock> {
     let txid = lock.outpoint.txid;
-    if lock.status == LockStatus::Consumed || ev.settled.contains(&txid) {
+    let by_txid = !ev.shared.contains(&txid);
+    if lock.status == LockStatus::Consumed || (by_txid && ev.settled.contains(&txid)) {
         return None;
     }
     let origin = if ev.own.contains(&txid) {
@@ -337,7 +301,7 @@ pub(crate) fn classify(kind: LockKindId, lock: &LockInfo, ev: &Evidence) -> Opti
         UnfinishedState::ReportedUsed
     } else if matches!(ev.readiness, Readiness::NotActive(_)) {
         UnfinishedState::NotActive
-    } else if ev.unknown.contains(&txid)
+    } else if (by_txid && ev.unknown.contains(&txid))
         // The library's "consumption unknown" for a lock of this device's.
         || (origin == LockOrigin::ThisDevice && lock.status == LockStatus::RecoveredFromChain)
     {
@@ -355,6 +319,15 @@ pub(crate) fn classify(kind: LockKindId, lock: &LockInfo, ev: &Evidence) -> Opti
     })
 }
 
+/// The txids of more than one of `locks`.
+fn shared_txids(locks: &[LockInfo]) -> HashSet<Txid> {
+    let mut seen = HashSet::new();
+    (locks.iter())
+        .filter(|l| !seen.insert(l.outpoint.txid))
+        .map(|l| l.outpoint.txid)
+        .collect()
+}
+
 /// The wallet's unfinished locks of `kind`, `reported_used` the restored
 /// ones Platform reported already consumed; `platform.unavailable` until
 /// the dispatch journal is read.
@@ -365,11 +338,15 @@ pub(crate) async fn detect(
     let own = kind.own_locks().ok_or(PlatformError::Unavailable)?;
     let locks = kind.locks().await;
     let (settled, unknown) = (kind.settled_locks().await, kind.unknown_locks().await);
-    let readiness = kind.readiness().await;
+    let readiness = kind
+        .not_active()
+        .map_or(Readiness::Ready, Readiness::NotActive);
+    let shared = shared_txids(&locks);
     let ev = Evidence {
         own: &own,
         settled: &settled,
         unknown: &unknown,
+        shared: &shared,
         reported_used,
         readiness: &readiness,
     };
@@ -378,4 +355,97 @@ pub(crate) async fn detect(
         .collect();
     out.sort_by(|a, b| (&a.txid, a.vout).cmp(&(&b.txid, b.vout)));
     Ok(out)
+}
+
+/// Finishes `kind`'s unfinished lock at `outpoint` under the lease
+/// `lease_of` gives, begun only once the lock is ready (a refusal before
+/// keeps the grant): the lease's funding signer, narrowed to the lock's
+/// credit key ([`LockKeySigner`]), and one call permit sign the kind's
+/// `FromExistingAssetLock` of the same outpoint. It funds and builds
+/// nothing and waits for no proof. Read again under the kind's wallet
+/// lock: a lock finished meanwhile is not applied again.
+///
+/// Only Platform's proved execution settles the lock. "Already consumed"
+/// for the lock and a failure after its signature leave it unfinished,
+/// [`LockFinish::Checking`]; a refusal before the signature is
+/// [`LockFinish::NotApplied`].
+pub(crate) async fn finish<K, F, Fut>(
+    kind: &K,
+    outpoint: OutPoint,
+    lease_of: F,
+) -> Result<LockFinish, PlatformError>
+where
+    K: LockKind,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Lease, PlatformError>>,
+{
+    let wallet_lock = kind.wallet_lock();
+    let _held = wallet_lock.lock().await;
+    let own = kind.own_locks().ok_or(PlatformError::Unavailable)?;
+    let locks = kind.locks().await;
+    let Some(lock) = locks.iter().find(|l| l.outpoint == outpoint) else {
+        return Err(PlatformError::InvalidArgument {
+            detail: "no tracked lock of that kind has that outpoint".into(),
+        });
+    };
+    let readiness = kind.readiness().await;
+    let (settled, unknown) = (kind.settled_locks().await, kind.unknown_locks().await);
+    let shared = shared_txids(&locks);
+    // A txid's records would speak for its other outputs too.
+    let by_txid = !shared.contains(&outpoint.txid);
+    let ev = Evidence {
+        own: &own,
+        settled: &settled,
+        unknown: &unknown,
+        shared: &shared,
+        reported_used: &HashSet::new(),
+        readiness: &readiness,
+    };
+    let Some(unfinished) = classify(kind.id(), lock, &ev) else {
+        return Ok(LockFinish::Applied);
+    };
+    if unfinished.state == UnfinishedState::Confirming {
+        return Ok(LockFinish::ProofWaiting);
+    }
+    if let Readiness::NotActive(code) | Readiness::Held(code) = readiness {
+        return Ok(LockFinish::NotApplied { error: code });
+    }
+    let script = kind
+        .credit_script(outpoint)
+        .await
+        .ok_or(PlatformError::Unavailable)?;
+    let lease = lease_of().await?;
+    let funding = lease.uncounted_funding_signer()?;
+    let signer = LockKeySigner::new(&funding, script);
+    let reply = lease
+        .scope(async {
+            let permit = lease.call_permit(kind.id().label(), None)?;
+            let reply = kind.apply(outpoint, &signer).await;
+            permit.finish(reply.is_ok());
+            reply
+        })
+        .await;
+    Ok(match reply {
+        Ok(ApplyReply::Done) => {
+            if by_txid {
+                kind.settle(outpoint.txid).await;
+            }
+            LockFinish::Applied
+        }
+        // Neither settles (SR1): the lock stays unfinished until a proved
+        // apply.
+        Ok(how @ (ApplyReply::AlreadyConsumed | ApplyReply::Unknown)) => {
+            tracing::warn!(%outpoint, ?how, "a lock's apply may have executed, unproved");
+            if by_txid {
+                kind.mark_unknown(outpoint.txid).await;
+            }
+            LockFinish::Checking
+        }
+        Err(e) => {
+            tracing::warn!(%outpoint, error = %e, "a lock's apply was refused before its signature");
+            LockFinish::NotApplied {
+                error: e.code().into(),
+            }
+        }
+    })
 }
