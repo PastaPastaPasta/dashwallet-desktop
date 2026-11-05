@@ -696,6 +696,14 @@ const SCENARIOS = {
     w.pending.recovery.locks = [restoredLock(1, 50_000_000, "notActive")];
     return w;
   },
+  /** A ready restored lock, its transaction's second credit output (which this version can't finish) and
+   * a lock worth less than the Platform fee: Home offers Finish for the first only. */
+  "recovery-unsupported": (t) => {
+    const w = base(t);
+    const first = restoredLock(1, 50_000_000);
+    w.pending.recovery.locks = [first, { ...first, vout: 1, duffs: 20_000_000, state: "unsupported" }, { ...restoredLock(2, 5_000), state: "tooSmall" }];
+    return w;
+  },
   /** The first finish ends `platform.unavailable`; a retry is applied. */
   "recovery-finish-fails": (t) => {
     const w = base(t);

@@ -30,6 +30,8 @@ describe("unfinished transfers card", () => {
     expect(view(list([lock(1, "confirming")]))).toBeNull();
     expect(view(list([lock(1, "notActive")]))).toBeNull();
     expect(view(list([lock(1, "reportedUsed")]))).toBeNull();
+    expect(view(list([lock(1, "unsupported")]))).toBeNull();
+    expect(view(list([lock(1, "tooSmall")]))).toBeNull();
   });
 
   it("is hidden while the list is incomplete", () => {

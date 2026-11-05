@@ -81,13 +81,17 @@ export const RECOVERY_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
   finish_transfer: ({ walletId, kind, txid, vout, grant }: { walletId: string; kind: LockKind; txid: string; vout: number; grant: string }, ctx: Ctx): LockFinish => {
     wallet(ctx.world, walletId);
     const r = ctx.world.pending.recovery;
-    const g = checkGrant(ctx.world, grant, walletId, ["platformOp"]);
-    if (g?.grant.purpose.kind !== "platformOp" || g.grant.purpose.maxDuffs < 1) return raise("platform.grant_invalid", "grant invalid");
     const lock = r.locks.find((l) => sameLock(l, kind, txid, vout));
     if (!lock) return raise("invalid_argument", "not an unfinished transfer", { kind: "reason", reason: "not an unfinished transfer" });
-    useGrant(ctx.world, grant);
+    // The refusals the engine reads before the lease: the grant is not read, so it is kept.
     if (lock.state === "confirming") return { kind: "proofWaiting" };
     if (lock.state === "notActive") return { kind: "notApplied", error: SHIELDED_CODES.notActive };
+    if (lock.state === "unsupported") return { kind: "notApplied", error: "platform.not_implemented" };
+    if (lock.state === "tooSmall") return { kind: "notApplied", error: "shielded.below_minimum" };
+    const g = checkGrant(ctx.world, grant, walletId, ["platformOp"]);
+    if (g?.grant.purpose.kind !== "platformOp") return raise("platform.grant_invalid", "grant invalid");
+    if (g.grant.purpose.maxDuffs < 1) return raise("platform.needs_grant", "needs a grant", { kind: "needsGrant", purpose: "funding" });
+    useGrant(ctx.world, grant);
     if (lock.state === "checking") {
       r.checks++;
       if (r.checksBeforeApply === null || r.checks <= r.checksBeforeApply) return { kind: "checking" };

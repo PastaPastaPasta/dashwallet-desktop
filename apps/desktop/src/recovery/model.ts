@@ -46,6 +46,8 @@ export const RECOVERY_COPY = {
       reportedUsed: "Checking",
       confirming: "Waiting for the network to confirm",
       notActive: "Not active on this network yet",
+      unsupported: "Can't be finished in this version",
+      tooSmall: "Too small to finish: worth less than the Platform fee",
     } satisfies Record<UnfinishedState, string>,
     done: {
       applied: "Added to Shielded",
