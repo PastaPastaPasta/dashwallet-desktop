@@ -4,8 +4,9 @@
 #   Xvfb in Docker, M1 and M2 flows);
 # - shielded: the Orchard prover warm-up in a cold process (E0-12); the pool itself is built and
 #   tested by PR CI since 0.1 turned it on;
-# - release-check: the release leg of dw-engine's tests/mg04b_release_check.rs (MG-04b D71), which
-#   PR CI, testing in debug only, never runs.
+# - release-check: the release legs of dw-engine's tests/mg04b_release_check.rs (MG-04b D71) and
+#   tests/mix_shield_release_check.rs (dwcli's `mix-shield-test`), which PR CI, testing in debug
+#   only, never runs.
 #
 # `schedule` runs only from the repository's default branch. Once the setup steps have passed,
 # every suite step runs even when an earlier one failed, so one run reports them all.
@@ -60,10 +61,12 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+      # `mix-shield-test` adds only test_move_mixed.py's `coinjoin-test-addresses` (debug builds
+      # only; the release-check job proves it absent from a release build).
       - name: Build dwcli
         working-directory: rust
         run: |
-          cargo build -p dwcli --locked
+          cargo build -p dwcli --features mix-shield-test --locked
           echo "DWCLI=$PWD/target/debug/dwcli" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
@@ -104,6 +107,10 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         working-directory: regtest/harness
         run: .venv/bin/python -m pytest -v tests/test_l2_tools.py --junitxml="$LOGS/l2-tools.xml"
+      - name: move-mixed (consolidation and move to Core)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        working-directory: regtest/harness
+        run: .venv/bin/python -m pytest -v tests/test_move_mixed.py --junitxml="$LOGS/move-mixed.xml"
       - name: e0-04 BL-76 (engine SPV against dashd)
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         working-directory: rust
@@ -194,6 +201,9 @@ jobs:
       - name: mg04b_release_check (release)
         working-directory: rust
         run: cargo test --release -p dw-engine --features test-support --test mg04b_release_check --locked
+      - name: mix_shield_release_check (release)
+        working-directory: rust
+        run: cargo test --release -p dw-engine --features test-mix-shield --test mix_shield_release_check --locked
 
   # Non-blocking: on the runner the demo fails 4 AT-SPI checks, two of them known-intermittent
   # (docs/ci.md, "Known gaps"). A red X here does not turn the nightly red; the regtest job does.

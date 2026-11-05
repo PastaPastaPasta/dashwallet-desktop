@@ -92,6 +92,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo clippy -p dw-app --all-targets --features selftest --locked -- -D warnings
+      - run: cargo clippy -p dwcli --all-targets --features mix-shield-test --locked -- -D warnings
       # Pinned like tauri-driver below; rust-cache keeps the installed binary between runs.
       - name: cargo-deny
         run: cargo install cargo-deny --version 0.20.2 --locked
@@ -131,6 +132,14 @@ jobs:
       - name: dw-app with the selftest feature
         if: ${{ !cancelled() }}
         run: cargo test -p dw-app --features selftest --locked --no-fail-fast
+      # Without the feature (the workspace run above), dwcli has no `coinjoin-test-addresses`; with
+      # it, the command parses and dw-engine's probe sees the test calls, so the nightly's release
+      # leg of mix_shield_release_check isn't vacuous.
+      - name: dwcli and dw-engine with the mix-shield-test feature
+        if: ${{ !cancelled() }}
+        run: |
+          cargo test -p dwcli --features mix-shield-test --locked --no-fail-fast -- coinjoin::tests
+          cargo test -p dw-engine --features test-mix-shield --test mix_shield_release_check --locked
       # E0-13: the TypeScript bindings and the facade coverage table are generated from dw-app;
       # regenerate them and fail when the committed files differ (or a new file is missing).
       - name: Regenerate the Tauri bindings and check them in

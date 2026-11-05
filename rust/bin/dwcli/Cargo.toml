@@ -40,6 +40,11 @@ invitation-create-test = ["dw-engine/test-support"]
 # Core balance outside the lease and coin fence. Debug builds only (`main.rs`
 # refuses it otherwise).
 platform-addr-fund = ["dw-engine/test-fund"]
+# The regtest suite of "move mixed coins" (regtest/harness/tests/
+# test_move_mixed.py): `coinjoin-test-addresses`, fresh CoinJoin-account
+# addresses to fund without mixing. Debug builds only (`main.rs` refuses it
+# otherwise; dw-engine's mix_shield_release_check proves the engine half).
+mix-shield-test = ["dw-engine/test-mix-shield"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Debug builds' fault injection (`-spawn-fail`) lowers RLIMIT_NPROC.

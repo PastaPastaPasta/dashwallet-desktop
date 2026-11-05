@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::Subcommand;
-use dw_engine::coinjoin::{CoinJoinSettings, CoinJoinStatus, MixingState, SweepDestination};
+use dw_engine::coinjoin::{
+    CoinJoinSettings, CoinJoinStatus, MixingState, SweepDestination, SweepResult,
+};
 use dw_engine::{CoinFilter, CoinSource, Engine, FeeMode, NetworkSession, WalletId};
 use dw_vault::{GrantPurpose, LockState, UnlockScope};
 use zeroize::Zeroizing;
@@ -83,6 +85,26 @@ pub enum CoinJoinCommand {
         plan_only: bool,
         #[arg(long)]
         sync_height: Option<u32>,
+    },
+    /// The consolidation round before a move to Shielded: the CoinJoin
+    /// account's final coins swept onto fresh addresses of the same account;
+    /// with `--plan-only` print the plan only.
+    #[command(name = "consolidate-mixed")]
+    ConsolidateMixed {
+        wallet: String,
+        #[arg(long)]
+        plan_only: bool,
+        #[arg(long)]
+        sync_height: Option<u32>,
+    },
+    /// Test only (`mix-shield-test`, debug builds): `count` fresh addresses
+    /// of the CoinJoin account, one `cjaddress <address>` line each.
+    #[cfg(feature = "mix-shield-test")]
+    #[command(name = "coinjoin-test-addresses")]
+    TestAddresses {
+        wallet: String,
+        #[arg(long, default_value_t = 1)]
+        count: usize,
     },
 }
 
@@ -393,17 +415,74 @@ pub fn run(
                 let r = engine
                     .block_on(session.move_mixed_coins(id, SweepDestination::Wallet, grant.id))
                     .map_err(e)?;
+                print_sweep(&r);
+            }
+        }
+        CoinJoinCommand::ConsolidateMixed {
+            wallet,
+            plan_only,
+            sync_height,
+        } => {
+            let id = wallet_id(&wallet)?;
+            if let Some(h) = sync_height {
+                wait_for_height(engine, session, id, h, Duration::from_secs(300))?;
+            }
+            let plan = engine
+                .block_on(session.mixed_coins_consolidation_plan(id))
+                .map_err(e)?;
+            println!(
+                "plan total={} chunks={} fully_mixed={} not_fully_mixed={} coins_after={} not_final={}",
+                plan.total,
+                plan.chunks.len(),
+                plan.fully_mixed,
+                plan.not_fully_mixed,
+                plan.coins_after,
+                plan.not_final
+            );
+            for c in &plan.chunks {
                 println!(
-                    "moved {} remaining={} txids={} failure={}",
-                    r.moved,
-                    r.remaining,
-                    r.txids.join(","),
-                    r.failure_code.as_deref().unwrap_or("-")
+                    "chunk inputs={} amount={} fee={}",
+                    c.inputs, c.amount, c.fee
                 );
+            }
+            if !plan_only {
+                let grant = session
+                    .vault()
+                    .authorize(
+                        GrantPurpose::Spend {
+                            max_duffs: plan.total,
+                        },
+                        Some(&id.0),
+                        credential(session, passphrase),
+                    )
+                    .map_err(|e| e.to_string())?;
+                let r = engine
+                    .block_on(session.consolidate_mixed_coins(id, grant.id))
+                    .map_err(e)?;
+                print_sweep(&r);
+            }
+        }
+        #[cfg(feature = "mix-shield-test")]
+        CoinJoinCommand::TestAddresses { wallet, count } => {
+            let addresses = engine
+                .block_on(session.coinjoin_addresses_for_test(wallet_id(&wallet)?, count))
+                .map_err(e)?;
+            for a in addresses {
+                println!("cjaddress {a}");
             }
         }
     }
     Ok(())
+}
+
+fn print_sweep(r: &SweepResult) {
+    println!(
+        "moved {} remaining={} txids={} failure={}",
+        r.moved,
+        r.remaining,
+        r.txids.join(","),
+        r.failure_code.as_deref().unwrap_or("-")
+    );
 }
 
 #[cfg(test)]
@@ -419,5 +498,31 @@ mod tests {
         assert!(apply_setting(&mut s, "multi=yes").is_err());
         assert!(apply_setting(&mut s, "moon=1").is_err());
         assert!(apply_setting(&mut s, "rounds").is_err());
+    }
+
+    /// Without `mix-shield-test` (every release and packaged build: the
+    /// feature refuses a release build) dwcli has no test-only CoinJoin
+    /// command; with it, the command parses, so the check isn't vacuous.
+    #[test]
+    fn the_test_addresses_command_exists_only_with_its_feature() {
+        use clap::Parser;
+        let parsed = crate::Cli::try_parse_from([
+            "dwcli",
+            "--datadir",
+            "d",
+            "coinjoin-test-addresses",
+            "w",
+            "--count",
+            "2",
+        ]);
+        if cfg!(feature = "mix-shield-test") {
+            assert!(parsed.is_ok());
+        } else {
+            let kind = parsed.err().map(|e| e.kind());
+            assert_eq!(kind, Some(clap::error::ErrorKind::InvalidSubcommand));
+        }
+        let consolidate =
+            crate::Cli::try_parse_from(["dwcli", "--datadir", "d", "consolidate-mixed", "w"]);
+        assert!(consolidate.is_ok(), "consolidate-mixed is a normal command");
     }
 }

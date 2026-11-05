@@ -124,6 +124,18 @@ DWD_COMPOSE_PROJECT=dwd-r1 DWD_REGTEST_BUILD=0 DWCLI=$DW_TARGET/debug/dwcli \
     .venv/bin/python -m pytest -v tests/test_l2_tools.py
 ```
 
+**move-mixed** (`tests/test_move_mixed.py`, 0.2 MIX-SHIELD) funds 60 addresses of a wallet's CoinJoin account
+directly (no masternodes here, so no mixing), consolidates them onto one fresh address of the same account
+(`consolidate-mixed`: the move plan still finds the value there, as one coin), then moves that coin to a BIP44
+receive address (`move-mixed`), after which the account has nothing to move. It needs a `dwcli` built with the
+test-only `mix-shield-test` feature (`coinjoin-test-addresses`; debug builds only) and is skipped otherwise.
+
+```sh
+(cd rust && cargo build -p dwcli --features mix-shield-test)
+DWD_COMPOSE_PROJECT=dwd-mm DWD_REGTEST_BUILD=0 DWCLI=$DW_TARGET/debug/dwcli \
+    .venv/bin/python -m pytest -v tests/test_move_mixed.py
+```
+
 **restore** (`tests/test_restore.py`, DESIGN-opus §4.3 `restore` and §4.4 items 1-2) checks dash-qt
 compatibility both ways with a host-built `dwcli`:
 
