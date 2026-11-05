@@ -21,6 +21,8 @@ export const SourceRowText = {
   platformSend: "Sent to a Platform address",
   /** A move the engine superseded with a retry: neither a loss nor a completed move. */
   replaced: "Replaced by a retry",
+  /** A move or send that failed by height but may still execute: not "Not accepted". */
+  mayLand: "May still go through",
   shieldedAdd: "Added to Shielded",
   shieldedToPlatform: "Moved to Platform",
   shieldedSentToPlatform: "Sent to Platform",
@@ -30,9 +32,13 @@ export const SourceRowText = {
 };
 
 const REPLACED = ":replaced";
+const MAY_LAND = ":mayland";
 
 /** A Platform move the engine replaced with a retry: it carries no amount and is never a loss. */
 export const isReplacedRow = (row: Pick<TxRow, "txid">): boolean => row.txid.endsWith(REPLACED);
+
+/** A failed Platform move or send that may still execute: shown as unconfirmed, never as a problem. */
+export const isMayLandRow = (row: Pick<TxRow, "txid">): boolean => row.txid.endsWith(MAY_LAND);
 
 /** The source of a synthetic row; `null` for a Core transaction. */
 export function rowSource(row: Pick<TxRow, "txid">): RowSource | null {
@@ -59,15 +65,16 @@ const base = (txid: string, status: TxRow["status"], timestamp: number | null, a
 
 /** A Platform-address activity row as a history row. A move shows what arrives in the Dash wallet
  * (an internal move: no sign); a send pays its recipient (`to`); a failed one is the "not accepted"
- * problem row. */
+ * problem row, unless it may still execute (`mayLand`): that one is unconfirmed, with its amount. */
 export function platformRow(a: PlatformActivity): TxRow {
   const move = a.kind === "moveToCore";
   const replaced = a.state === "replaced";
   // A move with no proved arrival shows what left (`credits`), never an amount that "arrives".
   const amount = replaced ? 0 : move ? (a.expectedDuffs ?? creditsToDuffs(a.credits)) : creditsToDuffs(a.credits);
-  const kind = a.state === "done" || replaced ? "confirmed" : a.state === "pending" ? "unconfirmed" : "notAccepted";
+  const mayLand = a.state === "failed" && a.mayLand && (move || a.kind === "send");
+  const kind = a.state === "done" || replaced ? "confirmed" : a.state === "pending" || mayLand ? "unconfirmed" : "notAccepted";
   return {
-    ...base(`platform:${a.kind}:${a.id}${replaced ? REPLACED : ""}`, statusOf(kind), a.at, a.kind === "outgoing" || a.kind === "send" ? -amount : amount),
+    ...base(`platform:${a.kind}:${a.id}${replaced ? REPLACED : mayLand ? MAY_LAND : ""}`, statusOf(kind), a.at, (a.kind === "outgoing" || a.kind === "send") && amount !== 0 ? -amount : amount),
     txType: move ? "platformTransfer" : a.kind === "incoming" ? "recvWithAddress" : "sendToAddress",
     category: move ? "platform" : a.kind === "incoming" ? "received" : "sent",
     address: move || a.kind === "send" ? a.to : a.address,

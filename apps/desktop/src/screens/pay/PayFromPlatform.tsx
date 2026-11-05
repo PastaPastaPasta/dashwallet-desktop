@@ -2,8 +2,9 @@
 // Platform balance, the fee estimate and its band, then a confirm sheet that runs the send and
 // shows how it ended.
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
+import type { PlatformActivity } from "../../api/generated/PlatformActivity";
 import type { PlatformSendOutcome } from "../../api/generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "../../api/generated/PlatformSendQuote";
 import type { WithdrawAmount } from "../../api/generated/WithdrawAmount";
@@ -14,12 +15,13 @@ import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
 import { useModel } from "../../onboarding/model";
-import { hasPendingMove } from "../../platform/move";
-import { sendAmount, sendCanRetry, sendErrorText, sendFor, SEND_COPY as C, type PlatformSendFlow } from "../../platform/send";
+import { hasUnansweredOp } from "../../platform/move";
+import { canRetry, heldSend, retryAsks, sendAmount, sendCanRetry, sendErrorText, sendFor, sendRefusalText, settledBy, staleConfirm, SEND_COPY as C, type PlatformSendFlow, type Settled } from "../../platform/send";
 import { GrantSheet } from "../tools/common";
 import { FormField, type useAmountField } from "./form";
 
-type Confirmed = { quote: PlatformSendQuote; amount: WithdrawAmount };
+/** `seen`: the Platform activity when Confirm opened (what a later read is compared with). */
+type Confirmed = { quote: PlatformSendQuote; amount: WithdrawAmount; seen: readonly PlatformActivity[] | null | undefined };
 
 function Row({ label, testId, children, total, address }: { label: string; testId: string; children: ReactNode; total?: boolean; address?: boolean }) {
   return (
@@ -32,56 +34,96 @@ function Row({ label, testId, children, total, address }: { label: string; testI
   );
 }
 
-function outcomeCopy(outcome: PlatformSendOutcome, credits: (c: string) => string): { title: string; text: string } {
+/** What the result sheet says: the outcome's own state, unless Activity has since settled it (`settled`).
+ * `retried`: the send answered a retry, which may be the earlier payment's own outcome. */
+function outcomeCopy(outcome: PlatformSendOutcome, credits: (c: string) => string, settled: Settled | null, retried: boolean): { title: string; text: string } {
+  if (settled === "went") return C.settled.went;
+  if (settled === "refused") return C.settled.refused;
   switch (outcome.state) {
-    case "done":
-      return { title: C.done.title, text: C.done.text(credits(outcome.credits)) };
+    case "done": {
+      // The debit counts the fee estimate when the balances did not show the fee taken (not for Max: its output paid it).
+      const text = C.done.text(credits(outcome.credits), outcome.estimated || (outcome.feeCredits === null && !outcome.feeFromAmount));
+      return { title: C.done.title, text: retried ? `${C.went} ${text}` : text };
+    }
     case "pending":
       return C.pending;
     case "failed":
-      return C.failed;
+      return outcome.mayLand ? C.failed : C.settled.refused;
     case "replaced":
       return C.replaced;
   }
 }
 
-function SendSheet({ flow, confirmed, credits, onClose }: { flow: PlatformSendFlow; confirmed: Confirmed | null; credits: (c: string) => string; onClose: (sent: boolean) => void }) {
+function ConfirmRows({ q, credits }: { q: PlatformSendQuote; credits: (c: string) => string }) {
+  const recipientGets = String(BigInt(q.amountCredits) - BigInt(q.feeCredits));
+  return (
+    <>
+      <dl className="detail-list topup-quote" data-testid="platform-send-confirm">
+        <Row label={C.rows.from} testId="platform-send-confirm-from">
+          {C.rows.fromValue}
+        </Row>
+        <Row label={C.rows.to} testId="platform-send-confirm-to" address>
+          {q.to}
+        </Row>
+        <Row label={C.rows.amount} testId="platform-send-confirm-amount">
+          {q.feeFromAmount ? `${credits(q.amountCredits)}, ${C.rows.everything}` : credits(q.amountCredits)}
+        </Row>
+        <Row label={C.rows.fee} testId="platform-send-confirm-fee">
+          {C.feeValue(credits(q.feeCredits), q.feeFromAmount || q.maxFeeCredits === null ? null : credits(q.maxFeeCredits))}
+        </Row>
+        {q.feeFromAmount && (
+          <Row label={C.rows.recipientGets} testId="platform-send-confirm-recipient">
+            {credits(recipientGets)}
+          </Row>
+        )}
+        <Row label={q.feeFromAmount ? C.rows.totalExact : C.rows.total} testId="platform-send-confirm-total" total>
+          {credits(q.credits)}
+        </Row>
+      </dl>
+      <p className="field-hint" data-testid={q.feeFromAmount ? "platform-send-fee-from-amount" : "platform-send-fee-source"}>
+        {q.feeFromAmount ? C.feeFromAmount : C.feeSource}
+      </p>
+      {q.retryOf !== null && (
+        <p className="field-hint" data-testid="platform-send-retry-note">
+          {C.retryNote}
+        </p>
+      )}
+    </>
+  );
+}
+
+function SendSheet({
+  flow,
+  confirmed,
+  credits,
+  settled,
+  onClose,
+  onRetry,
+}: {
+  flow: PlatformSendFlow;
+  confirmed: Confirmed | null;
+  credits: (c: string) => string;
+  settled: Settled | null;
+  onClose: (sent: boolean) => void;
+  onRetry: () => void;
+}) {
   const { step, outcome } = flow;
   const q = confirmed?.quote;
-  const close = () => onClose(step === "done");
+  const close = () => onClose(step === "done" && (outcome?.state === "done" || settled === "went"));
+  // Refused for good: nothing is held, so the payment can be sent again from the form.
+  const notSent = settled === "refused" || (outcome?.state === "failed" && !outcome.mayLand);
   return (
     <Sheet title={C.title} width="small" testId="platform-send-sheet" onClose={close}>
       <div data-testid="platform-send-body" data-step={step}>
         {step === "confirm" && q && confirmed && (
           <>
             <p className="sheet-text">{C.confirmText}</p>
-            <dl className="detail-list topup-quote" data-testid="platform-send-confirm">
-              <Row label={C.rows.from} testId="platform-send-confirm-from">
-                {C.rows.fromValue}
-              </Row>
-              <Row label={C.rows.to} testId="platform-send-confirm-to" address>
-                {q.to}
-              </Row>
-              <Row label={C.rows.amount} testId="platform-send-confirm-amount">
-                {credits(q.amountCredits)}
-              </Row>
-              <Row label={C.rows.fee} testId="platform-send-confirm-fee">
-                {C.feeValue(credits(q.feeCredits), credits(q.maxFeeCredits))}
-              </Row>
-              <Row label={C.rows.total} testId="platform-send-confirm-total" total>
-                {credits(String(BigInt(q.amountCredits) + (q.feeFromAmount ? 0n : BigInt(q.feeCredits))))}
-              </Row>
-            </dl>
-            {q.feeFromAmount && (
-              <p className="field-hint" data-testid="platform-send-fee-from-amount">
-                {C.feeFromAmount}
-              </p>
-            )}
+            <ConfirmRows q={q} credits={credits} />
             <div className="sheet-actions">
               <DashButton variant="tintedGray" size="large" data-testid="platform-send-cancel" disabled={flow.running} onClick={close}>
                 {C.cancel}
               </DashButton>
-              <DashButton variant="filledBlue" size="large" data-testid="platform-send-go" disabled={flow.running} onClick={() => void flow.send(q.grant, q.to, confirmed.amount)}>
+              <DashButton variant="filledBlue" size="large" data-testid="platform-send-go" disabled={flow.running || flow.isSpent(q.operation)} onClick={() => void flow.send(q)}>
                 {C.go}
               </DashButton>
             </div>
@@ -99,19 +141,29 @@ function SendSheet({ flow, confirmed, credits, onClose }: { flow: PlatformSendFl
         {step === "done" && outcome && (
           <div role="status">
             <p className="topup-title" data-testid="platform-send-outcome-title" data-state={outcome.state}>
-              {outcomeCopy(outcome, credits).title}
+              {outcomeCopy(outcome, credits, settled, flow.retryOf !== null).title}
             </p>
             <p className="sheet-text" data-testid="platform-send-outcome-text">
-              {outcomeCopy(outcome, credits).text}
+              {outcomeCopy(outcome, credits, settled, flow.retryOf !== null).text}
             </p>
+            {flow.noRetry && (
+              <p className="form-problem" role="alert" data-testid="platform-send-no-retry">
+                {C.noRetry}
+              </p>
+            )}
             <div className="sheet-actions">
-              {outcome.state !== "done" && (
+              {outcome.state !== "done" && settled !== "went" && !notSent && (
                 <DashButton variant="tintedGray" size="large" data-testid="platform-send-view" onClick={() => { close(); navigate("activity"); }}>
                   {C.view}
                 </DashButton>
               )}
+              {canRetry(outcome) && settled === null && (
+                <DashButton variant="tintedBlue" size="large" data-testid="platform-send-retry" disabled={flow.running} onClick={onRetry}>
+                  {C.retry}
+                </DashButton>
+              )}
               <DashButton variant="filledBlue" size="large" data-testid="platform-send-done" onClick={close}>
-                {C.close}
+                {notSent ? C.back : C.close}
               </DashButton>
             </div>
           </div>
@@ -119,7 +171,7 @@ function SendSheet({ flow, confirmed, credits, onClose }: { flow: PlatformSendFl
         {step === "refused" && (
           <>
             <p className="form-problem" role="alert" data-testid="platform-send-refusal">
-              {sendErrorText(flow.error, credits)}
+              {sendRefusalText(flow.error, credits)}
             </p>
             <div className="sheet-actions">
               {sendCanRetry(flow.error) && (
@@ -150,7 +202,9 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
   const [confirmed, setConfirmed] = useState<Confirmed | null>(null);
   const balance = usePlatformAddresses(walletId);
   const activity = usePlatformActivity(walletId);
-  const waiting = hasPendingMove(activity.data);
+  // Only an unanswered one waits here: a send that may still land is quoted (its exact retry passes; anything else is refused on the form).
+  const waiting = hasUnansweredOp(activity.data);
+  const [notice, setNotice] = useState<string | null>(null);
   const asked = sendAmount(max, amount.settled ? amount.duffs : undefined);
   const quote = usePlatformSendQuote(walletId, to, waiting ? null : asked);
   const empty = balance.data === null || (balance.data !== undefined && BigInt(balance.data.credits) === 0n);
@@ -158,7 +212,24 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
 
   const q = quote.data;
   const problem = waiting ? C.waiting : quote.isError ? sendErrorText(quote.error, credits) : (amount.error ?? null);
-  const ready = !waiting && !!q && !quote.isFetching && asked !== null;
+  // An operation is single use: after an attempt, Confirm waits for a quote taken since.
+  const ready = !waiting && !!q && !quote.isFetching && !quote.isError && asked !== null && !flow.isSpent(q.operation);
+  const requote = quote.refetch;
+  const handledAttempts = useRef(flow.attempts);
+  useEffect(() => {
+    if (flow.attempts === handledAttempts.current) return;
+    handledAttempts.current = flow.attempts;
+    if (!waiting && asked !== null && to !== "") void requote();
+  }, [flow.attempts]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A Confirm whose quote Activity has overtaken goes back to the form, with a fresh quote.
+  useEffect(() => {
+    if (!confirmed || flow.step !== "confirm" || flow.running || flow.isSpent(confirmed.quote.operation)) return;
+    const stale = staleConfirm(confirmed.quote, confirmed.seen, activity.data);
+    if (!stale) return;
+    setConfirmed(null);
+    setNotice(stale === "went" ? C.went : stale === "gone" ? C.gone : null);
+    void requote();
+  }, [activity.data, confirmed, flow.step, flow.running, requote]);
   const close = (sent: boolean) => {
     setConfirmed(null);
     flow.reset();
@@ -168,10 +239,24 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
       onSent();
     }
   };
+  // Retry this payment: the same recipient and amount, quoted again (the engine answers the exact retry).
+  const retry = async () => {
+    const got = await flow.retry(to);
+    if (got) setConfirmed({ ...got, seen: activity.data });
+  };
+  // An earlier payment that may still go through, retried from the form after its sheet is gone.
+  const held = heldSend(activity.data);
+  const retryHeld = async () => {
+    if (!held?.to) return;
+    setNotice(null);
+    const got = await flow.quoteRetry({ id: held.id, to: held.to }, retryAsks(held));
+    if (got) setConfirmed({ ...got, seen: activity.data });
+  };
+  const settled = flow.step === "done" ? settledBy(flow.outcome, activity.data) : null;
 
   const sheet = (
     <>
-      {sheetOpen && <SendSheet flow={flow} confirmed={confirmed} credits={credits} onClose={close} />}
+      {sheetOpen && <SendSheet flow={flow} confirmed={confirmed} credits={credits} settled={settled} onClose={close} onRetry={() => void retry()} />}
       <GrantSheet grants={flow.grants} />
     </>
   );
@@ -202,16 +287,38 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
               autoComplete="off"
               placeholder={max ? "Max" : shown.placeholder}
               onChange={(e) => {
+                setNotice(null);
                 setMax(false);
                 amount.setText(e.target.value);
               }}
             />
-            <DashButton variant={max ? "filledBlue" : "tintedBlue"} size="small" data-testid="pay-max" aria-pressed={max} onClick={() => setMax(!max)}>
+            <DashButton variant={max ? "filledBlue" : "tintedBlue"} size="small" data-testid="pay-max" aria-pressed={max} onClick={() => {
+                setNotice(null);
+                setMax(!max);
+              }}>
               Max
             </DashButton>
           </span>
         )}
       </FormField>
+      {held?.to && (
+        <div className="field-hint" data-testid="platform-send-earlier">
+          <p>{C.earlier(credits(held.credits), held.to)}</p>
+          <DashButton variant="tintedBlue" size="small" data-testid="platform-send-retry-held" disabled={flow.running} onClick={() => void retryHeld()}>
+            {C.retryThat}
+          </DashButton>
+          {flow.noRetry && flow.step === "confirm" && (
+            <p className="form-problem" role="alert" data-testid="platform-send-no-retry-form">
+              {C.noRetry}
+            </p>
+          )}
+        </div>
+      )}
+      {notice && (
+        <p className="field-hint" role="status" data-testid="platform-send-notice">
+          {notice}
+        </p>
+      )}
       <div className="pay-footer" data-testid="pay-footer">
         <div className="pay-footer-text" aria-live="polite">
           {problem ? (
@@ -228,7 +335,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
             </span>
           ) : q ? (
             <span className="pay-fee-line" id="pay-reason" data-testid="pay-fee-line">
-              {C.fee(credits(q.feeCredits), credits(q.maxFeeCredits))}
+              {C.fee(credits(q.feeCredits), q.feeFromAmount || q.maxFeeCredits === null ? null : credits(q.maxFeeCredits))}
             </span>
           ) : (
             <span className="field-hint" id="pay-reason" data-testid="pay-incomplete">
@@ -244,7 +351,11 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
           disabled={!ready}
           why={problem ?? C.quoting}
           whyId="pay-reason"
-          onClick={() => q && asked && setConfirmed({ quote: q, amount: asked })}
+          onClick={() => {
+            if (!q || !asked) return;
+            setNotice(null);
+            setConfirmed({ quote: q, amount: asked, seen: activity.data });
+          }}
         >
           Review
         </DashButton>

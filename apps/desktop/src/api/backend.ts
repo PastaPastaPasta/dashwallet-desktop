@@ -237,10 +237,11 @@ export interface Backend {
   platformAddressesSync(walletId: string): Promise<PlatformAddressBalance>;
   /** The payment account's lowest unused Platform address (`platform_receive_address`), bech32m. */
   platformReceiveAddress(walletId: string): Promise<PlatformReceiveAddress>;
-  /** What sending `amount` to the Platform address `to` takes (`platform_send_quote`). */
-  platformSendQuote(walletId: string, to: string, amount: WithdrawAmount): Promise<PlatformSendQuote>;
-  /** Sends `amount` from the Platform addresses to `to` under `grant` (`platform_send`). */
-  platformSend(walletId: string, to: string, amount: WithdrawAmount, grant: string): Promise<PlatformSendOutcome>;
+  /** What sending `amount` to the Platform address `to` takes (`platform_send_quote`); `retryOf`: the
+   * send this retries ("Retry this payment"), else `null`. */
+  platformSendQuote(walletId: string, to: string, amount: WithdrawAmount, retryOf: string | null): Promise<PlatformSendQuote>;
+  /** Sends the quoted `operation` (single use) from the Platform addresses under a fresh `platformOp` `grant` (`platform_send`). */
+  platformSend(walletId: string, operation: string, grant: string): Promise<PlatformSendOutcome>;
   syncStatus(): Promise<SyncStatus>;
   historyPage(walletId: string, request: HistoryRequest): Promise<HistoryRows>;
   /** dash-qt's CSV of the history `filter` and `sort` select (every field quoted, `\n` ends);

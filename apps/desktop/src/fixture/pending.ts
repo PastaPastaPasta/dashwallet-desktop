@@ -14,6 +14,7 @@ import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { PlatformAddressBalance } from "../api/generated/PlatformAddressBalance";
 import type { PlatformSendOutcome } from "../api/generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
+import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
 import { checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
 import { newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
@@ -23,10 +24,9 @@ import { FIXTURE_NOW } from "./wallet";
 const CREDITS_PER_DUFF = 1000n;
 /** What a move costs the fixture's wallet, in credits. */
 const MOVE_FEE_CREDITS = 2_000_000n;
-/** A send's fee estimate (dpp's: 500,000 per input, 6,000,000 for the output, one input) and the
- * library's band on it; the least a send pays (dpp's minimum output). */
+/** A send's fee estimate (dpp's: 500,000 per input, 6,000,000 for the output, one input); the least
+ * a send pays (dpp's minimum output). The most the fee can take is what its source address keeps. */
 const SEND_FEE_CREDITS = 6_500_000n;
-const SEND_FEE_BAND = 3n;
 const SEND_MIN_CREDITS = 500_000n;
 
 /** What the next `platform_move_to_core` comes to: Platform's proved answer, an answer that says
@@ -38,11 +38,36 @@ export type MoveResult = "done" | "pending" | "refused" | "unproved" | "tooManyC
  * still land), or refused by Platform. */
 export type SendResult = "done" | "pending" | "failed" | "refused";
 
+/** What a send was signed on (the engine's stored record): its recipient, what was asked and the
+ * quote's figures, so its exact retry replays them whatever the balances are now. */
+export interface SendTerms {
+  to: string;
+  amount: WithdrawAmount;
+  quote: Omit<PlatformSendQuote, "operation" | "retryOf">;
+  /** The inputs it signed, as one id (a retry signs these exactly). */
+  inputs: string;
+}
+
+/** A quote's operation: single use, and the held send it retries. */
+export interface SendOperation {
+  quote: PlatformSendQuote;
+  used: boolean;
+}
+
 export interface PlatformWorld {
   addresses: { address: string; credits: string }[];
   activity: PlatformActivity[];
   nextMove: MoveResult;
   nextSend: SendResult;
+  /** What the send after the next one comes to (`null`: the same as the next). */
+  thenSend: SendResult | null;
+  /** A proved send's debit counts the fee estimate (the balances hid the fee taken). */
+  estimateSends: boolean;
+  /** The terms of each send in the activity (by id). */
+  terms: Record<string, SendTerms>;
+  /** The quotes' operations (by id) and the next number. */
+  operations: Record<string, SendOperation>;
+  nextOperation: number;
   /** The lowest unused address, what `platform_receive_address` shows. */
   receive: { address: string; index: number };
   syncedAt: number | null;
@@ -70,11 +95,16 @@ const ADDRESSES = [
 export const newPlatformWorld = (): PlatformWorld => ({
   addresses: ADDRESSES.map((a) => ({ ...a })),
   activity: [
-    { id: "pa-2", kind: "incoming", state: "done", credits: "10000000000", address: ADDRESSES[1].address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 3 * 86_400 },
-    { id: "pa-1", kind: "incoming", state: "done", credits: "30000000000", address: ADDRESSES[0].address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 5 * 86_400 },
+    { id: "pa-2", kind: "incoming", state: "done", credits: "10000000000", address: ADDRESSES[1].address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 3 * 86_400, mayLand: false, estimated: false },
+    { id: "pa-1", kind: "incoming", state: "done", credits: "30000000000", address: ADDRESSES[0].address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 5 * 86_400, mayLand: false, estimated: false },
   ],
   nextMove: "done",
   nextSend: "done",
+  thenSend: null,
+  estimateSends: false,
+  terms: {},
+  operations: {},
+  nextOperation: 1,
   receive: { address: "tdash1k9w4v7d2n8x3c5m0q6z8r2t4y6u8p0s2a4d6f8h0", index: 2 },
   dust: "0",
   syncedAt: Math.floor(FIXTURE_NOW.getTime() / 1000) - 60,
@@ -144,33 +174,112 @@ function recipient(world: Ctx["world"], p: PlatformWorld, to: string): string {
   return t;
 }
 
-/** What holds the next send (`credits.move_pending`), as the engine: a send or move Platform has
- * not confirmed, or a send failed by height (the fixture's failed sends may all still land) unless
- * this is its exact retry (same recipient and what it may take). */
-function held(p: PlatformWorld, q: PlatformSendQuote) {
-  const h = p.activity.find(
-    (a) => ((a.kind === "moveToCore" || a.kind === "send") && a.state === "pending") || (a.kind === "send" && a.state === "failed" && (a.to !== q.to || a.credits !== q.credits)),
-  );
-  if (h) throw fail("credits.move_pending", "a move is pending", { kind: "artifact", artifact: h.id });
+/** The terms of a nominal send of `credits` to `to` as the fixture's quote plans one: one input (the
+ * largest address), which pays the fee, so the fee can take all it keeps after the send. */
+export function sendTerms(to: string, credits: bigint, inputs = "in-1", source = BigInt(ADDRESSES[0].credits)): SendTerms {
+  const kept = source - credits;
+  return {
+    to,
+    amount: { kind: "credits", credits: String(credits) },
+    inputs,
+    quote: { credits: String(credits + kept), amountCredits: String(credits), feeCredits: String(SEND_FEE_CREDITS), maxFeeCredits: String(kept), feeFromAmount: false, to, grant: { maxDuffs: 0, maxCredits: String(credits + kept) } },
+  };
 }
 
-function sendQuote(ctx: Ctx, walletId: string, to: string, amount: WithdrawAmount): PlatformSendQuote {
+const sameAmount = (a: WithdrawAmount, b: WithdrawAmount) => (a.kind === "all" ? b.kind === "all" : b.kind === "credits" && a.credits === b.credits);
+
+/** Whether `to` and `amount` are the exact retry of the send with these terms (the engine's `retried_by`). */
+const retriedBy = (t: SendTerms | undefined, to: string, amount: WithdrawAmount) => !!t && t.to === to && sameAmount(t.amount, amount);
+
+/** The held send (failed by height, may still land) `to` and `amount` is the exact retry of. */
+function retryTarget(p: PlatformWorld, to: string, amount: WithdrawAmount): PlatformActivity | null {
+  return p.activity.find((a) => a.kind === "send" && a.state === "failed" && a.mayLand && retriedBy(p.terms[a.id], to, amount)) ?? null;
+}
+
+const moveHeld = (id: string) => fail("credits.move_pending", "a move is pending", { kind: "artifact", artifact: id });
+
+/** What holds a send (`credits.move_pending`), as the engine: a move or send Platform has not
+ * answered or that may still land, unless this is the exact retry of the only such send. Returns
+ * the send it retries. */
+function holdFor(p: PlatformWorld, to: string, amount: WithdrawAmount): PlatformActivity | null {
+  const held = p.activity.filter(isHeldOp);
+  if (held.length === 0) return null;
+  const retry = retryTarget(p, to, amount);
+  const blocking = held.find((a) => a !== retry);
+  if (blocking || !retry) throw moveHeld((blocking ?? held[0]).id);
+  return retry;
+}
+
+/** The send a quote names with `retryOf`, whatever it became: it must be a send of these terms. */
+function namedRetry(p: PlatformWorld, id: string, to: string, amount: WithdrawAmount): PlatformActivity {
+  const row = p.activity.find((a) => a.id === id && a.kind === "send");
+  if (!row) throw fail("invalid_argument", "no send has that id", { kind: "reason", reason: "no send has that id" });
+  if (!retriedBy(p.terms[id], to, amount)) throw fail("invalid_argument", "not that send's retry", { kind: "reason", reason: "not that send's retry: the same address and amount" });
+  if (row.state === "pending") throw moveHeld(row.id);
+  return row;
+}
+
+function sendQuote(ctx: Ctx, walletId: string, to: string, amount: WithdrawAmount, retryOf: string | null): PlatformSendQuote {
   wallet(ctx.world, walletId);
   const p = platformOf(ctx.world, "platform_send_quote");
   const address = recipient(ctx.world, p, to);
+  const retry = retryOf === null ? holdFor(p, address, amount) : namedRetry(p, retryOf, address, amount);
+  const operation = `op-${p.nextOperation++}`;
+  const keep = (q: Omit<PlatformSendQuote, "operation" | "retryOf">, retryOf: string | null): PlatformSendQuote => {
+    const quote = { ...q, operation, retryOf };
+    p.operations[operation] = { quote, used: false };
+    return quote;
+  };
+  // The exact retry is quoted on the held send's stored terms (a settled one is answered when sent).
+  if (retry) return keep(p.terms[retry.id].quote, retry.id);
   const available = total(p);
-  const band = SEND_FEE_CREDITS * SEND_FEE_BAND;
   const short = (needed: bigint) => fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(needed), available: String(available) });
   const grant = (credits: bigint) => ({ maxDuffs: 0, maxCredits: String(credits) });
   if (amount.kind === "all") {
     // Max: everything, the output pays the fee.
-    if (available < SEND_MIN_CREDITS + band) throw short(SEND_MIN_CREDITS + band);
-    return { credits: String(available), amountCredits: String(available), feeCredits: String(SEND_FEE_CREDITS), maxFeeCredits: String(band), feeFromAmount: true, to: address, grant: grant(available) };
+    if (available < SEND_MIN_CREDITS + SEND_FEE_CREDITS) throw short(SEND_MIN_CREDITS + SEND_FEE_CREDITS);
+    return keep({ credits: String(available), amountCredits: String(available), feeCredits: String(SEND_FEE_CREDITS), maxFeeCredits: null, feeFromAmount: true, to: address, grant: grant(available) }, null);
   }
   const credits = BigInt(amount.credits);
   if (credits < SEND_MIN_CREDITS) throw fail("credits.send_out_of_range", "below the minimum", { kind: "creditMinimum", min: String(SEND_MIN_CREDITS) });
-  if (credits + band > available) throw short(credits + band);
-  return { credits: String(credits + band), amountCredits: String(credits), feeCredits: String(SEND_FEE_CREDITS), maxFeeCredits: String(band), feeFromAmount: false, to: address, grant: grant(credits + band) };
+  // Inputs largest first; the fee comes from the first address that keeps enough for it after giving.
+  let left = credits;
+  let kept: bigint | null = null;
+  for (const a of [...p.addresses].sort((x, y) => Number(BigInt(y.credits) - BigInt(x.credits)))) {
+    const give = left < BigInt(a.credits) ? left : BigInt(a.credits);
+    left -= give;
+    const rest = BigInt(a.credits) - give;
+    if (kept === null && rest >= SEND_FEE_CREDITS) kept = rest;
+  }
+  if (left > 0n || kept === null) throw short(credits + SEND_FEE_CREDITS);
+  return keep({ credits: String(credits + kept), amountCredits: String(credits), feeCredits: String(SEND_FEE_CREDITS), maxFeeCredits: String(kept), feeFromAmount: false, to: address, grant: grant(credits + kept) }, null);
+}
+
+/** A send's outcome, from its activity row and terms. */
+function sendOutcome(p: PlatformWorld, row: PlatformActivity): PlatformSendOutcome {
+  const t = p.terms[row.id];
+  return {
+    id: row.id,
+    credits: row.credits,
+    amountCredits: t?.quote.amountCredits ?? row.credits,
+    feeFromAmount: t?.quote.feeFromAmount ?? false,
+    to: row.to,
+    state: row.state,
+    mayLand: row.mayLand,
+    feeCredits: row.feeCredits,
+    estimated: row.estimated,
+  };
+}
+
+/** A held send lands meanwhile (Platform takes it after all): its row is `done`, debited as a proved send. */
+export function landSend(p: PlatformWorld, id: string) {
+  const row = p.activity.find((a) => a.id === id);
+  const t = p.terms[id];
+  if (!row || !t) return;
+  const fee = t.quote.feeFromAmount ? null : t.quote.feeCredits;
+  const debit = BigInt(t.quote.amountCredits) + BigInt(fee ?? 0);
+  p.activity = p.activity.map((a) => (a.id === id ? { ...a, state: "done" as const, credits: String(debit), feeCredits: fee, mayLand: false } : a));
+  spend(p, debit);
 }
 
 /** Takes `credits` from the addresses, largest first (a proved send). */
@@ -216,26 +325,63 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     wallet(world, walletId);
     return platformOf(world, "platform_receive_address").receive;
   },
-  platform_send_quote: ({ walletId, to, amount }: { walletId: string; to: string; amount: WithdrawAmount }, ctx: Ctx) => sendQuote(ctx, walletId, to, amount),
-  platform_send: ({ walletId, to, amount, grant }: { walletId: string; to: string; amount: WithdrawAmount; grant: string }, ctx: Ctx): PlatformSendOutcome => {
+  platform_send_quote: ({ walletId, to, amount, retryOf }: { walletId: string; to: string; amount: WithdrawAmount; retryOf?: string | null }, ctx: Ctx) => sendQuote(ctx, walletId, to, amount, retryOf ?? null),
+  platform_send: ({ walletId, operation, grant }: { walletId: string; operation: string; grant: string }, ctx: Ctx): PlatformSendOutcome => {
     const { world } = ctx;
-    const q = sendQuote(ctx, walletId, to, amount);
+    wallet(world, walletId);
     const p = platformOf(world, "platform_send");
-    held(p, q);
+    const op = p.operations[operation];
+    // An operation is the session's and single use: unknown or used is quoted again.
+    if (!op || op.used) throw fail("invalid_argument", "unknown or used operation", { kind: "reason", reason: "unknown or used operation" });
+    op.used = true;
+    const q = op.quote;
+    // Only a fresh grant pays someone else: a lease id is no grant here.
     const g = checkGrant(world, grant, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
     if (BigInt(g.grant.purpose.maxCredits) < BigInt(q.credits))
       throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: q.credits, remaining: g.grant.purpose.maxCredits });
+    const held = p.activity.filter(isHeldOp);
+    const target = q.retryOf === null ? null : (p.activity.find((a) => a.id === q.retryOf) ?? null);
+    if (target === null) {
+      // A new send, or a hold that appeared after its quote.
+      if (held.length > 0) throw moveHeld(held[0].id);
+    } else if (target.state === "pending") throw moveHeld(target.id);
+    else if (!isHeldOp(target)) {
+      // It landed, was replaced by its identical retry, or can never land: its settled outcome, nothing signed or paid.
+      const landed = target.state === "replaced" ? p.activity.find((a) => a.state === "done" && p.terms[a.id] === p.terms[target.id]) : undefined;
+      return sendOutcome(p, landed ?? target);
+    }
     useGrant(world, grant);
     if (p.nextSend === "refused") throw fail("platform.unavailable", "the fixture refuses the send");
     const state = p.nextSend;
+    if (p.thenSend !== null) {
+      p.nextSend = p.thenSend;
+      p.thenSend = null;
+    }
     const id = `ps-${p.activity.length + 1}`;
-    // As the engine: a proved send's `credits` is the debit (the fee included), an unsettled one's what it may take.
-    const feeCredits = state === "done" && !q.feeFromAmount ? q.feeCredits : null;
-    const credits = state === "done" ? String(BigInt(q.amountCredits) + BigInt(feeCredits ?? 0)) : q.credits;
-    p.activity = [{ id, kind: "send", state, credits, address: null, to: q.to, expectedDuffs: null, feeCredits, at: Math.floor(FIXTURE_NOW.getTime() / 1000) }, ...p.activity];
+    // As the engine: a proved send's `credits` is the debit (the fee included), an unsettled one's the amount.
+    // A Max send's output paid the fee (no figure); with `estimateSends` the balances hid it, so the debit counts the estimate.
+    const proved = !q.feeFromAmount && !p.estimateSends;
+    const feeCredits = state === "done" && proved ? q.feeCredits : null;
+    const credits = state === "done" ? String(BigInt(q.amountCredits) + (q.feeFromAmount ? 0n : BigInt(q.feeCredits))) : q.amountCredits;
+    const row: PlatformActivity = {
+      id,
+      kind: "send",
+      state,
+      credits,
+      address: null,
+      to: q.to,
+      expectedDuffs: null,
+      feeCredits,
+      at: Math.floor(FIXTURE_NOW.getTime() / 1000),
+      mayLand: state !== "done",
+      estimated: state === "done" && !q.feeFromAmount && !proved,
+    };
+    // A retry supersedes the held send it re-signed; of a group at most one executes.
+    p.activity = [row, ...p.activity.map((a) => (target && a.id === target.id ? { ...a, state: "replaced" as const, mayLand: false } : a))];
+    p.terms[id] = target ? p.terms[target.id] : { to: q.to, amount: q.feeFromAmount ? { kind: "all" } : { kind: "credits", credits: q.amountCredits }, inputs: `in-${id}`, quote: (({ operation: _o, retryOf: _r, ...rest }) => rest)(q) };
     if (state === "done") spend(p, BigInt(credits));
-    return { id, credits, to: q.to, state, feeCredits };
+    return sendOutcome(p, row);
   },
   platform_move_to_core_quote: ({ walletId, amount }: { walletId: string; amount: WithdrawAmount }, ctx: Ctx) => quote(ctx, walletId, amount),
   platform_move_to_core: ({ walletId, amount, to, grant }: { walletId: string; amount: WithdrawAmount; to: string; grant: string }, ctx: Ctx): MoveToCoreOutcome => {
@@ -244,6 +390,11 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     // Only to one of the wallet's own receiving addresses (the quote's).
     if (to !== q.to) throw fail("invalid_argument", "not an address of this wallet", { kind: "reason", reason: "not an address of this wallet" });
     const p = platformOf(world, "platform_move_to_core");
+    // A send that may still land, or a move Platform has not answered, holds the next move (it waits until it
+    // settles). A move that failed by height does not: the next one signs at the same inputs and frees it.
+    const holding = p.activity.find((a) => isHeldOp(a) && (a.kind === "send" || a.state === "pending"));
+    if (holding) throw moveHeld(holding.id);
+    const supersedes = p.activity.filter((a) => a.kind === "moveToCore" && isHeldOp(a)).map((a) => a.id);
     const g = checkGrant(world, grant, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
     if (BigInt(g.grant.purpose.maxCredits) < BigInt(q.credits))
@@ -255,7 +406,11 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     const expectedDuffs = p.nextMove === "unproved" ? null : q.expectedDuffs;
     const id = `pm-${p.activity.length + 1}`;
     const feeCredits = state === "done" ? q.feeCredits : null;
-    p.activity = [{ id, kind: "moveToCore", state, credits: q.credits, address: null, to: q.to, expectedDuffs, feeCredits, at: Math.floor(FIXTURE_NOW.getTime() / 1000) }, ...p.activity];
+    // Of a group of moves at the same inputs at most one executes: the new one replaces the held ones.
+    p.activity = [
+      { id, kind: "moveToCore", state, credits: q.credits, address: null, to: q.to, expectedDuffs, feeCredits, at: Math.floor(FIXTURE_NOW.getTime() / 1000), mayLand: state === "pending", estimated: false },
+      ...p.activity.map((a) => (supersedes.includes(a.id) ? { ...a, state: "replaced" as const, mayLand: false } : a)),
+    ];
     // A move that is `done` has emptied the addresses it took from; a `pending` one has not been seen yet.
     if (state === "done") p.addresses = [];
     return { id, credits: q.credits, expectedDuffs, to: q.to, state, feeCredits };

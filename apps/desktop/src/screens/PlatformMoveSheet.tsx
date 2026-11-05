@@ -11,7 +11,7 @@ import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
-import { hasPendingMove, moveBlock, moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
+import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
 import { GrantSheet } from "./tools/common";
 
 function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string; block: MoveBlock | null }) {
@@ -180,7 +180,10 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
   const dustText = C.card.dust(discreet ? shown.masked() : `${shown.compact(creditsToDuffs(dustCredits))} ${shown.name}`);
   // A move Platform has not confirmed: this session's result, or (after a restart) Activity's record.
   // Until Activity has answered, a fresh Move is not offered either (and an open confirmation waits).
-  const waiting = flow.pending || hasPendingMove(activity.data);
+  // Only an unanswered move or send waits here: one that failed by height and may still land leaves Move
+  // offered (a move at the same inputs follows a held move and frees it); the engine refuses the rest.
+  const waiting = flow.pending || hasUnansweredOp(activity.data);
+  const sendHeld = !flow.pending && sendHolds(activity.data);
   const block = moveBlock(waiting, activity);
   const sheet = <PlatformMoveSheet flow={flow} walletId={walletId} network={network} block={block} />;
   const holdReason = flow.running ? C.running.text : block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : null;
@@ -192,8 +195,13 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
           <h2 className="platform-card-title">{C.card.title}</h2>
           <p className="platform-card-text">
             {funded && <span data-testid="platform-card-amount">{discreet ? shown.masked() : shown.withUnit(platform)}. </span>}
-            {waiting ? C.waiting.text : flow.unseen ? C.unseen : funded ? C.card.text : dustText}
+            {waiting ? (sendHeld ? C.waiting.sendHeld : C.waiting.text) : flow.unseen ? C.unseen : funded ? C.card.text : dustText}
           </p>
+          {sendHeld && !waiting && (
+            <p className="platform-card-text" data-testid="platform-card-send-held">
+              {C.waiting.sendHeld}
+            </p>
+          )}
           {funded && dust && !waiting && (
             <p className="platform-card-text" data-testid="platform-card-dust">
               {dustText}
