@@ -18,10 +18,15 @@ suite is skipped when the binary lacks the feature.
 With one peer and no InstantSend quorum, dash-spv only accepts a broadcast
 once it is mined, so each sweep runs in the background while the test mines
 whatever reaches dashd's mempool.
+
+`DWD_MOVE_MIXED_COINS` (default 60, at most 500: one chunk) sets the number
+of coins; 490 proves a near-full chunk of confirmed coins against v24's
+standardness and mempool limits.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 import threading
 import time
@@ -31,7 +36,7 @@ import pytest
 
 from test_l1_send import DWCLI, Dwcli, duffs, fields, tx_fee
 
-COINS = 60
+COINS = int(os.environ.get("DWD_MOVE_MIXED_COINS", "60"))
 COIN_VALUE = Decimal("0.1")
 
 
@@ -104,7 +109,7 @@ def dw(regtest_node, funded_miner, tmp_path_factory) -> Dwcli:
 
 @pytest.fixture(scope="module")
 def funded(dw, regtest_node) -> tuple[list[str], int]:
-    """60 coins of 0.1 DASH on 60 CoinJoin-account addresses, mined."""
+    """COINS coins of 0.1 DASH on as many CoinJoin-account addresses, mined."""
     lines = dw.run("coinjoin-test-addresses", dw.wallet, "--count", str(COINS))
     addresses = [line.split()[1] for line in lines if line.startswith("cjaddress ")]
     assert len(set(addresses)) == COINS, lines
