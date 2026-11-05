@@ -287,11 +287,23 @@ pub(crate) trait ShieldedLib: Send + Sync {
     ) -> impl Future<Output = Result<(), FundError>> + Send;
     /// ShieldFromAssetLock of the proved lock at `outpoint` to the account's
     /// own address, its proof signed with the lock's credit key.
-    fn apply(
+    fn apply<S>(
         &self,
         outpoint: OutPoint,
-        signer: &VaultSigner,
-    ) -> impl Future<Output = Result<Applied, PlatformError>> + Send;
+        signer: &S,
+    ) -> impl Future<Output = Result<Applied, PlatformError>> + Send
+    where
+        S: key_wallet::ExtendedPubKeySigner
+            + key_wallet::Signer<Error = dw_vault::SignerError>
+            + Send
+            + Sync;
+    /// The script of the tracked lock's credit output at `outpoint`.
+    fn credit_script(
+        &self,
+        _outpoint: OutPoint,
+    ) -> impl Future<Output = Option<dashcore::ScriptBuf>> + Send {
+        async { None }
+    }
 }
 
 /// How an apply ended without an error.
@@ -1996,11 +2008,26 @@ impl ShieldedLib for PwShielded {
         Reg::wait_proof(&self.pw, outpoint, timeout).await
     }
 
-    async fn apply(
-        &self,
-        outpoint: OutPoint,
-        signer: &VaultSigner,
-    ) -> Result<Applied, PlatformError> {
+    async fn credit_script(&self, outpoint: OutPoint) -> Option<dashcore::ScriptBuf> {
+        use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+        let locks = self.pw.wallet.asset_locks().list_tracked_locks().await;
+        let lock = locks.into_iter().find(|l| l.out_point == outpoint)?;
+        let Some(TransactionPayload::AssetLockPayloadType(payload)) =
+            lock.transaction.special_transaction_payload
+        else {
+            return None;
+        };
+        let output = payload.credit_outputs.get(outpoint.vout as usize)?;
+        Some(output.script_pubkey.clone())
+    }
+
+    async fn apply<S>(&self, outpoint: OutPoint, signer: &S) -> Result<Applied, PlatformError>
+    where
+        S: key_wallet::ExtendedPubKeySigner
+            + key_wallet::Signer<Error = dw_vault::SignerError>
+            + Send
+            + Sync,
+    {
         let raw = (self.address().await).ok_or(PlatformError::Internal {
             detail: "the shielded account is not bound".into(),
         })?;
@@ -2022,7 +2049,7 @@ impl ShieldedLib for PwShielded {
                 Some(APPLY_CHAIN_LOCK_WAIT),
             )
             .await;
-        applied_from(applied, signer.signed())
+        applied_from(applied, outpoint, signer.signed())
     }
 }
 
@@ -2036,17 +2063,21 @@ pub(crate) fn shield_funding(outpoint: OutPoint) -> AssetLockFunding {
     }
 }
 
-/// How the library's shield call ended, given whether the lock's credit key
-/// signed a transition in it.
+/// How the library's shield call of the lock at `outpoint` ended, given
+/// whether the lock's credit key signed a transition in it. Only "already
+/// consumed" naming `outpoint` is [`Applied::Taken`].
 pub(crate) fn applied_from(
     result: Result<(), PlatformWalletError>,
+    outpoint: OutPoint,
     signed: bool,
 ) -> Result<Applied, PlatformError> {
     match result {
         Ok(()) => Ok(Applied::Done),
         // The library keeps the lock "consumption unknown" with its
         // ChainLock proof (it cannot authenticate the report).
-        Err(PlatformWalletError::AssetLockAlreadyConsumed(_)) => Ok(Applied::Taken),
+        Err(PlatformWalletError::AssetLockAlreadyConsumed(o)) if o == outpoint => {
+            Ok(Applied::Taken)
+        }
         // The library signs the transition and then broadcasts it
         // (`build_and_broadcast_shielded`, `fund_from_asset_lock.rs:707-757`):
         // a failure after a signature may follow its submission.

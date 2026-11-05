@@ -22,7 +22,7 @@ use dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dpp::prelude::AssetLockProof;
 use dpp::version::PlatformVersion;
-use dw_vault::{VaultError, VaultSigner};
+use dw_vault::VaultError;
 use platform_wallet::changeset::{
     AssetLockChangeSet, AssetLockEntry, PlatformWalletChangeSet, PlatformWalletPersistence,
 };
@@ -701,7 +701,7 @@ impl ShieldedLib for FakeShielded {
         Err(FundError::Refused(PlatformError::Unavailable))
     }
 
-    async fn apply(&self, outpoint: OutPoint, _: &VaultSigner) -> Result<Applied, PlatformError> {
+    async fn apply<S>(&self, outpoint: OutPoint, _: &S) -> Result<Applied, PlatformError> {
         self.applied.lock().unwrap().push(outpoint);
         if self.real_rows {
             let after = std::mem::take(&mut *self.row_after.lock().unwrap());
@@ -710,7 +710,7 @@ impl ShieldedLib for FakeShielded {
         if self.consumed.swap(false, Ordering::SeqCst) {
             // As platform-wallet answers it, mapped by the real function.
             let consumed = PlatformWalletError::AssetLockAlreadyConsumed(outpoint);
-            return pool::applied_from(Err(consumed), true);
+            return pool::applied_from(Err(consumed), outpoint, true);
         }
         (self.applies.lock().unwrap().take()).expect("a scripted apply")
     }
@@ -1951,16 +1951,19 @@ fn a_shield_refused_before_its_signature_is_not_applied() {
 #[test]
 fn a_shield_result_is_unknown_once_its_transition_was_signed() {
     let lost = || PlatformWalletError::ShieldedBuildError("no result".into());
-    assert_eq!(pool::applied_from(Ok(()), true).unwrap(), Applied::Done);
     assert_eq!(
-        pool::applied_from(Err(lost()), true).unwrap(),
+        pool::applied_from(Ok(()), OutPoint::null(), true).unwrap(),
+        Applied::Done
+    );
+    assert_eq!(
+        pool::applied_from(Err(lost()), OutPoint::null(), true).unwrap(),
         Applied::Unknown
     );
-    assert!(pool::applied_from(Err(lost()), false).is_err());
+    assert!(pool::applied_from(Err(lost()), OutPoint::null(), false).is_err());
     for signed in [false, true] {
         let consumed = PlatformWalletError::AssetLockAlreadyConsumed(OutPoint::null());
         assert_eq!(
-            pool::applied_from(Err(consumed), signed).unwrap(),
+            pool::applied_from(Err(consumed), OutPoint::null(), signed).unwrap(),
             Applied::Taken
         );
     }

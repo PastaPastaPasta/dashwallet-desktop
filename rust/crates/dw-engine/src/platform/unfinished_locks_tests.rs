@@ -436,3 +436,24 @@ fn a_finish_signs_with_the_lock_key_only() {
         assert!(narrowed.signed());
     });
 }
+
+/// A shield's apply reads Platform's "already consumed" as `Taken` only
+/// when it names the applied lock: one naming another outpoint is an
+/// ordinary failure (after the signature: unknown, before it: the
+/// refusal).
+#[test]
+fn a_shield_apply_reads_already_consumed_only_for_its_own_lock() {
+    use super::shielded_pool::{Applied, applied_from};
+    let at = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+    let other = OutPoint::new(Txid::from_byte_array([2; 32]), 0);
+    let consumed = PlatformWalletError::AssetLockAlreadyConsumed;
+    assert_eq!(
+        applied_from(Err(consumed(at)), at, true).unwrap(),
+        Applied::Taken
+    );
+    assert_eq!(
+        applied_from(Err(consumed(other)), at, true).unwrap(),
+        Applied::Unknown
+    );
+    assert!(applied_from(Err(consumed(other)), at, false).is_err());
+}
