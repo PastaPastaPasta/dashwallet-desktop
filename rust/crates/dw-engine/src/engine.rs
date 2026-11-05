@@ -58,6 +58,8 @@ pub struct EngineConfig {
 
 struct Shared {
     config: EngineConfig,
+    /// Prices (MP-01): the engine's, not a network's.
+    rates: Arc<crate::rates::RatesHub>,
     sink: Arc<dyn EventSink>,
     /// Lifecycle operations (open/close) are serialised by this lock, the
     /// desktop analogue of iOS's `SerialAsyncLifecycleQueue` at engine level.
@@ -96,15 +98,26 @@ impl Engine {
             .build()
             .map_err(|e| EngineError::Internal(format!("tokio runtime: {e}")))?;
         let handle = runtime.handle().clone();
+        let rates = crate::rates::RatesHub::start(
+            &config.data_root,
+            crate::rates::RatesConfig::production(),
+            Arc::clone(&sink),
+            &handle,
+        );
         Ok(Self {
             runtime: Some(runtime),
             handle,
             shared: Arc::new(Shared {
                 config,
+                rates,
                 sink,
                 sessions: Mutex::new(HashMap::new()),
             }),
         })
+    }
+
+    pub(crate) fn rates_hub(&self) -> Arc<crate::rates::RatesHub> {
+        Arc::clone(&self.shared.rates)
     }
 
     pub fn config(&self) -> &EngineConfig {
@@ -141,6 +154,9 @@ impl Engine {
                 )
                 .await?;
                 sessions.insert(network.clone(), Arc::clone(&session));
+                if network == DashNetwork::Mainnet {
+                    shared.rates.mainnet_opened();
+                }
                 shared.sink.emit(EngineEvent::SessionOpened { network });
                 Ok(session)
             })
@@ -194,6 +210,9 @@ impl Engine {
                     return Err(EngineError::ShieldedSpendUnresolved);
                 }
                 sessions.remove(&network);
+                if network == DashNetwork::Mainnet {
+                    shared.rates.mainnet_closed();
+                }
                 session.close().await;
                 Ok(true)
             })
@@ -206,7 +225,10 @@ impl Engine {
         self.handle
             .spawn(async move {
                 let mut sessions = shared.sessions.lock().await;
-                for (_, session) in sessions.drain() {
+                for (network, session) in sessions.drain() {
+                    if network == DashNetwork::Mainnet {
+                        shared.rates.mainnet_closed();
+                    }
                     session.close().await;
                 }
                 Ok(())

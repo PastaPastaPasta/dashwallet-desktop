@@ -24,6 +24,9 @@ import type { ShieldedStatus } from "./generated/ShieldedStatus";
 import type { ShieldOutcome } from "./generated/ShieldOutcome";
 import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { Balances } from "./generated/Balances";
+import type { CurrencyRate } from "./generated/CurrencyRate";
+import type { RatesSettings } from "./generated/RatesSettings";
+import type { RatesView } from "./generated/RatesView";
 import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { ContactList } from "./generated/ContactList";
 import type { ContactQueryArgs } from "./generated/ContactQueryArgs";
@@ -286,6 +289,12 @@ export interface Backend {
   uiSettings(): Promise<UiSettings>;
   /** Saves them; dw-app also sets the window's theme unless `--theme` was given (D3). */
   setUiSettings(settings: UiSettings): Promise<UiSettings>;
+  // Prices (MP-01, rates-engine): the app's, not a network's. A `rates` event makes them stale.
+  ratesStatus(): Promise<RatesView>;
+  ratesCurrencies(): Promise<CurrencyRate[]>;
+  setRatesSettings(settings: RatesSettings): Promise<RatesView>;
+  /** "Update now": `rates.off` while no request may be made, `rates.throttled` within 30 s. */
+  refreshRates(): Promise<RatesView>;
   /** Encrypts an unencrypted vault with a `changeCredential` grant; the vault ends locked. */
   encryptVault(newPassphrase: string, grantId: string): Promise<LockStatus>;
   changePassphrase(oldPassphrase: string, newPassphrase: string): Promise<LockStatus>;

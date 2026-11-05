@@ -48,6 +48,7 @@ import type { CostTable } from "./CostTable";
 import type { CreatedWallet } from "./CreatedWallet";
 import type { CredentialSpec } from "./CredentialSpec";
 import type { CsvUnitName } from "./CsvUnitName";
+import type { CurrencyRate } from "./CurrencyRate";
 import type { CurrentVoteRow } from "./CurrentVoteRow";
 import type { DashPayEventPage } from "./DashPayEventPage";
 import type { DashPayProfile } from "./DashPayProfile";
@@ -130,6 +131,8 @@ import type { PublishStateName } from "./PublishStateName";
 import type { QrMatrix } from "./QrMatrix";
 import type { QuickUnlockPolicy } from "./QuickUnlockPolicy";
 import type { QuorumSource } from "./QuorumSource";
+import type { RatesSettings } from "./RatesSettings";
+import type { RatesView } from "./RatesView";
 import type { ReceiveRequest } from "./ReceiveRequest";
 import type { RecentNotice } from "./RecentNotice";
 import type { Recipient } from "./Recipient";
@@ -2489,6 +2492,37 @@ export function governanceSubmitProposal(walletId: string, hash: string): Promis
 }
 
 /**
+ * The settings and the chosen currency's price and state now.
+ */
+export function ratesStatus(): Promise<RatesView> {
+  return invoke<RatesView>("rates_status");
+}
+
+/**
+ * Every currency with a price that has not expired, for the picker;
+ * empty while prices are off.
+ */
+export function ratesCurrencies(): Promise<Array<CurrencyRate>> {
+  return invoke<Array<CurrencyRate>>("rates_currencies");
+}
+
+/**
+ * Saves and applies the settings: off stops every request at once.
+ * `rates.invalid_currency` for a code that is not three capital letters.
+ */
+export function setRatesSettings(settings: RatesSettings): Promise<RatesView> {
+  return invoke<RatesView>("set_rates_settings", { settings });
+}
+
+/**
+ * "Update now": one attempt; `rates.off` while no request may be made,
+ * `rates.throttled` within 30 seconds of the last attempt.
+ */
+export function refreshRates(): Promise<RatesView> {
+  return invoke<RatesView>("refresh_rates");
+}
+
+/**
  * `--selftest`: writes the renderer's report, and exits once the report
  * is final (`"final": false` is a checkpoint before a probe that could
  * end the page).
@@ -2827,6 +2861,10 @@ export type CommandArgs = {
   governance_create_proposal: { walletId: string; draft: ProposalDraft; grant: string };
   governance_my_proposals: { walletId: string };
   governance_submit_proposal: { walletId: string; hash: string };
+  rates_status: {  };
+  rates_currencies: {  };
+  set_rates_settings: { settings: RatesSettings };
+  refresh_rates: {  };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
@@ -3120,6 +3158,10 @@ export type CommandResults = {
   governance_create_proposal: MyProposal;
   governance_my_proposals: Array<MyProposal>;
   governance_submit_proposal: MyProposal;
+  rates_status: RatesView;
+  rates_currencies: Array<CurrencyRate>;
+  set_rates_settings: RatesView;
+  refresh_rates: RatesView;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
@@ -3415,6 +3457,10 @@ export const COMMANDS: Record<CommandName, string> = {
   governance_create_proposal: "governance",
   governance_my_proposals: "governance",
   governance_submit_proposal: "governance",
+  rates_status: "rates",
+  rates_currencies: "rates",
+  set_rates_settings: "rates",
+  refresh_rates: "rates",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",
@@ -3669,4 +3715,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "governance.contest_closed",
   "governance.not_a_contender",
   "governance.not_implemented",
+  "rates.invalid_currency",
+  "rates.throttled",
+  "rates.off",
+  "rates.storage",
 ];

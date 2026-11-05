@@ -1,0 +1,2362 @@
+[
+  {
+    "baseCurrency": "BCH",
+    "price": "393.8419",
+    "quoteCurrency": "CAD",
+    "retrieved": "2026-11-04T23:59:20.070480932Z",
+    "source": "ctx-average",
+    "symbol": "BCHCAD"
+  },
+  {
+    "baseCurrency": "BCH",
+    "price": "251.0433",
+    "quoteCurrency": "EUR",
+    "retrieved": "2026-11-04T23:59:20.066686659Z",
+    "source": "ctx-average",
+    "symbol": "BCHEUR"
+  },
+  {
+    "baseCurrency": "BCH",
+    "price": "281.8720",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.066810043Z",
+    "source": "ctx-average",
+    "symbol": "BCHUSD"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "295481.4823",
+    "quoteCurrency": "AED",
+    "retrieved": "2026-11-04T23:59:20.066632466Z",
+    "source": "ctx-average",
+    "symbol": "BTCAED"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "114847.8818",
+    "quoteCurrency": "AUD",
+    "retrieved": "2026-11-04T23:59:20.066758897Z",
+    "source": "ctx-average",
+    "symbol": "BTCAUD"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "10013122.8919",
+    "quoteCurrency": "BDT",
+    "retrieved": "2026-11-04T23:59:20.066797689Z",
+    "source": "ctx-average",
+    "symbol": "BTCBDT"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "30360.8680",
+    "quoteCurrency": "BHD",
+    "retrieved": "2026-11-04T23:59:20.06676691Z",
+    "source": "ctx-average",
+    "symbol": "BTCBHD"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "80452.6715",
+    "quoteCurrency": "BMD",
+    "retrieved": "2026-11-04T23:59:20.066746487Z",
+    "source": "ctx-average",
+    "symbol": "BTCBMD"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "439187.1787",
+    "quoteCurrency": "BRL",
+    "retrieved": "2026-11-04T23:59:20.066628886Z",
+    "source": "ctx-average",
+    "symbol": "BTCBRL"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "112417.2813",
+    "quoteCurrency": "CAD",
+    "retrieved": "2026-11-04T23:59:20.066612779Z",
+    "source": "ctx-average",
+    "symbol": "BTCCAD"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "65709.4051",
+    "quoteCurrency": "CHF",
+    "retrieved": "2026-11-04T23:59:20.066681847Z",
+    "source": "ctx-average",
+    "symbol": "BTCCHF"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "77659340.9570",
+    "quoteCurrency": "CLP",
+    "retrieved": "2026-11-04T23:59:20.066725782Z",
+    "source": "ctx-average",
+    "symbol": "BTCCLP"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "536914.9881",
+    "quoteCurrency": "CNY",
+    "retrieved": "2026-11-04T23:59:20.066832552Z",
+    "source": "ctx-average",
+    "symbol": "BTCCNY"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "1739536.9495",
+    "quoteCurrency": "CZK",
+    "retrieved": "2026-11-04T23:59:20.06661963Z",
+    "source": "ctx-average",
+    "symbol": "BTCCZK"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "535381.3298",
+    "quoteCurrency": "DKK",
+    "retrieved": "2026-11-04T23:59:20.066710917Z",
+    "source": "ctx-average",
+    "symbol": "BTCDKK"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "71614.0825",
+    "quoteCurrency": "EUR",
+    "retrieved": "2026-11-04T23:59:20.066616197Z",
+    "source": "ctx-average",
+    "symbol": "BTCEUR"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "59728.3454",
+    "quoteCurrency": "GBP",
+    "retrieved": "2026-11-04T23:59:20.066603638Z",
+    "source": "ctx-average",
+    "symbol": "BTCGBP"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "631155.2441",
+    "quoteCurrency": "HKD",
+    "retrieved": "2026-11-04T23:59:20.066771594Z",
+    "source": "ctx-average",
+    "symbol": "BTCHKD"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "25972639.7195",
+    "quoteCurrency": "HUF",
+    "retrieved": "2026-11-04T23:59:20.066772189Z",
+    "source": "ctx-average",
+    "symbol": "BTCHUF"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "1456762555.5315",
+    "quoteCurrency": "IDR",
+    "retrieved": "2026-11-04T23:59:20.066782918Z",
+    "source": "ctx-average",
+    "symbol": "BTCIDR"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "253741.9209",
+    "quoteCurrency": "ILS",
+    "retrieved": "2026-11-04T23:59:20.06660778Z",
+    "source": "ctx-average",
+    "symbol": "BTCILS"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "7601400.3159",
+    "quoteCurrency": "INR",
+    "retrieved": "2026-11-04T23:59:20.06668896Z",
+    "source": "ctx-average",
+    "symbol": "BTCINR"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "12748668.0771",
+    "quoteCurrency": "JPY",
+    "retrieved": "2026-11-04T23:59:20.066695249Z",
+    "source": "ctx-average",
+    "symbol": "BTCJPY"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "107852855.9145",
+    "quoteCurrency": "KRW",
+    "retrieved": "2026-11-04T23:59:20.066680273Z",
+    "source": "ctx-average",
+    "symbol": "BTCKRW"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "25005.4478",
+    "quoteCurrency": "KWD",
+    "retrieved": "2026-11-04T23:59:20.066763532Z",
+    "source": "ctx-average",
+    "symbol": "BTCKWD"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "26761928.5543",
+    "quoteCurrency": "LKR",
+    "retrieved": "2026-11-04T23:59:20.066712555Z",
+    "source": "ctx-average",
+    "symbol": "BTCLKR"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "168929314.9493",
+    "quoteCurrency": "MMK",
+    "retrieved": "2026-11-04T23:59:20.066722182Z",
+    "source": "ctx-average",
+    "symbol": "BTCMMK"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "1497836.0861",
+    "quoteCurrency": "MXN",
+    "retrieved": "2026-11-04T23:59:20.066630669Z",
+    "source": "ctx-average",
+    "symbol": "BTCMXN"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "326907.5560",
+    "quoteCurrency": "MYR",
+    "retrieved": "2026-11-04T23:59:20.066627764Z",
+    "source": "ctx-average",
+    "symbol": "BTCMYR"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "746870.1249",
+    "quoteCurrency": "NOK",
+    "retrieved": "2026-11-04T23:59:20.066673258Z",
+    "source": "ctx-average",
+    "symbol": "BTCNOK"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "143054.2777",
+    "quoteCurrency": "NZD",
+    "retrieved": "2026-11-04T23:59:20.066700108Z",
+    "source": "ctx-average",
+    "symbol": "BTCNZD"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "5102029.8995",
+    "quoteCurrency": "PHP",
+    "retrieved": "2026-11-04T23:59:20.066750731Z",
+    "source": "ctx-average",
+    "symbol": "BTCPHP"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "22247911.2000",
+    "quoteCurrency": "PKR",
+    "retrieved": "2026-11-04T23:59:20.066851561Z",
+    "source": "ctx-average",
+    "symbol": "BTCPKR"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "314224.0568",
+    "quoteCurrency": "PLN",
+    "retrieved": "2026-11-04T23:59:20.06673334Z",
+    "source": "ctx-average",
+    "symbol": "BTCPLN"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "302207.5641",
+    "quoteCurrency": "SAR",
+    "retrieved": "2026-11-04T23:59:20.066761453Z",
+    "source": "ctx-average",
+    "symbol": "BTCSAR"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "783359.8188",
+    "quoteCurrency": "SEK",
+    "retrieved": "2026-11-04T23:59:20.066753926Z",
+    "source": "ctx-average",
+    "symbol": "BTCSEK"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "102871.2031",
+    "quoteCurrency": "SGD",
+    "retrieved": "2026-11-04T23:59:20.066762032Z",
+    "source": "ctx-average",
+    "symbol": "BTCSGD"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "2703766.7657",
+    "quoteCurrency": "THB",
+    "retrieved": "2026-11-04T23:59:20.066783569Z",
+    "source": "ctx-average",
+    "symbol": "BTCTHB"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "4025883.7303",
+    "quoteCurrency": "TRY",
+    "retrieved": "2026-11-04T23:59:20.066656813Z",
+    "source": "ctx-average",
+    "symbol": "BTCTRY"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "2641647.3891",
+    "quoteCurrency": "TWD",
+    "retrieved": "2026-11-04T23:59:20.066658101Z",
+    "source": "ctx-average",
+    "symbol": "BTCTWD"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "3662626.4287",
+    "quoteCurrency": "UAH",
+    "retrieved": "2026-11-04T23:59:20.066618462Z",
+    "source": "ctx-average",
+    "symbol": "BTCUAH"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "80453.1488",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.066646719Z",
+    "source": "ctx-average",
+    "symbol": "BTCUSD"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "2068093906.0875",
+    "quoteCurrency": "VND",
+    "retrieved": "2026-11-04T23:59:20.066798355Z",
+    "source": "ctx-average",
+    "symbol": "BTCVND"
+  },
+  {
+    "baseCurrency": "BTC",
+    "price": "1320546.1387",
+    "quoteCurrency": "ZAR",
+    "retrieved": "2026-11-04T23:59:20.066668275Z",
+    "source": "ctx-average",
+    "symbol": "BTCZAR"
+  },
+  {
+    "baseCurrency": "CAD",
+    "price": "0.71609435",
+    "quoteCurrency": "USDT",
+    "retrieved": "2026-11-04T23:59:20.070332992Z",
+    "source": "ctx-composite",
+    "symbol": "CADUSDT"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "182.4769",
+    "quoteCurrency": "AED",
+    "retrieved": "2026-11-04T23:59:20.069671388Z",
+    "source": "ctx-average",
+    "symbol": "DASHAED"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "3217.8512",
+    "quoteCurrency": "AFN",
+    "retrieved": "2026-11-04T23:59:20.069674647Z",
+    "source": "ctx-average",
+    "symbol": "DASHAFN"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "3997.1598",
+    "quoteCurrency": "ALL",
+    "retrieved": "2026-11-04T23:59:20.069677779Z",
+    "source": "ctx-average",
+    "symbol": "DASHALL"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "17827.8117",
+    "quoteCurrency": "AMD",
+    "retrieved": "2026-11-04T23:59:20.06968274Z",
+    "source": "ctx-average",
+    "symbol": "DASHAMD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "88.6037",
+    "quoteCurrency": "ANG",
+    "retrieved": "2026-11-04T23:59:20.069685367Z",
+    "source": "ctx-average",
+    "symbol": "DASHANG"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "45445.7658",
+    "quoteCurrency": "AOA",
+    "retrieved": "2026-11-04T23:59:20.069693036Z",
+    "source": "ctx-average",
+    "symbol": "DASHAOA"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "78741.1798",
+    "quoteCurrency": "ARS",
+    "retrieved": "2026-11-04T23:59:20.069697231Z",
+    "source": "ctx-average",
+    "symbol": "DASHARS"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "70.9241",
+    "quoteCurrency": "AUD",
+    "retrieved": "2026-11-04T23:59:20.069702026Z",
+    "source": "ctx-average",
+    "symbol": "DASHAUD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "89.1094",
+    "quoteCurrency": "AWG",
+    "retrieved": "2026-11-04T23:59:20.069704869Z",
+    "source": "ctx-average",
+    "symbol": "DASHAWG"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "84.3354",
+    "quoteCurrency": "AZN",
+    "retrieved": "2026-11-04T23:59:20.069709786Z",
+    "source": "ctx-average",
+    "symbol": "DASHAZN"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "86.0073",
+    "quoteCurrency": "BAM",
+    "retrieved": "2026-11-04T23:59:20.069712403Z",
+    "source": "ctx-average",
+    "symbol": "DASHBAM"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "99.6766",
+    "quoteCurrency": "BBD",
+    "retrieved": "2026-11-04T23:59:20.069715212Z",
+    "source": "ctx-average",
+    "symbol": "DASHBBD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "6183.5904",
+    "quoteCurrency": "BDT",
+    "retrieved": "2026-11-04T23:59:20.069719588Z",
+    "source": "ctx-average",
+    "symbol": "DASHBDT"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "86.5267",
+    "quoteCurrency": "BGN",
+    "retrieved": "2026-11-04T23:59:20.069722329Z",
+    "source": "ctx-average",
+    "symbol": "DASHBGN"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "18.7484",
+    "quoteCurrency": "BHD",
+    "retrieved": "2026-11-04T23:59:20.069726873Z",
+    "source": "ctx-average",
+    "symbol": "DASHBHD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "149010.6459",
+    "quoteCurrency": "BIF",
+    "retrieved": "2026-11-04T23:59:20.069731423Z",
+    "source": "ctx-average",
+    "symbol": "DASHBIF"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "49.6836",
+    "quoteCurrency": "BMD",
+    "retrieved": "2026-11-04T23:59:20.069736524Z",
+    "source": "ctx-average",
+    "symbol": "DASHBMD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "63.2631",
+    "quoteCurrency": "BND",
+    "retrieved": "2026-11-04T23:59:20.069739195Z",
+    "source": "ctx-average",
+    "symbol": "DASHBND"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "600.0404",
+    "quoteCurrency": "BOB",
+    "retrieved": "2026-11-04T23:59:20.06974803Z",
+    "source": "ctx-average",
+    "symbol": "DASHBOB"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "271.2283",
+    "quoteCurrency": "BRL",
+    "retrieved": "2026-11-04T23:59:20.069753453Z",
+    "source": "ctx-average",
+    "symbol": "DASHBRL"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "49.4909",
+    "quoteCurrency": "BSD",
+    "retrieved": "2026-11-04T23:59:20.069756693Z",
+    "source": "ctx-average",
+    "symbol": "DASHBSD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "0.00062068",
+    "quoteCurrency": "BTC",
+    "retrieved": "2026-11-04T23:59:20.066762599Z",
+    "source": "ctx-average",
+    "symbol": "DASHBTC"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "4681.1503",
+    "quoteCurrency": "BTN",
+    "retrieved": "2026-11-04T23:59:20.069759369Z",
+    "source": "ctx-average",
+    "symbol": "DASHBTN"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "679.4292",
+    "quoteCurrency": "BWP",
+    "retrieved": "2026-11-04T23:59:20.0697618Z",
+    "source": "ctx-average",
+    "symbol": "DASHBWP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "147.6697",
+    "quoteCurrency": "BYN",
+    "retrieved": "2026-11-04T23:59:20.069764325Z",
+    "source": "ctx-average",
+    "symbol": "DASHBYN"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "99.5333",
+    "quoteCurrency": "BZD",
+    "retrieved": "2026-11-04T23:59:20.069766808Z",
+    "source": "ctx-average",
+    "symbol": "DASHBZD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "69.4232",
+    "quoteCurrency": "CAD",
+    "retrieved": "2026-11-04T23:59:20.069775589Z",
+    "source": "ctx-average",
+    "symbol": "DASHCAD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "114604.5225",
+    "quoteCurrency": "CDF",
+    "retrieved": "2026-11-04T23:59:20.069778244Z",
+    "source": "ctx-average",
+    "symbol": "DASHCDF"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "40.5801",
+    "quoteCurrency": "CHF",
+    "retrieved": "2026-11-04T23:59:20.069782541Z",
+    "source": "ctx-average",
+    "symbol": "DASHCHF"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "1.2140",
+    "quoteCurrency": "CLF",
+    "retrieved": "2026-11-04T23:59:20.069784965Z",
+    "source": "ctx-average",
+    "symbol": "DASHCLF"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "47955.9471",
+    "quoteCurrency": "CLP",
+    "retrieved": "2026-11-04T23:59:20.069789145Z",
+    "source": "ctx-average",
+    "symbol": "DASHCLP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "330.3425",
+    "quoteCurrency": "CNH",
+    "retrieved": "2026-11-04T23:59:20.06979188Z",
+    "source": "ctx-average",
+    "symbol": "DASHCNH"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "331.5703",
+    "quoteCurrency": "CNY",
+    "retrieved": "2026-11-04T23:59:20.069797059Z",
+    "source": "ctx-average",
+    "symbol": "DASHCNY"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "159769.1156",
+    "quoteCurrency": "COP",
+    "retrieved": "2026-11-04T23:59:20.069799995Z",
+    "source": "ctx-average",
+    "symbol": "DASHCOP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "22479.8756",
+    "quoteCurrency": "CRC",
+    "retrieved": "2026-11-04T23:59:20.06980271Z",
+    "source": "ctx-average",
+    "symbol": "DASHCRC"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "49.5052",
+    "quoteCurrency": "CUC",
+    "retrieved": "2026-11-04T23:59:20.069805704Z",
+    "source": "ctx-average",
+    "symbol": "DASHCUC"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "1187.7343",
+    "quoteCurrency": "CUP",
+    "retrieved": "2026-11-04T23:59:20.069817161Z",
+    "source": "ctx-average",
+    "symbol": "DASHCUP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "4895.6789",
+    "quoteCurrency": "CVE",
+    "retrieved": "2026-11-04T23:59:20.06981955Z",
+    "source": "ctx-average",
+    "symbol": "DASHCVE"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "1074.3332",
+    "quoteCurrency": "CZK",
+    "retrieved": "2026-11-04T23:59:20.069824407Z",
+    "source": "ctx-average",
+    "symbol": "DASHCZK"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "8798.0474",
+    "quoteCurrency": "DJF",
+    "retrieved": "2026-11-04T23:59:20.06982688Z",
+    "source": "ctx-average",
+    "symbol": "DASHDJF"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "330.6486",
+    "quoteCurrency": "DKK",
+    "retrieved": "2026-11-04T23:59:20.069831509Z",
+    "source": "ctx-average",
+    "symbol": "DASHDKK"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "3000.0671",
+    "quoteCurrency": "DOP",
+    "retrieved": "2026-11-04T23:59:20.069834217Z",
+    "source": "ctx-average",
+    "symbol": "DASHDOP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "6729.6390",
+    "quoteCurrency": "DZD",
+    "retrieved": "2026-11-04T23:59:20.069836814Z",
+    "source": "ctx-average",
+    "symbol": "DASHDZD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "2708.3204",
+    "quoteCurrency": "EGP",
+    "retrieved": "2026-11-04T23:59:20.069839249Z",
+    "source": "ctx-average",
+    "symbol": "DASHEGP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "742.5780",
+    "quoteCurrency": "ERN",
+    "retrieved": "2026-11-04T23:59:20.069841787Z",
+    "source": "ctx-average",
+    "symbol": "DASHERN"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "8122.4092",
+    "quoteCurrency": "ETB",
+    "retrieved": "2026-11-04T23:59:20.069844202Z",
+    "source": "ctx-average",
+    "symbol": "DASHETB"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "0.02048701",
+    "quoteCurrency": "ETH",
+    "retrieved": "2026-11-04T23:59:20.07030782Z",
+    "source": "ctx-average",
+    "symbol": "DASHETH"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "43.8725",
+    "quoteCurrency": "EUR",
+    "retrieved": "2026-11-04T23:59:20.066842456Z",
+    "source": "ctx-average",
+    "symbol": "DASHEUR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "111.0747",
+    "quoteCurrency": "FJD",
+    "retrieved": "2026-11-04T23:59:20.069849091Z",
+    "source": "ctx-average",
+    "symbol": "DASHFJD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "36.8947",
+    "quoteCurrency": "FKP",
+    "retrieved": "2026-11-04T23:59:20.069851993Z",
+    "source": "ctx-average",
+    "symbol": "DASHFKP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "36.8758",
+    "quoteCurrency": "GBP",
+    "retrieved": "2026-11-04T23:59:20.069860227Z",
+    "source": "ctx-average",
+    "symbol": "DASHGBP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "129.0161",
+    "quoteCurrency": "GEL",
+    "retrieved": "2026-11-04T23:59:20.069865962Z",
+    "source": "ctx-average",
+    "symbol": "DASHGEL"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "36.8947",
+    "quoteCurrency": "GGP",
+    "retrieved": "2026-11-04T23:59:20.069868507Z",
+    "source": "ctx-average",
+    "symbol": "DASHGGP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "575.8101",
+    "quoteCurrency": "GHS",
+    "retrieved": "2026-11-04T23:59:20.069871281Z",
+    "source": "ctx-average",
+    "symbol": "DASHGHS"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "36.8947",
+    "quoteCurrency": "GIP",
+    "retrieved": "2026-11-04T23:59:20.069873695Z",
+    "source": "ctx-average",
+    "symbol": "DASHGIP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "3663.3852",
+    "quoteCurrency": "GMD",
+    "retrieved": "2026-11-04T23:59:20.069876165Z",
+    "source": "ctx-average",
+    "symbol": "DASHGMD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "438368.5337",
+    "quoteCurrency": "GNF",
+    "retrieved": "2026-11-04T23:59:20.069878578Z",
+    "source": "ctx-average",
+    "symbol": "DASHGNF"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "378.1960",
+    "quoteCurrency": "GTQ",
+    "retrieved": "2026-11-04T23:59:20.069881088Z",
+    "source": "ctx-average",
+    "symbol": "DASHGTQ"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "10368.7987",
+    "quoteCurrency": "GYD",
+    "retrieved": "2026-11-04T23:59:20.069885948Z",
+    "source": "ctx-average",
+    "symbol": "DASHGYD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "389.7673",
+    "quoteCurrency": "HKD",
+    "retrieved": "2026-11-04T23:59:20.069890245Z",
+    "source": "ctx-average",
+    "symbol": "DASHHKD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "1330.1269",
+    "quoteCurrency": "HNL",
+    "retrieved": "2026-11-04T23:59:20.069892764Z",
+    "source": "ctx-average",
+    "symbol": "DASHHNL"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "335.1012",
+    "quoteCurrency": "HRK",
+    "retrieved": "2026-11-04T23:59:20.069895271Z",
+    "source": "ctx-average",
+    "symbol": "DASHHRK"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "6483.7476",
+    "quoteCurrency": "HTG",
+    "retrieved": "2026-11-04T23:59:20.069897667Z",
+    "source": "ctx-average",
+    "symbol": "DASHHTG"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "16040.6393",
+    "quoteCurrency": "HUF",
+    "retrieved": "2026-11-04T23:59:20.069902615Z",
+    "source": "ctx-average",
+    "symbol": "DASHHUF"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "899618.3792",
+    "quoteCurrency": "IDR",
+    "retrieved": "2026-11-04T23:59:20.069906929Z",
+    "source": "ctx-average",
+    "symbol": "DASHIDR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "156.6978",
+    "quoteCurrency": "ILS",
+    "retrieved": "2026-11-04T23:59:20.069912832Z",
+    "source": "ctx-average",
+    "symbol": "DASHILS"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "36.8947",
+    "quoteCurrency": "IMP",
+    "retrieved": "2026-11-04T23:59:20.069915385Z",
+    "source": "ctx-average",
+    "symbol": "DASHIMP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "4693.6764",
+    "quoteCurrency": "INR",
+    "retrieved": "2026-11-04T23:59:20.069923193Z",
+    "source": "ctx-average",
+    "symbol": "DASHINR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "75026.5986",
+    "quoteCurrency": "IQD",
+    "retrieved": "2026-11-04T23:59:20.069925724Z",
+    "source": "ctx-average",
+    "symbol": "DASHIQD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "93238510.4614",
+    "quoteCurrency": "IRR",
+    "retrieved": "2026-11-04T23:59:20.069928216Z",
+    "source": "ctx-average",
+    "symbol": "DASHIRR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "6013.8801",
+    "quoteCurrency": "ISK",
+    "retrieved": "2026-11-04T23:59:20.069930678Z",
+    "source": "ctx-average",
+    "symbol": "DASHISK"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "36.8947",
+    "quoteCurrency": "JEP",
+    "retrieved": "2026-11-04T23:59:20.069933077Z",
+    "source": "ctx-average",
+    "symbol": "DASHJEP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "7844.3495",
+    "quoteCurrency": "JMD",
+    "retrieved": "2026-11-04T23:59:20.069944219Z",
+    "source": "ctx-average",
+    "symbol": "DASHJMD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "35.0996",
+    "quoteCurrency": "JOD",
+    "retrieved": "2026-11-04T23:59:20.069947085Z",
+    "source": "ctx-average",
+    "symbol": "DASHJOD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "7870.5988",
+    "quoteCurrency": "JPY",
+    "retrieved": "2026-11-04T23:59:20.069952383Z",
+    "source": "ctx-average",
+    "symbol": "DASHJPY"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "6432.2204",
+    "quoteCurrency": "KES",
+    "retrieved": "2026-11-04T23:59:20.069954925Z",
+    "source": "ctx-average",
+    "symbol": "DASHKES"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "4329.2405",
+    "quoteCurrency": "KGS",
+    "retrieved": "2026-11-04T23:59:20.06995747Z",
+    "source": "ctx-average",
+    "symbol": "DASHKGS"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "201230.0953",
+    "quoteCurrency": "KHR",
+    "retrieved": "2026-11-04T23:59:20.069962066Z",
+    "source": "ctx-average",
+    "symbol": "DASHKHR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "21831.8114",
+    "quoteCurrency": "KMF",
+    "retrieved": "2026-11-04T23:59:20.069965064Z",
+    "source": "ctx-average",
+    "symbol": "DASHKMF"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "44554.6763",
+    "quoteCurrency": "KPW",
+    "retrieved": "2026-11-04T23:59:20.069967726Z",
+    "source": "ctx-average",
+    "symbol": "DASHKPW"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "66609.3898",
+    "quoteCurrency": "KRW",
+    "retrieved": "2026-11-04T23:59:20.069974531Z",
+    "source": "ctx-average",
+    "symbol": "DASHKRW"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "15.4404",
+    "quoteCurrency": "KWD",
+    "retrieved": "2026-11-04T23:59:20.069978709Z",
+    "source": "ctx-average",
+    "symbol": "DASHKWD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "41.2399",
+    "quoteCurrency": "KYD",
+    "retrieved": "2026-11-04T23:59:20.069981226Z",
+    "source": "ctx-average",
+    "symbol": "DASHKYD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "22366.8037",
+    "quoteCurrency": "KZT",
+    "retrieved": "2026-11-04T23:59:20.069983707Z",
+    "source": "ctx-average",
+    "symbol": "DASHKZT"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "1114197.3176",
+    "quoteCurrency": "LAK",
+    "retrieved": "2026-11-04T23:59:20.069987225Z",
+    "source": "ctx-average",
+    "symbol": "DASHLAK"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "4431692.6762",
+    "quoteCurrency": "LBP",
+    "retrieved": "2026-11-04T23:59:20.069989726Z",
+    "source": "ctx-average",
+    "symbol": "DASHLBP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "16526.7901",
+    "quoteCurrency": "LKR",
+    "retrieved": "2026-11-04T23:59:20.069994808Z",
+    "source": "ctx-average",
+    "symbol": "DASHLKR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "8412.8780",
+    "quoteCurrency": "LRD",
+    "retrieved": "2026-11-04T23:59:20.069999338Z",
+    "source": "ctx-average",
+    "symbol": "DASHLRD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "814.6386",
+    "quoteCurrency": "LSL",
+    "retrieved": "2026-11-04T23:59:20.070001944Z",
+    "source": "ctx-average",
+    "symbol": "DASHLSL"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "0.88258610",
+    "quoteCurrency": "LTC",
+    "retrieved": "2026-11-04T23:59:20.070323525Z",
+    "source": "ctx-average",
+    "symbol": "DASHLTC"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "317.3272",
+    "quoteCurrency": "LYD",
+    "retrieved": "2026-11-04T23:59:20.070004393Z",
+    "source": "ctx-average",
+    "symbol": "DASHLYD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "483.4402",
+    "quoteCurrency": "MAD",
+    "retrieved": "2026-11-04T23:59:20.070006804Z",
+    "source": "ctx-average",
+    "symbol": "DASHMAD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "887.5936",
+    "quoteCurrency": "MDL",
+    "retrieved": "2026-11-04T23:59:20.070009323Z",
+    "source": "ctx-average",
+    "symbol": "DASHMDL"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "223525.4752",
+    "quoteCurrency": "MGA",
+    "retrieved": "2026-11-04T23:59:20.070011698Z",
+    "source": "ctx-average",
+    "symbol": "DASHMGA"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "2713.3776",
+    "quoteCurrency": "MKD",
+    "retrieved": "2026-11-04T23:59:20.070014768Z",
+    "source": "ctx-average",
+    "symbol": "DASHMKD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "104318.3181",
+    "quoteCurrency": "MMK",
+    "retrieved": "2026-11-04T23:59:20.070019115Z",
+    "source": "ctx-average",
+    "symbol": "DASHMMK"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "178124.0186",
+    "quoteCurrency": "MNT",
+    "retrieved": "2026-11-04T23:59:20.070022145Z",
+    "source": "ctx-average",
+    "symbol": "DASHMNT"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "399.8831",
+    "quoteCurrency": "MOP",
+    "retrieved": "2026-11-04T23:59:20.070024691Z",
+    "source": "ctx-average",
+    "symbol": "DASHMOP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "2013.0746",
+    "quoteCurrency": "MRU",
+    "retrieved": "2026-11-04T23:59:20.070027286Z",
+    "source": "ctx-average",
+    "symbol": "DASHMRU"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "2331.1906",
+    "quoteCurrency": "MUR",
+    "retrieved": "2026-11-04T23:59:20.070032634Z",
+    "source": "ctx-average",
+    "symbol": "DASHMUR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "765.1005",
+    "quoteCurrency": "MVR",
+    "retrieved": "2026-11-04T23:59:20.070035421Z",
+    "source": "ctx-average",
+    "symbol": "DASHMVR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "85812.2640",
+    "quoteCurrency": "MWK",
+    "retrieved": "2026-11-04T23:59:20.07003783Z",
+    "source": "ctx-average",
+    "symbol": "DASHMWK"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "925.1123",
+    "quoteCurrency": "MXN",
+    "retrieved": "2026-11-04T23:59:20.070042253Z",
+    "source": "ctx-average",
+    "symbol": "DASHMXN"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "201.8814",
+    "quoteCurrency": "MYR",
+    "retrieved": "2026-11-04T23:59:20.070046601Z",
+    "source": "ctx-average",
+    "symbol": "DASHMYR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "3163.8657",
+    "quoteCurrency": "MZN",
+    "retrieved": "2026-11-04T23:59:20.070049533Z",
+    "source": "ctx-average",
+    "symbol": "DASHMZN"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "814.6241",
+    "quoteCurrency": "NAD",
+    "retrieved": "2026-11-04T23:59:20.070052036Z",
+    "source": "ctx-average",
+    "symbol": "DASHNAD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "66894.7462",
+    "quoteCurrency": "NGN",
+    "retrieved": "2026-11-04T23:59:20.070055925Z",
+    "source": "ctx-average",
+    "symbol": "DASHNGN"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "1821.0254",
+    "quoteCurrency": "NIO",
+    "retrieved": "2026-11-04T23:59:20.070058286Z",
+    "source": "ctx-average",
+    "symbol": "DASHNIO"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "460.9669",
+    "quoteCurrency": "NOK",
+    "retrieved": "2026-11-04T23:59:20.070064414Z",
+    "source": "ctx-average",
+    "symbol": "DASHNOK"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "7489.8404",
+    "quoteCurrency": "NPR",
+    "retrieved": "2026-11-04T23:59:20.070070338Z",
+    "source": "ctx-average",
+    "symbol": "DASHNPR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "88.3437",
+    "quoteCurrency": "NZD",
+    "retrieved": "2026-11-04T23:59:20.070076522Z",
+    "source": "ctx-average",
+    "symbol": "DASHNZD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "19.0336",
+    "quoteCurrency": "OMR",
+    "retrieved": "2026-11-04T23:59:20.070079093Z",
+    "source": "ctx-average",
+    "symbol": "DASHOMR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "49.4940",
+    "quoteCurrency": "PAB",
+    "retrieved": "2026-11-04T23:59:20.07008173Z",
+    "source": "ctx-average",
+    "symbol": "DASHPAB"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "170.8140",
+    "quoteCurrency": "PEN",
+    "retrieved": "2026-11-04T23:59:20.070084268Z",
+    "source": "ctx-average",
+    "symbol": "DASHPEN"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "222.0763",
+    "quoteCurrency": "PGK",
+    "retrieved": "2026-11-04T23:59:20.070087228Z",
+    "source": "ctx-average",
+    "symbol": "DASHPGK"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "3152.0054",
+    "quoteCurrency": "PHP",
+    "retrieved": "2026-11-04T23:59:20.070091679Z",
+    "source": "ctx-average",
+    "symbol": "DASHPHP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "13739.1627",
+    "quoteCurrency": "PKR",
+    "retrieved": "2026-11-04T23:59:20.070095838Z",
+    "source": "ctx-average",
+    "symbol": "DASHPKR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "194.0662",
+    "quoteCurrency": "PLN",
+    "retrieved": "2026-11-04T23:59:20.070099961Z",
+    "source": "ctx-average",
+    "symbol": "DASHPLN"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "300088.8043",
+    "quoteCurrency": "PYG",
+    "retrieved": "2026-11-04T23:59:20.070105947Z",
+    "source": "ctx-average",
+    "symbol": "DASHPYG"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "180.4271",
+    "quoteCurrency": "QAR",
+    "retrieved": "2026-11-04T23:59:20.07010895Z",
+    "source": "ctx-average",
+    "symbol": "DASHQAR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "235.4270",
+    "quoteCurrency": "RON",
+    "retrieved": "2026-11-04T23:59:20.070111526Z",
+    "source": "ctx-average",
+    "symbol": "DASHRON"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "5186.3637",
+    "quoteCurrency": "RSD",
+    "retrieved": "2026-11-04T23:59:20.070113915Z",
+    "source": "ctx-average",
+    "symbol": "DASHRSD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "4087.9058",
+    "quoteCurrency": "RUB",
+    "retrieved": "2026-11-04T23:59:20.070117381Z",
+    "source": "ctx-average",
+    "symbol": "DASHRUB"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "72822.7793",
+    "quoteCurrency": "RWF",
+    "retrieved": "2026-11-04T23:59:20.070119845Z",
+    "source": "ctx-average",
+    "symbol": "DASHRWF"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "186.6291",
+    "quoteCurrency": "SAR",
+    "retrieved": "2026-11-04T23:59:20.070124573Z",
+    "source": "ctx-average",
+    "symbol": "DASHSAR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "398.6019",
+    "quoteCurrency": "SBD",
+    "retrieved": "2026-11-04T23:59:20.070126985Z",
+    "source": "ctx-average",
+    "symbol": "DASHSBD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "678.7433",
+    "quoteCurrency": "SCR",
+    "retrieved": "2026-11-04T23:59:20.070129568Z",
+    "source": "ctx-average",
+    "symbol": "DASHSCR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "29776.8407",
+    "quoteCurrency": "SDG",
+    "retrieved": "2026-11-04T23:59:20.07013201Z",
+    "source": "ctx-average",
+    "symbol": "DASHSDG"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "483.8237",
+    "quoteCurrency": "SEK",
+    "retrieved": "2026-11-04T23:59:20.07013643Z",
+    "source": "ctx-average",
+    "symbol": "DASHSEK"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "63.5262",
+    "quoteCurrency": "SGD",
+    "retrieved": "2026-11-04T23:59:20.070142254Z",
+    "source": "ctx-average",
+    "symbol": "DASHSGD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "36.9084",
+    "quoteCurrency": "SHP",
+    "retrieved": "2026-11-04T23:59:20.070144664Z",
+    "source": "ctx-average",
+    "symbol": "DASHSHP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "1038099.4668",
+    "quoteCurrency": "SLL",
+    "retrieved": "2026-11-04T23:59:20.070147046Z",
+    "source": "ctx-average",
+    "symbol": "DASHSLL"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "28284.7896",
+    "quoteCurrency": "SOS",
+    "retrieved": "2026-11-04T23:59:20.070149647Z",
+    "source": "ctx-average",
+    "symbol": "DASHSOS"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "1859.6116",
+    "quoteCurrency": "SRD",
+    "retrieved": "2026-11-04T23:59:20.070152078Z",
+    "source": "ctx-average",
+    "symbol": "DASHSRD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "284455.1270",
+    "quoteCurrency": "SSP",
+    "retrieved": "2026-11-04T23:59:20.070154753Z",
+    "source": "ctx-average",
+    "symbol": "DASHSSP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "1077.4189",
+    "quoteCurrency": "STN",
+    "retrieved": "2026-11-04T23:59:20.070157206Z",
+    "source": "ctx-average",
+    "symbol": "DASHSTN"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "433.0267",
+    "quoteCurrency": "SVC",
+    "retrieved": "2026-11-04T23:59:20.070159583Z",
+    "source": "ctx-average",
+    "symbol": "DASHSVC"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "643666.5686",
+    "quoteCurrency": "SYP",
+    "retrieved": "2026-11-04T23:59:20.070161996Z",
+    "source": "ctx-average",
+    "symbol": "DASHSYP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "814.1991",
+    "quoteCurrency": "SZL",
+    "retrieved": "2026-11-04T23:59:20.070164599Z",
+    "source": "ctx-average",
+    "symbol": "DASHSZL"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "1669.7667",
+    "quoteCurrency": "THB",
+    "retrieved": "2026-11-04T23:59:20.07017196Z",
+    "source": "ctx-average",
+    "symbol": "DASHTHB"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "456.5279",
+    "quoteCurrency": "TJS",
+    "retrieved": "2026-11-04T23:59:20.070175829Z",
+    "source": "ctx-average",
+    "symbol": "DASHTJS"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "173.7632",
+    "quoteCurrency": "TMT",
+    "retrieved": "2026-11-04T23:59:20.070196338Z",
+    "source": "ctx-average",
+    "symbol": "DASHTMT"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "147.4982",
+    "quoteCurrency": "TND",
+    "retrieved": "2026-11-04T23:59:20.070199355Z",
+    "source": "ctx-average",
+    "symbol": "DASHTND"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "119.1966",
+    "quoteCurrency": "TOP",
+    "retrieved": "2026-11-04T23:59:20.070201908Z",
+    "source": "ctx-average",
+    "symbol": "DASHTOP"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "2486.1415",
+    "quoteCurrency": "TRY",
+    "retrieved": "2026-11-04T23:59:20.070207223Z",
+    "source": "ctx-average",
+    "symbol": "DASHTRY"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "335.4831",
+    "quoteCurrency": "TTD",
+    "retrieved": "2026-11-04T23:59:20.070209906Z",
+    "source": "ctx-average",
+    "symbol": "DASHTTD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "1631.3231",
+    "quoteCurrency": "TWD",
+    "retrieved": "2026-11-04T23:59:20.070213915Z",
+    "source": "ctx-average",
+    "symbol": "DASHTWD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "131188.6757",
+    "quoteCurrency": "TZS",
+    "retrieved": "2026-11-04T23:59:20.070216351Z",
+    "source": "ctx-average",
+    "symbol": "DASHTZS"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "2261.8479",
+    "quoteCurrency": "UAH",
+    "retrieved": "2026-11-04T23:59:20.070220649Z",
+    "source": "ctx-average",
+    "symbol": "DASHUAH"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "203170.4143",
+    "quoteCurrency": "UGX",
+    "retrieved": "2026-11-04T23:59:20.07024254Z",
+    "source": "ctx-average",
+    "symbol": "DASHUGX"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "49.0476",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.066777732Z",
+    "source": "ctx-average",
+    "symbol": "DASHUSD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "1989.8560",
+    "quoteCurrency": "UYU",
+    "retrieved": "2026-11-04T23:59:20.070245234Z",
+    "source": "ctx-average",
+    "symbol": "DASHUYU"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "588425.6965",
+    "quoteCurrency": "UZS",
+    "retrieved": "2026-11-04T23:59:20.070247831Z",
+    "source": "ctx-average",
+    "symbol": "DASHUZS"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "44061.4382",
+    "quoteCurrency": "VES",
+    "retrieved": "2026-11-04T23:59:20.070250416Z",
+    "source": "ctx-average",
+    "symbol": "DASHVES"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "1277127.6362",
+    "quoteCurrency": "VND",
+    "retrieved": "2026-11-04T23:59:20.070254671Z",
+    "source": "ctx-average",
+    "symbol": "DASHVND"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "5914.5012",
+    "quoteCurrency": "VUV",
+    "retrieved": "2026-11-04T23:59:20.070257289Z",
+    "source": "ctx-average",
+    "symbol": "DASHVUV"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "137.5902",
+    "quoteCurrency": "WST",
+    "retrieved": "2026-11-04T23:59:20.070259999Z",
+    "source": "ctx-average",
+    "symbol": "DASHWST"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "28915.8168",
+    "quoteCurrency": "XAF",
+    "retrieved": "2026-11-04T23:59:20.070262555Z",
+    "source": "ctx-average",
+    "symbol": "DASHXAF"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "0.9506",
+    "quoteCurrency": "XAG",
+    "retrieved": "2026-11-04T23:59:20.070266645Z",
+    "source": "ctx-average",
+    "symbol": "DASHXAG"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "0.0122",
+    "quoteCurrency": "XAU",
+    "retrieved": "2026-11-04T23:59:20.070270784Z",
+    "source": "ctx-average",
+    "symbol": "DASHXAU"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "133.7903",
+    "quoteCurrency": "XCD",
+    "retrieved": "2026-11-04T23:59:20.070274917Z",
+    "source": "ctx-average",
+    "symbol": "DASHXCD"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "35.5519",
+    "quoteCurrency": "XDR",
+    "retrieved": "2026-11-04T23:59:20.070279261Z",
+    "source": "ctx-average",
+    "symbol": "DASHXDR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "28915.8168",
+    "quoteCurrency": "XOF",
+    "retrieved": "2026-11-04T23:59:20.070281674Z",
+    "source": "ctx-average",
+    "symbol": "DASHXOF"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "5244.5180",
+    "quoteCurrency": "XPF",
+    "retrieved": "2026-11-04T23:59:20.070285461Z",
+    "source": "ctx-average",
+    "symbol": "DASHXPF"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "11691.8898",
+    "quoteCurrency": "YER",
+    "retrieved": "2026-11-04T23:59:20.070289074Z",
+    "source": "ctx-average",
+    "symbol": "DASHYER"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "815.5049",
+    "quoteCurrency": "ZAR",
+    "retrieved": "2026-11-04T23:59:20.07029574Z",
+    "source": "ctx-average",
+    "symbol": "DASHZAR"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "1003.6879",
+    "quoteCurrency": "ZMW",
+    "retrieved": "2026-11-04T23:59:20.070299524Z",
+    "source": "ctx-average",
+    "symbol": "DASHZMW"
+  },
+  {
+    "baseCurrency": "DASH",
+    "price": "15940.6536",
+    "quoteCurrency": "ZWL",
+    "retrieved": "2026-11-04T23:59:20.070302604Z",
+    "source": "ctx-average",
+    "symbol": "DASHZWL"
+  },
+  {
+    "baseCurrency": "DOGE",
+    "price": "0.0770",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.066718343Z",
+    "source": "ctx-average",
+    "symbol": "DOGEUSD"
+  },
+  {
+    "baseCurrency": "ETH",
+    "price": "0.03013062",
+    "quoteCurrency": "BTC",
+    "retrieved": "2026-11-04T23:59:20.066727978Z",
+    "source": "ctx-average",
+    "symbol": "ETHBTC"
+  },
+  {
+    "baseCurrency": "ETH",
+    "price": "3387.3629",
+    "quoteCurrency": "CAD",
+    "retrieved": "2026-11-04T23:59:20.070486223Z",
+    "source": "ctx-average",
+    "symbol": "ETHCAD"
+  },
+  {
+    "baseCurrency": "ETH",
+    "price": "48.82714246",
+    "quoteCurrency": "DASH",
+    "retrieved": "2026-11-04T23:59:20.070312905Z",
+    "source": "ctx-average",
+    "symbol": "ETHDASH"
+  },
+  {
+    "baseCurrency": "ETH",
+    "price": "2157.0033",
+    "quoteCurrency": "EUR",
+    "retrieved": "2026-11-04T23:59:20.066827739Z",
+    "source": "ctx-average",
+    "symbol": "ETHEUR"
+  },
+  {
+    "baseCurrency": "ETH",
+    "price": "1804.2067",
+    "quoteCurrency": "GBP",
+    "retrieved": "2026-11-04T23:59:20.06668297Z",
+    "source": "ctx-average",
+    "symbol": "ETHGBP"
+  },
+  {
+    "baseCurrency": "ETH",
+    "price": "2423.3855",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.066708254Z",
+    "source": "ctx-average",
+    "symbol": "ETHUSD"
+  },
+  {
+    "baseCurrency": "EUR",
+    "price": "1.1232",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.066684527Z",
+    "source": "ctx-average",
+    "symbol": "EURUSD"
+  },
+  {
+    "baseCurrency": "GBP",
+    "price": "1.34824646",
+    "quoteCurrency": "USDT",
+    "retrieved": "2026-11-04T23:59:20.07033636Z",
+    "source": "ctx-composite",
+    "symbol": "GBPUSDT"
+  },
+  {
+    "baseCurrency": "LTC",
+    "price": "0.00069909",
+    "quoteCurrency": "BTC",
+    "retrieved": "2026-11-04T23:59:20.06674757Z",
+    "source": "ctx-average",
+    "symbol": "LTCBTC"
+  },
+  {
+    "baseCurrency": "LTC",
+    "price": "78.6465",
+    "quoteCurrency": "CAD",
+    "retrieved": "2026-11-04T23:59:20.070491851Z",
+    "source": "ctx-average",
+    "symbol": "LTCCAD"
+  },
+  {
+    "baseCurrency": "LTC",
+    "price": "1.13338941",
+    "quoteCurrency": "DASH",
+    "retrieved": "2026-11-04T23:59:20.070330093Z",
+    "source": "ctx-average",
+    "symbol": "LTCDASH"
+  },
+  {
+    "baseCurrency": "LTC",
+    "price": "50.1877",
+    "quoteCurrency": "EUR",
+    "retrieved": "2026-11-04T23:59:20.066860212Z",
+    "source": "ctx-average",
+    "symbol": "LTCEUR"
+  },
+  {
+    "baseCurrency": "LTC",
+    "price": "41.7466",
+    "quoteCurrency": "GBP",
+    "retrieved": "2026-11-04T23:59:20.066662241Z",
+    "source": "ctx-average",
+    "symbol": "LTCGBP"
+  },
+  {
+    "baseCurrency": "LTC",
+    "price": "56.2737",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.066820955Z",
+    "source": "ctx-average",
+    "symbol": "LTCUSD"
+  },
+  {
+    "baseCurrency": "SOL",
+    "price": "0.00118636",
+    "quoteCurrency": "BTC",
+    "retrieved": "2026-11-04T23:59:20.066767461Z",
+    "source": "ctx-average",
+    "symbol": "SOLBTC"
+  },
+  {
+    "baseCurrency": "SOL",
+    "price": "133.5550",
+    "quoteCurrency": "CAD",
+    "retrieved": "2026-11-04T23:59:20.066623514Z",
+    "source": "ctx-average",
+    "symbol": "SOLCAD"
+  },
+  {
+    "baseCurrency": "SOL",
+    "price": "85.0127",
+    "quoteCurrency": "EUR",
+    "retrieved": "2026-11-04T23:59:20.066787288Z",
+    "source": "ctx-average",
+    "symbol": "SOLEUR"
+  },
+  {
+    "baseCurrency": "SOL",
+    "price": "70.9300",
+    "quoteCurrency": "GBP",
+    "retrieved": "2026-11-04T23:59:20.066739524Z",
+    "source": "ctx-average",
+    "symbol": "SOLGBP"
+  },
+  {
+    "baseCurrency": "SOL",
+    "price": "95.5249",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.066679397Z",
+    "source": "ctx-average",
+    "symbol": "SOLUSD"
+  },
+  {
+    "baseCurrency": "USDC",
+    "price": "1.4283",
+    "quoteCurrency": "AUD",
+    "retrieved": "2026-11-04T23:59:20.066687681Z",
+    "source": "ctx-average",
+    "symbol": "USDCAUD"
+  },
+  {
+    "baseCurrency": "USDC",
+    "price": "1.3987",
+    "quoteCurrency": "CAD",
+    "retrieved": "2026-11-04T23:59:20.066648104Z",
+    "source": "ctx-average",
+    "symbol": "USDCCAD"
+  },
+  {
+    "baseCurrency": "USDC",
+    "price": "0.8162",
+    "quoteCurrency": "CHF",
+    "retrieved": "2026-11-04T23:59:20.066631287Z",
+    "source": "ctx-average",
+    "symbol": "USDCCHF"
+  },
+  {
+    "baseCurrency": "USDC",
+    "price": "0.8901",
+    "quoteCurrency": "EUR",
+    "retrieved": "2026-11-04T23:59:20.066697048Z",
+    "source": "ctx-average",
+    "symbol": "USDCEUR"
+  },
+  {
+    "baseCurrency": "USDC",
+    "price": "0.7419",
+    "quoteCurrency": "GBP",
+    "retrieved": "2026-11-04T23:59:20.066713633Z",
+    "source": "ctx-average",
+    "symbol": "USDCGBP"
+  },
+  {
+    "baseCurrency": "USDC",
+    "price": "1.0000",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.066773913Z",
+    "source": "ctx-average",
+    "symbol": "USDCUSD"
+  },
+  {
+    "baseCurrency": "USDT",
+    "price": "1.3965",
+    "quoteCurrency": "CAD",
+    "retrieved": "2026-11-04T23:59:20.070334447Z",
+    "source": "ctx-composite",
+    "symbol": "USDTCAD"
+  },
+  {
+    "baseCurrency": "USDT",
+    "price": "0.7417",
+    "quoteCurrency": "GBP",
+    "retrieved": "2026-11-04T23:59:20.070337811Z",
+    "source": "ctx-composite",
+    "symbol": "USDTGBP"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.6169",
+    "quoteCurrency": "AED",
+    "retrieved": "2026-11-04T23:59:20.07036531Z",
+    "source": "ctx-average",
+    "symbol": "XLMAED"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.2398",
+    "quoteCurrency": "AUD",
+    "retrieved": "2026-11-04T23:59:20.070391594Z",
+    "source": "ctx-average",
+    "symbol": "XLMAUD"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.0634",
+    "quoteCurrency": "BHD",
+    "retrieved": "2026-11-04T23:59:20.070433444Z",
+    "source": "ctx-average",
+    "symbol": "XLMBHD"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.9169",
+    "quoteCurrency": "BRL",
+    "retrieved": "2026-11-04T23:59:20.070454285Z",
+    "source": "ctx-average",
+    "symbol": "XLMBRL"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.2347",
+    "quoteCurrency": "CAD",
+    "retrieved": "2026-11-04T23:59:20.070342692Z",
+    "source": "ctx-average",
+    "symbol": "XLMCAD"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.1372",
+    "quoteCurrency": "CHF",
+    "retrieved": "2026-11-04T23:59:20.07044507Z",
+    "source": "ctx-average",
+    "symbol": "XLMCHF"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "162.1174",
+    "quoteCurrency": "CLP",
+    "retrieved": "2026-11-04T23:59:20.070361451Z",
+    "source": "ctx-average",
+    "symbol": "XLMCLP"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "541.9127",
+    "quoteCurrency": "COP",
+    "retrieved": "2026-11-04T23:59:20.070354696Z",
+    "source": "ctx-average",
+    "symbol": "XLMCOP"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "3.6305",
+    "quoteCurrency": "CZK",
+    "retrieved": "2026-11-04T23:59:20.07046966Z",
+    "source": "ctx-average",
+    "symbol": "XLMCZK"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "1.1183",
+    "quoteCurrency": "DKK",
+    "retrieved": "2026-11-04T23:59:20.070368958Z",
+    "source": "ctx-average",
+    "symbol": "XLMDKK"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "22.8259",
+    "quoteCurrency": "DZD",
+    "retrieved": "2026-11-04T23:59:20.070474521Z",
+    "source": "ctx-average",
+    "symbol": "XLMDZD"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "9.1862",
+    "quoteCurrency": "EGP",
+    "retrieved": "2026-11-04T23:59:20.070398038Z",
+    "source": "ctx-average",
+    "symbol": "XLMEGP"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.00006922",
+    "quoteCurrency": "ETH",
+    "retrieved": "2026-11-04T23:59:20.066744266Z",
+    "source": "ctx-average",
+    "symbol": "XLMETH"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.1495",
+    "quoteCurrency": "EUR",
+    "retrieved": "2026-11-04T23:59:20.066757705Z",
+    "source": "ctx-average",
+    "symbol": "XLMEUR"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.1247",
+    "quoteCurrency": "GBP",
+    "retrieved": "2026-11-04T23:59:20.066803032Z",
+    "source": "ctx-average",
+    "symbol": "XLMGBP"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "3041.1822",
+    "quoteCurrency": "IDR",
+    "retrieved": "2026-11-04T23:59:20.07046558Z",
+    "source": "ctx-average",
+    "symbol": "XLMIDR"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "15.8675",
+    "quoteCurrency": "INR",
+    "retrieved": "2026-11-04T23:59:20.070437164Z",
+    "source": "ctx-average",
+    "symbol": "XLMINR"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "254.4789",
+    "quoteCurrency": "IQD",
+    "retrieved": "2026-11-04T23:59:20.070472087Z",
+    "source": "ctx-average",
+    "symbol": "XLMIQD"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.1191",
+    "quoteCurrency": "JOD",
+    "retrieved": "2026-11-04T23:59:20.070439833Z",
+    "source": "ctx-average",
+    "symbol": "XLMJOD"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.0522",
+    "quoteCurrency": "KWD",
+    "retrieved": "2026-11-04T23:59:20.070420167Z",
+    "source": "ctx-average",
+    "symbol": "XLMKWD"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "3.1279",
+    "quoteCurrency": "MXN",
+    "retrieved": "2026-11-04T23:59:20.070349302Z",
+    "source": "ctx-average",
+    "symbol": "XLMMXN"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.2986",
+    "quoteCurrency": "NZD",
+    "retrieved": "2026-11-04T23:59:20.070429222Z",
+    "source": "ctx-average",
+    "symbol": "XLMNZD"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.0646",
+    "quoteCurrency": "OMR",
+    "retrieved": "2026-11-04T23:59:20.070422537Z",
+    "source": "ctx-average",
+    "symbol": "XLMOMR"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.5794",
+    "quoteCurrency": "PEN",
+    "retrieved": "2026-11-04T23:59:20.07035217Z",
+    "source": "ctx-average",
+    "symbol": "XLMPEN"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.6560",
+    "quoteCurrency": "PLN",
+    "retrieved": "2026-11-04T23:59:20.070403854Z",
+    "source": "ctx-average",
+    "symbol": "XLMPLN"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.6120",
+    "quoteCurrency": "QAR",
+    "retrieved": "2026-11-04T23:59:20.070425027Z",
+    "source": "ctx-average",
+    "symbol": "XLMQAR"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.6309",
+    "quoteCurrency": "SAR",
+    "retrieved": "2026-11-04T23:59:20.070395425Z",
+    "source": "ctx-average",
+    "symbol": "XLMSAR"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "1.6368",
+    "quoteCurrency": "SEK",
+    "retrieved": "2026-11-04T23:59:20.070387454Z",
+    "source": "ctx-average",
+    "symbol": "XLMSEK"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.2147",
+    "quoteCurrency": "SGD",
+    "retrieved": "2026-11-04T23:59:20.070461893Z",
+    "source": "ctx-average",
+    "symbol": "XLMSGD"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "5.6450",
+    "quoteCurrency": "THB",
+    "retrieved": "2026-11-04T23:59:20.070448819Z",
+    "source": "ctx-average",
+    "symbol": "XLMTHB"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "8.4036",
+    "quoteCurrency": "TRY",
+    "retrieved": "2026-11-04T23:59:20.070416507Z",
+    "source": "ctx-average",
+    "symbol": "XLMTRY"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "5.5147",
+    "quoteCurrency": "TWD",
+    "retrieved": "2026-11-04T23:59:20.07045813Z",
+    "source": "ctx-average",
+    "symbol": "XLMTWD"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "0.1679",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.066639176Z",
+    "source": "ctx-average",
+    "symbol": "XLMUSD"
+  },
+  {
+    "baseCurrency": "XLM",
+    "price": "2.7571",
+    "quoteCurrency": "ZAR",
+    "retrieved": "2026-11-04T23:59:20.070412032Z",
+    "source": "ctx-average",
+    "symbol": "XLMZAR"
+  },
+  {
+    "baseCurrency": "XMR",
+    "price": "0.00797191",
+    "quoteCurrency": "BTC",
+    "retrieved": "2026-11-04T23:59:20.066770134Z",
+    "source": "ctx-average",
+    "symbol": "XMRBTC"
+  },
+  {
+    "baseCurrency": "XMR",
+    "price": "895.3800",
+    "quoteCurrency": "CAD",
+    "retrieved": "2026-11-04T23:59:20.070506355Z",
+    "source": "ctx-average",
+    "symbol": "XMRCAD"
+  },
+  {
+    "baseCurrency": "XMR",
+    "price": "571.0150",
+    "quoteCurrency": "EUR",
+    "retrieved": "2026-11-04T23:59:20.066726329Z",
+    "source": "ctx-average",
+    "symbol": "XMREUR"
+  },
+  {
+    "baseCurrency": "XMR",
+    "price": "475.5913",
+    "quoteCurrency": "GBP",
+    "retrieved": "2026-11-04T23:59:20.070501244Z",
+    "source": "ctx-average",
+    "symbol": "XMRGBP"
+  },
+  {
+    "baseCurrency": "XMR",
+    "price": "638.9237",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.066598789Z",
+    "source": "ctx-average",
+    "symbol": "XMRUSD"
+  },
+  {
+    "baseCurrency": "XRD",
+    "price": "0.00029542135",
+    "quoteCurrency": "CAD",
+    "retrieved": "2026-11-04T23:59:20.07051788Z",
+    "source": "ctx-average",
+    "symbol": "XRDCAD"
+  },
+  {
+    "baseCurrency": "XRD",
+    "price": "0.00018818300",
+    "quoteCurrency": "EUR",
+    "retrieved": "2026-11-04T23:59:20.070523082Z",
+    "source": "ctx-average",
+    "symbol": "XRDEUR"
+  },
+  {
+    "baseCurrency": "XRD",
+    "price": "0.00015691215",
+    "quoteCurrency": "GBP",
+    "retrieved": "2026-11-04T23:59:20.070511407Z",
+    "source": "ctx-average",
+    "symbol": "XRDGBP"
+  },
+  {
+    "baseCurrency": "XRD",
+    "price": "0.00021185000",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.066836362Z",
+    "source": "ctx-average",
+    "symbol": "XRDUSD"
+  },
+  {
+    "baseCurrency": "XRP",
+    "price": "0.00001623",
+    "quoteCurrency": "BTC",
+    "retrieved": "2026-11-04T23:59:20.066656002Z",
+    "source": "ctx-average",
+    "symbol": "XRPBTC"
+  },
+  {
+    "baseCurrency": "XRP",
+    "price": "1.3042",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.066730958Z",
+    "source": "ctx-average",
+    "symbol": "XRPUSD"
+  },
+  {
+    "baseCurrency": "ZANO",
+    "price": "6.5002",
+    "quoteCurrency": "CAD",
+    "retrieved": "2026-11-04T23:59:20.070532894Z",
+    "source": "ctx-average",
+    "symbol": "ZANOCAD"
+  },
+  {
+    "baseCurrency": "ZANO",
+    "price": "4.1401",
+    "quoteCurrency": "EUR",
+    "retrieved": "2026-11-04T23:59:20.070537973Z",
+    "source": "ctx-average",
+    "symbol": "ZANOEUR"
+  },
+  {
+    "baseCurrency": "ZANO",
+    "price": "3.4540",
+    "quoteCurrency": "GBP",
+    "retrieved": "2026-11-04T23:59:20.070527772Z",
+    "source": "ctx-average",
+    "symbol": "ZANOGBP"
+  },
+  {
+    "baseCurrency": "ZANO",
+    "price": "4.6655",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.06664121Z",
+    "source": "ctx-average",
+    "symbol": "ZANOUSD"
+  },
+  {
+    "baseCurrency": "ZEC",
+    "price": "0.01601908",
+    "quoteCurrency": "BTC",
+    "retrieved": "2026-11-04T23:59:20.066854057Z",
+    "source": "ctx-average",
+    "symbol": "ZECBTC"
+  },
+  {
+    "baseCurrency": "ZEC",
+    "price": "1803.4647",
+    "quoteCurrency": "CAD",
+    "retrieved": "2026-11-04T23:59:20.070551816Z",
+    "source": "ctx-average",
+    "symbol": "ZECCAD"
+  },
+  {
+    "baseCurrency": "ZEC",
+    "price": "1153.1480",
+    "quoteCurrency": "EUR",
+    "retrieved": "2026-11-04T23:59:20.066765533Z",
+    "source": "ctx-average",
+    "symbol": "ZECEUR"
+  },
+  {
+    "baseCurrency": "ZEC",
+    "price": "957.9297",
+    "quoteCurrency": "GBP",
+    "retrieved": "2026-11-04T23:59:20.070544048Z",
+    "source": "ctx-average",
+    "symbol": "ZECGBP"
+  },
+  {
+    "baseCurrency": "ZEC",
+    "price": "1292.1529",
+    "quoteCurrency": "USD",
+    "retrieved": "2026-11-04T23:59:20.066611349Z",
+    "source": "ctx-average",
+    "symbol": "ZECUSD"
+  }
+]

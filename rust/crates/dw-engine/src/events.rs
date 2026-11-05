@@ -159,6 +159,11 @@ pub enum EngineEvent {
     Governance {
         network: DashNetwork,
     },
+    /// MP-01 (rates-engine §5): the rates view changed (a fetch, a setting,
+    /// a price turning stale or expiring, a mainnet network opened or
+    /// closed). Not a network's: prices are the engine's. Hosts re-read
+    /// `Rates::status`. dw-ffi withholds it.
+    Rates,
 }
 
 impl EngineEvent {
@@ -172,7 +177,8 @@ impl EngineEvent {
             | Self::LeaseChanged { .. }
             | Self::LockProgress { .. }
             | Self::DispatchResolved { .. }
-            | Self::Governance { .. } => true,
+            | Self::Governance { .. }
+            | Self::Rates => true,
             Self::Notice { code, .. } => code.engine_side(),
             _ => false,
         }

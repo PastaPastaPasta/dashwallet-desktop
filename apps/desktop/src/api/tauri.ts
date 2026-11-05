@@ -107,6 +107,10 @@ export class IpcBackend implements Backend {
   paymentAuthentication = () => cmd.paymentAuthentication();
   uiSettings = () => cmd.uiSettings();
   setUiSettings = cmd.setUiSettings;
+  ratesStatus = () => cmd.ratesStatus();
+  ratesCurrencies = () => cmd.ratesCurrencies();
+  setRatesSettings = cmd.setRatesSettings;
+  refreshRates = () => cmd.refreshRates();
   encryptVault = cmd.encryptVault;
   changePassphrase = cmd.changePassphrase;
   setPaymentAuthentication = cmd.setPaymentAuthentication;

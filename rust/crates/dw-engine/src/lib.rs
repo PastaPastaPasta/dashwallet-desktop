@@ -42,6 +42,7 @@ pub mod network_choice;
 mod parked;
 pub mod platform;
 mod pump;
+pub mod rates;
 mod receive;
 pub(crate) mod send;
 mod session;

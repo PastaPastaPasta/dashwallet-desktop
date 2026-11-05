@@ -54,7 +54,8 @@
         "shell",
         "files",
         "scan",
-        "governance"
+        "governance",
+        "rates"
       ]
     },
     "withGlobalTauri": false
