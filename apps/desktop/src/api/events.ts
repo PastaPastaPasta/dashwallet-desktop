@@ -100,6 +100,9 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // block sends none, so the tip-derived clock and statuses go stale until the next (MG-02 D96).
     case "governance":
       return [keys.governanceAll];
+    // A fetch, a setting, a price turning stale or expiring, mainnet opened or closed (MP-01).
+    case "rates":
+      return [keys.ratesAll];
     // No screen reads these yet (the notice and masternode views come with their tasks).
     // `masternodes` also follows a shared-masternode session change (mn-engine §6, MG-04b).
     // `newTransactions` is announced above (payments/received.ts), not read as a query.

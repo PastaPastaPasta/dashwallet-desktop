@@ -1004,6 +1004,55 @@ button {
   opacity: var(--dw-opacity-hero-secondary-text);
 }
 
+/* MP-01: the fiat row under the hero amount; the band grows by its line only while it shows. */
+.hero-band:has(.hero-fiat) {
+  height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line));
+}
+
+.hero-fiat {
+  display: flex;
+  gap: var(--dw-space-s);
+  align-items: baseline;
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.hero-fiat .fiat-line,
+.hero-fiat-note.is-quiet,
+.breakdown-fiat {
+  opacity: var(--dw-opacity-hero-secondary-text);
+}
+
+.hero-fiat-note.is-caution {
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+/* Stale (rates-engine §2): the caution colour and marker; the title gives the price's time. */
+.fiat-line.is-stale,
+.hero-fiat .fiat-line.is-stale,
+.hero-fiat-note.is-caution {
+  color: var(--dw-role-caution);
+  opacity: 1;
+}
+
+.fiat-line.is-stale::before {
+  content: "⚠ ";
+}
+
+.breakdown-amounts {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.breakdown-fiat {
+  font-size: var(--dw-type-caption2-size);
+  font-weight: var(--dw-type-caption2-weight);
+  line-height: var(--dw-type-caption2-line);
+}
+
 .hero-breakdown {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -1290,6 +1339,27 @@ button {
   line-height: var(--dw-type-footnote-medium-line);
 }
 
+/* The value now under the amount (MP-01). */
+.tx-row-fiat {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  font-weight: var(--dw-type-caption1-weight);
+  line-height: var(--dw-type-caption1-line);
+}
+
+/* A stored request's value now, under its amount (MP-01). */
+.request-fiat {
+  display: block;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  font-weight: var(--dw-type-caption1-weight);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.tx-table td.is-stale {
+  color: var(--dw-role-caution);
+}
+
 .see-all {
   display: flex;
   justify-content: center;
@@ -1523,6 +1593,15 @@ button {
   font-size: var(--dw-type-title1-size);
   font-weight: var(--dw-type-title1-weight);
   line-height: var(--dw-type-title1-line);
+}
+
+/* What the payment was worth when first seen (MP-01, rates-engine §6). */
+.tx-detail-fiat-then {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
 }
 
 .tx-detail-status {
@@ -1803,6 +1882,32 @@ button {
 .amount-entry input {
   flex: 1;
   min-width: 0;
+}
+
+/* MP-01: the fiat toggle keeps its width, and the other unit sits under the field. */
+.amount-toggle {
+  flex: none;
+  white-space: nowrap;
+}
+
+.amount-secondary {
+  display: block;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+  font-variant-numeric: tabular-nums;
+}
+
+.field-hint > .field-hint {
+  display: block;
+}
+
+.confirm-fiat {
+  display: block;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
 }
 
 .coin-control-body {
@@ -3963,6 +4068,90 @@ button.bell-row-open:focus-visible {
   color: var(--dw-role-text-secondary);
   font-size: var(--dw-type-footnote-size);
   line-height: var(--dw-type-footnote-line);
+}
+
+/* ------------------------------------------------------------------ Prices (MP-01) */
+
+.rates-consent-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.rates-consent-card .shielded-card-actions {
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.onboarding-rates {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  width: 100%;
+}
+
+.currency-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  width: 100%;
+}
+
+.currency-picker > p {
+  margin: 0;
+}
+
+.currency-list {
+  max-height: 280px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--dw-role-separator);
+  border-radius: var(--dw-radius-standard);
+}
+
+.currency-row {
+  display: grid;
+  grid-template-columns: 3.5em 1fr auto;
+  gap: var(--dw-space-s);
+  align-items: baseline;
+  width: 100%;
+  padding: var(--dw-space-xs) var(--dw-space-s);
+  border: 0;
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  font-size: var(--dw-type-subhead-size);
+  text-align: start;
+  cursor: pointer;
+}
+
+.currency-row[aria-pressed="true"] {
+  background: var(--dw-role-accent-tint);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.currency-row:disabled {
+  cursor: default;
+}
+
+.currency-code {
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.currency-name,
+.currency-price {
+  color: var(--dw-role-text-secondary);
+}
+
+.settings-currency-status {
+  font-size: var(--dw-type-footnote-size);
 }
 
 /* ------------------------------------------------------------------ CoinJoin (U-06) */

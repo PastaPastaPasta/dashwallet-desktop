@@ -1,8 +1,9 @@
-// Overview (Home), UX-SPEC §4.5: hero band with the balance and breakdown strip, the shortcut
-// card straddling its edge, the DashPay and CoinJoin cards (DP1-08, U-06), the frequent contacts
+// Overview (Home), UX-SPEC §4.5: hero band with the balance, its fiat value (MP-01) and breakdown
+// strip, the shortcut card straddling its edge, the one-time price disclosure, the DashPay and
+// CoinJoin cards (DP1-08, U-06), the frequent contacts
 // (DP3-07), then the recent history in day-group cards.
 
-import { Fragment, useEffect } from "react";
+import { Fragment, useEffect, type ReactNode } from "react";
 import type { Balances } from "../api/generated/Balances";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
@@ -16,6 +17,8 @@ import { useContactsOwner } from "../contacts/queries";
 import { useStatusInputs } from "../dashpay/queries";
 import { homeCard, type CardActionKind } from "../dashpay/status";
 import { useDisplay } from "../format/display";
+import { RatesConsentCard } from "../fiat/consent";
+import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
 import { coreSubtitle, homeBalance, POOL_ROWS } from "../format/homeBalance";
 import { isSyncing, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
@@ -32,7 +35,7 @@ const RECENT_COUNT = 5;
 const RECENT_FILTER: HistoryFilter = { categories: [], text: null, sort: "newestFirst" };
 
 /** `amount` null: not known, shown as "—" with no unit; `undefined`: still being read. */
-function BreakdownCell({ title, subtitle, amount, unitName, testId }: { title: string; subtitle: string; amount: string | null | undefined; unitName: string; testId: string }) {
+function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { title: string; subtitle: string; amount: string | null | undefined; unitName: string; testId: string; fiat?: ReactNode }) {
   return (
     <div className="breakdown-cell" data-testid={testId}>
       <span className="breakdown-text">
@@ -43,6 +46,11 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId }: { title: s
         <span className="breakdown-amount">
           <span aria-hidden="true">{amount === null ? "—" : "…"}</span>
           <VisuallyHidden>{amount === null ? "not available" : "loading"}</VisuallyHidden>
+        </span>
+      ) : fiat ? (
+        <span className="breakdown-amounts">
+          <AmountText className="breakdown-amount" text={amount} unitName={unitName} />
+          {fiat}
         </span>
       ) : (
         <AmountText className="breakdown-amount" text={amount} unitName={unitName} />
@@ -61,6 +69,7 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
   const home = balances && homeBalance(balances, shielded, platform);
   // Still being read, as against not known: the row waits instead of saying "—".
   const reading = { core: false, shielded: shielded === undefined, platform: platform === undefined };
+  const fiat = useFiat();
   return (
     <section className="hero" data-testid="hero" aria-label="Balance">
       {network.kind === "mainnet" ? <span className="network-capsule-slot" /> : <NetworkCapsule network={network} testId="hero-capsule" />}
@@ -83,6 +92,7 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
           <span className="hero-unknown-caption">Balance unavailable</span>
         </div>
       )}
+      {home && <HeroFiat fiat={fiat} duffs={home.total} hidden={discreet} />}
       {home && balances && (
         <div className="hero-breakdown" data-testid="hero-breakdown">
           {POOL_ROWS.map((row, i) => {
@@ -98,6 +108,7 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
                   amount={duffs !== null ? fmt(duffs) : reading[row.pool] ? undefined : null}
                   unitName={unit}
                   testId={`breakdown-${row.pool}`}
+                  fiat={duffs !== null && <FiatLine fiat={fiat} duffs={duffs} hidden={discreet} className="breakdown-fiat" testId={`breakdown-${row.pool}-fiat`} />}
                 />
               </Fragment>
             );
@@ -105,6 +116,24 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
         </div>
       )}
     </section>
+  );
+}
+
+/** The hero's fiat line and what is said about prices (MP-01): nothing on test networks or with
+ * prices off, so the band keeps its height there. Discreet mode hides the number, not the note. */
+function HeroFiat({ fiat, duffs, hidden }: { fiat: Fiat; duffs: number; hidden: boolean }) {
+  const note = ratesNote(fiat.view);
+  const text = hidden ? null : fiat.text(duffs);
+  if (text === null && note === null) return null;
+  return (
+    <p className="hero-fiat" data-testid="hero-fiat-row">
+      {text !== null && <FiatLine fiat={fiat} duffs={duffs} testId="hero-fiat" />}
+      {note && (
+        <span className={`hero-fiat-note is-${note.tone}`} data-testid="hero-rates-note" title={note.title}>
+          {note.text}
+        </span>
+      )}
+    </p>
   );
 }
 
@@ -196,6 +225,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         <ShortcutCard />
       </div>
       <div className="page-column">
+        <RatesConsentCard network={network} />
         <HomeDashPayCard walletId={walletId} network={network} />
         <ShieldedCard walletId={walletId} network={network} />
         <PlatformMoveCard walletId={walletId} network={network} platform={pools.platform} dustCredits={pools.platformDust} />

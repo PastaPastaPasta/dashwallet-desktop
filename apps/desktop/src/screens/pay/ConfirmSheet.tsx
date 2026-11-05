@@ -14,11 +14,12 @@ import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useBackend, useLockStatus, usePaymentAuthentication, useWallets } from "../../api/queries";
-import { navigate } from "../../app/ui";
+import { navigate, useUi } from "../../app/ui";
 import { AmountText, DashButton } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
 import { LoadingState } from "../../components/history";
 import { Sheet } from "../../components/sheet";
+import { FiatLine, useFiat } from "../../fiat/rates";
 import { useDisplay } from "../../format/display";
 import { feeWarningText, payFeeWarning } from "../../format/feeWarning";
 import { Avatar } from "../contacts/Avatar";
@@ -127,6 +128,10 @@ export function ConfirmSheet({
   const waitSecs = retryAt === null ? 0 : Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));
   const fieldId = useId();
   const unit = shown.name;
+  // Each amount's value at the current price (MP-01): beside the DASH, which is what is sent.
+  const fiat = useFiat();
+  const discreet = useUi((s) => s.discreet);
+  const value = (duffs: number, testId: string) => <FiatLine fiat={fiat} duffs={duffs} hidden={discreet} className="confirm-fiat" testId={testId} />;
   const { recipient, estimate, changeAddress, total } = confirmed;
   // The fee against what the payee gets (after a subtract-fee share; the change is not in it).
   const feeWarn = payFeeWarning(estimate.fee, estimate.totalSent);
@@ -290,6 +295,7 @@ export function ConfirmSheet({
       >
         <div className="confirm-summary">
           <AmountText className="confirm-amount" text={shown.full(total)} unitName={unit} glyphFactor={0.8} />
+          {value(total, "pay-confirm-fiat")}
           <p className="confirm-question">
             {contact?.acceptsToo
               ? `Accept ${contact.payee.name}'s contact request and send this payment?`
@@ -325,9 +331,11 @@ export function ConfirmSheet({
           {isContact(recipient) && recipient.note && <DetailRow label="Note">{recipient.note}</DetailRow>}
           <DetailRow label="Amount" testId="pay-confirm-amount">
             <AmountText text={shown.full(estimate.totalSent)} unitName={unit} glyph={false} />
+            {value(estimate.totalSent, "pay-confirm-amount-fiat")}
           </DetailRow>
           <DetailRow label="Network fee" testId="pay-confirm-fee">
             <AmountText text={shown.full(estimate.fee)} unitName={unit} glyph={false} />
+            {value(estimate.fee, "pay-confirm-fee-fiat")}
           </DetailRow>
           <DetailRow label="Using">{coinsText(coins)}</DetailRow>
           {changeAddress !== null && (
@@ -338,6 +346,7 @@ export function ConfirmSheet({
           )}
           <DetailRow label="Total" testId="pay-confirm-total">
             <AmountText text={shown.full(total)} unitName={unit} glyph={false} />
+            {value(total, "pay-confirm-total-fiat")}
           </DetailRow>
         </dl>
         {feeWarn && (

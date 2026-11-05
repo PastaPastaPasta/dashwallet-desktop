@@ -128,6 +128,11 @@ pub struct TxRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub counterparty: Option<TxCounterparty>,
+    /// The price the transaction was first seen at, in the currency chosen
+    /// then (MP-01); absent when it was not stamped (no back-fill).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub fiat_then: Option<crate::api::rates::TxFiat>,
 }
 
 /// The DashPay identity on the other side of a history record (DP3-02).
@@ -175,6 +180,7 @@ impl From<TxRecord> for TxRow {
             counts_toward_balance,
             involves_watch_only,
             counterparty,
+            fiat_then,
         } = r;
         TxRow {
             txid,
@@ -191,6 +197,7 @@ impl From<TxRecord> for TxRow {
             counts_toward_balance,
             involves_watch_only,
             counterparty: counterparty.map(Into::into),
+            fiat_then: fiat_then.map(Into::into),
         }
     }
 }

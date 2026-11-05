@@ -41,6 +41,7 @@ mod network;
 pub mod network_choice;
 pub mod platform;
 mod pump;
+pub mod rates;
 mod receive;
 mod restore;
 #[cfg(test)]
