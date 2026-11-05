@@ -217,7 +217,9 @@ pub struct PlatformSendQuote {
 pub struct PlatformSendOutcome {
     /// The send's activity row id.
     pub id: String,
-    /// What the send may take; for a group's `Done`, the proved debit.
+    /// What the send may take until it is `Done` (the amount, and the fee
+    /// band unless the amount pays the fee); then what it took: its inputs
+    /// and the fee taken (the estimate when the balances hide it).
     pub credits: u64,
     /// The recipient; for a group's `Done`, `None` unless every member
     /// named it.
