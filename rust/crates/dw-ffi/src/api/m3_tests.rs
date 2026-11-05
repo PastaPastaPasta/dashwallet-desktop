@@ -253,6 +253,7 @@ fn m3_error_codes_match_the_contract() {
             CoinJoinError::GrantInvalid,
             CoinJoinError::NothingToMove,
             CoinJoinError::MixingActive,
+            CoinJoinError::MoveRunning,
             CoinJoinError::SpvNotRunning,
             CoinJoinError::NoPeers,
             CoinJoinError::BroadcastRejected { reason: d() },

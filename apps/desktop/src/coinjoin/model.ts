@@ -55,6 +55,7 @@ export const CoinJoinText = {
     "These settings are kept for this network and apply to every wallet. Mixing itself is not kept: it stops when Dash Wallet quits, the wallet closes or the wallet locks.",
   vaultLocked: "Unlock the wallet, at least for mixing, and try again.",
   disabled: "CoinJoin is turned off in Settings ▸ CoinJoin.",
+  moveRunning: "A move of your mixed coins is running. Start mixing once it ends.",
   // dash-qt's Options ▸ CoinJoin (QT-046, `optionsdialog.ui`).
   enableFeatures: "Enable CoinJoin features",
   enableFeaturesTip: "Turning this off stops mixing in every wallet.",
@@ -353,6 +354,7 @@ export function actionFailureText(e: unknown, amount: (duffs: number) => string)
   if (hasCode(e, "coinjoin.vault_locked")) return CoinJoinText.vaultLocked;
   if (hasCode(e, "coinjoin.disabled")) return CoinJoinText.disabled;
   if (hasCode(e, "coinjoin.watch_only")) return CoinJoinText.watchOnly;
+  if (hasCode(e, "coinjoin.move_running")) return CoinJoinText.moveRunning;
   if (hasCode(e, "coinjoin.insufficient_funds")) {
     const min = e.data?.kind === "limit" ? e.data.duffs : null;
     return CoinJoinText.minimumBalance(min === null ? "the minimum balance" : amount(min));

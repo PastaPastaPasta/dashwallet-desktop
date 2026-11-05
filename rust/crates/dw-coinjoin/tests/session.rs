@@ -372,6 +372,56 @@ async fn test_qt_045_a_full_session_signs_with_anyonecanpay_and_succeeds() {
     assert_eq!(states.last(), Some(&PoolState::Idle));
 }
 
+/// Stopped once our signatures are out (`dss` sent, no `dsc`): the
+/// masternode may still broadcast the mixing transaction, so the inputs
+/// stay held and the output scripts kept, nothing released (review
+/// MIX-SHIELD A r1 Opus m2). Stopped before signing, everything is released.
+#[tokio::test]
+async fn a_stop_after_our_signatures_holds_the_inputs() {
+    let mn = Mn::new().await;
+    let wallet = TestWallet::new(3);
+    let (stop_tx, stop) = watch::channel(false);
+    let p = params(&mn);
+    let server = async {
+        let mut conn = mn.peer.accept().await.unwrap();
+        let entry = serve_until_entry(&mn, &mut conn).await;
+        let tx = final_tx(&entry, false);
+        conn.send("dsf", &FinalTx { session_id: 42, tx }.encode())
+            .await
+            .unwrap();
+        conn.recv_command("dss").await.unwrap();
+        stop_tx.send(true).unwrap();
+        (conn, entry)
+    };
+    let ((_conn, entry), outcome) = tokio::join!(server, run_session(&wallet, p, |_| {}, stop));
+    let SessionOutcome::SignedUnknown { inputs, failure } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(failure, SessionFailure::Cancelled);
+    assert_eq!(inputs.len(), entry.inputs.len());
+    assert_eq!(*wallet.held.lock().unwrap(), inputs);
+    assert_eq!(wallet.locked.lock().unwrap().len(), inputs.len());
+    assert_eq!(wallet.kept.lock().unwrap().len(), entry.outputs.len());
+    assert!(wallet.released.lock().unwrap().is_empty());
+
+    // Before `dsf`: no signature left us, everything goes back.
+    let mn = Mn::new().await;
+    let wallet = TestWallet::new(3);
+    let (stop_tx, stop) = watch::channel(false);
+    let p = params(&mn);
+    let server = async {
+        let mut conn = mn.peer.accept().await.unwrap();
+        let entry = serve_until_entry(&mn, &mut conn).await;
+        stop_tx.send(true).unwrap();
+        (conn, entry)
+    };
+    let ((_conn, entry), outcome) = tokio::join!(server, run_session(&wallet, p, |_| {}, stop));
+    assert_eq!(outcome, SessionOutcome::Failed(SessionFailure::Cancelled));
+    assert!(wallet.held.lock().unwrap().is_empty());
+    assert!(wallet.locked.lock().unwrap().is_empty());
+    assert_eq!(wallet.released.lock().unwrap().len(), entry.outputs.len());
+}
+
 #[tokio::test]
 async fn a_rejected_dsa_fails_the_session() {
     let mn = Mn::new().await;

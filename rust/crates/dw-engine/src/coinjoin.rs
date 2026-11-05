@@ -94,6 +94,9 @@ pub enum CoinJoinFailure {
     /// "Move mixed coins" and its consolidation wait for mixing to stop:
     /// the wallet mixes, or a session of it is still open.
     MixingActive,
+    /// Mixing, or another move, waits for a running move of the wallet's
+    /// mixed coins to end.
+    MoveRunning,
 }
 
 impl std::fmt::Display for CoinJoinFailure {
@@ -111,6 +114,7 @@ impl std::fmt::Display for CoinJoinFailure {
             Self::NoPeers => f.write_str("no connected peers"),
             Self::BroadcastRejected(r) => write!(f, "broadcast rejected: {r}"),
             Self::MixingActive => f.write_str("stop mixing first"),
+            Self::MoveRunning => f.write_str("a move of the mixed coins is running"),
         }
     }
 }
@@ -365,6 +369,24 @@ struct Mixer {
     held: HashMap<(OutPoint, SpendOwner), u64>,
     /// Collateral inputs locked for open sessions, with each session's owner.
     collateral_inputs: HashMap<u64, (SpendOwner, Vec<OutPoint>)>,
+    /// A move of the account's coins runs ([`CoinJoinRuntime::claim_sweep`]):
+    /// mixing does not start until it ends.
+    sweeping: bool,
+}
+
+/// A wallet's claim on its CoinJoin account for a move: while it lives no
+/// mixing starts and no other move runs ([`CoinJoinRuntime::claim_sweep`]).
+pub(crate) struct SweepClaim<'a> {
+    runtime: &'a CoinJoinRuntime,
+    wallet: WalletId,
+}
+
+impl Drop for SweepClaim<'_> {
+    fn drop(&mut self) {
+        if let Some(m) = self.runtime.mixers().get_mut(&self.wallet) {
+            m.sweeping = false;
+        }
+    }
 }
 
 /// Per-session CoinJoin state (one per [`NetworkSession`]).
@@ -414,6 +436,31 @@ impl CoinJoinRuntime {
     /// The wallet mixes, or a session of it is still open.
     fn busy(&self, id: &WalletId) -> bool {
         (self.mixers().get(id)).is_some_and(|m| m.mixing || !m.sessions.is_empty())
+    }
+
+    /// Claims `id`'s CoinJoin account for a move, through its last
+    /// broadcast: refused while the wallet mixes or a session of it is open
+    /// (`MixingActive`), or another move runs (`MoveRunning`). Checked and
+    /// taken under the lock `start_mixing` sets the mixing flag under, so
+    /// exactly one of the two wins.
+    pub(crate) fn claim_sweep(&self, id: WalletId) -> Result<SweepClaim<'_>, CoinJoinFailure> {
+        let mut mixers = self.mixers();
+        let m = mixers.entry(id).or_default();
+        if m.mixing || !m.sessions.is_empty() {
+            return Err(CoinJoinFailure::MixingActive);
+        }
+        if m.sweeping {
+            return Err(CoinJoinFailure::MoveRunning);
+        }
+        m.sweeping = true;
+        Ok(SweepClaim {
+            runtime: self,
+            wallet: id,
+        })
+    }
+
+    fn sweeping(&self, id: &WalletId) -> bool {
+        self.mixers().get(id).is_some_and(|m| m.sweeping)
     }
 
     /// Tests: marks `id` mixing (or not) without starting its loop.
@@ -1275,7 +1322,12 @@ impl NetworkSession {
             if this.coinjoin.is_mixing(&wallet_id) {
                 return Ok(());
             }
+            if this.coinjoin.sweeping(&wallet_id) {
+                return Err(CoinJoinFailure::MoveRunning.into());
+            }
             let view = this.read_mix_view(wallet_id).await?;
+            #[cfg(test)]
+            test_pause(sweep_hooks(&this).start_after_read).await;
             if view.total < MIN_MIXING_BALANCE {
                 return Err(CoinJoinFailure::InsufficientFunds {
                     min_duffs: MIN_MIXING_BALANCE,
@@ -1287,6 +1339,10 @@ impl NetworkSession {
             {
                 let mut mixers = this.coinjoin.mixers();
                 let m = mixers.entry(wallet_id).or_default();
+                // A move claimed the account since the check above.
+                if m.sweeping {
+                    return Err(CoinJoinFailure::MoveRunning.into());
+                }
                 m.mixing = true;
                 m.stopping = false;
                 m.stop_reason = None;
@@ -1303,7 +1359,9 @@ impl NetworkSession {
     }
 
     /// "Stop CoinJoin": `resetPool` (open sessions abandoned, their coins
-    /// released) then stop. Idempotent.
+    /// released, except those of a session whose signatures are out, held
+    /// until the wallet sees them or the observation timeout) then stop.
+    /// Idempotent.
     pub async fn stop_mixing(self: &Arc<Self>, wallet_id: WalletId) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
@@ -2134,6 +2192,17 @@ impl NetworkSession {
                             m.last_success_height = height.max(1);
                             m.status = Some(StatusCode::Masternode(PoolMessage::Success));
                         }
+                        // Stopped, timed out or cut off with our signatures
+                        // out: held as a success's until the wallet sees
+                        // the mixing transaction or the observation timeout.
+                        SessionOutcome::SignedUnknown { inputs, failure } => {
+                            tracing::info!(%wallet_id, %failure, "CoinJoin session ended after signing");
+                            let now = now_secs();
+                            for i in inputs {
+                                m.held.insert((*i, owner), now);
+                            }
+                            m.status = Some(StatusCode::Masternode(PoolMessage::Session));
+                        }
                         SessionOutcome::Failed(f) => {
                             tracing::info!(%wallet_id, failure = %f, "CoinJoin session ended");
                             m.status = Some(match f {
@@ -2267,6 +2336,9 @@ impl NetworkSession {
         target: SweepTarget,
         prune: bool,
     ) -> Result<SweepCoins, EngineError> {
+        // A stopped wallet's loop no longer expires its sessions' held
+        // inputs: a session whose outcome stayed unknown frees them here.
+        self.expire_held(wallet_id);
         let view = self.mix_view(fence).await?;
         if prune {
             self.prune_sweep_outs(wallet_id, &view).await?;
@@ -2499,7 +2571,9 @@ impl NetworkSession {
             if !this.vault.has_wallet_secret(&wallet_id.0) {
                 return Err(CoinJoinFailure::WatchOnly.into());
             }
-            this.refuse_while_mixing(wallet_id)?;
+            // Through the last broadcast: no mixing starts meanwhile, and
+            // none runs now.
+            let _claim = this.coinjoin.claim_sweep(wallet_id)?;
             // A sweep takes every mixed coin: none while the dispatch
             // journal, which holds signed locks' inputs, is not read
             // (review Opus closure C-1).
@@ -2511,11 +2585,11 @@ impl NetworkSession {
             // Held from the coin read through every chunk's signing and
             // reservation; released before the broadcasts (`coins.rs`).
             let fence = this.coin_fence(wallet_id).await?;
-            // Again under the fence: mixing may have started since.
-            this.refuse_while_mixing(wallet_id)?;
             let picked = (this
                 .replay_guarded(wallet_id, this.sweep_coins(wallet_id, &fence, target, true)))
             .await?;
+            #[cfg(test)]
+            test_pause(sweep_hooks(&this).after_read).await;
             if picked.chunks.is_empty() {
                 return Err(CoinJoinFailure::NothingToMove.into());
             }
@@ -2633,6 +2707,12 @@ impl NetworkSession {
             }
             drop(fence);
             for (n, (tx, value)) in signed.iter().enumerate() {
+                #[cfg(test)]
+                if let Some((at, pause)) = sweep_hooks(&this).before_broadcast
+                    && at == n
+                {
+                    test_pause(Some(pause)).await;
+                }
                 match broadcast_sweep(&this, &wallet, tx).await {
                     Ok(txid) => {
                         this.hub.note_announced(txid);
@@ -2835,6 +2915,21 @@ pub(crate) mod sweep_test_hooks {
     pub(crate) struct Hooks {
         pub(crate) broadcast: Option<Broadcast>,
         pub(crate) max_inputs: Option<usize>,
+        /// A sweep waits here once it read its coins, under the fence.
+        pub(crate) after_read: Option<Arc<crate::coins::TestPause>>,
+        /// A sweep waits here before broadcasting chunk `n`.
+        pub(crate) before_broadcast: Option<(usize, Arc<crate::coins::TestPause>)>,
+        /// `start_mixing` waits here once it read the mix view.
+        pub(crate) start_after_read: Option<Arc<crate::coins::TestPause>>,
+    }
+}
+
+/// Tests: marks `pause` reached and waits for its release.
+#[cfg(test)]
+async fn test_pause(pause: Option<Arc<crate::coins::TestPause>>) {
+    if let Some(p) = pause {
+        p.reached.store(true, std::sync::atomic::Ordering::SeqCst);
+        p.release.notified().await;
     }
 }
 

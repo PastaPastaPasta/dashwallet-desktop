@@ -10,6 +10,7 @@ extension L10n {
         public static func coinJoinMinimum(_ amount: String) -> String { "CoinJoin requires at least \(amount) to use." }
         public static let coinJoinNothingToMove = "There are no mixed coins to move."
         public static let coinJoinMixingActive = "Stop mixing before you move mixed coins."
+        public static let coinJoinMoveRunning = "A move of your mixed coins is running. Try again when it ends."
         public static let spvNotRunning = "Sync is not running. Start it and try again."
         public static let noPeers = "No peers are connected. Try again when the wallet is connected to the network."
         public static let broadcastRejected = "The network rejected the transaction."
@@ -33,6 +34,7 @@ extension ErrorText {
         case .coinjoinGrantInvalid, .masternodeGrantInvalid: return E.grantInvalid
         case .coinjoinNothingToMove: return E.coinJoinNothingToMove
         case .coinjoinMixingActive: return E.coinJoinMixingActive
+        case .coinjoinMoveRunning: return E.coinJoinMoveRunning
         case .coinjoinSpvNotRunning: return E.spvNotRunning
         case .coinjoinNoPeers: return E.noPeers
         case .coinjoinBroadcastRejected: return E.broadcastRejected

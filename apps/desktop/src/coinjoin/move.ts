@@ -57,6 +57,7 @@ export const MOVE_COPY = {
   },
   unknown: "One transaction may have reached the network. Its coins stay reserved until the wallet sees them spent; the rest stayed in your CoinJoin balance.",
   nothing: "There are no mixed coins to move.",
+  otherMove: "Another move of your mixed coins is running. Try again when it ends.",
   changed: "The approval no longer covers this move. Review it again.",
   close: "Close",
   again: "Try again",
@@ -74,6 +75,7 @@ export const planReceives = (p: MixedCoinsSweepPlan) => p.total - planFee(p);
 export function moveErrorText(e: unknown): string {
   if (hasCode(e, "coinjoin.nothing_to_move")) return MOVE_COPY.nothing;
   if (hasCode(e, "coinjoin.mixing_active")) return MOVE_COPY.mixing.text;
+  if (hasCode(e, "coinjoin.move_running")) return MOVE_COPY.otherMove;
   if (hasCode(e, "coinjoin.vault_locked")) return CoinJoinText.vaultLocked;
   if (hasCode(e, "coinjoin.watch_only")) return CoinJoinText.watchOnly;
   if (hasCode(e, "coinjoin.grant_invalid")) return MOVE_COPY.changed;
@@ -81,7 +83,7 @@ export function moveErrorText(e: unknown): string {
 }
 
 /** A thrown refusal the user answers with a fresh plan (a broadcast failure is the result's partial outcome). */
-export const canRetry = (e: unknown) => hasCode(e, "coinjoin.grant_invalid") || hasCode(e, "coinjoin.vault_locked") || hasCode(e, "rescan_in_progress");
+export const canRetry = (e: unknown) => hasCode(e, "coinjoin.grant_invalid") || hasCode(e, "coinjoin.move_running") || hasCode(e, "coinjoin.vault_locked") || hasCode(e, "rescan_in_progress");
 
 /** How long Stop Mixing waits for the engine to stop: the last session winds down. */
 const STOP_RETRIES = 20;

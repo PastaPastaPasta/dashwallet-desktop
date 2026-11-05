@@ -3596,6 +3596,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "coinjoin.no_peers",
   "coinjoin.broadcast_rejected",
   "coinjoin.mixing_active",
+  "coinjoin.move_running",
   "masternode.watch_only",
   "masternode.vault_locked",
   "masternode.grant_invalid",

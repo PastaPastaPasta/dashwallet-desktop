@@ -4,6 +4,7 @@
 //! that may be on the network.
 
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use dashcore::hashes::Hash;
@@ -15,6 +16,7 @@ use platform_wallet::PlatformWalletError as Pw;
 use crate::EngineError;
 use crate::coinjoin::sweep_test_hooks::Hooks;
 use crate::coinjoin::{CoinJoinFailure, SweepDestination, SweepResult};
+use crate::coins::TestPause;
 use crate::platform::lease::session_tests::{Fixture, fixture};
 use crate::send::SpendOwner;
 
@@ -62,6 +64,7 @@ fn hook(f: &Fixture, max_inputs: usize, outcomes: &[Outcome]) -> Arc<Wire> {
     *f.session.coinjoin.sweep_hooks.lock().unwrap() = Hooks {
         broadcast: Some(broadcast),
         max_inputs: Some(max_inputs),
+        ..Hooks::default()
     };
     wire
 }
@@ -181,6 +184,146 @@ fn a_move_is_refused_while_the_wallet_mixes() {
     s.coinjoin.set_mixing_for_test(f.wallet, false);
     assert_eq!(plan().unwrap().total, COIN);
     assert_eq!(move_to_wallet(&f).unwrap().txids.len(), 1);
+}
+
+/// A pause point of the hooks, set by `set` on the installed hooks.
+fn pause_at(f: &Fixture, set: impl FnOnce(&mut Hooks, Arc<TestPause>)) -> Arc<TestPause> {
+    let pause = Arc::new(TestPause::default());
+    set(
+        &mut f.session.coinjoin.sweep_hooks.lock().unwrap(),
+        Arc::clone(&pause),
+    );
+    pause
+}
+
+/// Releases its pauses when dropped, so a failing assertion leaves no task
+/// waiting on one for the fixture's shutdown to wait for.
+struct ReleaseOnDrop(Vec<Arc<TestPause>>);
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        for p in &self.0 {
+            p.release.notify_one();
+        }
+    }
+}
+
+/// `fut` on the engine's runtime, or `Internal` after 20 s: a call that
+/// waits on a fence another task holds fails the test instead of hanging
+/// it.
+fn within<T>(
+    f: &Fixture,
+    fut: impl std::future::Future<Output = Result<T, EngineError>>,
+) -> Result<T, EngineError> {
+    f.engine.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), fut)
+            .await
+            .unwrap_or_else(|_| Err(EngineError::Internal("waited 20 s".into())))
+    })
+}
+
+/// Waits (on the test thread) until `pause` is reached.
+fn reached(pause: &TestPause) {
+    for _ in 0..2_000 {
+        if pause.reached.load(Ordering::SeqCst) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("pause never reached");
+}
+
+/// The move, on the session's runtime, while the test thread goes on.
+fn spawn_move(f: &Fixture) -> tokio::task::JoinHandle<Result<SweepResult, EngineError>> {
+    let grant = spend_grant(f);
+    let (s, w) = (Arc::clone(&f.session), f.wallet);
+    (f.session.rt)
+        .spawn(async move { s.move_mixed_coins(w, SweepDestination::Wallet, grant).await })
+}
+
+fn start(f: &Fixture) -> Result<(), EngineError> {
+    within(f, f.session.start_mixing(f.wallet))
+}
+
+fn move_running(r: Result<(), EngineError>) {
+    assert!(
+        matches!(r, Err(EngineError::CoinJoin(CoinJoinFailure::MoveRunning))),
+        "{r:?}"
+    );
+}
+
+/// Review A r1 (Sol R2, Opus m7): mixing and a move claim the CoinJoin
+/// account under one lock, the move through its last broadcast. Mixing
+/// does not start while a move holds its coins read under the fence, nor
+/// while a multi-chunk broadcast waits between chunks; a start that read
+/// its view before the move claimed the account is refused when it would
+/// set the flag; a second move waits for the first.
+#[test]
+fn mixing_does_not_start_while_a_move_runs() {
+    let f = fixture(false);
+    for n in 1..=4 {
+        f.credit_coinjoin(n, COIN);
+    }
+
+    // The move read its coins under the fence and waits there.
+    hook(&f, 500, &[]);
+    let read = pause_at(&f, |h, p| h.after_read = Some(p));
+    let _release = ReleaseOnDrop(vec![Arc::clone(&read)]);
+    let moving = spawn_move(&f);
+    reached(&read);
+    move_running(start(&f));
+    let grant = spend_grant(&f);
+    let again = f
+        .session
+        .move_mixed_coins(f.wallet, SweepDestination::Wallet, grant);
+    move_running(within(&f, again).map(drop));
+    read.release.notify_one();
+    let done = f.engine.block_on(moving).unwrap().unwrap();
+    assert_eq!((done.txids.len(), done.failure_code), (1, None));
+    assert!(!f.session.coinjoin.is_mixing(&f.wallet));
+
+    // A start read its view, then the move claimed the account: the start
+    // is refused when it would set the flag.
+    let f = fixture(false);
+    for n in 1..=4 {
+        f.credit_coinjoin(n, COIN);
+    }
+    hook(&f, 500, &[]);
+    let start_read = pause_at(&f, |h, p| h.start_after_read = Some(p));
+    let starting = {
+        let (s, w) = (Arc::clone(&f.session), f.wallet);
+        (f.session.rt).spawn(async move { s.start_mixing(w).await })
+    };
+    reached(&start_read);
+    let read = pause_at(&f, |h, p| h.after_read = Some(p));
+    let _release = ReleaseOnDrop(vec![Arc::clone(&start_read), Arc::clone(&read)]);
+    let moving = spawn_move(&f);
+    reached(&read);
+    start_read.release.notify_one();
+    move_running(within(&f, async { starting.await.unwrap() }));
+    read.release.notify_one();
+    assert_eq!(
+        f.engine.block_on(moving).unwrap().unwrap().failure_code,
+        None
+    );
+    assert!(!f.session.coinjoin.is_mixing(&f.wallet));
+
+    // Between the chunks of a multi-chunk broadcast.
+    let f = fixture(false);
+    for n in 1..=4 {
+        f.credit_coinjoin(n, COIN);
+    }
+    let wire = hook(&f, 2, &[]);
+    let between = pause_at(&f, |h, p| h.before_broadcast = Some((1, p)));
+    let _release = ReleaseOnDrop(vec![Arc::clone(&between)]);
+    let moving = spawn_move(&f);
+    reached(&between);
+    assert_eq!(wire.txs().len(), 1, "chunk 1 out, chunk 2 waits");
+    move_running(start(&f));
+    between.release.notify_one();
+    let done = f.engine.block_on(moving).unwrap().unwrap();
+    assert_eq!((done.txids.len(), done.failure_code), (2, None));
+    assert!(!f.session.coinjoin.is_mixing(&f.wallet));
 }
 
 /// Q3: the round pays one fresh CoinJoin-account address per chunk, never a
