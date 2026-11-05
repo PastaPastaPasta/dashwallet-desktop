@@ -1770,8 +1770,6 @@ fn a_0_1_move_record_reads_as_to_core() {
     assert_eq!(row.expected_duffs, Some(0));
 }
 
-// ---- round 2 (Unit A review r1) ----
-
 impl World {
     /// A send of `amount` to `to` that goes out and is lost, then a later
     /// read shows it unexecuted: `Failed` by height, able to land.
@@ -1805,7 +1803,7 @@ impl World {
     }
 }
 
-/// A1 (Opus M1): the held send lands between its retry's quote and the
+/// The held send lands between its retry's quote and the
 /// Confirm: the Confirm answers that send's settled outcome and signs
 /// nothing, so the recipient is paid once, also once the records reload.
 #[test]
@@ -1842,7 +1840,7 @@ fn a_retry_after_the_held_send_landed_pays_nothing() {
     assert_eq!(w.net.credits(them), DASH);
 }
 
-/// A1 (review r2 B1): "Retry this payment" after the held send landed,
+/// "Retry this payment" after the held send landed,
 /// and Activity read it: the retry's quote still names that send, so its
 /// Confirm answers that it landed and pays nothing; a quote without the
 /// name is a new payment. A named retry on other terms is refused.
@@ -1859,7 +1857,7 @@ fn a_named_retry_of_a_send_that_landed_pays_nothing() {
     let quote = w.retry_quote(one, &to, Some(&first.id)).unwrap();
     let grant = w.f.grant(quote.credits);
     let out = w.confirm(&quote.operation, &grant).unwrap();
-    // Paid once first (Opus m5): a quote that dropped the name would pay
+    // Paid once first: a quote that dropped the name would pay
     // again here.
     assert_eq!(w.net.credits(them), DASH, "paid once");
     assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing signed");
@@ -1877,7 +1875,7 @@ fn a_named_retry_of_a_send_that_landed_pays_nothing() {
     assert_eq!(w.send_quote(one, &to).unwrap().retry_of, None);
 }
 
-/// A1: still failed at the Confirm, the retry re-signs the held send once;
+/// Still failed at the Confirm, the retry re-signs the held send once;
 /// whichever lands, the recipient is paid once.
 #[test]
 fn a_retry_of_a_still_failed_send_is_signed_once() {
@@ -1906,7 +1904,7 @@ fn a_retry_of_a_still_failed_send_is_signed_once() {
     );
 }
 
-/// A1: a quote made with no hold is a new send; a hold that appears before
+/// A quote made with no hold is a new send; a hold that appears before
 /// its Confirm refuses it, unsigned, its grant kept.
 #[test]
 fn a_hold_after_a_quote_without_one_refuses_the_send() {
@@ -1927,7 +1925,7 @@ fn a_hold_after_a_quote_without_one_refuses_the_send() {
     assert_eq!(w.net.sent.lock().unwrap().len(), 1);
 }
 
-/// Opus m5: a hold of the very same terms that appears after a quote made
+/// A hold of the very same terms that appears after a quote made
 /// with none still refuses it: a new send is never re-signed at a held
 /// send's inputs and nonces, however equal the terms (only a quote naming
 /// it as a retry is).
@@ -1950,7 +1948,7 @@ fn a_same_terms_hold_after_a_quote_without_one_refuses_the_send() {
     assert_eq!(w.net.credits(them), 0);
 }
 
-/// Opus m1: beside a hold the quote refuses anything but the exact retry,
+/// Beside a hold the quote refuses anything but the exact retry,
 /// before anything is asked of the user.
 #[test]
 fn the_quote_refuses_beside_a_hold() {
@@ -1973,7 +1971,7 @@ fn the_quote_refuses_beside_a_hold() {
     assert!(w.send_quote(one, &to).unwrap().retry_of.is_some());
 }
 
-/// A2: `DeductFromInput` takes the metered fee from all the fee source
+/// `DeductFromInput` takes the metered fee from all the fee source
 /// keeps (the pin caps nothing lower). The plan picks the source that
 /// keeps the least, and that remainder is the bound the quote states and
 /// the grant covers; a fee above three times the estimate is taken within
@@ -2027,7 +2025,7 @@ fn the_fee_bound_is_what_the_fee_source_keeps() {
     assert_eq!(w.net.credits(them), DASH + left - fee);
 }
 
-/// Sol R2-A2: what the fee source keeps is a snapshot, not a ceiling. A
+/// What the fee source keeps is a snapshot, not a ceiling. A
 /// deposit to it after the send is signed pays a larger metered fee when
 /// the original lands late, so the gross debit passes the quote's planned
 /// debit, its grant's cap. The outcome reads the inputs' fall, which the
@@ -2068,7 +2066,7 @@ fn a_deposit_after_signing_can_pay_a_larger_fee() {
     assert!(row.credits <= gross);
 }
 
-/// A3: a send failed by height may still go through, in Activity too, read
+/// A send failed by height may still go through, in Activity too, read
 /// afresh; one Platform refused for good never does; one its identical
 /// retry superseded reads as replaced.
 #[test]
@@ -2109,7 +2107,7 @@ fn activity_tells_a_live_send_from_a_refused_or_superseded_one() {
     );
 }
 
-/// A4: an identical retry Platform's stateless checks refuse, at the
+/// An identical retry Platform's stateless checks refuse, at the
 /// version the held send was signed at, releases it; a signer's refusal,
 /// or a held send of another (or no recorded) version, does not.
 #[test]
@@ -2141,7 +2139,7 @@ fn only_an_identical_definitive_refusal_releases_a_held_send() {
     assert!(setup(Act::Invalid, Some(None)), "no recorded version");
 }
 
-/// A5: a payment that arrives at the fee source while a send settles hides
+/// A payment that arrives at the fee source while a send settles hides
 /// its fee; the done send's debit counts the estimate and says so.
 #[test]
 fn a_deposit_that_hides_the_fee_marks_the_debit_estimated() {
@@ -2172,7 +2170,7 @@ fn a_deposit_that_hides_the_fee_marks_the_debit_estimated() {
     assert_eq!((out.estimated, out.fee_credits), (false, Some(w.net.fee())));
 }
 
-/// Opus m2: a move beside a held send is refused at its quote, before any
+/// A move beside a held send is refused at its quote, before any
 /// passphrase is asked, as the move itself would be; once the send lands
 /// it quotes again.
 #[test]
@@ -2189,7 +2187,7 @@ fn the_move_quote_refuses_beside_a_held_send() {
     w.quote(WithdrawAmount::All).unwrap();
 }
 
-/// Sol R2-A1: a new process quotes afresh, and no operation id from before
+/// A new process quotes afresh, and no operation id from before
 /// it pays there, neither one sent nor one never sent, also once the new
 /// process has quoted.
 #[test]
@@ -2218,7 +2216,7 @@ fn an_operation_id_from_before_a_restart_pays_nothing() {
     assert_eq!(w.net.credits(them), 2 * DASH);
 }
 
-/// Sol R2-A3: a send's grant is issued for its operation and pays that one
+/// A send's grant is issued for its operation and pays that one
 /// alone. Another operation's grant, or one issued for none, is refused
 /// before it is redeemed: neither it nor the operation is used.
 #[test]
@@ -2247,7 +2245,7 @@ fn a_grant_pays_only_the_operation_it_was_issued_for() {
     assert_eq!((w.net.credits(alice), w.net.credits(bob)), (DASH, DASH));
 }
 
-/// Opus m3: a send pays someone else, so only a fresh grant pays it, once:
+/// A send pays someone else, so only a fresh grant pays it, once:
 /// no lease (a move's, or a send flow's a caller holds), and no grant
 /// twice.
 #[test]
@@ -2276,7 +2274,7 @@ fn a_send_takes_a_fresh_grant_and_no_lease() {
     w.move_to(one, &w.to, &lease).unwrap();
 }
 
-/// A7: the own-address refusal covers the derived pool only: an address of
+/// The own-address refusal covers the derived pool only: an address of
 /// this wallet's payment account beyond it is accepted as a recipient.
 #[test]
 fn an_own_address_beyond_the_pool_is_accepted() {
@@ -2314,7 +2312,7 @@ fn an_own_address_beyond_the_pool_is_accepted() {
     );
 }
 
-/// Opus m6: below address funds (protocol version 11) the send's quote,
+/// Below address funds (protocol version 11) the send's quote,
 /// the send and the receive address are refused; without Platform the
 /// receive address is.
 #[test]
@@ -2358,7 +2356,7 @@ fn sends_and_receive_need_address_funds_and_platform() {
     }
 }
 
-/// Opus m6: a 0.1 move record (no `kind`, `fee_from_output` or `version`)
+/// A 0.1 move record (no `kind`, `fee_from_output` or `version`)
 /// read back holds and settles as a move to Core; a 0.1 move failed by
 /// height still lets a new move at its very inputs and nonces go.
 #[test]
@@ -2385,7 +2383,7 @@ fn a_0_1_record_reloads_and_settles() {
         (w, current.id)
     };
     // Its own transition landing late settles it: Done, a move to Core
-    // with its payout (Opus m4).
+    // with its payout.
     let (w, id) = stored();
     w.lands(0);
     let rows = w.activity();

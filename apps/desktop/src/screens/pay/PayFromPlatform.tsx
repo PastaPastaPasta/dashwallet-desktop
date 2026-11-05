@@ -57,6 +57,7 @@ function outcomeCopy(outcome: PlatformSendOutcome, credits: (c: string) => strin
 
 function ConfirmRows({ q, credits }: { q: PlatformSendQuote; credits: (c: string) => string }) {
   const recipientGets = String(BigInt(q.amountCredits) - BigInt(q.feeCredits));
+  const taken = q.feeFromAmount ? q.credits : String(BigInt(q.amountCredits) + BigInt(q.feeCredits));
   return (
     <>
       <dl className="detail-list topup-quote" data-testid="platform-send-confirm">
@@ -83,7 +84,7 @@ function ConfirmRows({ q, credits }: { q: PlatformSendQuote; credits: (c: string
           </Row>
         )}
         <Row label={q.feeFromAmount ? C.rows.totalExact : C.rows.total} testId="platform-send-confirm-total" total>
-          {credits(q.feeFromAmount ? q.credits : String(BigInt(q.amountCredits) + BigInt(q.feeCredits)))}
+          {credits(taken)}
         </Row>
       </dl>
       <p className="field-hint" data-testid={q.feeFromAmount ? "platform-send-fee-from-amount" : "platform-send-fee-source"}>

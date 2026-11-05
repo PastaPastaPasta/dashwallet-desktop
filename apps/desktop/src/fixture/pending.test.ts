@@ -168,7 +168,7 @@ describe("fixture pending commands", () => {
     expect(await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), null)).toMatchObject({ retryOf: null });
   });
 
-  // Sol R2-A4 (Opus m3): a retry that has not landed supersedes nothing; when the original lands late
+  // A retry that has not landed supersedes nothing; when the original lands late
   // the retry is the one replaced, and the payment is debited once.
   for (const retried of ["failed", "pending"] as const)
     it(`a ${retried} retry leaves the original live; the original landing late replaces the retry`, async () => {

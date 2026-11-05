@@ -220,7 +220,7 @@ function holdFor(p: PlatformWorld, to: string, amount: WithdrawAmount): Platform
 
 /** Settles the group of the send `done` (it executed): every other member that still holds is
  * replaced, as the engine's `settle` does once a member's nonces are taken. */
-function replaceOthers(p: PlatformWorld, done: string) {
+function replaceOthers(p: PlatformWorld, done: string): void {
   const terms = p.terms[done];
   p.activity = p.activity.map((a) => (a.id !== done && p.terms[a.id] === terms && isHeldOp(a) ? { ...a, state: "replaced" as const, mayLand: false } : a));
 }

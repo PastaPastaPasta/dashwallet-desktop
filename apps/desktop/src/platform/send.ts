@@ -122,8 +122,14 @@ export function sendErrorText(e: unknown, credits: (c: string) => string, activi
         : "Dash Platform does not take a payment of this amount.";
     case "credits.move_pending": {
       const id = e.data?.kind === "artifact" ? e.data.artifact : null;
-      const kind = activity?.find((a) => a.id === id)?.kind;
-      return kind === "send" ? SEND_COPY.held : kind === "moveToCore" ? SEND_COPY.heldMove : SEND_COPY.heldOther;
+      switch (activity?.find((a) => a.id === id)?.kind) {
+        case "send":
+          return SEND_COPY.held;
+        case "moveToCore":
+          return SEND_COPY.heldMove;
+        default:
+          return SEND_COPY.heldOther;
+      }
     }
     case "platform.trust_mismatch":
       return "Your Platform addresses could not be verified against the network. Nothing was sent.";
