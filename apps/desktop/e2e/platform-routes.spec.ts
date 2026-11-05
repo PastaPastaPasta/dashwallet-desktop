@@ -270,7 +270,7 @@ test.describe("Pay from Platform", () => {
     await expect(page.getByTestId("platform-send-earlier")).toHaveCount(0);
   });
 
-  test("a held move leaves Move offered; a held send names itself on the card and the engine refuses the move", async ({ page }) => {
+  test("a held move leaves Move offered, and moving again goes through", async ({ page }) => {
     await open(page, "platform-move-failed-may-land");
     await expect(page.getByTestId("platform-move")).toBeEnabled();
     await expect(page.getByTestId("platform-move-view")).toHaveCount(0);
