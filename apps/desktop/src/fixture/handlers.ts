@@ -231,7 +231,7 @@ function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPu
 
 /** `Vault::authorize_set`: one credential check, one single-use grant per purpose, all or none.
  * A grant issued while the vault holds no data key carries its own. */
-function authorizeSet(w: World, purposes: GrantPurposeSpec[], walletId: string | null, credential: CredentialSpec): AuthGrant[] {
+export function authorizeSet(w: World, purposes: GrantPurposeSpec[], walletId: string | null, credential: CredentialSpec): AuthGrant[] {
   if (walletId !== null && !/^[0-9a-f]{64}$/i.test(walletId)) throw fail("invalid_argument", `not a wallet id: ${walletId}`);
   if (purposes.length === 0) throw fail("invalid_argument", "no grant purpose");
   const unbound = purposes.find((p) => (p.kind !== "changeCredential") !== (walletId !== null));

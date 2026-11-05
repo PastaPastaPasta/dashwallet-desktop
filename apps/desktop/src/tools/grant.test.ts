@@ -14,6 +14,18 @@ const until = async (cond: () => boolean) => {
 };
 
 describe("GrantModel", () => {
+  it("asks for a Platform send's grant by its operation, behind the payment passphrase", async () => {
+    const { api, calls } = fakeVault();
+    const grants = new GrantModel(api);
+    const answer = grants.obtain({ kind: "platformSend", operation: "op-7" }, WALLET_A);
+    // An encrypted vault with "every payment" on: the passphrase first, as for `platformOp`.
+    await until(() => grants.pending !== null);
+    expect(await grants.submit("pw")).toBe(true);
+    expect((await answer)?.id).toBe("grant-1");
+    expect(calls.authorize).toEqual([{ purpose: { kind: "platformSend", operation: "op-7" }, walletId: WALLET_A, credential: { kind: "passphrase", passphrase: "pw" } }]);
+    expect(api.authorize).not.toHaveBeenCalled();
+  });
+
   it("a second request while one is asked for is refused at once", async () => {
     const { api } = fakeVault();
     const grants = new GrantModel(api);

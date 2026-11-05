@@ -1294,8 +1294,21 @@ impl World {
         self.confirm(&quote.operation, grant)
     }
 
-    /// `platform_send` of the quoted `operation`.
+    /// `platform_send` of the quoted `operation` under `grant`, issued for
+    /// it as `authorize_platform_send` issues one.
     fn confirm(&self, operation: &str, grant: &str) -> Result<PlatformSendOutcome, CreditsError> {
+        self.bind(operation, grant);
+        self.pay(operation, grant)
+    }
+
+    /// Binds `grant` to the quoted `operation` (`platform_send_bind`); an
+    /// unknown or sent one binds nothing.
+    fn bind(&self, operation: &str, grant: &str) {
+        let _ = (self.f.s.platform.send_ops).bind(operation, self.f.wallet, grant);
+    }
+
+    /// `platform_send` of `operation` under `grant` as it is.
+    fn pay(&self, operation: &str, grant: &str) -> Result<PlatformSendOutcome, CreditsError> {
         let (operation, grant) = (operation.to_owned(), grant.to_owned());
         self.call(
             move |net, s, w, id| async move { send(&*net, &s, &w, id, &operation, &grant).await },
@@ -2119,6 +2132,35 @@ fn an_operation_id_from_before_a_restart_pays_nothing() {
     w.confirm(&fresh[0].operation, &w.f.grant(20 * DASH))
         .unwrap();
     assert_eq!(w.net.credits(them), 2 * DASH);
+}
+
+/// Sol R2-A3: a send's grant is issued for its operation and pays that one
+/// alone. Another operation's grant, or one issued for none, is refused
+/// before it is redeemed: neither it nor the operation is used.
+#[test]
+fn a_grant_pays_only_the_operation_it_was_issued_for() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (alice, to_alice) = w.theirs(8);
+    let (bob, to_bob) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let qa = w.send_quote(one, &to_alice).unwrap();
+    let qb = w.send_quote(one, &to_bob).unwrap();
+    assert_eq!(qa.credits, qb.credits, "the same cap");
+    let dp = w.f.s.dashpay(w.f.wallet);
+    let op = qa.operation.clone();
+    let cap = (w.f.engine).block_on(async move { dp.platform_send_grant(op).await });
+    assert_eq!(cap.unwrap().max_credits, qa.credits);
+    let ga = w.f.grant(qa.credits);
+    w.bind(&qa.operation, &ga);
+    for grant in [ga.clone(), w.f.grant(20 * DASH)] {
+        let e = w.pay(&qb.operation, &grant).unwrap_err();
+        assert_eq!(e.code(), "platform.grant_invalid", "{e}");
+    }
+    assert!(w.net.sent.lock().unwrap().is_empty());
+    w.confirm(&qb.operation, &w.f.grant(qb.credits)).unwrap();
+    w.pay(&qa.operation, &ga).unwrap();
+    assert_eq!((w.net.credits(alice), w.net.credits(bob)), (DASH, DASH));
 }
 
 /// Opus m3: a send pays someone else, so only a fresh grant pays it, once:

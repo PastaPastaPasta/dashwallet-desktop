@@ -187,6 +187,9 @@ export interface Backend {
   importWallet(mnemonic: string, bip39Passphrase: string | null, options: ImportOptions): Promise<string>;
   /** `walletId` is `null` only for `changeCredential` (vault.rs). */
   authorize(purpose: GrantPurposeSpec, walletId: string | null, credential: CredentialSpec): Promise<AuthGrant>;
+  /** A grant for the quoted Platform send `operation` alone (its planned debit); `platformSend`
+   * refuses any other grant for it. */
+  authorizePlatformSend(walletId: string, operation: string, credential: CredentialSpec): Promise<AuthGrant>;
   /** One credential check for several grants, all or none (E0-04: "Accept and pay"). */
   authorizeSet(purposes: GrantPurposeSpec[], walletId: string | null, credential: CredentialSpec): Promise<AuthGrant[]>;
   /** Redeems grants into a flow's lease; returns the lease id a write or a prepare takes. */

@@ -377,8 +377,38 @@ impl DashPay {
         .await
     }
 
+    /// The grant the quoted send `operation` takes: no duffs, and its
+    /// quote's `credits` (the planned debit) as the credit cap. dw-app's
+    /// `authorize_platform_send` issues it and then binds it to the
+    /// operation ([`Self::platform_send_bind`]), so it pays that operation
+    /// alone. An unknown or sent operation is `invalid_argument`.
+    pub async fn platform_send_grant(
+        &self,
+        operation: String,
+    ) -> Result<GrantRequest, CreditsError> {
+        let max_credits = (self.session.platform.send_ops).cap(&operation, self.wallet_id)?;
+        Ok(GrantRequest {
+            max_duffs: 0,
+            max_credits,
+        })
+    }
+
+    /// Binds `grant`, which `authorize_platform_send` has just issued for
+    /// the quoted send `operation`, to it: `platform_send` pays the
+    /// operation under that grant only. An unknown or sent operation is
+    /// `invalid_argument`.
+    pub async fn platform_send_bind(
+        &self,
+        operation: String,
+        grant: String,
+    ) -> Result<(), CreditsError> {
+        (self.session.platform.send_ops).bind(&operation, self.wallet_id, &grant)?;
+        Ok(())
+    }
+
     /// Sends the quoted `operation` (its recipient and amount) under
-    /// `grant`, a fresh `PlatformOp` grant (no lease).
+    /// `grant`, the fresh grant `authorize_platform_send` issued for it (no lease;
+    /// any other grant is `platform.grant_invalid` and stays unused).
     pub async fn platform_send(
         &self,
         operation: String,

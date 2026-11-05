@@ -400,6 +400,19 @@ export function authorize(purpose: GrantPurposeSpec, walletId: string | null, cr
 }
 
 /**
+ * `authorize` for the quoted Platform send `operation`
+ * (`platformSendQuote`): a `platformOp` grant with no duffs and the
+ * quote's `credits` (its planned debit), which pays that operation
+ * alone. `platformSend` refuses any other grant for it, the grant left
+ * unused (`platform.grant_invalid`). An unknown or sent operation is
+ * `invalid_argument`, and nothing is issued. The payment rule is
+ * `authorize`'s.
+ */
+export function authorizePlatformSend(walletId: string, operation: string, credential: CredentialSpec): Promise<AuthGrant> {
+  return invoke<AuthGrant>("authorize_platform_send", { walletId, operation, credential });
+}
+
+/**
  * One credential check for several grants (E0-04 §3.3), one Argon2id
  * run and one throttle count: "Accept and pay" asks for a `platformOp`
  * and a `spend` together. Grants come back in the order of `purposes`;
@@ -2593,6 +2606,7 @@ export type CommandArgs = {
   encrypt_vault: { newPassphrase: string; grantId: string };
   change_passphrase: { oldPassphrase: string; newPassphrase: string };
   authorize: { purpose: GrantPurposeSpec; walletId: string | null; credential: CredentialSpec };
+  authorize_platform_send: { walletId: string; operation: string; credential: CredentialSpec };
   authorize_set: { purposes: Array<GrantPurposeSpec>; walletId: string | null; credential: CredentialSpec };
   revoke_grant: { grantId: string };
   reveal_mnemonic: { walletId: string; grantId: string };
@@ -2889,6 +2903,7 @@ export type CommandResults = {
   encrypt_vault: LockStatus;
   change_passphrase: LockStatus;
   authorize: AuthGrant;
+  authorize_platform_send: AuthGrant;
   authorize_set: Array<AuthGrant>;
   revoke_grant: null;
   reveal_mnemonic: RevealedMnemonic;
@@ -3187,6 +3202,7 @@ export const COMMANDS: Record<CommandName, string> = {
   encrypt_vault: "vault",
   change_passphrase: "vault",
   authorize: "vault",
+  authorize_platform_send: "vault",
   authorize_set: "vault",
   revoke_grant: "vault",
   reveal_mnemonic: "vault",

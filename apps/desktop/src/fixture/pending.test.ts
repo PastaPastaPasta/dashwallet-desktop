@@ -88,10 +88,12 @@ describe("fixture pending commands", () => {
   });
 
   const credits = (n: string) => ({ kind: "credits" as const, credits: n });
-  const grantFor = (maxCredits: string) => backend.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits }, W, { kind: "passphrase", passphrase: FIXTURE_PASSPHRASE });
+  const passphrase = { kind: "passphrase" as const, passphrase: FIXTURE_PASSPHRASE };
+  const grantFor = (operation: string) => backend.authorizePlatformSend(W, operation, passphrase);
+  const opGrant = (maxCredits: string) => backend.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits }, W, passphrase);
   const pay = async (amount: { kind: "all" } | { kind: "credits"; credits: string }, to = PLATFORM_PAYEE) => {
     const quote = await backend.platformSendQuote(W, to, amount, null);
-    const grant = await grantFor(quote.grant.maxCredits);
+    const grant = await grantFor(quote.operation);
     return { quote, outcome: await backend.platformSend(W, quote.operation, grant.id) };
   };
   const platform = () => fixture.world.pending.platform!;
@@ -101,20 +103,26 @@ describe("fixture pending commands", () => {
     const b = await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), null);
     expect(a.operation).toMatch(/^op-/);
     expect(b.operation).not.toBe(a.operation);
-    const grant = await grantFor(a.grant.maxCredits);
+    const grant = await grantFor(a.operation);
+    expect(grant.purpose).toEqual({ kind: "platformOp", maxDuffs: 0, maxCredits: a.credits });
+    await expect(grantFor("op-nope")).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(backend.platformSend(W, "op-nope", grant.id)).rejects.toMatchObject({ code: "invalid_argument" });
     expect(await backend.platformSend(W, a.operation, grant.id)).toMatchObject({ state: "done" });
     // Used: quote again.
-    const again = await grantFor(a.grant.maxCredits);
-    await expect(backend.platformSend(W, a.operation, again.id)).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(grantFor(a.operation)).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(backend.platformSend(W, a.operation, grant.id)).rejects.toMatchObject({ code: "invalid_argument" });
   });
 
-  it("takes only a fresh platformOp grant for a send: a lease id, or no such grant, is grant_invalid", async () => {
-    const quote = await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), null);
-    await expect(backend.platformSend(W, quote.operation, "lease-1")).rejects.toMatchObject({ code: "platform.grant_invalid" });
-    const small = await grantFor("1000");
-    const q2 = await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), null);
-    await expect(backend.platformSend(W, q2.operation, small.id)).rejects.toMatchObject({ code: "platform.grant_exceeded" });
+  it("pays a send only under the grant issued for its operation: a lease id, a plain grant or another's is refused unused", async () => {
+    const qa = await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), null);
+    const qb = await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), null);
+    const plain = await backend.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits: "40000000000" }, W, passphrase);
+    const ga = await grantFor(qa.operation);
+    for (const grant of ["lease-1", plain.id, ga.id])
+      await expect(backend.platformSend(W, qb.operation, grant)).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    // Neither the grant nor the operation was used.
+    expect(await backend.platformSend(W, qa.operation, ga.id)).toMatchObject({ state: "done" });
+    expect(await backend.platformSend(W, qb.operation, (await grantFor(qb.operation)).id)).toMatchObject({ state: "done" });
   });
 
   it("records a send in the activity and holds the next one while it is pending", async () => {
@@ -141,7 +149,7 @@ describe("fixture pending commands", () => {
   it("refuses a new send whose hold appeared after its quote", async () => {
     const quote = await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), null);
     platform().activity = [{ id: "pm-9", kind: "moveToCore", state: "pending", credits: "1", address: null, to: "y", expectedDuffs: null, feeCredits: null, at: 1, mayLand: true, estimated: false }, ...platform().activity];
-    await expect(backend.platformSend(W, quote.operation, (await grantFor(quote.grant.maxCredits)).id)).rejects.toMatchObject({ code: "credits.move_pending", data: { artifact: "pm-9" } });
+    await expect(backend.platformSend(W, quote.operation, (await grantFor(quote.operation)).id)).rejects.toMatchObject({ code: "credits.move_pending", data: { artifact: "pm-9" } });
   });
 
   it("an exact retry supersedes the held send (replaced) and sends once", async () => {
@@ -172,7 +180,7 @@ describe("fixture pending commands", () => {
     platform().nextSend = "failed";
     const first = await pay(credits("1000000000"));
     const retry = await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), null);
-    const grant = await grantFor(retry.grant.maxCredits);
+    const grant = await grantFor(retry.operation);
     landSend(platform(), first.outcome.id);
     const before = (await backend.platformAddresses(W))!.credits;
     const got = await backend.platformSend(W, retry.operation, grant.id);
@@ -188,7 +196,7 @@ describe("fixture pending commands", () => {
     const retry = await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), first.outcome.id);
     expect(retry).toMatchObject({ retryOf: first.outcome.id });
     const before = (await backend.platformAddresses(W))!.credits;
-    expect(await backend.platformSend(W, retry.operation, (await grantFor(retry.grant.maxCredits)).id)).toMatchObject({ id: first.outcome.id, state: "done", mayLand: false });
+    expect(await backend.platformSend(W, retry.operation, (await grantFor(retry.operation)).id)).toMatchObject({ id: first.outcome.id, state: "done", mayLand: false });
     expect((await backend.platformAddresses(W))!.credits).toBe(before);
     expect((await backend.platformActivity(W))!.filter((a) => a.kind === "send")).toHaveLength(1);
     // Without the name, the same payment is a new one.
@@ -202,7 +210,7 @@ describe("fixture pending commands", () => {
     const second = await pay(credits("1000000000"));
     const before = (await backend.platformAddresses(W))!.credits;
     const named = await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), first.outcome.id);
-    expect(await backend.platformSend(W, named.operation, (await grantFor(named.grant.maxCredits)).id)).toMatchObject({ id: second.outcome.id, state: "done" });
+    expect(await backend.platformSend(W, named.operation, (await grantFor(named.operation)).id)).toMatchObject({ id: second.outcome.id, state: "done" });
     expect((await backend.platformAddresses(W))!.credits).toBe(before);
   });
 
@@ -211,7 +219,7 @@ describe("fixture pending commands", () => {
     const first = await pay(credits("1000000000"));
     platform().activity = platform().activity.map((a) => (a.id === first.outcome.id ? { ...a, mayLand: false } : a));
     const named = await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), first.outcome.id);
-    expect(await backend.platformSend(W, named.operation, (await grantFor(named.grant.maxCredits)).id)).toMatchObject({ id: first.outcome.id, state: "failed", mayLand: false });
+    expect(await backend.platformSend(W, named.operation, (await grantFor(named.operation)).id)).toMatchObject({ id: first.outcome.id, state: "failed", mayLand: false });
     expect((await backend.platformActivity(W))!.filter((a) => a.kind === "send")).toHaveLength(1);
   });
 
@@ -237,7 +245,7 @@ describe("fixture pending commands", () => {
     fixture = installFixture({ scenario: "platform-move-failed-may-land" });
     backend = new IpcBackend("fixture");
     const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
-    expect(await backend.platformMoveToCore(W, { kind: "all" }, quote.to, (await grantFor(quote.grant.maxCredits)).id)).toMatchObject({ state: "done" });
+    expect(await backend.platformMoveToCore(W, { kind: "all" }, quote.to, (await opGrant(quote.grant.maxCredits)).id)).toMatchObject({ state: "done" });
     const activity = (await backend.platformActivity(W))!;
     expect(activity.find((a) => a.id === "pm-held")).toMatchObject({ state: "replaced", mayLand: false });
     expect(activity.some((a) => a.kind === "moveToCore" && a.mayLand)).toBe(false);
@@ -246,9 +254,9 @@ describe("fixture pending commands", () => {
   it("refuses a move beside a move Platform has not answered", async () => {
     platform().nextMove = "pending";
     const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
-    const first = await backend.platformMoveToCore(W, { kind: "all" }, quote.to, (await grantFor(quote.grant.maxCredits)).id);
+    const first = await backend.platformMoveToCore(W, { kind: "all" }, quote.to, (await opGrant(quote.grant.maxCredits)).id);
     expect(first.state).toBe("pending");
-    await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, (await grantFor(quote.grant.maxCredits)).id)).rejects.toMatchObject({ code: "credits.move_pending", data: { artifact: first.id } });
+    await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, (await opGrant(quote.grant.maxCredits)).id)).rejects.toMatchObject({ code: "credits.move_pending", data: { artifact: first.id } });
   });
 
   it("a done send that hid its fee counts the estimate", async () => {
@@ -262,7 +270,7 @@ describe("fixture pending commands", () => {
     platform().nextSend = "failed";
     const { outcome } = await pay(credits("1000000000"));
     const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
-    const grant = await grantFor(quote.grant.maxCredits);
+    const grant = await opGrant(quote.grant.maxCredits);
     await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, grant.id)).rejects.toMatchObject({ code: "credits.move_pending", data: { artifact: outcome.id } });
   });
 

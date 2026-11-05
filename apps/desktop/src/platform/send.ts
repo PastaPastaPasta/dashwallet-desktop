@@ -1,7 +1,7 @@
 // Pay from Platform (0.2 X1b; contract m4 §2.12 `platform_send_quote`, `platform_send`): Pay's
 // address tab, given a Platform address, pays it from the wallet's Platform addresses. The quote
 // names the amount, the fee estimate and the most the fee can take, and Confirm runs
-// `platform_send` for the quote's single-use operation under a fresh `platformOp` grant. One flow
+// `platform_send` for the quote's single-use operation under a grant issued for that operation. One flow
 // per wallet, kept while the app runs (as move.ts), so leaving Pay while a send runs keeps its result.
 
 import type { Backend } from "../api/backend";
@@ -12,12 +12,11 @@ import type { PlatformSendOutcome } from "../api/generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
 import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import { CREDITS_PER_DUFF } from "../api/pending";
-import { platformOp } from "../dashpay/topup";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { invalidArgumentText, isHeldOp, moveCanRetry, moveErrorText, onMoveSettledNotify } from "./move";
 
-export type PlatformSendApi = Pick<Backend, "platformSend" | "platformSendQuote" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
+export type PlatformSendApi = Pick<Backend, "platformSend" | "platformSendQuote" | "authorize" | "authorizePlatformSend" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
 export const SEND_COPY = {
   title: "Pay from Platform",
@@ -228,7 +227,7 @@ export class PlatformSendFlow extends Model {
     this.changed();
   }
 
-  /** Confirm & send: a fresh grant for the quote's credits, then `platformSend` for its operation
+  /** Confirm & send: a grant issued for the quote's operation, then `platformSend` for it
    * (one call at a time). The operation is single use, so any attempt that ran spends it. */
   async send(quote: PlatformSendQuote): Promise<void> {
     if (this.running) return;
@@ -237,7 +236,7 @@ export class PlatformSendFlow extends Model {
     this.error = null;
     this.changed();
     try {
-      const got = await this.grants.withGrant(platformOp(quote.grant), this.walletId, (g: AuthGrant) => {
+      const got = await this.grants.withGrant({ kind: "platformSend", operation: quote.operation }, this.walletId, (g: AuthGrant) => {
         ran = true;
         this.retryOf = quote.retryOf;
         this.#spent.add(quote.operation);

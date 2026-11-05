@@ -15,6 +15,7 @@ const PURPOSE_TEXT: Record<string, string> = {
   spend: "Enter your passphrase to authorize this payment.",
   signMessage: "Enter your passphrase to sign the message.",
   platformOp: "Enter your passphrase to authorize this Dash Platform operation.",
+  platformSend: "Enter your passphrase to authorize this payment.",
 };
 
 /** The passphrase for the grant a tab is waiting on, with U-02's lockout policy. */

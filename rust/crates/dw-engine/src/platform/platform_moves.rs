@@ -1501,13 +1501,16 @@ fn plan_beside(
 
 /// A quoted send (`PlatformSendQuote::operation`): what `platform_send`
 /// pays, once. `retry_of`: the held send it re-signs; `None`, a new send,
-/// which any hold refuses.
+/// which any hold refuses. `credits`: the quote's planned debit, the cap
+/// of the grant issued for it; `grant`: that grant, the one that pays it.
 #[derive(Debug)]
 struct SendOp {
     wallet: WalletId,
     to: String,
     amount: WithdrawAmount,
     retry_of: Option<String>,
+    credits: u64,
+    grant: Option<String>,
 }
 
 /// The session's quoted sends not yet sent, the newest [`OPS_KEPT`]. Ids
@@ -1552,9 +1555,37 @@ impl SendOps {
         f(&mut ops, at)
     }
 
-    /// Takes the quoted send `id` of `wallet`: each is sent at most once.
-    fn take(&self, id: &str, wallet: WalletId) -> Result<SendOp, PlatformError> {
-        self.with(id, wallet, |ops, at| Ok(ops.remove(at).1))
+    /// The cap of the grant for the quoted send `id` of `wallet`: its
+    /// planned debit.
+    pub(crate) fn cap(&self, id: &str, wallet: WalletId) -> Result<u64, PlatformError> {
+        self.with(id, wallet, |ops, at| Ok(ops[at].1.credits))
+    }
+
+    /// Makes `grant`, just issued for it, the grant that pays `id`.
+    pub(crate) fn bind(
+        &self,
+        id: &str,
+        wallet: WalletId,
+        grant: &str,
+    ) -> Result<(), PlatformError> {
+        self.with(id, wallet, |ops, at| {
+            ops[at].1.grant = Some(grant.to_owned());
+            Ok(())
+        })
+    }
+
+    /// Takes the quoted send `id` of `wallet` to pay under `grant`: each is
+    /// sent at most once, and only under the grant issued for it. Any other
+    /// grant (one issued for another send, or for none) is
+    /// `platform.grant_invalid` before anything is redeemed, and the send
+    /// stays quoted.
+    fn take(&self, id: &str, wallet: WalletId, grant: &str) -> Result<SendOp, PlatformError> {
+        self.with(id, wallet, |ops, at| {
+            if ops[at].1.grant.as_deref() != Some(grant) {
+                return Err(PlatformError::GrantInvalid);
+            }
+            Ok(ops.remove(at).1)
+        })
     }
 
     /// A new process's registry: nothing quoted.
@@ -1688,6 +1719,8 @@ pub(crate) async fn send_quote(
         to: to.clone(),
         amount,
         retry_of: retry_of.clone(),
+        credits,
+        grant: None,
     });
     Ok(PlatformSendQuote {
         credits,
@@ -1744,7 +1777,7 @@ pub(crate) async fn send(
     operation: &str,
     grant: &str,
 ) -> Result<PlatformSendOutcome, CreditsError> {
-    let op = (session.platform.send_ops).take(operation, wallet_id)?;
+    let op = (session.platform.send_ops).take(operation, wallet_id, grant)?;
     let address = recipient(session.vault.network(), &op.to, &pool(wallet).await?)
         .map_err(|reason| CreditsError::RecipientInvalid { reason })?;
     sends_active(net.sends_version().await)?;

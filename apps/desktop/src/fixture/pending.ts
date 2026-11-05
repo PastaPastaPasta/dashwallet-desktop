@@ -5,6 +5,8 @@
 // handler then rejects as an unknown command does.
 
 import type { AppError } from "../api/generated/AppError";
+import type { AuthGrant } from "../api/generated/AuthGrant";
+import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
 import type { MoveToCoreQuote } from "../api/generated/MoveToCoreQuote";
@@ -16,7 +18,7 @@ import type { PlatformSendOutcome } from "../api/generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
 import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
-import { checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
+import { authorizeSet, checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
 import { newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
 import { FIXTURE_NOW } from "./wallet";
 
@@ -48,10 +50,12 @@ export interface SendTerms {
   inputs: string;
 }
 
-/** A quote's operation: single use, and the held send it retries. */
+/** A quote's operation: single use, the held send it retries, and the grant issued for it (the
+ * only one that pays it). */
 export interface SendOperation {
   quote: PlatformSendQuote;
   used: boolean;
+  grant: string | null;
 }
 
 export interface PlatformWorld {
@@ -219,6 +223,8 @@ function namedRetry(p: PlatformWorld, id: string, to: string, amount: WithdrawAm
   return row;
 }
 
+const unknownOperation = () => fail("invalid_argument", "unknown or used operation", { kind: "reason", reason: "unknown or used operation" });
+
 function sendQuote(ctx: Ctx, walletId: string, to: string, amount: WithdrawAmount, retryOf: string | null): PlatformSendQuote {
   wallet(ctx.world, walletId);
   const p = platformOf(ctx.world, "platform_send_quote");
@@ -227,7 +233,7 @@ function sendQuote(ctx: Ctx, walletId: string, to: string, amount: WithdrawAmoun
   const operation = `op-${p.nextOperation++}`;
   const keep = (q: Omit<PlatformSendQuote, "operation" | "retryOf">, retryOf: string | null): PlatformSendQuote => {
     const quote = { ...q, operation, retryOf };
-    p.operations[operation] = { quote, used: false };
+    p.operations[operation] = { quote, used: false, grant: null };
     return quote;
   };
   // The exact retry is quoted on the held send's stored terms (a settled one is answered when sent).
@@ -326,13 +332,25 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     return platformOf(world, "platform_receive_address").receive;
   },
   platform_send_quote: ({ walletId, to, amount, retryOf }: { walletId: string; to: string; amount: WithdrawAmount; retryOf?: string | null }, ctx: Ctx) => sendQuote(ctx, walletId, to, amount, retryOf ?? null),
+  // As the engine: a `platformOp` grant of the quote's credits, bound to its operation alone.
+  authorize_platform_send: ({ walletId, operation, credential }: { walletId: string; operation: string; credential: CredentialSpec }, ctx: Ctx): AuthGrant => {
+    const { world } = ctx;
+    wallet(world, walletId);
+    const op = platformOf(world, "authorize_platform_send").operations[operation];
+    if (!op || op.used) throw unknownOperation();
+    const [grant] = authorizeSet(world, [{ kind: "platformOp", maxDuffs: 0, maxCredits: op.quote.credits }], walletId, credential);
+    op.grant = grant.id;
+    return grant;
+  },
   platform_send: ({ walletId, operation, grant }: { walletId: string; operation: string; grant: string }, ctx: Ctx): PlatformSendOutcome => {
     const { world } = ctx;
     wallet(world, walletId);
     const p = platformOf(world, "platform_send");
     const op = p.operations[operation];
     // An operation is the session's and single use: unknown or used is quoted again.
-    if (!op || op.used) throw fail("invalid_argument", "unknown or used operation", { kind: "reason", reason: "unknown or used operation" });
+    if (!op || op.used) throw unknownOperation();
+    // Only the grant issued for it pays it: any other is refused unused, and the operation stays.
+    if (op.grant !== grant) throw fail("platform.grant_invalid", "grant invalid");
     op.used = true;
     const q = op.quote;
     // Only a fresh grant pays someone else: a lease id is no grant here.

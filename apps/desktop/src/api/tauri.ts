@@ -42,6 +42,7 @@ export class IpcBackend implements Backend {
   importWallet = cmd.importWallet;
   authorize = cmd.authorize;
   authorizeSet = cmd.authorizeSet;
+  authorizePlatformSend = (...a: Parameters<typeof cmd.authorizePlatformSend>) => orUnavailable(cmd.authorizePlatformSend(...a));
   beginFlow = cmd.beginFlow;
   endFlow = cmd.endFlow;
   revokeGrant = cmd.revokeGrant;

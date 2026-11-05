@@ -1,5 +1,5 @@
-// Pay from Platform: the amount the form asks for, the send of the quote's operation under a fresh
-// platformOp grant, the retry of a held send, the Confirm that Activity overtakes, and the
+// Pay from Platform: the amount the form asks for, the send of the quote's operation under a grant
+// issued for it, the retry of a held send, the Confirm that Activity overtakes, and the
 // refusals' texts.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -72,13 +72,13 @@ describe("Pay from Platform", () => {
     expect([sendAmount(false, 0), sendAmount(false, null), sendAmount(false, undefined)]).toEqual([null, null, null]);
   });
 
-  it("sends the quote's operation under a fresh platformOp grant, one call at a time, and re-reads the balances after", async () => {
+  it("sends the quote's operation under a grant issued for that operation, one call at a time, and re-reads the balances after", async () => {
     const { flow, vault, calls, answer } = setup();
     const settled = vi.fn();
     const stop = onMoveSettled(settled);
     const going = flow.send(QUOTE);
     await vi.waitFor(() => expect(flow.step).toBe("running"));
-    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "1019500000" }, walletId: WALLET_A });
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformSend", operation: "op-1" }, walletId: WALLET_A });
     await flow.send({ ...QUOTE, operation: "op-9" });
     expect(calls).toEqual(["send op-1 grant-1"]);
     answer(OUTCOME);

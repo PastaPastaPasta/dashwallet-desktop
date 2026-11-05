@@ -143,6 +143,8 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.platform_receive_address",
     "DashPay.platform_send_quote",
     "DashPay.platform_send",
+    "DashPay.platform_send_grant",
+    "DashPay.platform_send_bind",
     // 0.1 E1: shielded funds.
     "DashPay.shielded_status",
     "DashPay.shielded_sync",
