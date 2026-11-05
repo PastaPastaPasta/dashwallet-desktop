@@ -2092,6 +2092,35 @@ fn a_deposit_that_hides_the_fee_marks_the_debit_estimated() {
     assert_eq!((out.estimated, out.fee_credits), (false, Some(w.net.fee())));
 }
 
+/// Sol R2-A1: a new process quotes afresh, and no operation id from before
+/// it pays there, neither one sent nor one never sent, also once the new
+/// process has quoted.
+#[test]
+fn an_operation_id_from_before_a_restart_pays_nothing() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (them, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let sent = w.send_quote(one, &to).unwrap();
+    w.confirm(&sent.operation, &w.f.grant(20 * DASH)).unwrap();
+    let unsent = w.send_quote(one, &to).unwrap();
+    // A new process: none of the old operation state.
+    w.f.s.platform.send_ops.reset();
+    let fresh = [
+        w.send_quote(one, &to).unwrap(),
+        w.send_quote(one, &to).unwrap(),
+    ];
+    for old in [&sent.operation, &unsent.operation] {
+        assert!(fresh.iter().all(|q| &q.operation != old));
+        let e = w.confirm(old, &w.f.grant(20 * DASH)).unwrap_err();
+        assert_eq!(e.code(), "invalid_argument", "{old}: {e}");
+    }
+    assert_eq!(w.net.credits(them), DASH);
+    w.confirm(&fresh[0].operation, &w.f.grant(20 * DASH))
+        .unwrap();
+    assert_eq!(w.net.credits(them), 2 * DASH);
+}
+
 /// Opus m3: a send pays someone else, so only a fresh grant pays it, once:
 /// no lease (a move's, or a send flow's a caller holds), and no grant
 /// twice.

@@ -64,7 +64,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -1511,35 +1510,57 @@ struct SendOp {
     retry_of: Option<String>,
 }
 
-/// The quoted sends not yet sent, the newest [`OPS_KEPT`].
-static SEND_OPS: LazyLock<Mutex<BTreeMap<u64, SendOp>>> = LazyLock::new(Mutex::default);
-static NEXT_OP: AtomicU64 = AtomicU64::new(1);
+/// The session's quoted sends not yet sent, the newest [`OPS_KEPT`]. Ids
+/// are 128 random bits, so none repeats in this session or another (a
+/// restart): an id from before matches nothing.
+#[derive(Debug, Default)]
+pub(crate) struct SendOps(Mutex<Vec<(String, SendOp)>>);
+
 const OPS_KEPT: usize = 256;
 
-fn new_op(op: SendOp) -> String {
-    let n = NEXT_OP.fetch_add(1, Ordering::Relaxed);
-    let mut ops = SEND_OPS.lock().unwrap_or_else(PoisonError::into_inner);
-    ops.insert(n, op);
-    while ops.len() > OPS_KEPT {
-        ops.pop_first();
+fn unknown_op() -> PlatformError {
+    PlatformError::InvalidArgument {
+        detail: "no quoted payment has that operation id; quote it again".into(),
     }
-    format!("op-{n}")
 }
 
-/// Takes the quoted send `id` of `wallet`: each is sent at most once.
-fn take_op(id: &str, wallet: WalletId) -> Result<SendOp, PlatformError> {
-    let unknown = || PlatformError::InvalidArgument {
-        detail: "no quoted payment has that operation id; quote it again".into(),
-    };
-    let n: u64 = (id.strip_prefix("op-").and_then(|n| n.parse().ok())).ok_or_else(unknown)?;
-    let mut ops = SEND_OPS.lock().unwrap_or_else(PoisonError::into_inner);
-    match ops.remove(&n) {
-        Some(op) if op.wallet == wallet => Ok(op),
-        Some(op) => {
-            ops.insert(n, op);
-            Err(unknown())
+impl SendOps {
+    fn ops(&self) -> std::sync::MutexGuard<'_, Vec<(String, SendOp)>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn issue(&self, op: SendOp) -> String {
+        let id = format!("op-{:032x}", rand::random::<u128>());
+        let mut ops = self.ops();
+        ops.push((id.clone(), op));
+        if ops.len() > OPS_KEPT {
+            ops.remove(0);
         }
-        None => Err(unknown()),
+        id
+    }
+
+    fn with<T>(
+        &self,
+        id: &str,
+        wallet: WalletId,
+        f: impl FnOnce(&mut Vec<(String, SendOp)>, usize) -> Result<T, PlatformError>,
+    ) -> Result<T, PlatformError> {
+        let mut ops = self.ops();
+        let at = (ops.iter())
+            .position(|(i, op)| i == id && op.wallet == wallet)
+            .ok_or_else(unknown_op)?;
+        f(&mut ops, at)
+    }
+
+    /// Takes the quoted send `id` of `wallet`: each is sent at most once.
+    fn take(&self, id: &str, wallet: WalletId) -> Result<SendOp, PlatformError> {
+        self.with(id, wallet, |ops, at| Ok(ops.remove(at).1))
+    }
+
+    /// A new process's registry: nothing quoted.
+    #[cfg(test)]
+    pub(crate) fn reset(&self) {
+        self.ops().clear();
     }
 }
 
@@ -1662,7 +1683,7 @@ pub(crate) async fn send_quote(
         _ => (target.plan(&balances, amount, &limits)?, None),
     };
     let credits = planned.may_lose();
-    let operation = new_op(SendOp {
+    let operation = session.platform.send_ops.issue(SendOp {
         wallet: wallet_id,
         to: to.clone(),
         amount,
@@ -1723,7 +1744,7 @@ pub(crate) async fn send(
     operation: &str,
     grant: &str,
 ) -> Result<PlatformSendOutcome, CreditsError> {
-    let op = take_op(operation, wallet_id)?;
+    let op = (session.platform.send_ops).take(operation, wallet_id)?;
     let address = recipient(session.vault.network(), &op.to, &pool(wallet).await?)
         .map_err(|reason| CreditsError::RecipientInvalid { reason })?;
     sends_active(net.sends_version().await)?;
