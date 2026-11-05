@@ -1734,18 +1734,19 @@ export function platformReceiveAddress(walletId: string): Promise<PlatformReceiv
 }
 
 /**
- * What sending `amount` to the Platform address `to` takes.
+ * What sending `amount` to the Platform address `to` takes; `retryOf`
+ * names the send this retries ("Retry this payment"), else `null`.
  */
-export function platformSendQuote(walletId: string, to: string, amount: WithdrawAmount): Promise<PlatformSendQuote> {
-  return invoke<PlatformSendQuote>("platform_send_quote", { walletId, to, amount });
+export function platformSendQuote(walletId: string, to: string, amount: WithdrawAmount, retryOf: string | null): Promise<PlatformSendQuote> {
+  return invoke<PlatformSendQuote>("platform_send_quote", { walletId, to, amount, retryOf });
 }
 
 /**
- * Sends `amount` of the Platform addresses' credits to the Platform
- * address `to` (the quote's) under `grant`.
+ * Sends the quoted `operation` (its recipient and amount, once) under
+ * `grant`, a fresh `platformOp` grant.
  */
-export function platformSend(walletId: string, to: string, amount: WithdrawAmount, grant: string): Promise<PlatformSendOutcome> {
-  return invoke<PlatformSendOutcome>("platform_send", { walletId, to, amount, grant });
+export function platformSend(walletId: string, operation: string, grant: string): Promise<PlatformSendOutcome> {
+  return invoke<PlatformSendOutcome>("platform_send", { walletId, operation, grant });
 }
 
 /**
@@ -2760,8 +2761,8 @@ export type CommandArgs = {
   platform_move_to_core_quote: { walletId: string; amount: WithdrawAmount };
   platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; grant: string };
   platform_receive_address: { walletId: string };
-  platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount };
-  platform_send: { walletId: string; to: string; amount: WithdrawAmount; grant: string };
+  platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount; retryOf: string | null };
+  platform_send: { walletId: string; operation: string; grant: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
   dispatch_status: { walletId: string; artifact: string };
   resolve_stuck_funding: { walletId: string; step: string; grant: string };

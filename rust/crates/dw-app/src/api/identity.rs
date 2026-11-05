@@ -470,30 +470,31 @@ commands! {
         Ok(dashpay.platform_receive_address().await?.into())
     }
 
-    /// What sending `amount` to the Platform address `to` takes.
+    /// What sending `amount` to the Platform address `to` takes; `retryOf`
+    /// names the send this retries ("Retry this payment"), else `null`.
     #[facade("DashPay::platform_send_quote")]
     fn platform_send_quote(
         state,
         wallet_id: String,
         to: String,
         amount: WithdrawAmount,
+        retry_of: Option<String>,
     ) -> PlatformSendQuote {
         let dashpay = state.dashpay(&wallet_id).await?;
-        Ok(dashpay.platform_send_quote(to, amount.into()).await?.into())
+        Ok(dashpay.platform_send_quote(to, amount.into(), retry_of).await?.into())
     }
 
-    /// Sends `amount` of the Platform addresses' credits to the Platform
-    /// address `to` (the quote's) under `grant`.
+    /// Sends the quoted `operation` (its recipient and amount, once) under
+    /// `grant`, a fresh `platformOp` grant.
     #[facade("DashPay::platform_send")]
     fn platform_send(
         state,
         wallet_id: String,
-        to: String,
-        amount: WithdrawAmount,
+        operation: String,
         grant: String,
     ) -> PlatformSendOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
-        Ok(dashpay.platform_send(to, amount.into(), grant).await?.into())
+        Ok(dashpay.platform_send(operation, grant).await?.into())
     }
 
     // Grants, flows and leases.

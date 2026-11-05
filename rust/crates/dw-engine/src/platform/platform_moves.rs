@@ -39,7 +39,10 @@
 //! one stays `pending` and refuses the next move (`credits.move_pending`).
 //! A move `failed` by height may still execute (its transition stays valid
 //! while its nonces are unused), so a later move must sign exactly its
-//! inputs at its nonces, or is refused the same way.
+//! inputs at its nonces, or is refused the same way; when either pays a
+//! Platform address it must also have its exact terms (the held send's
+//! exact retry, re-signed on its stored terms), and a retry of a send that
+//! landed pays nothing (m4 §2.12).
 //!
 //! **Restarts.** The record is stored able to land before anything is
 //! signed, and only a definitive refusal clears that; every `pending`
@@ -61,6 +64,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -171,6 +175,11 @@ pub(crate) struct MoveRecord {
     /// (module doc, Moves): what the group took, unattributed.
     #[serde(default)]
     pub(crate) group: Option<GroupOutcome>,
+    /// The protocol version it was signed at (`None` before 0.2): a
+    /// definitive refusal of an identical transition at the same version
+    /// says this one can never execute either.
+    #[serde(default)]
+    pub(crate) version: Option<u32>,
 }
 
 /// [`MoveRecord::terms`]: the kind and fee rule, the inputs (address,
@@ -260,23 +269,38 @@ impl MoveRecord {
             expected_duffs,
             fee_credits: self.fee_taken,
             at: self.at,
+            may_land: self.holds(),
+            estimated: self.estimated(),
         }
     }
 
-    /// What it shows as taken: what it may take, and for a send that is
-    /// done what it took (its inputs and, unless the output paid it, the
-    /// proved fee or else the estimate), not the fee's band.
+    /// What its inputs give: a send's amount (for Max, before the fee).
+    fn given(&self) -> u64 {
+        self.inputs.iter().map(|i| i.credits).sum()
+    }
+
+    /// What it shows as taken: a move what it may take; a send its amount
+    /// until it is done, then what it took: its inputs and, unless the
+    /// output paid it, the fee the balances show or else the estimate.
     fn debit(&self) -> u64 {
-        if self.kind != MoveKind::Transfer || self.state != PlatformActivityState::Done {
+        if self.kind != MoveKind::Transfer {
             return self.credits;
         }
-        let given: u64 = self.inputs.iter().map(|i| i.credits).sum();
-        let fee = if self.fee_from_output {
-            0
-        } else {
-            self.fee_taken.unwrap_or(self.fee_credits)
-        };
-        given.saturating_add(fee)
+        if self.state != PlatformActivityState::Done || self.fee_from_output {
+            return self.given();
+        }
+        self.given()
+            .saturating_add(self.fee_taken.unwrap_or(self.fee_credits))
+    }
+
+    /// A done send whose fee the balances did not show: its debit counts
+    /// the estimate.
+    fn estimated(&self) -> bool {
+        self.kind == MoveKind::Transfer
+            && self.state == PlatformActivityState::Done
+            && self.group.is_none()
+            && !self.fee_from_output
+            && self.fee_taken.is_none()
     }
 
     /// Asked again for `amount` to `to`, a send it is: its exact retry.
@@ -294,8 +318,9 @@ impl MoveRecord {
 
     /// Its plan again, to sign the same transition: an exact retry of a
     /// send re-signs these terms whatever the balances are now (they only
-    /// rose: a spend of them takes their nonces, and that settles it).
-    fn replan(&self, limits: &Limits) -> Option<Plan> {
+    /// rose: a spend of them takes their nonces, and that settles it). What
+    /// the fee may take is what the fee source keeps now (`balances`).
+    fn replan(&self, balances: &BTreeMap<PlatformAddress, u64>) -> Option<Plan> {
         let inputs: BTreeMap<_, _> = (self.inputs.iter())
             .map(|i| parse(&i.address).map(|a| (a, i.credits)))
             .collect::<Option<_>>()?;
@@ -303,12 +328,15 @@ impl MoveRecord {
             .find(|i| i.fee_source)
             .or(self.inputs.first())
             .and_then(|i| parse(&i.address))?;
+        let reserve = match self.inputs.iter().find(|i| i.fee_source) {
+            Some(i) if !self.fee_from_output => {
+                let now = balances.get(&fee_source).copied().unwrap_or(0);
+                now.max(i.before).saturating_sub(i.credits)
+            }
+            _ => 0,
+        };
         Some(Plan {
-            reserve: if self.fee_from_output {
-                0
-            } else {
-                limits.keep(inputs.len())
-            },
+            reserve,
             inputs,
             fee_source,
             fee: self.fee_credits,
@@ -432,7 +460,12 @@ pub(crate) fn settle(moves: &mut [MoveRecord], seen: &Seen) -> BTreeSet<usize> {
                 if Some(i) == winner {
                     moves[i].done(seen);
                 } else {
-                    moves[i].state = PlatformActivityState::Failed;
+                    // A send's identical retry superseded it; a move reads
+                    // as failed (0.1).
+                    moves[i].state = match moves[i].kind {
+                        MoveKind::Transfer => PlatformActivityState::Replaced,
+                        MoveKind::ToCore => PlatformActivityState::Failed,
+                    };
                     moves[i].can_land = false;
                 }
             }
@@ -525,6 +558,8 @@ pub(crate) fn changes(
             expected_duffs: None,
             fee_credits: None,
             at,
+            may_land: false,
+            estimated: false,
         };
         if is > was {
             rows.push(row(PlatformActivityKind::Incoming, is - was));
@@ -617,8 +652,10 @@ pub(crate) struct Plan {
     pub(crate) inputs: BTreeMap<PlatformAddress, u64>,
     pub(crate) fee_source: PlatformAddress,
     pub(crate) fee: u64,
-    /// What the fee source keeps for the fee (the estimate times the band);
-    /// 0 when the output pays it.
+    /// What the fee source keeps that the fee may take: for a withdrawal
+    /// the estimate, for a transfer's amount all it keeps (at least the
+    /// band; nothing on Platform caps the fee below it); 0 when the output
+    /// pays the fee.
     pub(crate) reserve: u64,
     /// The one output pays the fee (a transfer's Max).
     pub(crate) fee_from_output: bool,
@@ -632,7 +669,8 @@ impl Plan {
     }
 
     /// What the addresses may lose: what the inputs give and what the fee
-    /// source keeps for the fee.
+    /// may take of the fee source (a withdrawal's estimate; a transfer's
+    /// bound).
     pub(crate) fn may_lose(&self) -> u64 {
         self.credits().saturating_add(self.reserve)
     }
@@ -684,19 +722,10 @@ pub(crate) fn plan(
     amount: WithdrawAmount,
     limits: &Limits,
 ) -> Result<Plan, Refused> {
-    let available: u64 = balances.values().sum();
-    let mut candidates: Vec<(PlatformAddress, u64)> = (balances.iter())
-        .filter(|(_, c)| **c >= limits.min_input)
-        .map(|(a, c)| (*a, *c))
-        .collect();
-    candidates.sort_by_key(|(a, c)| (std::cmp::Reverse(*c), *a));
-    candidates.truncate(limits.max_inputs.max(1));
+    let (candidates, available) = candidates(balances, limits);
     // One address must hold the least withdrawal and its one-input fee.
-    let least = Refused::Short {
-        needed: limits.min.saturating_add(limits.keep(1)),
-        available,
-    };
-    let Some(&(source, top)) = candidates.first() else {
+    let least = least(limits, available);
+    let Some(&source) = candidates.first() else {
         return Err(least);
     };
     let want = match amount {
@@ -715,16 +744,54 @@ pub(crate) fn plan(
             credits
         }
     };
+    plan_from(&candidates, source, want, limits, available)
+}
+
+/// The addresses a plan may take from (at least the input minimum, the
+/// largest first, at most `max_inputs`) and what all of them hold.
+fn candidates(
+    balances: &BTreeMap<PlatformAddress, u64>,
+    limits: &Limits,
+) -> (Vec<(PlatformAddress, u64)>, u64) {
+    let available: u64 = balances.values().sum();
+    let mut candidates: Vec<(PlatformAddress, u64)> = (balances.iter())
+        .filter(|(_, c)| **c >= limits.min_input)
+        .map(|(a, c)| (*a, *c))
+        .collect();
+    candidates.sort_by_key(|(a, c)| (std::cmp::Reverse(*c), *a));
+    candidates.truncate(limits.max_inputs.max(1));
+    (candidates, available)
+}
+
+fn least(limits: &Limits, available: u64) -> Refused {
+    Refused::Short {
+        needed: limits.min.saturating_add(limits.keep(1)),
+        available,
+    }
+}
+
+/// [`plan`] of `want` with `source` (one of `candidates`) as the fee
+/// source: it gives first, keeping the fee's reserve; the others give the
+/// rest, the largest first; a last input below the minimum borrows from
+/// the one before.
+fn plan_from(
+    candidates: &[(PlatformAddress, u64)],
+    (source, top): (PlatformAddress, u64),
+    want: u64,
+    limits: &Limits,
+    available: u64,
+) -> Result<Plan, Refused> {
+    let others: Vec<_> = (candidates.iter()).filter(|(a, _)| *a != source).collect();
     let mut count = 1;
     for _ in 0..=candidates.len() {
         let keep = limits.keep(count);
         let first = top.saturating_sub(keep).min(want);
         if first < limits.min_input {
-            return Err(least);
+            return Err(least(limits, available));
         }
         let mut taken = vec![(source, first)];
         let mut left = want - first;
-        for &(address, credits) in &candidates[1..] {
+        for &&(address, credits) in &others {
             if left == 0 {
                 break;
             }
@@ -764,29 +831,47 @@ pub(crate) fn plan(
     Err(Refused::OutOfRange)
 }
 
-/// A Platform send's plan (`limits`: [`Limits::transfer_at`]). An amount is
-/// [`plan`]'s, the fee source keeping the band; it is refused only when no
-/// address can carry the amount and the band. `All` (Max) moves every
-/// input `plan` would take, in full, to the one output, which pays the fee
-/// (`ReduceOutput`): no remainder stays on them, and the output must carry
-/// the band, so the fee is covered. Dust below the input minimum, and
-/// inputs past the most one transition takes, stay (a second Max takes
+/// A Platform send's plan (`limits`: [`Limits::transfer_at`]).
+///
+/// An amount is [`plan`]'s with the fee source chosen to bound the fee:
+/// `DeductFromInput` takes Platform's metered fee from what the fee source
+/// keeps, all of it if need be (dpp
+/// `deduct_fee_from_inputs_and_outputs/v0/mod.rs:38-49`; nothing caps it),
+/// so of the addresses that can keep the band the plan takes the one left
+/// with the least, and [`Plan::reserve`] is that remainder: the most the
+/// fee can take. It is refused only when no address can carry the amount
+/// and the band.
+///
+/// `All` (Max) moves every input `plan` would take, in full, to the one
+/// output, which pays the fee (`ReduceOutput`): the inputs give exactly
+/// their balances, and the fee comes out of the output, as much as it
+/// meters. The output must carry the band. Dust below the input minimum,
+/// and inputs past the most one transition takes, stay (a second Max takes
 /// the rest).
 pub(crate) fn transfer_plan(
     balances: &BTreeMap<PlatformAddress, u64>,
     amount: WithdrawAmount,
     limits: &Limits,
 ) -> Result<Plan, Refused> {
-    if amount != WithdrawAmount::All {
-        return plan(balances, amount, limits);
+    let (candidates, available) = candidates(balances, limits);
+    if let WithdrawAmount::Credits { credits } = amount {
+        let bounded = |mut p: Plan| {
+            let held = balances.get(&p.fee_source).copied().unwrap_or(0);
+            p.reserve = held.saturating_sub(p.inputs.get(&p.fee_source).copied().unwrap_or(0));
+            p
+        };
+        // The largest fee source's plan decides whether it goes at all.
+        let mut best = bounded(plan(balances, amount, limits)?);
+        for &source in candidates.iter().skip(1) {
+            if let Ok(p) = plan_from(&candidates, source, credits, limits, available) {
+                let p = bounded(p);
+                if (p.reserve, p.inputs.len()) < (best.reserve, best.inputs.len()) {
+                    best = p;
+                }
+            }
+        }
+        return Ok(best);
     }
-    let available: u64 = balances.values().sum();
-    let mut candidates: Vec<(PlatformAddress, u64)> = (balances.iter())
-        .filter(|(_, c)| **c >= limits.min_input)
-        .map(|(a, c)| (*a, *c))
-        .collect();
-    candidates.sort_by_key(|(a, c)| (std::cmp::Reverse(*c), *a));
-    candidates.truncate(limits.max_inputs.max(1));
     let keep = limits.keep(candidates.len().max(1));
     let total: u64 = candidates.iter().map(|(_, c)| *c).sum();
     let Some(&(source, _)) = candidates.first() else {
@@ -840,6 +925,12 @@ pub(crate) type Proved = (u64, BTreeMap<PlatformAddress, Option<(u32, u64)>>);
 pub(crate) trait MoveNet: Send + Sync {
     /// The network's protocol version, as the SDK last proved it.
     fn version(&self) -> &'static PlatformVersion;
+    /// [`Self::version`], asked of Platform once first when it is below
+    /// address funds: the SDK starts at the network's floor until a proof
+    /// raises it, so a gate read before any proof is not refused on that.
+    fn sends_version(&self) -> impl Future<Output = &'static PlatformVersion> + Send {
+        std::future::ready(self.version())
+    }
     /// The addresses' nonces and balances, proved, with the proof's height.
     fn read(
         &self,
@@ -874,6 +965,14 @@ pub(crate) struct SdkMoves {
 
 impl MoveNet for SdkMoves {
     fn version(&self) -> &'static PlatformVersion {
+        self.sdk.version()
+    }
+
+    async fn sends_version(&self) -> &'static PlatformVersion {
+        use dpp::version::feature_initial_protocol_versions::ADDRESS_FUNDS_INITIAL_PROTOCOL_VERSION;
+        if self.sdk.protocol_version_number() < ADDRESS_FUNDS_INITIAL_PROTOCOL_VERSION {
+            super::protocol::refreshed(&self.sdk).await;
+        }
         self.sdk.version()
     }
 
@@ -1384,9 +1483,8 @@ impl Target<'_> {
 }
 
 /// The plan of a move to `target` while `held` may still execute: from its
-/// inputs only, so it signs at the same nonces, and for an exact retry of a
-/// held send its very terms (`MoveRecord::replan`), so a retry is never
-/// refused because the balances or the plan changed since.
+/// inputs only, so it signs at the same nonces (a send beside a hold is
+/// only the exact retry its quote named, [`run`]).
 fn plan_beside(
     target: &Target<'_>,
     mut balances: BTreeMap<PlatformAddress, u64>,
@@ -1396,16 +1494,53 @@ fn plan_beside(
     network: Network,
 ) -> Result<Plan, CreditsError> {
     if let Some(held) = held {
-        if let Target::Platform(to) = target
-            && held.retried_by(&bech32m(to, network), amount)
-            && let Some(plan) = held.replan(limits)
-        {
-            return Ok(plan);
-        }
         let only: BTreeSet<&str> = held.inputs.iter().map(|i| i.address.as_str()).collect();
         balances.retain(|a, _| only.contains(bech32m(a, network).as_str()));
     }
     target.plan(&balances, amount, limits)
+}
+
+/// A quoted send (`PlatformSendQuote::operation`): what `platform_send`
+/// pays, once. `retry_of`: the held send it re-signs; `None`, a new send,
+/// which any hold refuses.
+#[derive(Debug)]
+struct SendOp {
+    wallet: WalletId,
+    to: String,
+    amount: WithdrawAmount,
+    retry_of: Option<String>,
+}
+
+/// The quoted sends not yet sent, the newest [`OPS_KEPT`].
+static SEND_OPS: LazyLock<Mutex<BTreeMap<u64, SendOp>>> = LazyLock::new(Mutex::default);
+static NEXT_OP: AtomicU64 = AtomicU64::new(1);
+const OPS_KEPT: usize = 256;
+
+fn new_op(op: SendOp) -> String {
+    let n = NEXT_OP.fetch_add(1, Ordering::Relaxed);
+    let mut ops = SEND_OPS.lock().unwrap_or_else(PoisonError::into_inner);
+    ops.insert(n, op);
+    while ops.len() > OPS_KEPT {
+        ops.pop_first();
+    }
+    format!("op-{n}")
+}
+
+/// Takes the quoted send `id` of `wallet`: each is sent at most once.
+fn take_op(id: &str, wallet: WalletId) -> Result<SendOp, PlatformError> {
+    let unknown = || PlatformError::InvalidArgument {
+        detail: "no quoted payment has that operation id; quote it again".into(),
+    };
+    let n: u64 = (id.strip_prefix("op-").and_then(|n| n.parse().ok())).ok_or_else(unknown)?;
+    let mut ops = SEND_OPS.lock().unwrap_or_else(PoisonError::into_inner);
+    match ops.remove(&n) {
+        Some(op) if op.wallet == wallet => Ok(op),
+        Some(op) => {
+            ops.insert(n, op);
+            Err(unknown())
+        }
+        None => Err(unknown()),
+    }
 }
 
 /// `to` as a Platform address a send of the wallet with `pool` may pay on
@@ -1491,36 +1626,61 @@ pub(crate) async fn send_quote(
     session: &NetworkSession,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
-    to: &str,
-    amount: WithdrawAmount,
+    (to, amount, retry_of): (&str, WithdrawAmount, Option<&str>),
 ) -> Result<PlatformSendQuote, CreditsError> {
     let network = session.vault.network();
     let pool = pool(wallet).await?;
     let address = recipient(network, to, &pool)
         .map_err(|reason| CreditsError::RecipientInvalid { reason })?;
-    let version = net.version();
+    let version = net.sends_version().await;
     sends_active(version)?;
     let moves = Store::of(session, wallet_id)?.moves().await?;
     let seen = read(session, net, covered(&pool, &moves), true).await?;
     let target = Target::Platform(address);
     let limits = target.limits(version)?;
-    // As the send will plan: beside a move that may still execute (one this
-    // read shows taken is settled by the send's own read, so not counted).
-    let held = (moves.iter()).find(|m| m.holds() && !m.reached(&seen));
+    let to = bech32m(&address, network);
     let balances = proved_balances(&pool, &seen, network);
-    let planned = plan_beside(&target, balances, amount, &limits, held, network)?;
+    // As the send will decide, before anything is asked of the user: a
+    // move or send that may still execute refuses this one, unless this is
+    // its exact retry. A retry the host names stays that send's retry
+    // whatever it became (one that landed is answered, never paid again).
+    let held = match retry_of {
+        Some(id) => Some(retried(&moves, id, (&to, amount))?),
+        None => moves.iter().find(|m| m.holds()),
+    };
+    let (planned, retry_of) = match held {
+        Some(h) if retry_of.is_some() || h.retried_by(&to, amount) => {
+            if h.state == PlatformActivityState::Pending && !h.reached(&seen) {
+                return Err(CreditsError::MovePending { id: h.id.clone() });
+            }
+            let planned = h.replan(&balances).ok_or(PlatformError::Unavailable)?;
+            (planned, Some(h.id.clone()))
+        }
+        Some(h) if !h.reached(&seen) => {
+            return Err(CreditsError::MovePending { id: h.id.clone() });
+        }
+        _ => (target.plan(&balances, amount, &limits)?, None),
+    };
     let credits = planned.may_lose();
+    let operation = new_op(SendOp {
+        wallet: wallet_id,
+        to: to.clone(),
+        amount,
+        retry_of: retry_of.clone(),
+    });
     Ok(PlatformSendQuote {
         credits,
         amount_credits: planned.credits(),
         fee_credits: planned.fee,
-        max_fee_credits: limits.keep(planned.inputs.len()),
+        max_fee_credits: (!planned.fee_from_output).then_some(planned.reserve),
         fee_from_amount: planned.fee_from_output,
-        to: bech32m(&address, network),
+        to,
         grant: GrantRequest {
             max_duffs: 0,
             max_credits: credits,
         },
+        operation,
+        retry_of,
     })
 }
 
@@ -1538,7 +1698,7 @@ pub(crate) async fn move_to_core(
         session,
         wallet,
         wallet_id,
-        (amount, Target::Core(to)),
+        (amount, Target::Core(to), None),
         grant,
     )
     .await?;
@@ -1553,36 +1713,82 @@ pub(crate) async fn move_to_core(
     })
 }
 
-/// `DashPay::platform_send` (module doc): as `move_to_core`, to a Platform
-/// address [`recipient`] admits.
+/// `DashPay::platform_send` (module doc): the quoted `operation`, as
+/// `move_to_core` moves, to the Platform address its quote checked.
 pub(crate) async fn send(
     net: &impl MoveNet,
     session: &Arc<NetworkSession>,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
-    (amount, to): (WithdrawAmount, &str),
+    operation: &str,
     grant: &str,
 ) -> Result<PlatformSendOutcome, CreditsError> {
-    let address = recipient(session.vault.network(), to, &pool(wallet).await?)
+    let op = take_op(operation, wallet_id)?;
+    let address = recipient(session.vault.network(), &op.to, &pool(wallet).await?)
         .map_err(|reason| CreditsError::RecipientInvalid { reason })?;
-    sends_active(net.version())?;
-    let record = run(
-        net,
-        session,
-        wallet,
-        wallet_id,
-        (amount, Target::Platform(address)),
-        grant,
-    )
-    .await?;
+    sends_active(net.sends_version().await)?;
+    let ask = (op.amount, Target::Platform(address), op.retry_of.as_deref());
+    let record = run(net, session, wallet, wallet_id, ask, grant).await?;
     let row = record.activity();
     Ok(PlatformSendOutcome {
         id: record.id.clone(),
         credits: row.credits,
+        amount_credits: record.given(),
+        fee_from_amount: record.fee_from_output,
         to: row.to,
         state: record.state,
+        may_land: row.may_land,
         fee_credits: row.fee_credits,
+        estimated: row.estimated,
     })
+}
+
+/// What a send naming the held send `retry_of` (its quote's exact retry)
+/// does, under the wallet's lock after the read settled the records:
+/// `Ok(Some)` the record whose settled outcome it answers, signing
+/// nothing; `Ok(None)` re-sign it; else refused.
+fn retry_decision<'m>(
+    moves: &'m [MoveRecord],
+    retry_of: &str,
+    ask: (&str, WithdrawAmount),
+) -> Result<Option<&'m MoveRecord>, CreditsError> {
+    let held = retried(moves, retry_of, ask)?;
+    match held.state {
+        PlatformActivityState::Done => Ok(Some(held)),
+        PlatformActivityState::Pending => Err(CreditsError::MovePending {
+            id: held.id.clone(),
+        }),
+        _ if held.holds() => Ok(None),
+        // Its identical retry executed in its place, or it never can.
+        _ => Ok(Some(
+            (moves.iter())
+                .find(|m| {
+                    m.state == PlatformActivityState::Done
+                        && m.key() == held.key()
+                        && m.terms() == held.terms()
+                })
+                .unwrap_or(held),
+        )),
+    }
+}
+
+/// The send `id` that a send of `amount` to `to` retries: refused when there
+/// is none or that is not its exact retry.
+fn retried<'m>(
+    moves: &'m [MoveRecord],
+    id: &str,
+    (to, amount): (&str, WithdrawAmount),
+) -> Result<&'m MoveRecord, CreditsError> {
+    let held = (moves.iter().find(|m| m.id == id)).ok_or(PlatformError::InvalidArgument {
+        detail: "no send has that id".into(),
+    })?;
+    if !held.retried_by(to, amount) {
+        return Err(PlatformError::InvalidArgument {
+            detail: "not that send's retry: the same address and amount".into(),
+        }
+        .into());
+    }
+    Ok(held)
 }
 
 /// One move to `target` (module doc, Moves); the record as it stands when
@@ -1592,7 +1798,7 @@ async fn run(
     session: &Arc<NetworkSession>,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
-    (amount, target): (WithdrawAmount, Target<'_>),
+    (amount, target, retry_of): (WithdrawAmount, Target<'_>, Option<&str>),
     grant: &str,
 ) -> Result<MoveRecord, CreditsError> {
     let lock = wallet_lock(wallet_id);
@@ -1609,18 +1815,40 @@ async fn run(
             .pump
             .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
     }
-    if let Some(pending) = (moves.iter()).find(|m| m.state == PlatformActivityState::Pending) {
-        return Err(CreditsError::MovePending {
-            id: pending.id.clone(),
-        });
-    }
     let version = net.version();
     let limits = target.limits(version)?;
-    // A move that may still execute: the next one draws from its inputs only,
-    // so it signs at the same nonces (checked below).
-    let held = moves.iter().find(|m| m.holds());
     let balances = proved_balances(&pool, &seen, network);
-    let planned = plan_beside(&target, balances, amount, &limits, held, network)?;
+    // A move that may still execute: the next one draws from its inputs only,
+    // so it signs at the same nonces (checked below); a send beside it is
+    // only its exact retry, and a retry of one that landed pays nothing.
+    let (held, planned) = match (target, retry_of) {
+        (Target::Platform(to), Some(id)) => {
+            let to = bech32m(&to, network);
+            if let Some(settled) = retry_decision(&moves, id, (&to, amount))? {
+                return Ok(settled.clone());
+            }
+            let held = (moves.iter()).find(|m| m.id == id);
+            let planned =
+                (held.and_then(|h| h.replan(&balances))).ok_or(PlatformError::Unavailable)?;
+            (held, planned)
+        }
+        _ => {
+            if let Some(pending) =
+                (moves.iter()).find(|m| m.state == PlatformActivityState::Pending)
+            {
+                return Err(CreditsError::MovePending {
+                    id: pending.id.clone(),
+                });
+            }
+            let held = moves.iter().find(|m| m.holds());
+            if let (Target::Platform(_), Some(h)) = (target, held) {
+                // A new send: the hold came after its quote.
+                return Err(CreditsError::MovePending { id: h.id.clone() });
+            }
+            let planned = plan_beside(&target, balances, amount, &limits, held, network)?;
+            (held, planned)
+        }
+    };
     let mut inputs = BTreeMap::new();
     for (address, credits) in &planned.inputs {
         let nonce = seen
@@ -1666,6 +1894,7 @@ async fn run(
         seen_at: None,
         fee_taken: None,
         group: None,
+        version: Some(version.protocol_version),
     };
     // A move `failed` by height may still execute: only one at its very
     // inputs and nonces may follow it, and when either pays a Platform
@@ -1686,10 +1915,16 @@ async fn run(
         Target::Platform(_) => None,
     };
     // The authority before anything is redeemed: a refusal keeps the grant.
+    // A send pays someone else: only a fresh grant, redeemed into a lease
+    // for this send alone, never a lease another action holds.
+    let flow = match target {
+        Target::Core(_) => FlowKind::PlatformAddressMove,
+        Target::Platform(_) => FlowKind::PlatformAddressSend,
+    };
     let authority = match session.lease_for(&wallet_id, grant) {
         Some(lease) => {
             let lease = lease.map_err(PlatformError::from)?;
-            if lease.flow() != FlowKind::PlatformAddressMove {
+            if flow != FlowKind::PlatformAddressMove || lease.flow() != flow {
                 return Err(PlatformError::GrantInvalid.into());
             }
             NameAuthority::Lease(lease)
@@ -1706,7 +1941,7 @@ async fn run(
     let lease = match authority {
         NameAuthority::Lease(lease) => lease,
         NameAuthority::Grant(grant) => session
-            .begin_lease(wallet_id, FlowKind::PlatformAddressMove, &[grant])
+            .begin_lease(wallet_id, flow, &[grant])
             .await
             .map_err(PlatformError::from)?,
     };
@@ -1759,6 +1994,22 @@ async fn run(
         released < record.inputs.len() as u64 || call.as_ref().err().is_some_and(never_valid);
     if let Err(e) = &call {
         tracing::info!(id = %record.id, cannot_land, "a move's call failed: {e}");
+    }
+    // An identical transition at the same protocol version that Platform's
+    // stateless checks refused: the held send it retried never executes
+    // either. A signer's shortfall says nothing about the held one.
+    let identical_refused = released == record.inputs.len() as u64
+        && call.as_ref().err().is_some_and(never_valid)
+        && retry_of.is_some();
+    if identical_refused
+        && let Some(h) = (moves.iter_mut()).find(|m| Some(m.id.as_str()) == retry_of)
+        && h.holds()
+        && h.version == record.version
+        && h.terms() == record.terms()
+    {
+        tracing::info!(id = %h.id, "an identical retry was refused for good: the held send never executes");
+        h.state = PlatformActivityState::Failed;
+        h.can_land = false;
     }
     moves.push(record);
     let at = moves.len() - 1;
@@ -1828,7 +2079,7 @@ pub(crate) async fn receive_address(
     network: Network,
 ) -> Result<PlatformReceiveAddress, PlatformError> {
     // It ships with the send: below address funds, nothing could spend it.
-    sends_active(net.version())?;
+    sends_active(net.sends_version().await)?;
     let key = key_wallet::account::account_collection::PlatformPaymentAccountKey {
         account: ACCOUNT,
         key_class: 0,

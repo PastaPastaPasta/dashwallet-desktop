@@ -120,6 +120,7 @@ fn record(id: &str, at: u64, inputs: &[(&str, u32)]) -> MoveRecord {
         seen_at: None,
         fee_taken: None,
         group: None,
+        version: None,
     }
 }
 
@@ -370,6 +371,10 @@ enum Act {
     /// The transition sent `n`-th (from 0) executes instead of this one,
     /// which is answered with the addresses' snapshot.
     EarlierExecutes(usize),
+    /// The signer refuses every input: the transition, short of its
+    /// witnesses, is refused as Platform's checks refuse a malformed one
+    /// (an error `never_valid` reads as definitive), with nothing signed.
+    Unsigned,
 }
 
 struct FakeMoves {
@@ -377,8 +382,10 @@ struct FakeMoves {
     state: Mutex<BTreeMap<PlatformAddress, (u32, u64)>>,
     height: AtomicU64,
     acts: Mutex<VecDeque<Act>>,
-    /// The fee an executed transition takes.
-    fee: u64,
+    /// The fee an executed transition meters.
+    fee: AtomicU64,
+    /// The protocol version the network runs.
+    version: Mutex<&'static PlatformVersion>,
     sent: Mutex<Vec<BTreeMap<PlatformAddress, (u32, u64)>>>,
     /// Reads use a key SPV does not verify.
     unverified: AtomicBool,
@@ -403,7 +410,8 @@ impl FakeMoves {
             height: AtomicU64::new(100),
             acts: Mutex::default(),
             // Below the estimate, as Platform's actual fee is.
-            fee: Limits::at(PlatformVersion::latest()).unwrap().fee(1) / 2,
+            fee: AtomicU64::new(Limits::at(PlatformVersion::latest()).unwrap().fee(1) / 2),
+            version: Mutex::new(PlatformVersion::latest()),
             sent: Mutex::default(),
             unverified: AtomicBool::new(false),
             store: Mutex::default(),
@@ -433,8 +441,14 @@ impl FakeMoves {
         self.state.lock().unwrap().get(&address).map_or(0, |s| s.1)
     }
 
+    fn fee(&self) -> u64 {
+        self.fee.load(Ordering::SeqCst)
+    }
+
     /// Executes `inputs` as Drive would: every nonce the stored one + 1;
-    /// the fee from `source`, or from the output when `None`.
+    /// the metered fee from what `source` keeps, all of it if need be, or
+    /// from the output when `None` (dpp's `DeductFromInput` and
+    /// `ReduceOutput`); a fee they cannot cover executes nothing.
     fn execute(
         &self,
         inputs: &BTreeMap<PlatformAddress, (u32, u64)>,
@@ -445,13 +459,22 @@ impl FakeMoves {
         if !(inputs.iter()).all(|(a, (n, _))| state.get(a).is_some_and(|s| s.0 + 1 == *n)) {
             return;
         }
+        let fee = self.fee();
+        let covered = match (source, output) {
+            (Some(a), _) => state[&a].1 - inputs[&a].1 >= fee,
+            (None, Some((_, credits))) => credits >= fee,
+            (None, None) => true,
+        };
+        if !covered {
+            return;
+        }
         for (a, (n, c)) in inputs {
             let s = state.get_mut(a).unwrap();
             s.0 = *n;
-            s.1 -= c + if Some(*a) == source { self.fee } else { 0 };
+            s.1 -= c + if Some(*a) == source { fee } else { 0 };
         }
         if let Some((to, credits)) = output {
-            let paid = credits - if source.is_none() { self.fee } else { 0 };
+            let paid = credits - if source.is_none() { fee } else { 0 };
             state.entry(to).or_insert((0, 0)).1 += paid;
         }
         drop(state);
@@ -483,6 +506,12 @@ impl FakeMoves {
         let act = act.unwrap_or(Act::Executes);
         if act == Act::StopsBeforeSigning {
             panic!("the process stops");
+        }
+        if act == Act::Unsigned {
+            use dpp::consensus::basic::state_transition::TransitionNoInputsError;
+            return Err(Box::new(PlatformWalletError::Sdk(
+                TransitionNoInputsError::new().into(),
+            )));
         }
         for address in inputs.keys() {
             signer.sign(address, b"transition").await.unwrap();
@@ -521,6 +550,7 @@ impl FakeMoves {
                 ))
             }
             Act::StopsBeforeSigning | Act::StopsAfterSigning => panic!("the process stops"),
+            Act::Unsigned => unreachable!("returned before signing"),
             Act::StopsAfterBroadcast => {
                 self.execute(&inputs, source, output);
                 panic!("the process stops")
@@ -544,7 +574,7 @@ impl FakeMoves {
 
 impl MoveNet for FakeMoves {
     fn version(&self) -> &'static PlatformVersion {
-        PlatformVersion::latest()
+        *self.version.lock().unwrap()
     }
 
     async fn read(&self, addresses: BTreeSet<PlatformAddress>) -> Result<Proved, PlatformError> {
@@ -682,7 +712,7 @@ fn the_smoke_order_reads_the_funding_before_the_move() {
     assert_eq!(out.state, PlatformActivityState::Done);
     // The estimate's surplus stays, and is not incoming.
     let estimate = Limits::at(PlatformVersion::latest()).unwrap().fee(1);
-    assert_eq!(w.net.credits(a), estimate - w.net.fee);
+    assert_eq!(w.net.credits(a), estimate - w.net.fee());
     let done = PlatformActivityState::Done;
     let activity = w.activity();
     assert_eq!(activity.len(), 2, "{activity:?}");
@@ -691,8 +721,8 @@ fn the_smoke_order_reads_the_funding_before_the_move() {
     let moved = find(&activity, PlatformActivityKind::MoveToCore);
     assert_eq!((moved.state, moved.credits), (done, 3 * DASH));
     // Opus m3: the fee taken, not the estimate.
-    assert_eq!(out.fee_credits, Some(w.net.fee));
-    assert_eq!(moved.fee_credits, Some(w.net.fee));
+    assert_eq!(out.fee_credits, Some(w.net.fee()));
+    assert_eq!(moved.fee_credits, Some(w.net.fee()));
 }
 
 /// Opus m4: the move is recorded pending before anything is signed.
@@ -1004,7 +1034,7 @@ fn a_retry_with_other_terms_settles_as_one_group() {
         )
         .unwrap();
     let debit = before - w.net.credits(a);
-    assert_eq!(debit, DASH + w.net.fee, "the earlier one executed");
+    assert_eq!(debit, DASH + w.net.fee(), "the earlier one executed");
     assert_eq!(retry.state, PlatformActivityState::Done);
     assert_eq!(
         (retry.credits, retry.expected_duffs, retry.fee_credits),
@@ -1253,16 +1283,23 @@ impl World {
         (a, a.to_bech32m_string(self.network()))
     }
 
+    /// Quotes `amount` to `to`, then confirms the quote under `grant`.
     fn send(
         &self,
         amount: WithdrawAmount,
         to: &str,
         grant: &str,
     ) -> Result<PlatformSendOutcome, CreditsError> {
-        let (to, grant) = (to.to_owned(), grant.to_owned());
-        self.call(move |net, s, w, id| async move {
-            send(&*net, &s, &w, id, (amount, &to), &grant).await
-        })
+        let quote = self.send_quote(amount, to)?;
+        self.confirm(&quote.operation, grant)
+    }
+
+    /// `platform_send` of the quoted `operation`.
+    fn confirm(&self, operation: &str, grant: &str) -> Result<PlatformSendOutcome, CreditsError> {
+        let (operation, grant) = (operation.to_owned(), grant.to_owned());
+        self.call(
+            move |net, s, w, id| async move { send(&*net, &s, &w, id, &operation, &grant).await },
+        )
     }
 
     fn send_quote(
@@ -1270,10 +1307,21 @@ impl World {
         amount: WithdrawAmount,
         to: &str,
     ) -> Result<PlatformSendQuote, CreditsError> {
-        let to = to.to_owned();
-        self.call(
-            move |net, s, w, id| async move { send_quote(&*net, &s, &w, id, &to, amount).await },
-        )
+        self.retry_quote(amount, to, None)
+    }
+
+    /// The quote of a send the host names as the retry of `retry_of`.
+    fn retry_quote(
+        &self,
+        amount: WithdrawAmount,
+        to: &str,
+        retry_of: Option<&str>,
+    ) -> Result<PlatformSendQuote, CreditsError> {
+        let (to, retry_of) = (to.to_owned(), retry_of.map(str::to_owned));
+        self.call(move |net, s, w, id| async move {
+            let ask = (to.as_str(), amount, retry_of.as_deref());
+            send_quote(&*net, &s, &w, id, ask).await
+        })
     }
 
     fn receive_address(&self) -> PlatformReceiveAddress {
@@ -1491,7 +1539,7 @@ fn max_leaves_nothing_on_its_inputs_and_covers_the_fee() {
         .unwrap();
     assert_eq!(out.state, PlatformActivityState::Done);
     assert_eq!((w.net.credits(a), w.net.credits(b)), (0, 0), "no dust left");
-    assert_eq!(w.net.credits(them), 4 * DASH - w.net.fee);
+    assert_eq!(w.net.credits(them), 4 * DASH - w.net.fee());
     assert_eq!(out.fee_credits, None, "the recipient's output paid it");
     let activity = w.activity();
     assert!(
@@ -1513,32 +1561,37 @@ fn a_send_pays_the_recipient_and_shows_as_a_send() {
     let one = WithdrawAmount::Credits { credits: DASH };
     let quote = w.send_quote(one, &to).unwrap();
     let l = Limits::transfer_at(PlatformVersion::latest());
+    // The fee may take all its source keeps: the 2 DASH left on `a`.
     assert_eq!(
         (
             quote.amount_credits,
             quote.fee_credits,
             quote.max_fee_credits
         ),
-        (DASH, l.fee(1), l.keep(1))
+        (DASH, l.fee(1), Some(2 * DASH))
     );
     assert_eq!(
-        (quote.credits, quote.to.as_str()),
-        (DASH + l.keep(1), to.as_str())
+        (quote.credits, quote.to.as_str(), quote.retry_of.as_deref()),
+        (3 * DASH, to.as_str(), None)
     );
     assert!(!quote.fee_from_amount);
     assert_eq!(quote.grant.max_credits, quote.credits);
-    let out = w.send(one, &to, &w.f.grant(quote.credits)).unwrap();
+    let out = w
+        .confirm(&quote.operation, &w.f.grant(quote.credits))
+        .unwrap();
     assert_eq!(out.state, PlatformActivityState::Done);
+    assert!(!out.may_land && !out.estimated);
+    assert_eq!((out.amount_credits, out.fee_from_amount), (DASH, false));
     assert_eq!(w.net.credits(them), DASH);
-    assert_eq!(w.net.credits(a), 2 * DASH - w.net.fee);
-    assert_eq!(out.fee_credits, Some(w.net.fee));
+    assert_eq!(w.net.credits(a), 2 * DASH - w.net.fee());
+    assert_eq!(out.fee_credits, Some(w.net.fee()));
     assert_eq!(out.to.as_deref(), Some(to.as_str()));
     // Done, it shows what left the addresses: the amount and the fee taken,
     // not the band the plan kept for it.
-    assert_eq!(out.credits, DASH + w.net.fee);
+    assert_eq!(out.credits, DASH + w.net.fee());
     let activity = w.activity();
     let sent = find(&activity, PlatformActivityKind::Send);
-    assert_eq!(sent.credits, DASH + w.net.fee);
+    assert_eq!(sent.credits, DASH + w.net.fee());
     assert_eq!(
         (sent.state, sent.to.as_deref(), sent.expected_duffs),
         (PlatformActivityState::Done, Some(to.as_str()), None)
@@ -1559,7 +1612,7 @@ fn a_send_and_a_move_share_one_hold() {
     let (_, to) = w.theirs(9);
     w.net.then(Act::Lost);
     let one = WithdrawAmount::Credits { credits: DASH };
-    let first = w.send(one, &to, &w.f.grant(2 * DASH)).unwrap();
+    let first = w.send(one, &to, &w.f.grant(10 * DASH)).unwrap();
     assert_eq!(first.state, PlatformActivityState::Pending);
     let grant = w.f.grant(2 * DASH);
     match w.move_to(one, &w.to, &grant) {
@@ -1582,24 +1635,35 @@ fn a_failed_send_blocks_a_send_to_another_recipient() {
     let (_, other_to) = w.theirs(8);
     w.net.then(Act::Lost);
     let one = WithdrawAmount::Credits { credits: DASH };
-    let first = w.send(one, &first_to, &w.f.grant(2 * DASH)).unwrap();
+    let first = w.send(one, &first_to, &w.f.grant(10 * DASH)).unwrap();
     assert_eq!(first.state, PlatformActivityState::Pending);
     w.net.fund(b, 9 * DASH);
     w.activity();
     assert_eq!(w.moves()[0].state, PlatformActivityState::Failed);
     assert!(w.moves()[0].can_land);
-    let grant = w.f.grant(2 * DASH);
+    let grant = w.f.grant(10 * DASH);
     match w.send(one, &other_to, &grant) {
         Err(CreditsError::MovePending { id }) => assert_eq!(id, first.id),
         other => panic!("{other:?}"),
     }
     assert!(w.f.unused(&grant));
     assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing else signed");
-    // Its exact retry: the same inputs at the same nonces.
+    // Its exact retry: the same transition, inputs, nonces, output and fee
+    // source.
     let retry = w.send(one, &first_to, &grant).unwrap();
     assert_eq!(retry.state, PlatformActivityState::Done);
+    assert_same_transition(&w, 0, 1);
+}
+
+/// Sends `a` and `b` (in sending order) are one transition: inputs and
+/// nonces, output, fee source.
+fn assert_same_transition(w: &World, a: usize, b: usize) {
     let sent = w.net.sent.lock().unwrap().clone();
-    assert_eq!(sent[1], sent[0]);
+    let outputs = w.net.outputs.lock().unwrap().clone();
+    let sources = w.net.sources.lock().unwrap().clone();
+    assert_eq!(sent[a], sent[b]);
+    assert_eq!(outputs[a], outputs[b]);
+    assert_eq!(sources[a], sources[b]);
 }
 
 /// A held send's exact retry re-signs its own terms: a payment that arrived
@@ -1626,13 +1690,11 @@ fn a_failed_max_send_is_retried_on_its_own_terms() {
         (quote.amount_credits, quote.fee_from_amount),
         (3 * DASH, true)
     );
-    let retry = w
-        .send(WithdrawAmount::All, &to, &w.f.grant(quote.credits))
-        .unwrap();
+    assert_eq!(quote.retry_of.as_deref(), Some(first.id.as_str()));
+    let retry = (w.confirm(&quote.operation, &w.f.grant(quote.credits))).unwrap();
     assert_eq!(retry.state, PlatformActivityState::Done);
-    let sent = w.net.sent.lock().unwrap().clone();
-    assert_eq!(sent[1], sent[0]);
-    assert_eq!(w.net.credits(them), 3 * DASH - w.net.fee);
+    assert_same_transition(&w, 0, 1);
+    assert_eq!(w.net.credits(them), 3 * DASH - w.net.fee());
     assert_eq!(w.net.credits(a), DASH);
 }
 
@@ -1651,7 +1713,7 @@ fn a_held_send_and_a_held_move_refuse_anything_but_their_retry() {
     w.net.fund(w.address(0), 5 * DASH);
     let (_, to) = w.theirs(9);
     w.net.then(Act::Lost);
-    let first = w.send(one, &to, &w.f.grant(2 * DASH)).unwrap();
+    let first = w.send(one, &to, &w.f.grant(10 * DASH)).unwrap();
     w.net.tick();
     w.activity();
     assert_eq!(w.moves()[0].state, PlatformActivityState::Failed);
@@ -1676,7 +1738,7 @@ fn a_held_send_and_a_held_move_refuse_anything_but_their_retry() {
     w.activity();
     assert_eq!(w.moves()[0].state, PlatformActivityState::Failed);
     assert!(w.moves()[0].can_land);
-    pending(w.send(one, &to, &w.f.grant(2 * DASH)).map(drop), &first.id);
+    pending(w.send(one, &to, &w.f.grant(10 * DASH)).map(drop), &first.id);
     assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing else signed");
 }
 
@@ -1693,4 +1755,488 @@ fn a_0_1_move_record_reads_as_to_core() {
     let row = read.activity();
     assert_eq!(row.kind, PlatformActivityKind::MoveToCore);
     assert_eq!(row.expected_duffs, Some(0));
+}
+
+// ---- round 2 (Unit A review r1) ----
+
+impl World {
+    /// A send of `amount` to `to` that goes out and is lost, then a later
+    /// read shows it unexecuted: `Failed` by height, able to land.
+    fn held_send(&self, amount: WithdrawAmount, to: &str) -> PlatformSendOutcome {
+        self.net.then(Act::Lost);
+        let out = self.send(amount, to, &self.f.grant(20 * DASH)).unwrap();
+        self.net.tick();
+        self.activity();
+        let held = &self.moves()[0];
+        assert_eq!(
+            (held.state, held.can_land),
+            (PlatformActivityState::Failed, true)
+        );
+        out
+    }
+
+    /// Executes the `n`-th transition sent, late.
+    fn lands(&self, n: usize) {
+        let inputs = self.net.sent.lock().unwrap()[n].clone();
+        let source = self.net.sources.lock().unwrap()[n];
+        let output = self.net.outputs.lock().unwrap()[n];
+        self.net.execute(&inputs, source, output);
+    }
+
+    fn store(&self, records: &[MoveRecord]) {
+        let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
+        let writes: Vec<_> = records.iter().map(|r| move_write(r).unwrap()).collect();
+        (self.f.engine)
+            .block_on(async move { Store::of(&s, id).unwrap().commit(writes).await })
+            .unwrap();
+    }
+}
+
+/// A1 (Opus M1): the held send lands between its retry's quote and the
+/// Confirm: the Confirm answers that send's settled outcome and signs
+/// nothing, so the recipient is paid once, also once the records reload.
+#[test]
+fn a_retry_after_the_held_send_landed_pays_nothing() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (them, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let first = w.held_send(one, &to);
+    let quote = w.send_quote(one, &to).unwrap();
+    assert_eq!(quote.retry_of.as_deref(), Some(first.id.as_str()));
+    w.lands(0);
+    let grant = w.f.grant(quote.credits);
+    let out = w.confirm(&quote.operation, &grant).unwrap();
+    assert_eq!(
+        (out.id.as_str(), out.state),
+        (first.id.as_str(), PlatformActivityState::Done)
+    );
+    assert!(w.f.unused(&grant), "nothing redeemed");
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing signed");
+    assert_eq!(w.net.credits(them), DASH, "paid once");
+    // Reloaded: the one send, done, and no hold.
+    let moves = w.moves();
+    assert_eq!(moves.len(), 1);
+    assert_eq!(moves[0].state, PlatformActivityState::Done);
+    assert!(!moves[0].holds());
+    // The operation is spent; a new quote is a new payment.
+    assert_eq!(
+        w.confirm(&quote.operation, &w.f.grant(quote.credits))
+            .unwrap_err()
+            .code(),
+        "invalid_argument"
+    );
+    assert_eq!(w.net.credits(them), DASH);
+}
+
+/// A1 (review r2 B1): "Retry this payment" after the held send landed,
+/// and Activity read it: the retry's quote still names that send, so its
+/// Confirm answers that it landed and pays nothing; a quote without the
+/// name is a new payment. A named retry on other terms is refused.
+#[test]
+fn a_named_retry_of_a_send_that_landed_pays_nothing() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (them, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let first = w.held_send(one, &to);
+    w.lands(0);
+    w.activity();
+    assert!(!w.moves()[0].holds());
+    let two = WithdrawAmount::Credits { credits: 2 * DASH };
+    assert_eq!(
+        w.retry_quote(two, &to, Some(&first.id)).unwrap_err().code(),
+        "invalid_argument"
+    );
+    let quote = w.retry_quote(one, &to, Some(&first.id)).unwrap();
+    assert_eq!(quote.retry_of.as_deref(), Some(first.id.as_str()));
+    let grant = w.f.grant(quote.credits);
+    let out = w.confirm(&quote.operation, &grant).unwrap();
+    assert_eq!(
+        (out.id.as_str(), out.state, out.may_land),
+        (first.id.as_str(), PlatformActivityState::Done, false)
+    );
+    assert!(w.f.unused(&grant), "nothing redeemed");
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing signed");
+    assert_eq!(w.net.credits(them), DASH, "paid once");
+    assert_eq!(w.send_quote(one, &to).unwrap().retry_of, None);
+}
+
+/// A1: still failed at the Confirm, the retry re-signs the held send once;
+/// whichever lands, the recipient is paid once.
+#[test]
+fn a_retry_of_a_still_failed_send_is_signed_once() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (them, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let first = w.held_send(one, &to);
+    let quote = w.send_quote(one, &to).unwrap();
+    let out = w
+        .confirm(&quote.operation, &w.f.grant(quote.credits))
+        .unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    assert_ne!(out.id, first.id);
+    assert_eq!(w.net.sent.lock().unwrap().len(), 2);
+    assert_same_transition(&w, 0, 1);
+    // The original can no longer land: its nonces are taken.
+    w.lands(0);
+    w.activity();
+    assert_eq!(w.net.credits(them), DASH, "paid once");
+    let rows = w.activity();
+    let old = rows.iter().find(|r| r.id == first.id).unwrap();
+    assert_eq!(
+        (old.state, old.may_land),
+        (PlatformActivityState::Replaced, false)
+    );
+}
+
+/// A1: a quote made with no hold is a new send; a hold that appears before
+/// its Confirm refuses it, unsigned, its grant kept.
+#[test]
+fn a_hold_after_a_quote_without_one_refuses_the_send() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (_, to) = w.theirs(9);
+    let (_, other) = w.theirs(8);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let quote = w.send_quote(one, &to).unwrap();
+    assert_eq!(quote.retry_of, None);
+    let held = w.held_send(one, &other);
+    let grant = w.f.grant(quote.credits);
+    match w.confirm(&quote.operation, &grant) {
+        Err(CreditsError::MovePending { id }) => assert_eq!(id, held.id),
+        other => panic!("{other:?}"),
+    }
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1);
+}
+
+/// Opus m1: beside a hold the quote refuses anything but the exact retry,
+/// before anything is asked of the user.
+#[test]
+fn the_quote_refuses_beside_a_hold() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (_, to) = w.theirs(9);
+    let (_, other) = w.theirs(8);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let held = w.held_send(one, &to);
+    for (amount, to) in [
+        (one, other.as_str()),
+        (WithdrawAmount::Credits { credits: 2 * DASH }, to.as_str()),
+        (WithdrawAmount::All, to.as_str()),
+    ] {
+        match w.send_quote(amount, to) {
+            Err(CreditsError::MovePending { id }) => assert_eq!(id, held.id),
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(w.send_quote(one, &to).unwrap().retry_of.is_some());
+}
+
+/// A2: `DeductFromInput` takes the metered fee from all the fee source
+/// keeps (the pin caps nothing lower). The plan picks the source that
+/// keeps the least, and that remainder is the bound the quote states and
+/// the grant covers; a fee above three times the estimate is taken within
+/// it.
+#[test]
+fn the_fee_bound_is_what_the_fee_source_keeps() {
+    let l = Limits::transfer_at(PlatformVersion::latest());
+    let small = DASH * 3 / 10;
+    let b = balances(&[(1, 10 * DASH), (2, small)]);
+    let quarter = WithdrawAmount::Credits { credits: DASH / 4 };
+    let p = transfer_plan(&b, quarter, &l).unwrap();
+    assert_eq!((p.fee_source, p.inputs.len()), (address(2), 1));
+    assert_eq!(p.reserve, small - DASH / 4);
+    // A source too small to carry it alone gives what it can and keeps the
+    // band; the largest gives the rest.
+    let b = balances(&[(1, 10 * DASH), (2, DASH / 10)]);
+    let p = transfer_plan(&b, quarter, &l).unwrap();
+    assert_eq!((p.fee_source, p.reserve), (address(2), l.keep(2)));
+    assert_eq!(p.credits(), DASH / 4);
+
+    let w = World::new();
+    let a = w.address(0);
+    w.net.fund(a, 3 * DASH);
+    let (them, to) = w.theirs(9);
+    let fee = 5 * l.fee(1);
+    w.net.fee.store(fee, Ordering::SeqCst);
+    let quote = w
+        .send_quote(WithdrawAmount::Credits { credits: DASH }, &to)
+        .unwrap();
+    assert!(fee > l.keep(1), "above the band");
+    assert_eq!(quote.max_fee_credits, Some(2 * DASH));
+    let out = w
+        .confirm(&quote.operation, &w.f.grant(quote.credits))
+        .unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    assert_eq!(w.net.credits(them), DASH);
+    assert_eq!((out.fee_credits, out.credits), (Some(fee), DASH + fee));
+    assert!(out.credits <= quote.credits);
+    // Max: the inputs give exactly their balances; the fee comes out of the
+    // recipient's amount, however much it meters.
+    let quote = w.send_quote(WithdrawAmount::All, &to).unwrap();
+    assert_eq!(
+        (quote.max_fee_credits, quote.credits),
+        (None, quote.amount_credits)
+    );
+    let left = w.net.credits(a);
+    w.confirm(&quote.operation, &w.f.grant(quote.credits))
+        .unwrap();
+    assert_eq!(w.net.credits(a), 0);
+    assert_eq!(w.net.credits(them), DASH + left - fee);
+}
+
+/// A3: a send failed by height may still go through, in Activity too, read
+/// afresh; one Platform refused for good never does; one its identical
+/// retry superseded reads as replaced.
+#[test]
+fn activity_tells_a_live_send_from_a_refused_or_superseded_one() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (_, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let held = w.held_send(one, &to);
+    let row = |w: &World, id: &str| w.activity().into_iter().find(|r| r.id == id).unwrap();
+    let r = row(&w, &held.id);
+    assert_eq!(
+        (r.state, r.may_land, r.credits),
+        (PlatformActivityState::Failed, true, DASH)
+    );
+    // Its retry lands in its place.
+    w.send(one, &to, &w.f.grant(20 * DASH)).unwrap();
+    let r = row(&w, &held.id);
+    assert_eq!(
+        (r.state, r.may_land),
+        (PlatformActivityState::Replaced, false)
+    );
+
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    w.net.then(Act::Invalid);
+    let refused = w.send_quote(one, &to).unwrap();
+    assert!(
+        w.confirm(&refused.operation, &w.f.grant(20 * DASH))
+            .is_err()
+    );
+    let r = (w.activity().into_iter())
+        .find(|r| r.kind == PlatformActivityKind::Send)
+        .unwrap();
+    assert_eq!(
+        (r.state, r.may_land),
+        (PlatformActivityState::Failed, false)
+    );
+}
+
+/// A4: an identical retry Platform's stateless checks refuse, at the
+/// version the held send was signed at, releases it; a signer's refusal,
+/// or a held send of another (or no recorded) version, does not.
+#[test]
+fn only_an_identical_definitive_refusal_releases_a_held_send() {
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let setup = |act: Act, version: Option<Option<u32>>| {
+        let w = World::new();
+        w.net.fund(w.address(0), 5 * DASH);
+        let (_, to) = w.theirs(9);
+        let held = w.held_send(one, &to);
+        if let Some(v) = version {
+            let mut r = w.moves()[0].clone();
+            r.version = v;
+            w.store(&[r]);
+        }
+        w.net.then(act);
+        let quote = w.send_quote(one, &to).unwrap();
+        assert!(w.confirm(&quote.operation, &w.f.grant(20 * DASH)).is_err());
+        (w.moves().into_iter().find(|m| m.id == held.id))
+            .unwrap()
+            .holds()
+    };
+    assert!(!setup(Act::Invalid, None), "released");
+    assert!(
+        setup(Act::Unsigned, None),
+        "a signer's refusal says nothing"
+    );
+    assert!(setup(Act::Invalid, Some(Some(1))), "another version");
+    assert!(setup(Act::Invalid, Some(None)), "no recorded version");
+}
+
+/// A5: a payment that arrives at the fee source while a send settles hides
+/// its fee; the done send's debit counts the estimate and says so.
+#[test]
+fn a_deposit_that_hides_the_fee_marks_the_debit_estimated() {
+    let w = World::new();
+    let a = w.address(0);
+    w.net.fund(a, 3 * DASH);
+    let (_, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let held = w.held_send(one, &to);
+    let quote = w.send_quote(one, &to).unwrap();
+    w.lands(0);
+    w.net.fund(a, DASH);
+    let out = w
+        .confirm(&quote.operation, &w.f.grant(quote.credits))
+        .unwrap();
+    assert_eq!(out.id, held.id);
+    let estimate = Limits::transfer_at(PlatformVersion::latest()).fee(1);
+    assert_eq!(
+        (out.estimated, out.fee_credits, out.credits),
+        (true, None, DASH + estimate)
+    );
+    let row = w.activity().into_iter().find(|r| r.id == held.id).unwrap();
+    assert!(row.estimated);
+    // Without the deposit the balances show the fee: not estimated.
+    let w = World::new();
+    w.net.fund(w.address(0), 3 * DASH);
+    let out = w.send(one, &to, &w.f.grant(20 * DASH)).unwrap();
+    assert_eq!((out.estimated, out.fee_credits), (false, Some(w.net.fee())));
+}
+
+/// Opus m3: a send pays someone else, so only a fresh grant pays it, once:
+/// no lease (a move's, or a send flow's a caller holds), and no grant
+/// twice.
+#[test]
+fn a_send_takes_a_fresh_grant_and_no_lease() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (them, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    for flow in [FlowKind::PlatformAddressMove, FlowKind::PlatformAddressSend] {
+        let lease = w.f.flow(flow, vec![w.f.grant(20 * DASH)]);
+        let quote = w.send_quote(one, &to).unwrap();
+        assert_eq!(
+            w.confirm(&quote.operation, &lease).unwrap_err().code(),
+            "platform.grant_invalid",
+            "{flow:?}"
+        );
+    }
+    assert!(w.net.sent.lock().unwrap().is_empty());
+    let grant = w.f.grant(20 * DASH);
+    w.send(one, &to, &grant).unwrap();
+    assert!(w.send(one, &to, &grant).is_err(), "a grant pays one send");
+    assert_eq!(w.net.credits(them), DASH);
+    // A move still takes its own flow's lease.
+    let lease =
+        w.f.flow(FlowKind::PlatformAddressMove, vec![w.f.grant(20 * DASH)]);
+    w.move_to(one, &w.to, &lease).unwrap();
+}
+
+/// A7: the own-address refusal covers the derived pool only: an address of
+/// this wallet's payment account beyond it is accepted as a recipient.
+#[test]
+fn an_own_address_beyond_the_pool_is_accepted() {
+    use key_wallet::bip32::ChildNumber;
+    let w = World::new();
+    let (pool, xpub) = (w.call(|_, _, wallet, _| async move {
+        use key_wallet::account::account_collection::PlatformPaymentAccountKey;
+        let key = PlatformPaymentAccountKey {
+            account: 0,
+            key_class: 0,
+        };
+        let wm = wallet.wallet_manager().read().await;
+        let core = wm.get_wallet(&wallet.wallet_id()).unwrap();
+        let xpub = core.accounts.platform_payment_accounts[&key].account_xpub;
+        Ok((pool(&wallet).await?, xpub))
+    }))
+    .unwrap();
+    let at = |index: u32| {
+        let child = xpub
+            .derive_pub(&[ChildNumber::from_normal_idx(index).unwrap()])
+            .unwrap();
+        let hash = dpp::dashcore::PublicKey::new(child.public_key).pubkey_hash();
+        PlatformAddress::P2pkh(dpp::dashcore::hashes::Hash::to_byte_array(hash))
+    };
+    // The derivation is the pool's.
+    assert_eq!(
+        recipient(w.network(), &bech32m(&at(0), w.network()), &pool),
+        Err(RecipientProblem::Own)
+    );
+    let beyond = at(pool.len() as u32 + 5);
+    assert!(!pool.contains_key(&beyond));
+    assert_eq!(
+        recipient(w.network(), &bech32m(&beyond, w.network()), &pool),
+        Ok(beyond)
+    );
+}
+
+/// Opus m6: below address funds (protocol version 11) the send's quote,
+/// the send and the receive address are refused; without Platform the
+/// receive address is.
+#[test]
+fn sends_and_receive_need_address_funds_and_platform() {
+    use dpp::version::feature_initial_protocol_versions::ADDRESS_FUNDS_INITIAL_PROTOCOL_VERSION as V;
+    let w = World::new();
+    w.net.fund(w.address(0), 3 * DASH);
+    let (_, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let quote = w.send_quote(one, &to).unwrap();
+    *w.net.version.lock().unwrap() = PlatformVersion::get(V - 1).unwrap();
+    let off = |r: Result<(), CreditsError>| match r {
+        Err(CreditsError::Platform(PlatformError::FeatureOff { feature })) => feature,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(off(w.send_quote(one, &to).map(drop)), "platform_addresses");
+    assert_eq!(
+        off(w.confirm(&quote.operation, &w.f.grant(20 * DASH)).map(drop)),
+        "platform_addresses"
+    );
+    assert_eq!(
+        off(w
+            .call(|net, s, wallet, _| async move {
+                Ok(receive_address(&*net, &wallet, s.vault.network()).await?)
+            })
+            .map(drop)),
+        "platform_addresses"
+    );
+    assert!(w.net.sent.lock().unwrap().is_empty());
+
+    let f = super::super::contacts_tests::Fixture::new(true);
+    let dp = f.s.dashpay(f.wallet);
+    match f
+        .engine
+        .block_on(async move { dp.platform_receive_address().await })
+    {
+        Err(CreditsError::Platform(PlatformError::FeatureOff { feature })) => {
+            assert_eq!(feature, "platform")
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Opus m6: a 0.1 move record (no `kind`, `fee_from_output` or `version`)
+/// read back holds and settles as a move to Core; a 0.1 move failed by
+/// height still lets a new move at its very inputs and nonces go.
+#[test]
+fn a_0_1_record_reloads_and_settles() {
+    let w = World::new();
+    let a = w.address(0);
+    w.net.fund(a, 3 * DASH);
+    w.net.then(Act::Lost);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    w.move_to(one, &w.to, &w.f.grant(3 * DASH)).unwrap();
+    // Stored as 0.1 stored it.
+    let current = w.moves()[0].clone();
+    let mut json = serde_json::to_value(&current).unwrap();
+    for field in ["kind", "fee_from_output", "version"] {
+        json.as_object_mut().unwrap().remove(field);
+    }
+    let old: MoveRecord = serde_json::from_value(json).unwrap();
+    assert_eq!((old.kind, old.version), (MoveKind::ToCore, None));
+    w.store(&[old]);
+    // Failed by height, it holds; a new move at its inputs and nonces goes.
+    w.net.tick();
+    w.activity();
+    assert_eq!(w.moves()[0].state, PlatformActivityState::Failed);
+    assert!(w.moves()[0].holds());
+    let next = w.move_to(one, &w.to, &w.f.grant(3 * DASH)).unwrap();
+    assert_eq!(next.state, PlatformActivityState::Done);
+    let rows = w.activity();
+    let moved = rows.iter().find(|r| r.id == next.id).unwrap();
+    assert_eq!(moved.kind, PlatformActivityKind::MoveToCore);
+    assert!(moved.expected_duffs.is_some());
+    let old = rows.iter().find(|r| r.id == current.id).unwrap();
+    assert_eq!(
+        (old.state, old.may_land),
+        (PlatformActivityState::Failed, false)
+    );
 }

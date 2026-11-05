@@ -6,7 +6,8 @@ import type { GrantRequest } from "./GrantRequest";
  */
 export type PlatformSendQuote = {
 /**
- * The most the addresses may lose (the grant's credits).
+ * The most the addresses can lose, as Platform bounds it (the grant's
+ * credits).
  */
 credits: string,
 /**
@@ -19,14 +20,25 @@ amountCredits: string,
  */
 feeCredits: string,
 /**
- * The most fee the send provides for ("up to").
+ * The most the fee can take: all its source address keeps after the
+ * send ("at most"); `null` for Max, where it comes out of the amount.
  */
-maxFeeCredits: string,
+maxFeeCredits: string | null,
 /**
  * Max: the amount pays the fee.
  */
 feeFromAmount: boolean,
 /**
- * The recipient, normalized: `platformSend` pays it.
+ * The recipient, normalized.
  */
-to: string, grant: GrantRequest, };
+to: string, grant: GrantRequest,
+/**
+ * Pass it to `platformSend`: it pays this quote's recipient and amount,
+ * once.
+ */
+operation: string,
+/**
+ * The held send this quote retries on its stored terms; its send pays
+ * nothing more if that one landed meanwhile.
+ */
+retryOf: string | null, };

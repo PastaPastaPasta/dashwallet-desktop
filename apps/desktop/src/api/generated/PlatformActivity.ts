@@ -13,4 +13,13 @@ feeCredits: string | null,
 /**
  * Unix seconds.
  */
-at: number, };
+at: number,
+/**
+ * A move or send that may still execute: a `failed` one "may still go
+ * through"; a `failed` one without it never does.
+ */
+mayLand: boolean,
+/**
+ * A done send whose debit counts the fee estimate.
+ */
+estimated: boolean, };

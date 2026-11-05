@@ -2,12 +2,24 @@
 import type { PlatformActivityState } from "./PlatformActivityState";
 
 /**
- * A send's outcome: as a move's. `pending` and `failed` may still
- * execute, once.
+ * A send's outcome: as a move's; `mayLand` while it may still execute,
+ * once. A retry of a send that landed answers that send's outcome.
  */
-export type PlatformSendOutcome = { id: string, credits: string, to: string | null, state: PlatformActivityState,
+export type PlatformSendOutcome = { id: string,
 /**
- * Done: the fee taken from the fee source; `null` when the amount
- * paid it.
+ * Its amount until it is done; then what it took.
  */
-feeCredits: string | null, };
+credits: string,
+/**
+ * The amount it sends (for Max, before the fee).
+ */
+amountCredits: string, feeFromAmount: boolean, to: string | null, state: PlatformActivityState, mayLand: boolean,
+/**
+ * Done: the fee taken from the fee source as the balances show it;
+ * `null` when the amount paid it or the balances hide it.
+ */
+feeCredits: string | null,
+/**
+ * Done: `credits` counts the fee estimate.
+ */
+estimated: boolean, };

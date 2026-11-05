@@ -121,6 +121,11 @@ pub struct PlatformActivity {
     pub fee_credits: Option<u64>,
     /// Unix seconds.
     pub at: u64,
+    /// A move or send that may still execute: a `failed` one "may still go
+    /// through"; a `failed` one without it never does.
+    pub may_land: bool,
+    /// A done send whose debit counts the fee estimate.
+    pub estimated: bool,
 }
 
 impl From<engine::PlatformActivity> for PlatformActivity {
@@ -135,6 +140,8 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             expected_duffs,
             fee_credits,
             at,
+            may_land,
+            estimated,
         } = a;
         PlatformActivity {
             id,
@@ -146,6 +153,8 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             expected_duffs,
             fee_credits,
             at,
+            may_land,
+            estimated,
         }
     }
 }
@@ -248,7 +257,8 @@ impl From<engine::PlatformReceiveAddress> for PlatformReceiveAddress {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PlatformSendQuote {
-    /// The most the addresses may lose (the grant's credits).
+    /// The most the addresses can lose, as Platform bounds it (the grant's
+    /// credits).
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub credits: u64,
@@ -261,15 +271,22 @@ pub struct PlatformSendQuote {
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub fee_credits: u64,
-    /// The most fee the send provides for ("up to").
-    #[ts(type = "string")]
-    #[serde(with = "crate::dto::credits")]
-    pub max_fee_credits: u64,
+    /// The most the fee can take: all its source address keeps after the
+    /// send ("at most"); `null` for Max, where it comes out of the amount.
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub max_fee_credits: Option<u64>,
     /// Max: the amount pays the fee.
     pub fee_from_amount: bool,
-    /// The recipient, normalized: `platformSend` pays it.
+    /// The recipient, normalized.
     pub to: String,
     pub grant: GrantRequest,
+    /// Pass it to `platformSend`: it pays this quote's recipient and amount,
+    /// once.
+    pub operation: String,
+    /// The held send this quote retries on its stored terms; its send pays
+    /// nothing more if that one landed meanwhile.
+    pub retry_of: Option<String>,
 }
 
 impl From<engine::PlatformSendQuote> for PlatformSendQuote {
@@ -282,6 +299,8 @@ impl From<engine::PlatformSendQuote> for PlatformSendQuote {
             fee_from_amount,
             to,
             grant,
+            operation,
+            retry_of,
         } = q;
         PlatformSendQuote {
             credits,
@@ -291,26 +310,37 @@ impl From<engine::PlatformSendQuote> for PlatformSendQuote {
             fee_from_amount,
             to,
             grant: grant.into(),
+            operation,
+            retry_of,
         }
     }
 }
 
-/// A send's outcome: as a move's. `pending` and `failed` may still
-/// execute, once.
+/// A send's outcome: as a move's; `mayLand` while it may still execute,
+/// once. A retry of a send that landed answers that send's outcome.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PlatformSendOutcome {
     pub id: String,
+    /// Its amount until it is done; then what it took.
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub credits: u64,
+    /// The amount it sends (for Max, before the fee).
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub amount_credits: u64,
+    pub fee_from_amount: bool,
     pub to: Option<String>,
     pub state: PlatformActivityState,
-    /// Done: the fee taken from the fee source; `null` when the amount
-    /// paid it.
+    pub may_land: bool,
+    /// Done: the fee taken from the fee source as the balances show it;
+    /// `null` when the amount paid it or the balances hide it.
     #[ts(type = "string | null")]
     #[serde(with = "crate::dto::credits::option")]
     pub fee_credits: Option<u64>,
+    /// Done: `credits` counts the fee estimate.
+    pub estimated: bool,
 }
 
 impl From<engine::PlatformSendOutcome> for PlatformSendOutcome {
@@ -318,16 +348,24 @@ impl From<engine::PlatformSendOutcome> for PlatformSendOutcome {
         let engine::PlatformSendOutcome {
             id,
             credits,
+            amount_credits,
+            fee_from_amount,
             to,
             state,
+            may_land,
             fee_credits,
+            estimated,
         } = o;
         PlatformSendOutcome {
             id,
             credits,
+            amount_credits,
+            fee_from_amount,
             to,
             state: state.into(),
+            may_land,
             fee_credits,
+            estimated,
         }
     }
 }

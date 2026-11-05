@@ -79,7 +79,8 @@ pub enum PlatformActivityState {
     /// wallet with other terms also signed, and Platform took: one of them
     /// executed and no proof says which, so the newest carries the group's
     /// outcome (`Done`, the proved debit, payout and fee unattributed) and
-    /// the others read as replaced by it (m4 §7 item 69).
+    /// the others read as replaced by it (m4 §7 item 69). A send whose
+    /// identical retry executed in its place (0.2).
     Replaced,
 }
 
@@ -104,6 +105,16 @@ pub struct PlatformActivity {
     pub fee_credits: Option<u64>,
     /// Unix seconds the engine recorded the row.
     pub at: u64,
+    /// A move or send that may still execute (`Pending`, or `Failed` by
+    /// height): until its nonces are taken it holds the next one, and a
+    /// `Failed` one "may still go through". A `Failed` row without it never
+    /// executes; a send superseded by its identical retry is `Replaced`.
+    #[serde(default)]
+    pub may_land: bool,
+    /// A done send whose fee the balances did not show: `credits` counts
+    /// dpp's estimate for it.
+    #[serde(default)]
+    pub estimated: bool,
 }
 
 /// What "Move to Dash wallet" takes and pays out, at the network's
@@ -191,45 +202,66 @@ pub struct PlatformReceiveAddress {
 /// version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlatformSendQuote {
-    /// The most the addresses may lose: `amount_credits` and, unless the
-    /// amount pays the fee, the fee band the fee source keeps.
+    /// The most the addresses can lose, as Platform bounds it:
+    /// `amount_credits` and, unless the amount pays the fee,
+    /// `max_fee_credits`. The grant's cap.
     pub credits: u64,
     /// The transfer's output: what the recipient receives, less the fee
     /// when `fee_from_amount`.
     pub amount_credits: u64,
-    /// The fee estimate: dpp's minimum fee for the transfer.
+    /// The fee estimate: dpp's minimum fee for the transfer. Platform
+    /// takes the fee it meters, usually about this.
     pub fee_credits: u64,
-    /// The most fee the plan provides for: the estimate times
-    /// platform-wallet's safety band (3). Platform takes the fee it
-    /// meters; nothing caps it.
-    pub max_fee_credits: u64,
+    /// The most the fee can take: all the fee source keeps after the send
+    /// (`DeductFromInput` takes the metered fee from it, and nothing on
+    /// Platform caps it lower), at least three times the estimate; the plan
+    /// picks the source that keeps the least. `None` for Max: the fee comes
+    /// out of the amount, bounded only by it.
+    pub max_fee_credits: Option<u64>,
     /// Max: the output pays the fee, so the recipient receives
     /// `amount_credits` less it, and nothing is left on the inputs.
     pub fee_from_amount: bool,
-    /// The recipient, normalized: pass it to `platform_send`.
+    /// The recipient, normalized.
     pub to: String,
     /// What to authorize: no duffs, `credits` credits.
     pub grant: GrantRequest,
+    /// Pass it to `platform_send`: it pays this quote's recipient and
+    /// amount, once.
+    pub operation: String,
+    /// The held send this quote retries on that send's stored terms (a
+    /// send that may still execute, the same recipient and amount). Its
+    /// send pays nothing more if that one landed meanwhile.
+    pub retry_of: Option<String>,
 }
 
 /// A send's outcome.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlatformSendOutcome {
-    /// The send's activity row id.
+    /// The send's activity row id; a retry's of a send that landed, that
+    /// send's.
     pub id: String,
-    /// What the send may take until it is `Done` (the amount, and the fee
-    /// band unless the amount pays the fee); then what it took: its inputs
-    /// and the fee taken (the estimate when the balances hide it).
+    /// Until it is `Done` its amount; then what it took: its inputs and,
+    /// unless the amount paid it, the fee (as the balances show it, or the
+    /// estimate when `estimated`).
     pub credits: u64,
+    /// The amount it sends (for Max, before the fee).
+    pub amount_credits: u64,
+    /// Max: the amount paid the fee.
+    pub fee_from_amount: bool,
     /// The recipient; for a group's `Done`, `None` unless every member
     /// named it.
     pub to: Option<String>,
-    /// As [`MoveToCoreOutcome::state`]. `Pending` and `Failed` (by height)
-    /// may still execute: the recipient may still be paid, once.
+    /// As [`MoveToCoreOutcome::state`]; `Replaced` when its identical retry
+    /// executed in its place.
     pub state: PlatformActivityState,
-    /// Done: the fee taken from the fee source; `None` when the amount paid
-    /// it (Max) or the balances hide it.
+    /// It may still execute (`Pending`, or `Failed` by height): the
+    /// recipient may still be paid, once, and only its retry may follow.
+    pub may_land: bool,
+    /// Done: the fee taken from the fee source as the balances show it;
+    /// `None` when the amount paid it (Max) or the balances hide it.
     pub fee_credits: Option<u64>,
+    /// Done: `credits` counts the fee estimate (`fee_credits` `None`).
+    pub estimated: bool,
 }
 
 impl DashPay {
@@ -325,11 +357,13 @@ impl DashPay {
     }
 
     /// What sending `amount` of the Platform addresses' credits to the
-    /// Platform address `to` takes.
+    /// Platform address `to` takes; `retry_of`, the send it retries on its
+    /// stored terms (the result sheet's "Retry this payment").
     pub async fn platform_send_quote(
         &self,
         to: String,
         amount: WithdrawAmount,
+        retry_of: Option<String>,
     ) -> Result<PlatformSendQuote, CreditsError> {
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
@@ -337,18 +371,17 @@ impl DashPay {
                 sdk: manager.sdk_arc(),
                 wallet: Arc::clone(&wallet),
             };
-            platform_moves::send_quote(&net, &session, &wallet, wallet_id, &to, amount).await
+            let ask = (to.as_str(), amount, retry_of.as_deref());
+            platform_moves::send_quote(&net, &session, &wallet, wallet_id, ask).await
         })
         .await
     }
 
-    /// Sends `amount` of the Platform addresses' credits to the Platform
-    /// address `to` under `grant` (a `PlatformOp` grant or a
-    /// `PlatformAddressMove` lease).
+    /// Sends the quoted `operation` (its recipient and amount) under
+    /// `grant`, a fresh `PlatformOp` grant (no lease).
     pub async fn platform_send(
         &self,
-        to: String,
-        amount: WithdrawAmount,
+        operation: String,
         grant: String,
     ) -> Result<PlatformSendOutcome, CreditsError> {
         let wallet_id = self.wallet_id;
@@ -357,8 +390,7 @@ impl DashPay {
                 sdk: manager.sdk_arc(),
                 wallet: Arc::clone(&wallet),
             };
-            let ask = (amount, to.as_str());
-            platform_moves::send(&net, &session, &wallet, wallet_id, ask, &grant).await
+            platform_moves::send(&net, &session, &wallet, wallet_id, &operation, &grant).await
         })
         .await
     }
