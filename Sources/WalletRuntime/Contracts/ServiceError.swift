@@ -215,6 +215,7 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let coinjoinVaultLocked = Self(rawValue: "coinjoin.vault_locked")
     public static let coinjoinGrantInvalid = Self(rawValue: "coinjoin.grant_invalid")
     public static let coinjoinNothingToMove = Self(rawValue: "coinjoin.nothing_to_move")
+    public static let coinjoinMixingActive = Self(rawValue: "coinjoin.mixing_active")
     public static let coinjoinSpvNotRunning = Self(rawValue: "coinjoin.spv_not_running")
     public static let coinjoinNoPeers = Self(rawValue: "coinjoin.no_peers")
     public static let coinjoinBroadcastRejected = Self(rawValue: "coinjoin.broadcast_rejected")
@@ -302,8 +303,8 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     /// with the table.
     public static let m3EngineCodes: [ServiceErrorCode] = [
         .coinjoinDisabled, .coinjoinWatchOnly, .coinjoinInsufficientFunds, .coinjoinVaultLocked,
-        .coinjoinGrantInvalid, .coinjoinNothingToMove, .coinjoinSpvNotRunning, .coinjoinNoPeers,
-        .coinjoinBroadcastRejected, .masternodeWatchOnly, .masternodeVaultLocked, .masternodeGrantInvalid,
+        .coinjoinGrantInvalid, .coinjoinNothingToMove, .coinjoinMixingActive, .coinjoinSpvNotRunning,
+        .coinjoinNoPeers, .coinjoinBroadcastRejected, .masternodeWatchOnly, .masternodeVaultLocked, .masternodeGrantInvalid,
     ]
 }
 

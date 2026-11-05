@@ -9,6 +9,7 @@
 use dw_coinjoin::{denoms, settings};
 use dw_engine::coinjoin::{
     AmountAndRounds, CoinJoinBalances as EngineBalances, CoinJoinStatus as EngineStatus,
+    ConsolidationPlan,
     MixingState, PoolMessage, PoolState, ProgressInfo, RecoveryReport, SessionInfo, StatusCode,
     StopReason, SweepChunkInfo, SweepDestination, SweepPlan, SweepResult, Unavailable,
 };
@@ -19,7 +20,10 @@ use crate::dto::mirror_enum;
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
 
-pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
+pub(crate) const EXCLUDED: &[(&str, &str)] = &[(
+    "NetworkSession::coinjoin_addresses_for_test",
+    "test only: dwcli's `mix-shield-test` funds the CoinJoin account for the regtest suite (debug builds only)",
+)];
 
 /// The CoinJoin options (Options, CoinJoin, QT-046). Global for the
 /// network; mixing state is per wallet (QT-049).
@@ -536,6 +540,11 @@ pub struct MixedCoinsSweepPlan {
     /// 1000-duff threshold, mixed or not).
     pub total: u64,
     pub chunks: Vec<MixedCoinsChunk>,
+    /// Of `total`, the coins with the wallet's rounds.
+    pub fully_mixed: u64,
+    /// Of `total`, the CoinJoin account's other coins (short of the rounds,
+    /// collaterals): the move takes the whole account.
+    pub not_fully_mixed: u64,
 }
 
 impl From<SweepPlan> for MixedCoinsSweepPlan {
@@ -544,11 +553,56 @@ impl From<SweepPlan> for MixedCoinsSweepPlan {
             destination,
             total,
             chunks,
+            fully_mixed,
+            not_fully_mixed,
         } = p;
         MixedCoinsSweepPlan {
             destination: destination.into(),
             total,
             chunks: chunks.into_iter().map(Into::into).collect(),
+            fully_mixed,
+            not_fully_mixed,
+        }
+    }
+}
+
+/// The consolidation round before a move to Shielded (iOS #1221): the
+/// CoinJoin account's final coins combined, at most 500 per transaction,
+/// each onto one fresh address of the same CoinJoin account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MixedCoinsConsolidationPlan {
+    /// What leaves the coins it combines: the outputs plus the fees. The
+    /// outputs stay in the CoinJoin account.
+    pub total: u64,
+    /// One transaction each.
+    pub chunks: Vec<MixedCoinsChunk>,
+    pub fully_mixed: u64,
+    pub not_fully_mixed: u64,
+    /// The CoinJoin account's coins once the round confirms.
+    pub coins_after: u32,
+    /// The account's coins not final yet (neither confirmed nor
+    /// InstantSend-locked), which the round leaves.
+    pub not_final: u32,
+}
+
+impl From<ConsolidationPlan> for MixedCoinsConsolidationPlan {
+    fn from(p: ConsolidationPlan) -> Self {
+        let ConsolidationPlan {
+            total,
+            chunks,
+            fully_mixed,
+            not_fully_mixed,
+            coins_after,
+            not_final,
+        } = p;
+        MixedCoinsConsolidationPlan {
+            total,
+            chunks: chunks.into_iter().map(Into::into).collect(),
+            fully_mixed,
+            not_fully_mixed,
+            coins_after,
+            not_final,
         }
     }
 }
@@ -706,6 +760,25 @@ commands! {
             .move_mixed_coins(id, destination.into(), grant_id)
             .await?;
         Ok(result.into())
+    }
+
+    /// The consolidation round before a move to Shielded. Reads coins only.
+    #[facade("NetworkSession::mixed_coins_consolidation_plan")]
+    fn mixed_coins_consolidation_plan(state, wallet_id: String) -> MixedCoinsConsolidationPlan {
+        let id = parse_wallet_id(&wallet_id)?;
+        let session = state.session().await?;
+        Ok(session.mixed_coins_consolidation_plan(id).await?.into())
+    }
+
+    /// Runs the consolidation round: every transaction pays one fresh
+    /// address of the wallet's own CoinJoin account. `grantId`: a `Spend`
+    /// grant of at least the plan's total. Stops at the first failing chunk
+    /// and reports what went out.
+    #[facade("NetworkSession::consolidate_mixed_coins")]
+    fn consolidate_mixed_coins(state, wallet_id: String, grant_id: String) -> MixedCoinsSweepResult {
+        let id = parse_wallet_id(&wallet_id)?;
+        let session = state.session().await?;
+        Ok(session.consolidate_mixed_coins(id, grant_id).await?.into())
     }
 }
 

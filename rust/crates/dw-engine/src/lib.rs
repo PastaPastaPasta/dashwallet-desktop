@@ -54,6 +54,12 @@ pub mod sync;
 #[doc(hidden)]
 pub mod test_support;
 
+// The regtest suite's CoinJoin-account funding (dwcli `mix-shield-test`,
+// debug builds only).
+#[cfg(all(debug_assertions, feature = "test-mix-shield"))]
+#[doc(hidden)]
+pub mod mix_shield_test;
+
 /// A marker the release check reads (MG-04b r2-m4): `test_support` gives
 /// it `SHARED_SEND_OVERRIDE`, so its presence shows whether the
 /// sending override is compiled in.

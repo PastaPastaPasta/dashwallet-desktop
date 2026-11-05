@@ -14,6 +14,7 @@ extension DashKitError {
         case .VaultLocked: self = .domain(code: "coinjoin.vault_locked", detail: "")
         case .GrantInvalid: self = .domain(code: "coinjoin.grant_invalid", detail: "")
         case .NothingToMove: self = .domain(code: "coinjoin.nothing_to_move", detail: "")
+        case .MixingActive: self = .domain(code: "coinjoin.mixing_active", detail: "")
         case .SpvNotRunning: self = .domain(code: "coinjoin.spv_not_running", detail: "")
         case .NoPeers: self = .domain(code: "coinjoin.no_peers", detail: "")
         case .BroadcastRejected(let reason): self = .domain(code: "coinjoin.broadcast_rejected", detail: reason)

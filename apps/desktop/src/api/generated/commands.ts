@@ -89,6 +89,7 @@ import type { LinkRoute } from "./LinkRoute";
 import type { LockOutcome } from "./LockOutcome";
 import type { LockResolutionName } from "./LockResolutionName";
 import type { LockStatus } from "./LockStatus";
+import type { MixedCoinsConsolidationPlan } from "./MixedCoinsConsolidationPlan";
 import type { MixedCoinsDestination } from "./MixedCoinsDestination";
 import type { MixedCoinsSweepPlan } from "./MixedCoinsSweepPlan";
 import type { MixedCoinsSweepResult } from "./MixedCoinsSweepResult";
@@ -1426,6 +1427,23 @@ export function moveMixedCoins(walletId: string, destination: MixedCoinsDestinat
 }
 
 /**
+ * The consolidation round before a move to Shielded. Reads coins only.
+ */
+export function mixedCoinsConsolidationPlan(walletId: string): Promise<MixedCoinsConsolidationPlan> {
+  return invoke<MixedCoinsConsolidationPlan>("mixed_coins_consolidation_plan", { walletId });
+}
+
+/**
+ * Runs the consolidation round: every transaction pays one fresh
+ * address of the wallet's own CoinJoin account. `grantId`: a `Spend`
+ * grant of at least the plan's total. Stops at the first failing chunk
+ * and reports what went out.
+ */
+export function consolidateMixedCoins(walletId: string, grantId: string): Promise<MixedCoinsSweepResult> {
+  return invoke<MixedCoinsSweepResult>("consolidate_mixed_coins", { walletId, grantId });
+}
+
+/**
  * Same-seed discovery past the highest identity index on file; the
  * number of identities found. `grant` is an identity-scan grant id (a
  * lease id is `platform.grant_invalid`).
@@ -2694,6 +2712,8 @@ export type CommandArgs = {
   coinjoin_recovery_scan: { walletId: string };
   mixed_coins_sweep_plan: { walletId: string; destination: MixedCoinsDestination };
   move_mixed_coins: { walletId: string; destination: MixedCoinsDestination; grantId: string };
+  mixed_coins_consolidation_plan: { walletId: string };
+  consolidate_mixed_coins: { walletId: string; grantId: string };
   discover_identities: { walletId: string; grant: string };
   identities: { walletId: string };
   identity_detail: { walletId: string; identity: string };
@@ -2987,6 +3007,8 @@ export type CommandResults = {
   coinjoin_recovery_scan: CoinJoinRecoveryReport;
   mixed_coins_sweep_plan: MixedCoinsSweepPlan;
   move_mixed_coins: MixedCoinsSweepResult;
+  mixed_coins_consolidation_plan: MixedCoinsConsolidationPlan;
+  consolidate_mixed_coins: MixedCoinsSweepResult;
   discover_identities: number;
   identities: Array<IdentitySummary>;
   identity_detail: IdentityDetail;
@@ -3282,6 +3304,8 @@ export const COMMANDS: Record<CommandName, string> = {
   coinjoin_recovery_scan: "coinjoin",
   mixed_coins_sweep_plan: "coinjoin",
   move_mixed_coins: "coinjoin",
+  mixed_coins_consolidation_plan: "coinjoin",
+  consolidate_mixed_coins: "coinjoin",
   discover_identities: "identity",
   identities: "identity",
   identity_detail: "identity",
@@ -3571,6 +3595,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "coinjoin.spv_not_running",
   "coinjoin.no_peers",
   "coinjoin.broadcast_rejected",
+  "coinjoin.mixing_active",
   "masternode.watch_only",
   "masternode.vault_locked",
   "masternode.grant_invalid",

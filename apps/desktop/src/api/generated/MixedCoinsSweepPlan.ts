@@ -7,4 +7,13 @@ export type MixedCoinsSweepPlan = { destination: MixedCoinsDestination,
  * The CoinJoin account balance the plan moves (coins above the
  * 1000-duff threshold, mixed or not).
  */
-total: number, chunks: Array<MixedCoinsChunk>, };
+total: number, chunks: Array<MixedCoinsChunk>,
+/**
+ * Of `total`, the coins with the wallet's rounds.
+ */
+fullyMixed: number,
+/**
+ * Of `total`, the CoinJoin account's other coins (short of the rounds,
+ * collaterals): the move takes the whole account.
+ */
+notFullyMixed: number, };

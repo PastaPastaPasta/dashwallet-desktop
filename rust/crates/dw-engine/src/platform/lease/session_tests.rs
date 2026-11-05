@@ -2701,7 +2701,14 @@ impl Fixture {
 
     /// Credits a confirmed coin of `value` to a fresh CoinJoin-account
     /// address.
-    fn credit_coinjoin(&self, seed: u8, value: u64) -> OutPoint {
+    pub(crate) fn credit_coinjoin(&self, seed: u8, value: u64) -> OutPoint {
+        self.credit_coinjoin_with(seed, value, true)
+    }
+
+    /// Credits a coin of `value` to a fresh CoinJoin-account address,
+    /// confirmed or not (an unconfirmed one is neither mined nor
+    /// InstantSend-locked: not final).
+    pub(crate) fn credit_coinjoin_with(&self, seed: u8, value: u64, confirmed: bool) -> OutPoint {
         let session = Arc::clone(&self.session);
         let id = self.wallet;
         self.engine
@@ -2716,7 +2723,7 @@ impl Fixture {
                         script_pubkey: address.script_pubkey(),
                     };
                     let mut utxo = Utxo::new(outpoint, txout, address, 1, false);
-                    utxo.is_confirmed = true;
+                    utxo.is_confirmed = confirmed;
                     let wallet = session.wallet(&id).await?;
                     (wallet
                         .state_mut()

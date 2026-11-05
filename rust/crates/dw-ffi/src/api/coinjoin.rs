@@ -360,6 +360,9 @@ pub enum CoinJoinError {
     /// Code `coinjoin.broadcast_rejected`.
     #[error("broadcast rejected: {reason}")]
     BroadcastRejected { reason: String },
+    /// Code `coinjoin.mixing_active`: stop mixing first.
+    #[error("stop mixing first")]
+    MixingActive,
     /// Code `invalid_argument`.
     #[error("invalid argument: {detail}")]
     InvalidArgument { detail: String },
@@ -396,6 +399,7 @@ impl CoinJoinError {
             Self::SpvNotRunning => "coinjoin.spv_not_running",
             Self::NoPeers => "coinjoin.no_peers",
             Self::BroadcastRejected { .. } => "coinjoin.broadcast_rejected",
+            Self::MixingActive => "coinjoin.mixing_active",
             Self::InvalidArgument { .. } => "invalid_argument",
             Self::NetworkNotOpen { .. } => "network_not_open",
             Self::WalletNotFound { .. } => "wallet_not_found",
@@ -423,6 +427,7 @@ impl From<dw_engine::EngineError> for CoinJoinError {
                 F::SpvNotRunning => Self::SpvNotRunning,
                 F::NoPeers => Self::NoPeers,
                 F::BroadcastRejected(reason) => Self::BroadcastRejected { reason },
+                F::MixingActive => Self::MixingActive,
             },
             E::Vault(V::NoVault | V::Locked | V::MixingOnly) => Self::VaultLocked,
             E::Vault(V::GrantInvalid | V::GrantPurposeMismatch) => Self::GrantInvalid,

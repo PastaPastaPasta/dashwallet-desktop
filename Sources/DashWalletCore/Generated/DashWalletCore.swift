@@ -13699,6 +13699,10 @@ enum CoinJoinError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError 
     case BroadcastRejected(reason: String
     )
     /**
+     * Code `coinjoin.mixing_active`: stop mixing first.
+     */
+    case MixingActive
+    /**
      * Code `invalid_argument`.
      */
     case InvalidArgument(detail: String
@@ -13782,22 +13786,23 @@ public struct FfiConverterTypeCoinJoinError: FfiConverterRustBuffer {
         case 9: return .BroadcastRejected(
             reason: try FfiConverterString.read(from: &buf)
             )
-        case 10: return .InvalidArgument(
+        case 10: return .MixingActive
+        case 11: return .InvalidArgument(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 11: return .NetworkNotOpen(
+        case 12: return .NetworkNotOpen(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 12: return .WalletNotFound(
+        case 13: return .WalletNotFound(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 13: return .Storage(
+        case 14: return .Storage(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 14: return .NotImplemented(
+        case 15: return .NotImplemented(
             call: try FfiConverterString.read(from: &buf)
             )
-        case 15: return .Internal(
+        case 16: return .Internal(
             detail: try FfiConverterString.read(from: &buf)
             )
 
@@ -13850,33 +13855,37 @@ public struct FfiConverterTypeCoinJoinError: FfiConverterRustBuffer {
             FfiConverterString.write(reason, into: &buf)
             
         
-        case let .InvalidArgument(detail):
+        case .MixingActive:
             writeInt(&buf, Int32(10))
-            FfiConverterString.write(detail, into: &buf)
-            
         
-        case let .NetworkNotOpen(detail):
+        
+        case let .InvalidArgument(detail):
             writeInt(&buf, Int32(11))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .WalletNotFound(detail):
+        case let .NetworkNotOpen(detail):
             writeInt(&buf, Int32(12))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .Storage(detail):
+        case let .WalletNotFound(detail):
             writeInt(&buf, Int32(13))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .NotImplemented(call):
+        case let .Storage(detail):
             writeInt(&buf, Int32(14))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(15))
             FfiConverterString.write(call, into: &buf)
             
         
         case let .Internal(detail):
-            writeInt(&buf, Int32(15))
+            writeInt(&buf, Int32(16))
             FfiConverterString.write(detail, into: &buf)
             
         }

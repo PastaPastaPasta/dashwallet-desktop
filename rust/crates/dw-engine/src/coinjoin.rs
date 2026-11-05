@@ -91,6 +91,9 @@ pub enum CoinJoinFailure {
     NoPeers,
     /// A peer rejected a sweep transaction; the reason is Core's.
     BroadcastRejected(String),
+    /// "Move mixed coins" and its consolidation wait for mixing to stop:
+    /// the wallet mixes, or a session of it is still open.
+    MixingActive,
 }
 
 impl std::fmt::Display for CoinJoinFailure {
@@ -107,6 +110,7 @@ impl std::fmt::Display for CoinJoinFailure {
             Self::SpvNotRunning => f.write_str("spv is not running"),
             Self::NoPeers => f.write_str("no connected peers"),
             Self::BroadcastRejected(r) => write!(f, "broadcast rejected: {r}"),
+            Self::MixingActive => f.write_str("stop mixing first"),
         }
     }
 }
@@ -224,6 +228,30 @@ pub struct SweepPlan {
     pub destination: SweepDestination,
     pub total: u64,
     pub chunks: Vec<SweepChunkInfo>,
+    /// Of `total`, the value of the coins with the wallet's rounds.
+    pub fully_mixed: u64,
+    /// Of `total`, the value of the CoinJoin account's other coins
+    /// (denominations short of the rounds, collaterals, change): the move
+    /// takes the whole account.
+    pub not_fully_mixed: u64,
+}
+
+/// The consolidation round before a move to Shielded (iOS #1221).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsolidationPlan {
+    /// What leaves the coins swept: the outputs plus the fees. The outputs
+    /// stay in the wallet's CoinJoin account.
+    pub total: u64,
+    /// One transaction each, to one fresh CoinJoin-account address.
+    pub chunks: Vec<SweepChunkInfo>,
+    pub fully_mixed: u64,
+    pub not_fully_mixed: u64,
+    /// The CoinJoin account's coins once the round confirms: its outputs
+    /// and every coin it leaves (not final yet, held, dust).
+    pub coins_after: u32,
+    /// The account's coins not final yet (neither confirmed nor
+    /// InstantSend-locked), which the round leaves.
+    pub not_final: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -350,6 +378,9 @@ pub(crate) struct CoinJoinRuntime {
     watched: Mutex<HashMap<WalletId, u64>>,
     refresher: Mutex<Option<JoinHandle<()>>>,
     listener: Mutex<Option<JoinHandle<()>>>,
+    /// Tests: stand-ins for a sweep's broadcast and chunk size.
+    #[cfg(test)]
+    pub(crate) sweep_hooks: Mutex<sweep_test_hooks::Hooks>,
 }
 
 impl CoinJoinRuntime {
@@ -363,6 +394,8 @@ impl CoinJoinRuntime {
             watched: Mutex::new(HashMap::new()),
             refresher: Mutex::new(None),
             listener: Mutex::new(None),
+            #[cfg(test)]
+            sweep_hooks: Mutex::default(),
         }
     }
 
@@ -376,6 +409,17 @@ impl CoinJoinRuntime {
 
     fn is_mixing(&self, id: &WalletId) -> bool {
         self.mixers().get(id).is_some_and(|m| m.mixing)
+    }
+
+    /// The wallet mixes, or a session of it is still open.
+    fn busy(&self, id: &WalletId) -> bool {
+        (self.mixers().get(id)).is_some_and(|m| m.mixing || !m.sessions.is_empty())
+    }
+
+    /// Tests: marks `id` mixing (or not) without starting its loop.
+    #[cfg(test)]
+    pub(crate) fn set_mixing_for_test(&self, id: WalletId, mixing: bool) {
+        self.mixers().entry(id).or_default().mixing = mixing;
     }
 
     fn any_mixing(&self) -> bool {
@@ -2207,31 +2251,173 @@ impl NetworkSession {
         .await
     }
 
-    /// The CoinJoin account's coins above the threshold, in sweep chunks.
+    /// The CoinJoin account's coins a sweep to `target` takes, in its
+    /// chunks: free, spendable at the tip, on a CoinJoin path, above the
+    /// threshold, and an input of no sweep chunk that may be on the network
+    /// ([`SweepOut`]); trusted for a move to the wallet, final (confirmed or
+    /// InstantSend-locked) for a consolidation, whose outputs a drain of the
+    /// account then spends (iOS #1221: an unconfirmed input that never locks
+    /// would hold every coin swept with it).
     async fn sweep_coins(
         &self,
+        wallet_id: WalletId,
         fence: &CoinFence,
-    ) -> Result<(Vec<MixViewCoin>, Vec<dw_coinjoin::recovery::SweepChunk>), EngineError> {
+        target: SweepTarget,
+    ) -> Result<SweepCoins, EngineError> {
         let view = self.mix_view(fence).await?;
-        let coins: Vec<MixViewCoin> = view
+        let out = self.live_sweep_outs(wallet_id, &view).await?;
+        let held: HashSet<OutPoint> = out.iter().flat_map(|o| o.inputs.iter().copied()).collect();
+        let network = self.network.core_network();
+        let account: Vec<&MixViewCoin> = view
             .coins
-            .into_iter()
+            .iter()
+            .filter(|c| c.coin.coinjoin_account)
+            .collect();
+        let not_final = account.iter().filter(|c| !c.final_enough()).count() as u32;
+        let coins: Vec<MixViewCoin> = account
+            .iter()
             .filter(|c| {
-                c.coin.coinjoin_account
-                    && c.free()
-                    && c.trusted()
+                c.free()
+                    && !held.contains(&c.coin.utxo.outpoint)
+                    && match target {
+                        SweepTarget::Bip44 => c.trusted(),
+                        SweepTarget::CoinJoin => c.final_enough(),
+                    }
                     && c.coin.utxo.is_spendable(view.height)
                     && c.path
                         .as_ref()
-                        .is_some_and(|p| is_coinjoin_path(p, self.network.core_network()))
+                        .is_some_and(|p| is_coinjoin_path(p, network))
             })
+            .map(|c| (*c).clone())
             .collect();
         let values: Vec<u64> = coins.iter().map(MixViewCoin::value).collect();
-        let chunks = dw_coinjoin::recovery::plan_sweep(&values, crate::send::MIN_FEE_PER_KB);
-        Ok((coins, chunks))
+        let max_inputs = sweep_max_inputs(self);
+        let fee = crate::send::MIN_FEE_PER_KB;
+        let chunks = match target {
+            SweepTarget::Bip44 => {
+                dw_coinjoin::recovery::plan_sweep_chunked(&values, fee, max_inputs)
+            }
+            SweepTarget::CoinJoin => {
+                dw_coinjoin::recovery::plan_consolidation(&values, fee, max_inputs)
+            }
+        };
+        let swept: usize = chunks.iter().map(|c| c.coins.len()).sum();
+        Ok(SweepCoins {
+            coins_after: (account.len() - swept + chunks.len()) as u32,
+            not_final,
+            height: view.height,
+            coins,
+            chunks,
+        })
     }
 
-    /// What "Move mixed coins" would broadcast. Reads coins only.
+    /// `wallet_id`'s sweep chunks that may be on the network, read from
+    /// `app.sqlite`; a record whose chunk can no longer go through (one of
+    /// its inputs is no coin of the wallet's: the chunk or a conflict was
+    /// seen) or that expired ([`SWEEP_OUT_BLOCKS`]) is dropped.
+    async fn live_sweep_outs(
+        &self,
+        wallet_id: WalletId,
+        view: &MixView,
+    ) -> Result<Vec<SweepOut>, EngineError> {
+        let scope = dw_appdb::local_scope(&wallet_id.to_string());
+        let read_scope = scope.clone();
+        let rows = self
+            .appdb_op(move |db| db.settings_with_prefix(&read_scope, SWEEP_OUT_PREFIX))
+            .await?;
+        let unspent: HashSet<OutPoint> = view.coins.iter().map(|c| c.coin.utxo.outpoint).collect();
+        let (mut live, mut gone) = (Vec::new(), Vec::new());
+        for (key, value) in rows {
+            match SweepOut::decode(&key, &value) {
+                Some(o)
+                    if o.inputs.iter().all(|i| unspent.contains(i))
+                        && view.height < o.height.saturating_add(SWEEP_OUT_BLOCKS) =>
+                {
+                    live.push(o)
+                }
+                _ => gone.push(key),
+            }
+        }
+        if !gone.is_empty() {
+            self.appdb_op(move |db| {
+                let writes: Vec<(&str, Option<&str>)> =
+                    gone.iter().map(|k| (k.as_str(), None)).collect();
+                db.set_settings_durable(&scope, &writes)
+            })
+            .await?;
+        }
+        Ok(live)
+    }
+
+    /// Records (`Some(height)`) or drops (`None`) the sweep chunks `txs`,
+    /// durably, in one write.
+    async fn write_sweep_outs(
+        &self,
+        wallet_id: WalletId,
+        txs: &[&Transaction],
+        height: Option<u32>,
+    ) -> Result<(), EngineError> {
+        if txs.is_empty() {
+            return Ok(());
+        }
+        let scope = dw_appdb::local_scope(&wallet_id.to_string());
+        let rows: Vec<(String, Option<String>)> = txs
+            .iter()
+            .map(|tx| {
+                let o = SweepOut {
+                    txid: tx.txid(),
+                    height: height.unwrap_or(0),
+                    inputs: tx.input.iter().map(|i| i.previous_output).collect(),
+                };
+                (o.key(), height.map(|_| o.value()))
+            })
+            .collect();
+        self.appdb_op(move |db| {
+            let writes: Vec<(&str, Option<&str>)> = rows
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_deref()))
+                .collect();
+            db.set_settings_durable(&scope, &writes)
+        })
+        .await
+    }
+
+    /// Refuses a sweep's plan or broadcast while `wallet_id` mixes: a
+    /// session's coins may be in a masternode's hands, and the account the
+    /// sweep reads is the one mixing writes.
+    fn refuse_while_mixing(&self, wallet_id: WalletId) -> Result<(), EngineError> {
+        if self.coinjoin.busy(&wallet_id) {
+            return Err(CoinJoinFailure::MixingActive.into());
+        }
+        Ok(())
+    }
+
+    /// The plan of a sweep to `target`: its chunks and how much of it is
+    /// fully mixed. Reads coins only.
+    async fn sweep_plan(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+        target: SweepTarget,
+    ) -> Result<(SweepCoins, MixedAmounts), EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.refuse_while_mixing(wallet_id)?;
+            let picked = {
+                let fence = this.coin_fence(wallet_id).await?;
+                this.sweep_coins(wallet_id, &fence, target).await?
+            };
+            if picked.chunks.is_empty() {
+                return Err(CoinJoinFailure::NothingToMove.into());
+            }
+            let amounts = picked.amounts();
+            Ok((picked, amounts))
+        })
+        .await
+    }
+
+    /// What "Move mixed coins" would broadcast. Reads coins only. Refused
+    /// while the wallet mixes (`coinjoin.mixing_active`).
     pub async fn mixed_coins_sweep_plan(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -2242,35 +2428,39 @@ impl NetworkSession {
                 "NetworkSession.mixed_coins_sweep_plan.shielded".into(),
             ));
         }
-        let this = Arc::clone(self);
-        self.on_runtime(async move {
-            let _op = this.enter().await?;
-            let (_, chunks) = {
-                let fence = this.coin_fence(wallet_id).await?;
-                this.sweep_coins(&fence).await?
-            };
-            if chunks.is_empty() {
-                return Err(CoinJoinFailure::NothingToMove.into());
-            }
-            Ok(SweepPlan {
-                destination,
-                total: chunks.iter().map(|c| c.amount + c.fee).sum(),
-                chunks: chunks
-                    .iter()
-                    .map(|c| SweepChunkInfo {
-                        inputs: c.coins.len() as u32,
-                        amount: c.amount,
-                        fee: c.fee,
-                    })
-                    .collect(),
-            })
+        let (picked, amounts) = self.sweep_plan(wallet_id, SweepTarget::Bip44).await?;
+        Ok(SweepPlan {
+            destination,
+            total: picked.total(),
+            chunks: picked.chunk_infos(),
+            fully_mixed: amounts.fully_mixed,
+            not_fully_mixed: amounts.not_fully_mixed,
         })
-        .await
+    }
+
+    /// The consolidation round before a move to Shielded (iOS #1221): the
+    /// CoinJoin account's final coins in the fewest chunks of at most 500
+    /// inputs, each to one fresh address of the same CoinJoin account.
+    /// Reads coins only. Refused while the wallet mixes.
+    pub async fn mixed_coins_consolidation_plan(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+    ) -> Result<ConsolidationPlan, EngineError> {
+        let (picked, amounts) = self.sweep_plan(wallet_id, SweepTarget::CoinJoin).await?;
+        Ok(ConsolidationPlan {
+            total: picked.total(),
+            chunks: picked.chunk_infos(),
+            fully_mixed: amounts.fully_mixed,
+            not_fully_mixed: amounts.not_fully_mixed,
+            coins_after: picked.coins_after,
+            not_final: picked.not_final,
+        })
     }
 
     /// "Move mixed coins" (IOS-057): broadcasts the sweep chunks to fresh
     /// BIP44 receive addresses of the same wallet. `grant_id`: a `Spend`
     /// grant of at least the total. Stops at the first failing chunk.
+    /// Refused while the wallet mixes.
     pub async fn move_mixed_coins(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -2282,12 +2472,44 @@ impl NetworkSession {
                 "NetworkSession.move_mixed_coins.shielded".into(),
             ));
         }
+        self.sweep(wallet_id, SweepTarget::Bip44, grant_id).await
+    }
+
+    /// Runs the consolidation round of [`Self::mixed_coins_consolidation_plan`]:
+    /// every chunk pays one fresh address of the wallet's own CoinJoin
+    /// account, never BIP44. `grant_id`: a `Spend` grant of at least the
+    /// plan's total. Stops at the first failing chunk, as a move does.
+    pub async fn consolidate_mixed_coins(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+        grant_id: String,
+    ) -> Result<SweepResult, EngineError> {
+        self.sweep(wallet_id, SweepTarget::CoinJoin, grant_id).await
+    }
+
+    /// The sweep of [`Self::move_mixed_coins`] and
+    /// [`Self::consolidate_mixed_coins`] to `target`.
+    ///
+    /// Every chunk is signed and its inputs reserved under the coin fence;
+    /// the chunks are recorded in `app.sqlite` ([`SweepOut`]) before the
+    /// first is handed to the network, so a restart, which forgets the
+    /// reservations, still keeps their inputs out of the next sweep and the
+    /// next drain until the wallet sees them spent. The broadcasts run in
+    /// order and the first failure stops the sweep ([`settle_sweep_failure`]);
+    /// the records of the chunks it never handed off are dropped.
+    async fn sweep(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+        target: SweepTarget,
+        grant_id: String,
+    ) -> Result<SweepResult, EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
             if !this.vault.has_wallet_secret(&wallet_id.0) {
                 return Err(CoinJoinFailure::WatchOnly.into());
             }
+            this.refuse_while_mixing(wallet_id)?;
             // A sweep takes every mixed coin: none while the dispatch
             // journal, which holds signed locks' inputs, is not read
             // (review Opus closure C-1).
@@ -2299,12 +2521,13 @@ impl NetworkSession {
             // Held from the coin read through every chunk's signing and
             // reservation; released before the broadcasts (`coins.rs`).
             let fence = this.coin_fence(wallet_id).await?;
-            let (coins, chunks) =
-                (this.replay_guarded(wallet_id, this.sweep_coins(&fence))).await?;
-            if chunks.is_empty() {
+            let picked = (this
+                .replay_guarded(wallet_id, this.sweep_coins(wallet_id, &fence, target)))
+            .await?;
+            if picked.chunks.is_empty() {
                 return Err(CoinJoinFailure::NothingToMove.into());
             }
-            let total: u64 = chunks.iter().map(|c| c.amount + c.fee).sum();
+            let total = picked.total();
             let vault = this.vault.clone();
             let signer = tokio::task::spawn_blocking(move || {
                 let token = vault.redeem_grant(
@@ -2334,25 +2557,47 @@ impl NetworkSession {
             };
             // Every chunk is signed and reserved under the fence, then
             // broadcast in order; the first failure stops the sweep.
-            let mut signed: Vec<(Transaction, u64)> = Vec::with_capacity(chunks.len());
+            let mut signed: Vec<(Transaction, u64)> = Vec::with_capacity(picked.chunks.len());
+            // A consolidation's reserved CoinJoin address, per signed chunk.
+            let mut addresses: Vec<Address> = Vec::new();
             let mut sign_failure = None;
-            for chunk in &chunks {
-                let dest = match wallet.core().next_receive_address_for_account(0).await {
+            let release_all = |signed: &[(Transaction, u64)]| {
+                for (unsent, _) in signed {
+                    this.spends
+                        .release(&wallet_id, SpendOwner::Tx(unsent.txid()));
+                }
+            };
+            for chunk in &picked.chunks {
+                let dest = match target {
+                    SweepTarget::Bip44 => wallet
+                        .core()
+                        .next_receive_address_for_account(0)
+                        .await
+                        .map_err(EngineError::from),
+                    SweepTarget::CoinJoin => this
+                        .reserve_coinjoin_addresses(wallet_id, 1, false)
+                        .await
+                        .and_then(|a| {
+                            a.into_iter()
+                                .next()
+                                .ok_or_else(|| EngineError::Internal("no CoinJoin address".into()))
+                        }),
+                };
+                let dest = match dest {
                     Ok(dest) => dest,
                     Err(e) => {
                         // Nothing was broadcast: give back every reservation.
-                        for (unsent, _) in &signed {
-                            this.spends
-                                .release(&wallet_id, SpendOwner::Tx(unsent.txid()));
-                        }
-                        return Err(e.into());
+                        release_all(&signed);
+                        this.release_coinjoin_addresses(wallet_id, &addresses).await;
+                        return Err(e);
                     }
                 };
-                let picked: Vec<&MixViewCoin> = chunk.coins.iter().map(|i| &coins[*i]).collect();
+                let picked_coins: Vec<&MixViewCoin> =
+                    chunk.coins.iter().map(|i| &picked.coins[*i]).collect();
                 let mut tx = Transaction {
                     version: 2,
                     lock_time: 0,
-                    input: picked
+                    input: picked_coins
                         .iter()
                         .map(|c| unsigned_input(c.coin.utxo.outpoint))
                         .collect(),
@@ -2362,7 +2607,7 @@ impl NetworkSession {
                     }],
                     special_transaction_payload: None,
                 };
-                let to_sign: Vec<(usize, ScriptBuf, DerivationPath)> = picked
+                let to_sign: Vec<(usize, ScriptBuf, DerivationPath)> = picked_coins
                     .iter()
                     .enumerate()
                     .filter_map(|(i, c)| {
@@ -2373,6 +2618,9 @@ impl NetworkSession {
                     .collect();
                 if let Err(e) = sign_p2pkh_inputs(&signer, &mut tx, &to_sign, SIGHASH_ALL).await {
                     sign_failure = Some(e.code().to_string());
+                    if target == SweepTarget::CoinJoin {
+                        this.release_coinjoin_addresses(wallet_id, &[dest]).await;
+                    }
                     break;
                 }
                 this.spends.reserve(
@@ -2381,10 +2629,19 @@ impl NetworkSession {
                     tx.input.iter().map(|i| i.previous_output),
                 );
                 signed.push((tx, chunk.amount + chunk.fee));
+                if target == SweepTarget::CoinJoin {
+                    addresses.push(dest);
+                }
+            }
+            let txs: Vec<&Transaction> = signed.iter().map(|(tx, _)| tx).collect();
+            if let Err(e) = (this.write_sweep_outs(wallet_id, &txs, Some(picked.height))).await {
+                release_all(&signed);
+                this.release_coinjoin_addresses(wallet_id, &addresses).await;
+                return Err(e);
             }
             drop(fence);
             for (n, (tx, value)) in signed.iter().enumerate() {
-                match wallet.core().broadcast_transaction(tx).await {
+                match broadcast_sweep(&this, &wallet, tx).await {
                     Ok(txid) => {
                         this.hub.note_announced(txid);
                         result.txids.push(txid.to_string());
@@ -2392,10 +2649,19 @@ impl NetworkSession {
                         result.remaining -= value;
                     }
                     Err(e) => {
-                        let (code, unknown) =
-                            settle_sweep_failure(&this.spends, wallet_id, &signed, n, &e);
-                        result.failure_code = Some(code);
-                        result.unknown_txid = unknown.map(|t| t.to_string());
+                        let settled = settle_sweep_failure(&this.spends, wallet_id, &signed, n, &e);
+                        let unsent: Vec<&Transaction> =
+                            signed[settled.unsent..].iter().map(|(tx, _)| tx).collect();
+                        if let Err(e) = this.write_sweep_outs(wallet_id, &unsent, None).await {
+                            // Kept: the inputs wait out the record's expiry.
+                            tracing::warn!(error = %e, "could not drop unsent sweep chunks");
+                        }
+                        if target == SweepTarget::CoinJoin {
+                            let unused = addresses.get(settled.unsent..).unwrap_or_default();
+                            this.release_coinjoin_addresses(wallet_id, unused).await;
+                        }
+                        result.failure_code = Some(settled.code);
+                        result.unknown_txid = settled.unknown.map(|t| t.to_string());
                         break;
                     }
                 }
@@ -2414,6 +2680,190 @@ impl NetworkSession {
     }
 }
 
+/// Where a sweep pays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SweepTarget {
+    /// A fresh BIP44 receive address per chunk ("Move mixed coins").
+    Bip44,
+    /// A fresh address of the same CoinJoin account per chunk (the
+    /// consolidation before a move to Shielded).
+    CoinJoin,
+}
+
+/// A sweep's coins and chunks ([`NetworkSession::sweep_coins`]).
+struct SweepCoins {
+    coins: Vec<MixViewCoin>,
+    chunks: Vec<dw_coinjoin::recovery::SweepChunk>,
+    /// The CoinJoin account's coins once the chunks confirm: each chunk's
+    /// output and every coin the sweep leaves.
+    coins_after: u32,
+    /// The CoinJoin account's coins not final yet.
+    not_final: u32,
+    /// The wallet height the coins were read at.
+    height: u32,
+}
+
+/// What a sweep moves, by how mixed it is.
+struct MixedAmounts {
+    fully_mixed: u64,
+    not_fully_mixed: u64,
+}
+
+impl SweepCoins {
+    fn total(&self) -> u64 {
+        self.chunks.iter().map(|c| c.amount + c.fee).sum()
+    }
+
+    fn chunk_infos(&self) -> Vec<SweepChunkInfo> {
+        self.chunks
+            .iter()
+            .map(|c| SweepChunkInfo {
+                inputs: c.coins.len() as u32,
+                amount: c.amount,
+                fee: c.fee,
+            })
+            .collect()
+    }
+
+    fn amounts(&self) -> MixedAmounts {
+        let mut out = MixedAmounts {
+            fully_mixed: 0,
+            not_fully_mixed: 0,
+        };
+        for coin in self
+            .chunks
+            .iter()
+            .flat_map(|c| &c.coins)
+            .map(|i| &self.coins[*i])
+        {
+            if coin.fully_mixed {
+                out.fully_mixed += coin.value();
+            } else {
+                out.not_fully_mixed += coin.value();
+            }
+        }
+        out
+    }
+}
+
+/// The key prefix, in a wallet's local scope of `app.sqlite`, of its sweep
+/// chunks that may be on the network ([`SweepOut`]).
+const SWEEP_OUT_PREFIX: &str = "coinjoin.sweep_out.";
+
+/// Blocks after which a sweep chunk the wallet never saw no longer holds
+/// its inputs: about a day on mainnet, where a chunk paying the relay fee
+/// confirms in the next blocks if it ever reached a peer.
+pub(crate) const SWEEP_OUT_BLOCKS: u32 = 576;
+
+/// A sweep chunk that may be on the network: signed and recorded before its
+/// broadcast, dropped once it definitely was not sent, once the wallet sees
+/// one of its inputs spent (by it or by a conflict), or after
+/// [`SWEEP_OUT_BLOCKS`]. Until then its inputs are in no sweep (and in no
+/// drain of the CoinJoin account): a restart forgets the in-memory
+/// reservation, and the wallet records a sweep only when SPV sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SweepOut {
+    pub(crate) txid: Txid,
+    /// The wallet height when it was signed.
+    pub(crate) height: u32,
+    pub(crate) inputs: Vec<OutPoint>,
+}
+
+impl SweepOut {
+    fn key(&self) -> String {
+        format!("{SWEEP_OUT_PREFIX}{}", self.txid)
+    }
+
+    /// `<height> <txid:vout>…`.
+    fn value(&self) -> String {
+        let mut out = self.height.to_string();
+        for i in &self.inputs {
+            out.push(' ');
+            out.push_str(&i.to_string());
+        }
+        out
+    }
+
+    fn decode(key: &str, value: &str) -> Option<Self> {
+        let txid = key.strip_prefix(SWEEP_OUT_PREFIX)?.parse().ok()?;
+        let mut parts = value.split_whitespace();
+        let height = parts.next()?.parse().ok()?;
+        let inputs = parts
+            .map(str::parse)
+            .collect::<Result<Vec<OutPoint>, _>>()
+            .ok()?;
+        (!inputs.is_empty()).then_some(Self {
+            txid,
+            height,
+            inputs,
+        })
+    }
+}
+
+/// Tests: a session's stand-ins for a sweep's broadcast and its chunk
+/// size ([`CoinJoinRuntime::sweep_hooks`]).
+#[cfg(test)]
+pub(crate) mod sweep_test_hooks {
+    use std::sync::Arc;
+
+    use dashcore::{Transaction, Txid};
+
+    pub(crate) type Broadcast = Arc<
+        dyn Fn(&Transaction) -> Result<Txid, Box<platform_wallet::PlatformWalletError>>
+            + Send
+            + Sync,
+    >;
+
+    #[derive(Clone, Default)]
+    pub(crate) struct Hooks {
+        pub(crate) broadcast: Option<Broadcast>,
+        pub(crate) max_inputs: Option<usize>,
+    }
+}
+
+#[cfg(test)]
+fn sweep_hooks(session: &NetworkSession) -> sweep_test_hooks::Hooks {
+    (session.coinjoin.sweep_hooks.lock())
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+}
+
+/// Inputs per sweep chunk.
+fn sweep_max_inputs(_session: &NetworkSession) -> usize {
+    #[cfg(test)]
+    if let Some(max) = sweep_hooks(_session).max_inputs {
+        return max;
+    }
+    dw_coinjoin::recovery::SWEEP_MAX_INPUTS
+}
+
+/// Hands a signed sweep chunk to the network.
+async fn broadcast_sweep(
+    _session: &NetworkSession,
+    wallet: &platform_wallet::PlatformWallet,
+    tx: &Transaction,
+) -> Result<Txid, Box<platform_wallet::PlatformWalletError>> {
+    #[cfg(test)]
+    if let Some(hook) = sweep_hooks(_session).broadcast {
+        return hook(tx);
+    }
+    wallet
+        .core()
+        .broadcast_transaction(tx)
+        .await
+        .map_err(Box::new)
+}
+
+/// How a sweep that stopped at a chunk's broadcast ends.
+struct SweepSettled {
+    code: String,
+    /// The chunk that may be on the network.
+    unknown: Option<Txid>,
+    /// The first chunk never handed to the network: it and every later
+    /// one were released.
+    unsent: usize,
+}
+
 /// "Move mixed coins" stopped at chunk `n` of `signed` with `e`: releases
 /// the claims of the chunks never handed to the network and returns the
 /// sweep's failure code. Only dash-spv's rejection before the network took
@@ -2429,7 +2879,7 @@ fn settle_sweep_failure(
     signed: &[(Transaction, u64)],
     n: usize,
     e: &platform_wallet::PlatformWalletError,
-) -> (String, Option<dashcore::Txid>) {
+) -> SweepSettled {
     let (unsent, code) = match e {
         platform_wallet::PlatformWalletError::TransactionBroadcast(reason) => (
             n,
@@ -2441,11 +2891,16 @@ fn settle_sweep_failure(
         ),
         _ => (n + 1, "coinjoin.broadcast_unknown"),
     };
-    for (tx, _) in &signed[unsent.min(signed.len())..] {
+    let unsent = unsent.min(signed.len());
+    for (tx, _) in &signed[unsent..] {
         spends.release(&wallet_id, SpendOwner::Tx(tx.txid()));
     }
     let unknown = (unsent > n).then(|| signed.get(n).map(|(tx, _)| tx.txid()));
-    (code.to_owned(), unknown.flatten())
+    SweepSettled {
+        code: code.to_owned(),
+        unknown: unknown.flatten(),
+        unsent,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2732,6 +3187,10 @@ pub(crate) fn fully_mixed_candidates(view: &MixView) -> Vec<Utxo> {
 }
 
 #[cfg(test)]
+#[path = "coinjoin_sweep_tests.rs"]
+mod sweep_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2769,7 +3228,7 @@ mod tests {
 
         let spends = crate::send::PendingSpends::default();
         reserve(&spends);
-        let (code, unknown) = settle_sweep_failure(
+        let SweepSettled { code, unknown, .. } = settle_sweep_failure(
             &spends,
             wallet,
             &signed,
@@ -2785,7 +3244,7 @@ mod tests {
 
         let spends = crate::send::PendingSpends::default();
         reserve(&spends);
-        let (code, unknown) = settle_sweep_failure(
+        let SweepSettled { code, unknown, .. } = settle_sweep_failure(
             &spends,
             wallet,
             &signed,
@@ -2798,7 +3257,7 @@ mod tests {
 
         let spends = crate::send::PendingSpends::default();
         reserve(&spends);
-        let (code, unknown) = settle_sweep_failure(
+        let SweepSettled { code, unknown, .. } = settle_sweep_failure(
             &spends,
             wallet,
             &signed,
@@ -2915,6 +3374,31 @@ mod tests {
         // A's coin plus the not-fully-mixed denominations (B and C groups).
         assert_eq!(b.anonymizable, 50_000_000 + d + d);
         assert_eq!(average, 2.0);
+    }
+
+    /// Q4: the plan names how much of the move is fully mixed; the rest of
+    /// the account goes with it.
+    #[test]
+    fn a_sweep_splits_its_value_by_how_mixed_it_is() {
+        let coins = vec![
+            coin(1, 5_000, true, 4, true, A),
+            coin(2, 7_000, true, 1, false, B),
+            coin(3, 9_000, true, 4, true, C),
+        ];
+        let picked = SweepCoins {
+            chunks: vec![dw_coinjoin::recovery::SweepChunk {
+                coins: vec![0, 1, 2],
+                amount: 20_000,
+                fee: 1_000,
+            }],
+            coins,
+            coins_after: 1,
+            not_final: 0,
+            height: 0,
+        };
+        let a = picked.amounts();
+        assert_eq!((a.fully_mixed, a.not_fully_mixed), (14_000, 7_000));
+        assert_eq!(a.fully_mixed + a.not_fully_mixed, picked.total());
     }
 
     #[test]

@@ -3,4 +3,4 @@
 /**
  * `CoinJoinFailure`: a CoinJoin call failed.
  */
-export type CoinJoinCode = "coinjoin.disabled" | "coinjoin.watch_only" | "coinjoin.insufficient_funds" | "coinjoin.vault_locked" | "coinjoin.grant_invalid" | "coinjoin.nothing_to_move" | "coinjoin.spv_not_running" | "coinjoin.no_peers" | "coinjoin.broadcast_rejected";
+export type CoinJoinCode = "coinjoin.disabled" | "coinjoin.watch_only" | "coinjoin.insufficient_funds" | "coinjoin.vault_locked" | "coinjoin.grant_invalid" | "coinjoin.nothing_to_move" | "coinjoin.spv_not_running" | "coinjoin.no_peers" | "coinjoin.broadcast_rejected" | "coinjoin.mixing_active";
