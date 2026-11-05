@@ -2303,7 +2303,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   move again once it settles (no time bound: only a proved read settles it); a send (`platform_send_quote`,
   `platform_send`) is refused the same way, beside a held send that is not its exact retry, or while its exact
   retry's send is still `pending`. The host says so ("An earlier payment or move from Platform may still
-  go through. Wait for it to finish, or pay the same address the same amount again: only that retry can go now.";
+  go through. Wait for it to finish, or press Retry that payment: only that same payment can go now.";
   the result sheet of a send that may still land offers that retry) and refuses before asking for the
   passphrase.
   `credits.recipient_invalid{reason}` (data `reason`: `core`, `shielded`, `network`, `own`, `malformed`) is a send's

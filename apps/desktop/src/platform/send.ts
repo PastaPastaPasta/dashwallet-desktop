@@ -70,7 +70,7 @@ export const SEND_COPY = {
   noRetry: "This payment can no longer be retried from here. Check Activity, then send it again if it did not go through.",
   waiting: "A payment or move from Platform is not confirmed yet. Pay again once Activity shows that it went through.",
   /** `credits.move_pending` from the quote or the send: an earlier one may still go through. */
-  held: "An earlier payment or move from Platform may still go through. Wait for it to finish, or pay the same address the same amount again: only that retry can go now.",
+  held: "An earlier payment or move from Platform may still go through. Wait for it to finish, or press Retry that payment: only that same payment can go now.",
   /** `invalid_argument` from the send: its operation is unknown or used. */
   expired: "This payment's details expired. Review it again.",
   retry: "Retry this payment",

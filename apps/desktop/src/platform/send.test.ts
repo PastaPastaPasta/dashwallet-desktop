@@ -350,7 +350,7 @@ describe("Pay from Platform", () => {
       "Not enough on your Platform addresses: 0.02 tDASH needed with the fee, 0.01 tDASH available.",
     );
     expect(sendErrorText(appError("credits.move_pending", { kind: "artifact", artifact: "ps-1" }), credits)).toBe(
-      "An earlier payment or move from Platform may still go through. Wait for it to finish, or pay the same address the same amount again: only that retry can go now.",
+      "An earlier payment or move from Platform may still go through. Wait for it to finish, or press Retry that payment: only that same payment can go now.",
     );
     expect(sendErrorText(appError("platform.broadcast_unknown", { kind: "artifact", artifact: "x" }), credits)).toMatch(/may have been sent/);
   });

@@ -150,7 +150,7 @@ test.describe("Pay from Platform", () => {
     await page.getByTestId("platform-send-done").click();
     await page.getByTestId("pay-address").fill("tdash1sq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h");
     await page.getByTestId("platform-send-intro").waitFor();
-    await expect(page.getByTestId("pay-problem")).toContainText("Wait for it to finish, or pay the same address the same amount again");
+    await expect(page.getByTestId("pay-problem")).toContainText("Wait for it to finish, or press Retry that payment");
     await expect(page.getByTestId("pay-continue")).toBeDisabled();
   });
 
