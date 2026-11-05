@@ -97,6 +97,19 @@ pub(crate) fn fixture(encrypted: bool) -> Fixture {
 }
 
 impl Fixture {
+    /// A restart: the session closes and opens again on the same data
+    /// root, and every in-memory state (reservations, coins credited by
+    /// hand, history, hooks) is gone.
+    pub(crate) fn reopen(&mut self) {
+        self.engine
+            .block_on(self.engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+        self.session = self
+            .engine
+            .block_on(self.engine.open_network(DashNetwork::Regtest, options()))
+            .unwrap();
+    }
+
     pub(crate) fn grant(&self, purpose: GrantPurpose, credential: Credential<'_>) -> String {
         self.session
             .vault()

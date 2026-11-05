@@ -11,7 +11,8 @@ use dw_engine::coinjoin::{
     AmountAndRounds, CoinJoinBalances as EngineBalances, CoinJoinStatus as EngineStatus,
     ConsolidationPlan,
     MixingState, PoolMessage, PoolState, ProgressInfo, RecoveryReport, SessionInfo, StatusCode,
-    StopReason, SweepChunkInfo, SweepDestination, SweepPlan, SweepResult, Unavailable,
+    StopReason, SweepChunkInfo, SweepDestination, SweepPlan, SweepResend, SweepResendState,
+    SweepResult, Unavailable,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -618,9 +619,43 @@ pub struct MixedCoinsSweepResult {
     /// The code of the error that stopped the sweep; `null` when complete.
     pub failure_code: Option<String>,
     /// With `coinjoin.broadcast_unknown`: the chunk that may be on the
-    /// network (display txid), its coins reserved until the wallet sees
-    /// them spent.
+    /// network (display txid), its coins reserved until the wallet sees it
+    /// or a block spends one of them otherwise; `resend_mixed_coins` sends
+    /// its recorded bytes again.
     pub unknown_txid: Option<String>,
+}
+
+/// What sending a recorded chunk again came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum MixedCoinsResendState {
+    /// The network took it; its coins stay reserved until the wallet sees it.
+    Sent,
+    /// No verdict, or refused this time (a peer may hold the first send):
+    /// its coins stay reserved, and it is sent again on the next reconnect.
+    Unknown,
+    /// The wallet saw it, or a block spent one of its coins in another
+    /// transaction: nothing is held for it any more.
+    Resolved,
+}
+
+mirror_enum!(SweepResendState => MixedCoinsResendState { Sent, Unknown, Resolved });
+
+/// One recorded chunk sent again (display txid).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MixedCoinsResend {
+    pub txid: String,
+    pub state: MixedCoinsResendState,
+}
+
+impl From<SweepResend> for MixedCoinsResend {
+    fn from(r: SweepResend) -> Self {
+        MixedCoinsResend {
+            txid: r.txid.to_string(),
+            state: r.state.into(),
+        }
+    }
 }
 
 impl From<SweepResult> for MixedCoinsSweepResult {
@@ -779,6 +814,19 @@ commands! {
         let id = parse_wallet_id(&wallet_id)?;
         let session = state.session().await?;
         Ok(session.consolidate_mixed_coins(id, grant_id).await?.into())
+    }
+
+    /// "Try again" on a chunk of unknown outcome: sends the transaction
+    /// recorded for it, never signing again. `txid`: that chunk (display
+    /// txid); `null`: every recorded chunk. Refused while a move of the
+    /// wallet runs.
+    #[facade("NetworkSession::resend_mixed_coins")]
+    fn resend_mixed_coins(state, wallet_id: String, txid: Option<String>) -> Vec<MixedCoinsResend> {
+        let id = parse_wallet_id(&wallet_id)?;
+        let txid = txid.as_deref().map(crate::dto::parse_txid).transpose()?;
+        let session = state.session().await?;
+        let sent = session.resend_mixed_coins(id, txid).await?;
+        Ok(sent.into_iter().map(Into::into).collect())
     }
 }
 

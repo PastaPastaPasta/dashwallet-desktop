@@ -15,10 +15,15 @@ use platform_wallet::PlatformWalletError as Pw;
 
 use crate::EngineError;
 use crate::coinjoin::sweep_test_hooks::Hooks;
-use crate::coinjoin::{CoinJoinFailure, SweepDestination, SweepResult};
+use crate::coinjoin::{
+    CoinJoinFailure, SweepDestination, SweepResend, SweepResendState, SweepResult,
+};
 use crate::coins::TestPause;
+use crate::history::TxEntry;
 use crate::platform::lease::session_tests::{Fixture, fixture};
 use crate::send::SpendOwner;
+use dashcore::BlockHash;
+use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
 
 const COIN: u64 = 100_000_000;
 
@@ -102,12 +107,18 @@ fn forget_claims(f: &Fixture, txs: &[Transaction]) {
     assert!(f.session.spends.snapshot(&f.wallet).is_empty());
 }
 
-/// SPV saw `txs`: their inputs are no coins of the wallet any more.
+/// SPV saw `txs`: their inputs are no coins of the wallet any more, and
+/// the wallet's history holds them, in the mempool.
 fn see_spent(f: &Fixture, txs: &[Transaction]) {
-    let spent: HashSet<OutPoint> = txs
-        .iter()
-        .flat_map(|t| t.input.iter().map(|i| i.previous_output))
-        .collect();
+    drop_coins(f, &inputs(txs));
+    for tx in txs {
+        record_history(f, tx, None);
+    }
+}
+
+/// The CoinJoin account no longer holds the coins `spent`.
+fn drop_coins(f: &Fixture, spent: &HashSet<OutPoint>) {
+    let spent = spent.clone();
     let session = Arc::clone(&f.session);
     let id = f.wallet;
     f.engine
@@ -388,7 +399,8 @@ fn a_move_to_the_wallet_pays_bip44() {
 /// outcome, chunk 3 never sent. After a restart (the reservations gone)
 /// the next round takes chunk 3's coins only: nothing of chunks 1 and 2 is
 /// spent twice, and no extra chunk. Once SPV sees chunk 1, its record goes;
-/// chunk 2's inputs stay held until it is seen too.
+/// chunk 2's inputs stay held until it is seen too, however long that
+/// takes.
 #[test]
 fn an_interrupted_sweep_resumes_without_a_double_spend_or_an_extra_chunk() {
     for consolidation in [true, false] {
@@ -611,40 +623,283 @@ fn a_rejected_consolidation_gives_its_address_back() {
     assert_eq!(wire.txs()[0].output[0].script_pubkey, refused);
 }
 
-/// Which sweep records still hold their inputs: every input unspent and
-/// younger than [`SWEEP_OUT_BLOCKS`]; the rest, and rows that do not
-/// decode, are for dropping.
+/// The wallet's tip (processed and synced heights) moves up to `height`.
+fn advance(f: &Fixture, height: u32) {
+    let w = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
+    (f.engine).block_on(async {
+        let mut state = w.state_mut().await;
+        state.core_wallet.update_last_processed_height(height);
+        state.core_wallet.update_synced_height(height);
+    });
+    (f.session.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+        wallet_id: f.wallet.0,
+        height,
+    });
+}
+
+/// Q1 (Sol R1, Opus M1): a chunk of unknown outcome is never released on
+/// elapsed height. Recorded at height 0, it still holds its coins at 1_000
+/// (the old 576-block expiry long past) after a real restart: the session
+/// and its SQLite closed and opened again. The next move takes only the
+/// coins of the chunk that was never handed off.
 #[test]
-fn a_sweep_record_holds_while_its_inputs_are_unspent_and_it_is_young() {
-    use crate::coinjoin::{SWEEP_OUT_BLOCKS, SweepOut, split_sweep_outs};
-    let op = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
-    let record = |n: u8, height: u32, ins: &[u8]| {
-        let o = SweepOut {
-            txid: Txid::from_byte_array([100 + n; 32]),
-            height,
-            inputs: ins.iter().map(|i| op(*i)).collect(),
-        };
-        (o.key(), o.value())
-    };
-    let unspent: HashSet<OutPoint> = [1, 2, 3, 5].map(op).into();
-    let live = record(1, 900, &[1, 2]);
-    let input_gone = record(2, 900, &[3, 4]);
-    let expired = record(3, 1_000 - SWEEP_OUT_BLOCKS, &[5]);
-    let bad = ("coinjoin.sweep_out.nope".to_string(), "1 x".to_string());
-    let (held, mut gone) = split_sweep_outs(
-        vec![live, input_gone.clone(), expired.clone(), bad.clone()],
-        &unspent,
-        1_000,
+fn an_unseen_chunk_stays_held_past_the_old_expiry_across_a_reopen() {
+    let mut f = fixture(false);
+    let coins: Vec<OutPoint> = (1..=4).map(|n| f.credit_coinjoin(n, COIN)).collect();
+    let wire = hook(&f, 2, &[Outcome::Unknown]);
+    let first = move_to_wallet(&f).unwrap();
+    assert_eq!(
+        first.failure_code.as_deref(),
+        Some("coinjoin.broadcast_unknown")
     );
-    assert_eq!(held, [1, 2].map(op).into());
+    let sent = wire.txs();
+    assert_eq!(sent.len(), 1, "chunk 2 was never handed off");
+
+    f.reopen();
+    for n in 1..=4 {
+        f.credit_coinjoin(n, COIN);
+    }
+    advance(&f, 1_000);
+    assert!(f.session.spends.snapshot(&f.wallet).is_empty(), "a restart");
+    let wire = hook(&f, 2, &[]);
+    let second = move_to_wallet(&f).unwrap();
+    assert_eq!(second.failure_code, None);
+    let again = wire.txs();
+    assert_eq!(again.len(), 1, "only chunk 2's coins");
+    assert!(
+        inputs(&again).is_disjoint(&inputs(&sent)),
+        "chunk 1's coins stay held"
+    );
+    let held = inputs(&sent);
+    assert_eq!(
+        inputs(&again),
+        coins
+            .iter()
+            .copied()
+            .filter(|o| !held.contains(o))
+            .collect()
+    );
+    assert!(sweep_out_keys(&f).contains(&sent[0].txid()));
+}
+
+/// The wallet's history holds `tx`, in the mempool or (`Some(height)`) a
+/// block.
+fn record_history(f: &Fixture, tx: &Transaction, height: Option<u32>) {
+    let context = match height {
+        Some(h) => TransactionContext::InBlock(BlockInfo::new(h, BlockHash::all_zeros(), 0)),
+        None => TransactionContext::Mempool,
+    };
+    (f.session.hub.history).with_wallet(f.wallet, |h| {
+        h.txs.insert(tx.txid(), history_entry(tx.clone(), context));
+    });
+}
+
+fn history_entry(tx: Transaction, context: TransactionContext) -> TxEntry {
+    TxEntry {
+        tx,
+        context,
+        instant_locked: false,
+        first_seen: None,
+        own_inputs: Default::default(),
+        abandoned: false,
+    }
+}
+
+/// A transaction other than any chunk spending `input`.
+fn conflict(input: OutPoint) -> Transaction {
+    Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: input,
+            ..Default::default()
+        }],
+        output: vec![dashcore::TxOut {
+            value: COIN / 2,
+            script_pubkey: dashcore::ScriptBuf::new(),
+        }],
+        special_transaction_payload: None,
+    }
+}
+
+/// A block spends `input` in a transaction of its own: SPV drops the coin
+/// and records the spender, mined.
+fn mine_conflict(f: &Fixture, input: OutPoint) {
+    let tx = conflict(input);
+    drop_coins(f, &HashSet::from([input]));
+    record_history(f, &tx, Some(900));
+}
+
+fn resend(f: &Fixture, txid: Option<Txid>) -> Result<Vec<SweepResend>, EngineError> {
+    (f.engine).block_on(f.session.resend_mixed_coins(f.wallet, txid))
+}
+
+fn resent(txid: Txid, state: SweepResendState) -> Vec<SweepResend> {
+    vec![SweepResend { txid, state }]
+}
+
+/// Q1: "Try again" and every reconnect send the chunk's recorded bytes,
+/// never a new signature; a refusal of a send again (a peer may have the
+/// first) keeps the record and its coins. Only the wallet's sight of the
+/// chunk drops it. A txid the wallet records no chunk for is refused.
+#[test]
+fn a_chunk_is_sent_again_with_its_recorded_bytes_until_the_wallet_sees_it() {
+    let f = fixture(false);
+    f.credit_coinjoin(1, COIN);
+    f.credit_coinjoin(2, COIN);
+    let wire = hook(&f, 500, &[Outcome::Unknown]);
+    move_to_wallet(&f).unwrap();
+    let sent = wire.txs();
+    assert_eq!(sent.len(), 1);
+    let txid = sent[0].txid();
+    forget_claims(&f, &sent);
+
+    let wire = hook(&f, 500, &[Outcome::Rejected, Outcome::Unknown]);
+    assert_eq!(
+        resend(&f, Some(txid)).unwrap(),
+        resent(txid, SweepResendState::Unknown),
+        "a refusal of a send again is no verdict"
+    );
+    assert_eq!(sweep_out_keys(&f), HashSet::from([txid]));
+    assert!(
+        matches!(
+            move_to_wallet(&f),
+            Err(EngineError::CoinJoin(CoinJoinFailure::NothingToMove))
+        ),
+        "the coins stay held"
+    );
+    // A reconnect (SPV peers 0 -> 1) sends it again, in the background.
+    let peer: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+    dash_spv::EventHandler::on_network_event(
+        &*f.session.hub,
+        &dash_spv::network::NetworkEvent::PeerConnected { address: peer },
+    );
+    for _ in 0..2_000 {
+        if wire.txs().len() >= 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let wire_txs = wire.txs();
+    assert_eq!(wire_txs.len(), 2, "sent again on the reconnect");
+    for tx in &wire_txs {
+        assert_eq!(
+            dashcore::consensus::encode::serialize(tx),
+            dashcore::consensus::encode::serialize(&sent[0]),
+            "the recorded bytes, not a new signature"
+        );
+    }
+    assert_eq!(sweep_out_keys(&f), HashSet::from([txid]));
+
+    let wrong = Txid::from_byte_array([7; 32]);
+    assert!(matches!(
+        resend(&f, Some(wrong)),
+        Err(EngineError::InvalidArgument(_))
+    ));
+    see_spent(&f, &sent);
+    let wire = hook(&f, 500, &[]);
+    assert_eq!(
+        resend(&f, None).unwrap(),
+        resent(txid, SweepResendState::Resolved)
+    );
+    assert!(wire.txs().is_empty(), "a seen chunk is not sent");
+    assert!(sweep_out_keys(&f).is_empty());
+}
+
+/// Q1: a block spending one of a chunk's inputs in another transaction
+/// resolves it: the chunk can never confirm, its other inputs are free. A
+/// conflict only in the mempool resolves nothing.
+#[test]
+fn a_mined_conflict_frees_the_chunks_other_inputs() {
+    let f = fixture(false);
+    f.credit_coinjoin(1, COIN);
+    f.credit_coinjoin(2, COIN);
+    let wire = hook(&f, 500, &[Outcome::Unknown]);
+    move_to_wallet(&f).unwrap();
+    let sent = wire.txs();
+    forget_claims(&f, &sent);
+    let ins: Vec<OutPoint> = sent[0].input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(ins.len(), 2);
+
+    record_history(&f, &conflict(ins[0]), None);
+    hook(&f, 500, &[]);
+    assert!(
+        matches!(
+            move_to_wallet(&f),
+            Err(EngineError::CoinJoin(CoinJoinFailure::NothingToMove))
+        ),
+        "an unconfirmed conflict resolves nothing"
+    );
+    assert_eq!(sweep_out_keys(&f), HashSet::from([sent[0].txid()]));
+
+    mine_conflict(&f, ins[0]);
+    let wire = hook(&f, 500, &[]);
+    assert_eq!(move_to_wallet(&f).unwrap().failure_code, None);
+    assert_eq!(inputs(&wire.txs()), HashSet::from([ins[1]]));
+    assert!(!sweep_out_keys(&f).contains(&sent[0].txid()));
+}
+
+/// Which sweep records still hold their inputs: those the history neither
+/// holds nor conflicts in a block, however old; the rest, and rows that do
+/// not decode or whose bytes are not the transaction the key names, are
+/// for dropping.
+#[test]
+fn a_sweep_record_resolves_only_when_seen_or_conflicted_in_a_block() {
+    use crate::coinjoin::{SweepOut, held_inputs, split_sweep_outs};
+    let op = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+    let chunk = |ins: &[u8]| {
+        let mut tx = conflict(op(ins[0]));
+        tx.input.extend(ins[1..].iter().map(|i| dashcore::TxIn {
+            previous_output: op(*i),
+            ..Default::default()
+        }));
+        SweepOut { tx }
+    };
+    let row = |o: &SweepOut| (o.key(), o.value());
+    let pending = chunk(&[1, 2]);
+    let seen = chunk(&[3]);
+    let mined_conflict = chunk(&[4, 5]);
+    let mempool_conflict = chunk(&[6]);
+    let bad = ("coinjoin.sweep_out.nope".to_string(), "00".to_string());
+    let renamed = (pending.key(), seen.value());
+    let mut txs = std::collections::HashMap::new();
+    txs.insert(
+        seen.txid(),
+        history_entry(seen.tx.clone(), TransactionContext::Mempool),
+    );
+    let mut other = conflict(op(5));
+    other.lock_time = 1;
+    txs.insert(
+        other.txid(),
+        history_entry(
+            other,
+            TransactionContext::InBlock(BlockInfo::new(9, BlockHash::all_zeros(), 0)),
+        ),
+    );
+    let mut loose = conflict(op(6));
+    loose.lock_time = 2;
+    txs.insert(
+        loose.txid(),
+        history_entry(loose, TransactionContext::Mempool),
+    );
+    let (held, mut gone) = split_sweep_outs(
+        vec![
+            row(&pending),
+            row(&seen),
+            row(&mined_conflict),
+            row(&mempool_conflict),
+            bad.clone(),
+        ],
+        &txs,
+    );
+    assert_eq!(held, vec![pending.clone(), mempool_conflict.clone()]);
+    assert_eq!(held_inputs(&held), [1, 2, 6].map(op).into());
     gone.sort();
-    let mut want = vec![input_gone.0, expired.0, bad.0];
+    let mut want = vec![seen.key(), mined_conflict.key(), bad.0];
     want.sort();
     assert_eq!(gone, want);
-    // One block before expiry it still holds.
-    let young = record(4, 1_001 - SWEEP_OUT_BLOCKS, &[5]);
     assert_eq!(
-        split_sweep_outs(vec![young], &unspent, 1_000).0,
-        [5].map(op).into()
+        split_sweep_outs(vec![renamed.clone()], &txs).1,
+        vec![renamed.0]
     );
 }

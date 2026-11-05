@@ -106,6 +106,26 @@ describe("Move mixed coins to the wallet", () => {
     await expect(cmd.mixedCoinsSweepPlan(W, "wallet")).rejects.toMatchObject({ code: "coinjoin.nothing_to_move" });
   });
 
+  it("Try again on an unknown chunk sends its recorded transaction again: no grant, no new move", async () => {
+    installFixture({ scenario: "coinjoin-move-unknown" });
+    const api = new IpcBackend("fixture");
+    flow = new MoveMixedFlow(api, W);
+    flow.begin();
+    await until(() => flow.step !== "plan");
+    await move();
+    const txid = flow.result!.unknownTxid!;
+    const resend = vi.spyOn(api, "resendMixedCoins");
+    const moveAgain = vi.spyOn(api, "moveMixedCoins");
+    const authorize = vi.spyOn(api, "authorize");
+    await flow.resend();
+    expect(resend).toHaveBeenCalledWith(W, txid);
+    expect(moveAgain).not.toHaveBeenCalled();
+    expect(authorize).not.toHaveBeenCalled();
+    expect(flow).toMatchObject({ step: "done", resent: "unknown" });
+    expect(MOVE_COPY.resent.unknown).toContain("reserved");
+    await expect(cmd.resendMixedCoins(W, "ab".repeat(32))).rejects.toMatchObject({ code: "invalid_argument" });
+  });
+
   it("keeps a running move's result for the reopened sheet", async () => {
     await open("coinjoin-move");
     const done = move();

@@ -403,6 +403,9 @@ pub(crate) struct SessionHub {
     reconcile: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// The wallets with a reconcile started and not yet running.
     reconcile_pending: Mutex<HashSet<WalletId>>,
+    /// Runs on each SPV peers 0 -> >0 transition: the recorded sweep
+    /// chunks are sent again (`coinjoin`); unset in hub-only tests.
+    peers_up: OnceLock<Box<dyn Fn() + Send + Sync>>,
     /// Tests: holds the next first-seen write before it runs.
     #[cfg(test)]
     pub(crate) pause_seen: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -425,6 +428,7 @@ impl SessionHub {
             leases: std::sync::OnceLock::new(),
             reconcile: OnceLock::new(),
             reconcile_pending: Mutex::new(HashSet::new()),
+            peers_up: OnceLock::new(),
             #[cfg(test)]
             pause_seen: Mutex::new(None),
         }
@@ -438,6 +442,11 @@ impl SessionHub {
 
     fn lease_table(&self) -> Option<Arc<crate::platform::lease::LeaseTable>> {
         self.leases.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    /// Sets what runs on each SPV peers 0 -> >0 transition (once).
+    pub(crate) fn attach_peers_up(&self, run: Box<dyn Fn() + Send + Sync>) {
+        let _ = self.peers_up.set(run);
     }
 
     /// Sets what starts a wallet's duplicate-coin reconcile (once).
@@ -874,6 +883,9 @@ impl EventHandler for SessionHub {
         }
         if up && let Some(leases) = self.lease_table() {
             leases.request_resume(None);
+        }
+        if up && let Some(run) = self.peers_up.get() {
+            run();
         }
     }
 

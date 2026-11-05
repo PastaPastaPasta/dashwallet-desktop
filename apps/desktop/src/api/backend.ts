@@ -65,6 +65,7 @@ import type { CoinJoinSettings } from "./generated/CoinJoinSettings";
 import type { CoinJoinStatus } from "./generated/CoinJoinStatus";
 import type { MixedCoinsDestination } from "./generated/MixedCoinsDestination";
 import type { MixedCoinsSweepPlan } from "./generated/MixedCoinsSweepPlan";
+import type { MixedCoinsResend } from "./generated/MixedCoinsResend";
 import type { MixedCoinsSweepResult } from "./generated/MixedCoinsSweepResult";
 import type { CoinSelectionSummary } from "./generated/CoinSelectionSummary";
 import type { CoinSource } from "./generated/CoinSource";
@@ -336,6 +337,8 @@ export interface Backend {
   /** "Move mixed coins" (IOS-057): the CoinJoin account's chunks and mixed split; refused while mixing. */
   mixedCoinsSweepPlan(walletId: string, destination: MixedCoinsDestination): Promise<MixedCoinsSweepPlan>;
   moveMixedCoins(walletId: string, destination: MixedCoinsDestination, grantId: string): Promise<MixedCoinsSweepResult>;
+  /** "Try again" on a chunk of unknown outcome: its recorded bytes again, never a new signature. */
+  resendMixedCoins(walletId: string, txid: string | null): Promise<MixedCoinsResend[]>;
   dashpayStatus(walletId: string): Promise<DashPayStatus>;
   identities(walletId: string): Promise<IdentitySummary[]>;
   dashpayUnreadCount(walletId: string, identity: string): Promise<number>;

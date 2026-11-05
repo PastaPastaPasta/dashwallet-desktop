@@ -103,7 +103,17 @@ export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network
               <p className="sheet-text" data-testid="move-mixed-outcome-text">
                 {outcome.text}
               </p>
+              {outcome.kind === "unknown" && flow.resent && (
+                <p className="sheet-text" data-testid="move-mixed-resent" data-state={flow.resent}>
+                  {MOVE_COPY.resent[flow.resent]}
+                </p>
+              )}
               <div className="sheet-actions">
+                {outcome.kind === "unknown" && flow.resent !== "resolved" && (
+                  <DashButton variant="tintedGray" size="large" data-testid="move-mixed-resend" disabled={flow.running} onClick={() => void flow.resend()}>
+                    {MOVE_COPY.again}
+                  </DashButton>
+                )}
                 {outcome.kind === "partial" && (
                   <DashButton variant="tintedGray" size="large" data-testid="move-mixed-again" onClick={() => flow.again()}>
                     {MOVE_COPY.again}

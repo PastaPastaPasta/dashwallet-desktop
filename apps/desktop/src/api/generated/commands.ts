@@ -91,6 +91,7 @@ import type { LockResolutionName } from "./LockResolutionName";
 import type { LockStatus } from "./LockStatus";
 import type { MixedCoinsConsolidationPlan } from "./MixedCoinsConsolidationPlan";
 import type { MixedCoinsDestination } from "./MixedCoinsDestination";
+import type { MixedCoinsResend } from "./MixedCoinsResend";
 import type { MixedCoinsSweepPlan } from "./MixedCoinsSweepPlan";
 import type { MixedCoinsSweepResult } from "./MixedCoinsSweepResult";
 import type { MnemonicCheck } from "./MnemonicCheck";
@@ -1444,6 +1445,16 @@ export function consolidateMixedCoins(walletId: string, grantId: string): Promis
 }
 
 /**
+ * "Try again" on a chunk of unknown outcome: sends the transaction
+ * recorded for it, never signing again. `txid`: that chunk (display
+ * txid); `null`: every recorded chunk. Refused while a move of the
+ * wallet runs.
+ */
+export function resendMixedCoins(walletId: string, txid: string | null): Promise<Array<MixedCoinsResend>> {
+  return invoke<Array<MixedCoinsResend>>("resend_mixed_coins", { walletId, txid });
+}
+
+/**
  * Same-seed discovery past the highest identity index on file; the
  * number of identities found. `grant` is an identity-scan grant id (a
  * lease id is `platform.grant_invalid`).
@@ -2714,6 +2725,7 @@ export type CommandArgs = {
   move_mixed_coins: { walletId: string; destination: MixedCoinsDestination; grantId: string };
   mixed_coins_consolidation_plan: { walletId: string };
   consolidate_mixed_coins: { walletId: string; grantId: string };
+  resend_mixed_coins: { walletId: string; txid: string | null };
   discover_identities: { walletId: string; grant: string };
   identities: { walletId: string };
   identity_detail: { walletId: string; identity: string };
@@ -3009,6 +3021,7 @@ export type CommandResults = {
   move_mixed_coins: MixedCoinsSweepResult;
   mixed_coins_consolidation_plan: MixedCoinsConsolidationPlan;
   consolidate_mixed_coins: MixedCoinsSweepResult;
+  resend_mixed_coins: Array<MixedCoinsResend>;
   discover_identities: number;
   identities: Array<IdentitySummary>;
   identity_detail: IdentityDetail;
@@ -3306,6 +3319,7 @@ export const COMMANDS: Record<CommandName, string> = {
   move_mixed_coins: "coinjoin",
   mixed_coins_consolidation_plan: "coinjoin",
   consolidate_mixed_coins: "coinjoin",
+  resend_mixed_coins: "coinjoin",
   discover_identities: "identity",
   identities: "identity",
   identity_detail: "identity",

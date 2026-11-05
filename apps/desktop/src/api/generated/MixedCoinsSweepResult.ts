@@ -11,7 +11,8 @@ export type MixedCoinsSweepResult = { txids: Array<string>, moved: number, remai
 failureCode: string | null,
 /**
  * With `coinjoin.broadcast_unknown`: the chunk that may be on the
- * network (display txid), its coins reserved until the wallet sees
- * them spent.
+ * network (display txid), its coins reserved until the wallet sees it
+ * or a block spends one of them otherwise; `resend_mixed_coins` sends
+ * its recorded bytes again.
  */
 unknownTxid: string | null, };

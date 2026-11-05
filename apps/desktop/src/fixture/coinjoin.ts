@@ -16,6 +16,7 @@ import type { CoinJoinStatusCode } from "../api/generated/CoinJoinStatusCode";
 import type { CoinJoinStopReason } from "../api/generated/CoinJoinStopReason";
 import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { MixedCoinsChunk } from "../api/generated/MixedCoinsChunk";
+import type { MixedCoinsResend } from "../api/generated/MixedCoinsResend";
 import type { MixedCoinsSweepResult } from "../api/generated/MixedCoinsSweepResult";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { Utxo } from "../api/generated/Utxo";
@@ -58,6 +59,8 @@ export interface CoinJoinWorld {
   /** A scenario's failing "Move mixed coins" broadcast: chunk `at` (from 0) is rejected or of
    * unknown outcome, and the move stops there; unset, every chunk is sent. */
   sweepFailure?: { kind: "rejected" | "unknown"; at: number };
+  /** The recorded chunks of unknown outcome, by wallet id: their display txids. */
+  sweepUnknown?: Record<string, string[]>;
 }
 
 const NO_PROGRESS: CoinJoinProgress = { overallPercent: 0, denominatedPercent: 0, partiallyMixedPercent: 0, mixedPercent: 0, averageRounds: 0 };
@@ -196,6 +199,7 @@ export function coinjoinHandlers({ wallet, grant, useGrant }: CoinJoinDeps): Han
           failureCode = failure.kind === "rejected" ? "coinjoin.broadcast_rejected" : "coinjoin.broadcast_unknown";
           if (failure.kind === "unknown") {
             unknownTxid = txid;
+            (world.coinjoin.sweepUnknown ??= {})[walletId] = [...(world.coinjoin.sweepUnknown[walletId] ?? []), txid];
             for (const u of c.coins) u.reserved = true;
           }
           break;
@@ -214,6 +218,13 @@ export function coinjoinHandlers({ wallet, grant, useGrant }: CoinJoinDeps): Han
       changed(ctx, walletId);
       ctx.emit({ kind: "balances", network: world.launch.network.dirName, walletId, balances: w.summary.balances });
       return { txids: txidList, moved, remaining: total - moved, failureCode, unknownTxid };
+    },
+    // The engine sends a recorded chunk's bytes again; the fixture's network never answers.
+    resend_mixed_coins: ({ walletId, txid }, { world }): MixedCoinsResend[] => {
+      wallet(world, walletId);
+      const recorded = world.coinjoin.sweepUnknown?.[walletId] ?? [];
+      if (txid !== null && !recorded.includes(txid)) throw fail("invalid_argument", `the wallet records no sweep chunk ${txid}`);
+      return recorded.filter((t) => txid === null || t === txid).map((t) => ({ txid: t, state: "unknown" }));
     },
     coinjoin_limits: () => COINJOIN_LIMITS,
     coinjoin_settings: (_, { world }) => world.coinjoin.settings,

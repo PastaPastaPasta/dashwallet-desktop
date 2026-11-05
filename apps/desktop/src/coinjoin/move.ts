@@ -2,7 +2,7 @@
 // balance, fully mixed or not, swept in chunks to a fresh receive address of the same wallet. The
 // plan step reads the chunks and the mixed split, the confirm step asks for a spend grant of the
 // plan's total (U-05's GrantModel), and the outcome shows what moved, what remains, and a chunk
-// whose broadcast outcome is unknown. Mixing has to stop first: the engine refuses while it runs
+// whose broadcast outcome is unknown, whose Try again sends the same signed transaction again. Mixing has to stop first: the engine refuses while it runs
 // (`coinjoin.mixing_active`) and the sheet offers Stop Mixing. One flow per wallet, kept while the
 // app runs, so the sheet can close while the call runs and reopen to its result.
 
@@ -10,6 +10,7 @@ import type { Backend } from "../api/backend";
 import { hasCode } from "../api/backend";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { MixedCoinsSweepPlan } from "../api/generated/MixedCoinsSweepPlan";
+import type { MixedCoinsResendState } from "../api/generated/MixedCoinsResendState";
 import type { MixedCoinsSweepResult } from "../api/generated/MixedCoinsSweepResult";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
@@ -17,7 +18,7 @@ import { CoinJoinText } from "./model";
 
 export type MoveMixedApi = Pick<
   Backend,
-  "mixedCoinsSweepPlan" | "moveMixedCoins" | "stopMixing" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"
+  "mixedCoinsSweepPlan" | "moveMixedCoins" | "resendMixedCoins" | "stopMixing" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"
 >;
 
 export const MOVE_COPY = {
@@ -55,7 +56,12 @@ export const MOVE_COPY = {
     title: "Not everything moved",
     text: (moved: string, remaining: string) => `${moved} moved; ${remaining} stayed in your CoinJoin balance. Try again to move the rest.`,
   },
-  unknown: "One transaction may have reached the network. Its coins stay reserved until the wallet sees them spent; the rest stayed in your CoinJoin balance.",
+  unknown: "One transaction may have reached the network. Its coins stay reserved until the wallet sees it; the rest stayed in your CoinJoin balance. Try again sends the same transaction again.",
+  resent: {
+    sent: "Sent again. Its coins stay reserved until the wallet sees it.",
+    unknown: "Still no answer from the network. Its coins stay reserved, and the wallet sends it again when it reconnects.",
+    resolved: "The wallet has seen it, or its coins were spent otherwise. Nothing is held for it any more.",
+  } satisfies Record<MixedCoinsResendState, string>,
   nothing: "There are no mixed coins to move.",
   otherMove: "Another move of your mixed coins is running. Try again when it ends.",
   changed: "The approval no longer covers this move. Review it again.",
@@ -102,8 +108,10 @@ export class MoveMixedFlow extends Model {
   plan: MixedCoinsSweepPlan | null = null;
   result: MixedCoinsSweepResult | null = null;
   error: unknown = null;
-  /** A plan, stop or move call runs. */
+  /** A plan, stop, move or resend call runs. */
   running = false;
+  /** What the last Try again on a chunk of unknown outcome came to. */
+  resent: MixedCoinsResendState | null = null;
   readonly grants: GrantModel;
   #epoch = 0;
   /** A move or Stop Mixing refusal that came while the sheet was closed. */
@@ -143,6 +151,7 @@ export class MoveMixedFlow extends Model {
     this.step = "plan";
     this.plan = null;
     this.result = null;
+    this.resent = null;
     this.error = null;
     this.changed();
     for (;;) {
@@ -200,6 +209,24 @@ export class MoveMixedFlow extends Model {
         this.result = got.value;
         this.step = "done";
       } else this.step = "confirm";
+    } catch (e) {
+      this.#fail(e);
+      this.#unseen = !this.open;
+    } finally {
+      this.running = false;
+      this.changed();
+    }
+  }
+
+  /** Try again on a chunk of unknown outcome: its recorded bytes again, no grant, no new signature. */
+  async resend(): Promise<void> {
+    const txid = this.result?.unknownTxid ?? null;
+    if (this.running || txid === null) return;
+    this.running = true;
+    this.changed();
+    try {
+      const sent = await this.api.resendMixedCoins(this.walletId, txid);
+      this.resent = sent.find((s) => s.txid === txid)?.state ?? "resolved";
     } catch (e) {
       this.#fail(e);
       this.#unseen = !this.open;

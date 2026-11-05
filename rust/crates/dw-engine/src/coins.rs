@@ -790,9 +790,12 @@ impl NetworkSession {
         self.spends.retain_unspent(&wallet_id, &unspent);
         let reserved = self.spends.snapshot(&wallet_id);
         // A sweep chunk that may be on the network holds its inputs from
-        // every spender, across restarts (`coinjoin.rs` `SweepOut`); only a
-        // sweep drops a record.
-        let (swept, _) = crate::coinjoin::split_sweep_outs(sweep_outs, &unspent, snapshot.height);
+        // every spender, across restarts, until the wallet sees it or a block
+        // spends one of them otherwise (`coinjoin.rs` `SweepOut`); a sweep or
+        // a resend drops the resolved records.
+        let swept = (self.hub.history).read(&wallet_id, |txs| {
+            crate::coinjoin::held_inputs(&crate::coinjoin::split_sweep_outs(sweep_outs, txs).0)
+        });
         let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
         // A replay re-credits a coin whose spender is still unconfirmed at
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
