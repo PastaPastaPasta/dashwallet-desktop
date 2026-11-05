@@ -379,6 +379,23 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<Lease, PlatformError>>,
 {
+    Ok(run(kind, outpoint, lease_of)
+        .await?
+        .unwrap_or(LockFinish::Applied))
+}
+
+/// [`finish`]; `None` when the lock was already finished when read under
+/// the kind's lock (nothing ran).
+async fn run<K, F, Fut>(
+    kind: &K,
+    outpoint: OutPoint,
+    lease_of: F,
+) -> Result<Option<LockFinish>, PlatformError>
+where
+    K: LockKind,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Lease, PlatformError>>,
+{
     let wallet_lock = kind.wallet_lock();
     let _held = wallet_lock.lock().await;
     let own = kind.own_locks().ok_or(PlatformError::Unavailable)?;
@@ -402,13 +419,13 @@ where
         readiness: &readiness,
     };
     let Some(unfinished) = classify(kind.id(), lock, &ev) else {
-        return Ok(LockFinish::Applied);
+        return Ok(None);
     };
     if unfinished.state == UnfinishedState::Confirming {
-        return Ok(LockFinish::ProofWaiting);
+        return Ok(Some(LockFinish::ProofWaiting));
     }
     if let Readiness::NotActive(code) | Readiness::Held(code) = readiness {
-        return Ok(LockFinish::NotApplied { error: code });
+        return Ok(Some(LockFinish::NotApplied { error: code }));
     }
     let script = kind
         .credit_script(outpoint)
@@ -425,7 +442,7 @@ where
             reply
         })
         .await;
-    Ok(match reply {
+    Ok(Some(match reply {
         Ok(ApplyReply::Done) => {
             if by_txid {
                 kind.settle(outpoint.txid).await;
@@ -447,7 +464,7 @@ where
                 error: e.code().into(),
             }
         }
-    })
+    }))
 }
 
 /// Finishes every unfinished lock of `kind` under the bulk's `lease`, one
@@ -465,6 +482,7 @@ pub(crate) async fn finish_kind(
         Ok(listed) => listed,
         Err(e) => {
             tracing::warn!(kind = ?kind.id(), error = %e, "Finish transfers could not list a kind's locks");
+            report.unread.push(kind.id());
             return;
         }
     };
@@ -489,7 +507,12 @@ pub(crate) async fn finish_kind(
                     txid,
                     vout: lock.vout,
                 };
-                Some(finish(kind, outpoint, || async { Ok(lease.clone()) }).await)
+                match run(kind, outpoint, || async { Ok(lease.clone()) }).await {
+                    // Finished meanwhile (another finish): not this run's.
+                    Ok(None) => continue,
+                    Ok(Some(finished)) => Some(Ok(finished)),
+                    Err(e) => Some(Err(e)),
+                }
             }
         };
         match tried {
@@ -499,6 +522,7 @@ pub(crate) async fn finish_kind(
             }
             Some(Ok(LockFinish::ReportedUsed)) => {
                 counts.resumed += 1;
+                counts.still_pending += 1;
                 report.already_used += 1;
             }
             Some(Ok(LockFinish::Checking)) => {

@@ -26,7 +26,7 @@ test.describe("Unfinished transfers", () => {
 
   test("recovery-restored-mixed: Details lists the three restored locks", async ({ page }) => {
     await open(page, "recovery-restored-mixed");
-    await expect(page.getByTestId("unfinished-text")).toContainText("2 transfers from before the restore aren't finished");
+    await expect(page.getByTestId("unfinished-text")).toContainText("2 transfers to Shielded aren't finished");
     await page.getByTestId("unfinished-details").click();
     await expect(page.getByTestId("unfinished-row")).toHaveCount(3);
     await expect(page.getByTestId("unfinished-footer")).toHaveText("Nothing more is paid: finishing only adds money that's already locked.");
@@ -46,12 +46,16 @@ test.describe("Unfinished transfers", () => {
     await expect(page.getByTestId("unfinished-card")).toHaveCount(0);
   });
 
-  test("recovery-checking: Check again keeps the card while the lock stays unconfirmed", async ({ page }) => {
+  test("recovery-checking: Check again reaches the backend, and the second try applies the lock", async ({ page }) => {
     await open(page, "recovery-checking");
     await expect(page.getByTestId("unfinished-text")).toContainText("1 transfer may already be finished");
     await page.getByTestId("unfinished-checkAgain").click();
     await authorize(page);
     await expect(page.getByTestId("unfinished-text")).toContainText("1 transfer may already be finished");
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.world.pending.recovery.checks)).toBe(1);
+    await page.getByTestId("unfinished-checkAgain").click();
+    await authorize(page);
+    await expect(page.getByTestId("unfinished-card")).toHaveCount(0);
   });
 
   for (const scenario of ["funded", "recovery-confirming", "recovery-not-active"]) {

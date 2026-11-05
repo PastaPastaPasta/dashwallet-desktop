@@ -64,13 +64,17 @@ describe("fixture unfinished transfers", () => {
     expect((await cmd.unfinishedTransfers(W)).locks).toHaveLength(1);
   });
 
-  it("a checking lock stays checking, a confirming one waits, a not-active one is refused", async () => {
+  it("a checking lock stays checking (recovery-checking applies the second try), a confirming one waits, a not-active one is refused", async () => {
     const finish = async (s: ScenarioName) => {
       open(s);
       const [l] = (await cmd.unfinishedTransfers(W)).locks;
       return cmd.finishTransfer(W, l.kind, l.txid, l.vout, await grant());
     };
     expect(await finish("recovery-checking")).toEqual({ kind: "checking" });
+    open("recovery-restored-mixed");
+    const mixed = (await cmd.unfinishedTransfers(W)).locks[2];
+    expect(await cmd.finishTransfer(W, mixed.kind, mixed.txid, mixed.vout, await grant())).toEqual({ kind: "checking" });
+    expect(await cmd.finishTransfer(W, mixed.kind, mixed.txid, mixed.vout, await grant())).toEqual({ kind: "checking" });
     expect(await finish("recovery-confirming")).toEqual({ kind: "proofWaiting" });
     expect(await finish("recovery-not-active")).toEqual({ kind: "notApplied", error: "shielded.not_active" });
   });
@@ -84,7 +88,15 @@ describe("fixture unfinished transfers", () => {
     expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
   });
 
-  it("Finish transfers applies the ready restored locks and reports them by kind", async () => {
+  it("recovery-checking: the second check applies the lock", async () => {
+    open("recovery-checking");
+    const [l] = (await cmd.unfinishedTransfers(W)).locks;
+    expect(await cmd.finishTransfer(W, l.kind, l.txid, l.vout, await grant())).toEqual({ kind: "checking" });
+    expect(await cmd.finishTransfer(W, l.kind, l.txid, l.vout, await grant())).toEqual({ kind: "applied" });
+    expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
+  });
+
+  it("Finish transfers counts as the engine does: ready applied, checking tried, the rest pending", async () => {
     open("recovery-restored-mixed");
     expect(await cmd.finishAssetLocks(W, await grant())).toEqual({
       resumed: 3,
@@ -92,8 +104,18 @@ describe("fixture unfinished transfers", () => {
       stillPending: 1,
       alreadyUsed: 0,
       byKind: [{ kind: "shielded", resumed: 3, completed: 2, stillPending: 1 }],
+      unread: [],
     });
     expect((await cmd.unfinishedTransfers(W)).locks.map((l) => l.state)).toEqual(["checking"]);
+  });
+
+  it("Finish transfers does not try confirming or not-active locks, and lists their kind", async () => {
+    open("recovery-confirming");
+    expect(await cmd.finishAssetLocks(W, await grant())).toMatchObject({ resumed: 0, completed: 0, stillPending: 1, byKind: [{ kind: "shielded", resumed: 0, completed: 0, stillPending: 1 }] });
+    open("recovery-not-active");
+    expect(await cmd.finishAssetLocks(W, await grant())).toMatchObject({ resumed: 0, stillPending: 1 });
+    open("funded");
+    expect(await cmd.finishAssetLocks(W, await grant())).toMatchObject({ byKind: [] });
   });
 
   it("reads through the adapter", async () => {

@@ -9,6 +9,7 @@ import type { AppEvent } from "./generated/commands";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRows } from "./generated/HistoryRows";
 import type { PlatformChangeName } from "./generated/PlatformChangeName";
+import type { UnfinishedTransfers } from "./generated/UnfinishedTransfers";
 import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
 import { onTopUpSettled } from "../dashpay/topup";
@@ -45,7 +46,7 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // The Platform loops start and stop with SPV, also without one (DP6-03 D6).
     case "spvStateChanged":
     case "sync":
-      return [keys.sync, keys.dashpayStatusAll, dashpayKeys.syncInfoAll];
+      return [keys.sync, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll];
     // The username quote's fee grows with the wallet's coins (DP1-08).
     case "balances":
       // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7).
@@ -177,6 +178,9 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
       for (const queryKey of stale) {
         if (queryKey === keys.dashpayStatusAll)
           void client.invalidateQueries({ queryKey, predicate: (q) => withoutIdentity((q.state.data as DashPayStatus | undefined)?.kind) });
+        else if (queryKey === keys.unfinishedTransfersAll)
+          // Only a list that was partial is read again: sync events arrive up to 4 times a second.
+          void client.invalidateQueries({ queryKey, predicate: (q) => (q.state.data as UnfinishedTransfers | null | undefined)?.complete === false });
         else if (queryKey !== keys.lockReconcile) void client.invalidateQueries({ queryKey });
         else {
           const now = Date.now();

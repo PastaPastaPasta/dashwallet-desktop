@@ -22,7 +22,7 @@ use super::names::valid_label;
 use super::registration_flow::{self as flow, PwLib, RegistrationLib};
 use super::registration_ledger::{Ledger, Standing};
 use super::registration_rows::{Decoded, Funding, Phase, ProfileRecord};
-use super::unfinished::TransfersReport;
+use super::unfinished::{LockKindId, TransfersReport};
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
 
@@ -228,10 +228,15 @@ pub struct FinishReport {
     pub completed: u32,
     pub still_pending: u32,
     /// Restored transfers Platform reported already used (advisory,
-    /// unproved): not tried again, listed for "Check again".
+    /// unproved): not tried again, listed for "Check again". Reserved: 0
+    /// in this version.
     pub already_used: u32,
     /// The unfinished transfers' part, per kind that had any.
     pub by_kind: Vec<TransfersReport>,
+    /// The kinds whose unfinished transfers could not be read (the
+    /// journal unread, the kind's side not open): none of their locks is
+    /// counted, so "nothing pending" is not known for them.
+    pub unread: Vec<LockKindId>,
 }
 
 impl DashPay {
@@ -321,7 +326,9 @@ impl DashPay {
         grant: String,
     ) -> Result<FinishReport, RegistrationError> {
         let wallet = self.wallet_id;
-        self.on_lib(move |session, _, lib| async move {
+        // Its shields sign as `resume_shield` does: admitted as a signing
+        // call (`on_pool_signing`).
+        self.run_lib(true, move |session, _, lib| async move {
             let lease = authority(&session, wallet, &grant).await?;
             let mut report = finish_under(&session, wallet, &*lib, &lease).await?;
             super::topup::finish(&session, wallet, &*lib, &lease, &mut report).await;
@@ -348,11 +355,28 @@ impl DashPay {
         F: FnOnce(Arc<NetworkSession>, Arc<Manager>, Arc<PwLib>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T, RegistrationError>> + Send + 'static,
     {
+        self.run_lib(false, body).await
+    }
+
+    /// [`Self::on_lib`]; `signing`: admitted under the session's
+    /// `close_preflight` first, as `shielded_pool::on_pool_signing` is, so
+    /// an in-app close is refused while it runs.
+    async fn run_lib<T, F, Fut>(&self, signing: bool, body: F) -> Result<T, RegistrationError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<NetworkSession>, Arc<Manager>, Arc<PwLib>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, RegistrationError>> + Send + 'static,
+    {
         let session = Arc::clone(&self.session);
         let wallet_id = self.wallet_id;
         self.session
             .rt
             .spawn(async move {
+                // Before the session's gate, as `run_on_pool` takes it.
+                let _admitted = match signing {
+                    true => Some(session.platform.close_preflight.read().await),
+                    false => None,
+                };
                 let _op = session.enter().await.map_err(PlatformError::from)?;
                 let (manager, lib) = PwLib::open(&session, wallet_id).await?;
                 body(Arc::clone(&session), manager, Arc::new(lib)).await

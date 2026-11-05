@@ -1,15 +1,15 @@
 // Unfinished transfers on Home (recovery/model.ts): the card that offers to finish what a wallet
 // restore found locked for Shielded, and the sheet with one row per lock.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { useBackend, useUnfinishedTransfers } from "../api/queries";
+import { useBackend, useShieldedStatus, useUnfinishedTransfers } from "../api/queries";
 import { DashButton } from "../components/basics";
 import { CopyValue } from "../components/detail";
 import { Sheet } from "../components/sheet";
 import { shortId } from "../dashpay/identities";
 import { useModel } from "../onboarding/model";
-import { cardView, lockKey, RECOVERY_COPY as C, recoveryFor, resultText, sheetRows, type CardAction, type RecoveryModel } from "../recovery/model";
+import { cardView, lockKey, RECOVERY_COPY as C, recoveryFor, resultText, sheetRows, withoutPendingShields, type CardAction, type RecoveryModel } from "../recovery/model";
 import { shieldedErrorText } from "../shielded/flow";
 import { useFormats } from "./ShieldedSheet";
 import { GrantSheet } from "./tools/common";
@@ -24,7 +24,9 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
   const fmt = useFormats(network);
   const [details, setDetails] = useState(false);
   const errorText = (e: unknown) => shieldedErrorText(e, fmt.credits, fmt.duffs);
-  const data = query.isSuccess ? query.data : null;
+  const status = useShieldedStatus(walletId);
+  const data = query.isSuccess ? withoutPendingShields(query.data, status.data?.pendingShields) : null;
+  useEffect(() => model.settle(data), [model, data]);
   const view = cardView(data, model.state, fmt.duffs, errorText);
   const checking = data?.locks.filter((l) => l.origin === "restored" && l.state === "checking") ?? [];
   const run: Record<CardAction, () => void> = {
@@ -72,7 +74,8 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
   const query = useUnfinishedTransfers(walletId);
   const fmt = useFormats(network);
   const errorText = (e: unknown) => shieldedErrorText(e, fmt.credits, fmt.duffs);
-  const rows = sheetRows(query.isSuccess ? query.data : null, model.results);
+  const status = useShieldedStatus(walletId);
+  const rows = sheetRows(query.isSuccess ? withoutPendingShields(query.data, status.data?.pendingShields) : null, model.results);
   const failed = model.state.kind === "failed" ? model.state.error : null;
   return (
     <Sheet title={C.sheet.title} width="medium" testId="unfinished-sheet" onClose={onClose}>

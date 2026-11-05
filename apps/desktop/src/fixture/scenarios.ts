@@ -677,10 +677,11 @@ const SCENARIOS = {
     w.pending.recovery.locks = [restoredLock(1, 50_000_000), restoredLock(2, 25_000_000), restoredLock(3, 10_000_000, "checking")];
     return w;
   },
-  /** Only a restored lock that may already be applied: "Checking", and Check again. */
+  /** Only a restored lock that may already be applied: "Checking", and Check again (the second one applies it). */
   "recovery-checking": (t) => {
     const w = base(t);
     w.pending.recovery.locks = [restoredLock(1, 50_000_000, "checking")];
+    w.pending.recovery.checksBeforeApply = 1;
     return w;
   },
   /** A restored lock still waiting for its confirmations: Home has no card. */

@@ -8,6 +8,7 @@
 import { hasCode, isAppError } from "../api/backend";
 import type { NameAvailability } from "../api/generated/NameAvailability";
 import type { FinishReport } from "../api/generated/FinishReport";
+import type { LockKind } from "../api/generated/LockKind";
 import type { NameOutcome } from "../api/generated/NameOutcome";
 import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
@@ -21,6 +22,8 @@ export const MAX_LABEL = 23;
 
 /** F4: `name_availability` waits for the typing to settle. */
 export const AVAILABILITY_DEBOUNCE_MS = 400;
+
+const UNREAD_KIND: Record<LockKind, string> = { shielded: "Shielded", platformAddress: "Platform" };
 
 export const REG_COPY = {
   header: (n: 1 | 2, title: string) => `Step ${n} of 2 · ${title}`,
@@ -97,7 +100,8 @@ export const REG_COPY = {
     confirm: "Start a new registration",
     cancel: "Cancel",
   },
-  finished: (r: FinishReport) => `${r.resumed} resumed, ${r.completed} completed, ${r.stillPending} still pending${r.alreadyUsed > 0 ? `, ${r.alreadyUsed} already used` : ""}.`,
+  finished: (r: FinishReport) =>
+    `${r.resumed} resumed, ${r.completed} completed, ${r.stillPending} still pending${r.alreadyUsed > 0 ? `, ${r.alreadyUsed} already used` : ""}.${r.unread.length > 0 ? ` ${r.unread.map((k) => UNREAD_KIND[k]).join(" and ")} transfers couldn't be checked; try again.` : ""}`,
 } as const;
 
 // ---------------------------------------------------------------------------------------------

@@ -389,8 +389,8 @@ fn finishing_one_output_of_a_lock_leaves_its_other_output_listed() {
 }
 
 /// Repair's "Finish transfers" under its one lease: each unfinished lock
-/// once, in order, a failure or an unproved answer leaving that lock
-/// pending while the next runs; one with no proof is pending, not tried.
+/// once, in order, an unproved answer leaving that lock pending while the
+/// next runs; one with no proof is pending, not tried.
 #[test]
 fn finish_transfers_runs_each_lock_once_and_reports_the_kind() {
     let fx = Fixture::new(0);
@@ -431,6 +431,7 @@ fn finish_transfers_runs_each_lock_once_and_reports_the_kind() {
                 completed: 1,
                 still_pending: 2,
             }],
+            unread: Vec::new(),
         }
     );
     assert_eq!(
@@ -464,4 +465,92 @@ fn finish_transfers_with_nothing_unfinished_reports_no_kind() {
         report
     });
     assert_eq!(report, super::super::FinishReport::default());
+}
+
+/// Finish transfers over `lib` under a Registration lease, as Repair runs
+/// it.
+fn finish_transfers(fx: &Fixture, lib: &Arc<FakeShielded>) -> super::super::FinishReport {
+    let (wallet, grant) = (fx.wallet, shield_grant(fx, 1));
+    run(fx, lib, move |s, lib| async move {
+        let lease = (s
+            .begin_lease(wallet, FlowKind::Registration, &[grant])
+            .await)
+            .unwrap();
+        let mut report = super::super::FinishReport::default();
+        locks::finish_kind(&ShieldLocks::new(&s, wallet, &*lib), &lease, &mut report).await;
+        report
+    })
+}
+
+fn totals(r: &super::super::FinishReport) -> (u32, u32, u32) {
+    (r.resumed, r.completed, r.still_pending)
+}
+
+/// A lock refused before its signature (this device's here) stays pending,
+/// unmarked, and the next lock still runs.
+#[test]
+fn finish_transfers_runs_the_next_lock_after_a_refusal() {
+    let fx = Fixture::new(0);
+    let (own, restored) = (
+        lock(1, LockStatus::InstantSendLocked),
+        lock(2, LockStatus::RecoveredFromChain),
+    );
+    let lib = Arc::new(FakeShielded {
+        locks: vec![own.clone(), restored.clone()],
+        own: Some(HashSet::from([own.outpoint.txid])),
+        ..FakeShielded::default()
+    });
+    answer(&lib, Err(PlatformError::Unavailable));
+    lib.queued.lock().unwrap().push_back(Ok(Applied::Done));
+    let report = finish_transfers(&fx, &lib);
+    assert_eq!(totals(&report), (1, 1, 1));
+    assert_eq!(
+        *lib.applied.lock().unwrap(),
+        [own.outpoint, restored.outpoint]
+    );
+    assert!(
+        lib.unknown.lock().unwrap().is_empty(),
+        "a refusal marks nothing"
+    );
+    assert_eq!(*lib.settles.lock().unwrap(), [restored.outpoint.txid]);
+    assert_eq!(
+        state_of(&fx, &lib),
+        [(LockOrigin::ThisDevice, UnfinishedState::Ready)]
+    );
+}
+
+/// Below the activation every lock is pending, none tried.
+#[test]
+fn finish_transfers_tries_nothing_on_an_inactive_network() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded {
+        version: 11,
+        refreshed: 11,
+        locks: vec![lock(1, LockStatus::RecoveredFromChain)],
+        ..FakeShielded::default()
+    });
+    let report = finish_transfers(&fx, &lib);
+    assert_eq!(totals(&report), (0, 0, 1));
+    assert!(lib.applied.lock().unwrap().is_empty());
+}
+
+/// Locks that cannot be read are not counted as "nothing pending": the
+/// kind is reported unread.
+#[test]
+fn finish_transfers_reports_a_kind_it_could_not_read() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded {
+        locks: vec![lock(1, LockStatus::RecoveredFromChain)],
+        own: None,
+        ..FakeShielded::default()
+    });
+    let report = finish_transfers(&fx, &lib);
+    assert_eq!(
+        report,
+        super::super::FinishReport {
+            unread: vec![LockKindId::Shielded],
+            ..Default::default()
+        }
+    );
+    assert!(lib.applied.lock().unwrap().is_empty());
 }

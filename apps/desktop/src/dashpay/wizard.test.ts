@@ -58,7 +58,7 @@ function setup(lock = { encrypted: false }) {
     }),
     resumeRegistration: vi.fn(async (_: string, draft: string, grant: string | null) => (calls.push(`resume ${draft} ${grant}`), null)),
     discardRegistration: vi.fn(async (_: string, draft: string) => (calls.push(`discard ${draft}`), null)),
-    finishAssetLocks: vi.fn(async (_: string, grant: string) => (calls.push(`finish ${grant}`), { resumed: 1, completed: 0, stillPending: 0, alreadyUsed: 0, byKind: [] })),
+    finishAssetLocks: vi.fn(async (_: string, grant: string) => (calls.push(`finish ${grant}`), { resumed: 1, completed: 0, stillPending: 0, alreadyUsed: 0, byKind: [], unread: [] })),
     registrations: vi.fn(async () => rows),
     grantRequest: vi.fn(async () => ({ maxDuffs: 0, maxCredits: "2000000000" })),
     registrationResumeGrant: vi.fn(async (_: string, draft: string) => (calls.push(`resume grant ${draft}`), { maxDuffs: 0, maxCredits: "3500000000" })),
@@ -223,7 +223,7 @@ describe("IOS-068 the row's actions", () => {
     await wiz.finish();
     expect(vault.calls.authorize[0].purpose).toEqual({ kind: "platformOp", maxDuffs: 1, maxCredits: "2000000000" });
     expect(calls).toEqual([`quote ${QUOTE_LABEL}`, "finish grant-1"]);
-    expect(wiz.finished).toEqual({ resumed: 1, completed: 0, stillPending: 0, alreadyUsed: 0, byKind: [] });
+    expect(wiz.finished).toEqual({ resumed: 1, completed: 0, stillPending: 0, alreadyUsed: 0, byKind: [], unread: [] });
   });
 
   it("D12: a row the page shows is adopted, so its result stays until Done; never over an open step", () => {

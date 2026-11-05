@@ -2573,7 +2573,7 @@ mod tests {
         ),
         (
             "identity finish-asset-locks --max-credits 50000",
-            r#"{"ok":true,"result":{"resumed":0,"completed":0,"still_pending":0,"already_used":0,"by_kind":[]}}"#,
+            r#"{"ok":true,"result":{"resumed":0,"completed":0,"still_pending":0,"already_used":0,"by_kind":[],"unread":[]}}"#,
         ),
         (
             "identity faucet-key",

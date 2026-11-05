@@ -44,6 +44,7 @@ export const keys = {
   shieldedHistory: (walletId: string) => ["dashpay", "shielded", "history", walletId] as const,
   shieldedAddress: (walletId: string) => ["dashpay", "shielded", "address", walletId] as const,
   unfinishedTransfers: (walletId: string) => ["dashpay", "unfinished", walletId] as const,
+  unfinishedTransfersAll: ["dashpay", "unfinished"] as const,
   shieldedQuote: (walletId: string, request: string) => ["shieldedQuote", walletId, request] as const,
   // Under "dashpay": a `platform{domain:"platformAddresses"}` event is a domain events.ts does not
   // name, which it answers by invalidating everything under that prefix.

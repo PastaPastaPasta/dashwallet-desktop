@@ -189,7 +189,10 @@ pub(crate) async fn finish_all(
         Ok(lib) => {
             locks::finish_kind(&ShieldLocks::new(session, wallet, &lib), lease, report).await
         }
-        Err(e) => tracing::warn!(error = %e, "Finish transfers could not open the shielded side"),
+        Err(e) => {
+            tracing::warn!(error = %e, "Finish transfers could not open the shielded side");
+            report.unread.push(LockKindId::Shielded);
+        }
     }
 }
 

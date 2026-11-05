@@ -189,6 +189,8 @@ struct FakeShielded {
     settles: Mutex<Vec<Txid>>,
     /// The next apply's answer.
     applies: Mutex<Option<Result<Applied, PlatformError>>>,
+    /// The answers after it, in order.
+    queued: Mutex<std::collections::VecDeque<Result<Applied, PlatformError>>>,
     /// The outpoint of every apply, in order.
     applied: Mutex<Vec<OutPoint>>,
     /// The session a shield's funding records its lock in; none for tests
@@ -282,6 +284,7 @@ impl Default for FakeShielded {
             settled: Mutex::default(),
             settles: Mutex::default(),
             applies: Mutex::new(None),
+            queued: Mutex::default(),
             applied: Mutex::default(),
             funder: Mutex::default(),
             funded: Mutex::default(),
@@ -719,7 +722,9 @@ impl ShieldedLib for FakeShielded {
             let consumed = PlatformWalletError::AssetLockAlreadyConsumed(outpoint);
             return pool::applied_from(Err(consumed), outpoint, true);
         }
-        (self.applies.lock().unwrap().take()).expect("a scripted apply")
+        let answer = (self.applies.lock().unwrap().take()).expect("a scripted apply");
+        *self.applies.lock().unwrap() = self.queued.lock().unwrap().pop_front();
+        answer
     }
 }
 

@@ -25,7 +25,7 @@ export type RecoveryApi = Pick<
 export const RECOVERY_COPY = {
   title: "Unfinished transfers",
   one: (amount: string) => `${amount} was locked for your Shielded balance and isn't added yet.`,
-  several: (n: number, total: string) => `${n} transfers from before the restore aren't finished (${total}).`,
+  several: (n: number, total: string) => `${n} transfers to Shielded aren't finished (${total}).`,
   running: "Finishing…",
   checking: (n: number) => `${n} ${n === 1 ? "transfer may" : "transfers may"} already be finished. We can't confirm it yet.`,
   finish: "Finish",
@@ -82,6 +82,19 @@ export const lockKey = (l: Pick<UnfinishedLock, "kind" | "txid" | "vout">) => `$
 
 export const restoredOf = (data: UnfinishedTransfers | null | undefined): UnfinishedLock[] => data?.locks.filter((l) => l.origin === "restored") ?? [];
 
+/** `data` without the locks the Shielded card already shows as pending shields. */
+export function withoutPendingShields(data: UnfinishedTransfers | null | undefined, pending: readonly { txid: string }[] | null | undefined): UnfinishedTransfers | null | undefined {
+  if (!data || !pending || pending.length === 0) return data;
+  return { ...data, locks: data.locks.filter((l) => !pending.some((p) => p.txid === l.txid)) };
+}
+
+/** A failed finish whose locks have all left the list has nothing to retry. */
+export function failureStale(state: RecoveryState, data: UnfinishedTransfers | null | undefined): boolean {
+  if (state.kind !== "failed" || !data) return false;
+  const locks = state.retry.kind === "finish" ? [state.retry.lock] : state.retry.kind === "check" ? state.retry.locks : null;
+  return locks !== null && !locks.some((l) => data.locks.some((x) => lockKey(x) === lockKey(l)));
+}
+
 /** The Home card, `null` for none. It shows when the list is read and complete and holds a restored
  * lock that is ready or checking, and while a finish from the card runs, failed or reported. */
 export function cardView(
@@ -91,7 +104,7 @@ export function cardView(
   errorText: (e: unknown) => string,
 ): CardView | null {
   if (state.kind === "running") return { kind: "running", text: RECOVERY_COPY.running, note: null, actions: [], lock: null };
-  if (state.kind === "failed") return { kind: "failed", text: errorText(state.error), note: null, actions: ["retry"], lock: null };
+  if (state.kind === "failed" && !failureStale(state, data)) return { kind: "failed", text: errorText(state.error), note: null, actions: ["retry", "dismiss"], lock: null };
   const note = state.kind === "done" ? state.text : null;
   const restored = data?.complete ? restoredOf(data) : [];
   const ready = restored.filter((l) => l.state === "ready");
@@ -179,6 +192,11 @@ export class RecoveryModel extends Model {
 
   retry(): Promise<void> {
     return this.state.kind === "failed" ? this.#run(this.state.retry) : Promise.resolve();
+  }
+
+  /** Drops a failure whose locks are no longer listed. */
+  settle(data: UnfinishedTransfers | null | undefined) {
+    if (failureStale(this.state, data)) this.#set({ kind: "idle" });
   }
 
   dismiss() {

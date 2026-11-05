@@ -5,7 +5,7 @@ import type { UnfinishedLock } from "../api/generated/UnfinishedLock";
 import type { UnfinishedTransfers } from "../api/generated/UnfinishedTransfers";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { cardView, lockKey, onRecoverySettled, RECOVERY_COPY as C, RecoveryModel, resultText, sheetRows, type RecoveryState } from "./model";
+import { cardView, failureStale, lockKey, onRecoverySettled, RECOVERY_COPY as C, RecoveryModel, resultText, sheetRows, withoutPendingShields, type RecoveryState } from "./model";
 
 const lock = (n: number, state: UnfinishedLock["state"], origin: UnfinishedLock["origin"] = "restored", duffs = 50_000_000): UnfinishedLock => ({
   txid: String(n).repeat(64),
@@ -43,7 +43,7 @@ describe("unfinished transfers card", () => {
 
   it("several ready locks: the count and total, Finish all and Details", () => {
     const got = view(list([lock(1, "ready"), lock(2, "ready", "restored", 25_000_000), lock(3, "checking")]));
-    expect(got).toMatchObject({ kind: "ready", text: "2 transfers from before the restore aren't finished (75000000 duffs).", actions: ["finishAll", "details"] });
+    expect(got).toMatchObject({ kind: "ready", text: "2 transfers to Shielded aren't finished (75000000 duffs).", actions: ["finishAll", "details"] });
   });
 
   it("checking locks only: Check again, singular and plural", () => {
@@ -55,9 +55,28 @@ describe("unfinished transfers card", () => {
     expect(view(undefined, { kind: "running" })).toMatchObject({ kind: "running", text: "Finishing…", actions: [] });
   });
 
-  it("a failure shows its error and Retry, even when the list is empty", () => {
-    const state: RecoveryState = { kind: "failed", error: appError("platform.unavailable"), retry: { kind: "all" } };
-    expect(view(list([]), state)).toMatchObject({ kind: "failed", text: "error platform.unavailable", actions: ["retry"] });
+  it("a failure shows its error with Retry and Dismiss while its lock is listed", () => {
+    const state: RecoveryState = { kind: "failed", error: appError("platform.unavailable"), retry: { kind: "finish", lock: lock(1, "ready") } };
+    expect(view(list([lock(1, "ready")]), state)).toMatchObject({ kind: "failed", text: "error platform.unavailable", actions: ["retry", "dismiss"] });
+    expect(view(undefined, state)).toMatchObject({ kind: "failed" });
+  });
+
+  it("a failure whose lock has left the list is dropped", () => {
+    const state: RecoveryState = { kind: "failed", error: appError("platform.unavailable"), retry: { kind: "finish", lock: lock(1, "ready") } };
+    expect(failureStale(state, list([]))).toBe(true);
+    expect(failureStale(state, list([lock(2, "ready")]))).toBe(true);
+    expect(view(list([]), state)).toBeNull();
+    const all: RecoveryState = { ...state, retry: { kind: "all" } };
+    expect(view(list([]), all)).toMatchObject({ kind: "failed", actions: ["retry", "dismiss"] });
+  });
+
+  it("leaves out a lock the Shielded card already shows as a pending shield", () => {
+    const data = list([lock(1, "ready"), lock(2, "ready")]);
+    const kept = withoutPendingShields(data, [{ txid: lock(1, "ready").txid }]);
+    expect(kept?.locks.map((l) => l.txid[0])).toEqual(["2"]);
+    expect(view(withoutPendingShields(list([lock(1, "ready")]), [{ txid: lock(1, "ready").txid }]))).toBeNull();
+    expect(withoutPendingShields(data, [])).toBe(data);
+    expect(withoutPendingShields(data, null)).toBe(data);
   });
 
   it("a Finish all result is kept above the card, and alone once nothing is left", () => {
@@ -95,7 +114,7 @@ function setup(finish: (txid: string, n: number) => LockFinish | Error = () => (
     registrationQuote: vi.fn(async () => QUOTE),
     finishAssetLocks: vi.fn(async (_: string, grant: string) => {
       calls.push(`all ${grant}`);
-      return { resumed: 2, completed: 1, stillPending: 1, alreadyUsed: 1, byKind: [] };
+      return { resumed: 2, completed: 1, stillPending: 1, alreadyUsed: 1, byKind: [], unread: [] };
     }),
     finishTransfer: vi.fn(async (_: string, kind: string, txid: string, vout: number, grant: string) => {
       calls.push(`finish ${kind} ${txid[0]}:${vout} ${grant}`);
@@ -150,6 +169,18 @@ describe("RecoveryModel", () => {
     expect(calls).toHaveLength(1);
     await model.retry();
     expect(calls).toHaveLength(3);
+    expect(model.state).toEqual({ kind: "idle" });
+  });
+
+  it("settle drops a failure once its lock is gone, and Dismiss clears one", async () => {
+    const { model } = setup(() => ({ kind: "notApplied", error: "platform.unavailable" }));
+    await model.finish(lock(1, "ready"));
+    model.settle(list([lock(1, "ready")]));
+    expect(model.state.kind).toBe("failed");
+    model.settle(list([]));
+    expect(model.state).toEqual({ kind: "idle" });
+    await model.finish(lock(1, "ready"));
+    model.dismiss();
     expect(model.state).toEqual({ kind: "idle" });
   });
 

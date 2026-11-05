@@ -23,9 +23,13 @@ export interface RecoveryWorld {
   complete: boolean;
   /** The next finishes that end `platform.unavailable`. */
   failures: number;
+  /** How many times a checking lock answers `checking` before a finish applies it; `null`: always. */
+  checksBeforeApply: number | null;
+  /** The finishes of a checking lock so far. */
+  checks: number;
 }
 
-export const newRecoveryWorld = (): RecoveryWorld => ({ locks: [], complete: true, failures: 0 });
+export const newRecoveryWorld = (): RecoveryWorld => ({ locks: [], complete: true, failures: 0, checksBeforeApply: null, checks: 0 });
 
 /** A restored Core → Shielded lock for a scenario. */
 export const restoredLock = (n: number, duffs: number, state: UnfinishedLock["state"] = "ready"): UnfinishedLock => ({
@@ -54,14 +58,18 @@ function announce(ctx: Ctx, walletId: string) {
   ctx.emit({ kind: "platform", network: ctx.world.launch.network.dirName, walletId, change: { domain: "shielded" } });
 }
 
-/** `finish_asset_locks`' part: every ready restored lock is applied, a checking one stays. */
-export function finishRestored(ctx: Ctx, walletId: string): TransfersReport {
+/** `finish_asset_locks`' part, counted as the engine does: a ready lock is tried and applied, a checking
+ * one is tried and stays, a confirming or not-active one is not tried and stays pending. `null`
+ * while no lock is listed. */
+export function finishRestored(ctx: Ctx, walletId: string): TransfersReport | null {
   const r = ctx.world.pending.recovery;
-  const open = r.locks.filter((l) => l.state === "ready" || l.state === "checking");
-  const ready = open.filter((l) => l.state === "ready");
+  if (r.locks.length === 0) return null;
+  const listed = r.locks.length;
+  const ready = r.locks.filter((l) => l.state === "ready");
+  const tried = ready.length + r.locks.filter((l) => l.state === "checking").length;
   for (const lock of ready) apply(ctx.world, r, lock);
-  if (open.length > 0) announce(ctx, walletId);
-  return { kind: "shielded", resumed: open.length, completed: ready.length, stillPending: open.length - ready.length };
+  if (tried > 0) announce(ctx, walletId);
+  return { kind: "shielded", resumed: tried, completed: ready.length, stillPending: listed - ready.length };
 }
 
 export const RECOVERY_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
@@ -80,6 +88,13 @@ export const RECOVERY_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     useGrant(ctx.world, grant);
     if (lock.state === "confirming") return { kind: "proofWaiting" };
     if (lock.state === "notActive") return { kind: "notApplied", error: SHIELDED_CODES.notActive };
+    if (lock.state === "checking") {
+      r.checks++;
+      if (r.checksBeforeApply === null || r.checks <= r.checksBeforeApply) return { kind: "checking" };
+      apply(ctx.world, r, lock);
+      announce(ctx, walletId);
+      return { kind: "applied" };
+    }
     if (lock.state !== "ready") return { kind: "checking" };
     if (r.failures > 0) {
       r.failures--;
@@ -91,11 +106,12 @@ export const RECOVERY_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
   },
 };
 
-/** Finish transfers' report: the registrations' counts and the restored locks' (`byKind` has a row only for a kind that had any). */
-export const reportOf = (rows: { resumed: number; completed: number; stillPending: number }, restored: TransfersReport): FinishReport => ({
-  resumed: rows.resumed + restored.resumed,
-  completed: rows.completed + restored.completed,
-  stillPending: rows.stillPending + restored.stillPending,
+/** Finish transfers' report: the registrations' counts and the restored locks' (`byKind` has a row for a kind with any listed lock). */
+export const reportOf = (rows: { resumed: number; completed: number; stillPending: number }, restored: TransfersReport | null): FinishReport => ({
+  resumed: rows.resumed + (restored?.resumed ?? 0),
+  completed: rows.completed + (restored?.completed ?? 0),
+  stillPending: rows.stillPending + (restored?.stillPending ?? 0),
   alreadyUsed: 0,
-  byKind: restored.resumed > 0 ? [restored] : [],
+  byKind: restored ? [restored] : [],
+  unread: [],
 });
