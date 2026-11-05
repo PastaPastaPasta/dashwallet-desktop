@@ -46,6 +46,11 @@ export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network
           )}
           {step === "confirm" && plan && (
             <>
+              {flow.replanned && (
+                <p className="form-problem" role="alert" data-testid="move-mixed-replanned">
+                  {MOVE_COPY.planChanged}
+                </p>
+              )}
               <p className="sheet-text">{MOVE_COPY.confirm.message}</p>
               <dl className="detail-list topup-quote" data-testid="move-mixed-plan">
                 <Row label={MOVE_COPY.confirm.fullyMixed} value={amount(plan.fullyMixed)} testId="move-mixed-fully" />

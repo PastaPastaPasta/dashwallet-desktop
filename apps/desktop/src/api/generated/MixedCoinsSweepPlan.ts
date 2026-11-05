@@ -21,4 +21,8 @@ notFullyMixed: number,
  * The account's coins that wait for a confirmation: no chunk spends a
  * coin with unconfirmed parents.
  */
-unconfirmed: number, };
+unconfirmed: number,
+/**
+ * What `move_mixed_coins` takes to run exactly this plan.
+ */
+quoteId: string, };

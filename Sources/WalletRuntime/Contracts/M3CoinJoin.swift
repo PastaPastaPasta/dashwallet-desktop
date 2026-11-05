@@ -275,11 +275,14 @@ public struct MixedCoinsSweepPlan: Sendable, Hashable {
     public let destination: MixedCoinsDestination
     public let total: Amount
     public let chunks: [MixedCoinsChunk]
+    /// The engine's id of this plan: the move runs only on its coins.
+    public let quoteId: String
 
-    public init(destination: MixedCoinsDestination, total: Amount, chunks: [MixedCoinsChunk]) {
+    public init(destination: MixedCoinsDestination, total: Amount, chunks: [MixedCoinsChunk], quoteId: String = "") {
         self.destination = destination
         self.total = total
         self.chunks = chunks
+        self.quoteId = quoteId
     }
 }
 
@@ -310,7 +313,8 @@ public protocol MixedCoinsMoving: AnyObject, Sendable {
     /// Runs as a rescan (`RepairProviding.rescanProgress`).
     func recoveryScan(wallet: WalletID) async throws(ServiceError) -> CoinJoinRecoveryReport
     func plan(wallet: WalletID, destination: MixedCoinsDestination) async throws(ServiceError) -> MixedCoinsSweepPlan
+    /// Runs `plan` as confirmed (`.coinjoinPlanChanged` when its coins changed: plan again).
     /// `grant`: `.spend(max: ≥ plan.total)`.
-    func move(wallet: WalletID, destination: MixedCoinsDestination, grant: AuthGrant) async throws(ServiceError)
+    func move(wallet: WalletID, plan: MixedCoinsSweepPlan, grant: AuthGrant) async throws(ServiceError)
         -> MixedCoinsSweepResult
 }

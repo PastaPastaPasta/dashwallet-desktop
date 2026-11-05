@@ -1420,11 +1420,13 @@ export function mixedCoinsSweepPlan(walletId: string, destination: MixedCoinsDes
 
 /**
  * "Move mixed coins" (IOS-057): sweeps the CoinJoin account in chunks of
- * at most 500 inputs. `grantId`: a `Spend` grant of at least the plan's
- * total. Stops at the first failing chunk and reports what moved.
+ * at most 500 inputs. `quoteId`: the confirmed plan's (refused
+ * `coinjoin.plan_changed` when the coins are no longer its own);
+ * `grantId`: a `Spend` grant of at least the plan's total. Stops at the
+ * first failing chunk and reports what moved.
  */
-export function moveMixedCoins(walletId: string, destination: MixedCoinsDestination, grantId: string): Promise<MixedCoinsSweepResult> {
-  return invoke<MixedCoinsSweepResult>("move_mixed_coins", { walletId, destination, grantId });
+export function moveMixedCoins(walletId: string, destination: MixedCoinsDestination, quoteId: string, grantId: string): Promise<MixedCoinsSweepResult> {
+  return invoke<MixedCoinsSweepResult>("move_mixed_coins", { walletId, destination, quoteId, grantId });
 }
 
 /**
@@ -1436,12 +1438,12 @@ export function mixedCoinsConsolidationPlan(walletId: string): Promise<MixedCoin
 
 /**
  * Runs the consolidation round: every transaction pays one fresh
- * address of the wallet's own CoinJoin account. `grantId`: a `Spend`
- * grant of at least the plan's total. Stops at the first failing chunk
- * and reports what went out.
+ * address of the wallet's own CoinJoin account. `quoteId`: the
+ * confirmed plan's; `grantId`: a `Spend` grant of at least the plan's
+ * total. Stops at the first failing chunk and reports what went out.
  */
-export function consolidateMixedCoins(walletId: string, grantId: string): Promise<MixedCoinsSweepResult> {
-  return invoke<MixedCoinsSweepResult>("consolidate_mixed_coins", { walletId, grantId });
+export function consolidateMixedCoins(walletId: string, quoteId: string, grantId: string): Promise<MixedCoinsSweepResult> {
+  return invoke<MixedCoinsSweepResult>("consolidate_mixed_coins", { walletId, quoteId, grantId });
 }
 
 /**
@@ -2722,9 +2724,9 @@ export type CommandArgs = {
   generate_coinjoin_salt: { walletId: string };
   coinjoin_recovery_scan: { walletId: string };
   mixed_coins_sweep_plan: { walletId: string; destination: MixedCoinsDestination };
-  move_mixed_coins: { walletId: string; destination: MixedCoinsDestination; grantId: string };
+  move_mixed_coins: { walletId: string; destination: MixedCoinsDestination; quoteId: string; grantId: string };
   mixed_coins_consolidation_plan: { walletId: string };
-  consolidate_mixed_coins: { walletId: string; grantId: string };
+  consolidate_mixed_coins: { walletId: string; quoteId: string; grantId: string };
   resend_mixed_coins: { walletId: string; txid: string | null };
   discover_identities: { walletId: string; grant: string };
   identities: { walletId: string };
@@ -3611,6 +3613,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "coinjoin.broadcast_rejected",
   "coinjoin.mixing_active",
   "coinjoin.move_running",
+  "coinjoin.plan_changed",
   "masternode.watch_only",
   "masternode.vault_locked",
   "masternode.grant_invalid",

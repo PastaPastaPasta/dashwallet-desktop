@@ -65,7 +65,7 @@ describe("Move mixed coins to the wallet", () => {
     await open("coinjoin-move-mixing");
     expect(flow.step).toBe("mixing");
     expect(moveErrorText(flow.error)).toBe(MOVE_COPY.mixing.text);
-    await expect(cmd.moveMixedCoins(W, "wallet", "no-grant")).rejects.toMatchObject({ code: "coinjoin.mixing_active" });
+    await expect(cmd.moveMixedCoins(W, "wallet", "no-quote", "no-grant")).rejects.toMatchObject({ code: "coinjoin.mixing_active" });
 
     await flow.stopMixing();
     await until(() => flow.step !== "plan");
@@ -76,7 +76,7 @@ describe("Move mixed coins to the wallet", () => {
   it("asks for a grant covering the plan's total", async () => {
     await open("coinjoin-move");
     const small = await cmd.authorize({ kind: "spend", maxDuffs: flow.plan!.total - 1 }, W, { kind: "passphrase", passphrase: FIXTURE_PASSPHRASE });
-    await expect(cmd.moveMixedCoins(W, "wallet", small.id)).rejects.toMatchObject({ code: "coinjoin.grant_invalid" });
+    await expect(cmd.moveMixedCoins(W, "wallet", flow.plan!.quoteId, small.id)).rejects.toMatchObject({ code: "coinjoin.grant_invalid" });
   });
 
   it("reports a partial move: what moved and what stayed", async () => {
@@ -126,6 +126,24 @@ describe("Move mixed coins to the wallet", () => {
     await expect(cmd.resendMixedCoins(W, "ab".repeat(32))).rejects.toMatchObject({ code: "invalid_argument" });
   });
 
+  it("a move whose coins changed after the confirm returns to the confirm with the new plan", async () => {
+    installFixture({ scenario: "coinjoin-move" });
+    const api = new IpcBackend("fixture");
+    flow = new MoveMixedFlow(api, W);
+    flow.begin();
+    await until(() => flow.step !== "plan");
+    const confirmed = flow.plan!;
+    // Another plan (another sheet, or the coins changing) replaces the confirmed quote.
+    await api.mixedCoinsSweepPlan(W, "wallet");
+    await expect(api.moveMixedCoins(W, "wallet", confirmed.quoteId, "no-grant")).rejects.toMatchObject({ code: "coinjoin.plan_changed" });
+    await api.mixedCoinsSweepPlan(W, "wallet");
+    const moveSpy = vi.spyOn(api, "moveMixedCoins").mockRejectedValueOnce(appError("coinjoin.plan_changed"));
+    await move();
+    expect(moveSpy).toHaveBeenCalledTimes(1);
+    expect(flow).toMatchObject({ step: "confirm", replanned: true });
+    expect(flow.plan!.quoteId).not.toBe(confirmed.quoteId);
+  });
+
   it("keeps a running move's result for the reopened sheet", async () => {
     await open("coinjoin-move");
     const done = move();
@@ -156,7 +174,7 @@ describe("Move mixed coins to the wallet", () => {
 });
 
 describe("Move mixed coins, the flow's edges", () => {
-  const PLAN: MixedCoinsSweepPlan = { destination: "wallet", total: 30, chunks: [{ inputs: 3, amount: 27, fee: 3 }], fullyMixed: 20, notFullyMixed: 10, unconfirmed: 0 };
+  const PLAN: MixedCoinsSweepPlan = { destination: "wallet", total: 30, chunks: [{ inputs: 3, amount: 27, fee: 3 }], fullyMixed: 20, notFullyMixed: 10, unconfirmed: 0, quoteId: "q" };
   const stub = (over: Partial<Record<keyof MoveMixedApi, unknown>>) => new MoveMixedFlow({ stopMixing: vi.fn().mockResolvedValue(undefined), ...over } as unknown as MoveMixedApi, W);
 
   it("after Stop Mixing, plans again while the last session winds down", async () => {

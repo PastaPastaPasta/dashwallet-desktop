@@ -59,6 +59,8 @@ export interface CoinJoinWorld {
   /** A scenario's failing "Move mixed coins" broadcast: chunk `at` (from 0) is rejected or of
    * unknown outcome, and the move stops there; unset, every chunk is sent. */
   sweepFailure?: { kind: "rejected" | "unknown"; at: number };
+  /** Each wallet's last plan's quote: its id and its chunks' coins (`coinjoin.plan_changed` for another). */
+  sweepQuote?: Record<string, { id: string; coins: string }>;
   /** The recorded chunks of unknown outcome, by wallet id: their display txids. */
   sweepUnknown?: Record<string, string[]>;
 }
@@ -133,6 +135,9 @@ const SWEEP_MIN_COIN = 1_000;
 const SWEEP_MAX_INPUTS = 500;
 const sweepSize = (inputs: number) => 8 + (inputs < 253 ? 1 : 3) + inputs * 148 + 1 + 34;
 
+/** A plan's chunks' coins, in order, as one key. */
+const chunkCoins = (chunks: { coins: Utxo[] }[]) => chunks.map((c) => c.coins.map((u) => `${u.outpoint.txid}:${u.outpoint.vout}`).join(",")).join("|");
+
 /** A fresh display txid (64 hex digits) from the world's issue counter. */
 function sweepTxid(w: World): string {
   w.issued += 1;
@@ -180,14 +185,21 @@ export function coinjoinHandlers({ wallet, grant, useGrant }: CoinJoinDeps): Han
   return {
     mixed_coins_sweep_plan: ({ walletId, destination }, { world }) => {
       const { chunks, total, fullyMixed, unconfirmed } = sweepPlanOf(world, wallet(world, walletId), destination);
-      return { destination, total, chunks: chunks.map((c) => c.chunk), fullyMixed, notFullyMixed: total - fullyMixed, unconfirmed };
+      const quoteId = `quote-${(world.issued += 1)}`;
+      (world.coinjoin.sweepQuote ??= {})[walletId] = { id: quoteId, coins: chunkCoins(chunks) };
+      return { destination, total, chunks: chunks.map((c) => c.chunk), fullyMixed, notFullyMixed: total - fullyMixed, unconfirmed, quoteId };
     },
     // Each chunk sent becomes one coin of the wallet's main balance, outside the CoinJoin account;
     // `sweepFailure` stops at its chunk as a rejected or unknown broadcast.
-    move_mixed_coins: ({ walletId, destination, grantId }, ctx): MixedCoinsSweepResult => {
+    move_mixed_coins: ({ walletId, destination, quoteId, grantId }, ctx): MixedCoinsSweepResult => {
       const { world } = ctx;
       const w = wallet(world, walletId);
       const { chunks, total } = sweepPlanOf(world, w, destination);
+      // The engine compares under the fence: the confirmed plan's coins, used once.
+      const quoted = world.coinjoin.sweepQuote?.[walletId];
+      if (quoted?.id !== quoteId) throw fail("coinjoin.plan_changed", "the coins to move changed since the plan");
+      delete world.coinjoin.sweepQuote?.[walletId];
+      if (quoted.coins !== chunkCoins(chunks)) throw fail("coinjoin.plan_changed", "the coins to move changed since the plan");
       const g = grant(world, grantId, walletId, ["spend"]);
       if (g?.grant.purpose.kind !== "spend" || g.grant.purpose.maxDuffs < total) throw fail("coinjoin.grant_invalid", "grant invalid");
       useGrant(world, grantId);

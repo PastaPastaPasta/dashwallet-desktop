@@ -11,6 +11,7 @@ extension L10n {
         public static let coinJoinNothingToMove = "There are no mixed coins to move."
         public static let coinJoinMixingActive = "Stop mixing before you move mixed coins."
         public static let coinJoinMoveRunning = "A move of your mixed coins is running. Try again when it ends."
+        public static let coinJoinPlanChanged = "Your CoinJoin balance changed since you reviewed this move. Review it again."
         public static let spvNotRunning = "Sync is not running. Start it and try again."
         public static let noPeers = "No peers are connected. Try again when the wallet is connected to the network."
         public static let broadcastRejected = "The network rejected the transaction."
@@ -35,6 +36,7 @@ extension ErrorText {
         case .coinjoinNothingToMove: return E.coinJoinNothingToMove
         case .coinjoinMixingActive: return E.coinJoinMixingActive
         case .coinjoinMoveRunning: return E.coinJoinMoveRunning
+        case .coinjoinPlanChanged: return E.coinJoinPlanChanged
         case .coinjoinSpvNotRunning: return E.spvNotRunning
         case .coinjoinNoPeers: return E.noPeers
         case .coinjoinBroadcastRejected: return E.broadcastRejected

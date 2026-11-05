@@ -152,14 +152,22 @@ public final class MixedCoinsViewModel {
         }
         flow = .moving
         do {
-            let result = try await mixedCoins.move(wallet: wallet, destination: plan.destination, grant: grant)
+            let result = try await mixedCoins.move(wallet: wallet, plan: plan, grant: grant)
             if !result.txids.isEmpty {
                 desktopPreferences.updateM3 { $0.coinJoinWithdrawals[wallet.hex, default: []] += result.txids }
             }
             flow = .moved(result)
         } catch {
             grants.revoke(grant)
-            fail(error)
+            // The coins changed since the user confirmed: back to the confirm step with the new plan.
+            if error.code == .coinjoinPlanChanged,
+                let fresh = try? await mixedCoins.plan(wallet: wallet, destination: plan.destination)
+            {
+                errorMessage = ErrorText.m3(error, amount: amountText.callAsFunction)
+                flow = .planned(fresh)
+            } else {
+                fail(error)
+            }
         }
     }
 

@@ -131,7 +131,7 @@ struct DemoM3RulesTests {
         #expect(plan.total > .zero && !plan.chunks.isEmpty)
         #expect(await Self.code { _ = try await m3.mixedCoins.plan(wallet: wallet, destination: .shielded) } == .notImplemented)
         let grant = try await env.auth.authorize(.spend(max: plan.total), wallet: wallet, credential: .unencrypted)
-        #expect(await Self.code { _ = try await m3.mixedCoins.move(wallet: wallet, destination: .wallet, grant: grant) } == .notImplemented)
+        #expect(await Self.code { _ = try await m3.mixedCoins.move(wallet: wallet, plan: plan, grant: grant) } == .notImplemented)
     }
 
     @Test func QT041_panelRunsOverTheDemo() async {

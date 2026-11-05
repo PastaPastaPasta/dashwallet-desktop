@@ -83,18 +83,49 @@ fn spend_grant(f: &Fixture) -> String {
     )
 }
 
+/// The consolidation plan's quote ("" when there is no plan): the round
+/// then runs on what the user would have confirmed.
+fn consolidation_quote(f: &Fixture) -> String {
+    (f.engine)
+        .block_on(f.session.mixed_coins_consolidation_plan(f.wallet))
+        .map(|p| p.quote_id)
+        .unwrap_or_default()
+}
+
+/// The move plan's quote ("" when there is no plan).
+fn move_quote(f: &Fixture) -> String {
+    (f.engine)
+        .block_on(
+            f.session
+                .mixed_coins_sweep_plan(f.wallet, SweepDestination::Wallet),
+        )
+        .map(|p| p.quote_id)
+        .unwrap_or_default()
+}
+
 fn consolidate(f: &Fixture) -> Result<SweepResult, EngineError> {
+    let quote = consolidation_quote(f);
+    consolidate_with(f, quote)
+}
+
+fn consolidate_with(f: &Fixture, quote: String) -> Result<SweepResult, EngineError> {
     let grant = spend_grant(f);
-    f.engine
-        .block_on(f.session.consolidate_mixed_coins(f.wallet, grant))
+    (f.engine).block_on(f.session.consolidate_mixed_coins(f.wallet, quote, grant))
 }
 
 fn move_to_wallet(f: &Fixture) -> Result<SweepResult, EngineError> {
+    let quote = move_quote(f);
+    move_with(f, quote)
+}
+
+fn move_with(f: &Fixture, quote: String) -> Result<SweepResult, EngineError> {
     let grant = spend_grant(f);
-    (f.engine).block_on(
-        f.session
-            .move_mixed_coins(f.wallet, SweepDestination::Wallet, grant),
-    )
+    (f.engine).block_on(f.session.move_mixed_coins(
+        f.wallet,
+        SweepDestination::Wallet,
+        quote,
+        grant,
+    ))
 }
 
 /// A restart: the session's in-memory reservations of `txs` are gone.
@@ -246,10 +277,12 @@ fn reached(pause: &TestPause) {
 
 /// The move, on the session's runtime, while the test thread goes on.
 fn spawn_move(f: &Fixture) -> tokio::task::JoinHandle<Result<SweepResult, EngineError>> {
-    let grant = spend_grant(f);
+    let (quote, grant) = (move_quote(f), spend_grant(f));
     let (s, w) = (Arc::clone(&f.session), f.wallet);
-    (f.session.rt)
-        .spawn(async move { s.move_mixed_coins(w, SweepDestination::Wallet, grant).await })
+    (f.session.rt).spawn(async move {
+        s.move_mixed_coins(w, SweepDestination::Wallet, quote, grant)
+            .await
+    })
 }
 
 fn start(f: &Fixture) -> Result<(), EngineError> {
@@ -284,9 +317,8 @@ fn mixing_does_not_start_while_a_move_runs() {
     reached(&read);
     move_running(start(&f));
     let grant = spend_grant(&f);
-    let again = f
-        .session
-        .move_mixed_coins(f.wallet, SweepDestination::Wallet, grant);
+    let again =
+        (f.session).move_mixed_coins(f.wallet, SweepDestination::Wallet, String::new(), grant);
     move_running(within(&f, again).map(drop));
     read.release.notify_one();
     let done = f.engine.block_on(moving).unwrap().unwrap();
@@ -589,9 +621,11 @@ fn a_grant_below_the_total_is_refused_and_nothing_is_sent() {
         },
         Credential::None,
     );
+    let quote = move_quote(&f);
     let r = f.engine.block_on(f.session.move_mixed_coins(
         f.wallet,
         SweepDestination::Wallet,
+        quote,
         grant,
     ));
     assert!(
@@ -980,4 +1014,55 @@ fn the_plans_count_the_coins_that_wait_for_a_confirmation() {
         .block_on(f.session.mixed_coins_consolidation_plan(f.wallet))
         .unwrap();
     assert_eq!((plan.unconfirmed, plan.coins_after), (2, 3));
+}
+
+/// Sol R3 / Opus m5: a move runs only on the plan the user confirmed. A
+/// coin that arrives after the plan, the total still under the grant's
+/// cap, refuses it (`PlanChanged`) before anything is signed, sent,
+/// recorded or reserved. A quote is used once, an unknown or replaced one
+/// is refused (and leaves the wallet's last quote usable), and a fresh
+/// plan then moves everything.
+#[test]
+fn a_move_refuses_coins_other_than_the_confirmed_plans() {
+    for consolidation in [false, true] {
+        let f = fixture(false);
+        f.credit_coinjoin(1, COIN);
+        f.credit_coinjoin(2, COIN);
+        let wire = hook(&f, 500, &[]);
+        let quote = |f: &Fixture| {
+            if consolidation {
+                consolidation_quote(f)
+            } else {
+                move_quote(f)
+            }
+        };
+        let run = |f: &Fixture, q: String| {
+            if consolidation {
+                consolidate_with(f, q)
+            } else {
+                move_with(f, q)
+            }
+        };
+        let changed = |r: Result<SweepResult, EngineError>| {
+            assert!(
+                matches!(r, Err(EngineError::CoinJoin(CoinJoinFailure::PlanChanged))),
+                "{r:?}"
+            );
+            assert!(wire.txs().is_empty());
+            assert!(sweep_out_keys(&f).is_empty());
+            assert!(f.session.spends.snapshot(&f.wallet).is_empty());
+        };
+        let confirmed = quote(&f);
+        f.credit_coinjoin(3, COIN);
+        changed(run(&f, confirmed.clone()));
+        changed(run(&f, confirmed));
+        changed(run(&f, "not a quote".into()));
+
+        let replaced = quote(&f);
+        let last = quote(&f);
+        changed(run(&f, replaced));
+        let done = run(&f, last).unwrap();
+        assert_eq!(done.failure_code, None);
+        assert_eq!(inputs(&wire.txs()).len(), 3, "the three coins");
+    }
 }

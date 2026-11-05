@@ -24,4 +24,8 @@ coinsAfter: number,
  * The account's coins that wait for a confirmation, which the round
  * leaves.
  */
-unconfirmed: number, };
+unconfirmed: number,
+/**
+ * What `consolidate_mixed_coins` takes to run exactly this plan.
+ */
+quoteId: string, };

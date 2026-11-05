@@ -66,6 +66,7 @@ export const MOVE_COPY = {
   nothing: "There are no mixed coins to move.",
   otherMove: "Another move of your mixed coins is running. Try again when it ends.",
   changed: "The approval no longer covers this move. Review it again.",
+  planChanged: "Your CoinJoin balance changed since you reviewed this move. Review it again.",
   close: "Close",
   again: "Try again",
 } as const;
@@ -113,6 +114,8 @@ export class MoveMixedFlow extends Model {
   running = false;
   /** What the last Try again on a chunk of unknown outcome came to. */
   resent: MixedCoinsResendState | null = null;
+  /** The confirm step shows a fresh plan because the confirmed one's coins changed. */
+  replanned = false;
   readonly grants: GrantModel;
   #epoch = 0;
   /** A move or Stop Mixing refusal that came while the sheet was closed. */
@@ -153,6 +156,7 @@ export class MoveMixedFlow extends Model {
     this.plan = null;
     this.result = null;
     this.resent = null;
+    this.replanned = false;
     this.error = null;
     this.changed();
     for (;;) {
@@ -204,13 +208,21 @@ export class MoveMixedFlow extends Model {
       const got = await this.grants.withGrant({ kind: "spend", maxDuffs: plan.total }, this.walletId, (g: AuthGrant) => {
         this.step = "running";
         this.changed();
-        return this.api.moveMixedCoins(this.walletId, "wallet", g.id);
+        return this.api.moveMixedCoins(this.walletId, "wallet", plan.quoteId, g.id);
       });
       if (got) {
         this.result = got.value;
         this.step = "done";
       } else this.step = "confirm";
     } catch (e) {
+      if (hasCode(e, "coinjoin.plan_changed")) {
+        // The coins changed under the confirm step: show the new plan there.
+        this.running = false;
+        await this.#plan();
+        this.replanned = this.step === "confirm";
+        this.changed();
+        return;
+      }
       this.#fail(e);
       this.#unseen = !this.open;
     } finally {

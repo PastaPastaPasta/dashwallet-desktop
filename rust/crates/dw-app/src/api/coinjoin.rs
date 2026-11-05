@@ -549,6 +549,8 @@ pub struct MixedCoinsSweepPlan {
     /// The account's coins that wait for a confirmation: no chunk spends a
     /// coin with unconfirmed parents.
     pub unconfirmed: u32,
+    /// What `move_mixed_coins` takes to run exactly this plan.
+    pub quote_id: String,
 }
 
 impl From<SweepPlan> for MixedCoinsSweepPlan {
@@ -560,6 +562,7 @@ impl From<SweepPlan> for MixedCoinsSweepPlan {
             fully_mixed,
             not_fully_mixed,
             unconfirmed,
+            quote_id,
         } = p;
         MixedCoinsSweepPlan {
             destination: destination.into(),
@@ -568,6 +571,7 @@ impl From<SweepPlan> for MixedCoinsSweepPlan {
             fully_mixed,
             not_fully_mixed,
             unconfirmed,
+            quote_id,
         }
     }
 }
@@ -590,6 +594,8 @@ pub struct MixedCoinsConsolidationPlan {
     /// The account's coins that wait for a confirmation, which the round
     /// leaves.
     pub unconfirmed: u32,
+    /// What `consolidate_mixed_coins` takes to run exactly this plan.
+    pub quote_id: String,
 }
 
 impl From<ConsolidationPlan> for MixedCoinsConsolidationPlan {
@@ -601,6 +607,7 @@ impl From<ConsolidationPlan> for MixedCoinsConsolidationPlan {
             not_fully_mixed,
             coins_after,
             unconfirmed,
+            quote_id,
         } = p;
         MixedCoinsConsolidationPlan {
             total,
@@ -609,6 +616,7 @@ impl From<ConsolidationPlan> for MixedCoinsConsolidationPlan {
             not_fully_mixed,
             coins_after,
             unconfirmed,
+            quote_id,
         }
     }
 }
@@ -784,20 +792,23 @@ commands! {
     }
 
     /// "Move mixed coins" (IOS-057): sweeps the CoinJoin account in chunks of
-    /// at most 500 inputs. `grantId`: a `Spend` grant of at least the plan's
-    /// total. Stops at the first failing chunk and reports what moved.
+    /// at most 500 inputs. `quoteId`: the confirmed plan's (refused
+    /// `coinjoin.plan_changed` when the coins are no longer its own);
+    /// `grantId`: a `Spend` grant of at least the plan's total. Stops at the
+    /// first failing chunk and reports what moved.
     #[facade("NetworkSession::move_mixed_coins")]
     fn move_mixed_coins(
         state,
         wallet_id: String,
         destination: MixedCoinsDestination,
+        quote_id: String,
         grant_id: String,
     ) -> MixedCoinsSweepResult {
         let id = parse_wallet_id(&wallet_id)?;
         let result = state
             .session()
             .await?
-            .move_mixed_coins(id, destination.into(), grant_id)
+            .move_mixed_coins(id, destination.into(), quote_id, grant_id)
             .await?;
         Ok(result.into())
     }
@@ -811,14 +822,19 @@ commands! {
     }
 
     /// Runs the consolidation round: every transaction pays one fresh
-    /// address of the wallet's own CoinJoin account. `grantId`: a `Spend`
-    /// grant of at least the plan's total. Stops at the first failing chunk
-    /// and reports what went out.
+    /// address of the wallet's own CoinJoin account. `quoteId`: the
+    /// confirmed plan's; `grantId`: a `Spend` grant of at least the plan's
+    /// total. Stops at the first failing chunk and reports what went out.
     #[facade("NetworkSession::consolidate_mixed_coins")]
-    fn consolidate_mixed_coins(state, wallet_id: String, grant_id: String) -> MixedCoinsSweepResult {
+    fn consolidate_mixed_coins(
+        state,
+        wallet_id: String,
+        quote_id: String,
+        grant_id: String,
+    ) -> MixedCoinsSweepResult {
         let id = parse_wallet_id(&wallet_id)?;
         let session = state.session().await?;
-        Ok(session.consolidate_mixed_coins(id, grant_id).await?.into())
+        Ok(session.consolidate_mixed_coins(id, quote_id, grant_id).await?.into())
     }
 
     /// "Try again" on a chunk of unknown outcome: sends the transaction

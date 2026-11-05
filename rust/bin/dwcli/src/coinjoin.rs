@@ -413,7 +413,12 @@ pub fn run(
                     )
                     .map_err(|e| e.to_string())?;
                 let r = engine
-                    .block_on(session.move_mixed_coins(id, SweepDestination::Wallet, grant.id))
+                    .block_on(session.move_mixed_coins(
+                        id,
+                        SweepDestination::Wallet,
+                        plan.quote_id.clone(),
+                        grant.id,
+                    ))
                     .map_err(e)?;
                 print_sweep(&r);
             }
@@ -457,7 +462,7 @@ pub fn run(
                     )
                     .map_err(|e| e.to_string())?;
                 let r = engine
-                    .block_on(session.consolidate_mixed_coins(id, grant.id))
+                    .block_on(session.consolidate_mixed_coins(id, plan.quote_id.clone(), grant.id))
                     .map_err(e)?;
                 print_sweep(&r);
             }

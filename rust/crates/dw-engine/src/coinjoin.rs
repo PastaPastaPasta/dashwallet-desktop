@@ -87,6 +87,9 @@ pub enum CoinJoinFailure {
     GrantInvalid,
     /// "Move mixed coins": nothing above the 1000-duff threshold to move.
     NothingToMove,
+    /// The coins a move or consolidation would spend are not those of the
+    /// plan the user confirmed (another set, or a higher fee): plan again.
+    PlanChanged,
     /// The recovery scan needs a running SPV client.
     SpvNotRunning,
     NoPeers,
@@ -111,6 +114,7 @@ impl std::fmt::Display for CoinJoinFailure {
             Self::VaultLocked => f.write_str("vault locked"),
             Self::GrantInvalid => f.write_str("grant invalid"),
             Self::NothingToMove => f.write_str("no mixed coins to move"),
+            Self::PlanChanged => f.write_str("the coins to move changed since the plan"),
             Self::SpvNotRunning => f.write_str("spv is not running"),
             Self::NoPeers => f.write_str("no connected peers"),
             Self::BroadcastRejected(r) => write!(f, "broadcast rejected: {r}"),
@@ -242,6 +246,8 @@ pub struct SweepPlan {
     /// The CoinJoin account's coins that wait for a confirmation, which
     /// the move leaves (an InstantSend-locked coin among them).
     pub unconfirmed: u32,
+    /// What [`NetworkSession::move_mixed_coins`] takes to run this plan.
+    pub quote_id: String,
 }
 
 /// The consolidation round before a move to Shielded (iOS #1221).
@@ -260,6 +266,9 @@ pub struct ConsolidationPlan {
     /// The account's coins that wait for a confirmation, which the round
     /// leaves (an InstantSend-locked coin among them).
     pub unconfirmed: u32,
+    /// What [`NetworkSession::consolidate_mixed_coins`] takes to run this
+    /// plan.
+    pub quote_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -413,6 +422,8 @@ pub(crate) struct CoinJoinRuntime {
     watched: Mutex<HashMap<WalletId, u64>>,
     refresher: Mutex<Option<JoinHandle<()>>>,
     listener: Mutex<Option<JoinHandle<()>>>,
+    /// Each wallet's last plan per sweep target ([`SweepQuote`]).
+    quotes: Mutex<HashMap<(WalletId, SweepTarget), SweepQuote>>,
     /// Tests: stand-ins for a sweep's broadcast and chunk size.
     #[cfg(test)]
     pub(crate) sweep_hooks: Mutex<sweep_test_hooks::Hooks>,
@@ -429,6 +440,7 @@ impl CoinJoinRuntime {
             watched: Mutex::new(HashMap::new()),
             refresher: Mutex::new(None),
             listener: Mutex::new(None),
+            quotes: Mutex::new(HashMap::new()),
             #[cfg(test)]
             sweep_hooks: Mutex::default(),
         }
@@ -436,6 +448,41 @@ impl CoinJoinRuntime {
 
     fn mixers(&self) -> std::sync::MutexGuard<'_, HashMap<WalletId, Mixer>> {
         self.mixers.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn quotes(&self) -> std::sync::MutexGuard<'_, HashMap<(WalletId, SweepTarget), SweepQuote>> {
+        self.quotes.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Issues the quote of `picked`, `wallet`'s plan to `target`, in place
+    /// of the last one; returns its id.
+    fn issue_quote(&self, wallet: WalletId, target: SweepTarget, picked: &SweepCoins) -> String {
+        let quote = SweepQuote::of(picked);
+        let id = quote.id.clone();
+        self.quotes().insert((wallet, target), quote);
+        id
+    }
+
+    /// Takes `wallet`'s quote `id` for `target`: `PlanChanged` unless it is
+    /// the wallet's last one and covers `picked` ([`SweepQuote::covers`]).
+    /// A matching id is used once, whatever the outcome; another id leaves
+    /// the last quote as it is.
+    fn redeem_quote(
+        &self,
+        wallet: WalletId,
+        target: SweepTarget,
+        id: &str,
+        picked: &SweepCoins,
+    ) -> Result<(), CoinJoinFailure> {
+        let mut quotes = self.quotes();
+        let key = (wallet, target);
+        if !matches!(quotes.get(&key), Some(q) if q.id == id) {
+            return Err(CoinJoinFailure::PlanChanged);
+        }
+        match quotes.remove(&key) {
+            Some(q) if q.covers(picked) => Ok(()),
+            _ => Err(CoinJoinFailure::PlanChanged),
+        }
     }
 
     pub(crate) fn settings(&self) -> CoinJoinSettings {
@@ -2495,13 +2542,14 @@ impl NetworkSession {
         Ok(())
     }
 
-    /// The plan of a sweep to `target`: its chunks and how much of it is
-    /// fully mixed. Reads coins only.
+    /// The plan of a sweep to `target`: its chunks, how much of it is
+    /// fully mixed, and the id of its quote, which replaces the wallet's
+    /// last one for `target`. Reads coins only.
     async fn sweep_plan(
         self: &Arc<Self>,
         wallet_id: WalletId,
         target: SweepTarget,
-    ) -> Result<(SweepCoins, MixedAmounts), EngineError> {
+    ) -> Result<(SweepCoins, MixedAmounts, String), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
@@ -2514,7 +2562,8 @@ impl NetworkSession {
                 return Err(CoinJoinFailure::NothingToMove.into());
             }
             let amounts = picked.amounts();
-            Ok((picked, amounts))
+            let quote = this.coinjoin.issue_quote(wallet_id, target, &picked);
+            Ok((picked, amounts, quote))
         })
         .await
     }
@@ -2531,7 +2580,7 @@ impl NetworkSession {
                 "NetworkSession.mixed_coins_sweep_plan.shielded".into(),
             ));
         }
-        let (picked, amounts) = self.sweep_plan(wallet_id, SweepTarget::Bip44).await?;
+        let (picked, amounts, quote_id) = self.sweep_plan(wallet_id, SweepTarget::Bip44).await?;
         Ok(SweepPlan {
             destination,
             total: picked.total(),
@@ -2539,6 +2588,7 @@ impl NetworkSession {
             fully_mixed: amounts.fully_mixed,
             not_fully_mixed: amounts.not_fully_mixed,
             unconfirmed: picked.unconfirmed,
+            quote_id,
         })
     }
 
@@ -2550,7 +2600,7 @@ impl NetworkSession {
         self: &Arc<Self>,
         wallet_id: WalletId,
     ) -> Result<ConsolidationPlan, EngineError> {
-        let (picked, amounts) = self.sweep_plan(wallet_id, SweepTarget::CoinJoin).await?;
+        let (picked, amounts, quote_id) = self.sweep_plan(wallet_id, SweepTarget::CoinJoin).await?;
         Ok(ConsolidationPlan {
             total: picked.total(),
             chunks: picked.chunk_infos(),
@@ -2558,17 +2608,20 @@ impl NetworkSession {
             not_fully_mixed: amounts.not_fully_mixed,
             coins_after: picked.coins_after,
             unconfirmed: picked.unconfirmed,
+            quote_id,
         })
     }
 
     /// "Move mixed coins" (IOS-057): broadcasts the sweep chunks to fresh
-    /// BIP44 receive addresses of the same wallet. `grant_id`: a `Spend`
-    /// grant of at least the total. Stops at the first failing chunk.
-    /// Refused while the wallet mixes.
+    /// BIP44 receive addresses of the same wallet. `quote_id`: the plan the
+    /// user confirmed ([`SweepPlan::quote_id`]); `grant_id`: a `Spend` grant
+    /// of at least the total. Stops at the first failing chunk. Refused
+    /// while the wallet mixes.
     pub async fn move_mixed_coins(
         self: &Arc<Self>,
         wallet_id: WalletId,
         destination: SweepDestination,
+        quote_id: String,
         grant_id: String,
     ) -> Result<SweepResult, EngineError> {
         if destination == SweepDestination::Shielded {
@@ -2576,19 +2629,24 @@ impl NetworkSession {
                 "NetworkSession.move_mixed_coins.shielded".into(),
             ));
         }
-        self.sweep(wallet_id, SweepTarget::Bip44, grant_id).await
+        self.sweep(wallet_id, SweepTarget::Bip44, quote_id, grant_id)
+            .await
     }
 
     /// Runs the consolidation round of [`Self::mixed_coins_consolidation_plan`]:
     /// every chunk pays one fresh address of the wallet's own CoinJoin
-    /// account, never BIP44. `grant_id`: a `Spend` grant of at least the
-    /// plan's total. Stops at the first failing chunk, as a move does.
+    /// account, never BIP44. `quote_id`: the plan the user confirmed
+    /// ([`ConsolidationPlan::quote_id`]); `grant_id`: a `Spend` grant of at
+    /// least the plan's total. Stops at the first failing chunk, as a move
+    /// does.
     pub async fn consolidate_mixed_coins(
         self: &Arc<Self>,
         wallet_id: WalletId,
+        quote_id: String,
         grant_id: String,
     ) -> Result<SweepResult, EngineError> {
-        self.sweep(wallet_id, SweepTarget::CoinJoin, grant_id).await
+        self.sweep(wallet_id, SweepTarget::CoinJoin, quote_id, grant_id)
+            .await
     }
 
     /// Sends `wallet_id`'s recorded sweep chunks again: the bytes signed for
@@ -2711,6 +2769,7 @@ impl NetworkSession {
         self: &Arc<Self>,
         wallet_id: WalletId,
         target: SweepTarget,
+        quote_id: String,
         grant_id: String,
     ) -> Result<SweepResult, EngineError> {
         let this = Arc::clone(self);
@@ -2741,6 +2800,9 @@ impl NetworkSession {
             if picked.chunks.is_empty() {
                 return Err(CoinJoinFailure::NothingToMove.into());
             }
+            // Under the fence: exactly the confirmed plan's coins, at no
+            // higher fee, or nothing is signed.
+            (this.coinjoin).redeem_quote(wallet_id, target, &quote_id, &picked)?;
             let total = picked.total();
             let vault = this.vault.clone();
             let signer = tokio::task::spawn_blocking(move || {
@@ -2923,7 +2985,7 @@ pub struct SweepResend {
 }
 
 /// Where a sweep pays.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SweepTarget {
     /// A fresh BIP44 receive address per chunk ("Move mixed coins").
     Bip44,
@@ -2933,6 +2995,7 @@ enum SweepTarget {
 }
 
 /// A sweep's coins and chunks ([`NetworkSession::sweep_coins`]).
+#[derive(Clone)]
 struct SweepCoins {
     coins: Vec<MixViewCoin>,
     chunks: Vec<dw_coinjoin::recovery::SweepChunk>,
@@ -2941,6 +3004,33 @@ struct SweepCoins {
     coins_after: u32,
     /// The CoinJoin account's coins that wait for a confirmation.
     unconfirmed: u32,
+}
+
+/// A plan as the user confirms it (Sol R3): its chunks' inputs, and their
+/// fee as a ceiling. The sweep it confirms runs only on the same chunks at
+/// no higher fee, compared under the coin fence; the coins may change in
+/// between (a payment arrives, another spend takes one, a fee rule moves).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SweepQuote {
+    id: String,
+    chunks: Vec<Vec<OutPoint>>,
+    fee: u64,
+}
+
+impl SweepQuote {
+    fn of(picked: &SweepCoins) -> Self {
+        SweepQuote {
+            id: hex::encode(rand::random::<[u8; 16]>()),
+            chunks: picked.chunk_inputs(),
+            fee: picked.fee(),
+        }
+    }
+
+    /// Whether `picked`, read for the sweep, is the quoted plan: the same
+    /// chunks of the same inputs, at no higher fee.
+    fn covers(&self, picked: &SweepCoins) -> bool {
+        picked.chunk_inputs() == self.chunks && picked.fee() <= self.fee
+    }
 }
 
 /// What a sweep moves, by how mixed it is.
@@ -2952,6 +3042,21 @@ struct MixedAmounts {
 impl SweepCoins {
     fn total(&self) -> u64 {
         self.chunks.iter().map(|c| c.amount + c.fee).sum()
+    }
+
+    fn fee(&self) -> u64 {
+        self.chunks.iter().map(|c| c.fee).sum()
+    }
+
+    /// Each chunk's inputs, in order.
+    fn chunk_inputs(&self) -> Vec<Vec<OutPoint>> {
+        (self.chunks.iter())
+            .map(|c| {
+                (c.coins.iter())
+                    .map(|&i| self.coins[i].coin.utxo.outpoint)
+                    .collect()
+            })
+            .collect()
     }
 
     fn chunk_infos(&self) -> Vec<SweepChunkInfo> {
@@ -3709,6 +3814,22 @@ mod tests {
         let a = picked.amounts();
         assert_eq!((a.fully_mixed, a.not_fully_mixed), (14_000, 7_000));
         assert_eq!(a.fully_mixed + a.not_fully_mixed, picked.total());
+
+        // Sol R3: a quote covers its own chunks at the same or a lower fee
+        // only: a higher fee, or the same total from other coins, is
+        // another plan.
+        let quote = SweepQuote::of(&picked);
+        assert!(quote.covers(&picked));
+        let mut cheaper = picked.clone();
+        cheaper.chunks[0].fee -= 1;
+        assert!(quote.covers(&cheaper));
+        let mut dearer = picked.clone();
+        dearer.chunks[0].fee += 1;
+        assert!(!quote.covers(&dearer));
+        let mut other = picked.clone();
+        other.chunks[0].coins = vec![0, 1];
+        assert!(!quote.covers(&other));
+        assert_ne!(SweepQuote::of(&picked).id, quote.id, "fresh ids");
     }
 
     #[test]

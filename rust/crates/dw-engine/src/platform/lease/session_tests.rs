@@ -3804,11 +3804,18 @@ fn a_mixed_sweep_is_refused_while_a_replay_runs() {
     });
     checkpoint(500);
     let sweep = crate::coinjoin::SweepDestination::Wallet;
-    let plan = f.engine.block_on(s.mixed_coins_sweep_plan(f.wallet, sweep));
-    assert_eq!(plan.unwrap().total, COIN);
+    let plan = f
+        .engine
+        .block_on(s.mixed_coins_sweep_plan(f.wallet, sweep))
+        .unwrap();
+    assert_eq!(plan.total, COIN);
     let moved = || {
-        f.engine
-            .block_on(s.move_mixed_coins(f.wallet, sweep, "no grant".into()))
+        f.engine.block_on(s.move_mixed_coins(
+            f.wallet,
+            sweep,
+            plan.quote_id.clone(),
+            "no grant".into(),
+        ))
     };
     assert!(matches!(moved(), Err(EngineError::RescanInProgress)));
     checkpoint(1_000);

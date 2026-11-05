@@ -141,6 +141,7 @@ codes! {
         BroadcastRejected = "coinjoin.broadcast_rejected",
         MixingActive = "coinjoin.mixing_active",
         MoveRunning = "coinjoin.move_running",
+        PlanChanged = "coinjoin.plan_changed",
     }
 }
 
@@ -435,6 +436,7 @@ impl From<CoinJoinFailure> for AppError {
             F::NoPeers => (CoinJoinCode::NoPeers.into(), None),
             F::MixingActive => (CoinJoinCode::MixingActive.into(), None),
             F::MoveRunning => (CoinJoinCode::MoveRunning.into(), None),
+            F::PlanChanged => (CoinJoinCode::PlanChanged.into(), None),
             F::BroadcastRejected(reason) => (
                 CoinJoinCode::BroadcastRejected.into(),
                 Some(ErrorData::Reason { reason }),
@@ -691,6 +693,7 @@ mod tests {
             ),
             (CoinJoinFailure::MixingActive, "coinjoin.mixing_active"),
             (CoinJoinFailure::MoveRunning, "coinjoin.move_running"),
+            (CoinJoinFailure::PlanChanged, "coinjoin.plan_changed"),
         ];
         assert_eq!(coinjoin.len(), CoinJoinCode::ALL.len());
         for (f, expected) in coinjoin {

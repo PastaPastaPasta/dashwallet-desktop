@@ -1715,11 +1715,12 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     
     /**
      * "Move mixed coins" (IOS-057): sweeps the CoinJoin account in chunks
-     * of ≤ 500 inputs to `destination`. `grant_id`: a `Spend` grant of at
-     * least the plan's total. Stops at the first failing chunk and reports
-     * what moved.
+     * of ≤ 500 inputs to `destination`. `quote_id`: the confirmed plan's
+     * (`coinjoin.plan_changed` when the coins are no longer its own);
+     * `grant_id`: a `Spend` grant of at least the plan's total. Stops at the
+     * first failing chunk and reports what moved.
      */
-    func moveMixedCoins(walletId: String, destination: MixedCoinsDestination, grantId: String) async throws  -> MixedCoinsSweepResult
+    func moveMixedCoins(walletId: String, destination: MixedCoinsDestination, quoteId: String, grantId: String) async throws  -> MixedCoinsSweepResult
     
     /**
      * `coinjoinsalt set`: replaces the salt, which changes which coins
@@ -2485,16 +2486,17 @@ open func mixedCoinsSweepPlan(walletId: String, destination: MixedCoinsDestinati
     
     /**
      * "Move mixed coins" (IOS-057): sweeps the CoinJoin account in chunks
-     * of ≤ 500 inputs to `destination`. `grant_id`: a `Spend` grant of at
-     * least the plan's total. Stops at the first failing chunk and reports
-     * what moved.
+     * of ≤ 500 inputs to `destination`. `quote_id`: the confirmed plan's
+     * (`coinjoin.plan_changed` when the coins are no longer its own);
+     * `grant_id`: a `Spend` grant of at least the plan's total. Stops at the
+     * first failing chunk and reports what moved.
      */
-open func moveMixedCoins(walletId: String, destination: MixedCoinsDestination, grantId: String)async throws  -> MixedCoinsSweepResult  {
+open func moveMixedCoins(walletId: String, destination: MixedCoinsDestination, quoteId: String, grantId: String)async throws  -> MixedCoinsSweepResult  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_dashwallet_core_fn_method_networksession_move_mixed_coins(
-                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterTypeMixedCoinsDestination_lower(destination),FfiConverterString.lower(grantId)
+                        self.uniffiCloneHandle(),FfiConverterString.lower(walletId),FfiConverterTypeMixedCoinsDestination_lower(destination),FfiConverterString.lower(quoteId),FfiConverterString.lower(grantId)
                 )
             },
             pollFunc: ffi_dashwallet_core_rust_future_poll_rust_buffer,
@@ -9014,6 +9016,10 @@ public struct MixedCoinsSweepPlan: Equatable, Hashable {
      */
     public let total: UInt64
     public let chunks: [MixedCoinsChunk]
+    /**
+     * What `move_mixed_coins` takes to run exactly this plan.
+     */
+    public let quoteId: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -9021,10 +9027,14 @@ public struct MixedCoinsSweepPlan: Equatable, Hashable {
         /**
          * The CoinJoin-account balance the plan moves (coins above the
          * 1000-duff threshold, mixed or not).
-         */total: UInt64, chunks: [MixedCoinsChunk]) {
+         */total: UInt64, chunks: [MixedCoinsChunk], 
+        /**
+         * What `move_mixed_coins` takes to run exactly this plan.
+         */quoteId: String) {
         self.destination = destination
         self.total = total
         self.chunks = chunks
+        self.quoteId = quoteId
     }
 
     
@@ -9045,7 +9055,8 @@ public struct FfiConverterTypeMixedCoinsSweepPlan: FfiConverterRustBuffer {
             try MixedCoinsSweepPlan(
                 destination: FfiConverterTypeMixedCoinsDestination.read(from: &buf), 
                 total: FfiConverterUInt64.read(from: &buf), 
-                chunks: FfiConverterSequenceTypeMixedCoinsChunk.read(from: &buf)
+                chunks: FfiConverterSequenceTypeMixedCoinsChunk.read(from: &buf), 
+                quoteId: FfiConverterString.read(from: &buf)
         )
     }
 
@@ -9053,6 +9064,7 @@ public struct FfiConverterTypeMixedCoinsSweepPlan: FfiConverterRustBuffer {
         FfiConverterTypeMixedCoinsDestination.write(value.destination, into: &buf)
         FfiConverterUInt64.write(value.total, into: &buf)
         FfiConverterSequenceTypeMixedCoinsChunk.write(value.chunks, into: &buf)
+        FfiConverterString.write(value.quoteId, into: &buf)
     }
 }
 
@@ -13707,6 +13719,11 @@ enum CoinJoinError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError 
      */
     case MoveRunning
     /**
+     * Code `coinjoin.plan_changed`: the coins are no longer the confirmed
+     * plan's; plan again.
+     */
+    case PlanChanged
+    /**
      * Code `invalid_argument`.
      */
     case InvalidArgument(detail: String
@@ -13792,22 +13809,23 @@ public struct FfiConverterTypeCoinJoinError: FfiConverterRustBuffer {
             )
         case 10: return .MixingActive
         case 11: return .MoveRunning
-        case 12: return .InvalidArgument(
+        case 12: return .PlanChanged
+        case 13: return .InvalidArgument(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 13: return .NetworkNotOpen(
+        case 14: return .NetworkNotOpen(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 14: return .WalletNotFound(
+        case 15: return .WalletNotFound(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 15: return .Storage(
+        case 16: return .Storage(
             detail: try FfiConverterString.read(from: &buf)
             )
-        case 16: return .NotImplemented(
+        case 17: return .NotImplemented(
             call: try FfiConverterString.read(from: &buf)
             )
-        case 17: return .Internal(
+        case 18: return .Internal(
             detail: try FfiConverterString.read(from: &buf)
             )
 
@@ -13868,33 +13886,37 @@ public struct FfiConverterTypeCoinJoinError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(11))
         
         
-        case let .InvalidArgument(detail):
+        case .PlanChanged:
             writeInt(&buf, Int32(12))
-            FfiConverterString.write(detail, into: &buf)
-            
         
-        case let .NetworkNotOpen(detail):
+        
+        case let .InvalidArgument(detail):
             writeInt(&buf, Int32(13))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .WalletNotFound(detail):
+        case let .NetworkNotOpen(detail):
             writeInt(&buf, Int32(14))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .Storage(detail):
+        case let .WalletNotFound(detail):
             writeInt(&buf, Int32(15))
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .NotImplemented(call):
+        case let .Storage(detail):
             writeInt(&buf, Int32(16))
+            FfiConverterString.write(detail, into: &buf)
+            
+        
+        case let .NotImplemented(call):
+            writeInt(&buf, Int32(17))
             FfiConverterString.write(call, into: &buf)
             
         
         case let .Internal(detail):
-            writeInt(&buf, Int32(17))
+            writeInt(&buf, Int32(18))
             FfiConverterString.write(detail, into: &buf)
             
         }
@@ -24052,7 +24074,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_mixed_coins_sweep_plan() != 52064) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_move_mixed_coins() != 17880) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_move_mixed_coins() != 43567) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_set_coinjoin_salt() != 37838) {
