@@ -108,8 +108,8 @@ use crate::signer::{SignerScope, VaultSigner};
 use crate::types::{
     AuthGrant, Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose, GrantToken,
     KeyHold, KeySource, LockState, PASSPHRASE_MAX_AGE_SECS, QUICK_UNLOCK_SPEND_LIMITS,
-    QuickUnlockPolicy, RevealedMnemonic, SeedDerivation, UnlockScope, VaultConfig, VaultStatus,
-    WalletId, WalletSecret,
+    QuickUnlockPolicy, RevealedMnemonic, SeedDerivation, SignerLife, UnlockScope, VaultConfig,
+    VaultStatus, WalletId, WalletSecret,
 };
 use crate::vote::VoteSigner;
 use crate::{SignerError, VaultError};
@@ -2083,6 +2083,59 @@ impl Vault {
         self.scoped_signer(wallet, Some(hold), token, scope)
     }
 
+    /// The [`SignerScope::ShieldDrainFunding`] signer of `wallet` ("Move
+    /// mixed coins" to Shielded), authorized by a redeemed `Spend` grant
+    /// for that wallet whose key is the vault's: that grant's own signer is
+    /// [`SignerScope::Full`], so this one reaches nothing it does not. Any
+    /// other grant is `GrantPurposeMismatch`, and so is a `max_duffs` of 0
+    /// or above the grant's. A token with its own key issues one only
+    /// through its hold ([`Self::shield_drain_signer_held`]).
+    ///
+    /// The signer stops when `life` drops, whatever key it signs with, as
+    /// well as when the vault locks or changes unlock scope.
+    pub fn shield_drain_signer(
+        &self,
+        wallet: &WalletId,
+        token: &GrantToken,
+        max_duffs: u64,
+        life: &SignerLife,
+    ) -> Result<VaultSigner, VaultError> {
+        self.drain_signer(wallet, None, token, max_duffs, life)
+    }
+
+    /// [`Self::shield_drain_signer`] for a token whose key `hold` holds:
+    /// the signer stops when the first of `hold` and `life` drops.
+    pub fn shield_drain_signer_held(
+        &self,
+        wallet: &WalletId,
+        hold: &KeyHold,
+        token: &GrantToken,
+        max_duffs: u64,
+        life: &SignerLife,
+    ) -> Result<VaultSigner, VaultError> {
+        self.drain_signer(wallet, Some(hold), token, max_duffs, life)
+    }
+
+    fn drain_signer(
+        &self,
+        wallet: &WalletId,
+        hold: Option<&KeyHold>,
+        token: &GrantToken,
+        max_duffs: u64,
+        life: &SignerLife,
+    ) -> Result<VaultSigner, VaultError> {
+        let GrantPurpose::Spend { max_duffs: cap } = token.purpose else {
+            return Err(VaultError::GrantPurposeMismatch);
+        };
+        if max_duffs == 0 || max_duffs > cap {
+            return Err(VaultError::GrantPurposeMismatch);
+        }
+        let scope = SignerScope::ShieldDrainFunding { max_duffs };
+        Ok(self
+            .token_signer(wallet, token, scope, hold)?
+            .with_life(life.watch()))
+    }
+
     /// The vote signer of `wallet` (MG-05 §3, scope
     /// [`SignerScope::MasternodeVoting`]), authorized by a redeemed
     /// `Governance` grant for that wallet whose key is the vault's; any other
@@ -2172,7 +2225,6 @@ impl Vault {
             SignerScope::PlatformIdentity
                 | SignerScope::DashPayCrypto
                 | SignerScope::PlatformFunding { .. }
-                | SignerScope::ShieldDrainFunding { .. }
                 | SignerScope::PlatformAddress
         ) {
             return Err(VaultError::InvalidArgument(format!(
@@ -2187,8 +2239,7 @@ impl Vault {
             return Err(VaultError::GrantPurposeMismatch);
         };
         let granted = match scope {
-            SignerScope::PlatformFunding { max_duffs: wanted }
-            | SignerScope::ShieldDrainFunding { max_duffs: wanted } => {
+            SignerScope::PlatformFunding { max_duffs: wanted } => {
                 max_duffs != 0 && wanted <= max_duffs
             }
             SignerScope::PlatformIdentity | SignerScope::PlatformAddress => max_credits != 0,

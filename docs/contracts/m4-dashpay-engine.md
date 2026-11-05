@@ -3717,10 +3717,12 @@ renames or reshapes them takes the next version bump:
     unshields; only a closing session's) and a shield's funding held for a running SPV or a running DashPay bring-up
     (was `platform.context_unavailable` / `platform.unavailable`). §2.13 "Still syncing".
 75. **The CoinJoin drain lease (0.2 MIX-SHIELD, version 50).** `FlowKind` gains `ShieldDrain` ("Move mixed coins" to
-    Shielded): a lease of it takes one `PlatformOp` grant and issues only its duffs' funding signer, the vault scope
-    `ShieldDrainFunding{max_duffs}` (m1 §scopes: CoinJoin account 0's address keys and the shielded top-up credit keys,
-    nothing else); no contact crypto, identity key or credits. A call checks the lease's flow, so only the drain reads
-    that signer. `dw-app`'s `FlowKindName` mirrors it as `shieldDrain`.
+    Shielded): a lease of it takes one `Spend` grant (no `PlatformOp` grant reaches a CoinJoin coin) and issues only its
+    duffs' funding signer, the vault scope `ShieldDrainFunding{max_duffs}` (m1 §scopes: CoinJoin account 0's address keys
+    and the shielded top-up credit keys, nothing else); no spend signer, contact crypto, identity key or credits. The
+    signer is bound to the lease's life, so it stops when the lease ends, on the vault's key too. Registration refuses
+    a drain lease `platform.grant_invalid` before a row exists; the flows that read a lease's funding signer check its
+    flow. `dw-app`'s `FlowKindName` mirrors it as `shieldDrain`.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

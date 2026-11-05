@@ -12,8 +12,8 @@ use dashcore::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use dashcore::secp256k1::{Message, PublicKey, SecretKey};
 use dashcore::signer::double_sha;
 use dw_vault::{
-    Credential, GrantKind, GrantPurpose, GrantToken, SignerError, SignerScope, UnlockScope, Vault,
-    VaultError, VaultSigner, WalletSigner,
+    Credential, GrantKind, GrantPurpose, GrantToken, SignerError, SignerLife, SignerScope,
+    UnlockScope, Vault, VaultError, VaultSigner, WalletSigner,
 };
 use key_wallet::bip32::{ChildNumber, DerivationPath};
 use key_wallet::{ExtendedPubKeySigner, Network, Signer};
@@ -21,6 +21,8 @@ use key_wallet::{ExtendedPubKeySigner, Network, Signer};
 const FUNDING: SignerScope = SignerScope::PlatformFunding { max_duffs: 100_000 };
 /// "Move mixed coins" to Shielded (0.2 MIX-SHIELD).
 const DRAIN: SignerScope = SignerScope::ShieldDrainFunding { max_duffs: 100_000 };
+/// A `Spend` grant that covers [`DRAIN`].
+const SPEND: GrantPurpose = GrantPurpose::Spend { max_duffs: 100_000 };
 /// A `PlatformOp` grant that covers [`FUNDING`] and identity signatures.
 const PLATFORM_OP: GrantPurpose = GrantPurpose::PlatformOp {
     max_duffs: 100_000,
@@ -94,6 +96,18 @@ fn scan_token(v: &Vault) -> GrantToken {
 
 fn platform_signer(v: &Vault, scope: SignerScope) -> VaultSigner {
     v.platform_signer(&wallet(1), &platform_token(v), scope)
+        .unwrap()
+}
+
+/// A [`DRAIN`] signer of wallet 1 under `life`, from a `Spend` grant.
+fn drain_signer(v: &Vault, life: &SignerLife) -> VaultSigner {
+    let grant = v
+        .authorize(SPEND, Some(&wallet(1)), Credential::None)
+        .unwrap();
+    let token = v
+        .redeem_grant(&grant.id, GrantKind::Spend, Some(&wallet(1)))
+        .unwrap();
+    v.shield_drain_signer(&wallet(1), &token, 100_000, life)
         .unwrap()
 }
 
@@ -360,7 +374,12 @@ async fn check_platform_matrix(v: &Vault, coin: u32, other: u32) {
         FUNDING,
         DRAIN,
     ] {
-        let s = platform_signer(v, scope);
+        let life = SignerLife::new();
+        let s = if scope == DRAIN {
+            drain_signer(v, &life)
+        } else {
+            platform_signer(v, scope)
+        };
         for (name, p) in all_paths(coin, other) {
             assert_eq!(
                 uses(&s, &p).await,
@@ -453,6 +472,7 @@ async fn platform_grants_issue_scoped_signers_only() {
         SignerScope::Full,
         SignerScope::CoinJoinOnly,
         SignerScope::CoinJoinFunding,
+        DRAIN,
     ] {
         assert!(matches!(
             v.platform_signer(&wallet(1), &token, scope).unwrap_err(),
@@ -464,7 +484,6 @@ async fn platform_grants_issue_scoped_signers_only() {
         SignerScope::PlatformIdentity,
         SignerScope::DashPayCrypto,
         FUNDING,
-        DRAIN,
     ] {
         assert_eq!(
             v.platform_signer(&wallet(1), &token, scope)
@@ -904,52 +923,81 @@ async fn a_grant_tells_whether_the_vault_holds_an_identity_key_without_being_use
 }
 
 /// 0.2 MIX-SHIELD: a drain signer signs a CoinJoin input and the shielded
-/// credit key, refuses a BIP44 input, and stops when the vault locks; a
-/// mixing-only unlock issues none.
+/// credit key and refuses a BIP44 input. On the vault's own key it stops
+/// when its life drops, with the vault still unlocked; on a grant's own key
+/// when the first of its life, its hold and the vault's lock ends.
 #[tokio::test]
-async fn a_shield_drain_signer_ends_with_the_unlock() {
+async fn a_shield_drain_signer_ends_with_its_life() {
+    let coinjoin = path("m/9'/1'/4'/0'/0/1");
+    let sign = |s: VaultSigner, p: DerivationPath| async move { s.sign_ecdsa(&p, [1; 32]).await };
+
+    // The vault's own key: only the life ends it.
+    let fx = Fixture::new();
+    let v = unencrypted_vault(&fx);
+    let life = SignerLife::new();
+    let s = drain_signer(&v, &life);
+    assert_eq!(s.scope(), DRAIN);
+    sign(s.clone(), coinjoin.clone()).await.unwrap();
+    sign(s.clone(), path("m/9'/1'/5'/5'/0")).await.unwrap();
+    assert!(refused(sign(s.clone(), path("m/44'/1'/0'/0/0")).await));
+    assert!(refused(sign(s.clone(), path("m/9'/1'/5'/1'/0")).await));
+    let other = drain_signer(&v, &SignerLife::new());
+    assert_eq!(
+        sign(other, coinjoin.clone()).await.unwrap_err(),
+        SignerError::Locked,
+        "a dropped life ends its signer at once"
+    );
+    drop(life);
+    assert_eq!(
+        sign(s.clone(), coinjoin.clone()).await.unwrap_err(),
+        SignerError::Locked
+    );
+    // A new life gets a working signer.
+    let life = SignerLife::new();
+    sign(drain_signer(&v, &life), coinjoin.clone())
+        .await
+        .unwrap();
+
+    // A grant's own key, in a hold.
     let fx = Fixture::new();
     let v = fx.open();
     v.create(Some(PASS)).unwrap();
     v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
-    let grant = v
-        .authorize(PLATFORM_OP, Some(&wallet(1)), Credential::Passphrase(PASS))
-        .unwrap();
-    let mut tokens = [v
-        .redeem_grant(&grant.id, GrantKind::PlatformOp, Some(&wallet(1)))
-        .unwrap()];
-    let hold = v.hold_key(&mut tokens).unwrap();
-    let s = match &hold {
-        Some(hold) => v.platform_signer_held(&wallet(1), hold, &tokens[0], DRAIN),
-        None => v.platform_signer(&wallet(1), &tokens[0], DRAIN),
-    }
-    .unwrap();
-    assert_eq!(s.scope(), DRAIN);
-    s.sign_ecdsa(&path("m/9'/1'/4'/0'/0/1"), [1; 32])
-        .await
-        .unwrap();
-    s.sign_ecdsa(&path("m/9'/1'/5'/5'/0"), [1; 32])
-        .await
-        .unwrap();
-    assert!(refused(
-        s.sign_ecdsa(&path("m/44'/1'/0'/0/0"), [1; 32]).await
-    ));
-    assert!(refused(
-        s.sign_ecdsa(&path("m/9'/1'/5'/1'/0"), [1; 32]).await
-    ));
-
     v.lock();
+    let held = |life: &SignerLife| {
+        let grant = v
+            .authorize(SPEND, Some(&wallet(1)), Credential::Passphrase(PASS))
+            .unwrap();
+        let mut tokens = [v
+            .redeem_grant(&grant.id, GrantKind::Spend, Some(&wallet(1)))
+            .unwrap()];
+        let hold = v.hold_key(&mut tokens).unwrap().unwrap();
+        let s = v
+            .shield_drain_signer_held(&wallet(1), &hold, &tokens[0], 100_000, life)
+            .unwrap();
+        (hold, s)
+    };
+    let life = SignerLife::new();
+    let (hold, s) = held(&life);
+    sign(s.clone(), coinjoin.clone()).await.unwrap();
+    drop(life);
     assert_eq!(
-        s.sign_ecdsa(&path("m/9'/1'/4'/0'/0/1"), [1; 32])
-            .await
-            .unwrap_err(),
+        sign(s, coinjoin.clone()).await.unwrap_err(),
         SignerError::Locked
     );
-    v.unlock(PASS, UnlockScope::MixingOnly).unwrap();
+    drop(hold);
+    let life = SignerLife::new();
+    let (hold, s) = held(&life);
+    drop(hold);
     assert_eq!(
-        s.sign_ecdsa(&path("m/9'/1'/4'/0'/0/1"), [1; 32])
-            .await
-            .unwrap_err(),
+        sign(s, coinjoin.clone()).await.unwrap_err(),
         SignerError::Locked
+    );
+    let (_hold, s) = held(&life);
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    assert_eq!(
+        sign(s, coinjoin).await.unwrap_err(),
+        SignerError::Locked,
+        "an unlock is an epoch change"
     );
 }

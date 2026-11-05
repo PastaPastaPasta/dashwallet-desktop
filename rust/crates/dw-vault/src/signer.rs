@@ -19,6 +19,8 @@
 //! change holds, so none is released once `lock()` has returned (vault
 //! module doc, "Release").
 
+use std::sync::Weak;
+
 use async_trait::async_trait;
 use dashcore::secp256k1::{Message, PublicKey, SecretKey, ecdsa};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
@@ -75,21 +77,25 @@ pub enum SignerScope {
     /// (the lock's inputs) and of the shielded top-up credit keys
     /// `m/9'/coin'/5'/5'/index` (the lock's one-time key), nothing else: no
     /// BIP44, BIP32 or DashPay input, no other credit key, no identity,
-    /// Orchard or masternode key, no `signmessage`. Capped by the token like
-    /// `PlatformFunding`; the engine bounds the drain's inputs by
-    /// `max_duffs` before it signs and issues this scope only for a
-    /// `ShieldDrain` lease.
+    /// Orchard or masternode key, and no `signmessage` call.
     ///
-    /// Threat note: the vault signs sighashes and cannot see a transaction's
-    /// outputs, so a leaked signer of this scope (one that outlived its lease
-    /// or reached other code) can spend every coin of the wallet's CoinJoin
-    /// account to any script, and sign a Shielded lock's proof, sending a
-    /// pending Core → Shielded lock's credits to any Orchard address. It
-    /// reaches no other coin or key. A mixing-only unlock's `CoinJoinOnly`
-    /// signer already reaches the same CoinJoin keys, and `PlatformFunding`
-    /// the same credit keys, so the scope adds no key either lacks; it ends
-    /// with its lease (lock, close, passphrase change) like every lease
-    /// signer.
+    /// Issued only from a `Spend` grant, whose [`SignerScope::Full`] signer
+    /// already reaches every one of these keys, so it gives no grant more
+    /// reach; and only against a [`crate::SignerLife`]
+    /// ([`crate::Vault::shield_drain_signer`]), so it stops with its owner
+    /// whatever key it signs with, not at the vault's next epoch. The engine
+    /// issues it only for a `ShieldDrain` lease, whose life it is. The token
+    /// bounds `max_duffs` (not 0, at most the grant's), but the vault signs
+    /// sighashes and cannot see the debit: the engine's drain bounds the
+    /// sum of the lock's inputs by `max_duffs`.
+    ///
+    /// Threat note: a leaked signer of this scope (one that reached other
+    /// code while its life held) signs any digest at these keys. It can
+    /// spend every coin paying a CoinJoin account 0 address to any script,
+    /// whatever `max_duffs` says, and sign the proof of any unconsumed
+    /// Core → Shielded lock, sending its credits to whatever Platform use
+    /// consumes that lock. It reaches no other coin or key, and no private
+    /// key, chain code or Orchard key leaves it.
     ShieldDrainFunding { max_duffs: u64 },
     /// Platform-address spends (release 0.1, "Move to Dash wallet"):
     /// signatures and public keys (no chain codes) of the DIP-17 payment
@@ -303,6 +309,9 @@ pub struct VaultSigner {
     epoch: u64,
     /// The data key it signs with ([`KeySource`]).
     key: KeySource,
+    /// Its owner's [`crate::SignerLife`], when it has one: it stops when
+    /// that drops.
+    life: Option<Weak<()>>,
 }
 
 impl std::fmt::Debug for VaultSigner {
@@ -328,6 +337,21 @@ impl VaultSigner {
             scope,
             epoch,
             key,
+            life: None,
+        }
+    }
+
+    /// Binds the signer to `life` ([`crate::SignerLife::watch`]).
+    pub(crate) fn with_life(mut self, life: Weak<()>) -> Self {
+        self.life = Some(life);
+        self
+    }
+
+    /// `Locked` once the signer's [`crate::SignerLife`] dropped.
+    fn alive(&self) -> Result<(), SignerError> {
+        match &self.life {
+            Some(life) if life.strong_count() == 0 => Err(SignerError::Locked),
+            _ => Ok(()),
         }
     }
 
@@ -365,6 +389,7 @@ impl VaultSigner {
             self.check(*key_use, path)?;
         }
         self.vault.gated(SignerError::Locked, |gate| {
+            self.alive()?;
             let seed = self
                 .vault
                 .signing_seed(gate, &self.wallet_id, self.epoch, &self.key)?;
@@ -394,6 +419,7 @@ impl VaultSigner {
             return Err(SignerError::PathNotAllowed("the seed".into()));
         }
         self.vault.gated(SignerError::Locked, |gate| {
+            self.alive()?;
             let seed = self
                 .vault
                 .signing_seed(gate, &self.wallet_id, self.epoch, &self.key)?;
@@ -420,6 +446,7 @@ impl VaultSigner {
             )));
         }
         self.vault.gated(SignerError::Locked, |gate| {
+            self.alive()?;
             /// Erases the secret when dropped, so a panicking `f` erases it
             /// too.
             struct Erased(SecretKey);
