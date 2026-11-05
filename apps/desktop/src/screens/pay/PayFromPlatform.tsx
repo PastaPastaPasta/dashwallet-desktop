@@ -41,8 +41,9 @@ function outcomeCopy(outcome: PlatformSendOutcome, credits: (c: string) => strin
   if (settled === "refused") return C.settled.refused;
   switch (outcome.state) {
     case "done": {
-      // The debit counts the fee estimate when the balances did not show the fee taken (not for Max: its output paid it).
-      const text = C.done.text(credits(outcome.credits), outcome.estimated || (outcome.feeCredits === null && !outcome.feeFromAmount));
+      // The balances' figure: a deposit to the fee source while it settled hides part of the fee. Max's inputs gave
+      // exactly their balances (the output paid the fee), so its debit is exact.
+      const text = C.done.text(credits(outcome.credits), !outcome.feeFromAmount);
       return { title: C.done.title, text: retried ? `${C.went} ${text}` : text };
     }
     case "pending":
@@ -69,19 +70,24 @@ function ConfirmRows({ q, credits }: { q: PlatformSendQuote; credits: (c: string
           {q.feeFromAmount ? `${credits(q.amountCredits)}, ${C.rows.everything}` : credits(q.amountCredits)}
         </Row>
         <Row label={C.rows.fee} testId="platform-send-confirm-fee">
-          {C.feeValue(credits(q.feeCredits), q.feeFromAmount || q.maxFeeCredits === null ? null : credits(q.maxFeeCredits))}
+          {C.feeValue(credits(q.feeCredits))}
         </Row>
+        {q.feeSource !== null && (
+          <Row label={C.rows.feeSource} testId="platform-send-confirm-fee-source" address>
+            {q.feeSource}
+          </Row>
+        )}
         {q.feeFromAmount && (
           <Row label={C.rows.recipientGets} testId="platform-send-confirm-recipient">
             {credits(recipientGets)}
           </Row>
         )}
         <Row label={q.feeFromAmount ? C.rows.totalExact : C.rows.total} testId="platform-send-confirm-total" total>
-          {credits(q.credits)}
+          {credits(q.feeFromAmount ? q.credits : String(BigInt(q.amountCredits) + BigInt(q.feeCredits)))}
         </Row>
       </dl>
       <p className="field-hint" data-testid={q.feeFromAmount ? "platform-send-fee-from-amount" : "platform-send-fee-source"}>
-        {q.feeFromAmount ? C.feeFromAmount : C.feeSource}
+        {q.feeFromAmount || q.feeSourceCredits === null ? C.feeFromAmount : C.feeSource(credits(q.feeCredits), credits(q.feeSourceCredits))}
       </p>
       {q.retryOf !== null && (
         <p className="field-hint" data-testid="platform-send-retry-note">
@@ -335,7 +341,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
             </span>
           ) : q ? (
             <span className="pay-fee-line" id="pay-reason" data-testid="pay-fee-line">
-              {C.fee(credits(q.feeCredits), q.feeFromAmount || q.maxFeeCredits === null ? null : credits(q.maxFeeCredits))}
+              {C.fee(credits(q.feeCredits), q.feeFromAmount)}
             </span>
           ) : (
             <span className="field-hint" id="pay-reason" data-testid="pay-incomplete">

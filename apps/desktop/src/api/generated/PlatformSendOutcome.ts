@@ -7,7 +7,9 @@ import type { PlatformActivityState } from "./PlatformActivityState";
  */
 export type PlatformSendOutcome = { id: string,
 /**
- * Its amount until it is done; then what it took.
+ * Its amount until it is done; then what it took as the balances show
+ * it (a deposit to the fee source while it settled hides part of the
+ * fee, so this is "about").
  */
 credits: string,
 /**

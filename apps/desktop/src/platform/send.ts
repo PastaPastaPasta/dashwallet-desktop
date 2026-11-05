@@ -24,8 +24,8 @@ export const SEND_COPY = {
   from: (balance: string) => `From your Platform balance: ${balance}`,
   empty: "Your Platform balance is empty. Paying a Platform address from your Dash wallet is not supported yet.",
   max: "Everything on your Platform addresses. The fee comes out of the amount.",
-  /** The form's fee line: the estimate and the most the fee can take; Max pays it from the amount. */
-  fee: (fee: string, atMost: string | null) => (atMost === null ? `Platform fee about ${fee}, from the amount` : `Platform fee about ${fee} (at most ${atMost})`),
+  /** The form's fee line: the estimate; Max pays it from the amount. Platform meters the fee, so it is no maximum. */
+  fee: (fee: string, fromAmount: boolean) => (fromAmount ? `Platform fee usually about ${fee}, from the amount` : `Platform fee usually about ${fee}`),
   quoting: "Working out the fee…",
   rows: {
     from: "From",
@@ -34,13 +34,16 @@ export const SEND_COPY = {
     amount: "Amount",
     everything: "everything",
     fee: "Platform fee",
-    total: "Taken from Platform, at most",
+    total: "Taken from Platform, about",
+    feeSource: "Fee taken from",
     totalExact: "Taken from Platform",
     recipientGets: "Recipient gets, about",
   },
-  /** The estimate, and the most the fee can take (all its source address keeps after the payment). */
-  feeValue: (fee: string, atMost: string | null) => (atMost === null ? `about ${fee}` : `about ${fee}, at most ${atMost}`),
-  feeSource: "Platform takes its fee from one of your Platform addresses: at most what that address keeps after the payment.",
+  feeValue: (fee: string) => `usually about ${fee}`,
+  /** Where Platform takes the fee from, and what it can reach there: what that address keeps (`keeps`), and more if
+   * anything is sent to it before the payment goes through. */
+  feeSource: (fee: string, keeps: string) =>
+    `Platform takes the actual fee from the "Fee taken from" address when the payment goes through. It is usually about ${fee}, but it can be more: up to everything that address holds then (${keeps} after this payment, plus anything sent to it later).`,
   feeFromAmount: "The fee comes out of the amount: the recipient gets the amount less the fee, which may be more than the estimate.",
   confirmText: "Dash Platform pays the address below. This cannot be undone.",
   cancel: "Cancel",

@@ -62,21 +62,22 @@ describe("fixture pending commands", () => {
     expect(fixture.calls).toContain("platform_addresses_sync");
   });
 
-  it("quotes a send with the fee bounded by what its source keeps, Max with the fee from the amount, and refuses what the engine refuses", async () => {
-    // The largest address (30,000,000,000) gives 1,000,000,000 and keeps 29,000,000,000: the most the fee can take.
+  it("quotes a send with its fee source and what it keeps, Max with the fee from the amount, and refuses what the engine refuses", async () => {
+    // The largest address (30,000,000,000) gives 1,000,000,000 and keeps 29,000,000,000, all of which the fee may take.
     expect(await backend.platformSendQuote(W, PLATFORM_PAYEE, { kind: "credits", credits: "1000000000" }, null)).toMatchObject({
       credits: "30000000000",
       amountCredits: "1000000000",
       feeCredits: "6500000",
-      maxFeeCredits: "29000000000",
+      feeSourceCredits: "29000000000",
+      feeSource: fixture.world.pending.platform!.addresses.reduce((a, b) => (BigInt(b.credits) > BigInt(a.credits) ? b : a)).address,
       feeFromAmount: false,
       to: PLATFORM_PAYEE,
       grant: { maxDuffs: 0, maxCredits: "30000000000" },
       retryOf: null,
     });
     // More than the largest address holds: the fee source is the next address that keeps enough.
-    expect(await backend.platformSendQuote(W, PLATFORM_PAYEE, { kind: "credits", credits: "32000000000" }, null)).toMatchObject({ credits: "40000000000", maxFeeCredits: "8000000000" });
-    expect(await backend.platformSendQuote(W, PLATFORM_PAYEE, { kind: "all" }, null)).toMatchObject({ credits: "40000000000", amountCredits: "40000000000", maxFeeCredits: null, feeFromAmount: true, retryOf: null });
+    expect(await backend.platformSendQuote(W, PLATFORM_PAYEE, { kind: "credits", credits: "32000000000" }, null)).toMatchObject({ credits: "40000000000", feeSourceCredits: "8000000000" });
+    expect(await backend.platformSendQuote(W, PLATFORM_PAYEE, { kind: "all" }, null)).toMatchObject({ credits: "40000000000", amountCredits: "40000000000", feeSourceCredits: null, feeSource: null, feeFromAmount: true, retryOf: null });
     const reason = (to: string) => backend.platformSendQuote(W, to, { kind: "all" }, null).catch((e: { code: string; data: { reason: string } }) => `${e.code} ${e.data.reason}`);
     expect(await reason("yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf")).toBe("credits.recipient_invalid core");
     expect(await reason("tdash1zq0k8yv6m2e3x9n4c5w7a8s0d2f4g6h8j0k2l4m6n8p0q2r4s6t8u0v2w4x6y8z0a2c4e6g8j0m2")).toBe("credits.recipient_invalid shielded");
@@ -173,7 +174,7 @@ describe("fixture pending commands", () => {
     expect(first.outcome).toMatchObject({ state: "failed", feeFromAmount: true, amountCredits: "40000000000" });
     platform().addresses = [...platform().addresses, { address: "tdash1extra", credits: "5000000000" }];
     const retry = await backend.platformSendQuote(W, PLATFORM_PAYEE, { kind: "all" }, null);
-    expect(retry).toMatchObject({ retryOf: first.outcome.id, amountCredits: "40000000000", credits: "40000000000", maxFeeCredits: null, feeFromAmount: true });
+    expect(retry).toMatchObject({ retryOf: first.outcome.id, amountCredits: "40000000000", credits: "40000000000", feeSourceCredits: null, feeSource: null, feeFromAmount: true });
   });
 
   it("a retry of a send that landed meanwhile returns that send's outcome and debits nothing", async () => {

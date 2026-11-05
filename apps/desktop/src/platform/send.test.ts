@@ -16,7 +16,8 @@ const QUOTE: PlatformSendQuote = {
   credits: "1019500000",
   amountCredits: "1000000000",
   feeCredits: "6500000",
-  maxFeeCredits: "19500000",
+  feeSourceCredits: "19500000",
+  feeSource: "tdash1feesource",
   feeFromAmount: false,
   to: TO,
   grant: { maxDuffs: 0, maxCredits: "1019500000" },
@@ -355,13 +356,13 @@ describe("Pay from Platform", () => {
     expect(sendErrorText(appError("platform.broadcast_unknown", { kind: "artifact", artifact: "x" }), credits)).toMatch(/may have been sent/);
   });
 
-  it("says about when the debit counts the fee estimate, and no fee 'up to' wording anywhere", () => {
+  it("says about for a debit the balances show, and shows no fee maximum anywhere", () => {
     expect(SEND_COPY.done.text("0.01 tDASH", false)).toBe("0.01 tDASH left your Platform balance, the fee included. Activity shows the payment.");
     expect(SEND_COPY.done.text("0.01 tDASH", true)).toBe("About 0.01 tDASH left your Platform balance, the fee included. Activity shows the payment.");
-    expect(SEND_COPY.fee("a", "b")).toBe("Platform fee about a (at most b)");
-    expect(SEND_COPY.fee("a", null)).toBe("Platform fee about a, from the amount");
-    expect(SEND_COPY.feeValue("a", "b")).toBe("about a, at most b");
-    expect(SEND_COPY.feeValue("a", null)).toBe("about a");
-    expect(JSON.stringify(SEND_COPY).toLowerCase()).not.toMatch(/up to|expected/);
+    expect(SEND_COPY.fee("a", false)).toBe("Platform fee usually about a");
+    expect(SEND_COPY.fee("a", true)).toBe("Platform fee usually about a, from the amount");
+    expect(SEND_COPY.feeValue("a")).toBe("usually about a");
+    expect(SEND_COPY.feeSource("a", "b")).toMatch(/usually about a, but it can be more: up to everything that address holds then \(b after this payment, plus anything sent to it later\)/);
+    expect(JSON.stringify(SEND_COPY).toLowerCase()).not.toMatch(/at most|expected/);
   });
 });

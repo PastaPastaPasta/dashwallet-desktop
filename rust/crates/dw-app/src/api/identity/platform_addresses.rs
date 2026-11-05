@@ -257,8 +257,9 @@ impl From<engine::PlatformReceiveAddress> for PlatformReceiveAddress {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PlatformSendQuote {
-    /// The most the addresses can lose, as Platform bounds it (the grant's
-    /// credits).
+    /// The planned debit, the grant's cap: the amount and, unless the
+    /// amount pays the fee, `feeSourceCredits`. Not a ceiling Platform
+    /// enforces.
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub credits: u64,
@@ -271,11 +272,14 @@ pub struct PlatformSendQuote {
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub fee_credits: u64,
-    /// The most the fee can take: all its source address keeps after the
-    /// send ("at most"); `null` for Max, where it comes out of the amount.
+    /// What `feeSource` keeps after the send, as the quote read it: the
+    /// fee Platform meters may take all of it, and a later deposit to that
+    /// address too; `null` for Max, where it comes out of the amount.
     #[ts(type = "string | null")]
     #[serde(with = "crate::dto::credits::option")]
-    pub max_fee_credits: Option<u64>,
+    pub fee_source_credits: Option<u64>,
+    /// The address Platform takes the fee from; `null` for Max.
+    pub fee_source: Option<String>,
     /// Max: the amount pays the fee.
     pub fee_from_amount: bool,
     /// The recipient, normalized.
@@ -295,7 +299,8 @@ impl From<engine::PlatformSendQuote> for PlatformSendQuote {
             credits,
             amount_credits,
             fee_credits,
-            max_fee_credits,
+            fee_source_credits,
+            fee_source,
             fee_from_amount,
             to,
             grant,
@@ -306,7 +311,8 @@ impl From<engine::PlatformSendQuote> for PlatformSendQuote {
             credits,
             amount_credits,
             fee_credits,
-            max_fee_credits,
+            fee_source_credits,
+            fee_source,
             fee_from_amount,
             to,
             grant: grant.into(),
@@ -322,7 +328,9 @@ impl From<engine::PlatformSendQuote> for PlatformSendQuote {
 #[serde(rename_all = "camelCase")]
 pub struct PlatformSendOutcome {
     pub id: String,
-    /// Its amount until it is done; then what it took.
+    /// Its amount until it is done; then what it took as the balances show
+    /// it (a deposit to the fee source while it settled hides part of the
+    /// fee, so this is "about").
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub credits: u64,

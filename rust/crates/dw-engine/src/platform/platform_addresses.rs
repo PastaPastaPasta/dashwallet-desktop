@@ -121,8 +121,10 @@ pub struct PlatformActivity {
 /// protocol version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveToCoreQuote {
-    /// The credits the addresses may lose: the withdrawal and the fee
-    /// estimate.
+    /// What the move is planned to take: the withdrawal and the fee
+    /// estimate (the grant's cap, the user's consent to it). Platform takes
+    /// the fee it meters from the fee source's balance when the move
+    /// executes, so it can take more, up to what that address holds then.
     pub credits: u64,
     /// The fee estimate: dpp's minimum fee for the inputs, kept on the fee
     /// source. Platform takes the actual fee from what that input keeps;
@@ -202,9 +204,9 @@ pub struct PlatformReceiveAddress {
 /// version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlatformSendQuote {
-    /// The most the addresses can lose, as Platform bounds it:
-    /// `amount_credits` and, unless the amount pays the fee,
-    /// `max_fee_credits`. The grant's cap.
+    /// The planned debit: `amount_credits` and, unless the amount pays the
+    /// fee, `fee_source_credits`. The grant's cap, the user's consent to
+    /// this debit; not a ceiling Platform enforces (`fee_source_credits`).
     pub credits: u64,
     /// The transfer's output: what the recipient receives, less the fee
     /// when `fee_from_amount`.
@@ -212,12 +214,16 @@ pub struct PlatformSendQuote {
     /// The fee estimate: dpp's minimum fee for the transfer. Platform
     /// takes the fee it meters, usually about this.
     pub fee_credits: u64,
-    /// The most the fee can take: all the fee source keeps after the send
-    /// (`DeductFromInput` takes the metered fee from it, and nothing on
-    /// Platform caps it lower), at least three times the estimate; the plan
-    /// picks the source that keeps the least. `None` for Max: the fee comes
-    /// out of the amount, bounded only by it.
-    pub max_fee_credits: Option<u64>,
+    /// What the fee source keeps after the send, as this quote read it, at
+    /// least three times the estimate; the plan picks the source that keeps
+    /// the least. Platform takes the fee it meters from the fee source's
+    /// balance when the send executes (`DeductFromInput`; nothing caps it),
+    /// so the fee may take all of this, and a deposit to that address after
+    /// the send is signed is reachable too: a snapshot, not a ceiling.
+    /// `None` for Max: the fee comes out of the amount, bounded only by it.
+    pub fee_source_credits: Option<u64>,
+    /// The address Platform takes the fee from; `None` for Max.
+    pub fee_source: Option<String>,
     /// Max: the output pays the fee, so the recipient receives
     /// `amount_credits` less it, and nothing is left on the inputs.
     pub fee_from_amount: bool,
@@ -240,9 +246,11 @@ pub struct PlatformSendOutcome {
     /// The send's activity row id; a retry's of a send that landed, that
     /// send's.
     pub id: String,
-    /// Until it is `Done` its amount; then what it took: its inputs and,
-    /// unless the amount paid it, the fee (as the balances show it, or the
-    /// estimate when `estimated`).
+    /// Until it is `Done` its amount; then what it took as the balances
+    /// show it: its inputs and, unless the amount paid it, the fee as the
+    /// fee source's fall shows it, or the estimate when `estimated`. A
+    /// deposit to the fee source while the send settled hides that much of
+    /// the fee, so the gross debit can be larger: an "about" figure.
     pub credits: u64,
     /// The amount it sends (for Max, before the fee).
     pub amount_credits: u64,

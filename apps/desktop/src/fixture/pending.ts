@@ -180,13 +180,13 @@ function recipient(world: Ctx["world"], p: PlatformWorld, to: string): string {
 
 /** The terms of a nominal send of `credits` to `to` as the fixture's quote plans one: one input (the
  * largest address), which pays the fee, so the fee can take all it keeps after the send. */
-export function sendTerms(to: string, credits: bigint, inputs = "in-1", source = BigInt(ADDRESSES[0].credits)): SendTerms {
+export function sendTerms(to: string, credits: bigint, inputs = "in-1", source = BigInt(ADDRESSES[0].credits), feeSource = ADDRESSES[0].address): SendTerms {
   const kept = source - credits;
   return {
     to,
     amount: { kind: "credits", credits: String(credits) },
     inputs,
-    quote: { credits: String(credits + kept), amountCredits: String(credits), feeCredits: String(SEND_FEE_CREDITS), maxFeeCredits: String(kept), feeFromAmount: false, to, grant: { maxDuffs: 0, maxCredits: String(credits + kept) } },
+    quote: { credits: String(credits + kept), amountCredits: String(credits), feeCredits: String(SEND_FEE_CREDITS), feeSourceCredits: String(kept), feeSource, feeFromAmount: false, to, grant: { maxDuffs: 0, maxCredits: String(credits + kept) } },
   };
 }
 
@@ -244,21 +244,22 @@ function sendQuote(ctx: Ctx, walletId: string, to: string, amount: WithdrawAmoun
   if (amount.kind === "all") {
     // Max: everything, the output pays the fee.
     if (available < SEND_MIN_CREDITS + SEND_FEE_CREDITS) throw short(SEND_MIN_CREDITS + SEND_FEE_CREDITS);
-    return keep({ credits: String(available), amountCredits: String(available), feeCredits: String(SEND_FEE_CREDITS), maxFeeCredits: null, feeFromAmount: true, to: address, grant: grant(available) }, null);
+    return keep({ credits: String(available), amountCredits: String(available), feeCredits: String(SEND_FEE_CREDITS), feeSourceCredits: null, feeSource: null, feeFromAmount: true, to: address, grant: grant(available) }, null);
   }
   const credits = BigInt(amount.credits);
   if (credits < SEND_MIN_CREDITS) throw fail("credits.send_out_of_range", "below the minimum", { kind: "creditMinimum", min: String(SEND_MIN_CREDITS) });
   // Inputs largest first; the fee comes from the first address that keeps enough for it after giving.
   let left = credits;
-  let kept: bigint | null = null;
+  let kept: { address: string; credits: bigint } | null = null;
   for (const a of [...p.addresses].sort((x, y) => Number(BigInt(y.credits) - BigInt(x.credits)))) {
     const give = left < BigInt(a.credits) ? left : BigInt(a.credits);
     left -= give;
     const rest = BigInt(a.credits) - give;
-    if (kept === null && rest >= SEND_FEE_CREDITS) kept = rest;
+    if (kept === null && rest >= SEND_FEE_CREDITS) kept = { address: a.address, credits: rest };
   }
   if (left > 0n || kept === null) throw short(credits + SEND_FEE_CREDITS);
-  return keep({ credits: String(credits + kept), amountCredits: String(credits), feeCredits: String(SEND_FEE_CREDITS), maxFeeCredits: String(kept), feeFromAmount: false, to: address, grant: grant(credits + kept) }, null);
+  const debit = credits + kept.credits;
+  return keep({ credits: String(debit), amountCredits: String(credits), feeCredits: String(SEND_FEE_CREDITS), feeSourceCredits: String(kept.credits), feeSource: kept.address, feeFromAmount: false, to: address, grant: grant(debit) }, null);
 }
 
 /** A send's outcome, from its activity row and terms. */

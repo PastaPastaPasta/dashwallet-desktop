@@ -1579,7 +1579,7 @@ fn a_send_pays_the_recipient_and_shows_as_a_send() {
         (
             quote.amount_credits,
             quote.fee_credits,
-            quote.max_fee_credits
+            quote.fee_source_credits
         ),
         (DASH, l.fee(1), Some(2 * DASH))
     );
@@ -1979,7 +1979,8 @@ fn the_fee_bound_is_what_the_fee_source_keeps() {
         .send_quote(WithdrawAmount::Credits { credits: DASH }, &to)
         .unwrap();
     assert!(fee > l.keep(1), "above the band");
-    assert_eq!(quote.max_fee_credits, Some(2 * DASH));
+    assert_eq!(quote.fee_source_credits, Some(2 * DASH));
+    assert_eq!(quote.fee_source, Some(a.to_bech32m_string(w.network())));
     let out = w
         .confirm(&quote.operation, &w.f.grant(quote.credits))
         .unwrap();
@@ -1991,7 +1992,7 @@ fn the_fee_bound_is_what_the_fee_source_keeps() {
     // recipient's amount, however much it meters.
     let quote = w.send_quote(WithdrawAmount::All, &to).unwrap();
     assert_eq!(
-        (quote.max_fee_credits, quote.credits),
+        (quote.fee_source_credits, quote.credits),
         (None, quote.amount_credits)
     );
     let left = w.net.credits(a);
@@ -1999,6 +2000,47 @@ fn the_fee_bound_is_what_the_fee_source_keeps() {
         .unwrap();
     assert_eq!(w.net.credits(a), 0);
     assert_eq!(w.net.credits(them), DASH + left - fee);
+}
+
+/// Sol R2-A2: what the fee source keeps is a snapshot, not a ceiling. A
+/// deposit to it after the send is signed pays a larger metered fee when
+/// the original lands late, so the gross debit passes the quote's planned
+/// debit, its grant's cap. The outcome reads the inputs' fall, which the
+/// deposit offsets: an "about" figure, never above the gross debit.
+#[test]
+fn a_deposit_after_signing_can_pay_a_larger_fee() {
+    let estimate = Limits::transfer_at(PlatformVersion::latest()).fee(1);
+    let w = World::new();
+    let a = w.address(0);
+    let (them, to) = w.theirs(9);
+    w.net.fund(a, DASH + 3 * estimate);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let quote = w.send_quote(one, &to).unwrap();
+    assert_eq!(
+        (quote.fee_source_credits, quote.credits),
+        (Some(3 * estimate), DASH + 3 * estimate)
+    );
+    assert_eq!(quote.fee_source, Some(a.to_bech32m_string(w.network())));
+    w.net.then(Act::Lost);
+    let sent = w
+        .confirm(&quote.operation, &w.f.grant(quote.credits))
+        .unwrap();
+    assert!(sent.may_land);
+    let before = w.net.credits(a);
+    let deposit = 2 * estimate;
+    w.net.fund(a, deposit);
+    w.net.fee.store(5 * estimate, Ordering::SeqCst);
+    w.lands(0);
+    let gross = before + deposit - w.net.credits(a);
+    assert_eq!((gross, w.net.credits(them)), (DASH + 5 * estimate, DASH));
+    assert!(gross > quote.credits, "the planned debit is no ceiling");
+    let row = w.activity().into_iter().find(|r| r.id == sent.id).unwrap();
+    assert_eq!(row.state, PlatformActivityState::Done);
+    assert_eq!(
+        (row.credits, row.fee_credits),
+        (DASH + 3 * estimate, Some(3 * estimate))
+    );
+    assert!(row.credits <= gross);
 }
 
 /// A3: a send failed by height may still go through, in Activity too, read

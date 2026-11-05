@@ -6,8 +6,9 @@ import type { GrantRequest } from "./GrantRequest";
  */
 export type PlatformSendQuote = {
 /**
- * The most the addresses can lose, as Platform bounds it (the grant's
- * credits).
+ * The planned debit, the grant's cap: the amount and, unless the
+ * amount pays the fee, `feeSourceCredits`. Not a ceiling Platform
+ * enforces.
  */
 credits: string,
 /**
@@ -20,10 +21,15 @@ amountCredits: string,
  */
 feeCredits: string,
 /**
- * The most the fee can take: all its source address keeps after the
- * send ("at most"); `null` for Max, where it comes out of the amount.
+ * What `feeSource` keeps after the send, as the quote read it: the
+ * fee Platform meters may take all of it, and a later deposit to that
+ * address too; `null` for Max, where it comes out of the amount.
  */
-maxFeeCredits: string | null,
+feeSourceCredits: string | null,
+/**
+ * The address Platform takes the fee from; `null` for Max.
+ */
+feeSource: string | null,
 /**
  * Max: the amount pays the fee.
  */

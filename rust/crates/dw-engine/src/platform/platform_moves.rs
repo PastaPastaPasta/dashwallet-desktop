@@ -651,10 +651,11 @@ pub(crate) struct Plan {
     pub(crate) inputs: BTreeMap<PlatformAddress, u64>,
     pub(crate) fee_source: PlatformAddress,
     pub(crate) fee: u64,
-    /// What the fee source keeps that the fee may take: for a withdrawal
-    /// the estimate, for a transfer's amount all it keeps (at least the
-    /// band; nothing on Platform caps the fee below it); 0 when the output
-    /// pays the fee.
+    /// What the fee source keeps that the fee may take, at the balances
+    /// planned on: for a withdrawal the estimate, for a transfer's amount
+    /// all it keeps (at least the band; nothing on Platform caps the fee
+    /// below it, and a later deposit adds to it); 0 when the output pays
+    /// the fee.
     pub(crate) reserve: u64,
     /// The one output pays the fee (a transfer's Max).
     pub(crate) fee_from_output: bool,
@@ -667,9 +668,9 @@ impl Plan {
         self.inputs.values().sum()
     }
 
-    /// What the addresses may lose: what the inputs give and what the fee
-    /// may take of the fee source (a withdrawal's estimate; a transfer's
-    /// bound).
+    /// The planned debit: what the inputs give and what the fee may take
+    /// of the fee source as planned (a withdrawal's estimate; a transfer's
+    /// remainder).
     pub(crate) fn may_lose(&self) -> u64 {
         self.credits().saturating_add(self.reserve)
     }
@@ -837,8 +838,8 @@ fn plan_from(
 /// keeps, all of it if need be (dpp
 /// `deduct_fee_from_inputs_and_outputs/v0/mod.rs:38-49`; nothing caps it),
 /// so of the addresses that can keep the band the plan takes the one left
-/// with the least, and [`Plan::reserve`] is that remainder: the most the
-/// fee can take. It is refused only when no address can carry the amount
+/// with the least, and [`Plan::reserve`] is that remainder: what the fee
+/// can take at these balances (a later deposit to it adds to that). It is refused only when no address can carry the amount
 /// and the band.
 ///
 /// `All` (Max) moves every input `plan` would take, in full, to the one
@@ -1726,7 +1727,8 @@ pub(crate) async fn send_quote(
         credits,
         amount_credits: planned.credits(),
         fee_credits: planned.fee,
-        max_fee_credits: (!planned.fee_from_output).then_some(planned.reserve),
+        fee_source_credits: (!planned.fee_from_output).then_some(planned.reserve),
+        fee_source: (!planned.fee_from_output).then(|| bech32m(&planned.fee_source, network)),
         fee_from_amount: planned.fee_from_output,
         to,
         grant: GrantRequest {
