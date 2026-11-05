@@ -1856,22 +1856,24 @@ fn a_named_retry_of_a_send_that_landed_pays_nothing() {
     w.lands(0);
     w.activity();
     assert!(!w.moves()[0].holds());
+    let quote = w.retry_quote(one, &to, Some(&first.id)).unwrap();
+    let grant = w.f.grant(quote.credits);
+    let out = w.confirm(&quote.operation, &grant).unwrap();
+    // Paid once first (Opus m5): a quote that dropped the name would pay
+    // again here.
+    assert_eq!(w.net.credits(them), DASH, "paid once");
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing signed");
+    assert!(w.f.unused(&grant), "nothing redeemed");
+    assert_eq!(
+        (out.id.as_str(), out.state, out.may_land),
+        (first.id.as_str(), PlatformActivityState::Done, false)
+    );
+    assert_eq!(quote.retry_of.as_deref(), Some(first.id.as_str()));
     let two = WithdrawAmount::Credits { credits: 2 * DASH };
     assert_eq!(
         w.retry_quote(two, &to, Some(&first.id)).unwrap_err().code(),
         "invalid_argument"
     );
-    let quote = w.retry_quote(one, &to, Some(&first.id)).unwrap();
-    assert_eq!(quote.retry_of.as_deref(), Some(first.id.as_str()));
-    let grant = w.f.grant(quote.credits);
-    let out = w.confirm(&quote.operation, &grant).unwrap();
-    assert_eq!(
-        (out.id.as_str(), out.state, out.may_land),
-        (first.id.as_str(), PlatformActivityState::Done, false)
-    );
-    assert!(w.f.unused(&grant), "nothing redeemed");
-    assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing signed");
-    assert_eq!(w.net.credits(them), DASH, "paid once");
     assert_eq!(w.send_quote(one, &to).unwrap().retry_of, None);
 }
 
@@ -1923,6 +1925,29 @@ fn a_hold_after_a_quote_without_one_refuses_the_send() {
     }
     assert!(w.f.unused(&grant));
     assert_eq!(w.net.sent.lock().unwrap().len(), 1);
+}
+
+/// Opus m5: a hold of the very same terms that appears after a quote made
+/// with none still refuses it: a new send is never re-signed at a held
+/// send's inputs and nonces, however equal the terms (only a quote naming
+/// it as a retry is).
+#[test]
+fn a_same_terms_hold_after_a_quote_without_one_refuses_the_send() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (them, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let quote = w.send_quote(one, &to).unwrap();
+    assert_eq!(quote.retry_of, None);
+    let held = w.held_send(one, &to);
+    let grant = w.f.grant(quote.credits);
+    match w.confirm(&quote.operation, &grant) {
+        Err(CreditsError::MovePending { id }) => assert_eq!(id, held.id),
+        other => panic!("{other:?}"),
+    }
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing re-signed");
+    assert_eq!(w.net.credits(them), 0);
 }
 
 /// Opus m1: beside a hold the quote refuses anything but the exact retry,
@@ -2338,33 +2363,53 @@ fn sends_and_receive_need_address_funds_and_platform() {
 /// height still lets a new move at its very inputs and nonces go.
 #[test]
 fn a_0_1_record_reloads_and_settles() {
-    let w = World::new();
-    let a = w.address(0);
-    w.net.fund(a, 3 * DASH);
-    w.net.then(Act::Lost);
     let one = WithdrawAmount::Credits { credits: DASH };
-    w.move_to(one, &w.to, &w.f.grant(3 * DASH)).unwrap();
-    // Stored as 0.1 stored it.
-    let current = w.moves()[0].clone();
-    let mut json = serde_json::to_value(&current).unwrap();
-    for field in ["kind", "fee_from_output", "version"] {
-        json.as_object_mut().unwrap().remove(field);
-    }
-    let old: MoveRecord = serde_json::from_value(json).unwrap();
-    assert_eq!((old.kind, old.version), (MoveKind::ToCore, None));
-    w.store(&[old]);
-    // Failed by height, it holds; a new move at its inputs and nonces goes.
-    w.net.tick();
-    w.activity();
-    assert_eq!(w.moves()[0].state, PlatformActivityState::Failed);
-    assert!(w.moves()[0].holds());
+    // A move stored as 0.1 stored it, failed by height: it holds.
+    let stored = || {
+        let w = World::new();
+        w.net.fund(w.address(0), 3 * DASH);
+        w.net.then(Act::Lost);
+        w.move_to(one, &w.to, &w.f.grant(3 * DASH)).unwrap();
+        let current = w.moves()[0].clone();
+        let mut json = serde_json::to_value(&current).unwrap();
+        for field in ["kind", "fee_from_output", "version"] {
+            json.as_object_mut().unwrap().remove(field);
+        }
+        let old: MoveRecord = serde_json::from_value(json).unwrap();
+        assert_eq!((old.kind, old.version), (MoveKind::ToCore, None));
+        w.store(&[old]);
+        w.net.tick();
+        w.activity();
+        assert_eq!(w.moves()[0].state, PlatformActivityState::Failed);
+        assert!(w.moves()[0].holds());
+        (w, current.id)
+    };
+    // Its own transition landing late settles it: Done, a move to Core
+    // with its payout (Opus m4).
+    let (w, id) = stored();
+    w.lands(0);
+    let rows = w.activity();
+    let row = rows.iter().find(|r| r.id == id).unwrap();
+    assert_eq!(
+        (row.state, row.kind, row.may_land),
+        (
+            PlatformActivityState::Done,
+            PlatformActivityKind::MoveToCore,
+            false
+        )
+    );
+    assert!(row.expected_duffs.is_some());
+    assert!(!w.moves()[0].holds());
+    // A new move at its very inputs and nonces goes, and the 0.1 record is
+    // the group's loser.
+    let (w, id) = stored();
     let next = w.move_to(one, &w.to, &w.f.grant(3 * DASH)).unwrap();
     assert_eq!(next.state, PlatformActivityState::Done);
     let rows = w.activity();
     let moved = rows.iter().find(|r| r.id == next.id).unwrap();
     assert_eq!(moved.kind, PlatformActivityKind::MoveToCore);
     assert!(moved.expected_duffs.is_some());
-    let old = rows.iter().find(|r| r.id == current.id).unwrap();
+    let old = rows.iter().find(|r| r.id == id).unwrap();
     assert_eq!(
         (old.state, old.may_land),
         (PlatformActivityState::Failed, false)
