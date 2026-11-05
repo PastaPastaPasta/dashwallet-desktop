@@ -24,7 +24,6 @@ use key_wallet::account::{Account, AccountType, StandardAccountType};
 use key_wallet::bip32::{ChildNumber, ExtendedPubKey};
 use key_wallet::wallet::Wallet;
 use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
-use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
 use key_wallet::wallet::root_extended_keys::RootExtendedPubKey;
 use platform_wallet::changeset::{
     AccountAddressPoolEntry, AccountRegistrationEntry, PlatformWalletChangeSet,
@@ -352,9 +351,7 @@ impl NetworkSession {
                 return Err(EngineError::WalletNotFound(id.to_string()));
             }
             drop(passes);
-            // A block SPV replays before this is undone by the re-home (it
-            // drops the copy) and by the block event's reconcile.
-            this.rehome_parked_coins(&live.manager, id).await;
+            this.restore_loaded_wallet(&live.manager, id).await;
             this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;
             this.load_payment_locks(id).await;
@@ -516,13 +513,12 @@ impl NetworkSession {
                 .get_wallet(&id.0)
                 .await
                 .ok_or_else(|| EngineError::Internal(format!("watch-only wallet {id} did not load")))?;
-            if lookahead != WATCH_ONLY_DEFAULT_LOOKAHEAD
-                && let Err(e) = wallet
-                    .core()
-                    .set_gap_limit(AccountTypePreference::BIP44, account, lookahead)
-                    .await
-            {
-                tracing::warn!(wallet_id = %id, error = %e, "could not set the watch-only lookahead");
+            if lookahead != WATCH_ONLY_DEFAULT_LOOKAHEAD {
+                if let Err(e) = crate::keys::apply_lookahead(&wallet, lookahead).await {
+                    tracing::warn!(wallet_id = %id, error = %e, "could not set the watch-only lookahead");
+                }
+                // Raised again at every load, as a seed import's.
+                this.store_lookahead(id, lookahead).await;
             }
             this.refresh_wallet_state(&live.manager, id).await;
             let default_name = this.next_default_name();

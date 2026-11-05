@@ -186,21 +186,33 @@ pub(crate) fn mnemonic_error(e: MnemonicError) -> EngineError {
     }
 }
 
-/// Raises the receive/change lookahead of BIP44 account 0 and of the DIP9
-/// CoinJoin account 0 to `gap` (DESIGN.md R2: Core-mixed funds sit on the
+/// Raises the receive/change lookahead of the wallet's BIP44 accounts and of
+/// its DIP9 CoinJoin accounts to `gap` (DESIGN.md R2: Core-mixed funds sit on the
 /// BIP44 chains, dashj-mixed funds on the CoinJoin account; both need the
-/// restore gap).
+/// restore gap). An account that fails doesn't stop the others; the first
+/// error is returned.
 pub(crate) async fn apply_lookahead(
     wallet: &platform_wallet::wallet::platform_wallet::PlatformWallet,
     gap: u32,
 ) -> Result<(), EngineError> {
-    for account in [
-        AccountTypePreference::BIP44,
-        AccountTypePreference::CoinJoin,
-    ] {
-        wallet.core().set_gap_limit(account, 0, gap).await?;
+    // Every one the wallet has: a watch-only wallet's is BIP44 account N.
+    let accounts: Vec<(AccountTypePreference, u32)> = {
+        let state = wallet.state().await;
+        let accounts = &state.core_wallet.accounts;
+        (accounts.standard_bip44_accounts.keys())
+            .map(|i| (AccountTypePreference::BIP44, *i))
+            .chain(
+                (accounts.coinjoin_accounts.keys()).map(|i| (AccountTypePreference::CoinJoin, *i)),
+            )
+            .collect()
+    };
+    let mut first_error = None;
+    for (account, index) in accounts {
+        if let Err(e) = wallet.core().set_gap_limit(account, index, gap).await {
+            first_error.get_or_insert(e);
+        }
     }
-    Ok(())
+    first_error.map_or(Ok(()), |e| Err(e.into()))
 }
 
 impl NetworkSession {
@@ -657,27 +669,64 @@ impl NetworkSession {
         }
     }
 
-    /// Applies the stored lookahead of every wallet that has one (session
-    /// open). Failures are logged; the wallet keeps the default gap.
-    pub(crate) async fn apply_stored_lookaheads(&self, manager: &crate::session::Manager) {
-        let Ok(live) = self.live() else { return };
+    /// Wallet `id`'s stored lookahead, if a valid one is stored.
+    pub(crate) async fn stored_lookahead(&self, id: WalletId) -> Option<u32> {
+        let appdb = std::sync::Arc::clone(&self.live().ok()?.appdb);
+        let key = id.to_string();
+        tokio::task::spawn_blocking(move || appdb.setting(&key, LOOKAHEAD_SETTING))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|g| (1..=MAX_LOOKAHEAD).contains(g))
+    }
+
+    /// [`Self::restore_loaded_wallet`] for every wallet (session open).
+    pub(crate) async fn restore_loaded_wallets(&self, manager: &crate::session::Manager) {
         for id in manager.list_wallet_ids_blocking() {
-            let key = hex::encode(id);
-            let appdb = std::sync::Arc::clone(&live.appdb);
-            let stored =
-                tokio::task::spawn_blocking(move || appdb.setting(&key, LOOKAHEAD_SETTING))
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .flatten()
-                    .and_then(|v| v.parse::<u32>().ok())
-                    .filter(|g| (1..=MAX_LOOKAHEAD).contains(g));
-            let (Some(gap), Some(wallet)) = (stored, manager.get_wallet(&id).await) else {
-                continue;
-            };
-            if let Err(e) = apply_lookahead(&wallet, gap).await {
-                tracing::warn!(wallet_id = %hex::encode(id), error = %e, "could not apply the stored lookahead");
-            }
+            self.restore_loaded_wallet(manager, WalletId(id)).await;
+        }
+    }
+
+    /// Applies wallet `id`'s stored lookahead, if any, then places the coins
+    /// the load left outside the account that derives them
+    /// ([`crate::restore`]), before SPV can replay them. Failures are
+    /// logged; the wallet keeps the default gap.
+    pub(crate) async fn restore_loaded_wallet(
+        &self,
+        manager: &crate::session::Manager,
+        id: WalletId,
+    ) {
+        let restored = match self.stored_lookahead(id).await {
+            Some(gap) => self.raise_lookahead(manager, id, gap).await,
+            None => self.restore_coins(manager, id).await.map(|_| ()),
+        };
+        if let Err(e) = restored {
+            tracing::warn!(wallet_id = %id, error = %e, "could not restore the loaded wallet's lookahead or coins");
+        }
+    }
+
+    /// Raises open wallet `id`'s BIP44 and CoinJoin lookahead to `gap`, then
+    /// places the coins only the larger gap reaches in the accounts that
+    /// derive them ([`Self::restore_coins`]), before anything replays them.
+    /// Callers refresh the hub.
+    pub(crate) async fn raise_lookahead(
+        &self,
+        manager: &crate::session::Manager,
+        id: WalletId,
+        gap: u32,
+    ) -> Result<(), EngineError> {
+        let wallet = (manager.get_wallet(&id.0).await)
+            .ok_or_else(|| EngineError::WalletNotFound(id.to_string()))?;
+        let raised = apply_lookahead(&wallet, gap).await;
+        // A partial raise still grew some pools, so the restore runs either way.
+        let restored = self.restore_coins(manager, id).await;
+        match (raised, restored) {
+            (Err(raise), Err(restore)) => Err(EngineError::Internal(format!(
+                "{restore}; raising the lookahead to {gap} failed first: {raise}"
+            ))),
+            (raised, restored) => raised.and(restored.map(|_| ())),
         }
     }
 
