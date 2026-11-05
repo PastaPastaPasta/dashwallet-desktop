@@ -42,6 +42,7 @@ pub mod network_choice;
 pub mod platform;
 mod pump;
 mod receive;
+mod restore;
 #[cfg(test)]
 mod restore_tests;
 pub(crate) mod send;

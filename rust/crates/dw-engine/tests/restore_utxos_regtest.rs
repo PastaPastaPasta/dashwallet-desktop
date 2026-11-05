@@ -380,6 +380,37 @@ impl Fixture {
         (draft, prepared)
     }
 
+    /// The public CoinJoin recovery scan (it raises the lookahead, then
+    /// rescans and waits for it), with a deadline. Polls `rescan_progress`
+    /// meanwhile, as the app's UI does: only that clears a finished rescan,
+    /// which the scan's wait looks for.
+    fn recovery_scan(&self) {
+        std::thread::scope(|s| {
+            let scan = s.spawn(|| {
+                self.engine
+                    .block_on(self.session.coinjoin_recovery_scan(self.wallet))
+            });
+            let deadline = Instant::now() + LOAD_WAIT;
+            let mut next = Instant::now();
+            while !scan.is_finished() {
+                let state = format!(
+                    "rescan {:?}, scanned to {:?}, SPV {:?}",
+                    self.session.rescan_progress().ok().flatten(),
+                    self.session.wallet_scan_height(&self.wallet),
+                    self.session.spv_state().ok(),
+                );
+                let now = Instant::now();
+                assert!(now < deadline, "the recovery scan never finished: {state}");
+                if now >= next {
+                    eprintln!("recovery scan running: {state}");
+                    next = now + Duration::from_secs(30);
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            scan.join().unwrap().unwrap();
+        });
+    }
+
     fn assert_counted(&self, total: u64, coinjoin: u64, when: &str) {
         let b = self.balances();
         assert_eq!(
@@ -420,18 +451,82 @@ fn send_and_mine<T: Send>(
     assert!(node.confirmations(txid) >= 1, "dashd mined {txid}");
 }
 
-#[test]
-fn coinjoin_coins_past_99_reload_replay_once_and_spend_against_dashd() {
-    let Some(dashd) = std::env::var_os("DASHD_PATH").map(PathBuf::from) else {
-        eprintln!("skipped: DASHD_PATH is not set");
-        return;
+/// The wallet signs a PSBT spending `coin` whole (less a fee) to dashd's
+/// miner wallet, and it is mined. A PSBT, as coin control's CoinJoin rules
+/// don't take a coin dashd paid directly.
+fn spend_by_psbt(f: &Fixture, node: &Dashd, coin: OutPoint) {
+    let fee = 10_000;
+    let prev: dashcore::Transaction = dashcore::consensus::encode::deserialize(
+        &hex::decode(node.cli(&["getrawtransaction", &coin.txid.to_string()])).unwrap(),
+    )
+    .unwrap();
+    let value = prev.output[coin.vout as usize].value;
+    let payee = node.cli(&["-rpcwallet=miner", "getnewaddress"]);
+    let payee_info: serde_json::Value =
+        serde_json::from_str(&node.cli(&["-rpcwallet=miner", "getaddressinfo", &payee])).unwrap();
+    let tx = dashcore::Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: coin,
+            sequence: u32::MAX,
+            ..Default::default()
+        }],
+        output: vec![dashcore::TxOut {
+            value: value - fee,
+            script_pubkey: dashcore::ScriptBuf::from_bytes(
+                hex::decode(payee_info["scriptPubKey"].as_str().unwrap()).unwrap(),
+            ),
+        }],
+        special_transaction_payload: None,
     };
-    let dir = dw_testutil::private_tempdir();
-    let node_dir = dir.path().join("dashd");
+    let unsigned = dw_psbt::create_unsigned(
+        tx,
+        vec![dw_psbt::InputData {
+            prev_tx: prev,
+            derivation: None,
+        }],
+        vec![None],
+    )
+    .unwrap();
+    let signed = f
+        .engine
+        .block_on(f.session.sign_psbt(f.wallet, unsigned, f.spend_grant()))
+        .unwrap();
+    let mut complete = signed.clone();
+    assert!(
+        dw_psbt::finalize(&mut complete),
+        "the wallet signed its input"
+    );
+    let spend = dw_psbt::extract(&complete).unwrap();
+    let (raw, txid) = (
+        dashcore::consensus::encode::serialize(&spend),
+        spend.txid().to_string(),
+    );
+    send_and_mine(node, &txid, &raw, || {
+        f.engine.block_on(f.session.broadcast_psbt(signed))
+    });
+}
+
+/// A regtest dashd under `dir` with a `miner` wallet holding mature coins,
+/// or `None` when `DASHD_PATH` is not set.
+fn funded_node(dir: &Path) -> Option<Dashd> {
+    let dashd = PathBuf::from(std::env::var_os("DASHD_PATH")?);
+    let node_dir = dir.join("dashd");
     std::fs::create_dir(&node_dir).unwrap();
     let node = Dashd::start(&dashd, &node_dir);
     node.cli(&["createwallet", "miner"]);
     node.mine(101);
+    Some(node)
+}
+
+#[test]
+fn coinjoin_coins_past_99_reload_replay_once_and_spend_against_dashd() {
+    let dir = dw_testutil::private_tempdir();
+    let Some(node) = funded_node(dir.path()) else {
+        eprintln!("skipped: DASHD_PATH is not set");
+        return;
+    };
     let mut f = Fixture::new(dir.path(), &node);
 
     // The BIP44 coin first: the abandon below rescans from its block, so
@@ -498,59 +593,54 @@ fn coinjoin_coins_past_99_reload_replay_once_and_spend_against_dashd() {
     // Spendable from CoinJoin: the wallet signs the coin at index 150 (a
     // PSBT, as coin control's CoinJoin rules don't take a coin dashd paid
     // directly) and it pays dashd.
-    let fee = 10_000;
-    let prev: dashcore::Transaction = dashcore::consensus::encode::deserialize(
-        &hex::decode(node.cli(&["getrawtransaction", &held[1].txid.to_string()])).unwrap(),
-    )
-    .unwrap();
-    let payee_info: serde_json::Value =
-        serde_json::from_str(&node.cli(&["-rpcwallet=miner", "getaddressinfo", &payee])).unwrap();
-    let tx = dashcore::Transaction {
-        version: 2,
-        lock_time: 0,
-        input: vec![dashcore::TxIn {
-            previous_output: held[1],
-            sequence: u32::MAX,
-            ..Default::default()
-        }],
-        output: vec![dashcore::TxOut {
-            value: COIN - fee,
-            script_pubkey: dashcore::ScriptBuf::from_bytes(
-                hex::decode(payee_info["scriptPubKey"].as_str().unwrap()).unwrap(),
-            ),
-        }],
-        special_transaction_payload: None,
-    };
-    let unsigned = dw_psbt::create_unsigned(
-        tx,
-        vec![dw_psbt::InputData {
-            prev_tx: prev,
-            derivation: None,
-        }],
-        vec![None],
-    )
-    .unwrap();
-    let signed = f
-        .engine
-        .block_on(f.session.sign_psbt(f.wallet, unsigned, f.spend_grant()))
-        .unwrap();
-    let mut complete = signed.clone();
-    assert!(
-        dw_psbt::finalize(&mut complete),
-        "the wallet signed its input"
-    );
-    let spend = dw_psbt::extract(&complete).unwrap();
-    let (raw, txid) = (
-        dashcore::consensus::encode::serialize(&spend),
-        spend.txid().to_string(),
-    );
-    send_and_mine(&node, &txid, &raw, || {
-        f.engine.block_on(f.session.broadcast_psbt(signed))
-    });
+    spend_by_psbt(&f, &node, held[1]);
     f.wait_scanned(node.height());
     f.assert_counted(3 * COIN, 2 * COIN, "after spending the coin at 150");
 
     // And once more from the store.
     f.reload(&node);
     f.assert_counted(3 * COIN, 2 * COIN, "reloaded after the spend");
+}
+
+/// Sol r1 M1 through the public CoinJoin recovery scan: coins at CoinJoin
+/// 600 and 1,500, which only the recovery scan's lookahead (1,000) finds,
+/// the one at 1,500 only through the one at 600. The wallet spends the coin
+/// at 600. Reloaded from the store (pool rows 0..99, the scan's lookahead
+/// stored), the coin at 1,500 comes back in CoinJoin; a second recovery scan
+/// replays the whole history, the spent coin's included, and counts it once.
+#[test]
+fn a_coin_past_a_spent_bridge_counts_once_through_the_recovery_scan_against_dashd() {
+    let dir = dw_testutil::private_tempdir();
+    let Some(node) = funded_node(dir.path()) else {
+        eprintln!("skipped: DASHD_PATH is not set");
+        return;
+    };
+    let mut f = Fixture::new(dir.path(), &node);
+    let addrs = coinjoin_addresses(&[600, 1_500]);
+    for to in &addrs {
+        node.pay(to);
+    }
+    f.start_spv();
+    f.wait_scanned(node.height());
+    f.assert_counted(0, 0, "past the default gap");
+
+    f.recovery_scan();
+    f.wait_scanned(node.height());
+    f.assert_counted(2 * COIN, 2 * COIN, "after the recovery scan");
+    let deep = f.coin_at(&addrs[1]);
+
+    spend_by_psbt(&f, &node, f.coin_at(&addrs[0]));
+    f.wait_scanned(node.height());
+    f.assert_counted(COIN, COIN, "after spending the coin at 600");
+
+    f.reload(&node);
+    f.assert_counted(COIN, COIN, "reloaded from the store");
+    assert_eq!(f.coin_at(&addrs[1]), deep);
+
+    f.start_spv();
+    f.wait_scanned(node.height());
+    f.recovery_scan();
+    f.wait_scanned(node.height());
+    f.assert_counted(COIN, COIN, "after a second recovery scan's replay");
+    assert_eq!(f.coin_at(&addrs[1]), deep);
 }
