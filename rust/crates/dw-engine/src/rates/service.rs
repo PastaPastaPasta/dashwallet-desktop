@@ -71,6 +71,9 @@ struct Inner {
     next_due: Option<u64>,
     /// The view last announced.
     announced: Option<RatesView>,
+    /// Raised each time prices are turned off: an attempt started before
+    /// keeps nothing it brings, even if prices are on again when it lands.
+    off_epoch: u64,
 }
 
 pub(crate) struct RatesHub {
@@ -82,6 +85,8 @@ pub(crate) struct RatesHub {
     /// One attempt at a time.
     attempt: tokio::sync::Mutex<()>,
     wake: Arc<Notify>,
+    /// Notified when prices are turned off: the attempt in flight stops.
+    off: Notify,
 }
 
 impl RatesHub {
@@ -121,9 +126,11 @@ impl RatesHub {
                 failures: 0,
                 next_due: None,
                 announced: None,
+                off_epoch: 0,
             }),
             attempt: tokio::sync::Mutex::new(()),
             wake: Arc::new(Notify::new()),
+            off: Notify::new(),
         })
     }
 
@@ -172,18 +179,41 @@ impl RatesHub {
         inner.stored.currencies(self.now())
     }
 
+    /// Stores the settings. Turning prices off stops the attempt in
+    /// flight, so nothing it brings is kept, and clears every cached price
+    /// and attempt, here and in `rates.json` (rates-engine §1); on again,
+    /// the state is `unavailable(neverFetched)` until a new fetch. The
+    /// transactions' price stamps (§6) are history and stay.
     pub(crate) fn set_settings(&self, settings: RatesSettings) -> Result<RatesView, RatesError> {
         if let Some(c) = settings.currency.as_deref()
             && !is_code(c)
         {
             return Err(RatesError::InvalidCurrency(c.to_owned()));
         }
+        let off = !settings.enabled;
         {
             let mut inner = self.lock();
-            let mut next = inner.stored.clone();
-            next.settings = settings;
+            let next = if off {
+                Stored {
+                    settings,
+                    ..Stored::default()
+                }
+            } else {
+                Stored {
+                    settings,
+                    ..inner.stored.clone()
+                }
+            };
             self.write(&next)?;
             inner.stored = next;
+            if off {
+                inner.off_epoch += 1;
+                inner.failures = 0;
+                inner.next_due = None;
+            }
+        }
+        if off {
+            self.off.notify_waiters();
         }
         self.changed();
         Ok(self.view())
@@ -214,36 +244,55 @@ impl RatesHub {
 
     /// Asks the sources in order until one answers, then stores what it
     /// brought. Makes no request when prices are off.
+    /// Turning prices off stops it: the request is dropped, and nothing is
+    /// stored.
     pub(crate) async fn attempt(&self) {
         let _one = self.attempt.lock().await;
+        // Listening before the epoch is read: an Off after this is heard.
+        let off = self.off.notified();
+        tokio::pin!(off);
+        off.as_mut().enable();
+        let epoch = self.lock().off_epoch;
         if !self.may_fetch() {
             return;
         }
         let Some(http) = self.http.clone() else {
-            self.finish(None);
+            self.finish(None, epoch);
             return;
         };
-        let mut got = None;
-        for source in &self.cfg.sources {
-            match source.fetch(http.as_ref(), self.now()).await {
-                Ok(rates) => {
-                    got = Some(rates);
-                    break;
+        let fetch = async {
+            for source in &self.cfg.sources {
+                match source.fetch(http.as_ref(), self.now()).await {
+                    Ok(rates) => return Some(rates),
+                    Err(e) => {
+                        tracing::info!(source = ?source.id(), error = %e, "rates source failed");
+                    }
                 }
-                Err(e) => tracing::info!(source = ?source.id(), error = %e, "rates source failed"),
             }
-        }
-        // Turned off while the request was out: nothing it brought is kept.
+            None
+        };
+        // An Off already heard wins over an answer in the same poll.
+        let got = tokio::select! {
+            biased;
+            () = &mut off => return,
+            got = fetch => got,
+        };
+        // Not allowed any more (not disclosed, no mainnet): nothing it brought is kept.
         if !self.may_fetch() {
             return;
         }
-        self.finish(got);
+        self.finish(got, epoch);
     }
 
-    fn finish(&self, got: Option<super::sources::SourceRates>) {
+    /// Stores what the attempt started at `epoch` brought, unless prices
+    /// were turned off since.
+    fn finish(&self, got: Option<super::sources::SourceRates>, epoch: u64) {
         let now = self.now();
         {
             let mut inner = self.lock();
+            if inner.off_epoch != epoch {
+                return;
+            }
             let mut next = inner.stored.clone();
             let ok = got.is_some();
             match got {

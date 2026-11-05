@@ -115,4 +115,4 @@ export function ratesStatusText(view: RatesView, locale: string | undefined): st
 
 /** The disclosure, word for word, wherever it is shown (onboarding, Home's card, Settings). */
 export const RATES_DISCLOSURE =
-  "The wallet asks rates.ctx.com for DASH prices about every 5 minutes, and BitPay and DashCentral when it cannot reach it. No address, balance or transaction is sent; the requests show your IP address and that a Dash wallet is running.";
+  "The wallet asks rates.ctx.com for DASH prices about every 5 minutes, and BitPay and DashCentral when it cannot reach it. No address, balance or transaction is sent; the requests show these services your IP address, the time, and that a Dash wallet is running.";

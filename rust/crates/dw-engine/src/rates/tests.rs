@@ -637,6 +637,228 @@ fn every_change_of_the_view_is_announced_once() {
     assert_eq!(rig.events.rates(), after_on + 1);
 }
 
+/// A source that answers USD only once released, and says whether its
+/// fetch was dropped before it answered (the request aborted).
+struct Gated {
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    aborted: std::sync::atomic::AtomicBool,
+}
+
+impl Gated {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            aborted: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+}
+
+struct AbortFlag<'a>(&'a std::sync::atomic::AtomicBool, bool);
+
+impl Drop for AbortFlag<'_> {
+    fn drop(&mut self) {
+        if !self.1 {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+impl RateSource for Gated {
+    fn id(&self) -> RateSourceId {
+        RateSourceId::Ctx
+    }
+
+    fn fetch<'a>(
+        &'a self,
+        _http: &'a dyn HttpGet,
+        _now: u64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SourceRates, String>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let mut flag = AbortFlag(&self.aborted, false);
+            self.started.notify_one();
+            self.release.notified().await;
+            flag.1 = true;
+            Ok(SourceRates {
+                source: RateSourceId::Ctx,
+                rows: vec![SourceRow {
+                    currency: "USD".into(),
+                    price: Price::parse("49.0967").unwrap(),
+                    retrieved_at: T0,
+                }],
+            })
+        })
+    }
+}
+
+/// A rig whose only source is `gate`.
+fn gated_rig(gate: &Arc<Gated>) -> Rig {
+    let g = Arc::clone(gate);
+    Rig::with(Vec::new(), Vec::new(), move |c| RatesConfig {
+        sources: vec![g as Arc<dyn RateSource>],
+        ..c
+    })
+}
+
+fn off(rig: &Rig) {
+    rig.rates()
+        .set_settings(settings(false, Some("USD"), true))
+        .unwrap();
+}
+
+fn stored_file(rig: &Rig) -> Stored {
+    Stored::from_json(&std::fs::read_to_string(rig.root.join(RATES_FILE)).unwrap())
+}
+
+/// Amendment 4 (i): Off while a fetch is out stops it, and nothing it
+/// would have brought is stored; the view stays off.
+#[test]
+fn off_during_a_fetch_aborts_it_and_keeps_nothing() {
+    let gate = Gated::new();
+    let rig = gated_rig(&gate);
+    rig.on();
+    block_on(async {
+        let hub = Arc::clone(&rig.hub);
+        let task = tokio::spawn(async move { hub.attempt().await });
+        gate.started.notified().await;
+        off(&rig);
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("the attempt stops without its answer")
+            .unwrap();
+        // Were the request still out, this is the answer it would get.
+        gate.release.notify_waiters();
+        tokio::task::yield_now().await;
+    });
+    assert!(
+        gate.aborted.load(Ordering::SeqCst),
+        "the request was dropped"
+    );
+    let v = rig.rates().status();
+    assert_eq!(v.state, RateState::Off(RatesOff::Disabled));
+    assert_eq!(v.rate, None);
+    assert!(stored_file(&rig).rates.is_empty());
+    assert_eq!(rig.hub.view().last_attempt_at, None, "no attempt recorded");
+}
+
+/// A source that turns prices off and on again in the poll that answers:
+/// its result lands after an Off, with prices on again.
+#[derive(Default)]
+struct FlipsOff(std::sync::OnceLock<std::sync::Weak<RatesHub>>);
+
+impl RateSource for FlipsOff {
+    fn id(&self) -> RateSourceId {
+        RateSourceId::Ctx
+    }
+
+    fn fetch<'a>(
+        &'a self,
+        _http: &'a dyn HttpGet,
+        _now: u64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SourceRates, String>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let hub = self.0.get().and_then(std::sync::Weak::upgrade).unwrap();
+            hub.set_settings(settings(false, Some("USD"), true))
+                .unwrap();
+            hub.set_settings(settings(true, Some("USD"), true)).unwrap();
+            Ok(SourceRates {
+                source: RateSourceId::Ctx,
+                rows: vec![SourceRow {
+                    currency: "USD".into(),
+                    price: Price::parse("49.0967").unwrap(),
+                    retrieved_at: T0,
+                }],
+            })
+        })
+    }
+}
+
+/// Amendment 4: a result that lands after Off is never stored, even with
+/// prices on again by then.
+#[test]
+fn a_result_landing_after_off_then_on_is_discarded() {
+    let source = Arc::new(FlipsOff::default());
+    let s = Arc::clone(&source);
+    let rig = Rig::with(Vec::new(), Vec::new(), move |c| RatesConfig {
+        sources: vec![s as Arc<dyn RateSource>],
+        ..c
+    });
+    source.0.set(Arc::downgrade(&rig.hub)).unwrap();
+    rig.on();
+    block_on(rig.hub.attempt());
+    let v = rig.rates().status();
+    assert_eq!(
+        v.state,
+        RateState::Unavailable(RatesUnavailable::NeverFetched)
+    );
+    assert_eq!(v.rate, None);
+    assert!(stored_file(&rig).rates.is_empty());
+}
+
+/// Amendment 4 (ii) and (iii): Off clears every cached price and attempt,
+/// in memory and in rates.json; on again, nothing shows until a new fetch.
+#[test]
+fn off_clears_the_cache_and_on_starts_from_nothing() {
+    let rig = Rig::new(vec![usd("49.0967", T0)], vec![Err("unused")]);
+    rig.on();
+    block_on(rig.hub.attempt());
+    assert_eq!(rig.rates().status().state, RateState::Fresh);
+    assert!(!stored_file(&rig).rates.is_empty());
+
+    off(&rig);
+    let file = stored_file(&rig);
+    assert!(file.rates.is_empty(), "rates.json holds no rate rows");
+    assert_eq!(file.last_attempt_at, None);
+    assert_eq!(
+        file.settings,
+        settings(false, Some("USD"), true),
+        "the settings stay"
+    );
+
+    rig.on();
+    let v = rig.rates().status();
+    assert_eq!(
+        v.state,
+        RateState::Unavailable(RatesUnavailable::NeverFetched)
+    );
+    assert_eq!(
+        (v.rate, v.last_success_at, v.last_attempt_at),
+        (None, None, None)
+    );
+    assert!(
+        rig.rates().currencies().is_empty(),
+        "no stale number from before"
+    );
+    // A restart reads the same nothing.
+    let again = RatesHub::new(
+        &rig.root,
+        RatesConfig::production(),
+        Arc::new(Events::default()),
+    );
+    again.mainnet_opened();
+    assert_eq!(
+        again.view().state,
+        RateState::Unavailable(RatesUnavailable::NeverFetched)
+    );
+}
+
+/// Amendment 2: while CTX answers, the fallback is never asked.
+#[test]
+fn the_fallback_is_asked_only_after_ctx_fails() {
+    let rig = Rig::new(vec![usd("49.0967", T0)], vec![usd("1", T0)]);
+    rig.on();
+    for _ in 0..3 {
+        block_on(rig.hub.attempt());
+        rig.advance(60);
+    }
+    assert_eq!((rig.primary.calls(), rig.fallback.calls()), (3, 0));
+    assert_eq!(rig.requests(), 3, "one request per attempt, CTX's");
+    assert_eq!(rig.rates().status().rate.unwrap().source, RateSourceId::Ctx);
+}
+
 /// rates-engine §6: a Mainnet session stamps a transaction with the fresh
 /// price only, and only one whose time (first sight or block) is at most 3 h ago.
 mod stamps {

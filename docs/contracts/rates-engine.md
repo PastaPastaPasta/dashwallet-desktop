@@ -42,6 +42,11 @@ Every request:
 shown (`disclosed`), and a mainnet network is open. Otherwise no request at all, "Update now" included
 (`rates.off`). Testnet, devnet and regtest never fetch: test coins have no price.
 
+**Turning prices off** (`enabled: false`) stops the attempt in flight: its request is dropped, and a result
+that lands after Off is never stored, even when prices are on again by then. It also clears every cached
+price and attempt, in memory and in `rates.json`, keeping only the settings; on again, the state is
+`unavailable(neverFetched)` until a new fetch. The transactions' price stamps (§6) are history and stay.
+
 **Schedule.** One attempt as soon as requests are allowed (after a restart: 5 minutes after the last
 attempt), then every 5 minutes ± 20 %. After a failed attempt: 1, 2, then 4 minutes. "Update now" is
 refused within 30 s of the last attempt (`rates.throttled`). One attempt at a time.

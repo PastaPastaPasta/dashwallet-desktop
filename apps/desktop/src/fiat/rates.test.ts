@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RatesView } from "../api/generated/RatesView";
-import { ratesNote, ratesStatusText, shownRate } from "./rates";
+import { RATES_DISCLOSURE, ratesNote, ratesStatusText, shownRate } from "./rates";
 
 const AT = 1_793_835_763;
 const view = (state: RatesView["state"], over: Partial<RatesView> = {}): RatesView => ({
@@ -52,5 +52,13 @@ describe("the Settings status line", () => {
     expect(ratesStatusText(view({ kind: "off", reason: "notMainnet" }), "en-US")).toContain("Mainnet");
     expect(ratesStatusText(view({ kind: "off", reason: "disabled" }), "en-US")).toBeNull();
     expect(ratesStatusText(view({ kind: "unavailable", reason: "failed" }), "en-US")).toContain("could not be fetched");
+  });
+});
+
+describe("the disclosure", () => {
+  it("names each service asked, and what the requests show them: the IP address, the time, a Dash wallet", () => {
+    for (const service of ["rates.ctx.com", "BitPay", "DashCentral"]) expect(RATES_DISCLOSURE).toContain(service);
+    expect(RATES_DISCLOSURE).toContain("show these services your IP address, the time, and that a Dash wallet is running");
+    expect(RATES_DISCLOSURE).toContain("No address, balance or transaction is sent");
   });
 });
