@@ -2167,8 +2167,12 @@ impl NetworkSession {
                 }
                 // Re-places the coins the load left outside their account:
                 // the rescan with the larger gap would credit them again.
-                crate::keys::raise_lookahead(&manager, wallet_id, RECOVERY_LOOKAHEAD).await?;
+                // The hub refreshes even on an error: a partial raise may
+                // already have moved coins.
+                let raised =
+                    crate::keys::raise_lookahead(&manager, wallet_id, RECOVERY_LOOKAHEAD).await;
                 this.refresh_wallet_state(&manager, wallet_id).await;
+                raised?;
                 // Kept for later sessions, as a restore's lookahead is.
                 this.store_lookahead(wallet_id, RECOVERY_LOOKAHEAD).await;
                 let birth = this
