@@ -1076,6 +1076,37 @@ fn a_ctx_row_older_than_the_fallbacks_is_no_failure() {
     assert_eq!(v.state, RateState::Fresh);
 }
 
+/// Review round 2, m2: a price taken while the clock was a day ahead
+/// (the fallback's rows carry the fetch time) counts as absent once the
+/// clock is set back: no number and nothing to stamp with, and CTX's
+/// next price is taken rather than refused as older.
+#[test]
+fn a_price_dated_ahead_of_a_corrected_clock_counts_as_absent() {
+    let day = 24 * 60 * 60;
+    let rig = Rig::new(vec![Err("down"), usd("50", T0)], vec![usd("49", T0 + day)]);
+    let stamps = stamper(&rig);
+    rig.advance(day);
+    rig.on();
+    block_on(rig.hub.attempt());
+    assert_eq!(rig.rates().status().rate.unwrap().price, "49");
+    rig.clock.store(T0, Ordering::SeqCst);
+    let v = rig.rates().status();
+    assert_eq!(v.state, RateState::Unavailable(RatesUnavailable::Failed));
+    assert_eq!(v.rate, None, "never a frozen price that reads fresh");
+    assert!(rig.rates().currencies().is_empty());
+    assert!(stamps.stamp_rate().is_none());
+    block_on(rig.hub.attempt());
+    let v = rig.rates().status();
+    assert_eq!(v.state, RateState::Fresh);
+    let rate = v.rate.unwrap();
+    assert_eq!(
+        (rate.price.as_str(), rate.source),
+        ("50", RateSourceId::Ctx)
+    );
+    assert!(!v.last_attempt_failed);
+    assert!(!v.volatile, "nothing to compare with");
+}
+
 /// rates-engine §6: a Mainnet session stamps a transaction with the fresh
 /// price only, and only one whose time (first sight or block) is at most 3 h ago.
 mod stamps {

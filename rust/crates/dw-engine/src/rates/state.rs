@@ -59,6 +59,13 @@ impl Cached {
         now.saturating_sub(self.rate_at())
     }
 
+    /// Dated more than [`FUTURE_SKEW_SECS`] ahead of `now`: taken while the
+    /// clock was ahead. Such a row counts as absent, so a clock set back
+    /// cannot freeze a price that reads fresh (its age would be 0).
+    fn ahead(&self, now: u64) -> bool {
+        self.rate_at() > now.saturating_add(FUTURE_SKEW_SECS)
+    }
+
     fn price(&self) -> Option<Price> {
         Price::parse(&self.price)
     }
@@ -134,7 +141,7 @@ impl Stored {
         self.refused.clear();
         let mut refused = Vec::new();
         for row in got.rows {
-            let cached = self.rates.get(&row.currency);
+            let cached = self.rates.get(&row.currency).filter(|c| !c.ahead(now));
             let check = check_row(cached, &row.price, row.retrieved_at, now);
             if let Err(why) = check {
                 // A row older than the cached one is not a failure: the
@@ -200,10 +207,10 @@ impl Stored {
             return view;
         };
         view.last_attempt_failed |= self.refused.contains(code);
-        let Some(row) = self.rates.get(code) else {
+        let Some(row) = self.rates.get(code).filter(|r| !r.ahead(now)) else {
             view.state = RateState::Unavailable(if self.last_attempt_at.is_none() {
                 RatesUnavailable::NeverFetched
-            } else if self.rates.is_empty() {
+            } else if self.rates.values().all(|r| r.ahead(now)) {
                 RatesUnavailable::Failed
             } else {
                 RatesUnavailable::CurrencyMissing
@@ -234,7 +241,7 @@ impl Stored {
     pub(crate) fn currencies(&self, now: u64) -> Vec<CurrencyRate> {
         self.rates
             .iter()
-            .filter(|(_, c)| c.age(now) <= EXPIRE_SECS)
+            .filter(|(_, c)| !c.ahead(now) && c.age(now) <= EXPIRE_SECS)
             .map(|(code, c)| CurrencyRate {
                 code: code.clone(),
                 price: c.price.clone(),

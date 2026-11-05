@@ -72,6 +72,10 @@ above or below a cached price that has not expired. A row of the chosen currency
 absurd sets `lastAttemptFailed`; one refused as older does not, the price kept being the newer (the
 fallback's rows carry the fetch time, so CTX's next row may be older). Prices are `^[0-9]{1,15}(\.[0-9]{1,12})?$`, above zero; other rows are left out.
 
+A cached row dated more than 5 minutes ahead of the clock (taken while the clock was ahead, then set back)
+counts as absent: no number, no stamps, not offered in the picker, and the next row is taken against
+nothing, so a corrected clock cannot freeze a price that reads fresh.
+
 **Age** = now − min(provider time, fetch time).
 
 | State | When | A number? |
