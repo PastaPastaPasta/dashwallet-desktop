@@ -265,6 +265,8 @@ const NOT_FACADE: &[&str] = &[
     "topup_tests.rs",
     "trust.rs",
     "trust_tests.rs",
+    "unfinished_locks.rs",
+    "unfinished_locks_tests.rs",
     "users.rs",
     "users_tests.rs",
     "withdrawal.rs",

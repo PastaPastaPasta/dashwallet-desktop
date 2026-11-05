@@ -95,6 +95,9 @@ mod topup_tests;
 pub(crate) mod trust;
 #[cfg(test)]
 mod trust_tests;
+pub(crate) mod unfinished_locks;
+#[cfg(test)]
+mod unfinished_locks_tests;
 mod users;
 #[cfg(test)]
 mod users_tests;
