@@ -54,6 +54,18 @@ impl RatesConfig {
     }
 }
 
+#[cfg(test)]
+impl RatesConfig {
+    /// [`Self::production`] whose every request fails: no engine in a test
+    /// reaches the network.
+    pub(crate) fn offline_for_tests() -> Self {
+        Self {
+            http: Some(Arc::new(super::sources::NoNetwork)),
+            ..Self::production()
+        }
+    }
+}
+
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

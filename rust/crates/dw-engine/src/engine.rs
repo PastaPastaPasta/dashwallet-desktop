@@ -98,9 +98,13 @@ impl Engine {
             .build()
             .map_err(|e| EngineError::Internal(format!("tokio runtime: {e}")))?;
         let handle = runtime.handle().clone();
+        #[cfg(not(test))]
+        let rates_config = crate::rates::RatesConfig::production();
+        #[cfg(test)]
+        let rates_config = crate::rates::RatesConfig::offline_for_tests();
         let rates = crate::rates::RatesHub::start(
             &config.data_root,
-            crate::rates::RatesConfig::production(),
+            rates_config,
             Arc::clone(&sink),
             &handle,
         );

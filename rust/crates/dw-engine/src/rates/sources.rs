@@ -55,6 +55,21 @@ pub(crate) trait HttpGet: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
 }
 
+/// Tests: refuses every request.
+#[cfg(test)]
+pub(crate) struct NoNetwork;
+
+#[cfg(test)]
+impl HttpGet for NoNetwork {
+    fn get<'a>(
+        &'a self,
+        _url: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+    {
+        Box::pin(async { Err("no network in tests".into()) })
+    }
+}
+
 /// A price source the service asks, in order, until one answers.
 pub(crate) trait RateSource: Send + Sync {
     fn id(&self) -> RateSourceId;

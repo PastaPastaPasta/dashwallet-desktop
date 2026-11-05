@@ -14,7 +14,7 @@ mod service;
 mod sources;
 mod state;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod types;
 
 use std::sync::Arc;
@@ -25,6 +25,41 @@ pub use types::{
     CurrencyRate, FiatRate, RateSourceId, RateState, RatesOff, RatesSettings, RatesUnavailable,
     RatesView, TxFiat,
 };
+
+/// Tests: `<data_root>/rates.json` with prices on and disclosed, `currency`
+/// chosen and its price `price` fetched at `now`, for an engine started on
+/// `data_root` afterwards.
+#[cfg(test)]
+pub(crate) fn fresh_rates_file_for_tests(
+    data_root: &std::path::Path,
+    currency: &str,
+    price: &str,
+    now: u64,
+) {
+    let cached = state::Cached {
+        price: price.into(),
+        retrieved_at: now,
+        fetched_at: now,
+        source: RateSourceId::Ctx,
+        prev: None,
+    };
+    let stored = state::Stored {
+        settings: RatesSettings {
+            enabled: true,
+            currency: Some(currency.into()),
+            disclosed: true,
+        },
+        rates: [(currency.to_owned(), cached)].into(),
+        last_attempt_at: Some(now),
+        ..state::Stored::default()
+    };
+    std::fs::create_dir_all(data_root).unwrap();
+    std::fs::write(
+        data_root.join("rates.json"),
+        serde_json::to_vec(&stored).unwrap(),
+    )
+    .unwrap();
+}
 
 /// The engine's rates. A cheap handle on the engine's one service.
 #[derive(Clone)]

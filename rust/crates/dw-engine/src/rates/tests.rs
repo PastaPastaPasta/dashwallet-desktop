@@ -1109,7 +1109,7 @@ fn a_price_dated_ahead_of_a_corrected_clock_counts_as_absent() {
 
 /// rates-engine §6: a Mainnet session stamps a transaction with the fresh
 /// price only, and only one whose time (first sight or block) is at most 3 h ago.
-mod stamps {
+pub(crate) mod stamps {
     use dashcore::hashes::Hash;
     use dashcore::{BlockHash, OutPoint, Transaction, TxIn, Txid};
     use key_wallet::account::{AccountType, StandardAccountType};
@@ -1130,6 +1130,17 @@ mod stamps {
     }
 
     fn add_seen(hub: &SessionHub, n: u8, context: TransactionContext, seen: Option<u64>) -> Txid {
+        add_seen_to(hub, W, n, context, seen)
+    }
+
+    /// A transaction of `wallet` in `hub`'s history, first seen at `seen`.
+    pub(crate) fn add_seen_to(
+        hub: &SessionHub,
+        wallet: WalletId,
+        n: u8,
+        context: TransactionContext,
+        seen: Option<u64>,
+    ) -> Txid {
         let tx = Transaction {
             version: 2,
             lock_time: 0,
@@ -1153,7 +1164,8 @@ mod stamps {
             Vec::new(),
             1_000,
         );
-        hub.history.with_wallet(W, |h| assert!(h.upsert(&r, seen)));
+        hub.history
+            .with_wallet(wallet, |h| assert!(h.upsert(&r, seen)));
         r.txid
     }
 
