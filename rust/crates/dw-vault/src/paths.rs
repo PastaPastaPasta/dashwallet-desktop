@@ -15,9 +15,10 @@ use key_wallet::Network;
 use key_wallet::bip32::{ChildNumber, DerivationPath};
 use key_wallet::dip9::{
     DASHPAY_CONTACT_INFO_ENC_TO_USER_ID_CHILD, DASHPAY_CONTACT_INFO_PRIVATE_DATA_CHILD,
-    FEATURE_PURPOSE, FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_SHIELDED_ADDRESS_TOPUP,
-    FEATURE_PURPOSE_COINJOIN, FEATURE_PURPOSE_DASHPAY, FEATURE_PURPOSE_DASHPAY_AUTO_ACCEPT,
-    FEATURE_PURPOSE_IDENTITIES, FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_AUTHENTICATION,
+    FEATURE_PURPOSE, FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_ADDRESS_TOPUP,
+    FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_SHIELDED_ADDRESS_TOPUP, FEATURE_PURPOSE_COINJOIN,
+    FEATURE_PURPOSE_DASHPAY, FEATURE_PURPOSE_DASHPAY_AUTO_ACCEPT, FEATURE_PURPOSE_IDENTITIES,
+    FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_AUTHENTICATION,
     FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_INVITATIONS,
     FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_REGISTRATION,
     FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP, FEATURE_PURPOSE_PLATFORM_PAYMENT,
@@ -213,9 +214,11 @@ fn is_chain_and_index(p: &[ChildNumber]) -> bool {
 
 /// An asset-lock credit key under `m/9'/coin'/5'`: registration
 /// `1'/index`, top-up `2'/index` or `2'/identity'/index`, invitation
-/// `3'/index` (key-wallet `AccountType::Identity*`), shielded top-up
-/// `5'/index` (`AccountType::AssetLockShieldedAddressTopUp`, 0.1 E1's
-/// Core → Shielded), all of whose pools use non-hardened indices. A hardened last step is refused, so no credit key
+/// `3'/index` (key-wallet `AccountType::Identity*`), Platform address
+/// top-up `4'/index` (`AccountType::AssetLockAddressTopUp`, 0.2 X1b's
+/// Core → own Platform address), shielded top-up `5'/index`
+/// (`AccountType::AssetLockShieldedAddressTopUp`, 0.1 E1's Core →
+/// Shielded), all of whose pools use non-hardened indices. A hardened last step is refused, so no credit key
 /// is ever the top-up account node itself
 /// ([`is_identity_top_up_account`]).
 ///
@@ -235,6 +238,7 @@ pub fn is_asset_lock_credit_key(path: &DerivationPath, network: Network) -> bool
         (Some(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_REGISTRATION), 5)
         | (Some(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP), 5)
         | (Some(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_INVITATIONS), 5)
+        | (Some(FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_ADDRESS_TOPUP), 5)
         | (Some(FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_SHIELDED_ADDRESS_TOPUP), 5) => leaf,
         (Some(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP), 6) => {
             hardened_index(&p[4]).is_some() && leaf
@@ -594,6 +598,8 @@ mod tests {
             "m/9'/1'/5'/2'/3",
             "m/9'/1'/5'/2'/0'/3",
             "m/9'/1'/5'/3'/2",
+            "m/9'/1'/5'/4'/0",
+            "m/9'/1'/5'/4'/7",
             "m/9'/1'/5'/5'/0",
         ] {
             assert!(is_asset_lock_credit_key(&path(ok), t), "{ok}");
@@ -601,7 +607,14 @@ mod tests {
         for bad in [
             "m/9'/1'/5'/0'/0'",       // identity authentication
             "m/9'/1'/5'/0'/0'/0'/0'", // an identity key
-            "m/9'/1'/5'/4'/0",        // address top-up (not in scope)
+            "m/9'/1'/5'/4'/0'",       // address top-up: hardened leaf
+            "m/9'/1'/5'/4'/0'/0",     // address top-up: another account
+            "m/9'/1'/5'/4'/0/0",      // address top-up: too deep
+            "m/9'/1'/5'/4'",          // the address top-up account node
+            "m/9'/5'/5'/4'/0",        // address top-up: mainnet coin on testnet
+            "m/9'/1'/17'/4'/0",       // another feature (Platform payment)
+            "m/9'/1'/4'/4'/0",        // another feature
+            "m/9'/1'/5'/6'/0",        // an unknown asset-lock subfeature
             "m/9'/1'/5'/5'/0'",       // hardened leaf
             "m/9'/1'/5'/5'/0/0",
             "m/9'/1'/5'/5'",

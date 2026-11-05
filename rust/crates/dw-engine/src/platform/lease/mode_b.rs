@@ -53,7 +53,8 @@
 //! under an `IdentityTopUp` key) therefore matches only its own signed
 //! locks ([`own_row`]; DP1-06, as §2a.6 foresaw), and so does a shield's
 //! (0.1 E1: every shield funds under the one `AssetLockShieldedAddressTopUp`
-//! key of account 0): every lock a call of it
+//! key of account 0) and a Platform address fund's (0.2 X1b: every one
+//! under the one `AssetLockAddressTopUp` key of account 0): every lock a call of it
 //! signed has its durable record before it can be stored or sent (§2a.7),
 //! so they are all of its rows, across restarts too. Any other step matches by
 //! its draft's own key and its marker's: the J step that marks it records
@@ -606,11 +607,14 @@ fn matches_step(
 }
 
 /// A funding key many steps share, so a step's rows are its own signed
-/// locks (module doc): a top-up's, or a shield's.
+/// locks (module doc): a top-up's, a Platform address fund's, or a
+/// shield's.
 fn signed_lock_key(key: &FundingKey) -> bool {
     matches!(
         key.funding_type,
-        AssetLockFundingType::IdentityTopUp | AssetLockFundingType::AssetLockShieldedAddressTopUp
+        AssetLockFundingType::IdentityTopUp
+            | AssetLockFundingType::AssetLockAddressTopUp
+            | AssetLockFundingType::AssetLockShieldedAddressTopUp
     )
 }
 
