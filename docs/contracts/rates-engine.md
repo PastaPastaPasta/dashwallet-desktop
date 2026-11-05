@@ -38,6 +38,11 @@ Every request:
   the User-Agent `Mozilla/5.0` (no app name, no version);
 - 5 s to connect, 10 s in all, a body of at most 1 MiB.
 
+Not done, a stated deviation from the design (§2 there): the avatar fetcher's `FetchPolicy::STRICT` check
+that every address a name resolves to is public. The hosts are the fixed public names above and the
+system resolver answers for them; a resolver that pointed one at a local address would get the TLS
+handshake (and so learn that a wallet asks for prices) but no request, since the certificate check fails.
+
 **When requests are made.** Only while all of these hold: prices are on (`enabled`), the disclosure was
 shown (`disclosed`), and a mainnet network is open. Otherwise no request at all, "Update now" included
 (`rates.off`). Testnet, devnet and regtest never fetch: test coins have no price.
@@ -46,17 +51,21 @@ shown (`disclosed`), and a mainnet network is open. Otherwise no request at all,
 that lands after Off is never stored, even when prices are on again by then. It also clears every cached
 price and attempt, in memory and in `rates.json`, keeping only the settings; on again, the state is
 `unavailable(neverFetched)` until a new fetch. The transactions' price stamps (§6) are history and stay.
+Off takes effect even when `rates.json` cannot be written: the file is then removed, so a restart reads
+prices as never disclosed (no request until the disclosure is shown again), and `rates.storage` is
+returned.
 
-**Schedule.** One attempt as soon as requests are allowed (after a restart: 5 minutes after the last
-attempt), then every 5 minutes ± 20 %. After a failed attempt: 1, 2, then 4 minutes. "Update now" is
+**Schedule.** One attempt as soon as requests are allowed (after a restart: 5 minutes ± 20 % after the
+last attempt), then every 5 minutes ± 20 %. After a failed attempt: 1, 2, then 4 minutes, each ± 20 %. "Update now" is
 refused within 30 s of the last attempt (`rates.throttled`). One attempt at a time.
 
 ## 2. Rules on prices
 
 **Taken or refused, per currency.** A new row is refused, keeping the cached one, when its provider time is
 more than 5 minutes ahead of the clock, is older than the cached row's, or its price is more than ten times
-above or below a cached price that has not expired. A refused row of the chosen currency sets
-`lastAttemptFailed`. Prices are `^[0-9]{1,15}(\.[0-9]{1,12})?$`, above zero; other rows are left out.
+above or below a cached price that has not expired. A row of the chosen currency refused as ahead or as
+absurd sets `lastAttemptFailed`; one refused as older does not, the price kept being the newer (the
+fallback's rows carry the fetch time, so CTX's next row may be older). Prices are `^[0-9]{1,15}(\.[0-9]{1,12})?$`, above zero; other rows are left out.
 
 **Age** = now − min(provider time, fetch time).
 
@@ -212,7 +221,9 @@ withholds it.
 the transaction's time, the earlier of when the wallet first saw it and its block's time (whichever are
 known), is at most 3 hours before now. A `stale` price, prices off or undisclosed, another network: no
 stamp. Turning prices off (§1) stops new stamps: nothing is fresh while they are off, a result discarded
-after Off never reaches the stamper, and on again nothing stamps until a new fetch is fresh. There is no
+after Off never reaches the stamper, and on again nothing stamps until a new fetch is fresh. The stamps
+are written off the event thread; the write checks again that prices were not turned off since the price
+was read, else it writes none. There is no
 back-fill: a transaction older than 3 hours never gets one, so a rescan, a restore or a
 payment seen while no price was fresh is never stamped with a much later price.
 
@@ -224,3 +235,5 @@ the rows like every `wallet_id` table. A stored source the engine does not know 
 
 **Shown, never used.** The renderer converts the record's amount with the stamp's own price and currency
 (`format/fiat.ts`, the same rounding as §0); nothing re-rounds it, and nothing in a send reads it.
+`tx_fiat.price` is checked as the engine's decimal (§2): 1 to 15 digits, optionally a dot and 1 to 12
+more, above zero, so a `.dwbackup` cannot bring in another form.

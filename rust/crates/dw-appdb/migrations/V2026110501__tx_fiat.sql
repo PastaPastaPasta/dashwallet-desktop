@@ -5,7 +5,8 @@
 -- earlier: a rescan or a restore never stamps today's price on an old payment.
 -- There is no back-fill.
 --   currency    ISO 4217 code the price is in.
---   price       fiat per 1 DASH, the engine's exact decimal string.
+--   price       fiat per 1 DASH, the engine's exact decimal string: 1 to 15
+--               digits, optionally a dot and 1 to 12 more, above zero.
 --   rate_at     UNIX seconds the price is from (its age anchor).
 --   source      `ctx`, or `bitPayDashCentral` for the fallback.
 --   stamped_at  UNIX seconds the row was written.
@@ -14,7 +15,15 @@ CREATE TABLE tx_fiat (
     wallet_id TEXT NOT NULL,
     txid TEXT NOT NULL CHECK (length(txid) = 64 AND txid NOT GLOB '*[^0-9a-f]*'),
     currency TEXT NOT NULL CHECK (length(currency) = 3 AND currency NOT GLOB '*[^A-Z]*'),
-    price TEXT NOT NULL CHECK (length(price) BETWEEN 1 AND 28 AND price NOT GLOB '*[^0-9.]*'),
+    price TEXT NOT NULL CHECK (
+        price NOT GLOB '*[^0-9.]*' AND price GLOB '[0-9]*' AND price GLOB '*[1-9]*'
+        AND (
+            (instr(price, '.') = 0 AND length(price) <= 15)
+            OR (instr(price, '.') BETWEEN 2 AND 16
+                AND length(price) - instr(price, '.') BETWEEN 1 AND 12
+                AND substr(price, instr(price, '.') + 1) NOT GLOB '*.*')
+        )
+    ),
     rate_at INTEGER NOT NULL,
     source TEXT NOT NULL CHECK (source IN ('ctx', 'bitPayDashCentral')),
     stamped_at INTEGER NOT NULL,

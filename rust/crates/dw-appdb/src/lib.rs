@@ -1964,7 +1964,49 @@ mod tests {
         db.stamp_tx_fiat(W, &[stamp("52.1", "EUR")], 500).unwrap();
         assert_eq!(db.tx_fiat(W).unwrap(), vec![stamp("49.0967", "USD")]);
         assert!(db.tx_fiat(W2).unwrap().is_empty());
-        // The schema refuses what is not a stamp.
+        // The schema refuses what is not a stamp: a price that is not the
+        // engine's decimal (1 to 15 digits, a dot and 1 to 12 more, above
+        // zero) among them.
+        for price in [
+            ".",
+            "1.2.3",
+            "1.",
+            ".5",
+            "0",
+            "0.000",
+            "1234567890123456",
+            "1.1234567890123",
+            "1e3",
+            "",
+        ] {
+            assert!(
+                db.stamp_tx_fiat(
+                    W,
+                    &[TxFiat {
+                        txid: "c".repeat(64),
+                        ..stamp(price, "USD")
+                    }],
+                    1
+                )
+                .is_err(),
+                "{price:?}"
+            );
+        }
+        for (i, price) in ["123456789012345", "0.000000000001", "1.123456789012"]
+            .into_iter()
+            .enumerate()
+        {
+            let txid = format!("{i:0>64}");
+            db.stamp_tx_fiat(
+                W,
+                &[TxFiat {
+                    txid,
+                    ..stamp(price, "USD")
+                }],
+                1,
+            )
+            .unwrap();
+        }
         assert!(
             db.stamp_tx_fiat(
                 W,

@@ -1347,6 +1347,15 @@ button {
   line-height: var(--dw-type-caption1-line);
 }
 
+/* A stored request's value now, under its amount (MP-01). */
+.request-fiat {
+  display: block;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  font-weight: var(--dw-type-caption1-weight);
+  line-height: var(--dw-type-caption1-line);
+}
+
 .tx-table td.is-stale {
   color: var(--dw-role-caution);
 }

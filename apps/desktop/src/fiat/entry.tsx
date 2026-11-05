@@ -34,7 +34,7 @@ export interface FiatEntry {
   /** The unit the label names. */
   unitName: string;
   placeholder: string;
-  /** The typed fiat is not an amount. */
+  /** The typed fiat is not an amount, or too large to convert. */
   error: string | null;
   /** The field went back to DASH by itself. */
   note: string | null;
@@ -115,8 +115,11 @@ export function useFiatEntry(shown: Display, amount: AmountText): FiatEntry {
   };
 
   const code = view?.rate?.currency ?? view?.settings.currency ?? null;
-  const invalid = active && fiatText.trim() !== "" && code !== null && parseFiat(fiatText, code) === null;
-  const converted = active && fresh && !invalid && typed.current ? convert(fiatText, fresh) : null;
+  const typedAmount = active && fiatText.trim() !== "" && code !== null;
+  const invalid = typedAmount && parseFiat(fiatText, code) === null;
+  // An amount whose duffs are past what a number holds exactly: never left as an empty DASH text.
+  const tooLarge = typedAmount && !invalid && !!fresh && convert(fiatText, fresh) === null;
+  const converted = active && fresh && !invalid && !tooLarge && typed.current ? convert(fiatText, fresh) : null;
   return {
     active,
     currency: code,
@@ -124,7 +127,7 @@ export function useFiatEntry(shown: Display, amount: AmountText): FiatEntry {
     onChange,
     unitName: active && code ? code : shown.name,
     placeholder: active && code ? (minorUnits(code) === 0 ? "0" : "0.00") : shown.placeholder,
-    error: invalid && code ? ENTRY_TEXT.invalid(code) : null,
+    error: invalid && code ? ENTRY_TEXT.invalid(code) : tooLarge ? ENTRY_TEXT.tooLarge : null,
     note,
     toggle: {
       shown: offered && code !== null,

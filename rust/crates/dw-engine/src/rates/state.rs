@@ -137,7 +137,12 @@ impl Stored {
             let cached = self.rates.get(&row.currency);
             let check = check_row(cached, &row.price, row.retrieved_at, now);
             if let Err(why) = check {
-                self.refused.insert(row.currency.clone());
+                // A row older than the cached one is not a failure: the
+                // price kept is the newer (a fallback's rows are stamped
+                // with the fetch time, so CTX's next row can be older).
+                if why != Refusal::OlderThanCached {
+                    self.refused.insert(row.currency.clone());
+                }
                 refused.push((row.currency, why));
                 continue;
             }

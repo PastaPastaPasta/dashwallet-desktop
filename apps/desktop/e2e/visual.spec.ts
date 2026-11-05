@@ -225,6 +225,22 @@ for (const theme of THEMES) {
       await shoot(page, view, theme);
     });
   }
+  // Receive's stored requests with their value now.
+  test(`visual receive-requests-fiat ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("fiat", theme));
+    await page.getByTestId("hero").waitFor();
+    await page.getByTestId("sidebar-receive").click();
+    await page.getByTestId("request-label").fill("Dinner");
+    await page.getByTestId("request-amount").fill("1.5");
+    await page.getByTestId("request-create").and(page.locator(":enabled")).waitFor();
+    await page.getByTestId("request-create").click();
+    await page.getByTestId("request-sheet").waitFor();
+    await page.keyboard.press("Escape");
+    await page.getByTestId("request-sheet").waitFor({ state: "detached" });
+    await page.locator("[data-testid^=request-fiat-]").first().waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "receive-requests-fiat", theme);
+  });
   test(`visual tx-detail-fiat ${theme}`, async ({ page }) => {
     await page.goto(fixtureUrl("fiat", theme));
     await page.getByTestId("hero").waitFor();

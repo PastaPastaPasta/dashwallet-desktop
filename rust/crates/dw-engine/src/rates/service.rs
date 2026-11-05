@@ -170,6 +170,23 @@ impl RatesHub {
         }
     }
 
+    /// Counts the times prices were turned off: read before a rate is
+    /// taken for stamping, and given back to [`Self::stamps_still_allowed`].
+    pub(crate) fn off_epoch(&self) -> u64 {
+        self.lock().off_epoch
+    }
+
+    /// Stamps read under `epoch` may still be written: prices are on and
+    /// allowed, and were not turned off since (rates-engine §6).
+    pub(crate) fn stamps_still_allowed(&self, epoch: u64) -> bool {
+        let inner = self.lock();
+        inner.off_epoch == epoch
+            && !matches!(
+                inner.stored.view(self.now(), inner.mainnet > 0).state,
+                RateState::Off(_)
+            )
+    }
+
     pub(crate) fn currencies(&self) -> Vec<CurrencyRate> {
         let inner = self.lock();
         let view = inner.stored.view(self.now(), inner.mainnet > 0);
@@ -184,6 +201,10 @@ impl RatesHub {
     /// and attempt, here and in `rates.json` (rates-engine §1); on again,
     /// the state is `unavailable(neverFetched)` until a new fetch. The
     /// transactions' price stamps (§6) are history and stay.
+    ///
+    /// Off takes effect even when `rates.json` cannot be written: the file
+    /// is then removed, so a restart cannot bring the old prices back (it
+    /// reads as never disclosed), and the storage error is returned.
     pub(crate) fn set_settings(&self, settings: RatesSettings) -> Result<RatesView, RatesError> {
         if let Some(c) = settings.currency.as_deref()
             && !is_code(c)
@@ -191,31 +212,36 @@ impl RatesHub {
             return Err(RatesError::InvalidCurrency(c.to_owned()));
         }
         let off = !settings.enabled;
-        {
+        let saved = {
             let mut inner = self.lock();
-            let next = if off {
-                Stored {
+            if off {
+                inner.stored = Stored {
                     settings,
                     ..Stored::default()
-                }
-            } else {
-                Stored {
-                    settings,
-                    ..inner.stored.clone()
-                }
-            };
-            self.write(&next)?;
-            inner.stored = next;
-            if off {
+                };
                 inner.off_epoch += 1;
                 inner.failures = 0;
                 inner.next_due = None;
+                let saved = self.write(&inner.stored);
+                if saved.is_err() {
+                    let _ = std::fs::remove_file(&self.path);
+                }
+                saved
+            } else {
+                let next = Stored {
+                    settings,
+                    ..inner.stored.clone()
+                };
+                self.write(&next)?;
+                inner.stored = next;
+                Ok(())
             }
-        }
+        };
         if off {
             self.off.notify_waiters();
         }
         self.changed();
+        saved?;
         Ok(self.view())
     }
 
@@ -308,8 +334,9 @@ impl RatesHub {
             }
             inner.stored = next;
             inner.failures = if ok { 0 } else { inner.failures + 1 };
+            // Every wait is jittered, so no fetch falls on a fixed mark.
             let wait = if ok {
-                jittered(self.cfg.cadence, self.cfg.jitter)
+                self.cfg.cadence
             } else {
                 let i = (inner.failures - 1).min(self.cfg.backoff.len().saturating_sub(1));
                 self.cfg
@@ -319,6 +346,7 @@ impl RatesHub {
                     .unwrap_or(self.cfg.cadence)
                     .min(self.cfg.cadence)
             };
+            let wait = jittered(wait, self.cfg.jitter);
             inner.next_due = Some(now + wait.as_secs().max(1));
         }
         self.changed();
@@ -357,8 +385,7 @@ impl RatesHub {
         }
         let mut inner = self.lock();
         // After a restart the last attempt's time sets the next one.
-        let first =
-            (inner.stored.last_attempt_at).map_or(now, |at| at + self.cfg.cadence.as_secs());
+        let first = self.first_due(&inner.stored, now);
         let due = *inner.next_due.get_or_insert(first);
         if due <= now {
             return (Duration::ZERO, true);
@@ -386,6 +413,16 @@ async fn run(hub: std::sync::Weak<RatesHub>) {
             // The tick: a price may have turned stale or expired.
             h.announce();
         }
+    }
+}
+
+impl RatesHub {
+    /// When the first attempt of this run is due: now, or after a restart
+    /// a jittered cadence after the last attempt.
+    fn first_due(&self, stored: &Stored, now: u64) -> u64 {
+        stored.last_attempt_at.map_or(now, |at| {
+            at + jittered(self.cfg.cadence, self.cfg.jitter).as_secs()
+        })
     }
 }
 
@@ -429,5 +466,12 @@ impl RatesHub {
     pub(super) fn due_in_for_tests(&self) -> u64 {
         let now = self.now();
         self.lock().next_due.map_or(0, |d| d.saturating_sub(now))
+    }
+
+    /// Seconds from now to the first attempt of a run started now.
+    pub(super) fn first_due_in_for_tests(&self) -> u64 {
+        let now = self.now();
+        let stored = self.lock().stored.clone();
+        self.first_due(&stored, now).saturating_sub(now)
     }
 }

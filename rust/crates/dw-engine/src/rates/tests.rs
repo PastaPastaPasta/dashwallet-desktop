@@ -423,15 +423,15 @@ fn refuses_prices_from_the_future_older_than_cached_or_absurd() {
     );
     rig.on();
     block_on(rig.hub.attempt());
-    for refused in 0..4 {
+    // A price from the future or absurd is a failed attempt for its
+    // currency; one older than the cached price is not, the cached being
+    // the newer.
+    for (refused, failed) in [(0, true), (1, false), (2, true), (3, true)] {
         rig.advance(15);
         block_on(rig.hub.attempt());
         let v = rig.rates().status();
         assert_eq!(v.rate.unwrap().price, "50", "attempt {refused}");
-        assert!(
-            v.last_attempt_failed,
-            "a refused price is a failed attempt for its currency"
-        );
+        assert_eq!(v.last_attempt_failed, failed, "attempt {refused}");
         assert_eq!(v.state, RateState::Fresh);
     }
     rig.advance(1);
@@ -536,7 +536,45 @@ fn refresh_is_refused_within_thirty_seconds_and_failures_back_off() {
         block_on(rig.hub.attempt());
         waits.push(rig.hub.due_in_for_tests());
     }
-    assert_eq!(waits, [60, 120, 240, 240, 240]);
+    // Each ± 20 %.
+    for (wait, base) in waits.iter().zip([60, 120, 240, 240, 240]) {
+        assert!((base * 4 / 5..=base * 6 / 5).contains(wait), "{waits:?}");
+    }
+}
+
+/// Samples `f` 24 times, a little apart, since the jitter's entropy is the
+/// clock's sub-millisecond part.
+fn samples(mut f: impl FnMut() -> u64) -> std::collections::BTreeSet<u64> {
+    (0..24)
+        .map(|_| {
+            std::thread::sleep(Duration::from_micros(173));
+            f()
+        })
+        .collect()
+}
+
+/// Review nit 2: the backoffs and the first attempt after a restart are
+/// jittered too, so no fetch falls on a fixed mark.
+#[test]
+fn backoffs_and_the_first_wait_after_a_restart_are_jittered() {
+    let rig = Rig::new(vec![Err("down")], vec![Err("down")]);
+    rig.on();
+    for _ in 0..3 {
+        block_on(rig.hub.attempt());
+    }
+    let backoffs = samples(|| {
+        block_on(rig.hub.attempt());
+        rig.hub.due_in_for_tests()
+    });
+    assert!(
+        backoffs.iter().all(|w| (192..=288).contains(w)),
+        "{backoffs:?}"
+    );
+    assert!(backoffs.len() > 1, "never one fixed wait: {backoffs:?}");
+    // After a restart: the cadence after the last attempt, ± 20 %.
+    let firsts = samples(|| rig.hub.first_due_in_for_tests());
+    assert!(firsts.iter().all(|w| (240..=360).contains(w)), "{firsts:?}");
+    assert!(firsts.len() > 1, "never one fixed wait: {firsts:?}");
 }
 
 #[test]
@@ -898,6 +936,86 @@ fn the_fallback_is_asked_only_after_ctx_fails() {
     assert_eq!(rig.rates().status().rate.unwrap().source, RateSourceId::Ctx);
 }
 
+/// Review m1: Off takes effect in memory even when rates.json cannot be
+/// written. The fetch in flight stops, the cache is cleared and nothing
+/// more is stamped; the storage error comes back after, and the file is
+/// removed, so a restart reads prices as never disclosed.
+#[test]
+fn off_takes_effect_when_rates_json_cannot_be_written() {
+    let gate = Gated::new();
+    let rig = gated_rig(&gate);
+    let stamps = stamper(&rig);
+    rig.on();
+    block_on(async {
+        let hub = Arc::clone(&rig.hub);
+        let task = tokio::spawn(async move { hub.attempt().await });
+        gate.started.notified().await;
+        gate.release.notify_waiters();
+        task.await.unwrap();
+    });
+    assert_eq!(rig.rates().status().state, RateState::Fresh);
+    let check = stamps.stamp_check();
+    assert!(stamps.stamp_rate().is_some());
+    // The temporary file's place taken: no write can succeed.
+    std::fs::create_dir(rig.root.join("rates.json.tmp")).unwrap();
+    let res = block_on(async {
+        let hub = Arc::clone(&rig.hub);
+        let task = tokio::spawn(async move { hub.attempt().await });
+        gate.started.notified().await;
+        let res = rig.rates().set_settings(settings(false, Some("USD"), true));
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("the attempt stops without its answer")
+            .unwrap();
+        res
+    });
+    assert_eq!(res.map_err(|e| e.code()), Err("rates.storage"));
+    assert!(
+        gate.aborted.load(Ordering::SeqCst),
+        "the request was dropped"
+    );
+    let v = rig.rates().status();
+    assert_eq!(v.state, RateState::Off(RatesOff::Disabled));
+    assert_eq!((v.rate, v.last_attempt_at), (None, None));
+    assert!(rig.rates().currencies().is_empty());
+    assert!(stamps.stamp_rate().is_none(), "no stamps after Off");
+    assert!(!check(), "stamps read before Off are not written");
+    assert!(!rig.root.join(RATES_FILE).exists());
+    let again = RatesHub::new(
+        &rig.root,
+        RatesConfig::production(),
+        Arc::new(Events::default()),
+    );
+    again.mainnet_opened();
+    let v = again.view();
+    assert_eq!(v.state, RateState::Off(RatesOff::NotDisclosed));
+    assert_eq!(v.rate, None);
+}
+
+/// Review nit 5: after the fallback answered, a CTX row with an earlier
+/// provider time is refused, the fallback's being newer, but the attempt
+/// did not fail.
+#[test]
+fn a_ctx_row_older_than_the_fallbacks_is_no_failure() {
+    let rig = Rig::new(
+        vec![Err("down"), usd("49.5", T0 + 30)],
+        vec![usd("49", T0 + 60)],
+    );
+    rig.on();
+    block_on(rig.hub.attempt());
+    assert_eq!(
+        rig.rates().status().rate.unwrap().source,
+        RateSourceId::BitPayDashCentral
+    );
+    rig.advance(90);
+    block_on(rig.hub.attempt());
+    let v = rig.rates().status();
+    assert_eq!(rig.primary.calls(), 2);
+    assert_eq!(v.rate.unwrap().price, "49", "the newer price is kept");
+    assert!(!v.last_attempt_failed, "CTX answered: no failure");
+    assert_eq!(v.state, RateState::Fresh);
+}
+
 /// rates-engine §6: a Mainnet session stamps a transaction with the fresh
 /// price only, and only one whose time (first sight or block) is at most 3 h ago.
 mod stamps {
@@ -1028,6 +1146,29 @@ mod stamps {
             .set_settings(settings(false, Some("USD"), true))
             .unwrap();
         assert!(hub.stamp_rate().is_none());
+    }
+
+    /// Review nit 1: the stamp write re-checks, so an Off between reading
+    /// the rate and writing the stamps writes none.
+    #[test]
+    fn an_off_between_reading_the_rate_and_writing_stamps_writes_none() {
+        let rig = Rig::new(vec![usd("49.0967", T0)], vec![Err("unused")]);
+        rig.on();
+        block_on(rig.hub.attempt());
+        let hub = stamper(&rig);
+        let check = hub.stamp_check();
+        assert!(hub.stamp_rate().is_some());
+        assert!(check(), "nothing changed: the stamps are written");
+        rig.rates()
+            .set_settings(settings(false, Some("USD"), true))
+            .unwrap();
+        assert!(!check(), "turned off since the rate was read");
+        rig.on();
+        block_on(rig.hub.attempt());
+        assert!(!check(), "on again since: the rate read then is not used");
+        assert!(hub.stamp_check()(), "a rate read now is");
+        let detached = SessionHub::new(DashNetwork::Mainnet, Arc::new(NoSink));
+        assert!(!detached.stamp_check()(), "no prices attached");
     }
 
     #[test]

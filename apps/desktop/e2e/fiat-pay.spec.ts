@@ -40,6 +40,15 @@ async function ageThePrice(page: Page) {
   });
 }
 
+/** A new fresh USD price, announced as the engine's `rates` event. */
+async function newPrice(page: Page, price: string) {
+  await page.evaluate((price) => {
+    const f = window.__dwFixture!;
+    f.world.rates.cached = f.world.rates.cached.map((r) => (r.code === "USD" ? { ...r, price } : r));
+    f.emit({ kind: "rates" });
+  }, price);
+}
+
 /** Prices turned on or off through the engine's command, as Settings does, while a form is open. */
 async function setPrices(page: Page, enabled: boolean) {
   await page.evaluate(
@@ -100,6 +109,31 @@ test("a stale price disables the toggle and says why", async ({ page }) => {
   await expect(page.getByTestId("pay-amount-other")).toHaveClass(/is-stale/);
 });
 
+test("a new fresh price converts the typed fiat again; an open Confirm keeps its amount", async ({ page }) => {
+  const errors = await open(page, "fiat");
+  await payToAddress(page);
+  await page.getByTestId("pay-amount-toggle").click();
+  await page.getByTestId("pay-amount").fill("10.00");
+  await expect(page.getByTestId("pay-amount-other")).toHaveText(dash(duffsOf(1000n)));
+  const at = (price: string) => Number(minorToDuffs(1000n, price, "USD"));
+  await newPrice(page, "51.2345");
+  await expect(page.getByTestId("pay-amount-other")).toHaveText(dash(at("51.2345")));
+  await page.getByTestId("pay-continue").and(page.locator(":enabled")).waitFor();
+  await page.getByTestId("pay-continue").click();
+  const amount = full(at("51.2345"), false, "DASH");
+  await expect(page.getByTestId("pay-confirm-amount")).toContainText(amount);
+  await expect(page.getByTestId("pay-confirm-amount-fiat")).toHaveText(fiatText(at("51.2345"), "51.2345", "USD", "en-US")!);
+  // Another price while Confirm is open: the form behind converts again, and only the values beside
+  // Confirm's amounts move. The form's new amount is given time to be parsed and estimated.
+  await newPrice(page, "60.0000");
+  await expect(page.getByTestId("pay-amount-other")).toHaveText(dash(at("60.0000")));
+  await expect(page.getByTestId("pay-confirm-amount-fiat")).toHaveText(fiatText(at("51.2345"), "60.0000", "USD", "en-US")!);
+  await page.waitForTimeout(1500);
+  await expect(page.getByTestId("pay-confirm-amount")).toContainText(amount);
+  await expect(page.getByTestId("pay-confirm-amount")).not.toContainText(full(at("60.0000"), false, "DASH"));
+  expect(errors).toEqual([]);
+});
+
 test("losing the fresh price turns the field back to DASH with the same duffs", async ({ page }) => {
   await open(page, "fiat");
   await payToAddress(page);
@@ -157,6 +191,48 @@ test("paying a contact takes the amount in fiat too", async ({ page }) => {
   await expect(page.getByTestId("pay-amount")).toHaveValue(full(duffsOf(500n), false, "DASH"));
 });
 
+// C5b: fiat whose duffs are past what a number holds exactly (over 90 million DASH) is refused with
+// a reason, never left as an empty DASH amount; yen has no minor unit.
+const TOO_LARGE = [
+  ["fiat", "5000000000"],
+  ["fiat", "999999999999999.99"],
+  ["fiat-jpy", "1000000000000"],
+] as const;
+for (const [scenario, text] of TOO_LARGE) {
+  test(`C5b ${scenario} ${text}: Pay refuses it, with the reason`, async ({ page }) => {
+    await open(page, scenario);
+    await payToAddress(page);
+    await page.getByTestId("pay-amount-toggle").click();
+    await page.getByTestId("pay-amount").fill(text);
+    await expect(page.getByText(ENTRY_TEXT.tooLarge)).toBeVisible();
+    await expect(page.getByTestId("pay-amount-other")).toHaveCount(0);
+    await expect(page.getByTestId("pay-continue")).toBeDisabled();
+  });
+
+  test(`C5b ${scenario} ${text}: Receive refuses it and makes no request`, async ({ page }) => {
+    await open(page, scenario);
+    await page.getByTestId("sidebar-receive").click();
+    const before = await world(page, (w) => w.wallets[0].receive.requests.length);
+    await page.getByTestId("request-amount-toggle").click();
+    await page.getByTestId("request-amount").fill(text);
+    await expect(page.getByText(ENTRY_TEXT.tooLarge)).toBeVisible();
+    await expect(page.getByTestId("request-create")).toBeDisabled();
+    await page.getByTestId("request-amount").press("Enter");
+    await page.waitForTimeout(500);
+    expect(await world(page, (w) => w.wallets[0].receive.requests.length)).toBe(before);
+  });
+}
+
+test("C5b: paying a contact refuses a fiat amount too large to convert", async ({ page }) => {
+  await open(page, "fiat-contacts");
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+  await page.getByTestId("pay-frequent-chip").first().click();
+  await page.getByTestId("pay-amount-toggle").click();
+  await page.getByTestId("pay-amount").fill("5000000000");
+  await expect(page.getByText(ENTRY_TEXT.tooLarge)).toBeVisible();
+  await expect(page.getByTestId("pay-amount-other")).toHaveCount(0);
+});
+
 // Off clears the cached price (rates-engine §1): the toggle and the value line go, a field in fiat is
 // DASH again with the same duffs, and on again nothing converts until a new fetch.
 for (const form of [
@@ -197,6 +273,25 @@ test.describe("Receive", () => {
     await page.getByTestId("request-create").and(page.locator(":enabled")).waitFor();
     await page.getByTestId("request-create").click();
     await expect.poll(() => world(page, (w) => w.wallets[0].receive.requests[0]?.amount)).toBe(duffs);
+  });
+
+  test("each stored request shows its value now; discreet hides it, and prices off remove it", async ({ page }) => {
+    const errors = await open(page, "fiat");
+    await page.getByTestId("sidebar-receive").click();
+    await page.getByTestId("request-amount").fill("1.5");
+    await page.getByTestId("request-create").and(page.locator(":enabled")).waitFor();
+    await page.getByTestId("request-create").click();
+    await page.keyboard.press("Escape");
+    const id = await world(page, (w) => w.wallets[0].receive.requests[0].id);
+    const line = page.getByTestId(`request-fiat-${id}`);
+    await expect(line).toHaveText(fiatText(150_000_000, PRICE, "USD", "en-US")!);
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "toggleDiscreet" }));
+    await expect(line).toHaveCount(0);
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "toggleDiscreet" }));
+    await expect(line).toBeVisible();
+    await setPrices(page, false);
+    await expect(line).toHaveCount(0);
+    expect(errors).toEqual([]);
   });
 
   test("fiat that is not an amount never makes an any-amount request", async ({ page }) => {

@@ -19,6 +19,7 @@ import { Sheet } from "../components/sheet";
 import { CopyDashButton } from "../components/copy";
 import { useUi } from "../app/ui";
 import { FiatSecondary, FiatToggle, useFiatEntry } from "../fiat/entry";
+import { FiatLine, useFiat } from "../fiat/rates";
 import { useDisplay } from "../format/display";
 import { useHeldAddress } from "../payments/hold";
 import { useLookupPending, useReceived } from "../payments/received";
@@ -162,8 +163,10 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
   const amountError =
     fiat.error ??
     (checked === "" ? null : parsed.data === null ? shown.invalidAmount : parsed.data === 0 ? "The amount must be larger than 0, or empty." : null);
-  // Fiat that is not an amount leaves the DASH text empty: never an "any amount" request.
-  const ready = !busy && !fiat.error && checked === amt && (amt === "" || (typeof parsed.data === "number" && parsed.data > 0));
+  // Fiat that is not an amount, or too large, leaves the DASH text empty: never an "any amount"
+  // request from a fiat field holding text.
+  const fiatLeftEmpty = fiat.active && fiat.value.trim() !== "" && amt === "";
+  const ready = !busy && !fiat.error && !fiatLeftEmpty && checked === amt && (amt === "" || (typeof parsed.data === "number" && parsed.data > 0));
 
   const clear = () => {
     setLabel("");
@@ -289,6 +292,8 @@ function RequestList({ walletId, network, onShow }: { walletId: string; network:
   const client = useQueryClient();
   const requests = useReceiveRequests(walletId);
   const shown = useDisplay(network);
+  const fiat = useFiat();
+  const discreet = useUi((s) => s.discreet);
   const [problem, setProblem] = useState<string | null>(null);
   const remove = async (r: ReceiveRequest) => {
     setProblem(null);
@@ -333,7 +338,16 @@ function RequestList({ walletId, network, onShow }: { walletId: string; network:
                   <td>{new Date(r.createdAt * 1000).toLocaleDateString(b.locale, { year: "numeric", month: "short", day: "numeric" })}</td>
                   <td>{r.label || <span className="text-secondary">(no label)</span>}</td>
                   <td>{r.message || <span className="text-secondary">(no message)</span>}</td>
-                  <td className="num">{r.amount === null ? <span className="text-secondary">(no amount requested)</span> : shown.full(r.amount)}</td>
+                  <td className="num">
+                    {r.amount === null ? (
+                      <span className="text-secondary">(no amount requested)</span>
+                    ) : (
+                      <>
+                        {shown.full(r.amount)}
+                        <FiatLine fiat={fiat} duffs={r.amount} hidden={discreet} className="request-fiat" testId={`request-fiat-${r.id}`} />
+                      </>
+                    )}
+                  </td>
                   <td className="row-actions">
                     <DashButton variant="plainBlue" size="small" data-testid={`request-show-${r.id}`} onClick={() => onShow(r)}>
                       Show
