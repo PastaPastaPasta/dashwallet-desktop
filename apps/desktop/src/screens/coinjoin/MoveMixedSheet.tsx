@@ -53,9 +53,11 @@ export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network
                 <Row label={MOVE_COPY.confirm.fee} value={amount(planFee(plan))} testId="move-mixed-fee" />
                 <Row label={MOVE_COPY.confirm.receive} value={amount(planReceives(plan))} testId="move-mixed-receive" total />
               </dl>
-              <p className="sheet-text" data-testid="move-mixed-combined">
-                {MOVE_COPY.confirm.combined}
-              </p>
+              {plan.fullyMixed > 0 && (
+                <p className="sheet-text" data-testid="move-mixed-combined">
+                  {MOVE_COPY.confirm.combined}
+                </p>
+              )}
               <p className="sheet-text" data-testid="move-mixed-transactions">
                 {MOVE_COPY.confirm.transactions(plan.chunks.length)}
               </p>

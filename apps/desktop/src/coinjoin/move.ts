@@ -57,7 +57,7 @@ export const MOVE_COPY = {
   },
   unknown: "One transaction may have reached the network. Its coins stay reserved until the wallet sees them spent; the rest stayed in your CoinJoin balance.",
   nothing: "There are no mixed coins to move.",
-  changed: "Your CoinJoin balance changed. Review the move again.",
+  changed: "The approval no longer covers this move. Review it again.",
   close: "Close",
   again: "Try again",
 } as const;
@@ -76,14 +76,12 @@ export function moveErrorText(e: unknown): string {
   if (hasCode(e, "coinjoin.mixing_active")) return MOVE_COPY.mixing.text;
   if (hasCode(e, "coinjoin.vault_locked")) return CoinJoinText.vaultLocked;
   if (hasCode(e, "coinjoin.watch_only")) return CoinJoinText.watchOnly;
-  if (hasCode(e, "coinjoin.no_peers")) return "No peers to send to. Try again once the wallet is connected.";
   if (hasCode(e, "coinjoin.grant_invalid")) return MOVE_COPY.changed;
-  if (hasCode(e, "coinjoin.broadcast_rejected")) return "The network refused the transaction. Your coins stayed in your CoinJoin balance.";
   return failureText(e);
 }
 
-/** A refusal the user answers with a fresh plan. */
-export const canRetry = (e: unknown) => hasCode(e, "coinjoin.grant_invalid") || hasCode(e, "coinjoin.no_peers") || hasCode(e, "coinjoin.broadcast_rejected");
+/** A thrown refusal the user answers with a fresh plan (a broadcast failure is the result's partial outcome). */
+export const canRetry = (e: unknown) => hasCode(e, "coinjoin.grant_invalid") || hasCode(e, "coinjoin.vault_locked") || hasCode(e, "rescan_in_progress");
 
 /** How long Stop Mixing waits for the engine to stop: the last session winds down. */
 const STOP_RETRIES = 20;
@@ -106,6 +104,8 @@ export class MoveMixedFlow extends Model {
   running = false;
   readonly grants: GrantModel;
   #epoch = 0;
+  /** A move or Stop Mixing refusal that came while the sheet was closed. */
+  #unseen = false;
 
   constructor(
     private readonly api: MoveMixedApi,
@@ -120,7 +120,9 @@ export class MoveMixedFlow extends Model {
   /** Opens the sheet: where a running move or its unseen outcome is, else at a fresh plan. */
   begin() {
     this.open = true;
-    if (this.running || this.step === "done" || this.step === "refused") {
+    const unseen = this.#unseen;
+    this.#unseen = false;
+    if (this.running || this.step === "done" || (this.step === "refused" && unseen)) {
       this.changed();
       return;
     }
@@ -169,8 +171,8 @@ export class MoveMixedFlow extends Model {
     try {
       await this.api.stopMixing(this.walletId);
     } catch (e) {
-      this.error = e;
-      this.step = "refused";
+      this.#fail(e);
+      this.#unseen = !this.open;
       return;
     } finally {
       this.running = false;
@@ -198,6 +200,7 @@ export class MoveMixedFlow extends Model {
       } else this.step = "confirm";
     } catch (e) {
       this.#fail(e);
+      this.#unseen = !this.open;
     } finally {
       this.running = false;
       this.changed();

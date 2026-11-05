@@ -150,9 +150,32 @@ describe("Move mixed coins, the flow's edges", () => {
   });
 
   it("a stale approval offers Try again, which plans afresh", async () => {
-    expect(moveErrorText(appError("coinjoin.grant_invalid"))).toBe(MOVE_COPY.changed);
-    expect(canRetry(appError("coinjoin.grant_invalid"))).toBe(true);
+    const plan = vi.fn().mockResolvedValue(PLAN);
+    const f = stub({ mixedCoinsSweepPlan: plan, moveMixedCoins: vi.fn().mockRejectedValue(appError("coinjoin.grant_invalid")) });
+    f.grants.withGrant = (async (_p: unknown, _w: unknown, run: (g: { id: string }) => Promise<unknown>) => ({ value: await run({ id: "g" }) })) as typeof f.grants.withGrant;
+    f.begin();
+    await vi.waitFor(() => expect(f.step).toBe("confirm"));
+    await f.move();
+    expect([f.step, moveErrorText(f.error), canRetry(f.error)]).toEqual(["refused", MOVE_COPY.changed, true]);
     expect(canRetry(appError("coinjoin.nothing_to_move"))).toBe(false);
+    f.again();
+    await vi.waitFor(() => expect(f.step).toBe("confirm"));
+    expect(plan).toHaveBeenCalledTimes(2);
+  });
+
+  it("a plan refusal that came while the sheet was closed is not kept: reopening plans again", async () => {
+    const plan = vi.fn().mockRejectedValueOnce(appError("coinjoin.mixing_active")).mockRejectedValueOnce(appError("coinjoin.nothing_to_move")).mockResolvedValue(PLAN);
+    let stopped!: () => void;
+    const f = stub({ mixedCoinsSweepPlan: plan, stopMixing: vi.fn(() => new Promise<void>((ok) => (stopped = ok))) });
+    f.begin();
+    await vi.waitFor(() => expect(f.step).toBe("mixing"));
+    const stopping = f.stopMixing();
+    f.close();
+    stopped();
+    await stopping;
+    expect(f.step).toBe("refused");
+    f.begin();
+    await vi.waitFor(() => expect(f.step).toBe("confirm"));
   });
 
   it("a refusal that came while the sheet was closed waits for it", async () => {
@@ -165,7 +188,7 @@ describe("Move mixed coins, the flow's edges", () => {
     const going = f.move();
     await vi.waitFor(() => expect(f.step).toBe("running"));
     f.close();
-    refuse(appError("coinjoin.no_peers"));
+    refuse(appError("coinjoin.vault_locked"));
     await going;
     f.begin();
     expect([f.open, f.step, plan.mock.calls.length]).toEqual([true, "refused", 1]);
