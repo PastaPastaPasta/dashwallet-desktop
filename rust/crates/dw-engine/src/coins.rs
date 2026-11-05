@@ -762,7 +762,8 @@ impl NetworkSession {
                 (c.utxo.value(), txid, vout)
             })
             .collect();
-        let locked: HashMap<(String, u32), LockReason> = self
+        let sweep_scope = dw_appdb::local_scope(&id);
+        let (locked, sweep_outs) = self
             .appdb_op(move |db| {
                 if let Some(threshold) =
                     parse_threshold(db.setting(GLOBAL_SCOPE, DUST_PROTECTION_KEY)?)?
@@ -774,17 +775,24 @@ impl NetworkSession {
                         }
                     }
                 }
-                Ok(db
+                let locked: HashMap<(String, u32), LockReason> = db
                     .locks(&id)?
                     .into_iter()
                     .filter(|row| row.is_locked())
                     .map(|row| ((row.txid, row.vout), row.reason))
-                    .collect())
+                    .collect();
+                let sweep_outs =
+                    db.settings_with_prefix(&sweep_scope, crate::coinjoin::SWEEP_OUT_PREFIX)?;
+                Ok((locked, sweep_outs))
             })
             .await?;
         let unspent: HashSet<OutPoint> = snapshot.coins.iter().map(|c| c.utxo.outpoint).collect();
         self.spends.retain_unspent(&wallet_id, &unspent);
         let reserved = self.spends.snapshot(&wallet_id);
+        // A sweep chunk that may be on the network holds its inputs from
+        // every spender, across restarts (`coinjoin.rs` `SweepOut`); only a
+        // sweep drops a record.
+        let (swept, _) = crate::coinjoin::split_sweep_outs(sweep_outs, &unspent, snapshot.height);
         let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
         // A replay re-credits a coin whose spender is still unconfirmed at
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
@@ -798,7 +806,8 @@ impl NetworkSession {
             coin.unresolved_lock = !lock_reserved && unresolved.contains(&o);
             // A lock's own input stays held as the lock's.
             let lock_held = lock_reserved || coin.unresolved_lock;
-            let spend_reserved = reserved.contains(&o) || (spent.contains(&o) && !lock_held);
+            let spend_reserved =
+                reserved.contains(&o) || swept.contains(&o) || (spent.contains(&o) && !lock_held);
             coin.lock_input = !spend_reserved && lock_held;
             coin.reserved = spend_reserved || lock_held;
         }

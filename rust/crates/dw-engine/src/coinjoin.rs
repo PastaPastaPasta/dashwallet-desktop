@@ -2252,21 +2252,25 @@ impl NetworkSession {
     }
 
     /// The CoinJoin account's coins a sweep to `target` takes, in its
-    /// chunks: free, spendable at the tip, on a CoinJoin path, above the
-    /// threshold, and an input of no sweep chunk that may be on the network
-    /// ([`SweepOut`]); trusted for a move to the wallet, final (confirmed or
-    /// InstantSend-locked) for a consolidation, whose outputs a drain of the
-    /// account then spends (iOS #1221: an unconfirmed input that never locks
-    /// would hold every coin swept with it).
+    /// chunks: free (an input of a sweep chunk that may be on the network,
+    /// [`SweepOut`], reads reserved), spendable at the tip, on a CoinJoin
+    /// path, above the threshold; trusted for a move to the wallet, final
+    /// (confirmed or InstantSend-locked) for a consolidation, whose outputs
+    /// a drain of the account then spends (iOS #1221: an unconfirmed input
+    /// that never locks would hold every coin swept with it). With `prune`
+    /// (a sweep, under the replay guard), the records that can no longer
+    /// hold anything are dropped first; a plan only reads.
     async fn sweep_coins(
         &self,
         wallet_id: WalletId,
         fence: &CoinFence,
         target: SweepTarget,
+        prune: bool,
     ) -> Result<SweepCoins, EngineError> {
         let view = self.mix_view(fence).await?;
-        let out = self.live_sweep_outs(wallet_id, &view).await?;
-        let held: HashSet<OutPoint> = out.iter().flat_map(|o| o.inputs.iter().copied()).collect();
+        if prune {
+            self.prune_sweep_outs(wallet_id, &view).await?;
+        }
         let network = self.network.core_network();
         let account: Vec<&MixViewCoin> = view
             .coins
@@ -2278,7 +2282,6 @@ impl NetworkSession {
             .iter()
             .filter(|c| {
                 c.free()
-                    && !held.contains(&c.coin.utxo.outpoint)
                     && match target {
                         SweepTarget::Bip44 => c.trusted(),
                         SweepTarget::CoinJoin => c.final_enough(),
@@ -2311,42 +2314,29 @@ impl NetworkSession {
         })
     }
 
-    /// `wallet_id`'s sweep chunks that may be on the network, read from
-    /// `app.sqlite`; a record whose chunk can no longer go through (one of
-    /// its inputs is no coin of the wallet's: the chunk or a conflict was
-    /// seen) or that expired ([`SWEEP_OUT_BLOCKS`]) is dropped.
-    async fn live_sweep_outs(
+    /// Drops `wallet_id`'s sweep records that can no longer hold anything
+    /// ([`split_sweep_outs`]).
+    async fn prune_sweep_outs(
         &self,
         wallet_id: WalletId,
         view: &MixView,
-    ) -> Result<Vec<SweepOut>, EngineError> {
+    ) -> Result<(), EngineError> {
         let scope = dw_appdb::local_scope(&wallet_id.to_string());
         let read_scope = scope.clone();
         let rows = self
             .appdb_op(move |db| db.settings_with_prefix(&read_scope, SWEEP_OUT_PREFIX))
             .await?;
         let unspent: HashSet<OutPoint> = view.coins.iter().map(|c| c.coin.utxo.outpoint).collect();
-        let (mut live, mut gone) = (Vec::new(), Vec::new());
-        for (key, value) in rows {
-            match SweepOut::decode(&key, &value) {
-                Some(o)
-                    if o.inputs.iter().all(|i| unspent.contains(i))
-                        && view.height < o.height.saturating_add(SWEEP_OUT_BLOCKS) =>
-                {
-                    live.push(o)
-                }
-                _ => gone.push(key),
-            }
+        let (_, gone) = split_sweep_outs(rows, &unspent, view.height);
+        if gone.is_empty() {
+            return Ok(());
         }
-        if !gone.is_empty() {
-            self.appdb_op(move |db| {
-                let writes: Vec<(&str, Option<&str>)> =
-                    gone.iter().map(|k| (k.as_str(), None)).collect();
-                db.set_settings_durable(&scope, &writes)
-            })
-            .await?;
-        }
-        Ok(live)
+        self.appdb_op(move |db| {
+            let writes: Vec<(&str, Option<&str>)> =
+                gone.iter().map(|k| (k.as_str(), None)).collect();
+            db.set_settings_durable(&scope, &writes)
+        })
+        .await
     }
 
     /// Records (`Some(height)`) or drops (`None`) the sweep chunks `txs`,
@@ -2405,7 +2395,7 @@ impl NetworkSession {
             this.refuse_while_mixing(wallet_id)?;
             let picked = {
                 let fence = this.coin_fence(wallet_id).await?;
-                this.sweep_coins(wallet_id, &fence, target).await?
+                this.sweep_coins(wallet_id, &fence, target, false).await?
             };
             if picked.chunks.is_empty() {
                 return Err(CoinJoinFailure::NothingToMove.into());
@@ -2521,8 +2511,10 @@ impl NetworkSession {
             // Held from the coin read through every chunk's signing and
             // reservation; released before the broadcasts (`coins.rs`).
             let fence = this.coin_fence(wallet_id).await?;
+            // Again under the fence: mixing may have started since.
+            this.refuse_while_mixing(wallet_id)?;
             let picked = (this
-                .replay_guarded(wallet_id, this.sweep_coins(wallet_id, &fence, target)))
+                .replay_guarded(wallet_id, this.sweep_coins(wallet_id, &fence, target, true)))
             .await?;
             if picked.chunks.is_empty() {
                 return Err(CoinJoinFailure::NothingToMove.into());
@@ -2748,7 +2740,7 @@ impl SweepCoins {
 
 /// The key prefix, in a wallet's local scope of `app.sqlite`, of its sweep
 /// chunks that may be on the network ([`SweepOut`]).
-const SWEEP_OUT_PREFIX: &str = "coinjoin.sweep_out.";
+pub(crate) const SWEEP_OUT_PREFIX: &str = "coinjoin.sweep_out.";
 
 /// Blocks after which a sweep chunk the wallet never saw no longer holds
 /// its inputs: about a day on mainnet, where a chunk paying the relay fee
@@ -2798,6 +2790,31 @@ impl SweepOut {
             inputs,
         })
     }
+}
+
+/// Splits a wallet's sweep records (`app.sqlite` rows) into the inputs they
+/// still hold and the keys of those that can no longer hold anything: one
+/// of its inputs is no coin of the wallet's (`unspent`: the chunk or a
+/// conflict was seen), the record expired at `height`
+/// ([`SWEEP_OUT_BLOCKS`]), or it does not decode.
+pub(crate) fn split_sweep_outs(
+    rows: Vec<(String, String)>,
+    unspent: &HashSet<OutPoint>,
+    height: u32,
+) -> (HashSet<OutPoint>, Vec<String>) {
+    let (mut held, mut gone) = (HashSet::new(), Vec::new());
+    for (key, value) in rows {
+        match SweepOut::decode(&key, &value) {
+            Some(o)
+                if o.inputs.iter().all(|i| unspent.contains(i))
+                    && height < o.height.saturating_add(SWEEP_OUT_BLOCKS) =>
+            {
+                held.extend(o.inputs)
+            }
+            _ => gone.push(key),
+        }
+    }
+    (held, gone)
 }
 
 /// Tests: a session's stand-ins for a sweep's broadcast and its chunk
@@ -2880,7 +2897,7 @@ fn settle_sweep_failure(
     n: usize,
     e: &platform_wallet::PlatformWalletError,
 ) -> SweepSettled {
-    let (unsent, code) = match e {
+    let (unsent, code, unknown) = match e {
         platform_wallet::PlatformWalletError::TransactionBroadcast(reason) => (
             n,
             if reason.to_lowercase().contains("no peers") {
@@ -2888,17 +2905,21 @@ fn settle_sweep_failure(
             } else {
                 "coinjoin.broadcast_rejected"
             },
+            None,
         ),
-        _ => (n + 1, "coinjoin.broadcast_unknown"),
+        _ => (
+            n + 1,
+            "coinjoin.broadcast_unknown",
+            signed.get(n).map(|(tx, _)| tx.txid()),
+        ),
     };
     let unsent = unsent.min(signed.len());
     for (tx, _) in &signed[unsent..] {
         spends.release(&wallet_id, SpendOwner::Tx(tx.txid()));
     }
-    let unknown = (unsent > n).then(|| signed.get(n).map(|(tx, _)| tx.txid()));
     SweepSettled {
         code: code.to_owned(),
-        unknown: unknown.flatten(),
+        unknown,
         unsent,
     }
 }

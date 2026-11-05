@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
+use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Transaction, Txid};
 use dw_vault::{Credential, GrantPurpose, is_bip44_path, is_coinjoin_path};
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
@@ -369,4 +370,138 @@ fn a_consolidation_is_refused_while_a_replay_runs() {
         consolidate(&f),
         Err(EngineError::RescanInProgress)
     ));
+}
+
+/// A chunk of unknown outcome holds its coins from every spender after a
+/// restart, not only from the next sweep: the coin list reads them
+/// reserved. A plan reads its record and keeps it; a sweep drops it once
+/// SPV saw the chunk.
+#[test]
+fn an_unknown_chunk_holds_its_coins_from_every_spender_after_a_restart() {
+    let f = fixture(false);
+    let coins: Vec<OutPoint> = (1..=4).map(|n| f.credit_coinjoin(n, COIN)).collect();
+    let wire = hook(&f, 2, &[Outcome::Unknown]);
+    let first = move_to_wallet(&f).unwrap();
+    assert_eq!(
+        first.failure_code.as_deref(),
+        Some("coinjoin.broadcast_unknown")
+    );
+    let sent = wire.txs();
+    assert_eq!(sent.len(), 1);
+    forget_claims(&f, &sent);
+
+    let all = crate::coins::CoinFilter {
+        include_locked: true,
+        ..Default::default()
+    };
+    let listed = (f.engine).block_on(f.session.utxos(f.wallet, all)).unwrap();
+    let held = inputs(&sent);
+    assert_eq!(held.len(), 2);
+    for o in &coins {
+        let coin = listed.iter().find(|c| c.outpoint == *o).unwrap();
+        assert_eq!(coin.reserved, held.contains(o), "{o}");
+    }
+
+    see_spent(&f, &sent);
+    let plan = (f.engine)
+        .block_on(
+            f.session
+                .mixed_coins_sweep_plan(f.wallet, SweepDestination::Wallet),
+        )
+        .unwrap();
+    assert_eq!(plan.total, 2 * COIN);
+    assert_eq!(
+        sweep_out_keys(&f),
+        HashSet::from([sent[0].txid()]),
+        "a plan only reads"
+    );
+    hook(&f, 2, &[]);
+    move_to_wallet(&f).unwrap();
+    assert!(!sweep_out_keys(&f).contains(&sent[0].txid()));
+}
+
+/// The spend grant has to cover the sweep's total: one below it is refused
+/// before anything is signed, recorded or reserved.
+#[test]
+fn a_grant_below_the_total_is_refused_and_nothing_is_sent() {
+    let f = fixture(false);
+    f.credit_coinjoin(1, COIN);
+    f.credit_coinjoin(2, COIN);
+    let wire = hook(&f, 500, &[]);
+    let grant = f.grant(
+        GrantPurpose::Spend {
+            max_duffs: 2 * COIN - 1,
+        },
+        Credential::None,
+    );
+    let r = f.engine.block_on(f.session.move_mixed_coins(
+        f.wallet,
+        SweepDestination::Wallet,
+        grant,
+    ));
+    assert!(
+        matches!(r, Err(EngineError::CoinJoin(CoinJoinFailure::GrantInvalid))),
+        "{r:?}"
+    );
+    assert!(wire.txs().is_empty());
+    assert!(sweep_out_keys(&f).is_empty());
+    assert!(f.session.spends.snapshot(&f.wallet).is_empty());
+}
+
+/// A rejected consolidation chunk gives its reserved CoinJoin address back:
+/// the next round pays the same one, the account's gap does not grow.
+#[test]
+fn a_rejected_consolidation_gives_its_address_back() {
+    let f = fixture(false);
+    f.credit_coinjoin(1, COIN);
+    f.credit_coinjoin(2, COIN);
+    let wire = hook(&f, 500, &[Outcome::Rejected]);
+    let first = consolidate(&f).unwrap();
+    assert_eq!(
+        first.failure_code.as_deref(),
+        Some("coinjoin.broadcast_rejected")
+    );
+    let refused = wire.txs()[0].output[0].script_pubkey.clone();
+
+    let wire = hook(&f, 500, &[]);
+    assert_eq!(consolidate(&f).unwrap().failure_code, None);
+    assert_eq!(wire.txs()[0].output[0].script_pubkey, refused);
+}
+
+/// Which sweep records still hold their inputs: every input unspent and
+/// younger than [`SWEEP_OUT_BLOCKS`]; the rest, and rows that do not
+/// decode, are for dropping.
+#[test]
+fn a_sweep_record_holds_while_its_inputs_are_unspent_and_it_is_young() {
+    use crate::coinjoin::{SWEEP_OUT_BLOCKS, SweepOut, split_sweep_outs};
+    let op = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+    let record = |n: u8, height: u32, ins: &[u8]| {
+        let o = SweepOut {
+            txid: Txid::from_byte_array([100 + n; 32]),
+            height,
+            inputs: ins.iter().map(|i| op(*i)).collect(),
+        };
+        (o.key(), o.value())
+    };
+    let unspent: HashSet<OutPoint> = [1, 2, 3, 5].map(op).into();
+    let live = record(1, 900, &[1, 2]);
+    let input_gone = record(2, 900, &[3, 4]);
+    let expired = record(3, 1_000 - SWEEP_OUT_BLOCKS, &[5]);
+    let bad = ("coinjoin.sweep_out.nope".to_string(), "1 x".to_string());
+    let (held, mut gone) = split_sweep_outs(
+        vec![live, input_gone.clone(), expired.clone(), bad.clone()],
+        &unspent,
+        1_000,
+    );
+    assert_eq!(held, [1, 2].map(op).into());
+    gone.sort();
+    let mut want = vec![input_gone.0, expired.0, bad.0];
+    want.sort();
+    assert_eq!(gone, want);
+    // One block before expiry it still holds.
+    let young = record(4, 1_001 - SWEEP_OUT_BLOCKS, &[5]);
+    assert_eq!(
+        split_sweep_outs(vec![young], &unspent, 1_000).0,
+        [5].map(op).into()
+    );
 }
