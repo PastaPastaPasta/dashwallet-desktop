@@ -39,10 +39,12 @@ pub mod masternodes;
 mod multiwallet;
 mod network;
 pub mod network_choice;
-mod parked;
 pub mod platform;
 mod pump;
 mod receive;
+mod restore;
+#[cfg(test)]
+mod restore_tests;
 pub(crate) mod send;
 mod session;
 mod store;

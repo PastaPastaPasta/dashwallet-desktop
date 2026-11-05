@@ -399,7 +399,7 @@ pub(crate) struct SessionHub {
     /// wallet's positive network evidence (BL-76, [`Self::note_seen`]).
     leases: std::sync::OnceLock<std::sync::Weak<crate::platform::lease::LeaseTable>>,
     /// Starts the duplicate-coin reconcile of a wallet after its block
-    /// events (`parked`); unset in hub-only tests.
+    /// events (`restore`); unset in hub-only tests.
     reconcile: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// The wallets with a reconcile started and not yet running.
     reconcile_pending: Mutex<HashSet<WalletId>>,
@@ -1139,7 +1139,7 @@ mod tests {
         }
     }
 
-    /// A wallet's block events start its duplicate-coin reconcile (`parked`)
+    /// A wallet's block events start its duplicate-coin reconcile (`restore`)
     /// once per run: while one is started and not yet running, more events
     /// start nothing; once it runs, the next event starts another.
     #[test]
