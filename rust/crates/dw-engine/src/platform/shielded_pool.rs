@@ -110,7 +110,7 @@ use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::lease::{CallPermit, FundingKey, Lease, LeaseError};
 use super::registration::{RegistrationWait, funding_cap, grant_cap};
 use super::registration_flow::{
-    FundError, LockInfo, LockStatus, PwLib, RegistrationLib as Reg, Spendable, lock_status,
+    FundError, LockInfo, LockStatus, PwLib, RegistrationLib as Reg, Spendable,
 };
 use super::requests::{leased, write_permit};
 use super::shielded::{
@@ -1937,30 +1937,15 @@ impl ShieldedLib for PwShielded {
     }
 
     async fn shield_lock_rows(&self) -> Vec<super::unfinished_locks::KindLock> {
-        use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
         (self
             .pw
             .wallet
             .asset_locks()
             .list_tracked_locks()
             .await
-            .into_iter())
+            .iter())
         .filter(|l| l.funding_type == AssetLockFundingType::AssetLockShieldedAddressTopUp)
-        .map(|l| super::unfinished_locks::KindLock {
-            info: LockInfo {
-                outpoint: l.out_point,
-                registration: false,
-                identity_index: l.identity_index,
-                account: l.account_index,
-                amount: l.amount,
-                status: lock_status(&l.status),
-            },
-            proof: l.proof.is_some(),
-            credit_outputs: match &l.transaction.special_transaction_payload {
-                Some(TransactionPayload::AssetLockPayloadType(p)) => p.credit_outputs.len(),
-                _ => 0,
-            },
-        })
+        .map(super::unfinished_locks::KindLock::of_row)
         .collect()
     }
 

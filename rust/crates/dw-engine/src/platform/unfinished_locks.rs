@@ -55,12 +55,12 @@ use dashcore::{OutPoint, ScriptBuf, Txid};
 use dw_appdb::{AppDb, AppDbError};
 use dw_vault::{SignerError, VaultSigner};
 use key_wallet::bip32::{DerivationPath, ExtendedPubKey};
-use platform_wallet::{AssetLockFundingType, PlatformWalletError};
+use platform_wallet::{AssetLockFundingType, PlatformWalletError, TrackedAssetLock};
 
 use super::errors::PlatformError;
 use super::flows::FlowKind;
 use super::lease::{Lease, SignatureCount};
-use super::registration_flow::{LockInfo, LockStatus};
+use super::registration_flow::{LockInfo, LockStatus, lock_status};
 pub(crate) use super::unfinished::{
     LockFinish, LockKindId, LockOrigin, TransfersReport, UnfinishedLock, UnfinishedState,
 };
@@ -174,6 +174,30 @@ pub(crate) struct KindLock {
 }
 
 impl KindLock {
+    /// The kind's row of the library's tracked lock `row`. Every kind builds
+    /// its rows with it: `credit_outputs` counts the whole payload, so a
+    /// record by txid of another output of the transaction (another
+    /// family's included) never speaks for this one (the conformance run's
+    /// shared-transaction case fails a kind that counts otherwise).
+    pub(crate) fn of_row(row: &TrackedAssetLock) -> Self {
+        use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+        Self {
+            info: LockInfo {
+                outpoint: row.out_point,
+                registration: false,
+                identity_index: row.identity_index,
+                account: row.account_index,
+                amount: row.amount,
+                status: lock_status(&row.status),
+            },
+            proof: row.proof.is_some(),
+            credit_outputs: match &row.transaction.special_transaction_payload {
+                Some(TransactionPayload::AssetLockPayloadType(p)) => p.credit_outputs.len(),
+                _ => 0,
+            },
+        }
+    }
+
     /// Its transaction has no other credit output, so a record by txid is
     /// this lock's.
     pub(crate) fn alone(&self) -> bool {
@@ -545,7 +569,7 @@ pub(crate) async fn detect(
 }
 
 /// The code a finish of a lock at `vout` ≠ 0 is refused with (module doc).
-pub(crate) const UNSUPPORTED: &str = "platform.not_implemented";
+pub(crate) const UNSUPPORTED: &str = "recovery.unsupported_output";
 
 /// Finishes `kind`'s unfinished lock at `outpoint` under the lease
 /// `lease_of` gives: the lease's funding signer, narrowed to the lock's
@@ -646,7 +670,9 @@ where
             let signer = LockKeySigner::new(&funding, script, permit.signatures());
             let reply = kind.apply(outpoint, &signer).await;
             let signed = signer.signed();
-            permit.finish(reply.is_ok());
+            // Only a proved apply was sent for certain; anything else ends
+            // MaybeSent after a signature and Cancelled without one.
+            permit.finish(matches!(reply, Ok(ApplyReply::Done)));
             Ok::<_, PlatformError>((reply, signed))
         })
         .await;
@@ -686,11 +712,12 @@ where
 /// Finishes every unfinished lock of `kind` under the bulk's `lease`, one
 /// at a time (a refusal leaves that lock pending and the next one runs),
 /// and adds what came of them to `report`: its totals and, when the kind
-/// had any, its [`TransfersReport`]. A lock with no proof, of a kind not
+/// had any, its [`TransfersReport`]. Only a Ready lock is tried. One whose
+/// apply may already have executed (Checking), with no proof, of a kind not
 /// active, at `vout` ≠ 0 or below the apply's minimum is pending, not
-/// tried; one Platform reported
-/// already used is counted in `already_used`, not tried ("Check again"
-/// tries it). A lock another finish settled meanwhile counts in no field.
+/// tried (a Checking lock's own "Check again" tries it); one Platform
+/// reported already used is counted in `already_used`, not tried. A lock
+/// another finish settled meanwhile counts in no field.
 pub(crate) async fn finish_kind(
     kind: &impl LockKind,
     lease: &Lease,
@@ -712,7 +739,8 @@ pub(crate) async fn finish_kind(
     };
     for lock in &listed {
         let tried = match lock.state {
-            UnfinishedState::Confirming
+            UnfinishedState::Checking
+            | UnfinishedState::Confirming
             | UnfinishedState::NotActive
             | UnfinishedState::Unsupported
             | UnfinishedState::TooSmall => None,
@@ -720,7 +748,7 @@ pub(crate) async fn finish_kind(
                 report.already_used += 1;
                 continue;
             }
-            UnfinishedState::Ready | UnfinishedState::Checking => {
+            UnfinishedState::Ready => {
                 let Ok(txid) = lock.txid.parse::<Txid>() else {
                     continue;
                 };

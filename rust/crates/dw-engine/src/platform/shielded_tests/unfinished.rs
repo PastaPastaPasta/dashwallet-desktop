@@ -7,9 +7,10 @@ use std::str::FromStr;
 use key_wallet::bip32::DerivationPath;
 
 use super::*;
+use crate::platform::lease::FlowOutcome;
 use crate::platform::unfinished_conformance::{self as conformance, End, Rig};
 use crate::platform::unfinished_locks::{
-    self as locks, KindLock, LockFinish, LockKind, LockKindId, LockOrigin, Marks, Minimum,
+    self as locks, KindLock, LockFinish, LockKind, LockKindId, LockOrigin, Mark, Marks, Minimum,
     UnfinishedLock, UnfinishedState,
 };
 use crate::platform::unfinished_shields::ShieldLocks;
@@ -418,25 +419,53 @@ fn lock_script(fx: &Fixture) -> dashcore::ScriptBuf {
     })
 }
 
-/// `ShieldLocks` over the scripted library, its records the session's own
+/// `ShieldLocks` over the library's own tracked rows (`real_rows`: the
+/// funder's wallet, read through the real `PwShielded`, which builds the
+/// kind's rows), its apply scripted, its records the session's own
 /// `app.sqlite` and journal.
 struct ShieldRig {
     fx: Fixture,
     lib: Arc<FakeShielded>,
+    script: dashcore::ScriptBuf,
+    outcomes: Mutex<Vec<FlowOutcome>>,
 }
 
 impl ShieldRig {
     fn new() -> Self {
         let fx = Fixture::new(0);
-        let lib = Arc::new(FakeShielded::default());
-        *lib.script.lock().unwrap() = Some(lock_script(&fx));
-        Self { fx, lib }
+        let lib = real_rows(&fx);
+        let script = lock_script(&fx);
+        Self {
+            fx,
+            lib,
+            script,
+            outcomes: Mutex::default(),
+        }
     }
 }
 
 impl Rig for ShieldRig {
-    fn track(&self, rows: Vec<KindLock>) {
-        *self.lib.lock_rows.lock().unwrap() = Some(rows);
+    fn funding_type(&self) -> AssetLockFundingType {
+        AssetLockFundingType::AssetLockShieldedAddressTopUp
+    }
+
+    fn credit_script(&self) -> dashcore::ScriptBuf {
+        self.script.clone()
+    }
+
+    fn track(&self, rows: Vec<TrackedAssetLock>) {
+        for row in rows {
+            self.fx.engine.block_on(self.lib.track(row, true));
+        }
+    }
+
+    fn record_txid(&self, mark: Mark, txid: Txid) {
+        run(&self.fx, &self.lib, move |_, lib| async move {
+            match mark {
+                Mark::Settled => lib.settle(txid).await.unwrap(),
+                Mark::Unknown => lib.mark_unknown(txid).await,
+            }
+        });
     }
 
     fn next(&self, end: End) {
@@ -467,7 +496,30 @@ impl Rig for ShieldRig {
     }
 
     fn finish(&self, outpoint: OutPoint) -> (Result<LockFinish, PlatformError>, bool) {
-        finish(&self.fx, &self.lib, outpoint)
+        let (wallet, grant) = (self.fx.wallet, shield_grant(&self.fx, 1));
+        let (kept, begun) = (Arc::new(Mutex::new(None)), Arc::new(AtomicBool::new(false)));
+        let (keep, asked) = (Arc::clone(&kept), Arc::clone(&begun));
+        let finished = run(&self.fx, &self.lib, move |s, lib| async move {
+            let kind = ShieldLocks::new(&s, wallet, &*lib);
+            let leases = Arc::clone(&s);
+            let lease_of = || async move {
+                asked.store(true, Ordering::SeqCst);
+                let lease = leases
+                    .begin_lease(wallet, FlowKind::Shield, &[grant])
+                    .await?;
+                *keep.lock().unwrap() = Some(lease.clone());
+                Ok::<_, PlatformError>(lease)
+            };
+            locks::finish(&kind, outpoint, lease_of).await
+        });
+        let kept: Option<Lease> = kept.lock().unwrap().take();
+        *self.outcomes.lock().unwrap() =
+            (kept.as_ref()).map_or_else(Vec::new, conformance::call_outcomes);
+        (finished, begun.load(Ordering::SeqCst))
+    }
+
+    fn outcomes(&self) -> Vec<FlowOutcome> {
+        self.outcomes.lock().unwrap().clone()
     }
 
     fn marks(&self) -> (Marks, Marks) {
@@ -903,6 +955,57 @@ fn finish_transfers_runs_each_lock_once_and_reports_the_kind() {
             (LockOrigin::Restored, UnfinishedState::Checking),
             (LockOrigin::Restored, UnfinishedState::Confirming),
         ]
+    );
+}
+
+/// Finish all tries a Ready lock only: one already Checking before the bulk
+/// (an earlier apply may have executed) is pending, not tried; its own
+/// "Check again" (`finish_transfer`) still runs it.
+#[test]
+fn finish_transfers_leaves_a_checking_lock_to_check_again() {
+    let fx = Fixture::new(0);
+    let (ready, checking) = (
+        lock(1, LockStatus::RecoveredFromChain),
+        lock(2, LockStatus::RecoveredFromChain),
+    );
+    let lib = Arc::new(FakeShielded {
+        locks: vec![ready.clone(), checking.clone()],
+        ..FakeShielded::default()
+    });
+    lib.unknown.lock().unwrap().insert(checking.outpoint.txid);
+    assert_eq!(
+        state_of(&fx, &lib),
+        [
+            (LockOrigin::Restored, UnfinishedState::Ready),
+            (LockOrigin::Restored, UnfinishedState::Checking),
+        ]
+    );
+    answer(&lib, Ok(Applied::Done));
+    let report = finish_transfers(&fx, &lib);
+    assert_eq!(totals(&report), (1, 1, 1));
+    assert_eq!(
+        report.by_kind,
+        [locks::TransfersReport {
+            kind: LockKindId::Shielded,
+            resumed: 1,
+            completed: 1,
+            still_pending: 1,
+        }]
+    );
+    assert_eq!(*lib.applied.lock().unwrap(), [ready.outpoint]);
+    assert_eq!(
+        state_of(&fx, &lib),
+        [(LockOrigin::Restored, UnfinishedState::Checking)]
+    );
+
+    answer(&lib, Ok(Applied::Done));
+    assert_eq!(
+        finish(&fx, &lib, checking.outpoint).0.unwrap(),
+        LockFinish::Applied
+    );
+    assert_eq!(
+        *lib.applied.lock().unwrap(),
+        [ready.outpoint, checking.outpoint]
     );
 }
 

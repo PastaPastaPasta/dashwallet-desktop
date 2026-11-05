@@ -18,8 +18,8 @@ use super::registration_flow::{LockInfo, LockStatus};
 use super::unfinished_conformance::{self as conformance, End, Rig};
 use super::unfinished_locks::{
     ApplyReply, Evidence, KindLock, LockFinish, LockKeySigner, LockKind, LockKindId, LockOrigin,
-    Marks, Minimum, Readiness, UNSUPPORTED, UnfinishedLock, UnfinishedState, classify, detect,
-    finish, reply_from,
+    Mark, Marks, Minimum, Readiness, UnfinishedLock, UnfinishedState, classify, detect, finish,
+    reply_from,
 };
 
 fn lock(n: u8, status: LockStatus) -> LockInfo {
@@ -715,7 +715,7 @@ fn a_lock_at_another_output_cannot_be_finished_in_this_version() {
     assert_eq!(
         block_on(finish(&kind, second.info.outpoint, lease)).unwrap(),
         LockFinish::NotApplied {
-            error: UNSUPPORTED.into()
+            error: "recovery.unsupported_output".into()
         }
     );
     assert!(!asked.load(Ordering::SeqCst), "refused before the lease");
@@ -945,6 +945,7 @@ fn the_runner_signs_with_the_lock_key_only() {
 struct FakeRig {
     fx: super::requests::tests::Fixture,
     kind: FakeKind,
+    outcomes: Mutex<Vec<super::lease::FlowOutcome>>,
 }
 
 impl FakeRig {
@@ -971,7 +972,11 @@ impl FakeRig {
             }),
             ..FakeKind::default()
         };
-        Self { fx, kind }
+        Self {
+            fx,
+            kind,
+            outcomes: Mutex::default(),
+        }
     }
 
     fn grant(fx: &super::requests::tests::Fixture) -> String {
@@ -986,8 +991,29 @@ impl FakeRig {
 }
 
 impl Rig for FakeRig {
-    fn track(&self, rows: Vec<KindLock>) {
-        *self.kind.locks.lock().unwrap() = rows;
+    fn funding_type(&self) -> AssetLockFundingType {
+        AssetLockFundingType::AssetLockShieldedAddressTopUp
+    }
+
+    fn credit_script(&self) -> dashcore::ScriptBuf {
+        self.kind.script.clone().unwrap()
+    }
+
+    /// The kind's rows are built as every kind builds them
+    /// ([`KindLock::of_row`]).
+    fn track(&self, rows: Vec<platform_wallet::TrackedAssetLock>) {
+        *self.kind.locks.lock().unwrap() = (rows.iter())
+            .filter(|r| r.funding_type == self.funding_type())
+            .map(KindLock::of_row)
+            .collect();
+    }
+
+    fn record_txid(&self, mark: Mark, txid: Txid) {
+        let marks = match mark {
+            Mark::Settled => &self.kind.settled,
+            Mark::Unknown => &self.kind.unknown,
+        };
+        marks.lock().unwrap().txids.insert(txid);
     }
 
     fn next(&self, end: End) {
@@ -1009,12 +1035,24 @@ impl Rig for FakeRig {
             Self::grant(&self.fx),
         );
         let asked = AtomicBool::new(false);
+        let kept = Mutex::new(None);
         let lease = || async {
             asked.store(true, Ordering::SeqCst);
-            Ok::<_, PlatformError>(s.begin_lease(wallet, FlowKind::Shield, &[grant]).await?)
+            let lease = s.begin_lease(wallet, FlowKind::Shield, &[grant]).await?;
+            *kept.lock().unwrap() = Some(lease.clone());
+            Ok::<_, PlatformError>(lease)
         };
         let finished = self.fx.engine.block_on(finish(&self.kind, outpoint, lease));
+        let kept = kept.lock().unwrap().take();
+        *self.outcomes.lock().unwrap() = kept
+            .as_ref()
+            .map(conformance::call_outcomes)
+            .unwrap_or_default();
         (finished, asked.load(Ordering::SeqCst))
+    }
+
+    fn outcomes(&self) -> Vec<super::lease::FlowOutcome> {
+        self.outcomes.lock().unwrap().clone()
     }
 
     fn marks(&self) -> (Marks, Marks) {
@@ -1043,15 +1081,21 @@ fn the_runner_conforms() {
 #[test]
 fn an_error_after_the_signature_is_checking_whatever_the_kind_says() {
     let rig = FakeRig::new();
-    let at = conformance::row(1, 0, LockStatus::RecoveredFromChain, true, 1);
-    rig.track(vec![at.clone()]);
-    rig.next(End::SignedThenFailed);
-    assert_eq!(
-        rig.finish(at.info.outpoint).0.unwrap(),
-        LockFinish::Checking
+    let transaction = conformance::transaction(1, 1, 1_000_000, &rig.credit_script());
+    let row = conformance::tracked(
+        &transaction,
+        0,
+        rig.funding_type(),
+        platform_wallet::AssetLockStatus::RecoveredFromChain,
+        true,
     );
+    let at = row.out_point;
+    rig.track(vec![row]);
+    rig.next(End::SignedThenFailed);
+    assert_eq!(rig.finish(at).0.unwrap(), LockFinish::Checking);
+    assert_eq!(rig.outcomes(), [super::lease::FlowOutcome::MaybeSent]);
     assert_eq!(*rig.kind.signed.lock().unwrap(), [true]);
-    assert!(rig.marks().1.outpoints.contains(&at.info.outpoint));
+    assert!(rig.marks().1.outpoints.contains(&at));
     let listed = rig.list().unwrap();
     assert_eq!(listed[0].state, UnfinishedState::Checking);
 }
