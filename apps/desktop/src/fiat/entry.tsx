@@ -71,8 +71,10 @@ export function useFiatEntry(shown: Display, amount: AmountText): FiatEntry {
     amount.setText(text);
   };
   const leave = (why: string | null) => {
+    // Fiat was typed but converts to nothing (not an amount, too large): say so, never "kept".
+    const lost = fiatText.trim() !== "" && amount.text === "" && wrote.current === "" && currency.current !== null;
     setActive(false);
-    setNote(why);
+    setNote(lost ? ENTRY_TEXT.notKept(currency.current!) : why);
     wrote.current = null;
     typed.current = false;
   };
@@ -89,7 +91,7 @@ export function useFiatEntry(shown: Display, amount: AmountText): FiatEntry {
   useEffect(() => {
     if (active && typed.current && fresh && fresh.currency === currency.current && fiatText.trim() !== "") {
       const duffs = convert(fiatText, fresh);
-      if (duffs !== null) write(shown.full(duffs));
+      write(duffs === null ? "" : shown.full(duffs));
     }
   }, [fresh?.price]);
 

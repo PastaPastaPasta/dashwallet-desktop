@@ -79,6 +79,13 @@ export function useAmountField(shown: Shown, initial: string) {
   return { text, setText, duffs, error, settled: checked === typed };
 }
 
+/** Pay's amount field with its fiat entry (MP-01): the form reads `fiat.error` too, so Review is
+ * never open while the field shows one. */
+export function usePayAmount(shown: Shown, initial: string) {
+  const amount = useAmountField(shown, initial);
+  return { ...amount, fiat: useFiatEntry(shown, amount) };
+}
+
 /** What the chosen coin source can spend (the engine's `maxSpendable`), for "Available"; `undefined`
  * while it loads or when "Selected coins" has none yet. Under the coin keys, so coin events refresh it. */
 export function useAvailable(walletId: string, advanced: Advanced): number | undefined {
@@ -169,7 +176,7 @@ export function AmountFields({
   inputRef,
 }: {
   shown: Shown;
-  amount: ReturnType<typeof useAmountField>;
+  amount: ReturnType<typeof usePayAmount>;
   max: ReturnType<typeof useMax>;
   error: string | null;
   available: number | undefined;
@@ -179,7 +186,7 @@ export function AmountFields({
   onSubtractFee: (on: boolean) => void;
   inputRef?: Ref<HTMLInputElement>;
 }) {
-  const fiat = useFiatEntry(shown, amount);
+  const { fiat } = amount;
   return (
     <>
       <FormField

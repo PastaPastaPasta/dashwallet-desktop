@@ -123,14 +123,43 @@ test("a new fresh price converts the typed fiat again; an open Confirm keeps its
   const amount = full(at("51.2345"), false, "DASH");
   await expect(page.getByTestId("pay-confirm-amount")).toContainText(amount);
   await expect(page.getByTestId("pay-confirm-amount-fiat")).toHaveText(fiatText(at("51.2345"), "51.2345", "USD", "en-US")!);
-  // Another price while Confirm is open: the form behind converts again, and only the values beside
-  // Confirm's amounts move. The form's new amount is given time to be parsed and estimated.
+  // Another price while Confirm is open: the form behind converts again and re-estimates its new
+  // amount, and only the values beside Confirm's amounts move. What is sent is Confirm's amount.
   await newPrice(page, "60.0000");
   await expect(page.getByTestId("pay-amount-other")).toHaveText(dash(at("60.0000")));
   await expect(page.getByTestId("pay-confirm-amount-fiat")).toHaveText(fiatText(at("51.2345"), "60.0000", "USD", "en-US")!);
-  await page.waitForTimeout(1500);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (duffs) => Object.values(window.__dwFixture!.world.send.drafts).some((d) => d.recipients[0]?.amount === duffs),
+        at("60.0000"),
+      ),
+    )
+    .toBe(true);
   await expect(page.getByTestId("pay-confirm-amount")).toContainText(amount);
   await expect(page.getByTestId("pay-confirm-amount")).not.toContainText(full(at("60.0000"), false, "DASH"));
+  const before = await world(page, (w) => w.wallets[0].rows.length);
+  await page.getByTestId("pay-confirm-passphrase").fill("demo");
+  await page.getByTestId("pay-confirm-send").click();
+  await expect.poll(() => world(page, (w) => w.wallets[0].rows.length)).toBe(before + 1);
+  const sent = await world(page, (w) => w.wallets[0].rows[0]);
+  expect(-sent.amount - (sent.fee ?? 0)).toBe(at("51.2345"));
+  expect(errors).toEqual([]);
+});
+
+test("a new price that makes the typed fiat too large clears the DASH amount and keeps Review closed", async ({ page }) => {
+  const errors = await open(page, "fiat");
+  await payToAddress(page);
+  await page.getByTestId("pay-amount-toggle").click();
+  await page.getByTestId("pay-amount").fill("4000000000");
+  await expect(page.getByTestId("pay-amount-other")).toHaveText(dash(duffsOf(400_000_000_000n)));
+  // Over 81M DASH: the estimate refuses it, for a reason about the DASH amount.
+  await expect(page.getByTestId("pay-problem")).toBeVisible();
+  await newPrice(page, "40.0000");
+  await expect(page.getByText(ENTRY_TEXT.tooLarge)).toBeVisible();
+  await expect(page.getByTestId("pay-amount-other")).toHaveCount(0);
+  await expect(page.getByTestId("pay-problem")).toHaveCount(0);
+  await expect(page.getByTestId("pay-continue")).toBeDisabled();
   expect(errors).toEqual([]);
 });
 
@@ -260,6 +289,28 @@ for (const form of [
     await expect(page.getByTestId(form.id)).toHaveValue(duffs);
     expect(errors).toEqual([]);
   });
+}
+
+// Fiat that converts to nothing leaves no DASH amount: going back to DASH says so, never "kept".
+for (const form of [
+  { name: "Pay", go: payToAddress, id: "pay-amount" },
+  { name: "Receive", go: (page: Page) => page.getByTestId("sidebar-receive").click(), id: "request-amount" },
+]) {
+  for (const how of ["the toggle", "prices off"] as const) {
+    test(`${form.name}: leaving fiat that is not an amount by ${how} says no amount is set`, async ({ page }) => {
+      const errors = await open(page, "fiat");
+      await form.go(page);
+      await page.getByTestId(`${form.id}-toggle`).click();
+      await page.getByTestId(form.id).fill("12.345");
+      await expect(page.getByText(ENTRY_TEXT.invalid("USD"))).toBeVisible();
+      if (how === "the toggle") await page.getByTestId(`${form.id}-toggle`).click();
+      else await setPrices(page, false);
+      await expect(page.getByTestId(`${form.id}-other-note`)).toHaveText(ENTRY_TEXT.notKept("USD"));
+      await expect(page.getByTestId(form.id)).toHaveValue("");
+      await expect(page.getByText("Amount (DASH)")).toBeVisible();
+      expect(errors).toEqual([]);
+    });
+  }
 }
 
 test.describe("Receive", () => {
