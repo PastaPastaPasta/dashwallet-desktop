@@ -99,7 +99,10 @@ export function ratesHandlers(): Handlers {
     rates_currencies: (_, { world }) => (offReason(world) ? [] : world.rates.cached.filter((c) => now() - c.rateAt <= EXPIRE_SECS)),
     set_rates_settings: ({ settings }, ctx) => {
       if (settings.currency !== null && !/^[A-Z]{3}$/.test(settings.currency)) throw fail("rates.invalid_currency", `not a currency code: ${settings.currency}`);
-      ctx.world.rates.settings = { ...settings };
+      const r = ctx.world.rates;
+      r.settings = { ...settings };
+      // Off clears every cached price and attempt, as the engine does (rates-engine §1); stamps stay.
+      if (!settings.enabled) Object.assign(r, { cached: [], lastAttemptAt: null, lastAttemptFailed: false, lastSuccessAt: null });
       changed(ctx);
       return ratesView(ctx.world);
     },
@@ -190,7 +193,7 @@ export function ratesScenarios<T>(base: (t: T) => World) {
     /** Every source failed and nothing is cached: no number anywhere. */
     "fiat-unavailable": (t: T) => priced(base(t), { cached: [], lastAttemptAt: at(60), lastAttemptFailed: true, lastSuccessAt: null, serves: null }),
     /** "Show values in local currency" off: no request and no fiat. */
-    "fiat-off": (t: T) => priced(base(t), { settings: { enabled: false, currency: "USD", disclosed: true } }),
+    "fiat-off": (t: T) => priced(base(t), { settings: { enabled: false, currency: "USD", disclosed: true }, cached: [], lastAttemptAt: null, lastSuccessAt: null }),
     /** Yen, which has no minor unit. */
     "fiat-jpy": (t: T) => priced(base(t), { settings: { enabled: true, currency: "JPY", disclosed: true } }),
     /** A 0.1 install opened on mainnet: Home asks once before any request. */

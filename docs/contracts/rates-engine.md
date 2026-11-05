@@ -211,7 +211,9 @@ withholds it.
 `flush_history`, after its first-seen time), while the chosen currency's price is `fresh`, and only while
 the transaction's time, the earlier of when the wallet first saw it and its block's time (whichever are
 known), is at most 3 hours before now. A `stale` price, prices off or undisclosed, another network: no
-stamp. There is no back-fill: a transaction older than 3 hours never gets one, so a rescan, a restore or a
+stamp. Turning prices off (§1) stops new stamps: nothing is fresh while they are off, a result discarded
+after Off never reaches the stamper, and on again nothing stamps until a new fetch is fresh. There is no
+back-fill: a transaction older than 3 hours never gets one, so a rescan, a restore or a
 payment seen while no price was fresh is never stamped with a much later price.
 
 **Written once.** One row per wallet and transaction in dw-appdb's `tx_fiat` (`V2026110501`), inserted with

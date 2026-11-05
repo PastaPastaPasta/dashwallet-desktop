@@ -40,6 +40,17 @@ async function ageThePrice(page: Page) {
   });
 }
 
+/** Prices turned on or off through the engine's command, as Settings does, while a form is open. */
+async function setPrices(page: Page, enabled: boolean) {
+  await page.evaluate(
+    (enabled) =>
+      (window as unknown as { __TAURI_INTERNALS__: { invoke(c: string, a: unknown): Promise<unknown> } }).__TAURI_INTERNALS__.invoke("set_rates_settings", {
+        settings: { enabled, currency: "USD", disclosed: true },
+      }),
+    enabled,
+  );
+}
+
 test("10.00 USD fills the DASH line, and Confirm shows those duffs as the amount, its value beside", async ({ page }) => {
   const errors = await open(page, "fiat");
   await payToAddress(page);
@@ -145,6 +156,35 @@ test("paying a contact takes the amount in fiat too", async ({ page }) => {
   await page.getByTestId("pay-amount-toggle").click();
   await expect(page.getByTestId("pay-amount")).toHaveValue(full(duffsOf(500n), false, "DASH"));
 });
+
+// Off clears the cached price (rates-engine §1): the toggle and the value line go, a field in fiat is
+// DASH again with the same duffs, and on again nothing converts until a new fetch.
+for (const form of [
+  { name: "Pay", go: payToAddress, id: "pay-amount" },
+  { name: "Receive", go: (page: Page) => page.getByTestId("sidebar-receive").click(), id: "request-amount" },
+]) {
+  test(`${form.name}: prices off while typing in fiat turn the field back to DASH with the same duffs`, async ({ page }) => {
+    const errors = await open(page, "fiat");
+    await form.go(page);
+    const duffs = full(duffsOf(1234n), false, "DASH");
+    await page.getByTestId(`${form.id}-toggle`).click();
+    await page.getByTestId(form.id).fill("12.34");
+    await expect(page.getByTestId(`${form.id}-other`)).toHaveText(`${duffs} DASH`);
+
+    await setPrices(page, false);
+    await expect(page.getByTestId(`${form.id}-toggle`)).toHaveCount(0);
+    await expect(page.getByTestId(`${form.id}-other`)).toHaveCount(0);
+    await expect(page.getByTestId(form.id)).toHaveValue(duffs);
+    await expect(page.getByTestId(`${form.id}-other-note`)).toHaveText(ENTRY_TEXT.backToDash);
+
+    await setPrices(page, true);
+    await expect(page.getByTestId(`${form.id}-toggle`)).toBeDisabled();
+    await expect(page.getByTestId(`${form.id}-other-why`)).toHaveText(ENTRY_TEXT.unavailable);
+    await expect(page.getByTestId(`${form.id}-other`)).toHaveCount(0);
+    await expect(page.getByTestId(form.id)).toHaveValue(duffs);
+    expect(errors).toEqual([]);
+  });
+}
 
 test.describe("Receive", () => {
   test("a request amount typed in fiat stores the duffs it converts to", async ({ page }) => {

@@ -708,6 +708,19 @@ fn off(rig: &Rig) {
         .unwrap();
 }
 
+/// A Mainnet session's stamper reading `rig`'s prices (rates-engine §6).
+fn stamper(rig: &Rig) -> crate::events::SessionHub {
+    let hub = crate::events::SessionHub::new(crate::DashNetwork::Mainnet, Arc::new(NoSink));
+    hub.set_rates(Arc::downgrade(&rig.hub));
+    hub
+}
+
+struct NoSink;
+
+impl EventSink for NoSink {
+    fn emit(&self, _: EngineEvent) {}
+}
+
 fn stored_file(rig: &Rig) -> Stored {
     Stored::from_json(&std::fs::read_to_string(rig.root.join(RATES_FILE)).unwrap())
 }
@@ -718,6 +731,7 @@ fn stored_file(rig: &Rig) -> Stored {
 fn off_during_a_fetch_aborts_it_and_keeps_nothing() {
     let gate = Gated::new();
     let rig = gated_rig(&gate);
+    let stamps = stamper(&rig);
     rig.on();
     block_on(async {
         let hub = Arc::clone(&rig.hub);
@@ -741,6 +755,14 @@ fn off_during_a_fetch_aborts_it_and_keeps_nothing() {
     assert_eq!(v.rate, None);
     assert!(stored_file(&rig).rates.is_empty());
     assert_eq!(rig.hub.view().last_attempt_at, None, "no attempt recorded");
+    assert!(stamps.stamp_rate().is_none(), "prices off stamp nothing");
+    // On again: the dropped answer was never kept, so there is nothing to stamp with.
+    rig.on();
+    assert_eq!(
+        rig.rates().status().state,
+        RateState::Unavailable(RatesUnavailable::NeverFetched)
+    );
+    assert!(stamps.stamp_rate().is_none());
 }
 
 /// A source that turns prices off and on again in the poll that answers:
@@ -787,6 +809,7 @@ fn a_result_landing_after_off_then_on_is_discarded() {
         ..c
     });
     source.0.set(Arc::downgrade(&rig.hub)).unwrap();
+    let stamps = stamper(&rig);
     rig.on();
     block_on(rig.hub.attempt());
     let v = rig.rates().status();
@@ -796,6 +819,10 @@ fn a_result_landing_after_off_then_on_is_discarded() {
     );
     assert_eq!(v.rate, None);
     assert!(stored_file(&rig).rates.is_empty());
+    assert!(
+        stamps.stamp_rate().is_none(),
+        "a discarded result never reaches the stamper"
+    );
 }
 
 /// Amendment 4 (ii) and (iii): Off clears every cached price and attempt,
@@ -803,12 +830,15 @@ fn a_result_landing_after_off_then_on_is_discarded() {
 #[test]
 fn off_clears_the_cache_and_on_starts_from_nothing() {
     let rig = Rig::new(vec![usd("49.0967", T0)], vec![Err("unused")]);
+    let stamps = stamper(&rig);
     rig.on();
     block_on(rig.hub.attempt());
     assert_eq!(rig.rates().status().state, RateState::Fresh);
     assert!(!stored_file(&rig).rates.is_empty());
+    assert!(stamps.stamp_rate().is_some());
 
     off(&rig);
+    assert!(stamps.stamp_rate().is_none(), "Off stops new stamps");
     let file = stored_file(&rig);
     assert!(file.rates.is_empty(), "rates.json holds no rate rows");
     assert_eq!(file.last_attempt_at, None);
@@ -832,6 +862,10 @@ fn off_clears_the_cache_and_on_starts_from_nothing() {
         rig.rates().currencies().is_empty(),
         "no stale number from before"
     );
+    assert!(
+        stamps.stamp_rate().is_none(),
+        "nothing to stamp with until a new fetch"
+    );
     // A restart reads the same nothing.
     let again = RatesHub::new(
         &rig.root,
@@ -843,6 +877,11 @@ fn off_clears_the_cache_and_on_starts_from_nothing() {
         again.view().state,
         RateState::Unavailable(RatesUnavailable::NeverFetched)
     );
+    drop(again);
+    // A new fetch stamps again.
+    block_on(rig.hub.attempt());
+    assert_eq!(rig.rates().status().state, RateState::Fresh);
+    assert!(stamps.stamp_rate().is_some());
 }
 
 /// Amendment 2: while CTX answers, the fallback is never asked.
@@ -913,24 +952,12 @@ mod stamps {
         TransactionContext::InBlock(BlockInfo::new(1, BlockHash::all_zeros(), time as u32))
     }
 
-    fn mainnet(rig: &Rig) -> SessionHub {
-        let hub = SessionHub::new(DashNetwork::Mainnet, Arc::new(NoSink));
-        hub.set_rates(Arc::downgrade(&rig.hub));
-        hub
-    }
-
-    struct NoSink;
-
-    impl EventSink for NoSink {
-        fn emit(&self, _: EngineEvent) {}
-    }
-
     #[test]
     fn a_fresh_price_stamps_new_and_recent_transactions_only() {
         let rig = Rig::new(vec![usd("49.0967", T0)], vec![Err("unused")]);
         rig.on();
         block_on(rig.hub.attempt());
-        let hub = mainnet(&rig);
+        let hub = stamper(&rig);
         let now = T0;
         let mempool = add(&hub, 1, TransactionContext::Mempool);
         let recent = add(&hub, 2, block_at(now - HOURS_3));
@@ -981,7 +1008,7 @@ mod stamps {
             "no prices attached"
         );
 
-        let hub = mainnet(&rig);
+        let hub = stamper(&rig);
         assert!(hub.stamp_rate().is_some());
         rig.advance(FRESH_SECS + 1);
         assert_eq!(rig.rates().status().state, RateState::Stale);
@@ -996,7 +1023,7 @@ mod stamps {
         let rig = Rig::new(vec![usd("49.0967", T0)], vec![Err("unused")]);
         rig.on();
         block_on(rig.hub.attempt());
-        let hub = mainnet(&rig);
+        let hub = stamper(&rig);
         rig.rates()
             .set_settings(settings(false, Some("USD"), true))
             .unwrap();

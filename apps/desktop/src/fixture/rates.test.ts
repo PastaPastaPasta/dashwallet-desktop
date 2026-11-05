@@ -70,13 +70,20 @@ describe("fixture prices", () => {
     await expect(cmd.setRatesSettings({ enabled: true, currency: "usd", disclosed: true })).rejects.toMatchObject({ code: "rates.invalid_currency" });
   });
 
-  it("turning off stops attempts", async () => {
+  it("turning off stops attempts and clears the cache; on again shows nothing until a fetch", async () => {
     install("fiat");
+    const stamps = fixture.world.wallets[0].rows.map((r) => r.fiatThen);
     fixture.world.rates.lastAttemptAt = null;
     await cmd.setRatesSettings({ enabled: false, currency: "USD", disclosed: true });
     await expect(cmd.refreshRates()).rejects.toMatchObject({ code: "rates.off" });
     expect(await cmd.ratesCurrencies()).toEqual([]);
     expect(fixture.world.rates.requests).toBe(0);
+    const on = await cmd.setRatesSettings({ enabled: true, currency: "USD", disclosed: true });
+    expect(on.state).toEqual({ kind: "unavailable", reason: "neverFetched" });
+    expect(on.rate).toBeNull();
+    expect(await cmd.ratesCurrencies()).toEqual([]);
+    expect(fixture.world.wallets[0].rows.map((r) => r.fiatThen)).toEqual(stamps);
+    expect((await cmd.refreshRates()).state.kind).toBe("fresh");
   });
 
   it("stamps the newest rows on Mainnet, each at its own time; none before the disclosure or on testnet", async () => {
