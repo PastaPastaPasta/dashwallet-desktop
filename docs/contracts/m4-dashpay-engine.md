@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 49
+Contract-Version: 50
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -72,7 +72,7 @@ type is `pub(crate)`.
 | `notifications.rs` | DP2-05 | `events`, `unread_count`, `mark_read` |
 | `profile.rs` | DP4-01, DP4-02 | `profile`, `profile_limits`, `prepare_avatar`, `avatar_upload_available`, `upload_avatar`, `update_profile`, `avatar`, `NetworkSession.load_contact_pictures`, `set_load_contact_pictures` |
 | `credits.rs` | DP1-06, DP6-02 | `cost_table`, `top_up_quote`, `top_up`, `pending_top_ups`, `stuck_top_up_fundings`, `resume_top_up`, `resolve_top_up`, `withdraw_quote`, `withdraw`, `withdrawals` |
-| `platform_addresses.rs` | release 0.1, lane E2 | `platform_addresses`, `platform_activity`, `sync_platform_addresses`, `move_to_core_quote`, `move_to_core` |
+| `platform_addresses.rs` | release 0.1, lane E2; 0.2 X1b | `platform_addresses`, `platform_activity`, `sync_platform_addresses`, `move_to_core_quote`, `move_to_core`, `platform_receive_address`, `platform_send_quote`, `platform_send` |
 | `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_link`, `stashed_links`, `take_stashed_link`, `forget_stashed_link`, `stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
 | `shielded.rs` | 0.1 E1 (RELEASE-PLAN §1 "Shielded") | `shielded_status`, `shielded_sync`, `shielded_receive_address`, `shield_quote`, `shield_from_core`, `resume_shield`, `shielded_send_quote`, `shielded_send`, `unshield_quote`, `unshield_to_core`, `shielded_history` |
@@ -575,8 +575,9 @@ The wallet's DIP-17 Platform payment addresses (account 0, key class 0, which ev
 The library's sync loop (`PlatformAddressSyncManager`) runs with the other Platform loops: it starts after the
 bring-up when SPV starts and the network has Platform, and is quiesced when SPV stops and drained, sealed and joined
 by the manager's shutdown at close. Each completed pass that changed a wallet's balances sends
-`Platform{PlatformAddresses}` (§6). 0.1 has **no Platform receive address**: the wallet shows and empties what it
-finds there (RELEASE-PLAN §1). Every call refuses an unknown wallet (`wallet_not_found`) and a closed session
+`Platform{PlatformAddresses}` (§6). 0.1 had **no Platform receive address**: the wallet showed and emptied what it
+found there (RELEASE-PLAN §1). 0.2 (X1b slice 1, version 50) adds the receive address and a send to a Platform address,
+which ship together (§7 item 75). Every call refuses an unknown wallet (`wallet_not_found`) and a closed session
 (`network_not_open`).
 
 | Call | Kind | Semantics | Errors |
@@ -586,12 +587,19 @@ finds there (RELEASE-PLAN §1). Every call refuses an unknown wallet (`wallet_no
 | `sync_platform_addresses()` | async | Runs one pass of the library's sync for the wallet now and returns `platform_addresses()` after it; a pass already running is waited for (up to 2 minutes, then `platform.timeout`), not repeated. A session without Platform (`no_platform`) is `platform.feature_off{feature: "platform"}`. **Implemented (release 0.1).** | `CreditsError` |
 | `move_to_core_quote(amount)` | async | What "Move to Dash wallet" takes and pays out at the network's protocol version, planned on one proved read of the payment account's addresses (rule 5 as `move_to_core`'s read): `credits` taken from the addresses (the fee estimate included), `fee_credits` (an **estimate**: dpp's minimum fee for the plan's inputs, `AddressCreditWithdrawalTransition::estimate_min_fee`, kept on the fee's input; Platform deducts the fee it meters from what that input keeps and no cap on it exists, so the fee taken may differ, and is reported by the move once done; after `All` the estimate's surplus stays on that address), `expected_duffs` (the payout on Core: the withdrawal, converted as Platform converts one), `to` (the wallet's current receiving address: the first unused one, not marked by a quote; `move_to_core` takes it) and the `grant` (`max_credits` = `credits`, no duffs). The plan: the funded addresses at or above the minimum input, the largest first, at most the inputs one transition takes; the fee's input is the largest, which keeps the estimate. `All` takes them all less the estimate, at most Platform's largest withdrawal; `Credits{credits}` takes that many, the fee's input first, then the largest (a last input below the minimum input borrows from the one before), so a partial move never depends on what the other addresses hold. The range is the address withdrawal's own (`validate_credit_withdrawal_structure` version: the platform minimum, raised by the Core fee from the version that does so, and at least the dust floor; at most `max_withdrawal_amount`). Refuses nothing movable (`platform.insufficient_credits{needed, available}`, `needed` the least withdrawal plus the one-input estimate), an amount outside the range (`credits.withdrawal_out_of_range{min, max}`), and an amount above what the inputs carry (`platform.insufficient_credits`). **Implemented (release 0.1).** | `CreditsError` |
 | `move_to_core(amount, to, grant)` | async | Moves `amount` to `to` (the quote's address; anything but one of the wallet's BIP44 account 0 receiving addresses on this network is `invalid_argument`), at Core fee rate 1 with pooling `Never`. Under the wallet's move lock it takes **one proved read** of the addresses, with rule 5: under an enforcing trust mode with the fallback latch set once the read completed (the read itself may set it), the read is repeated until its proofs used only SPV-verified quorum keys, within the money gate's wait, else `platform.context_unavailable` with nothing redeemed. The read settles and records the activity (as `platform_activity`); a move still `Pending` refuses this one (`credits.move_pending{id}`). A move `Failed` by height may still execute, so this one is planned on that move's inputs only and must sign exactly its inputs at its nonces, else `credits.move_pending{id}`. Then the quote's plan and refusals, at the nonces proved + 1 (an address Platform holds no nonce for is `platform.unavailable`); the destination; the grant or a `PlatformAddressMove` lease (`platform.grant_exceeded` below `credits`, `platform.grant_invalid` for another flow's lease), all before the grant is redeemed. Its permit is charged `credits`. Before anything is signed the move is **recorded durably** (app.sqlite, a full checkpoint) as `Pending` and able to execute, with its inputs, the nonces it signs at, each input's proved balance, the amounts, the address and the payout, and read back; a failed write or read-back is `storage` with nothing signed. Only a definitive refusal (below) clears it; a process that stops after it, or an outcome write that fails, leaves that record for the next read to settle. The payment-address keys sign (vault scope `PlatformAddress`, §7 item 67) and the library broadcasts (`withdraw`, `ExplicitWithNonces`). The record is `Failed` with the call's error when the transition can never execute: not every input was signed, or Platform's structure or signature check refused it (raised before the broadcast, §7 item 69). Otherwise the outcome is decided by the inputs' proved nonces, read once after the call, never by the call's answer alone: `MoveToCoreOutcome{state: Done, fee_credits}` (the fee taken, from the proved balances) when every input reached its signed nonce (for a group with other terms, `credits` is the proved debit and `expected_duffs` and `fee_credits` are `None`, and so is `to` unless every member named the same address (version 44); `Replaced` when another member carries it), else `Pending` (`platform_activity` settles it; the call's error, if any, is logged, not returned). **Implemented (release 0.1).** | `CreditsError` |
+| `platform_receive_address()` | async | `PlatformReceiveAddress{address, index}`: the payment account's lowest unused address (platform-wallet's `next_unused_receive_address`, public key material only), in the network's bech32m form (DIP-18; `dash` mainnet, `tdash` otherwise), and its index. The same address until a sync pass sees it funded (the pool's gap of 20 is the library's). No vault, no network, no grant. A session without Platform is `platform.feature_off{feature: "platform"}`, and below protocol version 11, where nothing could spend it, `platform.feature_off{feature: "platform_addresses"}`. The address is shown and put in a QR code bare: no `dash:` URI or deep link carries a Platform address (§7 item 75). **Implemented (0.2).** | `CreditsError` |
+| `platform_send_quote(to, amount)` | async | What sending `amount` to the Platform address `to` takes, planned on one proved read of the payment account's addresses (rule 5 as `move_to_core`'s read). `to` is checked first, with no read: a DIP-18 P2PKH or P2SH address of this network (dw-uri's classification, the one Pay shows; dpp's own parse takes either HRP), not one of the wallet's own, else `credits.recipient_invalid{reason}` (`core`, `shielded`, `network`: an address of another network, `own`, `malformed`). Below protocol version 11 (address funds) it is `platform.feature_off{feature: "platform_addresses"}`. `PlatformSendQuote`: `amount_credits` (the transfer's one output), `fee_credits` (an **estimate**: dpp's `AddressFundsTransferTransition::estimate_min_fee` for the inputs and one output), `max_fee_credits` (the estimate times 3, platform-wallet's own fee safety band, `transfer.rs:426` at the pin: Platform's metered fee may exceed the static estimate, platform#3040), `fee_from_amount`, `to` (normalized) and `credits` with the `grant` (`max_credits` = `credits`, no duffs). `Credits{credits}` is `move_to_core`'s plan with the fee's input keeping `max_fee_credits` (fee strategy `DeductFromInput`): `credits` = the amount plus `max_fee_credits`; it is refused only when no plan carries the amount and that band (`platform.insufficient_credits{needed, available}`); below the output minimum (the larger of dpp's `min_output_amount` and `min_input_amount`) or when a last input cannot borrow up to the input minimum it is `credits.send_out_of_range{min}`. `All` (Max) takes the inputs `move_to_core`'s `All` would, in full, to the output, which pays the fee (`ReduceOutput(0)`, `fee_from_amount`): nothing remains on them, `credits` = `amount_credits`, and the output must carry the minimum and the band, else `platform.insufficient_credits`. Dust below the input minimum and inputs past the most one transition takes stay. Planned as `platform_send` will plan it: beside a move or send that may still execute (above), on its inputs, and an exact retry of a held send on its terms. **Implemented (0.2).** | `CreditsError` |
+| `platform_send(to, amount, grant)` | async | Sends to `to` as `move_to_core` moves (its lock, read, settlement, `credits.move_pending{id}`, plan on a held move's inputs, nonces, grant or `PlatformAddressMove` lease, record before signing, outcome by proved nonces), with `to` and the protocol version checked first as by `platform_send_quote`, and the library's `transfer` (`ExplicitWithNonces`, one output) in place of `withdraw`. The record carries `kind` `transfer`; its activity row is a `Send` with `to` the recipient and no payout. A send and a move share the wallet's one hold: a pending one refuses the other, and while one may still execute (`pending`, or `failed` by height) the next must sign its very inputs at its nonces and, when either pays a Platform address, have its exact terms (amounts, fee estimate, fee rule and destination), else `credits.move_pending{id}`: of the two at most one executes, and it pays what the user asked. The exact retry of a held send (the same `to`, and the same amount, or Max again) is planned as that send was: its inputs, nonces, amounts, fee estimate and fee rule, whatever the balances are now (they only rise until its nonces are taken), so a retry is never refused because a payment arrived or the plan would differ; any other send or move waits until the held one settles. `PlatformSendOutcome{id, credits, to, state, fee_credits}`: `credits` is what the send may take (its amount and the fee band) until it is `Done`, and then what it took: its inputs plus `fee_credits`, the fee the proved balances show taken from the fee's input (the estimate when they do not show it; `None` and nothing added for Max, whose output paid it); its `Send` row carries the same `credits`. `Pending` and `Failed` by height may still execute, once. **Implemented (0.2).** | `CreditsError` |
 
 **0.1 rulings.** The move pays only the wallet's own Core address, so a move that lands after it was marked `Failed`
 moves the user's credits to the user's wallet; even so a move that may still execute holds its inputs' nonces, so
 two moves never both spend them (§7 item 69). A nonce another device's spend took reads as the move done (0.1 has
-one device per wallet). No external Platform send, no Platform receive address, no Max drain of the shielded
-pool (0.2).
+one device per wallet). No Max drain of the shielded pool.
+
+**0.2 rulings (version 50).** A send pays someone else, so a send that lands after it was marked `Failed` pays that
+recipient: the hold makes sure at most one of a group executes and that a retry can only be the same send, and the
+host says "may still go through" for `Pending` and `Failed`. The one-device assumption stands: with a second device
+spending the same addresses, a nonce it took reads as our send done.
 ### 2.13 Shielded funds (`shielded.rs`; 0.1 E1, RELEASE-PLAN §1 "Shielded")
 
 The wallet's Orchard account 0 in Platform's shielded pool, over platform-wallet's `wallet::shielded` at the pin: the
@@ -756,7 +764,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: e81999a2cb051cf0560054d80e6c7f41a3f50adbedf4b23bf411123038f983ba version: 49 -->
+<!-- surface-sha256: 4c3317a457171f56c778d75cf67668bf3ea80d2c3ccb8223984d202e670eeed9 version: 50 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1167,6 +1175,8 @@ pub enum CreditsError {
     WithdrawalOutOfRange { min: u64, max: u64 },
     WithdrawalLanded { artifact: String },
     MovePending { id: String },
+    RecipientInvalid { reason: super::platform_addresses::RecipientProblem },
+    SendOutOfRange { min: u64 },
     Platform(PlatformError),
 }
 impl CreditsError {
@@ -1658,6 +1668,7 @@ pub enum PlatformActivityKind {
     Incoming,
     Outgoing,
     MoveToCore,
+    Send,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1696,12 +1707,50 @@ pub struct MoveToCoreOutcome {
     pub state: PlatformActivityState,
     pub fee_credits: Option<u64>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecipientProblem {
+    Core,
+    Shielded,
+    Network,
+    Own,
+    Malformed,
+}
+impl RecipientProblem {
+    pub fn as_str(self) -> &'static str;
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformReceiveAddress {
+    pub address: String,
+    pub index: u32,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformSendQuote {
+    pub credits: u64,
+    pub amount_credits: u64,
+    pub fee_credits: u64,
+    pub max_fee_credits: u64,
+    pub fee_from_amount: bool,
+    pub to: String,
+    pub grant: GrantRequest,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformSendOutcome {
+    pub id: String,
+    pub credits: u64,
+    pub to: Option<String>,
+    pub state: PlatformActivityState,
+    pub fee_credits: Option<u64>,
+}
 impl DashPay {
     pub async fn platform_addresses(&self) -> Result<PlatformAddressBalance, CreditsError>;
     pub async fn platform_activity(&self) -> Result<Vec<PlatformActivity>, CreditsError>;
     pub async fn sync_platform_addresses(&self) -> Result<PlatformAddressBalance, CreditsError>;
     pub async fn move_to_core_quote(&self, amount: WithdrawAmount) -> Result<MoveToCoreQuote, CreditsError>;
     pub async fn move_to_core(&self, amount: WithdrawAmount, to: String, grant: String) -> Result<MoveToCoreOutcome, CreditsError>;
+    pub async fn platform_receive_address(&self) -> Result<PlatformReceiveAddress, CreditsError>;
+    pub async fn platform_send_quote(&self, to: String, amount: WithdrawAmount) -> Result<PlatformSendQuote, CreditsError>;
+    pub async fn platform_send(&self, to: String, amount: WithdrawAmount, grant: String) -> Result<PlatformSendOutcome, CreditsError>;
 }
 // src/platform/profile.rs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2151,8 +2200,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 | `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired`, `contact.scan_unverified`, `contact.no_username`, `contact.details_too_long` |
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
 | `AvatarError` | `avatar.too_large`, `avatar.unsupported`, `avatar.fetch_failed`, `avatar.hash_mismatch`, `avatar.upload_unconfigured` |
-| `CreditsError` | `credits.funding_insufficient`, `credits.below_minimum`, `credits.coins_locked`, `credits.top_up_pending`, `credits.withdrawal_out_of_range`, `credits.withdrawal_landed`, `credits.move_pending` |
-| `CreditsError` | `credits.funding_insufficient`, `credits.below_minimum`, `credits.coins_locked`, `credits.top_up_pending`, `credits.withdrawal_out_of_range`, `credits.withdrawal_landed` |
+| `CreditsError` | `credits.funding_insufficient`, `credits.below_minimum`, `credits.coins_locked`, `credits.top_up_pending`, `credits.withdrawal_out_of_range`, `credits.withdrawal_landed`, `credits.move_pending`, `credits.recipient_invalid`, `credits.send_out_of_range` |
 | `ShieldedError` | `shielded.not_active`, `shielded.not_synced`, `shielded.invalid_address`, `shielded.insufficient_funds`, `shielded.funding_insufficient`, `shielded.below_minimum`, `shielded.coins_locked`, `shielded.shield_pending`, `shielded.too_many_inputs`, `shielded.pool_too_small`, `shielded.unrecorded_spend` |
 
 - `PlatformError` carries the m1 common codes (`invalid_argument`, `network_not_open`, `wallet_not_found`, `storage`,
@@ -2229,7 +2277,12 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   `credits.move_pending{id}` (data `artifact` = the move's id) is a "Move to Dash wallet" refused, unsigned and its
   grant unredeemed, because the wallet's move `id` is still `pending`, or `failed` but able to execute and this move
   would not sign its very inputs at its nonces (§2.12, §7 item 69): the host shows that move's row and offers the
-  move again once it settles (no time bound: only a proved read settles it).
+  move again once it settles (no time bound: only a proved read settles it); a send (`platform_send`) is refused the
+  same way.
+  `credits.recipient_invalid{reason}` (data `reason`: `core`, `shielded`, `network`, `own`, `malformed`) is a send's
+  `to` that is no Platform address it may pay; nothing was read or redeemed. `credits.send_out_of_range{min}` (data
+  `creditMinimum`: `min` credits) is a send below the output minimum, or an amount the inputs cannot carry with each
+  giving at least the input minimum (`min` is the larger of the two).
   `credits.coins_locked` is `registration.coins_locked` for a top-up (a held-back coin
   the pinned asset-lock builder would select). `credits.top_up_pending{txid}` is an earlier top-up of the identity not
   applied yet: the host offers `resume_top_up(txid)`, never a second funding; when its `PendingTopUp` is
@@ -3715,6 +3768,18 @@ renames or reshapes them takes the next version bump:
     instead of a Platform code: the dispatch journal not read (was `platform.unavailable` for shields, sends and
     unshields; only a closing session's) and a shield's funding held for a running SPV or a running DashPay bring-up
     (was `platform.context_unavailable` / `platform.unavailable`). §2.13 "Still syncing".
+
+75. **Platform receive and sends to Platform addresses (0.2 X1b slice 1, version 50).** §2.12 adds
+    `platform_receive_address`, `platform_send_quote` and `platform_send`; `PlatformActivityKind::Send`;
+    `credits.recipient_invalid{reason}` and `credits.send_out_of_range{min}`. The receive address ships only with the
+    send, so what arrives there can be spent from Platform (RELEASE-PLAN §1's reason for none in 0.1). A send reuses
+    the move's record (a `kind`, `transfer`, and `fee_from_output`; a 0.1 record reads as a move to Core), its hold
+    and its settlement, under the same `PlatformAddressMove` flow and DIP-17 signer; while a send may still land only
+    its exact retry, re-signed on its own terms, may follow, so a wallet is never held by a send it cannot repeat. The
+    fee's input keeps three
+    times dpp's estimate (platform-wallet's band, platform#3040); Max lets the output pay the fee so no remainder is
+    left. `dash:` URIs and deep links stay Core-only: the pinned sources define no URI form for a Platform address,
+    so its QR code is the bare address and Pay takes a pasted or scanned one.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

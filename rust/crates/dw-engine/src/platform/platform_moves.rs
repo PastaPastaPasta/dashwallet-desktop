@@ -87,7 +87,8 @@ use super::money_gate::Refusal;
 use super::names::{NameAuthority, check_credit_cap};
 use super::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformActivityKind,
-    PlatformActivityState, PlatformAddressBalance, PlatformAddressRow,
+    PlatformActivityState, PlatformAddressBalance, PlatformAddressRow, PlatformReceiveAddress,
+    PlatformSendOutcome, PlatformSendQuote, RecipientProblem,
 };
 use super::requests::{leased, write_permit};
 use super::signers::VaultPlatformAddressSigner;
@@ -112,17 +113,42 @@ const BASELINE_KEY: &str = "platform_address/baseline";
 const ROW_PREFIX: &str = "platform_address/row/";
 const MOVE_PREFIX: &str = "platform_address/move/";
 
+/// What a move pays: the wallet's Core address, or a Platform address.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MoveKind {
+    /// "Move to Dash wallet" (an address credit withdrawal); every 0.1
+    /// record.
+    #[default]
+    ToCore,
+    /// A send to a Platform address (an address funds transfer, 0.2).
+    Transfer,
+}
+
 /// One move as recorded before it is signed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MoveRecord {
     pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) kind: MoveKind,
     pub(crate) inputs: Vec<MoveInput>,
-    /// What the addresses may lose: the withdrawal and the fee estimate.
+    /// What the addresses may lose: the amount and the fee the plan keeps
+    /// for it (a withdrawal's estimate, a transfer's band), or, when the
+    /// output pays the fee, the amount alone.
     pub(crate) credits: u64,
-    /// The fee estimate (dpp's minimum fee for the inputs; no cap exists).
+    /// The fee estimate (dpp's minimum fee for the transition; no cap
+    /// exists).
     pub(crate) fee_credits: u64,
+    /// A withdrawal's payout on Core; 0 for a transfer.
     pub(crate) expected_duffs: u64,
+    /// The Core address (a withdrawal) or the bech32m Platform address (a
+    /// transfer) it pays.
     pub(crate) to: String,
+    /// A transfer whose one output pays the fee (`ReduceOutput`, Max): its
+    /// inputs give exactly their amounts and the recipient receives the
+    /// output less the fee.
+    #[serde(default)]
+    pub(crate) fee_from_output: bool,
     pub(crate) at: u64,
     pub(crate) state: PlatformActivityState,
     /// A signature was released.
@@ -146,6 +172,16 @@ pub(crate) struct MoveRecord {
     #[serde(default)]
     pub(crate) group: Option<GroupOutcome>,
 }
+
+/// [`MoveRecord::terms`]: the kind and fee rule, the inputs (address,
+/// nonce, credits), the fee estimate, the payout and the destination.
+type Terms<'a> = (
+    (MoveKind, bool),
+    Vec<(&'a str, u32, u64)>,
+    u64,
+    u64,
+    &'a str,
+);
 
 /// A group's `Done` (module doc, Moves): the proved debit of its inputs
 /// (`None` when a balance before is not on record) and the destination,
@@ -206,14 +242,17 @@ impl MoveRecord {
         let (credits, to, expected_duffs) = match &self.group {
             Some(g) => (g.debit.unwrap_or(self.credits), g.to.clone(), None),
             None => (
-                self.credits,
+                self.debit(),
                 Some(self.to.clone()),
-                Some(self.expected_duffs),
+                (self.kind == MoveKind::ToCore).then_some(self.expected_duffs),
             ),
         };
         PlatformActivity {
             id: self.id.clone(),
-            kind: PlatformActivityKind::MoveToCore,
+            kind: match self.kind {
+                MoveKind::ToCore => PlatformActivityKind::MoveToCore,
+                MoveKind::Transfer => PlatformActivityKind::Send,
+            },
             state: self.state,
             credits,
             address: None,
@@ -224,14 +263,68 @@ impl MoveRecord {
         }
     }
 
+    /// What it shows as taken: what it may take, and for a send that is
+    /// done what it took (its inputs and, unless the output paid it, the
+    /// proved fee or else the estimate), not the fee's band.
+    fn debit(&self) -> u64 {
+        if self.kind != MoveKind::Transfer || self.state != PlatformActivityState::Done {
+            return self.credits;
+        }
+        let given: u64 = self.inputs.iter().map(|i| i.credits).sum();
+        let fee = if self.fee_from_output {
+            0
+        } else {
+            self.fee_taken.unwrap_or(self.fee_credits)
+        };
+        given.saturating_add(fee)
+    }
+
+    /// Asked again for `amount` to `to`, a send it is: its exact retry.
+    fn retried_by(&self, to: &str, amount: WithdrawAmount) -> bool {
+        self.kind == MoveKind::Transfer
+            && self.to == to
+            && match amount {
+                WithdrawAmount::All => self.fee_from_output,
+                WithdrawAmount::Credits { credits } => {
+                    !self.fee_from_output
+                        && self.inputs.iter().map(|i| i.credits).sum::<u64>() == credits
+                }
+            }
+    }
+
+    /// Its plan again, to sign the same transition: an exact retry of a
+    /// send re-signs these terms whatever the balances are now (they only
+    /// rose: a spend of them takes their nonces, and that settles it).
+    fn replan(&self, limits: &Limits) -> Option<Plan> {
+        let inputs: BTreeMap<_, _> = (self.inputs.iter())
+            .map(|i| parse(&i.address).map(|a| (a, i.credits)))
+            .collect::<Option<_>>()?;
+        let fee_source = (self.inputs.iter())
+            .find(|i| i.fee_source)
+            .or(self.inputs.first())
+            .and_then(|i| parse(&i.address))?;
+        Some(Plan {
+            reserve: if self.fee_from_output {
+                0
+            } else {
+                limits.keep(inputs.len())
+            },
+            inputs,
+            fee_source,
+            fee: self.fee_credits,
+            fee_from_output: self.fee_from_output,
+        })
+    }
+
     /// What it pays and takes: two moves of one key with equal terms
     /// leave the same history whichever executed.
-    fn terms(&self) -> (Vec<(&str, u32, u64)>, u64, u64, &str) {
+    fn terms(&self) -> Terms<'_> {
         let mut inputs: Vec<_> = (self.inputs.iter())
             .map(|i| (i.address.as_str(), i.nonce, i.credits))
             .collect();
         inputs.sort();
         (
+            (self.kind, self.fee_from_output),
             inputs,
             self.fee_credits,
             self.expected_duffs,
@@ -277,6 +370,15 @@ impl MoveRecord {
             .map(|i| seen.credits(&i.address).unwrap_or(0))
             .sum();
         let withdrawn: u64 = self.inputs.iter().map(|i| i.credits).sum();
+        if self.fee_from_output {
+            // The recipient's output paid the fee: the inputs fell by their
+            // amounts alone, and nothing here shows the fee.
+            self.fee_taken = None;
+            for input in &mut self.inputs {
+                input.unseen = input.credits;
+            }
+            return;
+        }
         self.fee_taken = before
             .and_then(|b| b.checked_sub(after))
             .and_then(|fell| fell.checked_sub(withdrawn));
@@ -437,23 +539,36 @@ pub(crate) fn changes(
     (rows, next)
 }
 
-/// The address-withdrawal rules at one protocol version.
+/// The fee a transfer's fee source keeps, as a multiple of dpp's static
+/// estimate: platform-wallet's own safety band for a transfer's fee
+/// (`REDUCE_OUTPUT_FEE_SAFETY_MULTIPLE`, `transfer.rs:426` at the pin), as
+/// Platform's metered fee may exceed the estimate (platform#3040).
+pub(crate) const TRANSFER_FEE_BAND: u64 = 3;
+
+/// The address rules of one transition kind at one protocol version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Limits {
     /// The least an input may take (dpp `address_funds.min_input_amount`).
     pub(crate) min_input: u64,
     /// The most inputs one transition has.
     pub(crate) max_inputs: usize,
-    /// The least and the most one withdrawal takes ([`withdrawal::address_range`]).
+    /// The least and the most one transition takes: a withdrawal's
+    /// [`withdrawal::address_range`]; a transfer's output minimum, no most.
     pub(crate) min: u64,
     pub(crate) max: u64,
     /// dpp's minimum fee: `fee_base + fee_per_input × inputs`, no change
-    /// output (`AddressCreditWithdrawalTransition::estimate_min_fee`).
+    /// output (`AddressCreditWithdrawalTransition::estimate_min_fee`; a
+    /// transfer's `AddressFundsTransferTransition::estimate_min_fee` with
+    /// one output, the output's cost being the base).
     pub(crate) fee_base: u64,
     pub(crate) fee_per_input: u64,
+    /// What the fee source keeps, as a multiple of the estimate: 1 for a
+    /// withdrawal, [`TRANSFER_FEE_BAND`] for a transfer.
+    pub(crate) band: u64,
 }
 
 impl Limits {
+    /// An address credit withdrawal's ("Move to Dash wallet").
     pub(crate) fn at(version: &PlatformVersion) -> Result<Self, PlatformError> {
         let (min, max) = withdrawal::address_range(version)?;
         let funds = &version.dpp.state_transitions;
@@ -465,30 +580,67 @@ impl Limits {
             max,
             fee_base: fees.address_credit_withdrawal,
             fee_per_input: fees.address_funds_transfer_input_cost,
+            band: 1,
         })
     }
 
+    /// An address funds transfer's with one output (a Platform send).
+    pub(crate) fn transfer_at(version: &PlatformVersion) -> Self {
+        let funds = &version.dpp.state_transitions;
+        let fees = &version.fee_version.state_transition_min_fees;
+        Self {
+            min_input: funds.address_funds.min_input_amount,
+            max_inputs: funds.max_address_inputs as usize,
+            min: (funds.address_funds.min_output_amount).max(funds.address_funds.min_input_amount),
+            max: u64::MAX,
+            fee_base: fees.address_funds_transfer_output_cost,
+            fee_per_input: fees.address_funds_transfer_input_cost,
+            band: TRANSFER_FEE_BAND,
+        }
+    }
+
+    /// dpp's static estimate for `inputs`.
     pub(crate) fn fee(&self, inputs: usize) -> u64 {
         (self.fee_per_input.saturating_mul(inputs as u64)).saturating_add(self.fee_base)
+    }
+
+    /// What the fee source keeps for the fee of `inputs`.
+    pub(crate) fn keep(&self, inputs: usize) -> u64 {
+        self.fee(inputs).saturating_mul(self.band)
     }
 }
 
 /// What a move takes: each input's amount, the fee source (which keeps the
-/// fee estimate), and the estimate.
+/// fee estimate, or the band), and the estimate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Plan {
     pub(crate) inputs: BTreeMap<PlatformAddress, u64>,
     pub(crate) fee_source: PlatformAddress,
     pub(crate) fee: u64,
+    /// What the fee source keeps for the fee (the estimate times the band);
+    /// 0 when the output pays it.
+    pub(crate) reserve: u64,
+    /// The one output pays the fee (a transfer's Max).
+    pub(crate) fee_from_output: bool,
 }
 
 impl Plan {
-    /// What reaches Core, in credits (before the asset unlock's own fee).
+    /// What the inputs give: what reaches Core (before the asset unlock's
+    /// own fee), or a transfer's output.
     pub(crate) fn credits(&self) -> u64 {
         self.inputs.values().sum()
     }
 
+    /// What the addresses may lose: what the inputs give and what the fee
+    /// source keeps for the fee.
+    pub(crate) fn may_lose(&self) -> u64 {
+        self.credits().saturating_add(self.reserve)
+    }
+
     fn fee_strategy(&self) -> AddressFundsFeeStrategy {
+        if self.fee_from_output {
+            return vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];
+        }
         let index = (self.inputs.keys()).position(|a| *a == self.fee_source);
         let index = index.and_then(|i| u16::try_from(i).ok()).unwrap_or(0);
         vec![AddressFundsFeeStrategyStep::DeductFromInput(index)]
@@ -505,15 +657,18 @@ pub(crate) enum Refused {
 }
 
 impl Refused {
-    fn error(self, limits: &Limits) -> CreditsError {
-        match self {
-            Refused::Short { needed, available } => {
+    fn error(self, kind: MoveKind, limits: &Limits) -> CreditsError {
+        match (self, kind) {
+            (Refused::Short { needed, available }, _) => {
                 PlatformError::InsufficientCredits { needed, available }.into()
             }
-            Refused::OutOfRange => CreditsError::WithdrawalOutOfRange {
+            (Refused::OutOfRange, MoveKind::ToCore) => CreditsError::WithdrawalOutOfRange {
                 min: limits.min,
                 max: limits.max,
             },
+            (Refused::OutOfRange, MoveKind::Transfer) => {
+                CreditsError::SendOutOfRange { min: limits.min }
+            }
         }
     }
 }
@@ -538,7 +693,7 @@ pub(crate) fn plan(
     candidates.truncate(limits.max_inputs.max(1));
     // One address must hold the least withdrawal and its one-input fee.
     let least = Refused::Short {
-        needed: limits.min.saturating_add(limits.fee(1)),
+        needed: limits.min.saturating_add(limits.keep(1)),
         available,
     };
     let Some(&(source, top)) = candidates.first() else {
@@ -547,7 +702,7 @@ pub(crate) fn plan(
     let want = match amount {
         WithdrawAmount::All => {
             let all = (candidates.iter().map(|(_, c)| *c).sum::<u64>())
-                .saturating_sub(limits.fee(candidates.len()));
+                .saturating_sub(limits.keep(candidates.len()));
             if all < limits.min {
                 return Err(least);
             }
@@ -562,8 +717,8 @@ pub(crate) fn plan(
     };
     let mut count = 1;
     for _ in 0..=candidates.len() {
-        let fee = limits.fee(count);
-        let first = top.saturating_sub(fee).min(want);
+        let keep = limits.keep(count);
+        let first = top.saturating_sub(keep).min(want);
         if first < limits.min_input {
             return Err(least);
         }
@@ -579,7 +734,7 @@ pub(crate) fn plan(
         }
         if left > 0 {
             return Err(Refused::Short {
-                needed: want.saturating_add(fee),
+                needed: want.saturating_add(keep),
                 available,
             });
         }
@@ -601,10 +756,58 @@ pub(crate) fn plan(
         return Ok(Plan {
             inputs: taken.into_iter().collect(),
             fee_source: source,
-            fee,
+            fee: limits.fee(count),
+            reserve: keep,
+            fee_from_output: false,
         });
     }
     Err(Refused::OutOfRange)
+}
+
+/// A Platform send's plan (`limits`: [`Limits::transfer_at`]). An amount is
+/// [`plan`]'s, the fee source keeping the band; it is refused only when no
+/// address can carry the amount and the band. `All` (Max) moves every
+/// input `plan` would take, in full, to the one output, which pays the fee
+/// (`ReduceOutput`): no remainder stays on them, and the output must carry
+/// the band, so the fee is covered. Dust below the input minimum, and
+/// inputs past the most one transition takes, stay (a second Max takes
+/// the rest).
+pub(crate) fn transfer_plan(
+    balances: &BTreeMap<PlatformAddress, u64>,
+    amount: WithdrawAmount,
+    limits: &Limits,
+) -> Result<Plan, Refused> {
+    if amount != WithdrawAmount::All {
+        return plan(balances, amount, limits);
+    }
+    let available: u64 = balances.values().sum();
+    let mut candidates: Vec<(PlatformAddress, u64)> = (balances.iter())
+        .filter(|(_, c)| **c >= limits.min_input)
+        .map(|(a, c)| (*a, *c))
+        .collect();
+    candidates.sort_by_key(|(a, c)| (std::cmp::Reverse(*c), *a));
+    candidates.truncate(limits.max_inputs.max(1));
+    let keep = limits.keep(candidates.len().max(1));
+    let total: u64 = candidates.iter().map(|(_, c)| *c).sum();
+    let Some(&(source, _)) = candidates.first() else {
+        return Err(Refused::Short {
+            needed: limits.min.saturating_add(limits.keep(1)),
+            available,
+        });
+    };
+    if total < limits.min.saturating_add(keep) {
+        return Err(Refused::Short {
+            needed: limits.min.saturating_add(keep),
+            available,
+        });
+    }
+    Ok(Plan {
+        fee: limits.fee(candidates.len()),
+        inputs: candidates.into_iter().collect(),
+        fee_source: source,
+        reserve: 0,
+        fee_from_output: true,
+    })
 }
 
 /// What `balances` (credits) can move: an `All` plan's withdrawal, 0 when
@@ -651,6 +854,16 @@ pub(crate) trait MoveNet: Send + Sync {
         fee_strategy: AddressFundsFeeStrategy,
         signer: &VaultPlatformAddressSigner,
     ) -> impl Future<Output = Result<(), PlatformWalletError>> + Send;
+    /// Signs the transfer of `inputs` to the one output `to` with `signer`
+    /// and broadcasts it; `Ok` once Platform answered with the addresses'
+    /// state.
+    fn transfer(
+        &self,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        to: (PlatformAddress, u64),
+        fee_strategy: AddressFundsFeeStrategy,
+        signer: &VaultPlatformAddressSigner,
+    ) -> impl Future<Output = Result<(), PlatformWalletError>> + Send;
 }
 
 /// The SDK and platform-wallet.
@@ -686,6 +899,26 @@ impl MoveNet for SdkMoves {
                 InputSelection::ExplicitWithNonces(inputs),
                 script,
                 CORE_FEE_PER_BYTE,
+                fee_strategy,
+                Some(self.sdk.version()),
+                signer,
+            )
+            .await
+            .map(drop)
+    }
+
+    async fn transfer(
+        &self,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        (to, credits): (PlatformAddress, u64),
+        fee_strategy: AddressFundsFeeStrategy,
+        signer: &VaultPlatformAddressSigner,
+    ) -> Result<(), PlatformWalletError> {
+        (self.wallet.platform())
+            .transfer(
+                ACCOUNT,
+                InputSelection::ExplicitWithNonces(inputs),
+                [(to, credits)].into(),
                 fee_strategy,
                 Some(self.sdk.version()),
                 signer,
@@ -1112,6 +1345,114 @@ pub(crate) async fn activity(
     Ok(out)
 }
 
+/// Where a move pays.
+#[derive(Debug, Clone, Copy)]
+enum Target<'a> {
+    /// One of the wallet's Core receiving addresses (a withdrawal).
+    Core(&'a str),
+    /// A Platform address, checked by [`recipient`] (a transfer).
+    Platform(PlatformAddress),
+}
+
+impl Target<'_> {
+    fn kind(&self) -> MoveKind {
+        match self {
+            Target::Core(_) => MoveKind::ToCore,
+            Target::Platform(_) => MoveKind::Transfer,
+        }
+    }
+
+    fn limits(&self, version: &PlatformVersion) -> Result<Limits, PlatformError> {
+        match self {
+            Target::Core(_) => Limits::at(version),
+            Target::Platform(_) => Ok(Limits::transfer_at(version)),
+        }
+    }
+
+    fn plan(
+        &self,
+        balances: &BTreeMap<PlatformAddress, u64>,
+        amount: WithdrawAmount,
+        limits: &Limits,
+    ) -> Result<Plan, CreditsError> {
+        match self {
+            Target::Core(_) => plan(balances, amount, limits),
+            Target::Platform(_) => transfer_plan(balances, amount, limits),
+        }
+        .map_err(|r| r.error(self.kind(), limits))
+    }
+}
+
+/// The plan of a move to `target` while `held` may still execute: from its
+/// inputs only, so it signs at the same nonces, and for an exact retry of a
+/// held send its very terms (`MoveRecord::replan`), so a retry is never
+/// refused because the balances or the plan changed since.
+fn plan_beside(
+    target: &Target<'_>,
+    mut balances: BTreeMap<PlatformAddress, u64>,
+    amount: WithdrawAmount,
+    limits: &Limits,
+    held: Option<&MoveRecord>,
+    network: Network,
+) -> Result<Plan, CreditsError> {
+    if let Some(held) = held {
+        if let Target::Platform(to) = target
+            && held.retried_by(&bech32m(to, network), amount)
+            && let Some(plan) = held.replan(limits)
+        {
+            return Ok(plan);
+        }
+        let only: BTreeSet<&str> = held.inputs.iter().map(|i| i.address.as_str()).collect();
+        balances.retain(|a, _| only.contains(bech32m(a, network).as_str()));
+    }
+    target.plan(&balances, amount, limits)
+}
+
+/// `to` as a Platform address a send of the wallet with `pool` may pay on
+/// `network`: a DIP-18 P2PKH or P2SH address whose HRP is the network's
+/// (dw-uri's classification, as Pay's; dpp's own parse takes either HRP),
+/// and none of the wallet's own.
+pub(crate) fn recipient(
+    network: Network,
+    to: &str,
+    pool: &BTreeMap<PlatformAddress, DerivationPath>,
+) -> Result<PlatformAddress, RecipientProblem> {
+    use dw_uri::keyio::{AddressKind, PlatformDestination, classify_address};
+    let address = match classify_address(to, network) {
+        AddressKind::Platform(PlatformDestination::PubKeyHash(h)) => PlatformAddress::P2pkh(h),
+        AddressKind::Platform(PlatformDestination::ScriptHash(h)) => PlatformAddress::P2sh(h),
+        AddressKind::Core(_) => return Err(RecipientProblem::Core),
+        AddressKind::Shielded(_) => return Err(RecipientProblem::Shielded),
+        AddressKind::Invalid(_) => {
+            let other = match network {
+                Network::Mainnet => Network::Testnet,
+                _ => Network::Mainnet,
+            };
+            return Err(match classify_address(to, other) {
+                AddressKind::Invalid(_) => RecipientProblem::Malformed,
+                _ => RecipientProblem::Network,
+            });
+        }
+    };
+    if pool.contains_key(&address) {
+        return Err(RecipientProblem::Own);
+    }
+    Ok(address)
+}
+
+/// Platform sends need address funds transitions
+/// (`ADDRESS_FUNDS_INITIAL_PROTOCOL_VERSION`): below it a send is
+/// `platform.feature_off{feature: "platform_addresses"}`.
+fn sends_active(version: &PlatformVersion) -> Result<(), PlatformError> {
+    use dpp::version::feature_initial_protocol_versions::ADDRESS_FUNDS_INITIAL_PROTOCOL_VERSION;
+    if version.protocol_version < ADDRESS_FUNDS_INITIAL_PROTOCOL_VERSION {
+        return Err(PlatformError::FeatureOff {
+            feature: "platform_addresses".into(),
+        });
+    }
+    Ok(())
+}
+
 /// `DashPay::move_to_core_quote`.
 pub(crate) async fn quote(
     net: &impl MoveNet,
@@ -1124,19 +1465,58 @@ pub(crate) async fn quote(
     let pool = pool(wallet).await?;
     let seen = read(session, net, pool.keys().copied().collect(), true).await?;
     let version = net.version();
-    let limits = Limits::at(version)?;
-    let planned = plan(&proved_balances(&pool, &seen, network), amount, &limits)
-        .map_err(|r| r.error(&limits))?;
+    let target = Target::Core("");
+    let limits = target.limits(version)?;
+    let planned = target.plan(&proved_balances(&pool, &seen, network), amount, &limits)?;
     let to = session
         .current_receiving_address(wallet_id)
         .await
         .map_err(PlatformError::from)?;
-    let credits = planned.credits() + planned.fee;
+    let credits = planned.may_lose();
     Ok(MoveToCoreQuote {
         credits,
         fee_credits: planned.fee,
         expected_duffs: withdrawal::expected_duffs(planned.credits(), version)?,
         to: to.to_string(),
+        grant: GrantRequest {
+            max_duffs: 0,
+            max_credits: credits,
+        },
+    })
+}
+
+/// `DashPay::platform_send_quote`.
+pub(crate) async fn send_quote(
+    net: &impl MoveNet,
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+    to: &str,
+    amount: WithdrawAmount,
+) -> Result<PlatformSendQuote, CreditsError> {
+    let network = session.vault.network();
+    let pool = pool(wallet).await?;
+    let address = recipient(network, to, &pool)
+        .map_err(|reason| CreditsError::RecipientInvalid { reason })?;
+    let version = net.version();
+    sends_active(version)?;
+    let moves = Store::of(session, wallet_id)?.moves().await?;
+    let seen = read(session, net, covered(&pool, &moves), true).await?;
+    let target = Target::Platform(address);
+    let limits = target.limits(version)?;
+    // As the send will plan: beside a move that may still execute (one this
+    // read shows taken is settled by the send's own read, so not counted).
+    let held = (moves.iter()).find(|m| m.holds() && !m.reached(&seen));
+    let balances = proved_balances(&pool, &seen, network);
+    let planned = plan_beside(&target, balances, amount, &limits, held, network)?;
+    let credits = planned.may_lose();
+    Ok(PlatformSendQuote {
+        credits,
+        amount_credits: planned.credits(),
+        fee_credits: planned.fee,
+        max_fee_credits: limits.keep(planned.inputs.len()),
+        fee_from_amount: planned.fee_from_output,
+        to: bech32m(&address, network),
         grant: GrantRequest {
             max_duffs: 0,
             max_credits: credits,
@@ -1153,6 +1533,68 @@ pub(crate) async fn move_to_core(
     (amount, to): (WithdrawAmount, &str),
     grant: &str,
 ) -> Result<MoveToCoreOutcome, CreditsError> {
+    let record = run(
+        net,
+        session,
+        wallet,
+        wallet_id,
+        (amount, Target::Core(to)),
+        grant,
+    )
+    .await?;
+    let row = record.activity();
+    Ok(MoveToCoreOutcome {
+        id: record.id.clone(),
+        credits: row.credits,
+        expected_duffs: row.expected_duffs,
+        to: row.to,
+        state: record.state,
+        fee_credits: row.fee_credits,
+    })
+}
+
+/// `DashPay::platform_send` (module doc): as `move_to_core`, to a Platform
+/// address [`recipient`] admits.
+pub(crate) async fn send(
+    net: &impl MoveNet,
+    session: &Arc<NetworkSession>,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+    (amount, to): (WithdrawAmount, &str),
+    grant: &str,
+) -> Result<PlatformSendOutcome, CreditsError> {
+    let address = recipient(session.vault.network(), to, &pool(wallet).await?)
+        .map_err(|reason| CreditsError::RecipientInvalid { reason })?;
+    sends_active(net.version())?;
+    let record = run(
+        net,
+        session,
+        wallet,
+        wallet_id,
+        (amount, Target::Platform(address)),
+        grant,
+    )
+    .await?;
+    let row = record.activity();
+    Ok(PlatformSendOutcome {
+        id: record.id.clone(),
+        credits: row.credits,
+        to: row.to,
+        state: record.state,
+        fee_credits: row.fee_credits,
+    })
+}
+
+/// One move to `target` (module doc, Moves); the record as it stands when
+/// the call returns.
+async fn run(
+    net: &impl MoveNet,
+    session: &Arc<NetworkSession>,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+    (amount, target): (WithdrawAmount, Target<'_>),
+    grant: &str,
+) -> Result<MoveRecord, CreditsError> {
     let lock = wallet_lock(wallet_id);
     let _one = lock.lock().await;
     let network = session.vault.network();
@@ -1173,16 +1615,12 @@ pub(crate) async fn move_to_core(
         });
     }
     let version = net.version();
-    let limits = Limits::at(version)?;
-    let mut balances = proved_balances(&pool, &seen, network);
+    let limits = target.limits(version)?;
     // A move that may still execute: the next one draws from its inputs only,
     // so it signs at the same nonces (checked below).
     let held = moves.iter().find(|m| m.holds());
-    if let Some(held) = held {
-        let only: BTreeSet<&str> = held.inputs.iter().map(|i| i.address.as_str()).collect();
-        balances.retain(|a, _| only.contains(bech32m(a, network).as_str()));
-    }
-    let planned = plan(&balances, amount, &limits).map_err(|r| r.error(&limits))?;
+    let balances = proved_balances(&pool, &seen, network);
+    let planned = plan_beside(&target, balances, amount, &limits, held, network)?;
     let mut inputs = BTreeMap::new();
     for (address, credits) in &planned.inputs {
         let nonce = seen
@@ -1190,8 +1628,16 @@ pub(crate) async fn move_to_core(
             .ok_or(PlatformError::Unavailable)?;
         inputs.insert(*address, (nonce.saturating_add(1), *credits));
     }
+    let (to, expected_duffs) = match target {
+        Target::Core(to) => (
+            to.to_owned(),
+            withdrawal::expected_duffs(planned.credits(), version)?,
+        ),
+        Target::Platform(address) => (bech32m(&address, network), 0),
+    };
     let mut record = MoveRecord {
         id: format!("move-{}-{}", seen.height, moves.len()),
+        kind: target.kind(),
         inputs: (inputs.iter())
             .map(|(a, (nonce, credits))| {
                 let address = bech32m(a, network);
@@ -1200,15 +1646,16 @@ pub(crate) async fn move_to_core(
                     address,
                     nonce: *nonce,
                     credits: *credits,
-                    fee_source: *a == planned.fee_source,
+                    fee_source: !planned.fee_from_output && *a == planned.fee_source,
                     unseen: 0,
                 }
             })
             .collect(),
-        credits: planned.credits() + planned.fee,
+        credits: planned.may_lose(),
         fee_credits: planned.fee,
-        expected_duffs: withdrawal::expected_duffs(planned.credits(), version)?,
-        to: to.to_owned(),
+        expected_duffs,
+        to,
+        fee_from_output: planned.fee_from_output,
         at: unix_now(),
         state: PlatformActivityState::Pending,
         signed: false,
@@ -1221,30 +1668,23 @@ pub(crate) async fn move_to_core(
         group: None,
     };
     // A move `failed` by height may still execute: only one at its very
-    // inputs and nonces may follow it.
-    if let Some(held) = held.filter(|h| h.key() != record.key()) {
+    // inputs and nonces may follow it, and when either pays a Platform
+    // address (someone else's) only its exact retry, so whichever of the
+    // two lands pays what the user asked, once.
+    let blocks = |h: &&MoveRecord| {
+        h.key() != record.key()
+            || ((h.kind == MoveKind::Transfer || record.kind == MoveKind::Transfer)
+                && h.terms() != record.terms())
+    };
+    if let Some(held) = held.filter(blocks) {
         return Err(CreditsError::MovePending {
             id: held.id.clone(),
         });
     }
-    let script = withdrawal::destination(network, to)?;
-    // `destination` checked it parses, for this network.
-    let address = std::str::FromStr::from_str(to.trim())
-        .ok()
-        .and_then(|a: dpp::dashcore::Address<_>| a.require_network(network).ok())
-        .ok_or(PlatformError::InvalidArgument {
-            detail: "not a Dash address of this network".into(),
-        })?;
-    let own = session
-        .is_receiving_address(wallet_id, &address)
-        .await
-        .map_err(PlatformError::from)?;
-    if !own {
-        return Err(PlatformError::InvalidArgument {
-            detail: "a move pays only one of this wallet's receiving addresses".into(),
-        }
-        .into());
-    }
+    let script = match target {
+        Target::Core(to) => Some(own_core_destination(session, wallet_id, network, to).await?),
+        Target::Platform(_) => None,
+    };
     // The authority before anything is redeemed: a refusal keeps the grant.
     let authority = match session.lease_for(&wallet_id, grant) {
         Some(lease) => {
@@ -1270,7 +1710,11 @@ pub(crate) async fn move_to_core(
             .await
             .map_err(PlatformError::from)?,
     };
-    let permit = write_permit(&lease, "move_to_core", record.credits)?;
+    let label = match target {
+        Target::Core(_) => "move_to_core",
+        Target::Platform(_) => "platform_send",
+    };
+    let permit = write_permit(&lease, label, record.credits)?;
     let signer = match permit.platform_address_signer(paths) {
         Ok(signer) => signer,
         Err(e) => {
@@ -1288,11 +1732,17 @@ pub(crate) async fn move_to_core(
         .hub
         .pump
         .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
-    let call = leased(
-        &lease,
-        net.withdraw(inputs, script, planned.fee_strategy(), &signer),
-    )
-    .await;
+    let strategy = planned.fee_strategy();
+    let call = match (target, script) {
+        (Target::Platform(address), _) => {
+            let output = (address, planned.credits());
+            leased(&lease, net.transfer(inputs, output, strategy, &signer)).await
+        }
+        (Target::Core(_), Some(script)) => {
+            leased(&lease, net.withdraw(inputs, script, strategy, &signer)).await
+        }
+        (Target::Core(_), None) => unreachable!("a withdrawal has its destination"),
+    };
     // The testnet smoke's restart (release 0.1, review r2): the process
     // ends between the call and its outcome, as a crash would there.
     #[cfg(all(feature = "test-fund", debug_assertions))]
@@ -1335,18 +1785,68 @@ pub(crate) async fn move_to_core(
         .hub
         .pump
         .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
-    let record = &moves[at];
     if cannot_land && let Err(e) = call {
         return Err(PlatformError::from(e).into());
     }
-    let row = record.activity();
-    Ok(MoveToCoreOutcome {
-        id: record.id.clone(),
-        credits: row.credits,
-        expected_duffs: row.expected_duffs,
-        to: row.to,
-        state: record.state,
-        fee_credits: row.fee_credits,
+    Ok(moves.swap_remove(at))
+}
+
+/// `to` as the script of one of the wallet's Core receiving addresses on
+/// `network`, the only destination a withdrawal pays.
+async fn own_core_destination(
+    session: &NetworkSession,
+    wallet_id: WalletId,
+    network: Network,
+    to: &str,
+) -> Result<CoreScript, PlatformError> {
+    let script = withdrawal::destination(network, to)?;
+    // `destination` checked it parses, for this network.
+    let address = std::str::FromStr::from_str(to.trim())
+        .ok()
+        .and_then(|a: dpp::dashcore::Address<_>| a.require_network(network).ok())
+        .ok_or(PlatformError::InvalidArgument {
+            detail: "not a Dash address of this network".into(),
+        })?;
+    let own = session
+        .is_receiving_address(wallet_id, &address)
+        .await
+        .map_err(PlatformError::from)?;
+    if !own {
+        return Err(PlatformError::InvalidArgument {
+            detail: "a move pays only one of this wallet's receiving addresses".into(),
+        });
+    }
+    Ok(script)
+}
+
+/// `DashPay::platform_receive_address`: the lowest unused address of the
+/// payment account (platform-wallet's `next_unused_receive_address`, from
+/// public key material; the same one until a sync pass sees it funded).
+pub(crate) async fn receive_address(
+    net: &impl MoveNet,
+    wallet: &PlatformWallet,
+    network: Network,
+) -> Result<PlatformReceiveAddress, PlatformError> {
+    // It ships with the send: below address funds, nothing could spend it.
+    sends_active(net.version())?;
+    let key = key_wallet::account::account_collection::PlatformPaymentAccountKey {
+        account: ACCOUNT,
+        key_class: 0,
+    };
+    let address = wallet
+        .platform()
+        .next_unused_receive_address(key)
+        .await
+        .map_err(PlatformError::from)?;
+    let index = (pool(wallet).await?.get(&address))
+        .and_then(|path| path.as_ref().last().copied())
+        .map(u32::from)
+        .ok_or_else(|| PlatformError::Internal {
+            detail: "the receive address is not in the payment account".into(),
+        })?;
+    Ok(PlatformReceiveAddress {
+        address: bech32m(&address, network),
+        index,
     })
 }
 

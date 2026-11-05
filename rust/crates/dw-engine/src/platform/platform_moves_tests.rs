@@ -95,6 +95,7 @@ fn a_moves_own_spend_is_no_outgoing_row() {
 fn record(id: &str, at: u64, inputs: &[(&str, u32)]) -> MoveRecord {
     MoveRecord {
         id: id.into(),
+        kind: MoveKind::ToCore,
         inputs: inputs
             .iter()
             .map(|(a, n)| MoveInput {
@@ -110,6 +111,7 @@ fn record(id: &str, at: u64, inputs: &[(&str, u32)]) -> MoveRecord {
         fee_credits: 1,
         expected_duffs: 0,
         to: "y".into(),
+        fee_from_output: false,
         at,
         state: PlatformActivityState::Pending,
         signed: true,
@@ -225,6 +227,7 @@ fn limits() -> Limits {
         max: 2_000,
         fee_base: 7,
         fee_per_input: 1,
+        band: 1,
     }
 }
 
@@ -382,8 +385,10 @@ struct FakeMoves {
     /// Where the moves are stored, to see one recorded before signing.
     store: Mutex<Option<(Arc<dw_appdb::AppDb>, String)>>,
     recorded_before_signing: Mutex<Vec<bool>>,
-    /// Each sent transition's fee source.
-    sources: Mutex<Vec<PlatformAddress>>,
+    /// Each sent transition's fee source (`None`: its output pays it).
+    sources: Mutex<Vec<Option<PlatformAddress>>>,
+    /// Each sent transition's output, a transfer's.
+    outputs: Mutex<Vec<Option<(PlatformAddress, u64)>>>,
     /// The next read stops the process.
     stop_in_read: AtomicBool,
     /// The next read uses the fallback, setting the latch: the session's
@@ -404,6 +409,7 @@ impl FakeMoves {
             store: Mutex::default(),
             recorded_before_signing: Mutex::default(),
             sources: Mutex::default(),
+            outputs: Mutex::default(),
             stop_in_read: AtomicBool::new(false),
             sets_latch: Mutex::default(),
         })
@@ -427,8 +433,14 @@ impl FakeMoves {
         self.state.lock().unwrap().get(&address).map_or(0, |s| s.1)
     }
 
-    /// Executes `inputs` as Drive would: every nonce the stored one + 1.
-    fn execute(&self, inputs: &BTreeMap<PlatformAddress, (u32, u64)>, source: PlatformAddress) {
+    /// Executes `inputs` as Drive would: every nonce the stored one + 1;
+    /// the fee from `source`, or from the output when `None`.
+    fn execute(
+        &self,
+        inputs: &BTreeMap<PlatformAddress, (u32, u64)>,
+        source: Option<PlatformAddress>,
+        output: Option<(PlatformAddress, u64)>,
+    ) {
         let mut state = self.state.lock().unwrap();
         if !(inputs.iter()).all(|(a, (n, _))| state.get(a).is_some_and(|s| s.0 + 1 == *n)) {
             return;
@@ -436,10 +448,97 @@ impl FakeMoves {
         for (a, (n, c)) in inputs {
             let s = state.get_mut(a).unwrap();
             s.0 = *n;
-            s.1 -= c + if *a == source { self.fee } else { 0 };
+            s.1 -= c + if Some(*a) == source { self.fee } else { 0 };
+        }
+        if let Some((to, credits)) = output {
+            let paid = credits - if source.is_none() { self.fee } else { 0 };
+            state.entry(to).or_insert((0, 0)).1 += paid;
         }
         drop(state);
         self.tick();
+    }
+
+    /// The scripted broadcast of a withdrawal (`output` `None`) or a
+    /// transfer.
+    async fn broadcast(
+        &self,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        output: Option<(PlatformAddress, u64)>,
+        fee_strategy: AddressFundsFeeStrategy,
+        signer: &VaultPlatformAddressSigner,
+    ) -> Result<(), Box<PlatformWalletError>> {
+        let recorded = self
+            .store
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|(db, scope)| {
+                (db.settings_with_prefix(scope, MOVE_PREFIX).unwrap().iter()).any(|(_, v)| {
+                    let m: MoveRecord = serde_json::from_str(v).unwrap();
+                    m.state == PlatformActivityState::Pending && !m.signed
+                })
+            });
+        self.recorded_before_signing.lock().unwrap().push(recorded);
+        let act = self.acts.lock().unwrap().pop_front();
+        let act = act.unwrap_or(Act::Executes);
+        if act == Act::StopsBeforeSigning {
+            panic!("the process stops");
+        }
+        for address in inputs.keys() {
+            signer.sign(address, b"transition").await.unwrap();
+        }
+        let source = match fee_strategy.as_slice() {
+            [AddressFundsFeeStrategyStep::DeductFromInput(i)] => {
+                Some(*inputs.keys().nth(usize::from(*i)).unwrap())
+            }
+            [AddressFundsFeeStrategyStep::ReduceOutput(0)] if output.is_some() => None,
+            _ => panic!("{fee_strategy:?}"),
+        };
+        self.sent.lock().unwrap().push(inputs.clone());
+        self.sources.lock().unwrap().push(source);
+        self.outputs.lock().unwrap().push(output);
+        let lost = || {
+            PlatformWalletError::Sdk(dash_sdk::Error::TimeoutReached(
+                Duration::from_secs(1),
+                "wait".into(),
+            ))
+        };
+        let result = match act {
+            Act::Executes => {
+                self.execute(&inputs, source, output);
+                Ok(())
+            }
+            Act::AnswersOnly => Ok(()),
+            Act::ExecutesUnanswered => {
+                self.execute(&inputs, source, output);
+                Err(lost())
+            }
+            Act::Lost => Err(lost()),
+            Act::Invalid => {
+                use dpp::consensus::basic::state_transition::TransitionNoInputsError;
+                Err(PlatformWalletError::Sdk(
+                    TransitionNoInputsError::new().into(),
+                ))
+            }
+            Act::StopsBeforeSigning | Act::StopsAfterSigning => panic!("the process stops"),
+            Act::StopsAfterBroadcast => {
+                self.execute(&inputs, source, output);
+                panic!("the process stops")
+            }
+            Act::StopsBeforeOutcome => {
+                self.execute(&inputs, source, output);
+                self.stop_in_read.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+            Act::EarlierExecutes(n) => {
+                let earlier = self.sent.lock().unwrap()[n].clone();
+                let source = self.sources.lock().unwrap()[n];
+                let output = self.outputs.lock().unwrap()[n];
+                self.execute(&earlier, source, output);
+                Ok(())
+            }
+        };
+        result.map_err(Box::new)
     }
 }
 
@@ -473,72 +572,17 @@ impl MoveNet for FakeMoves {
         fee_strategy: AddressFundsFeeStrategy,
         signer: &VaultPlatformAddressSigner,
     ) -> Result<(), PlatformWalletError> {
-        let recorded = self
-            .store
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|(db, scope)| {
-                (db.settings_with_prefix(scope, MOVE_PREFIX).unwrap().iter()).any(|(_, v)| {
-                    let m: MoveRecord = serde_json::from_str(v).unwrap();
-                    m.state == PlatformActivityState::Pending && !m.signed
-                })
-            });
-        self.recorded_before_signing.lock().unwrap().push(recorded);
-        let act = self.acts.lock().unwrap().pop_front();
-        let act = act.unwrap_or(Act::Executes);
-        if act == Act::StopsBeforeSigning {
-            panic!("the process stops");
-        }
-        for address in inputs.keys() {
-            signer.sign(address, b"transition").await.unwrap();
-        }
-        let [AddressFundsFeeStrategyStep::DeductFromInput(i)] = fee_strategy.as_slice() else {
-            panic!("{fee_strategy:?}")
-        };
-        let source = *inputs.keys().nth(usize::from(*i)).unwrap();
-        self.sent.lock().unwrap().push(inputs.clone());
-        self.sources.lock().unwrap().push(source);
-        let lost = || {
-            PlatformWalletError::Sdk(dash_sdk::Error::TimeoutReached(
-                Duration::from_secs(1),
-                "wait".into(),
-            ))
-        };
-        match act {
-            Act::Executes => {
-                self.execute(&inputs, source);
-                Ok(())
-            }
-            Act::AnswersOnly => Ok(()),
-            Act::ExecutesUnanswered => {
-                self.execute(&inputs, source);
-                Err(lost())
-            }
-            Act::Lost => Err(lost()),
-            Act::Invalid => {
-                use dpp::consensus::basic::state_transition::TransitionNoInputsError;
-                Err(PlatformWalletError::Sdk(
-                    TransitionNoInputsError::new().into(),
-                ))
-            }
-            Act::StopsBeforeSigning | Act::StopsAfterSigning => panic!("the process stops"),
-            Act::StopsAfterBroadcast => {
-                self.execute(&inputs, source);
-                panic!("the process stops")
-            }
-            Act::StopsBeforeOutcome => {
-                self.execute(&inputs, source);
-                self.stop_in_read.store(true, Ordering::SeqCst);
-                Ok(())
-            }
-            Act::EarlierExecutes(n) => {
-                let earlier = self.sent.lock().unwrap()[n].clone();
-                let source = self.sources.lock().unwrap()[n];
-                self.execute(&earlier, source);
-                Ok(())
-            }
-        }
+        (self.broadcast(inputs, None, fee_strategy, signer).await).map_err(|e| *e)
+    }
+
+    async fn transfer(
+        &self,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        to: (PlatformAddress, u64),
+        fee_strategy: AddressFundsFeeStrategy,
+        signer: &VaultPlatformAddressSigner,
+    ) -> Result<(), PlatformWalletError> {
+        (self.broadcast(inputs, Some(to), fee_strategy, signer).await).map_err(|e| *e)
     }
 }
 
@@ -679,7 +723,7 @@ fn an_answer_without_the_nonce_stays_pending() {
     assert!(w.f.unused(&grant));
     // It lands after all.
     let sent = w.net.sent.lock().unwrap()[0].clone();
-    w.net.execute(&sent, a);
+    w.net.execute(&sent, Some(a), None);
     let activity = w.activity();
     let moved = find(&activity, PlatformActivityKind::MoveToCore);
     assert_eq!(moved.state, PlatformActivityState::Done);
@@ -1194,4 +1238,459 @@ fn a_group_with_two_destinations_names_none() {
         (row.state, row.to.as_deref()),
         (PlatformActivityState::Done, None)
     );
+}
+
+// ---- 0.2 X1b: the receive address and sends to Platform addresses ----
+
+impl World {
+    fn network(&self) -> Network {
+        self.f.s.vault.network()
+    }
+
+    /// A Platform address that is not the wallet's, in this network's form.
+    fn theirs(&self, byte: u8) -> (PlatformAddress, String) {
+        let a = PlatformAddress::P2pkh([byte; 20]);
+        (a, a.to_bech32m_string(self.network()))
+    }
+
+    fn send(
+        &self,
+        amount: WithdrawAmount,
+        to: &str,
+        grant: &str,
+    ) -> Result<PlatformSendOutcome, CreditsError> {
+        let (to, grant) = (to.to_owned(), grant.to_owned());
+        self.call(move |net, s, w, id| async move {
+            send(&*net, &s, &w, id, (amount, &to), &grant).await
+        })
+    }
+
+    fn send_quote(
+        &self,
+        amount: WithdrawAmount,
+        to: &str,
+    ) -> Result<PlatformSendQuote, CreditsError> {
+        let to = to.to_owned();
+        self.call(
+            move |net, s, w, id| async move { send_quote(&*net, &s, &w, id, &to, amount).await },
+        )
+    }
+
+    fn receive_address(&self) -> PlatformReceiveAddress {
+        self.call(
+            |net, s, w, _| async move { Ok(receive_address(&*net, &w, s.vault.network()).await?) },
+        )
+        .unwrap()
+    }
+}
+
+fn reason(r: Result<impl std::fmt::Debug, CreditsError>) -> RecipientProblem {
+    match r {
+        Err(CreditsError::RecipientInvalid { reason }) => reason,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A bech32m string of `hrp` over `payload` (dw-uri's shielded form when
+/// `payload` is the shielded type byte and 43 bytes).
+fn bech32m_of(hrp: &str, payload: &[u8]) -> String {
+    use dpp::dashcore::bech32::{self, ToBase32, Variant};
+    bech32::encode(hrp, payload.to_base32(), Variant::Bech32m).unwrap()
+}
+
+/// R1: the receive address is the payment account's lowest unused one, in
+/// the network's form; asking again gives the same address until it is
+/// seen funded, then the next one.
+#[test]
+fn the_receive_address_is_the_lowest_unused_and_stable() {
+    let w = World::new();
+    // The payment account's addresses by their index.
+    let by_index: BTreeMap<u32, String> = (w.call(|_, s, wallet, _| async move {
+        let network = s.vault.network();
+        Ok((pool(&wallet).await?.into_iter())
+            .map(|(a, path)| {
+                (
+                    u32::from(*path.as_ref().last().unwrap()),
+                    bech32m(&a, network),
+                )
+            })
+            .collect())
+    }))
+    .unwrap();
+    let first = w.receive_address();
+    assert_eq!(first, w.receive_address(), "stable until funded");
+    assert_eq!((first.index, &first.address), (0, &by_index[&0]));
+    assert!(first.address.starts_with("tdash1"), "{}", first.address);
+    // A sync pass funds it (platform-wallet's `on_address_found` write).
+    let funded = parse(&first.address).unwrap();
+    w.call(move |_, _, wallet, _| async move {
+        use key_wallet::KeySource;
+        use key_wallet::account::account_collection::PlatformPaymentAccountKey;
+        let key = PlatformPaymentAccountKey {
+            account: 0,
+            key_class: 0,
+        };
+        let mut wm = wallet.wallet_manager().write().await;
+        let (core, info) = wm.get_wallet_mut_and_info_mut(&wallet.wallet_id()).unwrap();
+        let xpub = core.accounts.platform_payment_accounts[&key].account_xpub;
+        let account = (info.core_wallet)
+            .platform_payment_managed_account_at_index_mut(0)
+            .unwrap();
+        let PlatformAddress::P2pkh(hash) = funded else {
+            unreachable!()
+        };
+        let p2pkh = PlatformP2PKHAddress::new(hash);
+        account.set_address_credit_balance(p2pkh, DASH, Some(&KeySource::Public(xpub)));
+        Ok(())
+    })
+    .unwrap();
+    let next = w.receive_address();
+    assert_eq!((next.index, &next.address), (1, &by_index[&1]));
+}
+
+/// Q3: a P2SH Platform address of this network is a recipient, as a
+/// P2PKH one is.
+#[test]
+fn a_p2sh_platform_recipient_is_accepted() {
+    let w = World::new();
+    let pool = w.call(|_, _, wallet, _| async move { Ok(pool(&wallet).await?) });
+    let pool = pool.unwrap();
+    let p2sh = PlatformAddress::P2sh([5; 20]);
+    let text = p2sh.to_bech32m_string(w.network());
+    assert_eq!(recipient(w.network(), &text, &pool), Ok(p2sh));
+    let (p2pkh, text) = w.theirs(9);
+    assert_eq!(
+        recipient(w.network(), &format!(" {text}\n"), &pool),
+        Ok(p2pkh)
+    );
+}
+
+/// Q3: a Platform address of another network is refused as such, though
+/// dpp's own parse takes either HRP.
+#[test]
+fn a_platform_address_of_another_network_is_refused() {
+    let w = World::new();
+    let pool = (w.call(|_, _, wallet, _| async move { Ok(pool(&wallet).await?) })).unwrap();
+    for a in [
+        PlatformAddress::P2pkh([9; 20]),
+        PlatformAddress::P2sh([5; 20]),
+    ] {
+        let mainnet = a.to_bech32m_string(Network::Mainnet);
+        assert!(PlatformAddress::from_bech32m_string(&mainnet).is_ok());
+        assert_eq!(
+            recipient(w.network(), &mainnet, &pool),
+            Err(RecipientProblem::Network)
+        );
+    }
+}
+
+/// Q3: a Core or a shielded address, one of the wallet's own Platform
+/// addresses, and no address at all are refused, each with its reason;
+/// the send refuses them before any read, and keeps the grant.
+#[test]
+fn a_core_shielded_own_or_malformed_recipient_is_refused() {
+    let w = World::new();
+    w.net.fund(w.address(0), 3 * DASH);
+    let mut shielded = vec![dw_uri::keyio::SHIELDED_TYPE_BYTE];
+    shielded.extend([3; 43]);
+    let cases = [
+        (w.to.clone(), RecipientProblem::Core),
+        (bech32m_of("tdash", &shielded), RecipientProblem::Shielded),
+        (bech32m(&w.address(1), w.network()), RecipientProblem::Own),
+        ("tdash1notanaddress".to_owned(), RecipientProblem::Malformed),
+    ];
+    let grant = w.f.grant(DASH);
+    let one = WithdrawAmount::Credits { credits: DASH / 2 };
+    for (to, want) in cases {
+        assert_eq!(reason(w.send_quote(one, &to)), want, "{to}");
+        assert_eq!(reason(w.send(one, &to, &grant)), want, "{to}");
+    }
+    assert!(w.f.unused(&grant));
+    assert!(w.net.sent.lock().unwrap().is_empty());
+}
+
+/// The send's fee estimate is dpp's transfer estimate with one output.
+#[test]
+fn the_send_fee_is_dpps_transfer_estimate() {
+    use dpp::state_transition::address_funds_transfer_transition::AddressFundsTransferTransition;
+    let v = PlatformVersion::latest();
+    let l = Limits::transfer_at(v);
+    for n in 1..=3 {
+        assert_eq!(
+            l.fee(n),
+            AddressFundsTransferTransition::estimate_min_fee(n, 1, v)
+        );
+        assert_eq!(l.keep(n), TRANSFER_FEE_BAND * l.fee(n));
+    }
+    let funds = &v.dpp.state_transitions.address_funds;
+    assert_eq!(l.min, funds.min_output_amount.max(funds.min_input_amount));
+}
+
+/// Q4: an amount is refused up front only when no address carries it and
+/// the band; the fee source keeps the band.
+#[test]
+fn a_send_is_refused_only_when_the_amount_and_band_do_not_fit() {
+    let l = Limits::transfer_at(PlatformVersion::latest());
+    let amount = 2 * l.min;
+    let fits = balances(&[(1, amount + l.keep(1))]);
+    let p = transfer_plan(&fits, WithdrawAmount::Credits { credits: amount }, &l).unwrap();
+    assert_eq!(p.inputs, balances(&[(1, amount)]));
+    assert_eq!(
+        (p.fee, p.reserve, p.may_lose()),
+        (l.fee(1), l.keep(1), amount + l.keep(1))
+    );
+    let short = balances(&[(1, amount + l.keep(1) - 1)]);
+    assert_eq!(
+        transfer_plan(&short, WithdrawAmount::Credits { credits: amount }, &l),
+        Err(Refused::Short {
+            needed: amount + l.keep(1),
+            available: amount + l.keep(1) - 1,
+        })
+    );
+    assert_eq!(
+        transfer_plan(&fits, WithdrawAmount::Credits { credits: l.min - 1 }, &l),
+        Err(Refused::OutOfRange)
+    );
+}
+
+/// Q5: Max moves every input in full to the output, which pays the fee: no
+/// remainder is left on them, and the output carries the band.
+#[test]
+fn max_leaves_nothing_on_its_inputs_and_covers_the_fee() {
+    let l = Limits::transfer_at(PlatformVersion::latest());
+    let b = balances(&[(1, 5 * DASH), (2, 2 * DASH), (3, l.min_input - 1)]);
+    let p = transfer_plan(&b, WithdrawAmount::All, &l).unwrap();
+    assert_eq!(p.inputs, balances(&[(1, 5 * DASH), (2, 2 * DASH)]));
+    assert!(p.fee_from_output);
+    assert_eq!(p.reserve, 0);
+    assert_eq!(
+        p.fee_strategy(),
+        vec![AddressFundsFeeStrategyStep::ReduceOutput(0)]
+    );
+    assert!(p.credits() >= l.min + l.keep(2));
+    // Too little to carry the band: refused, not sent.
+    let tiny = balances(&[(1, l.min + l.keep(1) - 1)]);
+    assert!(matches!(
+        transfer_plan(&tiny, WithdrawAmount::All, &l),
+        Err(Refused::Short { .. })
+    ));
+
+    // Against the network: the inputs end at 0, the recipient gets the
+    // rest less the fee, and the send's fall is no outgoing row.
+    let w = World::new();
+    let (a, b) = (w.address(0), w.address(1));
+    w.net.fund(a, 3 * DASH);
+    w.net.fund(b, DASH);
+    w.activity();
+    let (them, to) = w.theirs(9);
+    let quote = w.send_quote(WithdrawAmount::All, &to).unwrap();
+    assert!(quote.fee_from_amount);
+    assert_eq!((quote.amount_credits, quote.credits), (4 * DASH, 4 * DASH));
+    let out = w
+        .send(WithdrawAmount::All, &to, &w.f.grant(4 * DASH))
+        .unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    assert_eq!((w.net.credits(a), w.net.credits(b)), (0, 0), "no dust left");
+    assert_eq!(w.net.credits(them), 4 * DASH - w.net.fee);
+    assert_eq!(out.fee_credits, None, "the recipient's output paid it");
+    let activity = w.activity();
+    assert!(
+        !activity
+            .iter()
+            .any(|r| r.kind == PlatformActivityKind::Outgoing)
+    );
+}
+
+/// R3: a send pays the recipient at the nonces it signs, shows as a `Send`
+/// row with its recipient and the fee taken, and its own fall is no
+/// outgoing row.
+#[test]
+fn a_send_pays_the_recipient_and_shows_as_a_send() {
+    let w = World::new();
+    let a = w.address(0);
+    w.net.fund(a, 3 * DASH);
+    let (them, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let quote = w.send_quote(one, &to).unwrap();
+    let l = Limits::transfer_at(PlatformVersion::latest());
+    assert_eq!(
+        (
+            quote.amount_credits,
+            quote.fee_credits,
+            quote.max_fee_credits
+        ),
+        (DASH, l.fee(1), l.keep(1))
+    );
+    assert_eq!(
+        (quote.credits, quote.to.as_str()),
+        (DASH + l.keep(1), to.as_str())
+    );
+    assert!(!quote.fee_from_amount);
+    assert_eq!(quote.grant.max_credits, quote.credits);
+    let out = w.send(one, &to, &w.f.grant(quote.credits)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    assert_eq!(w.net.credits(them), DASH);
+    assert_eq!(w.net.credits(a), 2 * DASH - w.net.fee);
+    assert_eq!(out.fee_credits, Some(w.net.fee));
+    assert_eq!(out.to.as_deref(), Some(to.as_str()));
+    // Done, it shows what left the addresses: the amount and the fee taken,
+    // not the band the plan kept for it.
+    assert_eq!(out.credits, DASH + w.net.fee);
+    let activity = w.activity();
+    let sent = find(&activity, PlatformActivityKind::Send);
+    assert_eq!(sent.credits, DASH + w.net.fee);
+    assert_eq!(
+        (sent.state, sent.to.as_deref(), sent.expected_duffs),
+        (PlatformActivityState::Done, Some(to.as_str()), None)
+    );
+    assert!(
+        !activity
+            .iter()
+            .any(|r| r.kind == PlatformActivityKind::Outgoing)
+    );
+}
+
+/// A send that may still land holds its inputs' nonces against a move to
+/// Core, as a move does against a send: one hold for both.
+#[test]
+fn a_send_and_a_move_share_one_hold() {
+    let w = World::new();
+    w.net.fund(w.address(0), 3 * DASH);
+    let (_, to) = w.theirs(9);
+    w.net.then(Act::Lost);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let first = w.send(one, &to, &w.f.grant(2 * DASH)).unwrap();
+    assert_eq!(first.state, PlatformActivityState::Pending);
+    let grant = w.f.grant(2 * DASH);
+    match w.move_to(one, &w.to, &grant) {
+        Err(CreditsError::MovePending { id }) => assert_eq!(id, first.id),
+        other => panic!("{other:?}"),
+    }
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1);
+}
+
+/// A send failed by height may still land: a send to another recipient
+/// at its very inputs and nonces is refused (only one of them could land,
+/// and nothing would say which recipient was paid); its exact retry goes.
+#[test]
+fn a_failed_send_blocks_a_send_to_another_recipient() {
+    let w = World::new();
+    let (a, b) = (w.address(0), w.address(1));
+    w.net.fund(a, 3 * DASH);
+    let (_, first_to) = w.theirs(9);
+    let (_, other_to) = w.theirs(8);
+    w.net.then(Act::Lost);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let first = w.send(one, &first_to, &w.f.grant(2 * DASH)).unwrap();
+    assert_eq!(first.state, PlatformActivityState::Pending);
+    w.net.fund(b, 9 * DASH);
+    w.activity();
+    assert_eq!(w.moves()[0].state, PlatformActivityState::Failed);
+    assert!(w.moves()[0].can_land);
+    let grant = w.f.grant(2 * DASH);
+    match w.send(one, &other_to, &grant) {
+        Err(CreditsError::MovePending { id }) => assert_eq!(id, first.id),
+        other => panic!("{other:?}"),
+    }
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing else signed");
+    // Its exact retry: the same inputs at the same nonces.
+    let retry = w.send(one, &first_to, &grant).unwrap();
+    assert_eq!(retry.state, PlatformActivityState::Done);
+    let sent = w.net.sent.lock().unwrap().clone();
+    assert_eq!(sent[1], sent[0]);
+}
+
+/// A held send's exact retry re-signs its own terms: a payment that arrived
+/// at its input since (Max would now plan more) does not hold it back, and
+/// the quote shows those terms.
+#[test]
+fn a_failed_max_send_is_retried_on_its_own_terms() {
+    let w = World::new();
+    let a = w.address(0);
+    w.net.fund(a, 3 * DASH);
+    let (them, to) = w.theirs(9);
+    w.net.then(Act::Lost);
+    let first = w
+        .send(WithdrawAmount::All, &to, &w.f.grant(3 * DASH))
+        .unwrap();
+    assert_eq!(first.state, PlatformActivityState::Pending);
+    w.net.tick();
+    w.activity();
+    assert_eq!(w.moves()[0].state, PlatformActivityState::Failed);
+    assert!(w.moves()[0].can_land);
+    w.net.fund(a, DASH);
+    let quote = w.send_quote(WithdrawAmount::All, &to).unwrap();
+    assert_eq!(
+        (quote.amount_credits, quote.fee_from_amount),
+        (3 * DASH, true)
+    );
+    let retry = w
+        .send(WithdrawAmount::All, &to, &w.f.grant(quote.credits))
+        .unwrap();
+    assert_eq!(retry.state, PlatformActivityState::Done);
+    let sent = w.net.sent.lock().unwrap().clone();
+    assert_eq!(sent[1], sent[0]);
+    assert_eq!(w.net.credits(them), 3 * DASH - w.net.fee);
+    assert_eq!(w.net.credits(a), DASH);
+}
+
+/// While a send may still land, a move to Core, and another amount to the
+/// same recipient, are refused; while a move may, a send is.
+#[test]
+fn a_held_send_and_a_held_move_refuse_anything_but_their_retry() {
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let two = WithdrawAmount::Credits { credits: 2 * DASH };
+    let pending = |r: Result<_, CreditsError>, id: &str| match r {
+        Err(CreditsError::MovePending { id: held }) => assert_eq!(held, id),
+        other => panic!("{other:?}"),
+    };
+    // A send held.
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (_, to) = w.theirs(9);
+    w.net.then(Act::Lost);
+    let first = w.send(one, &to, &w.f.grant(2 * DASH)).unwrap();
+    w.net.tick();
+    w.activity();
+    assert_eq!(w.moves()[0].state, PlatformActivityState::Failed);
+    pending(
+        w.move_to(one, &w.to, &w.f.grant(2 * DASH)).map(drop),
+        &first.id,
+    );
+    pending(w.send(two, &to, &w.f.grant(3 * DASH)).map(drop), &first.id);
+    pending(
+        w.send(WithdrawAmount::All, &to, &w.f.grant(5 * DASH))
+            .map(drop),
+        &first.id,
+    );
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing else signed");
+    // A move held.
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (_, to) = w.theirs(9);
+    w.net.then(Act::Lost);
+    let first = w.move_to(one, &w.to, &w.f.grant(2 * DASH)).unwrap();
+    w.net.tick();
+    w.activity();
+    assert_eq!(w.moves()[0].state, PlatformActivityState::Failed);
+    assert!(w.moves()[0].can_land);
+    pending(w.send(one, &to, &w.f.grant(2 * DASH)).map(drop), &first.id);
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing else signed");
+}
+
+/// A 0.1 move record (no `kind`, no `fee_from_output`) reads as a move to
+/// Core.
+#[test]
+fn a_0_1_move_record_reads_as_to_core() {
+    let mut json = serde_json::to_value(record("m", 1, &[("x", 1)])).unwrap();
+    let fields = json.as_object_mut().unwrap();
+    fields.remove("kind");
+    fields.remove("fee_from_output");
+    let read: MoveRecord = serde_json::from_value(json).unwrap();
+    assert_eq!((read.kind, read.fee_from_output), (MoveKind::ToCore, false));
+    let row = read.activity();
+    assert_eq!(row.kind, PlatformActivityKind::MoveToCore);
+    assert_eq!(row.expected_duffs, Some(0));
 }

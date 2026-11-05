@@ -918,6 +918,8 @@ fn credits_params(e: &CreditsError) -> Value {
         CreditsError::WithdrawalOutOfRange { min, max } => json!({"min": min, "max": max}),
         CreditsError::WithdrawalLanded { artifact } => json!({"artifact": artifact}),
         CreditsError::MovePending { id } => json!({"id": id}),
+        CreditsError::RecipientInvalid { reason } => json!({"reason": reason.as_str()}),
+        CreditsError::SendOutOfRange { min } => json!({"min": min}),
         CreditsError::Platform(p) => platform_params(p),
     }
 }

@@ -1,9 +1,8 @@
-//! Platform addresses (release 0.1, lane E2; m4 §2.12): the balance of the
-//! wallet's DIP-17 payment addresses as the library's sync loop leaves it,
-//! their activity, and "Move to Dash wallet", which withdraws it to the
-//! wallet's own Core receive address. No Platform receive address in 0.1:
-//! the wallet shows and empties what it finds there, it does not ask for
-//! more (RELEASE-PLAN §1).
+//! Platform addresses (release 0.1, lane E2; 0.2 X1b; m4 §2.12): the
+//! balance of the wallet's DIP-17 payment addresses as the library's sync
+//! loop leaves it, their activity, "Move to Dash wallet", which withdraws it
+//! to the wallet's own Core receive address, the receive address (0.2) and
+//! a send to another Platform address (0.2).
 
 use std::sync::Arc;
 
@@ -11,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::credits::WithdrawAmount;
 use super::dashpay::DashPay;
-use super::errors::CreditsError;
+use super::errors::{CreditsError, PlatformError};
 use super::flows::GrantRequest;
 use super::platform_moves;
 
@@ -57,6 +56,8 @@ pub enum PlatformActivityKind {
     Outgoing,
     /// A "Move to Dash wallet" this wallet made.
     MoveToCore,
+    /// A send of this wallet to a Platform address (`to`).
+    Send,
 }
 
 /// Where an activity row stands.
@@ -94,7 +95,7 @@ pub struct PlatformActivity {
     /// The Platform address an `Incoming` or `Outgoing` row changed;
     /// `None` for a move (it may spend several).
     pub address: Option<String>,
-    /// A move's Core address.
+    /// A move's Core address, a send's Platform address.
     pub to: Option<String>,
     /// A move's expected payout on Core, in duffs.
     pub expected_duffs: Option<u64>,
@@ -143,6 +144,89 @@ pub struct MoveToCoreOutcome {
     /// `Replaced` when another move of the group carries the outcome.
     pub state: PlatformActivityState,
     /// Done: the fee taken, as [`PlatformActivity::fee_credits`].
+    pub fee_credits: Option<u64>,
+}
+
+/// Why a string is no Platform address a send may pay
+/// (`credits.recipient_invalid{reason}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecipientProblem {
+    /// A Dash Core address: Pay sends to it from the Core balance.
+    Core,
+    /// A shielded address.
+    Shielded,
+    /// A Platform (or Core, or shielded) address of another network.
+    Network,
+    /// One of the wallet's own Platform addresses.
+    Own,
+    /// Not an address.
+    Malformed,
+}
+
+impl RecipientProblem {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Core => "core",
+            Self::Shielded => "shielded",
+            Self::Network => "network",
+            Self::Own => "own",
+            Self::Malformed => "malformed",
+        }
+    }
+}
+
+/// The wallet's Platform receive address: where another Platform wallet
+/// pays it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformReceiveAddress {
+    /// bech32m (DIP-18), the network's HRP; shown and encoded in a QR code
+    /// as it is (no `dash:` URI carries one).
+    pub address: String,
+    /// Its index in the payment account (`m/9'/coin'/17'/0'/0'/index`).
+    pub index: u32,
+}
+
+/// What a send to a Platform address takes, at the network's protocol
+/// version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformSendQuote {
+    /// The most the addresses may lose: `amount_credits` and, unless the
+    /// amount pays the fee, the fee band the fee source keeps.
+    pub credits: u64,
+    /// The transfer's output: what the recipient receives, less the fee
+    /// when `fee_from_amount`.
+    pub amount_credits: u64,
+    /// The fee estimate: dpp's minimum fee for the transfer.
+    pub fee_credits: u64,
+    /// The most fee the plan provides for: the estimate times
+    /// platform-wallet's safety band (3). Platform takes the fee it
+    /// meters; nothing caps it.
+    pub max_fee_credits: u64,
+    /// Max: the output pays the fee, so the recipient receives
+    /// `amount_credits` less it, and nothing is left on the inputs.
+    pub fee_from_amount: bool,
+    /// The recipient, normalized: pass it to `platform_send`.
+    pub to: String,
+    /// What to authorize: no duffs, `credits` credits.
+    pub grant: GrantRequest,
+}
+
+/// A send's outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformSendOutcome {
+    /// The send's activity row id.
+    pub id: String,
+    /// What the send may take; for a group's `Done`, the proved debit.
+    pub credits: u64,
+    /// The recipient; for a group's `Done`, `None` unless every member
+    /// named it.
+    pub to: Option<String>,
+    /// As [`MoveToCoreOutcome::state`]. `Pending` and `Failed` (by height)
+    /// may still execute: the recipient may still be paid, once.
+    pub state: PlatformActivityState,
+    /// Done: the fee taken from the fee source; `None` when the amount paid
+    /// it (Max) or the balances hide it.
     pub fee_credits: Option<u64>,
 }
 
@@ -214,6 +298,65 @@ impl DashPay {
             };
             let ask = (amount, to.as_str());
             platform_moves::move_to_core(&net, &session, &wallet, wallet_id, ask, &grant).await
+        })
+        .await
+    }
+
+    /// The wallet's Platform receive address: the lowest unused one of the
+    /// payment account, the same until a sync pass sees it funded. No
+    /// vault, no network.
+    pub async fn platform_receive_address(&self) -> Result<PlatformReceiveAddress, CreditsError> {
+        self.on_wallet(move |session, manager, wallet| async move {
+            if !session.platform.enabled() {
+                return Err(PlatformError::FeatureOff {
+                    feature: "platform".into(),
+                }
+                .into());
+            }
+            let net = platform_moves::SdkMoves {
+                sdk: manager.sdk_arc(),
+                wallet: Arc::clone(&wallet),
+            };
+            Ok(platform_moves::receive_address(&net, &wallet, session.vault.network()).await?)
+        })
+        .await
+    }
+
+    /// What sending `amount` of the Platform addresses' credits to the
+    /// Platform address `to` takes.
+    pub async fn platform_send_quote(
+        &self,
+        to: String,
+        amount: WithdrawAmount,
+    ) -> Result<PlatformSendQuote, CreditsError> {
+        let wallet_id = self.wallet_id;
+        self.on_wallet(move |session, manager, wallet| async move {
+            let net = platform_moves::SdkMoves {
+                sdk: manager.sdk_arc(),
+                wallet: Arc::clone(&wallet),
+            };
+            platform_moves::send_quote(&net, &session, &wallet, wallet_id, &to, amount).await
+        })
+        .await
+    }
+
+    /// Sends `amount` of the Platform addresses' credits to the Platform
+    /// address `to` under `grant` (a `PlatformOp` grant or a
+    /// `PlatformAddressMove` lease).
+    pub async fn platform_send(
+        &self,
+        to: String,
+        amount: WithdrawAmount,
+        grant: String,
+    ) -> Result<PlatformSendOutcome, CreditsError> {
+        let wallet_id = self.wallet_id;
+        self.on_wallet(move |session, manager, wallet| async move {
+            let net = platform_moves::SdkMoves {
+                sdk: manager.sdk_arc(),
+                wallet: Arc::clone(&wallet),
+            };
+            let ask = (amount, to.as_str());
+            platform_moves::send(&net, &session, &wallet, wallet_id, ask, &grant).await
         })
         .await
     }

@@ -139,6 +139,10 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.sync_platform_addresses",
     "DashPay.move_to_core_quote",
     "DashPay.move_to_core",
+    // 0.2 X1b slice 1: Platform receive and sends.
+    "DashPay.platform_receive_address",
+    "DashPay.platform_send_quote",
+    "DashPay.platform_send",
     // 0.1 E1: shielded funds.
     "DashPay.shielded_status",
     "DashPay.shielded_sync",
@@ -1065,6 +1069,10 @@ fn error_codes_match_the_contract() {
                 artifact: String::new(),
             },
             CreditsError::MovePending { id: String::new() },
+            CreditsError::RecipientInvalid {
+                reason: dw_engine::platform::RecipientProblem::Own,
+            },
+            CreditsError::SendOutOfRange { min: 0 },
         ],
         CreditsError::code,
     );

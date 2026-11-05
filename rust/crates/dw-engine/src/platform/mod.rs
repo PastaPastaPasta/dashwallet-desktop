@@ -138,7 +138,8 @@ pub use payments::{
 };
 pub use platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformActivityKind,
-    PlatformActivityState, PlatformAddressBalance, PlatformAddressRow,
+    PlatformActivityState, PlatformAddressBalance, PlatformAddressRow, PlatformReceiveAddress,
+    PlatformSendOutcome, PlatformSendQuote, RecipientProblem,
 };
 pub use profile::{
     AvatarCandidate, AvatarChange, AvatarImage, AvatarSize, AvatarSource, CropRect, Profile,
