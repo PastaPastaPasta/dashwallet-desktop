@@ -9,6 +9,7 @@ import { useBackend } from "../api/queries";
 import { useSecretScreen } from "../app/ui";
 import { DashButton, DashLogo, NetworkCapsule } from "../components/basics";
 import { NetworkPicker, useNetworkPicker } from "../components/networkPicker";
+import { OnboardingRatesChoice, useRatesConsent } from "../fiat/consent";
 import { NewPassphraseForm, PassphrasePrompt } from "../components/passphrase";
 import { Bip39Field, noCopy, PhraseGrid, PhraseInput, ProtectionPending } from "../components/phrase";
 import { useModel } from "../onboarding/model";
@@ -81,7 +82,7 @@ export function Onboarding({
         </header>
         <main className="onboarding-body" ref={body} data-testid={ready ? `onboarding-${step}` : "onboarding-preparing"}>
           {ready ? (
-            <Step model={model} onCancel={onCancel} onDone={onDone} restoreText={restoreText} setRestoreText={setRestoreText} />
+            <Step model={model} network={network} onCancel={onCancel} onDone={onDone} restoreText={restoreText} setRestoreText={setRestoreText} />
           ) : (
             <ProtectionPending protection={protection} onCancel={onCancel} />
           )}
@@ -101,12 +102,14 @@ function Title({ children }: { children: string }) {
 
 function Step({
   model,
+  network,
   onCancel,
   onDone,
   restoreText,
   setRestoreText,
 }: {
   model: OnboardingModel;
+  network: NetworkInfo;
   onCancel: (() => void) | null;
   onDone: (walletId: string | null) => void;
   restoreText: string;
@@ -174,19 +177,7 @@ function Step({
         </>
       );
     case "done":
-      return (
-        <>
-          <Title>Your wallet is ready</Title>
-          <p className="onboarding-text">
-            {model.flow === "restore"
-              ? "Dash Wallet now scans the blockchain for the wallet's transactions. This can take a while."
-              : "Keep your recovery phrase safe. It is the only way to restore this wallet."}
-          </p>
-          <DashButton variant="filledBlue" size="large" fill data-autofocus data-testid="onboarding-open" onClick={() => onDone(model.walletId)}>
-            Open wallet
-          </DashButton>
-        </>
-      );
+      return <Done model={model} network={network} onDone={onDone} />;
     case "failed":
       return (
         <>
@@ -200,6 +191,32 @@ function Step({
         </>
       );
   }
+}
+
+/** The last step; on Mainnet it carries the price disclosure (MP-01), saved by "Open wallet". */
+function Done({ model, network, onDone }: { model: OnboardingModel; network: NetworkInfo; onDone: (walletId: string | null) => void }) {
+  const consent = useRatesConsent(network);
+  const [ratesOn, setRatesOn] = useState(true);
+  const [opening, setOpening] = useState(false);
+  const open = () => {
+    if (!consent.needed) return onDone(model.walletId);
+    setOpening(true);
+    void consent.answer(ratesOn).finally(() => onDone(model.walletId));
+  };
+  return (
+    <>
+      <Title>Your wallet is ready</Title>
+      <p className="onboarding-text">
+        {model.flow === "restore"
+          ? "Dash Wallet now scans the blockchain for the wallet's transactions. This can take a while."
+          : "Keep your recovery phrase safe. It is the only way to restore this wallet."}
+      </p>
+      {consent.needed && <OnboardingRatesChoice consent={consent} on={ratesOn} setOn={setRatesOn} />}
+      <DashButton variant="filledBlue" size="large" fill data-autofocus data-testid="onboarding-open" disabled={opening} onClick={open}>
+        Open wallet
+      </DashButton>
+    </>
+  );
 }
 
 function Welcome({ model, onCancel }: { model: OnboardingModel; onCancel: (() => void) | null }) {

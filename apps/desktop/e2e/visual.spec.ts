@@ -163,6 +163,31 @@ for (const theme of THEMES) {
   }
 }
 
+// MP-01: Home with prices on Mainnet (fresh, stale, unavailable, the one-time disclosure) and
+// Settings ▸ General's Local currency card with its picker.
+const FIAT_HOME = ["fiat", "fiat-stale", "fiat-unavailable", "fiat-disclosure"];
+
+for (const theme of THEMES) {
+  for (const scenario of FIAT_HOME) {
+    test(`visual home-${scenario} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(scenario, theme));
+      await page.getByTestId("hero").waitFor();
+      await page.locator("[data-testid=hero-fiat-row], [data-testid=rates-consent-card]").first().waitFor();
+      await shoot(page, `home-${scenario}`, theme);
+    });
+  }
+  test(`visual settings-currency ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("fiat", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+    const card = page.getByTestId("settings-currency");
+    await card.getByTestId("settings-currency-USD").waitFor();
+    await card.scrollIntoViewIfNeeded();
+    await fontsReady(page);
+    await expect(card).toHaveScreenshot(`${theme}-settings-currency.png`, { animations: "disabled", caret: "hide" });
+  });
+}
+
 const SETTINGS: SettingsView[] = ["general", "security", "wallets", "backups", "about", "exportSheet"];
 
 for (const theme of THEMES) {

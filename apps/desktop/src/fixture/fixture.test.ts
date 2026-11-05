@@ -70,6 +70,8 @@ describe("fixture backend", () => {
       "pending.test.ts",
       "pending.ts",
       "profile.test.ts",
+      "rates.test.ts",
+      "rates.ts",
       "registration.test.ts",
       "registration.ts",
       "savedLinks.test.ts",
@@ -94,7 +96,7 @@ describe("fixture backend", () => {
     ]);
     // Only `*.test.ts` is a test (vite.config.ts `test.include`): a `*.test.mts` is a module.
     const modules = files.filter((f) => /\.[cm]?[jt]sx?$/.test(f) && !f.endsWith(".test.ts"));
-    expect(modules).toEqual(["coinjoin.ts", "dashpay.ts", "errors.ts", "governance.ts", "handlers.ts", "identities.ts", "index.ts", "links.ts", "names.ts", "pending.ts", "registration.ts", "scan.ts", "scenarios.ts", "send.ts", "settings.ts", "shielded.ts", "tools.ts", "topup.ts", "vault.ts", "wallet.ts"]);
+    expect(modules).toEqual(["coinjoin.ts", "dashpay.ts", "errors.ts", "governance.ts", "handlers.ts", "identities.ts", "index.ts", "links.ts", "names.ts", "pending.ts", "rates.ts", "registration.ts", "scan.ts", "scenarios.ts", "send.ts", "settings.ts", "shielded.ts", "tools.ts", "topup.ts", "vault.ts", "wallet.ts"]);
     const { bySource } = await fixtureSentinels(fileURLToPath(new URL("../..", import.meta.url)));
     for (const f of modules) {
       expect(readFileSync(join(dir, f), "utf8").startsWith("// dw-fixture-module"), f).toBe(true);
@@ -138,9 +140,10 @@ describe("fixture backend", () => {
       const { b } = backend({ scenario });
       const launch = await b.launchInfo();
       expect(launch.engineVersion, scenario).toBe("fixture");
-      expect((await b.openNetwork()).network.dirName, scenario).toBe("testnet");
+      // Prices are Mainnet's (MP-01): the fiat scenarios open it.
+      expect((await b.openNetwork()).network.dirName, scenario).toBe(scenario.startsWith("fiat") ? "mainnet" : "testnet");
       const wallets = await b.listWallets();
-      const count = scenario.startsWith("no-wallet") ? 0 : scenario.endsWith("two-wallets") ? 2 : 1;
+      const count = scenario.startsWith("no-wallet") || scenario === "fiat-first-run" ? 0 : scenario.endsWith("two-wallets") ? 2 : 1;
       expect(wallets.length, scenario).toBe(count);
       await b.syncStatus();
       clearMocks();

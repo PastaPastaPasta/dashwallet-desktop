@@ -37,6 +37,7 @@ import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./se
 import { newPendingWorld, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
+import { newRatesWorld, onMainnet, ratesScenarios, type RatesWorld } from "./rates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { buildRows, caughtUp, FIXTURE_NOW, FUNDED_BALANCES, makeIds, prng, secs, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
@@ -113,6 +114,8 @@ export interface World {
   coinjoin: CoinJoinWorld;
   /** Governance: sync, proposals, voting masternodes and own proposals (governance.ts, MG-09). */
   governance: GovernanceWorld;
+  /** Prices in fiat: settings, rates.json and the next attempt (rates.ts, MP-01). */
+  rates: RatesWorld;
   /** The commands dw-app does not have yet: network choice, shielded and Platform balances (pending.ts). */
   pending: PendingWorld;
 }
@@ -210,6 +213,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     scan: scanWorld(),
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
+    rates: newRatesWorld(),
     pending: newPendingWorld(),
   };
 }
@@ -1136,6 +1140,10 @@ const SCENARIOS = {
   ...coinjoinScenarios(base),
   // Governance (MG-09): governance.ts.
   ...governanceScenarios(base),
+  // Prices in fiat (MP-01): rates.ts.
+  ...ratesScenarios(base),
+  /** A new install on Mainnet: onboarding's last step carries the price disclosure. */
+  "fiat-first-run": (t): World => onMainnet(buildWorld("no-wallet", t)),
 } satisfies Record<string, (theme: ThemeName | null) => World>;
 
 export type ScenarioName = keyof typeof SCENARIOS;
