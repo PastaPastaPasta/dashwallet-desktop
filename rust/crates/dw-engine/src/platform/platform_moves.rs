@@ -1651,7 +1651,16 @@ pub(crate) async fn quote(
 ) -> Result<MoveToCoreQuote, CreditsError> {
     let network = session.vault.network();
     let pool = pool(wallet).await?;
-    let seen = read(session, net, pool.keys().copied().collect(), true).await?;
+    let moves = Store::of(session, wallet_id)?.moves().await?;
+    let seen = read(session, net, covered(&pool, &moves), true).await?;
+    // As the move will decide, before anything is asked of the user: a
+    // send that may still execute holds the next move (it must have the
+    // send's exact terms, which no move has).
+    if let Some(h) =
+        (moves.iter()).find(|m| m.kind == MoveKind::Transfer && m.holds() && !m.reached(&seen))
+    {
+        return Err(CreditsError::MovePending { id: h.id.clone() });
+    }
     let version = net.version();
     let target = Target::Core("");
     let limits = target.limits(version)?;

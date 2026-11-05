@@ -71,8 +71,11 @@ export const SEND_COPY = {
   /** A retry was asked for but the engine did not answer it as that payment's retry. */
   noRetry: "This payment can no longer be retried from here. Check Activity, then send it again if it did not go through.",
   waiting: "A payment or move from Platform is not confirmed yet. Pay again once Activity shows that it went through.",
-  /** `credits.move_pending` from the quote or the send: an earlier one may still go through. */
-  held: "An earlier payment or move from Platform may still go through. Wait for it to finish, or press Retry that payment: only that same payment can go now.",
+  /** `credits.move_pending` from the quote or the send, by what holds: a payment, which Retry that
+   * payment re-sends; a move, which only Move to Dash wallet follows; or one Activity does not show. */
+  held: "An earlier payment from Platform may still go through. Wait for it to finish, or press Retry that payment: only that same payment can go now.",
+  heldMove: "A move to your Dash wallet may still go through. Wait for it to finish, or move again from the Platform card on Home.",
+  heldOther: "An earlier payment or move from Platform may still go through. Wait for it to finish.",
   /** `invalid_argument` from the send: its operation is unknown or used. */
   expired: "This payment's details expired. Review it again.",
   retry: "Retry this payment",
@@ -107,7 +110,7 @@ export function recipientText(reason: string | undefined): string {
 }
 
 /** A send's refusal, by code; the move's texts for the codes both share. */
-export function sendErrorText(e: unknown, credits: (c: string) => string): string {
+export function sendErrorText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null): string {
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "credits.recipient_invalid":
@@ -117,8 +120,11 @@ export function sendErrorText(e: unknown, credits: (c: string) => string): strin
       return e.data?.kind === "creditMinimum"
         ? `Dash Platform cannot send this amount: the payment, and what it takes from each of your Platform addresses, must be at least ${credits(e.data.min)}. Try another amount, or Max.`
         : "Dash Platform does not take a payment of this amount.";
-    case "credits.move_pending":
-      return SEND_COPY.held;
+    case "credits.move_pending": {
+      const id = e.data?.kind === "artifact" ? e.data.artifact : null;
+      const kind = activity?.find((a) => a.id === id)?.kind;
+      return kind === "send" ? SEND_COPY.held : kind === "moveToCore" ? SEND_COPY.heldMove : SEND_COPY.heldOther;
+    }
     case "platform.trust_mismatch":
       return "Your Platform addresses could not be verified against the network. Nothing was sent.";
     case "invalid_argument":
@@ -130,8 +136,8 @@ export function sendErrorText(e: unknown, credits: (c: string) => string): strin
 
 /** The refusal of `platformSend` itself: an unknown or used operation (`invalid_argument`) means the
  * quote it came from is no good any more; the rest as a quote's. */
-export function sendRefusalText(e: unknown, credits: (c: string) => string): string {
-  return hasCode(e, "invalid_argument") ? SEND_COPY.expired : sendErrorText(e, credits);
+export function sendRefusalText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null): string {
+  return hasCode(e, "invalid_argument") ? SEND_COPY.expired : sendErrorText(e, credits, activity);
 }
 
 /** Back is offered when a new quote may pass (as for a move), and after an expired operation. */

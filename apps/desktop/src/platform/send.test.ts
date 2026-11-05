@@ -194,7 +194,7 @@ describe("Pay from Platform", () => {
       await going;
       api.platformSendQuote.mockRejectedValueOnce(appError("credits.move_pending", { kind: "artifact", artifact: "pm-3" }));
       expect(await flow.retry(TO)).toBeNull();
-      expect([flow.step, sendRefusalText(flow.error, credits)]).toEqual(["refused", SEND_COPY.held]);
+      expect([flow.step, sendRefusalText(flow.error, credits, [row("pm-3", { kind: "moveToCore" })])]).toEqual(["refused", SEND_COPY.heldMove]);
       expect(api.platformSend).toHaveBeenCalledTimes(1);
     });
 
@@ -350,9 +350,11 @@ describe("Pay from Platform", () => {
     expect(sendErrorText(appError("platform.insufficient_credits", { kind: "credits", needed: "2000000000", available: "1000000000" }), credits)).toBe(
       "Not enough on your Platform addresses: 0.02 tDASH needed with the fee, 0.01 tDASH available.",
     );
-    expect(sendErrorText(appError("credits.move_pending", { kind: "artifact", artifact: "ps-1" }), credits)).toBe(
-      "An earlier payment or move from Platform may still go through. Wait for it to finish, or press Retry that payment: only that same payment can go now.",
-    );
+    // Opus m1: the text names the way out that exists for what holds.
+    const held = (activity: PlatformActivity[]) => sendErrorText(appError("credits.move_pending", { kind: "artifact", artifact: "x-1" }), credits, activity);
+    expect(held([row("x-1")])).toBe("An earlier payment from Platform may still go through. Wait for it to finish, or press Retry that payment: only that same payment can go now.");
+    expect(held([row("x-1", { kind: "moveToCore", to: null })])).toBe("A move to your Dash wallet may still go through. Wait for it to finish, or move again from the Platform card on Home.");
+    expect(held([])).toBe("An earlier payment or move from Platform may still go through. Wait for it to finish.");
     expect(sendErrorText(appError("platform.broadcast_unknown", { kind: "artifact", artifact: "x" }), credits)).toMatch(/may have been sent/);
   });
 

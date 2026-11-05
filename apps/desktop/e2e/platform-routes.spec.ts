@@ -280,14 +280,22 @@ test.describe("Pay from Platform", () => {
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
   });
 
-  test("a held send keeps Move offered, says so on the card, and the refusal names the held payment", async ({ page }) => {
+  test("a held send says so on the card, and the move's quote refuses before any passphrase", async ({ page }) => {
     await open(page, "platform-send-failed-may-land");
     await expect(page.getByTestId("platform-card-send-held")).toHaveText("A payment from Platform may still go through. Moving waits until it settles.");
-    await expect(page.getByTestId("platform-move")).toBeEnabled();
     await page.getByTestId("platform-move").click();
-    await page.getByTestId("platform-move-go").click();
-    await authorize(page);
-    await expect(page.getByTestId("platform-move-refusal")).toHaveText("An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.");
+    await expect(page.getByTestId("platform-move-quote-error")).toHaveText("An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.");
+    await expect(page.getByTestId("platform-move-go")).toBeDisabled();
+    await expect(page.getByTestId("grant-sheet")).toHaveCount(0);
+    expect(await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_move_to_core").length)).toBe(0);
+  });
+
+  test("a held move refuses Pay from Platform with the move's own way out", async ({ page }) => {
+    await open(page, "platform-move-failed-may-land");
+    await payTo(page, PAYEE);
+    await page.getByTestId("pay-amount").fill("0.01");
+    await expect(page.getByTestId("pay-problem")).toHaveText("A move to your Dash wallet may still go through. Wait for it to finish, or move again from the Platform card on Home.");
+    await expect(page.getByTestId("platform-send-earlier")).toHaveCount(0);
   });
 
   test("a held send keeps Pay from Platform back", async ({ page }) => {

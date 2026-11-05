@@ -2147,6 +2147,23 @@ fn a_deposit_that_hides_the_fee_marks_the_debit_estimated() {
     assert_eq!((out.estimated, out.fee_credits), (false, Some(w.net.fee())));
 }
 
+/// Opus m2: a move beside a held send is refused at its quote, before any
+/// passphrase is asked, as the move itself would be; once the send lands
+/// it quotes again.
+#[test]
+fn the_move_quote_refuses_beside_a_held_send() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (_, to) = w.theirs(9);
+    let held = w.held_send(WithdrawAmount::Credits { credits: DASH }, &to);
+    match w.quote(WithdrawAmount::All) {
+        Err(CreditsError::MovePending { id }) => assert_eq!(id, held.id),
+        other => panic!("{other:?}"),
+    }
+    w.lands(0);
+    w.quote(WithdrawAmount::All).unwrap();
+}
+
 /// Sol R2-A1: a new process quotes afresh, and no operation id from before
 /// it pays there, neither one sent nor one never sent, also once the new
 /// process has quoted.

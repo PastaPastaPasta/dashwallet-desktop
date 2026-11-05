@@ -160,7 +160,11 @@ function moveCredits(p: PlatformWorld, amount: WithdrawAmount): bigint {
 
 function quote(ctx: Ctx, walletId: string, amount: WithdrawAmount): MoveToCoreQuote {
   wallet(ctx.world, walletId);
-  const credits = moveCredits(platformOf(ctx.world, "platform_move_to_core_quote"), amount);
+  const p = platformOf(ctx.world, "platform_move_to_core_quote");
+  // As the engine's quote: a send that may still land holds the next move, refused before any passphrase.
+  const sending = p.activity.find((a) => a.kind === "send" && isHeldOp(a));
+  if (sending) throw moveHeld(sending.id);
+  const credits = moveCredits(p, amount);
   const to = HANDLERS.current_receive_address!({ walletId }, ctx).address;
   return { credits: String(credits), feeCredits: String(MOVE_FEE_CREDITS), expectedDuffs: Number((credits - MOVE_FEE_CREDITS) / CREDITS_PER_DUFF), to, grant: { maxDuffs: 0, maxCredits: String(credits) } };
 }

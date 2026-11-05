@@ -289,12 +289,14 @@ describe("fixture pending commands", () => {
     expect((await backend.platformActivity(W))?.[0]).toMatchObject({ estimated: true, mayLand: false });
   });
 
-  it("holds a move beside a send that may still land", async () => {
+  it("holds a move beside a send that may still land, at the quote (before any passphrase) and at the move", async () => {
+    const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
     platform().nextSend = "failed";
     const { outcome } = await pay(credits("1000000000"));
-    const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+    const held = { code: "credits.move_pending", data: { artifact: outcome.id } };
+    await expect(backend.platformMoveToCoreQuote(W, { kind: "all" })).rejects.toMatchObject(held);
     const grant = await opGrant(quote.grant.maxCredits);
-    await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, grant.id)).rejects.toMatchObject({ code: "credits.move_pending", data: { artifact: outcome.id } });
+    await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, grant.id)).rejects.toMatchObject(held);
   });
 
   it("seeds a send that may land for the scenario: its row carries mayLand and its exact retry is quoted", async () => {

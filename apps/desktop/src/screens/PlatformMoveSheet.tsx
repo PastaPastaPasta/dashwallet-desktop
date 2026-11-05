@@ -82,7 +82,7 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
             variant="filledBlue"
             size="large"
             data-testid="platform-move-go"
-            why={block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : quote.isError ? C.quoteFailed : flow.running ? C.running.title : C.quoting}
+            why={block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : quote.isError ? moveErrorText(quote.error, credits) : flow.running ? C.running.title : C.quoting}
             disabled={block !== null || !q || quote.isError || quote.isFetching || flow.running}
             onClick={() => block === null && q && void flow.move(q.grant, q.to)}
           >

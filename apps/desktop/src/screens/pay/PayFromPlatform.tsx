@@ -103,6 +103,7 @@ function SendSheet({
   confirmed,
   credits,
   settled,
+  activity,
   onClose,
   onRetry,
 }: {
@@ -110,6 +111,7 @@ function SendSheet({
   confirmed: Confirmed | null;
   credits: (c: string) => string;
   settled: Settled | null;
+  activity: readonly PlatformActivity[] | null | undefined;
   onClose: (sent: boolean) => void;
   onRetry: () => void;
 }) {
@@ -177,7 +179,7 @@ function SendSheet({
         {step === "refused" && (
           <>
             <p className="form-problem" role="alert" data-testid="platform-send-refusal">
-              {sendRefusalText(flow.error, credits)}
+              {sendRefusalText(flow.error, credits, activity)}
             </p>
             <div className="sheet-actions">
               {sendCanRetry(flow.error) && (
@@ -217,7 +219,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
   const sheetOpen = confirmed !== null || flow.running || flow.step !== "confirm";
 
   const q = quote.data;
-  const problem = waiting ? C.waiting : quote.isError ? sendErrorText(quote.error, credits) : (amount.error ?? null);
+  const problem = waiting ? C.waiting : quote.isError ? sendErrorText(quote.error, credits, activity.data) : (amount.error ?? null);
   // An operation is single use: after an attempt, Confirm waits for a quote taken since.
   const ready = !waiting && !!q && !quote.isFetching && !quote.isError && asked !== null && !flow.isSpent(q.operation);
   const requote = quote.refetch;
@@ -262,7 +264,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
 
   const sheet = (
     <>
-      {sheetOpen && <SendSheet flow={flow} confirmed={confirmed} credits={credits} settled={settled} onClose={close} onRetry={() => void retry()} />}
+      {sheetOpen && <SendSheet flow={flow} confirmed={confirmed} credits={credits} settled={settled} activity={activity.data} onClose={close} onRetry={() => void retry()} />}
       <GrantSheet grants={flow.grants} />
     </>
   );
