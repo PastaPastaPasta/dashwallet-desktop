@@ -806,9 +806,10 @@ pub(crate) async fn raise_lookahead(
 ) -> Result<(), EngineError> {
     let wallet = (manager.get_wallet(&id.0).await)
         .ok_or_else(|| EngineError::WalletNotFound(id.to_string()))?;
-    apply_lookahead(&wallet, gap).await?;
-    restore_underived_coins(manager, id).await;
-    Ok(())
+    let raised = apply_lookahead(&wallet, gap).await;
+    // A partial raise still grew some pools, so the restore runs either way.
+    restore_underived_coins(manager, id).await?;
+    raised
 }
 
 /// Restores again, with the gap limits a lookahead raised after the load (a
@@ -817,14 +818,18 @@ pub(crate) async fn raise_lookahead(
 /// the default gap limits, so one only the larger gap reaches is left where
 /// its pool row put it, or in the first funds account; a replay with the
 /// larger gap would then credit it to its own account as well. Coins still
-/// out of reach stay. Callers refresh the hub.
-async fn restore_underived_coins(manager: &crate::session::Manager, id: WalletId) {
+/// out of reach stay. Callers refresh the hub. An error leaves the coins
+/// where they were, so a caller about to rescan stops.
+async fn restore_underived_coins(
+    manager: &crate::session::Manager,
+    id: WalletId,
+) -> Result<(), EngineError> {
     use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
     use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
     let wm = manager.wallet_manager_arc();
     let mut wm = wm.write().await;
     let Some((wallet, info)) = wm.get_wallet_and_info_mut(&id.0) else {
-        return;
+        return Ok(());
     };
     let core = &mut info.core_wallet;
     let underived: Vec<key_wallet::Utxo> = (core.accounts.all_funding_accounts().into_iter())
@@ -835,19 +840,20 @@ async fn restore_underived_coins(manager: &crate::session::Manager, id: WalletId
         .cloned()
         .collect();
     if underived.is_empty() {
-        return;
+        return Ok(());
     }
     let count = underived.len();
-    match core.restore_utxos(wallet, underived) {
-        Ok(unmatched) => tracing::info!(
-            wallet_id = %id,
-            restored = count - unmatched.len(),
-            unmatched = unmatched.len(),
-            "restored coins the stored lookahead reaches"
-        ),
-        Err(e) => {
-            tracing::warn!(wallet_id = %id, error = %e, "could not restore coins past the default gap")
-        }
-    }
+    let restored = core.restore_utxos(wallet, underived);
     core.update_balance();
+    let unmatched = restored.map_err(|e| {
+        tracing::warn!(wallet_id = %id, error = %e, "could not restore coins past the default gap");
+        EngineError::Internal(format!("restoring coins past the default gap: {e}"))
+    })?;
+    tracing::info!(
+        wallet_id = %id,
+        restored = count - unmatched.len(),
+        unmatched = unmatched.len(),
+        "restored coins the raised lookahead reaches"
+    );
+    Ok(())
 }
