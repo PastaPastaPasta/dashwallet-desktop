@@ -870,3 +870,28 @@ for (const theme of THEMES) {
     await shoot(page, "names-vote-result", theme);
   });
 }
+
+// Unfinished transfers on Home: the card for a restored Core → Shielded lock in each state, and
+// the Details sheet with a lock this version can't finish.
+for (const theme of THEMES) {
+  for (const scenario of ["recovery-one", "recovery-restored-mixed", "recovery-checking"]) {
+    test(`visual unfinished-card ${scenario} ${theme}`, async ({ page }) => {
+      await page.clock.setFixedTime(FIXTURE_NOW);
+      await page.goto(fixtureUrl(scenario, theme));
+      const card = page.getByTestId("unfinished-card");
+      await expect(card.getByTestId("unfinished-text")).toBeVisible();
+      await fontsReady(page);
+      await expect(card).toHaveScreenshot(`${theme}-unfinished-card-${scenario}.png`, SHOT);
+    });
+  }
+  test(`visual unfinished-sheet recovery-unsupported ${theme}`, async ({ page }) => {
+    await page.clock.setFixedTime(FIXTURE_NOW);
+    await page.goto(fixtureUrl("recovery-unsupported", theme));
+    await page.getByTestId("unfinished-details").click();
+    const sheet = page.getByTestId("unfinished-sheet");
+    await expect(sheet.getByTestId("unfinished-row").first()).toBeVisible();
+    await page.mouse.move(0, 0);
+    await fontsReady(page);
+    await expect(sheet).toHaveScreenshot(`${theme}-unfinished-sheet-recovery-unsupported.png`, SHOT);
+  });
+}

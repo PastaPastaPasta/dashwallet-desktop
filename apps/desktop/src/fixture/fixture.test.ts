@@ -72,6 +72,8 @@ describe("fixture backend", () => {
       "profile.test.ts",
       "rates.test.ts",
       "rates.ts",
+      "recovery.test.ts",
+      "recovery.ts",
       "registration.test.ts",
       "registration.ts",
       "savedLinks.test.ts",
@@ -96,7 +98,7 @@ describe("fixture backend", () => {
     ]);
     // Only `*.test.ts` is a test (vite.config.ts `test.include`): a `*.test.mts` is a module.
     const modules = files.filter((f) => /\.[cm]?[jt]sx?$/.test(f) && !f.endsWith(".test.ts"));
-    expect(modules).toEqual(["coinjoin.ts", "dashpay.ts", "errors.ts", "governance.ts", "handlers.ts", "identities.ts", "index.ts", "links.ts", "names.ts", "pending.ts", "rates.ts", "registration.ts", "scan.ts", "scenarios.ts", "send.ts", "settings.ts", "shielded.ts", "tools.ts", "topup.ts", "vault.ts", "wallet.ts"]);
+    expect(modules).toEqual(["coinjoin.ts", "dashpay.ts", "errors.ts", "governance.ts", "handlers.ts", "identities.ts", "index.ts", "links.ts", "names.ts", "pending.ts", "rates.ts", "recovery.ts", "registration.ts", "scan.ts", "scenarios.ts", "send.ts", "settings.ts", "shielded.ts", "tools.ts", "topup.ts", "vault.ts", "wallet.ts"]);
     const { bySource } = await fixtureSentinels(fileURLToPath(new URL("../..", import.meta.url)));
     for (const f of modules) {
       expect(readFileSync(join(dir, f), "utf8").startsWith("// dw-fixture-module"), f).toBe(true);

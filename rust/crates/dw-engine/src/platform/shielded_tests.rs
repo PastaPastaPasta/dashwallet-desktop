@@ -22,7 +22,7 @@ use dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dpp::prelude::AssetLockProof;
 use dpp::version::PlatformVersion;
-use dw_vault::{VaultError, VaultSigner};
+use dw_vault::VaultError;
 use platform_wallet::changeset::{
     AssetLockChangeSet, AssetLockEntry, PlatformWalletChangeSet, PlatformWalletPersistence,
 };
@@ -53,6 +53,8 @@ use super::shielded_pool::{
 };
 use super::withdrawal::{Rules, expected_duffs};
 use crate::{DashNetwork, ImportOptions, NetworkSession};
+
+mod unfinished;
 
 const LATEST: u32 = 15;
 const NOTE: u64 = 300_000_000;
@@ -187,6 +189,8 @@ struct FakeShielded {
     settles: Mutex<Vec<Txid>>,
     /// The next apply's answer.
     applies: Mutex<Option<Result<Applied, PlatformError>>>,
+    /// The answers after it, in order.
+    queued: Mutex<std::collections::VecDeque<Result<Applied, PlatformError>>>,
     /// The outpoint of every apply, in order.
     applied: Mutex<Vec<OutPoint>>,
     /// The session a shield's funding records its lock in; none for tests
@@ -219,6 +223,20 @@ struct FakeShielded {
     scan_finds: Mutex<Option<Status>>,
     /// The locks of unknown consumption, as `app.sqlite` keeps them.
     unknown: Mutex<HashSet<Txid>>,
+    /// The shield lock rows, when set: exactly these (else `locks` and
+    /// `funded`, each with its status's proof, the payload's credit
+    /// outputs counted by txid).
+    lock_rows: Mutex<Option<Vec<super::unfinished_locks::KindLock>>>,
+    /// The credit script every lock's row names (without `real_rows`).
+    script: Mutex<Option<dashcore::ScriptBuf>>,
+    /// The keys the next apply signs with, through its signer, before it
+    /// answers; and whether each signed.
+    sign_next: Mutex<Vec<key_wallet::bip32::DerivationPath>>,
+    signed: Mutex<Vec<bool>>,
+    /// The next funding's inputs and credit script, when set (with
+    /// `real_rows`): a drain of the CoinJoin account into Shielded, funded
+    /// under the shield's own step (MIX-SHIELD).
+    funds_next: Mutex<Option<(Vec<OutPoint>, dashcore::ScriptBuf)>>,
     /// Asked during each spend's library call; its answers, in order.
     probe: Mutex<Option<Box<dyn Fn() -> bool + Send>>>,
     probed: Mutex<Vec<bool>>,
@@ -280,6 +298,7 @@ impl Default for FakeShielded {
             settled: Mutex::default(),
             settles: Mutex::default(),
             applies: Mutex::new(None),
+            queued: Mutex::default(),
             applied: Mutex::default(),
             funder: Mutex::default(),
             funded: Mutex::default(),
@@ -300,6 +319,11 @@ impl Default for FakeShielded {
             rows: Mutex::default(),
             scan_finds: Mutex::new(None),
             unknown: Mutex::default(),
+            lock_rows: Mutex::default(),
+            script: Mutex::new(Some(dashcore::ScriptBuf::new())),
+            sign_next: Mutex::default(),
+            signed: Mutex::default(),
+            funds_next: Mutex::default(),
             probe: Mutex::new(None),
             probed: Mutex::default(),
             real_rows: false,
@@ -552,8 +576,28 @@ impl ShieldedLib for FakeShielded {
         if self.real_rows {
             return self.real().await.shield_locks().await;
         }
+        (self.shield_lock_rows().await.into_iter())
+            .map(|l| l.info)
+            .collect()
+    }
+
+    async fn shield_lock_rows(&self) -> Vec<super::unfinished_locks::KindLock> {
+        if self.real_rows {
+            return self.real().await.shield_lock_rows().await;
+        }
+        if let Some(rows) = &*self.lock_rows.lock().unwrap() {
+            return rows.clone();
+        }
         let funded = self.funded.lock().unwrap().clone();
-        self.locks.iter().cloned().chain(funded).collect()
+        let infos: Vec<LockInfo> = self.locks.iter().cloned().chain(funded).collect();
+        let outputs = |txid: Txid| infos.iter().filter(|l| l.outpoint.txid == txid).count();
+        (infos.iter())
+            .map(|l| super::unfinished_locks::KindLock {
+                info: l.clone(),
+                proof: l.status.has_proof(),
+                credit_outputs: outputs(l.outpoint.txid),
+            })
+            .collect()
     }
 
     fn own_locks(&self) -> Option<HashSet<Txid>> {
@@ -656,8 +700,30 @@ impl ShieldedLib for FakeShielded {
     /// call's signatures do not cover yet).
     async fn fund(&self, duffs: u64, permit: &CallPermit) -> Result<OutPoint, FundError> {
         let n = self.funded.lock().unwrap().len() as u8 + 0x70;
+        let (inputs, script) = match self.funds_next.lock().unwrap().take() {
+            Some((inputs, script)) => (inputs, Some(script)),
+            None => (
+                vec![OutPoint::new(
+                    Txid::from_byte_array([0x66; 32]),
+                    u32::from(n),
+                )],
+                None,
+            ),
+        };
         let outpoint = if self.real_rows {
-            let transaction = lock_transaction(n);
+            use dashcore::transaction::special_transaction::TransactionPayload;
+            let mut transaction = lock_transaction(n);
+            transaction.input = (inputs.iter())
+                .map(|&previous_output| dashcore::TxIn {
+                    previous_output,
+                    ..Default::default()
+                })
+                .collect();
+            if let (Some(script), Some(TransactionPayload::AssetLockPayloadType(payload))) =
+                (&script, &mut transaction.special_transaction_payload)
+            {
+                payload.credit_outputs[0].script_pubkey = script.clone();
+            }
             let outpoint = OutPoint::new(transaction.txid(), 0);
             let row = TrackedAssetLock {
                 out_point: outpoint,
@@ -681,10 +747,7 @@ impl ShieldedLib for FakeShielded {
             wallet,
             &[super::lease::StoredLock {
                 txid: outpoint.txid,
-                inputs: vec![OutPoint::new(
-                    Txid::from_byte_array([0x66; 32]),
-                    u32::from(n),
-                )],
+                inputs,
                 sighashes: Some(vec![sighash]),
                 built: true,
             }],
@@ -701,18 +764,41 @@ impl ShieldedLib for FakeShielded {
         Err(FundError::Refused(PlatformError::Unavailable))
     }
 
-    async fn apply(&self, outpoint: OutPoint, _: &VaultSigner) -> Result<Applied, PlatformError> {
+    async fn credit_script(&self, outpoint: OutPoint) -> Option<dashcore::ScriptBuf> {
+        if self.real_rows {
+            return self.real().await.credit_script(outpoint).await;
+        }
+        self.script.lock().unwrap().clone()
+    }
+
+    /// Signs with `sign_next` through the shield's own `Witnessed` wrapper,
+    /// as the library's transition does, then answers as scripted.
+    async fn apply<S>(&self, outpoint: OutPoint, signer: &S) -> Result<Applied, PlatformError>
+    where
+        S: key_wallet::ExtendedPubKeySigner
+            + key_wallet::Signer<Error = dw_vault::SignerError>
+            + Send
+            + Sync,
+    {
         self.applied.lock().unwrap().push(outpoint);
         if self.real_rows {
             let after = std::mem::take(&mut *self.row_after.lock().unwrap());
             self.change_row(outpoint, after).await;
         }
+        let witnessed = pool::Witnessed::new(signer);
+        let paths = std::mem::take(&mut *self.sign_next.lock().unwrap());
+        for path in &paths {
+            let signed = key_wallet::Signer::sign_ecdsa(&witnessed, path, [7; 32]).await;
+            self.signed.lock().unwrap().push(signed.is_ok());
+        }
         if self.consumed.swap(false, Ordering::SeqCst) {
             // As platform-wallet answers it, mapped by the real function.
             let consumed = PlatformWalletError::AssetLockAlreadyConsumed(outpoint);
-            return pool::applied_from(Err(consumed), true);
+            return pool::applied_from(Err(consumed), outpoint, true);
         }
-        (self.applies.lock().unwrap().take()).expect("a scripted apply")
+        let answer = (self.applies.lock().unwrap().take()).expect("a scripted apply");
+        *self.applies.lock().unwrap() = self.queued.lock().unwrap().pop_front();
+        answer
     }
 }
 
@@ -1951,16 +2037,19 @@ fn a_shield_refused_before_its_signature_is_not_applied() {
 #[test]
 fn a_shield_result_is_unknown_once_its_transition_was_signed() {
     let lost = || PlatformWalletError::ShieldedBuildError("no result".into());
-    assert_eq!(pool::applied_from(Ok(()), true).unwrap(), Applied::Done);
     assert_eq!(
-        pool::applied_from(Err(lost()), true).unwrap(),
+        pool::applied_from(Ok(()), OutPoint::null(), true).unwrap(),
+        Applied::Done
+    );
+    assert_eq!(
+        pool::applied_from(Err(lost()), OutPoint::null(), true).unwrap(),
         Applied::Unknown
     );
-    assert!(pool::applied_from(Err(lost()), false).is_err());
+    assert!(pool::applied_from(Err(lost()), OutPoint::null(), false).is_err());
     for signed in [false, true] {
         let consumed = PlatformWalletError::AssetLockAlreadyConsumed(OutPoint::null());
         assert_eq!(
-            pool::applied_from(Err(consumed), signed).unwrap(),
+            pool::applied_from(Err(consumed), OutPoint::null(), signed).unwrap(),
             Applied::Taken
         );
     }

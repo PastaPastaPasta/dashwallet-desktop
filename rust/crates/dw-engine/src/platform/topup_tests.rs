@@ -231,11 +231,7 @@ impl Fixture {
                     .begin_lease(self.wallet, FlowKind::TopUp, &[grant]),
             )
             .unwrap();
-        let mut report = FinishReport {
-            resumed: 0,
-            completed: 0,
-            still_pending: 0,
-        };
+        let mut report = FinishReport::default();
         self.engine.block_on(topup::finish(
             &self.session,
             self.wallet,
