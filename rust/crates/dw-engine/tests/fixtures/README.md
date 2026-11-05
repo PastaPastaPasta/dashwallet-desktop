@@ -127,3 +127,22 @@ To regenerate: copy `bl190_avatar_fingerprints.corpus.rs` to `examples/bl190_cor
 then copy `bl190_avatar_fingerprints.gen.rs` to `examples/bl190_vectors.rs` and run
 `cargo run -p dw-engine --example bl190_vectors -- <dir> > tests/fixtures/bl190_avatar_fingerprints.json`. Delete the
 two copies afterwards. A new corpus can differ (profiles change), so the counts in the test move with it.
+
+## `v0_1_0-regtest/`
+
+A regtest data root written by dw 0.1.0 (tag `v0.1.0`, 67b6dd4b) for the BIP39 `abandon … about` test phrase with
+no passphrase (`src/restore_tests.rs`, `a_0_1_0_store_loads_its_coinjoin_coin_past_99_into_coinjoin`). The 0.1.0
+engine's own test helpers stored three coins of 1.00001 DASH, the way SPV stores them (no pool row for their
+addresses), then reopened the session once:
+
+- CoinJoin index 60, spent;
+- CoinJoin index 150, unspent, past the stored CoinJoin pool rows (0..99);
+- BIP44 index 0, unspent.
+
+`wallet.sqlite`, `app.sqlite`, `dispatch.sqlite` and `vault/vault.dwv` are the files as 0.1.0 left them. The vault's
+OS key was a `MemoryOsStore`'s, so the vault doesn't open here; the load needs only the stores. The automatic backup
+and the lock file are left out.
+
+To regenerate, add a test to `rust/crates/dw-engine/src/parked.rs` at `v0.1.0` that does the above with that file's
+`engine_wallet`, `coinjoin_address`, `pays` and `confirmed_coin`, closes the network, and copies `<data_root>`
+here.

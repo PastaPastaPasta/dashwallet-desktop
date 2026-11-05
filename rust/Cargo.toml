@@ -15,7 +15,11 @@ publish = false
 
 [workspace.dependencies]
 # ---- dashpay/platform, pinned to pasta's fork (DESIGN.md R3, DEC-18, DEC-168) ----
-# PastaPastaPasta/platform dw/bl187-v24-dashcore@dc0c946307 = dw/dp3-04b-pool-rotation@82fb33aff8
+# PastaPastaPasta/platform dw/0.1.x-restore-utxos@2ce6aae742 = dw/bl187-v24-dashcore@dc0c946307
+# + the SQLite rehydrate placing each restored UTXO in the funds account that
+# derives its address (key-wallet `restore_utxos`, dashpay/platform#5724), on
+# the rust-dashcore backport below.
+# dw/bl187-v24-dashcore@dc0c946307 = dw/dp3-04b-pool-rotation@82fb33aff8
 # + rust-dashcore 626c91d1 with upstream's adaptations to it (#5307, #5392, #5403, #5423; BL-187)
 # + MasternodeListSummary.net_info, every net-info entry of the list (MG-04b D39, D75).
 # dw/dp3-04b-pool-rotation@82fb33aff8 = dw/e0-10c-v5.1-spv-trust
@@ -30,37 +34,40 @@ publish = false
 # `shielded`: the Orchard pool (halo2, orchard, the commitment tree), on since
 # 0.1 ships shielded funds (RELEASE-PLAN §1; cost in docs/research/shielded-cost.md).
 # It turns on `dash-sdk/shielded` and `dpp/shielded-client` too.
-platform-wallet = { git = "https://github.com/PastaPastaPasta/platform", rev = "dc0c946307f7ac14a2b8e50479b178e67123cbc1", features = ["bls", "eddsa", "shielded"] }
+platform-wallet = { git = "https://github.com/PastaPastaPasta/platform", rev = "2ce6aae74226a7b78a5d1a977dd2ee6e273740d5", features = ["bls", "eddsa", "shielded"] }
 # `sqlite` = SqlitePersister, `secrets` = vault/keyring primitives (WS-03),
 # `shielded` = the persister's shielded tables.
-platform-wallet-storage = { git = "https://github.com/PastaPastaPasta/platform", rev = "dc0c946307f7ac14a2b8e50479b178e67123cbc1", default-features = false, features = ["sqlite", "secrets", "shielded"] }
+platform-wallet-storage = { git = "https://github.com/PastaPastaPasta/platform", rev = "2ce6aae74226a7b78a5d1a977dd2ee6e273740d5", default-features = false, features = ["sqlite", "secrets", "shielded"] }
 # Default features kept, as platform-wallet-ffi (the iOS build) does.
-dash-sdk = { git = "https://github.com/PastaPastaPasta/platform", rev = "dc0c946307f7ac14a2b8e50479b178e67123cbc1", features = ["wallet", "dashpay-contract", "dpns-contract"] }
+dash-sdk = { git = "https://github.com/PastaPastaPasta/platform", rev = "2ce6aae74226a7b78a5d1a977dd2ee6e273740d5", features = ["wallet", "dashpay-contract", "dpns-contract"] }
 # `ed25519-dalek`: platform-wallet's masternode locator imports `dpp::ed25519_dalek`
 # but its manifest does not enable the feature (the platform workspace gets it by
 # feature unification).
-dpp = { git = "https://github.com/PastaPastaPasta/platform", rev = "dc0c946307f7ac14a2b8e50479b178e67123cbc1", features = ["ed25519-dalek"] }
-dash-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "dc0c946307f7ac14a2b8e50479b178e67123cbc1" }
+dpp = { git = "https://github.com/PastaPastaPasta/platform", rev = "2ce6aae74226a7b78a5d1a977dd2ee6e273740d5", features = ["ed25519-dalek"] }
+dash-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "2ce6aae74226a7b78a5d1a977dd2ee6e273740d5" }
 # Drive's document cost estimator (`drive::drive::document::cost`, the one
 # wasm-sdk exposes), for the credits cost table (DP1-06). `verify` is the
 # feature dash-sdk already builds it with.
-drive = { git = "https://github.com/PastaPastaPasta/platform", rev = "dc0c946307f7ac14a2b8e50479b178e67123cbc1", default-features = false, features = ["verify"] }
+drive = { git = "https://github.com/PastaPastaPasta/platform", rev = "2ce6aae74226a7b78a5d1a977dd2ee6e273740d5", default-features = false, features = ["verify"] }
 # `dpns-contract`: the provider serves the DPNS contract that the contested-name
 # vote-state proofs need (DP1-03), as rs-sdk-ffi (the iOS build) enables it;
 # `dashpay-contract`: the DashPay contract that a broadcast contactRequest's
 # proof is verified against (DP2-02).
-rs-sdk-trusted-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "dc0c946307f7ac14a2b8e50479b178e67123cbc1", features = ["dpns-contract", "dashpay-contract"] }
+rs-sdk-trusted-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "2ce6aae74226a7b78a5d1a977dd2ee6e273740d5", features = ["dpns-contract", "dashpay-contract"] }
 # DIP-15 DashPay crypto (ECDH, account reference, contactInfo AES) for the
 # vault's Platform signers; the same functions platform-wallet calls.
-platform-encryption = { git = "https://github.com/PastaPastaPasta/platform", rev = "dc0c946307f7ac14a2b8e50479b178e67123cbc1" }
+platform-encryption = { git = "https://github.com/PastaPastaPasta/platform", rev = "2ce6aae74226a7b78a5d1a977dd2ee6e273740d5" }
 
-# ---- dashpay/rust-dashcore: EXACTLY the revision platform pins (platform Cargo.toml) ----
+# ---- rust-dashcore: EXACTLY the revision platform pins (platform Cargo.toml) ----
 # A different revision would duplicate every dashcore type in the graph.
-dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "626c91d1efcc471d2ea06290cadd08ef222aee35" }
-key-wallet = { git = "https://github.com/dashpay/rust-dashcore", rev = "626c91d1efcc471d2ea06290cadd08ef222aee35" }
-key-wallet-manager = { git = "https://github.com/dashpay/rust-dashcore", rev = "626c91d1efcc471d2ea06290cadd08ef222aee35" }
-dash-spv = { git = "https://github.com/dashpay/rust-dashcore", rev = "626c91d1efcc471d2ea06290cadd08ef222aee35" }
-dashcore-rpc = { git = "https://github.com/dashpay/rust-dashcore", rev = "626c91d1efcc471d2ea06290cadd08ef222aee35" }
+# PastaPastaPasta/rust-dashcore dw/restore-utxos-626c91d1@55663e43 = dashpay
+# 626c91d1 + #1112, #1105, #1295 (`ManagedWalletInfo::restore_utxos`),
+# cherry-picked; back to a dashpay revision at the next platform re-pin.
+dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "55663e4352d382a3b47818503946d2754328188e" }
+key-wallet = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "55663e4352d382a3b47818503946d2754328188e" }
+key-wallet-manager = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "55663e4352d382a3b47818503946d2754328188e" }
+dash-spv = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "55663e4352d382a3b47818503946d2754328188e" }
+dashcore-rpc = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "55663e4352d382a3b47818503946d2754328188e" }
 # ---- dashpay/base-sdk: EXACTLY the revision that rust-dashcore pins ----
 dash-pkc = { git = "https://github.com/dashpay/base-sdk", rev = "33fcc59e1868c803f9608e0e78ee8bddf3abcee7", default-features = false }
 

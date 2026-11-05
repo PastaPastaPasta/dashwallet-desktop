@@ -108,6 +108,10 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         working-directory: rust
         run: DASHD_PATH="$DASHCORE_DIR/bin/dashd" cargo test -p dw-engine --test e0_04_bl76_regtest -- --nocapture
+      - name: restore-utxos (CoinJoin coins past index 99 against dashd)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        working-directory: rust
+        run: DASHD_PATH="$DASHCORE_DIR/bin/dashd" cargo test -p dw-engine --test restore_utxos_regtest -- --nocapture
       - name: restore
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         working-directory: regtest/harness
