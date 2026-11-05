@@ -21,7 +21,7 @@ chunks: Array<MixedCoinsChunk>, fullyMixed: number, notFullyMixed: number,
  */
 coinsAfter: number,
 /**
- * The account's coins not final yet (neither confirmed nor
- * InstantSend-locked), which the round leaves.
+ * The account's coins that wait for a confirmation, which the round
+ * leaves.
  */
-notFinal: number, };
+unconfirmed: number, };

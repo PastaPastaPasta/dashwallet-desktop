@@ -37,6 +37,7 @@ export const MOVE_COPY = {
     fee: "Network fee",
     receive: "You receive",
     transactions: (n: number) => (n === 1 ? "This takes one transaction." : `This takes ${n} transactions.`),
+    waiting: (n: number) => (n === 1 ? "1 coin waits for a confirmation and stays in your CoinJoin balance." : `${n} coins wait for a confirmation and stay in your CoinJoin balance.`),
     cancel: "Cancel",
     move: "Move",
   },

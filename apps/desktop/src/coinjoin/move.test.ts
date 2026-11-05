@@ -156,7 +156,7 @@ describe("Move mixed coins to the wallet", () => {
 });
 
 describe("Move mixed coins, the flow's edges", () => {
-  const PLAN: MixedCoinsSweepPlan = { destination: "wallet", total: 30, chunks: [{ inputs: 3, amount: 27, fee: 3 }], fullyMixed: 20, notFullyMixed: 10 };
+  const PLAN: MixedCoinsSweepPlan = { destination: "wallet", total: 30, chunks: [{ inputs: 3, amount: 27, fee: 3 }], fullyMixed: 20, notFullyMixed: 10, unconfirmed: 0 };
   const stub = (over: Partial<Record<keyof MoveMixedApi, unknown>>) => new MoveMixedFlow({ stopMixing: vi.fn().mockResolvedValue(undefined), ...over } as unknown as MoveMixedApi, W);
 
   it("after Stop Mixing, plans again while the last session winds down", async () => {

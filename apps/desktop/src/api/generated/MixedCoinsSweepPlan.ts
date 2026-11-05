@@ -16,4 +16,9 @@ fullyMixed: number,
  * Of `total`, the CoinJoin account's other coins (short of the rounds,
  * collaterals): the move takes the whole account.
  */
-notFullyMixed: number, };
+notFullyMixed: number,
+/**
+ * The account's coins that wait for a confirmation: no chunk spends a
+ * coin with unconfirmed parents.
+ */
+unconfirmed: number, };

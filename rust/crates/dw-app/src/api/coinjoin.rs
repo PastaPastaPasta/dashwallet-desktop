@@ -546,6 +546,9 @@ pub struct MixedCoinsSweepPlan {
     /// Of `total`, the CoinJoin account's other coins (short of the rounds,
     /// collaterals): the move takes the whole account.
     pub not_fully_mixed: u64,
+    /// The account's coins that wait for a confirmation: no chunk spends a
+    /// coin with unconfirmed parents.
+    pub unconfirmed: u32,
 }
 
 impl From<SweepPlan> for MixedCoinsSweepPlan {
@@ -556,6 +559,7 @@ impl From<SweepPlan> for MixedCoinsSweepPlan {
             chunks,
             fully_mixed,
             not_fully_mixed,
+            unconfirmed,
         } = p;
         MixedCoinsSweepPlan {
             destination: destination.into(),
@@ -563,6 +567,7 @@ impl From<SweepPlan> for MixedCoinsSweepPlan {
             chunks: chunks.into_iter().map(Into::into).collect(),
             fully_mixed,
             not_fully_mixed,
+            unconfirmed,
         }
     }
 }
@@ -582,9 +587,9 @@ pub struct MixedCoinsConsolidationPlan {
     pub not_fully_mixed: u64,
     /// The CoinJoin account's coins once the round confirms.
     pub coins_after: u32,
-    /// The account's coins not final yet (neither confirmed nor
-    /// InstantSend-locked), which the round leaves.
-    pub not_final: u32,
+    /// The account's coins that wait for a confirmation, which the round
+    /// leaves.
+    pub unconfirmed: u32,
 }
 
 impl From<ConsolidationPlan> for MixedCoinsConsolidationPlan {
@@ -595,7 +600,7 @@ impl From<ConsolidationPlan> for MixedCoinsConsolidationPlan {
             fully_mixed,
             not_fully_mixed,
             coins_after,
-            not_final,
+            unconfirmed,
         } = p;
         MixedCoinsConsolidationPlan {
             total,
@@ -603,7 +608,7 @@ impl From<ConsolidationPlan> for MixedCoinsConsolidationPlan {
             fully_mixed,
             not_fully_mixed,
             coins_after,
-            not_final,
+            unconfirmed,
         }
     }
 }

@@ -164,20 +164,23 @@ function sweepPlanOf(world: World, w: FixtureWallet, destination: string) {
   if (destination !== "wallet") throw fail("platform.not_implemented", "not implemented: move_mixed_coins.shielded", { kind: "call", call: "move_mixed_coins.shielded" });
   if (w.summary.watchOnly) throw fail("coinjoin.watch_only", "fixture: this wallet is watch-only");
   if ((world.coinjoin.mixers[w.summary.walletId]?.state ?? "idle") !== "idle") throw fail("coinjoin.mixing_active", "stop mixing first");
-  const coins = w.coins.filter(isCoinJoinCoin);
+  // Confirmed coins only (`sweep_coins`); the rest wait for a confirmation.
+  const account = w.coins.filter(isCoinJoinCoin);
+  const coins = account.filter((u) => u.confirmations > 0);
+  const unconfirmed = account.length - coins.length;
   const chunks = sweepChunks(coins);
   if (chunks.length === 0) throw fail("coinjoin.nothing_to_move", "no mixed coins to move");
   const swept = chunks.flatMap((c) => c.coins);
   const fullyMixed = swept.filter((u) => (u.coinjoinRounds ?? 0) >= world.coinjoin.settings.rounds).reduce((n, u) => n + u.amount, 0);
   const total = swept.reduce((n, u) => n + u.amount, 0);
-  return { chunks, total, fullyMixed };
+  return { chunks, total, fullyMixed, unconfirmed };
 }
 
 export function coinjoinHandlers({ wallet, grant, useGrant }: CoinJoinDeps): Handlers {
   return {
     mixed_coins_sweep_plan: ({ walletId, destination }, { world }) => {
-      const { chunks, total, fullyMixed } = sweepPlanOf(world, wallet(world, walletId), destination);
-      return { destination, total, chunks: chunks.map((c) => c.chunk), fullyMixed, notFullyMixed: total - fullyMixed };
+      const { chunks, total, fullyMixed, unconfirmed } = sweepPlanOf(world, wallet(world, walletId), destination);
+      return { destination, total, chunks: chunks.map((c) => c.chunk), fullyMixed, notFullyMixed: total - fullyMixed, unconfirmed };
     },
     // Each chunk sent becomes one coin of the wallet's main balance, outside the CoinJoin account;
     // `sweepFailure` stops at its chunk as a rejected or unknown broadcast.

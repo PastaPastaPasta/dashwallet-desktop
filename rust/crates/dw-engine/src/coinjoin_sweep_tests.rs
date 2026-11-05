@@ -341,7 +341,7 @@ fn mixing_does_not_start_while_a_move_runs() {
 /// BIP44 one, takes every final coin once, in the fewest chunks under the
 /// cap, and leaves the coins that are not final.
 #[test]
-fn a_consolidation_pays_fresh_coinjoin_addresses_and_takes_final_coins_only() {
+fn a_consolidation_pays_fresh_coinjoin_addresses_and_takes_confirmed_coins_only() {
     let f = fixture(false);
     let coins: Vec<OutPoint> = (1..=6).map(|n| f.credit_coinjoin(n, COIN)).collect();
     let pending = f.credit_coinjoin_with(7, COIN, false);
@@ -354,7 +354,7 @@ fn a_consolidation_pays_fresh_coinjoin_addresses_and_takes_final_coins_only() {
         plan.chunks.iter().map(|c| c.inputs).collect::<Vec<_>>(),
         [2, 2, 2]
     );
-    assert_eq!(plan.not_final, 1);
+    assert_eq!(plan.unconfirmed, 1);
     assert_eq!(plan.coins_after, 4, "three outputs and the pending coin");
     assert_eq!(plan.not_fully_mixed + plan.fully_mixed, 6 * COIN);
 
@@ -365,7 +365,7 @@ fn a_consolidation_pays_fresh_coinjoin_addresses_and_takes_final_coins_only() {
     assert_eq!(
         inputs(&txs),
         coins.iter().copied().collect(),
-        "each final coin once"
+        "each confirmed coin once"
     );
     assert!(!inputs(&txs).contains(&pending));
     let mut outputs = HashSet::new();
@@ -902,4 +902,82 @@ fn a_sweep_record_resolves_only_when_seen_or_conflicted_in_a_block() {
         split_sweep_outs(vec![renamed.clone()], &txs).1,
         vec![renamed.0]
     );
+}
+
+/// Marks the credited coin `o` InstantSend-locked: final and trusted, but
+/// unconfirmed, its parent still in the mempool.
+fn instant_lock(f: &Fixture, o: OutPoint) {
+    let session = Arc::clone(&f.session);
+    let id = f.wallet;
+    f.engine
+        .block_on(session.on_runtime({
+            let session = Arc::clone(&session);
+            async move {
+                let wallet = session.wallet(&id).await?;
+                let mut state = wallet.state_mut().await;
+                let account = (state.core_wallet.accounts.coinjoin_accounts)
+                    .get_mut(&0)
+                    .unwrap();
+                let utxo = account.utxos.get_mut(&o).unwrap();
+                utxo.is_instantlocked = true;
+                utxo.is_trusted = true;
+                Ok(())
+            }
+        }))
+        .unwrap();
+}
+
+/// Opus M1 (ancestor limits): a chunk spends confirmed coins only. An
+/// unconfirmed coin's parents, a DSTX's foreign inputs among them, are not
+/// the wallet's to count, so a full chunk with unconfirmed parents could
+/// pass Core's ancestor limits (`-limitancestorcount` 25,
+/// `-limitancestorsize` 101 kvB) unseen: such coins wait for a
+/// confirmation, for a move and a consolidation alike. Here a chunk of at
+/// most 10 inputs with 9 confirmed coins and 3 InstantSend-locked ones:
+/// one chunk of the 9, the 3 left out.
+#[test]
+fn a_full_chunk_never_spends_a_coin_with_unconfirmed_parents() {
+    for consolidation in [false, true] {
+        let f = fixture(false);
+        let confirmed: HashSet<OutPoint> = (1..=9).map(|n| f.credit_coinjoin(n, COIN)).collect();
+        for n in 10..=12 {
+            let o = f.credit_coinjoin_with(n, COIN, false);
+            instant_lock(&f, o);
+        }
+        let wire = hook(&f, 10, &[]);
+        let r = if consolidation {
+            consolidate(&f)
+        } else {
+            move_to_wallet(&f)
+        }
+        .unwrap();
+        assert_eq!(r.failure_code, None);
+        let txs = wire.txs();
+        assert_eq!(txs.len(), 1, "one chunk");
+        assert_eq!(inputs(&txs), confirmed, "confirmed coins only");
+    }
+}
+
+/// Both plans say how many of the account's coins wait for a
+/// confirmation: InstantSend-locked or not, they stay out of every chunk.
+#[test]
+fn the_plans_count_the_coins_that_wait_for_a_confirmation() {
+    let f = fixture(false);
+    f.credit_coinjoin(1, COIN);
+    f.credit_coinjoin(4, COIN);
+    f.credit_coinjoin_with(2, COIN, false);
+    let locked = f.credit_coinjoin_with(3, COIN, false);
+    instant_lock(&f, locked);
+    hook(&f, 10, &[]);
+    let plan = (f.engine)
+        .block_on(
+            f.session
+                .mixed_coins_sweep_plan(f.wallet, SweepDestination::Wallet),
+        )
+        .unwrap();
+    assert_eq!((plan.total, plan.unconfirmed), (2 * COIN, 2));
+    let plan = (f.engine)
+        .block_on(f.session.mixed_coins_consolidation_plan(f.wallet))
+        .unwrap();
+    assert_eq!((plan.unconfirmed, plan.coins_after), (2, 3));
 }

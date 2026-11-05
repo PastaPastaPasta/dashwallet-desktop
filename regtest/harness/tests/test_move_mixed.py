@@ -120,7 +120,7 @@ def test_consolidation_keeps_the_value_in_the_coinjoin_account(dw, regtest_node,
     head, chunks = plan(dw, "consolidate-mixed", height)
     assert int(head["total"]) == total, head
     assert int(head["fully_mixed"]) + int(head["not_fully_mixed"]) == total, head
-    assert (head["chunks"], head["coins_after"], head["not_final"]) == ("1", "1", "0"), head
+    assert (head["chunks"], head["coins_after"], head["unconfirmed"]) == ("1", "1", "0"), head
     assert [c["inputs"] for c in chunks] == [str(COINS)], chunks
 
     out, mined = sweep_in_background(

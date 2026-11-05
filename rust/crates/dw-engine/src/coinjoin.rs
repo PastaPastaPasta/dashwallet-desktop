@@ -239,6 +239,9 @@ pub struct SweepPlan {
     /// (denominations short of the rounds, collaterals, change): the move
     /// takes the whole account.
     pub not_fully_mixed: u64,
+    /// The CoinJoin account's coins that wait for a confirmation, which
+    /// the move leaves (an InstantSend-locked coin among them).
+    pub unconfirmed: u32,
 }
 
 /// The consolidation round before a move to Shielded (iOS #1221).
@@ -254,9 +257,9 @@ pub struct ConsolidationPlan {
     /// The CoinJoin account's coins once the round confirms: its outputs
     /// and every coin it leaves (not final yet, held, dust).
     pub coins_after: u32,
-    /// The account's coins not final yet (neither confirmed nor
-    /// InstantSend-locked), which the round leaves.
-    pub not_final: u32,
+    /// The account's coins that wait for a confirmation, which the round
+    /// leaves (an InstantSend-locked coin among them).
+    pub unconfirmed: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2351,11 +2354,16 @@ impl NetworkSession {
 
     /// The CoinJoin account's coins a sweep to `target` takes, in its
     /// chunks: free (an input of a sweep chunk that may be on the network,
-    /// [`SweepOut`], reads reserved), spendable at the tip, on a CoinJoin
-    /// path, above the threshold; trusted for a move to the wallet, final
-    /// (confirmed or InstantSend-locked) for a consolidation, whose outputs
-    /// a drain of the account then spends (iOS #1221: an unconfirmed input
-    /// that never locks would hold every coin swept with it). With `prune`
+    /// [`SweepOut`], reads reserved), confirmed, spendable at the tip, on a
+    /// CoinJoin path, above the threshold. Confirmed only, for a move and a
+    /// consolidation alike: a chunk of up to 500 inputs with unconfirmed
+    /// parents can exceed Core's ancestor limits (`-limitancestorcount` 25,
+    /// `-limitancestorsize` 101 kvB, policy.h), and the wallet cannot count
+    /// them: a mixing transaction's other inputs are foreign, their parents
+    /// unknown to SPV. An InstantSend lock does not help (the parents stay
+    /// in the mempool), and an unconfirmed input that never locks would
+    /// hold every coin swept with it (iOS #1221). The rest wait for a
+    /// confirmation (`unconfirmed`). With `prune`
     /// (a sweep, under the replay guard), the records that resolved are
     /// dropped first; a plan only reads.
     async fn sweep_coins(
@@ -2378,15 +2386,12 @@ impl NetworkSession {
             .iter()
             .filter(|c| c.coin.coinjoin_account)
             .collect();
-        let not_final = account.iter().filter(|c| !c.final_enough()).count() as u32;
+        let unconfirmed = account.iter().filter(|c| !c.coin.utxo.is_confirmed).count() as u32;
         let coins: Vec<MixViewCoin> = account
             .iter()
             .filter(|c| {
                 c.free()
-                    && match target {
-                        SweepTarget::Bip44 => c.trusted(),
-                        SweepTarget::CoinJoin => c.final_enough(),
-                    }
+                    && c.coin.utxo.is_confirmed
                     && c.coin.utxo.is_spendable(view.height)
                     && c.path
                         .as_ref()
@@ -2408,7 +2413,7 @@ impl NetworkSession {
         let swept: usize = chunks.iter().map(|c| c.coins.len()).sum();
         Ok(SweepCoins {
             coins_after: (account.len() - swept + chunks.len()) as u32,
-            not_final,
+            unconfirmed,
             coins,
             chunks,
         })
@@ -2533,11 +2538,12 @@ impl NetworkSession {
             chunks: picked.chunk_infos(),
             fully_mixed: amounts.fully_mixed,
             not_fully_mixed: amounts.not_fully_mixed,
+            unconfirmed: picked.unconfirmed,
         })
     }
 
     /// The consolidation round before a move to Shielded (iOS #1221): the
-    /// CoinJoin account's final coins in the fewest chunks of at most 500
+    /// CoinJoin account's confirmed coins in the fewest chunks of at most 500
     /// inputs, each to one fresh address of the same CoinJoin account.
     /// Reads coins only. Refused while the wallet mixes.
     pub async fn mixed_coins_consolidation_plan(
@@ -2551,7 +2557,7 @@ impl NetworkSession {
             fully_mixed: amounts.fully_mixed,
             not_fully_mixed: amounts.not_fully_mixed,
             coins_after: picked.coins_after,
-            not_final: picked.not_final,
+            unconfirmed: picked.unconfirmed,
         })
     }
 
@@ -2933,8 +2939,8 @@ struct SweepCoins {
     /// The CoinJoin account's coins once the chunks confirm: each chunk's
     /// output and every coin the sweep leaves.
     coins_after: u32,
-    /// The CoinJoin account's coins not final yet.
-    not_final: u32,
+    /// The CoinJoin account's coins that wait for a confirmation.
+    unconfirmed: u32,
 }
 
 /// What a sweep moves, by how mixed it is.
@@ -3698,7 +3704,7 @@ mod tests {
             }],
             coins,
             coins_after: 1,
-            not_final: 0,
+            unconfirmed: 0,
         };
         let a = picked.amounts();
         assert_eq!((a.fully_mixed, a.not_fully_mixed), (14_000, 7_000));

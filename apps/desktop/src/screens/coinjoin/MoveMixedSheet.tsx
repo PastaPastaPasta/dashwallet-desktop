@@ -61,6 +61,11 @@ export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network
               <p className="sheet-text" data-testid="move-mixed-transactions">
                 {MOVE_COPY.confirm.transactions(plan.chunks.length)}
               </p>
+              {plan.unconfirmed > 0 && (
+                <p className="sheet-text" data-testid="move-mixed-waiting">
+                  {MOVE_COPY.confirm.waiting(plan.unconfirmed)}
+                </p>
+              )}
               <div className="sheet-actions">
                 <DashButton variant="tintedGray" size="large" data-testid="move-mixed-cancel" disabled={flow.running} onClick={() => flow.close()}>
                   {MOVE_COPY.confirm.cancel}

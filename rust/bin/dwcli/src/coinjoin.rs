@@ -431,13 +431,13 @@ pub fn run(
                 .block_on(session.mixed_coins_consolidation_plan(id))
                 .map_err(e)?;
             println!(
-                "plan total={} chunks={} fully_mixed={} not_fully_mixed={} coins_after={} not_final={}",
+                "plan total={} chunks={} fully_mixed={} not_fully_mixed={} coins_after={} unconfirmed={}",
                 plan.total,
                 plan.chunks.len(),
                 plan.fully_mixed,
                 plan.not_fully_mixed,
                 plan.coins_after,
-                plan.not_final
+                plan.unconfirmed
             );
             for c in &plan.chunks {
                 println!(
