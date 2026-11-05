@@ -7,10 +7,12 @@ import type { ShieldedStatus } from "../src/api/generated/ShieldedStatus";
 import { MAIN_PHRASE } from "../src/fixture/vault";
 import { seriousAxeViolations } from "./axe";
 import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
+import type { TxRow } from "../src/api/generated/TxRow";
 
-// MP-01 slice (a) on the fixture backend (src/fixture/rates.ts): the Home hero and breakdown in
-// fiat, the stale, volatile and unavailable lines, discreet mode, the one-time disclosure (Home
-// card, onboarding's last step) and Settings ▸ General ▸ Local currency. Prices are Mainnet's;
+// MP-01 on the fixture backend (src/fixture/rates.ts): the Home hero and breakdown in fiat, the
+// stale, volatile and unavailable lines, discreet mode, the one-time disclosure (Home card,
+// onboarding's last step), Settings ▸ General ▸ Local currency, and Activity with the transaction
+// detail (the value now, and the price stamp a payment was first seen with). Prices are Mainnet's;
 // the testnet scenarios show none.
 
 async function open(page: Page, scenario: string, theme: Theme = "light") {
@@ -21,7 +23,7 @@ async function open(page: Page, scenario: string, theme: Theme = "light") {
 }
 
 const world = <T>(page: Page, read: (w: World) => T) => page.evaluate(`(${read.toString()})(window.__dwFixture.world)`) as Promise<T>;
-const navigate = (page: Page, route: "home" | "settings") => page.evaluate((route) => window.__dwFixture!.shellCommand({ kind: "navigate", route }), route);
+const navigate = (page: Page, route: "home" | "settings" | "activity") => page.evaluate((route) => window.__dwFixture!.shellCommand({ kind: "navigate", route }), route);
 
 /** The hero's total and each pool in duffs, as Home adds them up from the same commands. */
 async function totals(page: Page) {
@@ -207,4 +209,92 @@ test.describe("Settings ▸ General ▸ Local currency", () => {
       expect(await seriousAxeViolations(page)).toEqual([]);
     });
   }
+});
+
+test.describe("Activity and the transaction detail", () => {
+  const rowId = (r: Pick<TxRow, "txid" | "recordIndex">) => `tx-row-${r.txid.slice(0, 10)}-${r.recordIndex}`;
+  const rows = (page: Page) => world(page, (w) => w.wallets[0].rows.slice(0, 5));
+
+  async function openActivity(page: Page, scenario: string) {
+    const errors = await open(page, scenario);
+    await navigate(page, "activity");
+    await page.getByTestId("tx-list").waitFor();
+    return errors;
+  }
+
+  test("each row shows its value now, from the exact integer, and discreet mode hides it", async ({ page }) => {
+    const errors = await openActivity(page, "fiat");
+    const [first, , sent] = await rows(page);
+    await expect(page.getByTestId(`${rowId(first)}-fiat`)).toHaveText(fiatText(first.amount, "49.0967", "USD", "en-US")!);
+    await expect(page.getByTestId(`${rowId(sent)}-fiat`)).toHaveText(fiatText(sent.amount, "49.0967", "USD", "en-US")!);
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "toggleDiscreet" }));
+    await expect(page.locator(".tx-row-fiat")).toHaveCount(0);
+    await expect(page.getByTestId(rowId(first))).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test("the table has a value column only while a price shows", async ({ page }) => {
+    await openActivity(page, "fiat-stale");
+    await page.getByTestId("tx-mode-table").click();
+    await expect(page.getByTestId("tx-table-value")).toHaveText("Value (USD)");
+    const [first] = await rows(page);
+    const cell = page.getByTestId(`table-${rowId(first)}-fiat`);
+    await expect(cell).toHaveText(fiatText(first.amount, "49.0967", "USD", "en-US")!);
+    await expect(cell).toHaveClass(/is-stale/);
+    await expect(cell).toHaveAttribute("title", /^Price from .+, may be out of date$/);
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "toggleDiscreet" }));
+    await expect(page.getByTestId("tx-table-value")).toHaveCount(0);
+  });
+
+  for (const scenario of ["funded", "fiat-off", "fiat-unavailable"]) {
+    test(`${scenario}: no value column, no row value`, async ({ page }) => {
+      await openActivity(page, scenario);
+      await expect(page.locator(".tx-row-fiat")).toHaveCount(0);
+      await page.getByTestId("tx-mode-table").click();
+      await expect(page.getByTestId("tx-table")).toBeVisible();
+      await expect(page.getByTestId("tx-table-value")).toHaveCount(0);
+    });
+  }
+
+  test("the detail says what a payment was worth when first seen, in that stamp's currency, and its value now", async ({ page }) => {
+    await openActivity(page, "fiat");
+    const [received, unstamped, sent] = await rows(page);
+
+    await page.getByTestId(rowId(received)).click();
+    await expect(page.getByTestId("tx-detail-fiat-then")).toHaveText(`${fiatText(received.amount, "48.1203", "USD", "en-US")} when received`);
+    await expect(page.getByTestId("tx-detail-fiat-then")).toHaveAttribute("title", /from rates\.ctx\.com$/);
+    await expect(page.getByTestId("tx-detail-value-now-text")).toHaveText(fiatText(received.amount, "49.0967", "USD", "en-US")!);
+    await page.keyboard.press("Escape");
+
+    // A payment seen before prices were on keeps none: no back-filled price.
+    await page.getByTestId(rowId(unstamped)).click();
+    await expect(page.getByTestId("tx-detail-facts")).toBeVisible();
+    await expect(page.getByTestId("tx-detail-fiat-then")).toHaveCount(0);
+    await expect(page.getByTestId("tx-detail-value-now")).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    // Stamped in euros before the switch to dollars: it keeps its own currency.
+    await page.getByTestId(rowId(sent)).click();
+    await expect(page.getByTestId("tx-detail-fiat-then")).toHaveText(`${fiatText(sent.amount, "41.2500", "EUR", "en-US")} when sent`);
+    await expect(page.getByTestId("tx-detail-value-now-text")).toHaveText(/^\$/);
+
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "toggleDiscreet" }));
+    await expect(page.getByTestId("tx-detail-fiat-then")).toHaveCount(0);
+    await expect(page.getByTestId("tx-detail-value-now")).toHaveCount(0);
+  });
+
+  test("prices off hide the stamp too; unavailable prices keep it, with no value now", async ({ page }) => {
+    await openActivity(page, "fiat-off");
+    const [received] = await rows(page);
+    expect(received.fiatThen).toBeTruthy();
+    await page.getByTestId(rowId(received)).click();
+    await expect(page.getByTestId("tx-detail-facts")).toBeVisible();
+    await expect(page.getByTestId("tx-detail-fiat-then")).toHaveCount(0);
+    await expect(page.getByTestId("tx-detail-value-now")).toHaveCount(0);
+
+    await openActivity(page, "fiat-unavailable");
+    await page.getByTestId(rowId(received)).click();
+    await expect(page.getByTestId("tx-detail-fiat-then")).toHaveText(`${fiatText(received.amount, "48.1203", "USD", "en-US")} when received`);
+    await expect(page.getByTestId("tx-detail-value-now")).toHaveCount(0);
+  });
 });

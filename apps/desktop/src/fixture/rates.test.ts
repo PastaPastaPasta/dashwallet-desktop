@@ -78,4 +78,19 @@ describe("fixture prices", () => {
     expect(await cmd.ratesCurrencies()).toEqual([]);
     expect(fixture.world.rates.requests).toBe(0);
   });
+
+  it("stamps the newest rows on Mainnet, each at its own time; none before the disclosure or on testnet", async () => {
+    install("fiat");
+    const walletId = fixture.world.wallets[0].summary.walletId;
+    const rows = fixture.world.wallets[0].rows;
+    const stamps = rows.slice(0, 5).map((r) => r.fiatThen?.currency ?? null);
+    expect(stamps).toEqual(["USD", null, "EUR", "USD", "USD"]);
+    for (const r of rows.filter((r) => r.fiatThen)) expect(r.fiatThen!.rateAt).toBe(r.timestamp);
+    const detail = await cmd.txDetail(walletId, rows[0].txid);
+    expect(detail.rows[0].fiatThen).toEqual(rows[0].fiatThen);
+    for (const s of ["funded", "fiat-disclosure"] as const) {
+      install(s);
+      expect(fixture.world.wallets[0].rows.some((r) => r.fiatThen)).toBe(false);
+    }
+  });
 });

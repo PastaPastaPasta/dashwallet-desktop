@@ -117,3 +117,35 @@ pub struct CurrencyRate {
     pub rate_at: u64,
     pub source: RateSourceId,
 }
+
+/// The price a transaction was first seen at (rates-engine §6), in the
+/// currency chosen then. Written once; a later price or currency never
+/// replaces it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxFiat {
+    pub currency: String,
+    /// Fiat per 1 DASH, an exact decimal string.
+    pub price: String,
+    /// UNIX seconds the price is from.
+    pub rate_at: u64,
+    pub source: RateSourceId,
+}
+
+impl RateSourceId {
+    /// The name `tx_fiat.source` stores.
+    pub(crate) fn stored(self) -> &'static str {
+        match self {
+            Self::Ctx => "ctx",
+            Self::BitPayDashCentral => "bitPayDashCentral",
+        }
+    }
+
+    pub(crate) fn from_stored(s: &str) -> Option<Self> {
+        match s {
+            "ctx" => Some(Self::Ctx),
+            "bitPayDashCentral" => Some(Self::BitPayDashCentral),
+            _ => None,
+        }
+    }
+}

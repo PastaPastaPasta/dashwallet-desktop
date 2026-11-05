@@ -636,3 +636,160 @@ fn every_change_of_the_view_is_announced_once() {
     block_on(rig.hub.attempt());
     assert_eq!(rig.events.rates(), after_on + 1);
 }
+
+/// rates-engine §6: a Mainnet session stamps a transaction with the fresh
+/// price only, and only one whose time (first sight or block) is at most 3 h ago.
+mod stamps {
+    use dashcore::hashes::Hash;
+    use dashcore::{BlockHash, OutPoint, Transaction, TxIn, Txid};
+    use key_wallet::account::{AccountType, StandardAccountType};
+    use key_wallet::managed_account::transaction_record::{
+        TransactionDirection, TransactionRecord,
+    };
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext, TransactionType};
+
+    use super::*;
+    use crate::events::SessionHub;
+    use crate::{DashNetwork, WalletId};
+
+    const W: WalletId = WalletId([7; 32]);
+    const HOURS_3: u64 = 3 * 3600;
+
+    fn add(hub: &SessionHub, n: u8, context: TransactionContext) -> Txid {
+        add_seen(hub, n, context, Some(T0))
+    }
+
+    fn add_seen(hub: &SessionHub, n: u8, context: TransactionContext, seen: Option<u64>) -> Txid {
+        let tx = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::from_byte_array([n; 32]), 0),
+                ..Default::default()
+            }],
+            output: Vec::new(),
+            special_transaction_payload: None,
+        };
+        let r = TransactionRecord::new(
+            tx,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            context,
+            TransactionType::Standard,
+            TransactionDirection::Incoming,
+            Vec::new(),
+            Vec::new(),
+            1_000,
+        );
+        hub.history.with_wallet(W, |h| assert!(h.upsert(&r, seen)));
+        r.txid
+    }
+
+    fn block_at(time: u64) -> TransactionContext {
+        TransactionContext::InBlock(BlockInfo::new(1, BlockHash::all_zeros(), time as u32))
+    }
+
+    fn mainnet(rig: &Rig) -> SessionHub {
+        let hub = SessionHub::new(DashNetwork::Mainnet, Arc::new(NoSink));
+        hub.set_rates(Arc::downgrade(&rig.hub));
+        hub
+    }
+
+    struct NoSink;
+
+    impl EventSink for NoSink {
+        fn emit(&self, _: EngineEvent) {}
+    }
+
+    #[test]
+    fn a_fresh_price_stamps_new_and_recent_transactions_only() {
+        let rig = Rig::new(vec![usd("49.0967", T0)], vec![Err("unused")]);
+        rig.on();
+        block_on(rig.hub.attempt());
+        let hub = mainnet(&rig);
+        let now = T0;
+        let mempool = add(&hub, 1, TransactionContext::Mempool);
+        let recent = add(&hub, 2, block_at(now - HOURS_3));
+        let old = add(&hub, 3, block_at(now - HOURS_3 - 1));
+        // Seen over 3 h ago while no price was fresh, mined just now: too late to stamp.
+        let late = add_seen(&hub, 4, block_at(now), Some(now - HOURS_3 - 1));
+        let late_mempool = add_seen(
+            &hub,
+            5,
+            TransactionContext::Mempool,
+            Some(now - HOURS_3 - 1),
+        );
+        let unseen = add_seen(&hub, 6, TransactionContext::Mempool, None);
+        let unknown = Txid::from_byte_array([9; 32]);
+
+        let rate = hub.stamp_rate().expect("a fresh price stamps");
+        let all = [mempool, recent, old, late, late_mempool, unseen, unknown];
+        let rows = hub.price_stamps(&rate, &W, &all, now);
+        let stamped: Vec<&str> = rows.iter().map(|r| r.txid.as_str()).collect();
+        assert_eq!(
+            stamped,
+            [mempool.to_string(), recent.to_string(), unseen.to_string()]
+        );
+        let r = &rows[0];
+        assert_eq!(
+            (
+                r.currency.as_str(),
+                r.price.as_str(),
+                r.rate_at,
+                r.source.as_str()
+            ),
+            ("USD", "49.0967", T0, "ctx")
+        );
+    }
+
+    #[test]
+    fn a_stale_price_or_another_network_never_stamps() {
+        let rig = Rig::new(vec![usd("49.0967", T0)], vec![Err("unused")]);
+        rig.on();
+        block_on(rig.hub.attempt());
+        let testnet = SessionHub::new(DashNetwork::Testnet, Arc::new(NoSink));
+        testnet.set_rates(Arc::downgrade(&rig.hub));
+        assert!(testnet.stamp_rate().is_none(), "test coins have no price");
+        assert!(
+            SessionHub::new(DashNetwork::Mainnet, Arc::new(NoSink))
+                .stamp_rate()
+                .is_none(),
+            "no prices attached"
+        );
+
+        let hub = mainnet(&rig);
+        assert!(hub.stamp_rate().is_some());
+        rig.advance(FRESH_SECS + 1);
+        assert_eq!(rig.rates().status().state, RateState::Stale);
+        assert!(
+            hub.stamp_rate().is_none(),
+            "a stale price is shown, never stamped"
+        );
+    }
+
+    #[test]
+    fn prices_off_never_stamp() {
+        let rig = Rig::new(vec![usd("49.0967", T0)], vec![Err("unused")]);
+        rig.on();
+        block_on(rig.hub.attempt());
+        let hub = mainnet(&rig);
+        rig.rates()
+            .set_settings(settings(false, Some("USD"), true))
+            .unwrap();
+        assert!(hub.stamp_rate().is_none());
+    }
+
+    #[test]
+    fn stored_source_names_round_trip() {
+        for id in [RateSourceId::Ctx, RateSourceId::BitPayDashCentral] {
+            assert_eq!(RateSourceId::from_stored(id.stored()), Some(id));
+        }
+        assert_eq!(
+            RateSourceId::stored(RateSourceId::BitPayDashCentral),
+            "bitPayDashCentral"
+        );
+        assert_eq!(RateSourceId::from_stored("coingecko"), None);
+    }
+}

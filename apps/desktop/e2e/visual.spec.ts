@@ -163,8 +163,9 @@ for (const theme of THEMES) {
   }
 }
 
-// MP-01: Home with prices on Mainnet (fresh, stale, unavailable, the one-time disclosure) and
-// Settings ▸ General's Local currency card with its picker.
+// MP-01: Home with prices on Mainnet (fresh, stale, unavailable, the one-time disclosure),
+// Settings ▸ General's Local currency card with its picker, Activity's rows and table with their
+// values, and the transaction detail with its price stamp and value now.
 const FIAT_HOME = ["fiat", "fiat-stale", "fiat-unavailable", "fiat-disclosure"];
 
 for (const theme of THEMES) {
@@ -185,6 +186,26 @@ for (const theme of THEMES) {
     await card.scrollIntoViewIfNeeded();
     await fontsReady(page);
     await expect(card).toHaveScreenshot(`${theme}-settings-currency.png`, { animations: "disabled", caret: "hide" });
+  });
+  for (const mode of ["list", "table"] as const) {
+    test(`visual activity-fiat-${mode} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl("fiat", theme));
+      await page.getByTestId("hero").waitFor();
+      await page.getByTestId("sidebar-activity").click();
+      await page.getByTestId(`tx-mode-${mode}`).click();
+      await page.locator(mode === "table" ? "[data-testid=tx-table-value]" : ".tx-row-fiat").first().waitFor();
+      await page.mouse.move(0, 0);
+      await shoot(page, `activity-fiat-${mode}`, theme);
+    });
+  }
+  test(`visual tx-detail-fiat ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("fiat", theme));
+    await page.getByTestId("hero").waitFor();
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(".tx-row").first().click();
+    await page.getByTestId("tx-detail-fiat-then").waitFor();
+    await page.getByTestId("tx-detail-value-now").waitFor();
+    await shoot(page, "tx-detail-fiat", theme);
   });
 }
 

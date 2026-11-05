@@ -382,6 +382,10 @@ pub(crate) struct WalletName {
     pub order: u64,
 }
 
+/// How old a transaction may be to be stamped with the current price
+/// (MP-01; Android's rule).
+const STAMP_MAX_AGE: u64 = 3 * 3600;
+
 /// In-memory state of one session, updated from SPV and wallet callbacks.
 pub(crate) struct SessionHub {
     pub network: DashNetwork,
@@ -400,6 +404,9 @@ pub(crate) struct SessionHub {
     pub announced: Mutex<HashMap<Txid, u64>>,
     /// The quorum provider, told when the masternode phase is done.
     pub trust: OnceLock<Arc<crate::platform::trust::TrustProvider>>,
+    /// The engine's prices (MP-01): a mainnet session stamps the
+    /// transactions it first sees with the fresh price (rates-engine §6).
+    rates: OnceLock<std::sync::Weak<crate::rates::RatesHub>>,
     /// The lease table: its catch-up runs on each SPV peers 0 → >0
     /// transition (E0-04 H6 part 2), and its dispatch fence hears the
     /// wallet's positive network evidence (BL-76, [`Self::note_seen`]).
@@ -415,6 +422,54 @@ pub(crate) struct SessionHub {
 }
 
 impl SessionHub {
+    pub(crate) fn set_rates(&self, rates: std::sync::Weak<crate::rates::RatesHub>) {
+        let _ = self.rates.set(rates);
+    }
+
+    /// The price to stamp a transaction first seen now with: on Mainnet,
+    /// while the chosen currency's price is fresh.
+    pub(crate) fn stamp_rate(&self) -> Option<crate::rates::FiatRate> {
+        if self.network != DashNetwork::Mainnet {
+            return None;
+        }
+        self.rates.get()?.upgrade()?.fresh_rate()
+    }
+
+    /// The stamps for `txids` of `wallet`: each one whose time, the earlier
+    /// of its first sight and its block's, is at most [`STAMP_MAX_AGE`] ago,
+    /// so a rescan, a restore or a payment seen while no price was fresh is
+    /// never stamped with a much later price.
+    pub(crate) fn price_stamps(
+        &self,
+        rate: &crate::rates::FiatRate,
+        wallet: &WalletId,
+        txids: &[Txid],
+        now: u64,
+    ) -> Vec<dw_appdb::TxFiat> {
+        self.history.read(wallet, |txs| {
+            txids
+                .iter()
+                .filter(|t| {
+                    txs.get(*t).is_some_and(|e| {
+                        let block = e.context.block_info().map(|b| u64::from(b.timestamp()));
+                        e.first_seen
+                            .into_iter()
+                            .chain(block)
+                            .min()
+                            .is_none_or(|time| now.saturating_sub(time) <= STAMP_MAX_AGE)
+                    })
+                })
+                .map(|t| dw_appdb::TxFiat {
+                    txid: t.to_string(),
+                    currency: rate.currency.clone(),
+                    price: rate.price.clone(),
+                    rate_at: rate.rate_at,
+                    source: rate.source.stored().to_owned(),
+                })
+                .collect()
+        })
+    }
+
     pub(crate) fn new(network: DashNetwork, sink: Arc<dyn EventSink>) -> Self {
         Self {
             network,
@@ -428,6 +483,7 @@ impl SessionHub {
             chainlock: Mutex::new(None),
             announced: Mutex::new(HashMap::new()),
             trust: OnceLock::new(),
+            rates: OnceLock::new(),
             leases: std::sync::OnceLock::new(),
             reconcile: OnceLock::new(),
             reconcile_pending: Mutex::new(HashSet::new()),
@@ -979,6 +1035,9 @@ impl PumpTarget for SessionPump {
 
     fn flush_history(&self, changes: BTreeMap<WalletId, TxidSet>) {
         let mut seen: Vec<(WalletId, Vec<String>)> = Vec::new();
+        let mut stamps: Vec<(WalletId, Vec<dw_appdb::TxFiat>)> = Vec::new();
+        let now = unix_now();
+        let rate = self.hub.stamp_rate();
         for (wallet_id, set) in changes {
             let txids = match set {
                 TxidSet::All => Vec::new(),
@@ -986,6 +1045,12 @@ impl PumpTarget for SessionPump {
             };
             if !txids.is_empty() {
                 seen.push((wallet_id, txids.iter().map(Txid::to_string).collect()));
+            }
+            if let Some(rate) = &rate {
+                let rows = self.hub.price_stamps(rate, &wallet_id, &txids, now);
+                if !rows.is_empty() {
+                    stamps.push((wallet_id, rows));
+                }
             }
             self.hub.emit(EngineEvent::HistoryChanged {
                 network: self.hub.network.clone(),
@@ -997,13 +1062,18 @@ impl PumpTarget for SessionPump {
             return;
         }
         // First-seen times keep a mempool payment's arrival time across
-        // restarts (the persisted record has only the block time).
+        // restarts (the persisted record has only the block time). Price
+        // stamps are written once, after the first-seen time.
         let appdb = Arc::clone(&self.appdb);
-        let now = unix_now();
         let write = move || {
             for (wallet_id, txids) in seen {
                 if let Err(e) = appdb.note_txs_seen(&wallet_id.to_string(), &txids, now) {
                     tracing::warn!(%wallet_id, error = %e, "could not store first-seen times");
+                }
+            }
+            for (wallet_id, rows) in stamps {
+                if let Err(e) = appdb.stamp_tx_fiat(&wallet_id.to_string(), &rows, now) {
+                    tracing::warn!(%wallet_id, error = %e, "could not store price stamps");
                 }
             }
         };

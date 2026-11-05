@@ -23,7 +23,7 @@ pub use errors::RatesError;
 pub(crate) use service::{RatesConfig, RatesHub};
 pub use types::{
     CurrencyRate, FiatRate, RateSourceId, RateState, RatesOff, RatesSettings, RatesUnavailable,
-    RatesView,
+    RatesView, TxFiat,
 };
 
 /// The engine's rates. A cheap handle on the engine's one service.

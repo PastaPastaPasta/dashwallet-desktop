@@ -13,7 +13,7 @@ use crate::ipc::commands;
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
 
 /// Which source a price came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum RateSourceName {
     /// `rates.ctx.com`.
@@ -181,6 +181,35 @@ impl From<r::RatesView> for RatesView {
             last_attempt_failed,
             last_attempt_at,
             last_success_at,
+        }
+    }
+}
+
+/// The price a transaction was first seen at (rates-engine §6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TxFiat {
+    pub currency: String,
+    /// Fiat per 1 DASH, an exact decimal string.
+    pub price: String,
+    /// UNIX seconds the price is from.
+    pub rate_at: u64,
+    pub source: RateSourceName,
+}
+
+impl From<r::TxFiat> for TxFiat {
+    fn from(f: r::TxFiat) -> Self {
+        let r::TxFiat {
+            currency,
+            price,
+            rate_at,
+            source,
+        } = f;
+        Self {
+            currency,
+            price,
+            rate_at,
+            source: source.into(),
         }
     }
 }

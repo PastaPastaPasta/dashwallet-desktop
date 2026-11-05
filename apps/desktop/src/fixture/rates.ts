@@ -147,8 +147,10 @@ export function onMainnet(w: World): World {
   return w;
 }
 
+/** Mainnet with prices; rows carry stamps once the disclosure was seen. */
 function priced(w: World, r: Partial<RatesWorld>): World {
   onMainnet(w);
+  if (r.settings?.disclosed ?? true) stamped(w);
   const prices = ctxPrices(120);
   w.rates = {
     ...newRatesWorld(),
@@ -159,6 +161,18 @@ function priced(w: World, r: Partial<RatesWorld>): World {
     lastSuccessAt: at(120),
     ...r,
   };
+  return w;
+}
+
+/** Price stamps (rates-engine §6) at each row's own time: the newest in USD, the next seen before
+ * prices were on (none), the third from before a switch to USD (EUR, kept), then USD. */
+function stamped(w: World): World {
+  const rows = w.wallets[0]?.rows ?? [];
+  const stamps: ([string, string] | null)[] = [["USD", "48.1203"], null, ["EUR", "41.2500"], ["USD", "51.3377"], ["USD", "50.0021"]];
+  stamps.forEach((s, i) => {
+    const row = rows[i];
+    if (s && row) row.fiatThen = { currency: s[0], price: s[1], rateAt: row.timestamp ?? at(0), source: "ctx" };
+  });
   return w;
 }
 

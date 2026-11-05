@@ -155,6 +155,7 @@ impl Engine {
                 .await?;
                 sessions.insert(network.clone(), Arc::clone(&session));
                 if network == DashNetwork::Mainnet {
+                    session.hub.set_rates(Arc::downgrade(&shared.rates));
                     shared.rates.mainnet_opened();
                 }
                 shared.sink.emit(EngineEvent::SessionOpened { network });

@@ -981,6 +981,7 @@ mod tests {
             counts_toward_balance: true,
             involves_watch_only: false,
             counterparty: None,
+            fiat_then: None,
         }
     }
 

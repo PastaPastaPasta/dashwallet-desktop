@@ -153,6 +153,16 @@ impl RatesHub {
         inner.stored.view(self.now(), inner.mainnet > 0)
     }
 
+    /// The price a transaction first seen now is stamped with: the chosen
+    /// currency's, only while it is fresh (rates-engine §6).
+    pub(crate) fn fresh_rate(&self) -> Option<super::types::FiatRate> {
+        let view = self.view();
+        match view.state {
+            RateState::Fresh => view.rate,
+            _ => None,
+        }
+    }
+
     pub(crate) fn currencies(&self) -> Vec<CurrencyRate> {
         let inner = self.lock();
         let view = inner.stored.view(self.now(), inner.mainnet > 0);

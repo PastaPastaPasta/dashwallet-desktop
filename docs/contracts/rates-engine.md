@@ -1,6 +1,6 @@
 # Rates engine contract (`dw_engine::rates`, MP-01)
 
-Contract-Version: 1
+Contract-Version: 2
 
 Status: **contract**, 2026-11-05. Code: `rust/crates/dw-engine/src/rates/`; bound for the Tauri host in
 `rust/crates/dw-app/src/api/rates.rs`; dw-ffi withholds the event and binds no call. Designed in the 0.2
@@ -72,7 +72,7 @@ half, up or down, from the price before it, when that one was fetched at most 7 
 ## 3. The surface
 
 <!-- BEGIN GENERATED: rates-surface -->
-<!-- surface-sha256: 63fe20b3b0f8ed356d244b6aa8a3e547d228011c0f8a1a60b483b1a7966c05af version: 1 -->
+<!-- surface-sha256: 15762d96a0f9caf85d8cacd35e6459cfe74d2c04175090451fdbabeec3da7ef2 version: 2 -->
 
 ```rust
 // src/rates/errors.rs
@@ -88,7 +88,7 @@ impl RatesError {
 }
 // src/rates/mod.rs
 pub use errors::RatesError;
-pub use types::{ CurrencyRate, FiatRate, RateSourceId, RateState, RatesOff, RatesSettings, RatesUnavailable, RatesView, };
+pub use types::{ CurrencyRate, FiatRate, RateSourceId, RateState, RatesOff, RatesSettings, RatesUnavailable, RatesView, TxFiat, };
 #[derive(Clone)]
 pub struct Rates {
     ..
@@ -168,6 +168,14 @@ pub struct CurrencyRate {
     pub rate_at: u64,
     pub source: RateSourceId,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxFiat {
+    pub currency: String,
+    pub price: String,
+    pub rate_at: u64,
+    pub source: RateSourceId,
+}
 ```
 
 <!-- END GENERATED: rates-surface -->
@@ -186,3 +194,26 @@ pub struct CurrencyRate {
 `EngineEvent::Rates` (no payload) whenever the view changes: an attempt, a setting, a price turning stale or
 expiring (re-read once a minute), a mainnet network opened or closed. dw-app sends it as `{ kind: "rates" }`;
 hosts re-read `Rates::status`. dw-ffi withholds it.
+
+## 6. Historic stamps
+
+The price a transaction was first seen at, kept so Activity and the transaction detail can say what it was
+worth then. Version 2 adds `TxFiat` to the surface and `fiat_then: Option<TxFiat>` to m1's `TxRecord` (so
+`history_page` and `tx_detail`'s records); dw-app's `TxRow` binds it as the optional `fiatThen`; dw-ffi
+withholds it.
+
+**When a stamp is written.** When a Mainnet session's history marks a transaction (events.rs
+`flush_history`, after its first-seen time), while the chosen currency's price is `fresh`, and only while
+the transaction's time, the earlier of when the wallet first saw it and its block's time (whichever are
+known), is at most 3 hours before now. A `stale` price, prices off or undisclosed, another network: no
+stamp. There is no back-fill: a transaction older than 3 hours never gets one, so a rescan, a restore or a
+payment seen while no price was fresh is never stamped with a much later price.
+
+**Written once.** One row per wallet and transaction in dw-appdb's `tx_fiat` (`V2026110501`), inserted with
+`ON CONFLICT DO NOTHING`: a later price or a currency switch leaves it as it was, so a stamp may be in a
+currency other than the one chosen now. Its fields are those of the fresh `FiatRate` (currency, exact
+price string, `rate_at`, source). A removed wallet's insert is skipped (DEC-210), and a `.dwbackup` carries
+the rows like every `wallet_id` table. A stored source the engine does not know is left out on read.
+
+**Shown, never used.** The renderer converts the record's amount with the stamp's own price and currency
+(`format/fiat.ts`, the same rounding as §0); nothing re-rounds it, and nothing in a send reads it.

@@ -1339,6 +1339,18 @@ button {
   line-height: var(--dw-type-footnote-medium-line);
 }
 
+/* The value now under the amount (MP-01). */
+.tx-row-fiat {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  font-weight: var(--dw-type-caption1-weight);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.tx-table td.is-stale {
+  color: var(--dw-role-caution);
+}
+
 .see-all {
   display: flex;
   justify-content: center;
@@ -1572,6 +1584,15 @@ button {
   font-size: var(--dw-type-title1-size);
   font-weight: var(--dw-type-title1-weight);
   line-height: var(--dw-type-title1-line);
+}
+
+/* What the payment was worth when first seen (MP-01, rates-engine §6). */
+.tx-detail-fiat-then {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
 }
 
 .tx-detail-status {

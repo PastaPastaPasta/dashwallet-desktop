@@ -151,6 +151,9 @@ pub struct TxRecord {
     /// The DashPay identity on the other side of a contact payment, sent
     /// or received (DP3-02, `platform/attribution.rs`).
     pub counterparty: Option<Counterparty>,
+    /// The price the transaction was first seen at (MP-01); `None` when it
+    /// was not stamped (no back-fill).
+    pub fiat_then: Option<crate::rates::TxFiat>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -875,12 +878,13 @@ pub(crate) fn decompose(entry: &TxEntry, view: &ChainView<'_>) -> Decomposed {
     }
 }
 
-/// Labels the history shows: transaction labels by txid, address labels by
-/// address.
+/// What dw-appdb adds to the history: transaction labels by txid, address
+/// labels by address, price stamps by txid (MP-01).
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Labels {
     pub tx: HashMap<String, String>,
     pub address: HashMap<String, String>,
+    pub fiat: HashMap<String, crate::rates::TxFiat>,
 }
 
 /// Every record of one transaction.
@@ -919,6 +923,7 @@ pub(crate) fn records_of(
             counts_toward_balance: counts,
             involves_watch_only: false,
             counterparty: side.and_then(|s| view.payees.counterparty(&s.contact)),
+            fiat_then: labels.fiat.get(&txid_s).cloned(),
         })
         .collect();
     (records, d, status)
@@ -1621,6 +1626,39 @@ mod tests {
         assert_eq!(op_return_payload(&data).as_deref(), Some("dead"));
     }
 
+    /// rates-engine §6: the stamp a transaction was first seen with rides
+    /// on each of its records; one with no stamp has none.
+    #[test]
+    fn the_price_stamp_rides_on_every_record() {
+        let mut f = Fixture::new();
+        let stamped = f.add(entry(
+            tx(
+                vec![foreign_input(7)],
+                vec![out(1_000, &hash_addr(1)), out(2_000, &hash_addr(2))],
+            ),
+            TransactionContext::Mempool,
+        ));
+        let plain = f.add(entry(
+            tx(vec![foreign_input(8)], vec![out(3_000, &hash_addr(1))]),
+            TransactionContext::Mempool,
+        ));
+        let stamp = crate::rates::TxFiat {
+            currency: "EUR".into(),
+            price: "44.12".into(),
+            rate_at: 1_793_835_763,
+            source: crate::rates::RateSourceId::Ctx,
+        };
+        let labels = Labels {
+            fiat: HashMap::from([(stamped.to_string(), stamp.clone())]),
+            ..Labels::default()
+        };
+        let (records, ..) = records_of(&stamped, &f.history[&stamped], &f.view(5), &labels);
+        assert!(!records.is_empty());
+        assert!(records.iter().all(|r| r.fiat_then.as_ref() == Some(&stamp)));
+        let (records, ..) = records_of(&plain, &f.history[&plain], &f.view(5), &labels);
+        assert!(records.iter().all(|r| r.fiat_then.is_none()));
+    }
+
     #[test]
     fn chainlock_confirms_at_once_and_instantsend_counts() {
         let mut f = Fixture::new();
@@ -1720,6 +1758,7 @@ mod tests {
             counts_toward_balance: true,
             involves_watch_only: false,
             counterparty: None,
+            fiat_then: None,
         }
     }
 
