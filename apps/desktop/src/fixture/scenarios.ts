@@ -34,7 +34,7 @@ import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
-import { newPendingWorld, type PendingWorld } from "./pending";
+import { newPendingWorld, PLATFORM_PAYEE, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
@@ -604,6 +604,33 @@ const SCENARIOS = {
   "platform-partly-dust": (t) => {
     const w = base(t);
     w.pending.platform!.dust = "1500000";
+    return w;
+  },
+  /** The next send to a Platform address gets no answer from Platform: it stays pending. */
+  "platform-send-pending": (t) => {
+    const w = base(t);
+    w.pending.platform!.nextSend = "pending";
+    return w;
+  },
+  /** The next send is not taken in time (failed by height): it may still land. */
+  "platform-send-failed": (t) => {
+    const w = base(t);
+    w.pending.platform!.nextSend = "failed";
+    return w;
+  },
+  /** A send Platform has not confirmed: Pay from Platform and Move wait for it. */
+  "platform-send-held": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [{ id: "ps-held", kind: "send", state: "pending", credits: "1019500000", address: null, to: PLATFORM_PAYEE, expectedDuffs: null, feeCredits: null, at: at - 600 }, ...p.activity];
+    return w;
+  },
+  /** No credits on the Platform addresses: Pay from Platform says so. */
+  "platform-empty": (t) => {
+    const w = base(t);
+    w.pending.platform!.addresses = [];
+    w.pending.platform!.activity = [];
     return w;
   },
   /** A move the engine replaced with a retry (done), among the Platform activity. */

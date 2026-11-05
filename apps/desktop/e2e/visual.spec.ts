@@ -55,6 +55,38 @@ const ONBOARDING: Record<string, (page: Page) => Promise<void>> = {
 };
 
 const LATER: Record<string, { scenario: string; go: (page: Page) => Promise<void> }> = {
+  // 0.2 X1b: Receive on Platform open, Pay from Platform with its quote, and its confirm.
+  "platform-receive": {
+    scenario: "funded",
+    go: async (page) => {
+      await page.getByTestId("sidebar-receive").click();
+      await page.getByTestId("receive-qr").waitFor();
+      await page.getByTestId("platform-receive-toggle").click();
+      await page.getByTestId("platform-receive-qr").waitFor();
+    },
+  },
+  "platform-pay": {
+    scenario: "funded",
+    go: async (page) => {
+      await page.getByTestId("sidebar-pay").click();
+      await page.getByTestId("pay-tabs-address").click();
+      await page.getByTestId("pay-address").fill("tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h");
+      await page.getByTestId("pay-amount").fill("0.01");
+      await page.getByTestId("pay-fee-line").waitFor();
+    },
+  },
+  "platform-pay-confirm": {
+    scenario: "funded",
+    go: async (page) => {
+      await page.getByTestId("sidebar-pay").click();
+      await page.getByTestId("pay-tabs-address").click();
+      await page.getByTestId("pay-address").fill("tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h");
+      await page.getByTestId("pay-amount").fill("0.01");
+      await page.getByTestId("pay-fee-line").waitFor();
+      await page.getByTestId("pay-continue").click();
+      await page.getByTestId("platform-send-confirm").waitFor();
+    },
+  },
   "lock-wait": { scenario: "locked-throttled", go: (page) => page.getByTestId("lock-error").getByText("try again").waitFor() },
   forgot: {
     scenario: "locked-two-wallets",

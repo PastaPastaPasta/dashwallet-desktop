@@ -131,9 +131,9 @@ export function recipientOf(input: PayInput): Recipient {
 export function addressProblem(c: AddressClass): string | null {
   switch (c.kind) {
     case "core":
-      return null;
     case "platform":
-      return "This is a Dash Platform address. Pay it from Platform, not from this wallet.";
+      // A Platform address is paid from the Platform balance (PayFromPlatform).
+      return null;
     case "shielded":
       return "This is a shielded address. This wallet cannot pay shielded addresses yet.";
     case "invalid":

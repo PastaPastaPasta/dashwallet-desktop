@@ -12,6 +12,9 @@ import type { HistoryFilterRequest } from "./generated/HistoryFilterRequest";
 import type { HistorySortName } from "./generated/HistorySortName";
 import type { MoveToCoreOutcome } from "./generated/MoveToCoreOutcome";
 import type { MoveToCoreQuote } from "./generated/MoveToCoreQuote";
+import type { PlatformReceiveAddress } from "./generated/PlatformReceiveAddress";
+import type { PlatformSendOutcome } from "./generated/PlatformSendOutcome";
+import type { PlatformSendQuote } from "./generated/PlatformSendQuote";
 import type { ChosenNetwork } from "./generated/ChosenNetwork";
 import type { NetworkChoiceView } from "./generated/NetworkChoiceView";
 import type { PlatformActivity } from "./generated/PlatformActivity";
@@ -230,6 +233,14 @@ export interface Backend {
   /** Moves the Platform addresses' credits to `to`, one of the wallet's own receive addresses (the
    * quote's), under `grant`. */
   platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, grant: string): Promise<MoveToCoreOutcome>;
+  /** Reads the Platform addresses from the network now (`platform_addresses_sync`). */
+  platformAddressesSync(walletId: string): Promise<PlatformAddressBalance>;
+  /** The payment account's lowest unused Platform address (`platform_receive_address`), bech32m. */
+  platformReceiveAddress(walletId: string): Promise<PlatformReceiveAddress>;
+  /** What sending `amount` to the Platform address `to` takes (`platform_send_quote`). */
+  platformSendQuote(walletId: string, to: string, amount: WithdrawAmount): Promise<PlatformSendQuote>;
+  /** Sends `amount` from the Platform addresses to `to` under `grant` (`platform_send`). */
+  platformSend(walletId: string, to: string, amount: WithdrawAmount, grant: string): Promise<PlatformSendOutcome>;
   syncStatus(): Promise<SyncStatus>;
   historyPage(walletId: string, request: HistoryRequest): Promise<HistoryRows>;
   /** dash-qt's CSV of the history `filter` and `sort` select (every field quoted, `\n` ends);

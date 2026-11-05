@@ -91,6 +91,8 @@ describe("Move to Dash wallet", () => {
     const base = { id: "pm-1", credits: "1", address: null, to: null, expectedDuffs: null, feeCredits: null, at: 1 } as const;
     expect(hasPendingMove([{ ...base, kind: "moveToCore", state: "pending" }])).toBe(true);
     expect(hasPendingMove([{ ...base, kind: "moveToCore", state: "done" }, { ...base, kind: "incoming", state: "pending" }])).toBe(false);
+    // A send shares the hold: a pending one holds a move too.
+    expect(hasPendingMove([{ ...base, kind: "send", state: "pending" }])).toBe(true);
     expect(hasPendingMove(null)).toBe(false);
   });
 

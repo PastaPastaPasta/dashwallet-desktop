@@ -256,6 +256,12 @@ describe("fixture send engine", () => {
 describe("fixture text helpers", () => {
   it("classifies the fixture's address shapes", () => {
     expect(classifyAddress("testnet", PAYEE)).toEqual({ kind: "core", scriptHash: false });
+    // Bech32m at the network's HRP: shielded (type byte 0x10, `z`) apart from Platform (`k`, `s`).
+    expect(classifyAddress("testnet", "tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h")).toEqual({ kind: "platform" });
+    expect(classifyAddress("testnet", "tdash1sq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h")).toEqual({ kind: "platform" });
+    expect(classifyAddress("testnet", "tdash1zq0k8yv6m2e3x9n4c5w7a8s0d2f4g6h8j0k2l4m6n8p0q2r4s6t8u0v2w4x6y8z0a2c4e6g8j0m2")).toEqual({ kind: "shielded" });
+    expect(classifyAddress("mainnet", "dash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h")).toEqual({ kind: "platform" });
+    expect(classifyAddress("mainnet", "tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h")).toMatchObject({ kind: "invalid" });
     expect(classifyAddress("mainnet", PAYEE)).toMatchObject({ kind: "invalid", problem: { kind: "invalidBase58Prefix" } });
     expect(classifyAddress("testnet", "y123")).toMatchObject({ kind: "invalid", problem: { kind: "invalidBase58Length" } });
     expect(classifyAddress("testnet", "hello world")).toMatchObject({ kind: "invalid", problem: { kind: "notBech32mOrBase58" } });

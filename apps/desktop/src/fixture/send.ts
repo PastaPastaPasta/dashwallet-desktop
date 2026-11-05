@@ -166,10 +166,16 @@ export function buildCoins(variant: HistoryVariant): Utxo[] {
 const BASE58_RE = new RegExp(`^[${BASE58}]+$`);
 
 /** dw-uri's `classify` for the fixture's address shapes: Base58 P2PKH/P2SH of the network
- * (`y`/`8` off mainnet, `X`/`7` on it), and Platform's bech32m HRPs. */
+ * (`y`/`8` off mainnet, `X`/`7` on it), and bech32m at the network's HRP (`dash` on mainnet,
+ * `tdash` off it): a shielded address's type byte 0x10 reads `z` first, a Platform P2PKH's 0xb0
+ * `k` and a P2SH's 0x80 `s`. Another network's HRP is not an address here. */
 export function classifyAddress(network: string, text: string): AddressClass {
   const t = text.trim();
-  if (/^t?dash1[02-9ac-hj-np-z]+$/.test(t)) return { kind: "platform" };
+  const bech = /^(t?dash)1([02-9ac-hj-np-z]+)$/.exec(t);
+  if (bech) {
+    if (bech[1] !== (network === "mainnet" ? "dash" : "tdash")) return { kind: "invalid", problem: { kind: "notBech32mOrBase58" } };
+    return bech[2].startsWith("z") ? { kind: "shielded" } : { kind: "platform" };
+  }
   if (!BASE58_RE.test(t)) return { kind: "invalid", problem: { kind: "notBech32mOrBase58" } };
   if (t.length !== 34) return { kind: "invalid", problem: { kind: "invalidBase58Length" } };
   const [p2pkh, p2sh] = network === "mainnet" ? ["X", "7"] : ["y", "8"];

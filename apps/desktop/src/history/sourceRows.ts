@@ -18,6 +18,7 @@ export const SourceRowText = {
   platformIncoming: "Received on Platform",
   platformOutgoing: "Sent from Platform",
   moveToCore: "Moved to Dash wallet",
+  platformSend: "Sent to a Platform address",
   /** A move the engine superseded with a retry: neither a loss nor a completed move. */
   replaced: "Replaced by a retry",
   shieldedAdd: "Added to Shielded",
@@ -57,7 +58,8 @@ const base = (txid: string, status: TxRow["status"], timestamp: number | null, a
 });
 
 /** A Platform-address activity row as a history row. A move shows what arrives in the Dash wallet
- * (an internal move: no sign); a failed one is the "not accepted" problem row. */
+ * (an internal move: no sign); a send pays its recipient (`to`); a failed one is the "not accepted"
+ * problem row. */
 export function platformRow(a: PlatformActivity): TxRow {
   const move = a.kind === "moveToCore";
   const replaced = a.state === "replaced";
@@ -65,10 +67,10 @@ export function platformRow(a: PlatformActivity): TxRow {
   const amount = replaced ? 0 : move ? (a.expectedDuffs ?? creditsToDuffs(a.credits)) : creditsToDuffs(a.credits);
   const kind = a.state === "done" || replaced ? "confirmed" : a.state === "pending" ? "unconfirmed" : "notAccepted";
   return {
-    ...base(`platform:${a.kind}:${a.id}${replaced ? REPLACED : ""}`, statusOf(kind), a.at, a.kind === "outgoing" ? -amount : amount),
+    ...base(`platform:${a.kind}:${a.id}${replaced ? REPLACED : ""}`, statusOf(kind), a.at, a.kind === "outgoing" || a.kind === "send" ? -amount : amount),
     txType: move ? "platformTransfer" : a.kind === "incoming" ? "recvWithAddress" : "sendToAddress",
     category: move ? "platform" : a.kind === "incoming" ? "received" : "sent",
-    address: move ? a.to : a.address,
+    address: move || a.kind === "send" ? a.to : a.address,
   };
 }
 
@@ -91,7 +93,7 @@ export function shieldedRow(a: ShieldedActivity): TxRow {
 
 export function sourceRowTitle(row: TxRow): string {
   const kind = row.txid.split(":")[1];
-  if (rowSource(row) === "platform") return kind === "moveToCore" ? SourceRowText.moveToCore : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
+  if (rowSource(row) === "platform") return kind === "moveToCore" ? SourceRowText.moveToCore : kind === "send" ? SourceRowText.platformSend : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
   switch (kind) {
     case "shield":
     case "shieldFromCore":

@@ -113,10 +113,11 @@ export function moveErrorText(e: unknown, credits: (c: string) => string): strin
 /** Back is offered when a new quote may pass. */
 export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "platform.insufficient_credits");
 
-/** Whether a move of this wallet is recorded `pending` in the Platform activity (it settles to
- * `done` or `failed` within minutes: the engine's `platform_activity` settles it). */
+/** Whether a move or send of this wallet is recorded `pending` in the Platform activity (it settles
+ * to `done` or `failed` within minutes: the engine's `platform_activity` settles it). Moves and sends
+ * share one hold: while one is pending the engine refuses the other. */
 export const hasPendingMove = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
-  !!activity?.some((a) => a.kind === "moveToCore" && a.state === "pending");
+  !!activity?.some((a) => (a.kind === "moveToCore" || a.kind === "send") && a.state === "pending");
 
 const settledListeners = new Set<() => void>();
 
@@ -125,6 +126,11 @@ const settledListeners = new Set<() => void>();
 export function onMoveSettled(f: () => void): () => void {
   settledListeners.add(f);
   return () => settledListeners.delete(f);
+}
+
+/** Tells the listeners a move or send that ran has ended. */
+export function onMoveSettledNotify() {
+  for (const f of settledListeners) queueMicrotask(f);
 }
 
 export class PlatformMoveFlow extends Model {
@@ -227,7 +233,7 @@ export class PlatformMoveFlow extends Model {
     } finally {
       this.running = false;
       // A cancelled passphrase ran nothing: nothing to read again.
-      if (ran) for (const f of settledListeners) queueMicrotask(f);
+      if (ran) onMoveSettledNotify();
       this.changed();
     }
   }

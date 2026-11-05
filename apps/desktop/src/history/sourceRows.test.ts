@@ -63,6 +63,13 @@ describe("platform activity rows", () => {
     expect([rowSource(move), rowSource(core("abc", 1))]).toEqual(["platform", null]);
   });
 
+  it("shows a send to a Platform address as a payment to its recipient", () => {
+    const send = platformRow(act("s", { kind: "send", address: null, to: "tdash1kpayee", credits: "1006500000" }));
+    expect(send).toMatchObject({ txid: "platform:send:s", txType: "sendToAddress", category: "sent", amount: -1_006_500, address: "tdash1kpayee" });
+    expect(sourceRowTitle(send)).toBe("Sent to a Platform address");
+    expect(platformRow(act("sp", { kind: "send", state: "pending", to: "tdash1kpayee" })).status.kind).toBe("unconfirmed");
+  });
+
   it("shows a pending move as pending and a failed one as a problem", () => {
     expect(platformRow(act("p", { state: "pending" })).status.kind).toBe("unconfirmed");
     expect(platformRow(act("f", { state: "failed" })).status.kind).toBe("notAccepted");
