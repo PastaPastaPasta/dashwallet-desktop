@@ -86,7 +86,7 @@ describe("fixture unfinished transfers", () => {
     const [ready, second, small] = (await cmd.unfinishedTransfers(W)).locks;
     // Refused before the lease: the same grant then finishes the ready lock.
     const kept = await grant();
-    expect(await cmd.finishTransfer(W, second.kind, second.txid, second.vout, kept)).toEqual({ kind: "notApplied", error: "platform.not_implemented" });
+    expect(await cmd.finishTransfer(W, second.kind, second.txid, second.vout, kept)).toEqual({ kind: "notApplied", error: "recovery.unsupported_output" });
     expect(await cmd.finishTransfer(W, small.kind, small.txid, small.vout, kept)).toEqual({ kind: "notApplied", error: "shielded.below_minimum" });
     expect(await cmd.finishTransfer(W, ready.kind, ready.txid, ready.vout, kept)).toEqual({ kind: "applied" });
   });
@@ -108,14 +108,14 @@ describe("fixture unfinished transfers", () => {
     expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
   });
 
-  it("Finish transfers counts as the engine does: ready applied, checking tried, the rest pending", async () => {
+  it("Finish transfers counts as the engine does: ready applied, checking not tried and pending", async () => {
     open("recovery-restored-mixed");
     expect(await cmd.finishAssetLocks(W, await grant())).toEqual({
-      resumed: 3,
+      resumed: 2,
       completed: 2,
       stillPending: 1,
       alreadyUsed: 0,
-      byKind: [{ kind: "shielded", resumed: 3, completed: 2, stillPending: 1 }],
+      byKind: [{ kind: "shielded", resumed: 2, completed: 2, stillPending: 1 }],
       unread: [],
     });
     expect((await cmd.unfinishedTransfers(W)).locks.map((l) => l.state)).toEqual(["checking"]);

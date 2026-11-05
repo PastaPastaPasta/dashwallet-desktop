@@ -24,8 +24,9 @@ export type RecoveryApi = Pick<
 
 export const RECOVERY_COPY = {
   title: "Unfinished transfers",
-  one: (amount: string) => `${amount} was locked for your Shielded balance and isn't added yet.`,
-  several: (n: number, total: string) => `${n} transfers to Shielded aren't finished (${total}).`,
+  one: (amount: string) => `${amount} was funded on Core for Shielded, and this wallet hasn't seen it added on Platform. Finishing adds it at most once.`,
+  several: (n: number, total: string) =>
+    `${n} transfers to Shielded (${total}) were funded on Core, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.`,
   running: "Finishing…",
   checking: (n: number) => `${n} ${n === 1 ? "transfer may" : "transfers may"} already be finished. We can't confirm it yet.`,
   finish: "Finish",
@@ -36,7 +37,7 @@ export const RECOVERY_COPY = {
   dismiss: "Dismiss",
   sheet: {
     title: "Unfinished transfers",
-    intro: "These transfers were locked before the restore. Finishing adds them to Shielded.",
+    intro: "These transfers were funded on Core before the restore, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.",
     footer: "Nothing more is paid: finishing only adds money that's already locked.",
     close: "Close",
     kind: { shielded: "Shielded", platformAddress: "Platform address" } satisfies Record<LockKind, string>,
@@ -98,7 +99,8 @@ export function failureStale(state: RecoveryState, data: UnfinishedTransfers | n
 }
 
 /** The Home card, `null` for none. It shows when the list is read and complete and holds a restored
- * lock that is ready or checking, and while a finish from the card runs, failed or reported. */
+ * lock that is ready or checking, and while a finish from the card runs, failed or reported. Its
+ * Finish all (`finish_asset_locks`) tries the ready locks only; checking ones keep Check again. */
 export function cardView(
   data: UnfinishedTransfers | null | undefined,
   state: RecoveryState,

@@ -58,18 +58,17 @@ function announce(ctx: Ctx, walletId: string) {
   ctx.emit({ kind: "platform", network: ctx.world.launch.network.dirName, walletId, change: { domain: "shielded" } });
 }
 
-/** `finish_asset_locks`' part, counted as the engine does: a ready lock is tried and applied, a checking
- * one is tried and stays, a confirming or not-active one is not tried and stays pending. `null`
- * while no lock is listed. */
+/** `finish_asset_locks`' part, counted as the engine does: a ready lock is tried and applied; a
+ * checking, confirming, not-active, unsupported or too-small one is not tried and stays pending (a
+ * checking one's own Check again tries it). `null` while no lock is listed. */
 export function finishRestored(ctx: Ctx, walletId: string): TransfersReport | null {
   const r = ctx.world.pending.recovery;
   if (r.locks.length === 0) return null;
   const listed = r.locks.length;
   const ready = r.locks.filter((l) => l.state === "ready");
-  const tried = ready.length + r.locks.filter((l) => l.state === "checking").length;
   for (const lock of ready) apply(ctx.world, r, lock);
-  if (tried > 0) announce(ctx, walletId);
-  return { kind: "shielded", resumed: tried, completed: ready.length, stillPending: listed - ready.length };
+  if (ready.length > 0) announce(ctx, walletId);
+  return { kind: "shielded", resumed: ready.length, completed: ready.length, stillPending: listed - ready.length };
 }
 
 export const RECOVERY_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
@@ -86,7 +85,7 @@ export const RECOVERY_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     // The refusals the engine reads before the lease: the grant is not read, so it is kept.
     if (lock.state === "confirming") return { kind: "proofWaiting" };
     if (lock.state === "notActive") return { kind: "notApplied", error: SHIELDED_CODES.notActive };
-    if (lock.state === "unsupported") return { kind: "notApplied", error: "platform.not_implemented" };
+    if (lock.state === "unsupported") return { kind: "notApplied", error: "recovery.unsupported_output" };
     if (lock.state === "tooSmall") return { kind: "notApplied", error: "shielded.below_minimum" };
     const g = checkGrant(ctx.world, grant, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp") return raise("platform.grant_invalid", "grant invalid");

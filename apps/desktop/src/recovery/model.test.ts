@@ -40,12 +40,12 @@ describe("unfinished transfers card", () => {
 
   it("one ready lock: its amount and Finish", () => {
     const got = view(list([lock(1, "ready"), lock(2, "ready", "thisDevice")]));
-    expect(got).toMatchObject({ kind: "ready", text: "50000000 duffs was locked for your Shielded balance and isn't added yet.", actions: ["finish"], lock: lock(1, "ready") });
+    expect(got).toMatchObject({ kind: "ready", text: "50000000 duffs was funded on Core for Shielded, and this wallet hasn't seen it added on Platform. Finishing adds it at most once.", actions: ["finish"], lock: lock(1, "ready") });
   });
 
   it("several ready locks: the count and total, Finish all and Details", () => {
     const got = view(list([lock(1, "ready"), lock(2, "ready", "restored", 25_000_000), lock(3, "checking")]));
-    expect(got).toMatchObject({ kind: "ready", text: "2 transfers to Shielded aren't finished (75000000 duffs).", actions: ["finishAll", "details"] });
+    expect(got).toMatchObject({ kind: "ready", text: "2 transfers to Shielded (75000000 duffs) were funded on Core, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.", actions: ["finishAll", "details"] });
   });
 
   it("checking locks only: Check again, singular and plural", () => {

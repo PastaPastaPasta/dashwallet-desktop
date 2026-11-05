@@ -16,7 +16,7 @@ test.describe("Unfinished transfers", () => {
   test("recovery-one: the card offers Finish, and the card goes once it is applied", async ({ page }) => {
     const errors = await open(page, "recovery-one");
     const card = page.getByTestId("unfinished-card");
-    await expect(card).toContainText("0.50 tDASH was locked for your Shielded balance and isn't added yet.");
+    await expect(card).toContainText("0.50 tDASH was funded on Core for Shielded, and this wallet hasn't seen it added on Platform.");
     expect(await seriousAxeViolations(page)).toEqual([]);
     await page.getByTestId("unfinished-finish").click();
     await authorize(page);
@@ -26,7 +26,7 @@ test.describe("Unfinished transfers", () => {
 
   test("recovery-restored-mixed: Details lists the three restored locks", async ({ page }) => {
     await open(page, "recovery-restored-mixed");
-    await expect(page.getByTestId("unfinished-text")).toContainText("2 transfers to Shielded aren't finished");
+    await expect(page.getByTestId("unfinished-text")).toContainText("2 transfers to Shielded (");
     await page.getByTestId("unfinished-details").click();
     await expect(page.getByTestId("unfinished-row")).toHaveCount(3);
     await expect(page.getByTestId("unfinished-footer")).toHaveText("Nothing more is paid: finishing only adds money that's already locked.");
