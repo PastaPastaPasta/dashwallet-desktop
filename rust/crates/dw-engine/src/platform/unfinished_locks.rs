@@ -46,7 +46,7 @@ use super::flows::FlowKind;
 use super::lease::Lease;
 use super::registration_flow::{LockInfo, LockStatus};
 pub(crate) use super::unfinished::{
-    LockFinish, LockKindId, LockOrigin, UnfinishedLock, UnfinishedState,
+    LockFinish, LockKindId, LockOrigin, TransfersReport, UnfinishedLock, UnfinishedState,
 };
 
 impl LockKindId {
@@ -448,4 +448,77 @@ where
             }
         }
     })
+}
+
+/// Finishes every unfinished lock of `kind` under the bulk's `lease`, one
+/// at a time (a refusal leaves that lock pending and the next one runs),
+/// and adds what came of them to `report`: its totals and, when the kind
+/// had any, its [`TransfersReport`]. A lock with no proof or of a kind not
+/// active is pending, not tried; one Platform reported already used is
+/// counted in `already_used`, not tried ("Check again" tries it).
+pub(crate) async fn finish_kind(
+    kind: &impl LockKind,
+    lease: &Lease,
+    report: &mut super::FinishReport,
+) {
+    let listed = match detect(kind, &HashSet::new()).await {
+        Ok(listed) => listed,
+        Err(e) => {
+            tracing::warn!(kind = ?kind.id(), error = %e, "Finish transfers could not list a kind's locks");
+            return;
+        }
+    };
+    let mut counts = TransfersReport {
+        kind: kind.id(),
+        resumed: 0,
+        completed: 0,
+        still_pending: 0,
+    };
+    for lock in &listed {
+        let tried = match lock.state {
+            UnfinishedState::Confirming | UnfinishedState::NotActive => None,
+            UnfinishedState::ReportedUsed => {
+                report.already_used += 1;
+                continue;
+            }
+            UnfinishedState::Ready | UnfinishedState::Checking => {
+                let Ok(txid) = lock.txid.parse::<Txid>() else {
+                    continue;
+                };
+                let outpoint = OutPoint {
+                    txid,
+                    vout: lock.vout,
+                };
+                Some(finish(kind, outpoint, || async { Ok(lease.clone()) }).await)
+            }
+        };
+        match tried {
+            Some(Ok(LockFinish::Applied)) => {
+                counts.resumed += 1;
+                counts.completed += 1;
+            }
+            Some(Ok(LockFinish::ReportedUsed)) => {
+                counts.resumed += 1;
+                report.already_used += 1;
+            }
+            Some(Ok(LockFinish::Checking)) => {
+                counts.resumed += 1;
+                counts.still_pending += 1;
+            }
+            Some(Ok(LockFinish::ProofWaiting | LockFinish::NotApplied { .. })) | None => {
+                counts.still_pending += 1;
+            }
+            Some(Err(e)) => {
+                tracing::warn!(kind = ?kind.id(), error = %e, "Finish transfers could not finish a lock");
+                counts.still_pending += 1;
+            }
+        }
+    }
+    if listed.is_empty() {
+        return;
+    }
+    report.resumed += counts.resumed;
+    report.completed += counts.completed;
+    report.still_pending += counts.still_pending;
+    report.by_kind.push(counts);
 }

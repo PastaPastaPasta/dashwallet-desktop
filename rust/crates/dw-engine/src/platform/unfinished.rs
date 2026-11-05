@@ -15,7 +15,7 @@ use super::dashpay::DashPay;
 use super::errors::{PlatformError, ShieldedError};
 use super::flows::FlowKind;
 use super::lease::Lease;
-use super::shielded_pool::{on_pool, on_pool_signing};
+use super::shielded_pool::{PwShielded, on_pool, on_pool_signing};
 use super::unfinished_locks::{self as locks, LockKind};
 use super::unfinished_shields::ShieldLocks;
 use crate::{NetworkSession, WalletId};
@@ -96,6 +96,19 @@ pub enum LockFinish {
     NotApplied { error: String },
 }
 
+/// What Repair's "Finish transfers" did with one kind's unfinished
+/// transfers ([`super::FinishReport::by_kind`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransfersReport {
+    pub kind: LockKindId,
+    /// Applies tried.
+    pub resumed: u32,
+    /// Proved applied.
+    pub completed: u32,
+    /// Still unfinished: confirming, not active, refused, or checking.
+    pub still_pending: u32,
+}
+
 /// The wallet's unfinished transfers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnfinishedTransfers {
@@ -160,6 +173,23 @@ impl DashPay {
                 })
             }
         }
+    }
+}
+
+/// Repair's "Finish transfers" over the unfinished transfers, after the
+/// registrations and top-ups and under their `lease`: every kind's
+/// unfinished locks, one at a time ([`locks::finish_kind`]).
+pub(crate) async fn finish_all(
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    lease: &Lease,
+    report: &mut super::FinishReport,
+) {
+    match PwShielded::open(session, wallet).await {
+        Ok(lib) => {
+            locks::finish_kind(&ShieldLocks::new(session, wallet, &lib), lease, report).await
+        }
+        Err(e) => tracing::warn!(error = %e, "Finish transfers could not open the shielded side"),
     }
 }
 

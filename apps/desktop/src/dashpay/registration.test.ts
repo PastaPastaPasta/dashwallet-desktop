@@ -211,3 +211,12 @@ describe("refusals of a start", () => {
     expect(startErrorText(new Error("boom"), amount)).toBe("boom");
   });
 });
+
+describe("REG_COPY.finished", () => {
+  const report = { resumed: 3, completed: 2, stillPending: 1, alreadyUsed: 0, byKind: [] };
+
+  it("names the already-used count only when there is one", () => {
+    expect(REG_COPY.finished(report)).toBe("3 resumed, 2 completed, 1 still pending.");
+    expect(REG_COPY.finished({ ...report, alreadyUsed: 1 })).toBe("3 resumed, 2 completed, 1 still pending, 1 already used.");
+  });
+});

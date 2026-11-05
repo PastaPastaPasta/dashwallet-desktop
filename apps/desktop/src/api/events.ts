@@ -15,6 +15,7 @@ import { onTopUpSettled } from "../dashpay/topup";
 import { onWithdrawSettled } from "../dashpay/withdraw";
 import { announceReceived } from "../payments/received";
 import { onMoveSettled } from "../platform/move";
+import { onRecoverySettled } from "../recovery/model";
 import { onShieldedSettled } from "../shielded/flow";
 import { keys } from "./queries";
 import { announceable, feedSync } from "./syncDisplay";
@@ -199,12 +200,15 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
   // 0.1: a Platform-address move or a shielded call that ended moved the pools and Activity's rows.
   const stopMoves = onMoveSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
   const stopShielded = onShieldedSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
+  // A finished transfer leaves the unfinished list and joins the Shielded balance.
+  const stopRecovery = onRecoverySettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
   return () => {
     stopReconcile();
     stopTopUps();
     stopWithdrawals();
     stopMoves();
     stopShielded();
+    stopRecovery();
     unsubscribe();
   };
 }

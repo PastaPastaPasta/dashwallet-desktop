@@ -201,7 +201,7 @@ describe("discard and Finish transfers", () => {
 
   it("D10: Finish transfers resumes the rows waiting for it", async () => {
     install("dashpay-registration-needs-finish");
-    expect(await cmd.finishAssetLocks(W, await grant(1))).toEqual({ resumed: 1, completed: 0, stillPending: 0 });
+    expect(await cmd.finishAssetLocks(W, await grant(1))).toEqual({ resumed: 1, completed: 0, stillPending: 0, alreadyUsed: 0, byKind: [] });
     expect(await rowOf("reg-1")).toMatchObject({ waiting: "instantSend", holdsKey: false, running: true });
   });
 });

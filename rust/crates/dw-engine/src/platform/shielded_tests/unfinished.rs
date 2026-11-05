@@ -387,3 +387,81 @@ fn finishing_one_output_of_a_lock_leaves_its_other_output_listed() {
         .map(|l| l.state);
     assert_eq!(second_listed, Some(UnfinishedState::Ready));
 }
+
+/// Repair's "Finish transfers" under its one lease: each unfinished lock
+/// once, in order, a failure or an unproved answer leaving that lock
+/// pending while the next runs; one with no proof is pending, not tried.
+#[test]
+fn finish_transfers_runs_each_lock_once_and_reports_the_kind() {
+    let fx = Fixture::new(0);
+    let (checking, applied, unproved) = (
+        lock(1, LockStatus::RecoveredFromChain),
+        lock(2, LockStatus::RecoveredFromChain),
+        lock(3, LockStatus::Broadcast),
+    );
+    let lib = Arc::new(FakeShielded {
+        locks: vec![unproved.clone(), applied.clone(), checking.clone()],
+        ..FakeShielded::default()
+    });
+    // In txid order: the first apply hears "already consumed", the second
+    // is proved.
+    lib.consumed.store(true, Ordering::SeqCst);
+    answer(&lib, Ok(Applied::Done));
+    let before = funding_counts(&lib);
+    let (wallet, grant) = (fx.wallet, shield_grant(&fx, 1));
+    let report = run(&fx, &lib, move |s, lib| async move {
+        let lease = (s
+            .begin_lease(wallet, FlowKind::Registration, &[grant])
+            .await)
+            .unwrap();
+        let mut report = super::super::FinishReport::default();
+        locks::finish_kind(&ShieldLocks::new(&s, wallet, &*lib), &lease, &mut report).await;
+        report
+    });
+    assert_eq!(
+        report,
+        super::super::FinishReport {
+            resumed: 2,
+            completed: 1,
+            still_pending: 2,
+            already_used: 0,
+            by_kind: vec![locks::TransfersReport {
+                kind: LockKindId::Shielded,
+                resumed: 2,
+                completed: 1,
+                still_pending: 2,
+            }],
+        }
+    );
+    assert_eq!(
+        *lib.applied.lock().unwrap(),
+        [checking.outpoint, applied.outpoint]
+    );
+    assert_eq!(*lib.settles.lock().unwrap(), [applied.outpoint.txid]);
+    assert_no_funding(&lib, before);
+    assert_eq!(
+        state_of(&fx, &lib),
+        [
+            (LockOrigin::Restored, UnfinishedState::Checking),
+            (LockOrigin::Restored, UnfinishedState::Confirming),
+        ]
+    );
+}
+
+/// Nothing unfinished, nothing reported: no kind row.
+#[test]
+fn finish_transfers_with_nothing_unfinished_reports_no_kind() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let (wallet, grant) = (fx.wallet, shield_grant(&fx, 1));
+    let report = run(&fx, &lib, move |s, lib| async move {
+        let lease = (s
+            .begin_lease(wallet, FlowKind::Registration, &[grant])
+            .await)
+            .unwrap();
+        let mut report = super::super::FinishReport::default();
+        locks::finish_kind(&ShieldLocks::new(&s, wallet, &*lib), &lease, &mut report).await;
+        report
+    });
+    assert_eq!(report, super::super::FinishReport::default());
+}

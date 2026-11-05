@@ -145,3 +145,30 @@ impl From<engine::LockFinish> for LockFinish {
         }
     }
 }
+
+/// One kind's part of "Finish transfers".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TransfersReport {
+    pub kind: LockKind,
+    pub resumed: u32,
+    pub completed: u32,
+    pub still_pending: u32,
+}
+
+impl From<engine::TransfersReport> for TransfersReport {
+    fn from(r: engine::TransfersReport) -> Self {
+        let engine::TransfersReport {
+            kind,
+            resumed,
+            completed,
+            still_pending,
+        } = r;
+        TransfersReport {
+            kind: kind.into(),
+            resumed,
+            completed,
+            still_pending,
+        }
+    }
+}

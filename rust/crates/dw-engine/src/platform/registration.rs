@@ -22,6 +22,7 @@ use super::names::valid_label;
 use super::registration_flow::{self as flow, PwLib, RegistrationLib};
 use super::registration_ledger::{Ledger, Standing};
 use super::registration_rows::{Decoded, Funding, Phase, ProfileRecord};
+use super::unfinished::TransfersReport;
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
 
@@ -219,12 +220,18 @@ pub struct RegistrationFailure {
     pub available: Option<u64>,
 }
 
-/// Tools ▸ Repair "Finish transfers".
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Tools ▸ Repair "Finish transfers". The totals count every finish it
+/// ran, the unfinished transfers' (§2.14) too.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinishReport {
     pub resumed: u32,
     pub completed: u32,
     pub still_pending: u32,
+    /// Restored transfers Platform reported already used (advisory,
+    /// unproved): not tried again, listed for "Check again".
+    pub already_used: u32,
+    /// The unfinished transfers' part, per kind that had any.
+    pub by_kind: Vec<TransfersReport>,
 }
 
 impl DashPay {
@@ -307,7 +314,8 @@ impl DashPay {
     }
 
     /// Also applies the wallet's proved top-up locks that Platform has not
-    /// taken (DP1-06, `topup.rs`).
+    /// taken (DP1-06, `topup.rs`), then the unfinished transfers (§2.14),
+    /// one at a time.
     pub async fn finish_asset_locks(
         &self,
         grant: String,
@@ -317,6 +325,7 @@ impl DashPay {
             let lease = authority(&session, wallet, &grant).await?;
             let mut report = finish_under(&session, wallet, &*lib, &lease).await?;
             super::topup::finish(&session, wallet, &*lib, &lease, &mut report).await;
+            super::unfinished::finish_all(&session, wallet, &lease, &mut report).await;
             Ok(report)
         })
         .await
@@ -1277,11 +1286,7 @@ async fn finish_under<L: RegistrationLib>(
     lib: &L,
     lease: &Lease,
 ) -> Result<FinishReport, RegistrationError> {
-    let mut report = FinishReport {
-        resumed: 0,
-        completed: 0,
-        still_pending: 0,
-    };
+    let mut report = FinishReport::default();
     let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
     let held = lib.funding_hold().is_some();
     let now = crate::events::unix_now();

@@ -77,7 +77,7 @@ function setup(lock = {}) {
     registrationQuote: vi.fn(async () => QUOTE),
     finishAssetLocks: vi.fn(async (walletId: string, grant: string) => {
       calls.push(`finish ${walletId.slice(0, 2)} ${grant}`);
-      return { resumed: 2, completed: 1, stillPending: 1 };
+      return { resumed: 2, completed: 1, stillPending: 1, alreadyUsed: 0, byKind: [] };
     }),
     creditsStuckTopUpFundings: vi.fn(async (): Promise<StuckTopUpFunding[]> => []),
     identities: vi.fn(async () => [{ identity: "alice-id", index: 0, mainName: "alice" } as IdentitySummary]),

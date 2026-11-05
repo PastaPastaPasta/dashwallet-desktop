@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::flows::GrantRequest;
+use super::unfinished::TransfersReport;
 use crate::dto::mirror_enum;
 
 /// What to register. Passed to the quote and to the start alike.
@@ -359,13 +360,17 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
     }
 }
 
-/// Tools ▸ Repair "Finish transfers".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+/// Tools ▸ Repair "Finish transfers". The totals count the unfinished
+/// transfers too; `byKind` has one row per kind that had any.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FinishReport {
     pub resumed: u32,
     pub completed: u32,
     pub still_pending: u32,
+    /// Restored transfers Platform reported already used (unproved).
+    pub already_used: u32,
+    pub by_kind: Vec<TransfersReport>,
 }
 
 impl From<engine::FinishReport> for FinishReport {
@@ -374,11 +379,15 @@ impl From<engine::FinishReport> for FinishReport {
             resumed,
             completed,
             still_pending,
+            already_used,
+            by_kind,
         } = r;
         FinishReport {
             resumed,
             completed,
             still_pending,
+            already_used,
+            by_kind: by_kind.into_iter().map(Into::into).collect(),
         }
     }
 }

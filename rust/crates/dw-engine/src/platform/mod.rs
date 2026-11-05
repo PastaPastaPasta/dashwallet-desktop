@@ -171,5 +171,6 @@ pub use startup::{
 pub use startup_status::{DashPayStartup, PlatformCadence, SpvState};
 pub use status::PlatformStatus;
 pub use unfinished::{
-    LockFinish, LockKindId, LockOrigin, UnfinishedLock, UnfinishedState, UnfinishedTransfers,
+    LockFinish, LockKindId, LockOrigin, TransfersReport, UnfinishedLock, UnfinishedState,
+    UnfinishedTransfers,
 };

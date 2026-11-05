@@ -97,7 +97,7 @@ export const REG_COPY = {
     confirm: "Start a new registration",
     cancel: "Cancel",
   },
-  finished: (r: FinishReport) => `${r.resumed} resumed, ${r.completed} completed, ${r.stillPending} still pending.`,
+  finished: (r: FinishReport) => `${r.resumed} resumed, ${r.completed} completed, ${r.stillPending} still pending${r.alreadyUsed > 0 ? `, ${r.alreadyUsed} already used` : ""}.`,
 } as const;
 
 // ---------------------------------------------------------------------------------------------
