@@ -643,9 +643,9 @@ pub struct MixedCoinsSweepResult {
     /// The code of the error that stopped the sweep; `null` when complete.
     pub failure_code: Option<String>,
     /// With `coinjoin.broadcast_unknown`: the chunk that may be on the
-    /// network (display txid), its coins reserved until the wallet sees it
-    /// or a block spends one of them otherwise; `resend_mixed_coins` sends
-    /// its recorded bytes again.
+    /// network (display txid), its coins reserved until a block or an
+    /// InstantSend lock shows it, or a block spends one of them otherwise;
+    /// `resend_mixed_coins` sends its recorded bytes again.
     pub unknown_txid: Option<String>,
 }
 
@@ -653,13 +653,14 @@ pub struct MixedCoinsSweepResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum MixedCoinsResendState {
-    /// The network took it; its coins stay reserved until the wallet sees it.
+    /// The network took it; its coins stay reserved until a block or an
+    /// InstantSend lock shows it.
     Sent,
     /// No verdict, or refused this time (a peer may hold the first send):
     /// its coins stay reserved, and it is sent again on the next reconnect.
     Unknown,
-    /// The wallet saw it, or a block spent one of its coins in another
-    /// transaction: nothing is held for it any more.
+    /// A block or an InstantSend lock shows it, or a block spent one of its
+    /// coins in another transaction: nothing is held for it any more.
     Resolved,
 }
 

@@ -48,15 +48,27 @@ impl Wire {
 }
 
 /// Installs a broadcast that answers `outcomes` in order (`Sent` past the
-/// end) and chunks of at most `max_inputs`.
+/// end) and chunks of at most `max_inputs`. A chunk it does not refuse
+/// goes into the wallet's history as a mempool transaction, as dash-spv
+/// hands every broadcast to the wallet before any peer has it.
 fn hook(f: &Fixture, max_inputs: usize, outcomes: &[Outcome]) -> Arc<Wire> {
     let wire = Arc::new(Wire::default());
     let (w, outcomes) = (Arc::clone(&wire), outcomes.to_vec());
+    let (session, wallet) = (Arc::downgrade(&f.session), f.wallet);
     let broadcast: crate::coinjoin::sweep_test_hooks::Broadcast = Arc::new(move |tx| {
         let mut seen = w.seen.lock().unwrap();
         let n = seen.len();
         seen.push(tx.clone());
-        match outcomes.get(n).copied().unwrap_or(Outcome::Sent) {
+        let outcome = outcomes.get(n).copied().unwrap_or(Outcome::Sent);
+        if !matches!(outcome, Outcome::Rejected)
+            && let Some(s) = session.upgrade()
+        {
+            (s.hub.history).with_wallet(wallet, |h| {
+                (h.txs.entry(tx.txid()))
+                    .or_insert_with(|| history_entry(tx.clone(), TransactionContext::Mempool));
+            });
+        }
+        match outcome {
             Outcome::Sent => Ok(tx.txid()),
             Outcome::Rejected => Err(Box::new(Pw::TransactionBroadcast(
                 "rejected: txn-mempool-conflict".into(),
@@ -141,12 +153,12 @@ fn forget_claims(f: &Fixture, txs: &[Transaction]) {
     assert!(f.session.spends.snapshot(&f.wallet).is_empty());
 }
 
-/// SPV saw `txs`: their inputs are no coins of the wallet any more, and
-/// the wallet's history holds them, in the mempool.
+/// A block holds `txs`: their inputs are no coins of the wallet any more,
+/// and the wallet's history holds them, mined.
 fn see_spent(f: &Fixture, txs: &[Transaction]) {
     drop_coins(f, &inputs(txs));
     for tx in txs {
-        record_history(f, tx, None);
+        record_history(f, tx, Some(900));
     }
 }
 
@@ -735,6 +747,13 @@ fn an_unseen_chunk_stays_held_past_the_old_expiry_across_a_reopen() {
         );
     }
     let wire = hook(&f, 2, &[]);
+    assert_eq!(
+        resend(&f, None).unwrap(),
+        resent(sent[0].txid(), SweepResendState::Sent),
+        "sent again after the restart"
+    );
+    assert_eq!(wire.txs(), sent, "the recorded bytes");
+    let wire = hook(&f, 2, &[]);
     let second = move_to_wallet(&f).unwrap();
     assert_eq!(second.failure_code, None);
     let again = wire.txs();
@@ -813,8 +832,10 @@ fn resent(txid: Txid, state: SweepResendState) -> Vec<SweepResend> {
 
 /// Q1: "Try again" and every reconnect send the chunk's recorded bytes,
 /// never a new signature; a refusal of a send again (a peer may have the
-/// first) keeps the record and its coins. Only the wallet's sight of the
-/// chunk drops it. A txid the wallet records no chunk for is refused.
+/// first) keeps the record and its coins. The wallet's own mempool record
+/// of the chunk is no sight of it; only a block (or an InstantSend lock)
+/// drops it. A txid the wallet no longer records a chunk for reads
+/// resolved.
 #[test]
 fn a_chunk_is_sent_again_with_its_recorded_bytes_until_the_wallet_sees_it() {
     let f = fixture(false);
@@ -826,6 +847,10 @@ fn a_chunk_is_sent_again_with_its_recorded_bytes_until_the_wallet_sees_it() {
     assert_eq!(sent.len(), 1);
     let txid = sent[0].txid();
     forget_claims(&f, &sent);
+    assert!(
+        (f.session.hub.history).read(&f.wallet, |txs| txs.contains_key(&txid)),
+        "the wallet records its broadcast at once"
+    );
 
     let wire = hook(&f, 500, &[Outcome::Rejected, Outcome::Unknown]);
     assert_eq!(
@@ -865,10 +890,10 @@ fn a_chunk_is_sent_again_with_its_recorded_bytes_until_the_wallet_sees_it() {
     assert_eq!(sweep_out_keys(&f), HashSet::from([txid]));
 
     let wrong = Txid::from_byte_array([7; 32]);
-    assert!(matches!(
-        resend(&f, Some(wrong)),
-        Err(EngineError::InvalidArgument(_))
-    ));
+    assert_eq!(
+        resend(&f, Some(wrong)).unwrap(),
+        resent(wrong, SweepResendState::Resolved)
+    );
     see_spent(&f, &sent);
     let wire = hook(&f, 500, &[]);
     assert_eq!(
@@ -933,12 +958,25 @@ fn a_sweep_record_resolves_only_when_seen_or_conflicted_in_a_block() {
     let seen = chunk(&[3]);
     let mined_conflict = chunk(&[4, 5]);
     let mempool_conflict = chunk(&[6]);
+    let locked = chunk(&[7]);
+    let local = chunk(&[8]);
     let bad = ("coinjoin.sweep_out.nope".to_string(), "00".to_string());
     let renamed = (pending.key(), seen.value());
     let mut txs = std::collections::HashMap::new();
     txs.insert(
         seen.txid(),
-        history_entry(seen.tx.clone(), TransactionContext::Mempool),
+        history_entry(
+            seen.tx.clone(),
+            TransactionContext::InBlock(BlockInfo::new(9, BlockHash::all_zeros(), 0)),
+        ),
+    );
+    let mut is_locked = history_entry(locked.tx.clone(), TransactionContext::Mempool);
+    is_locked.instant_locked = true;
+    txs.insert(locked.txid(), is_locked);
+    // The wallet's own broadcast, in its mempool view only: no evidence.
+    txs.insert(
+        local.txid(),
+        history_entry(local.tx.clone(), TransactionContext::Mempool),
     );
     let mut other = conflict(op(5));
     other.lock_time = 1;
@@ -961,14 +999,19 @@ fn a_sweep_record_resolves_only_when_seen_or_conflicted_in_a_block() {
             row(&seen),
             row(&mined_conflict),
             row(&mempool_conflict),
+            row(&locked),
+            row(&local),
             bad.clone(),
         ],
         &txs,
     );
-    assert_eq!(held, vec![pending.clone(), mempool_conflict.clone()]);
-    assert_eq!(held_inputs(&held), [1, 2, 6].map(op).into());
+    assert_eq!(
+        held,
+        vec![pending.clone(), mempool_conflict.clone(), local.clone()]
+    );
+    assert_eq!(held_inputs(&held), [1, 2, 6, 8].map(op).into());
     gone.sort();
-    let mut want = vec![seen.key(), mined_conflict.key(), bad.0];
+    let mut want = vec![seen.key(), mined_conflict.key(), locked.key(), bad.0];
     want.sort();
     assert_eq!(gone, want);
     assert_eq!(

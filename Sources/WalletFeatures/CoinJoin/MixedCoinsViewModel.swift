@@ -162,11 +162,15 @@ public final class MixedCoinsViewModel {
         } catch {
             grants.revoke(grant)
             // The coins changed since the user confirmed: back to the confirm step with the new plan.
-            if error.code == .coinjoinPlanChanged,
-                let fresh = try? await mixedCoins.plan(wallet: wallet, destination: plan.destination)
-            {
-                errorMessage = ErrorText.m3(error, amount: amountText.callAsFunction)
-                flow = .planned(fresh)
+            if error.code == .coinjoinPlanChanged {
+                do {
+                    let fresh = try await mixedCoins.plan(wallet: wallet, destination: plan.destination)
+                    errorMessage = ErrorText.m3(error, amount: amountText.callAsFunction)
+                    flow = .planned(fresh)
+                } catch {
+                    // The re-plan's own reason (nothing left to move, mixing started).
+                    fail(error)
+                }
             } else {
                 fail(error)
             }

@@ -246,7 +246,7 @@ export function coinjoinHandlers({ wallet, grant, useGrant }: CoinJoinDeps): Han
     resend_mixed_coins: ({ walletId, txid }, { world }): MixedCoinsResend[] => {
       wallet(world, walletId);
       const recorded = world.coinjoin.sweepUnknown?.[walletId] ?? [];
-      if (txid !== null && !recorded.includes(txid)) throw fail("invalid_argument", `the wallet records no sweep chunk ${txid}`);
+      if (txid !== null && !recorded.includes(txid)) return [{ txid, state: "resolved" }];
       return recorded.filter((t) => txid === null || t === txid).map((t) => ({ txid: t, state: "unknown" }));
     },
     coinjoin_limits: () => COINJOIN_LIMITS,

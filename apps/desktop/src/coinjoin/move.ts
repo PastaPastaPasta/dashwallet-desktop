@@ -59,11 +59,11 @@ export const MOVE_COPY = {
     text: (received: string, fee: string, remaining: string) =>
       `${received} is on its way to your wallet's main balance (network fee ${fee}); ${remaining} stayed in your CoinJoin balance. Try again to move the rest.`,
   },
-  unknown: "One transaction may have reached the network. Its coins stay reserved until the wallet sees it; the rest stayed in your CoinJoin balance. Try again sends the same transaction again.",
+  unknown: "One transaction may have reached the network. Its coins stay reserved until it confirms; the rest stayed in your CoinJoin balance. Try again sends the same transaction again.",
   resent: {
-    sent: "Sent again. Its coins stay reserved until the wallet sees it.",
+    sent: "Sent again. Its coins stay reserved until it confirms.",
     unknown: "Still no answer from the network. Its coins stay reserved, and the wallet sends it again when it reconnects.",
-    resolved: "The wallet has seen it, or its coins were spent otherwise. Nothing is held for it any more.",
+    resolved: "It confirmed, or its coins were spent otherwise. Nothing is held for it any more.",
   } satisfies Record<MixedCoinsResendState, string>,
   nothing: "There are no mixed coins to move.",
   otherMove: "Another move of your mixed coins is running. Try again when it ends.",

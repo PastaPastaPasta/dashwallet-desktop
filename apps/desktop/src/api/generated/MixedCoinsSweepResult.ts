@@ -24,8 +24,8 @@ fee: number, remaining: number,
 failureCode: string | null,
 /**
  * With `coinjoin.broadcast_unknown`: the chunk that may be on the
- * network (display txid), its coins reserved until the wallet sees it
- * or a block spends one of them otherwise; `resend_mixed_coins` sends
- * its recorded bytes again.
+ * network (display txid), its coins reserved until a block or an
+ * InstantSend lock shows it, or a block spends one of them otherwise;
+ * `resend_mixed_coins` sends its recorded bytes again.
  */
 unknownTxid: string | null, };

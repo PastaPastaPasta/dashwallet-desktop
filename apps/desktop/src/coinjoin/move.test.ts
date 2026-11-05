@@ -126,7 +126,8 @@ describe("Move mixed coins to the wallet", () => {
     expect(authorize).not.toHaveBeenCalled();
     expect(flow).toMatchObject({ step: "done", resent: "unknown" });
     expect(MOVE_COPY.resent.unknown).toContain("reserved");
-    await expect(cmd.resendMixedCoins(W, "ab".repeat(32))).rejects.toMatchObject({ code: "invalid_argument" });
+    // A chunk the wallet no longer records resolved earlier.
+    await expect(cmd.resendMixedCoins(W, "ab".repeat(32))).resolves.toEqual([{ txid: "ab".repeat(32), state: "resolved" }]);
   });
 
   it("a move whose coins changed after the confirm returns to the confirm with the new plan", async () => {

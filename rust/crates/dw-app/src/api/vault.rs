@@ -109,6 +109,14 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: reached through `DashPay::shielded_send` and `unshield_to_core`, which redeem their `ShieldedSpend` grant for one spend (m4 §2.13)",
     ),
     (
+        "Vault::shield_drain_signer",
+        "internal: the shield drain (\"Move mixed coins\" to Shielded) issues its funding signer from the `Spend` grant it redeems, inside its lease; never a host's",
+    ),
+    (
+        "Vault::shield_drain_signer_held",
+        "internal: the shield drain's funding signer for a token whose key the drain's lease holds; never a host's",
+    ),
+    (
         "Vault::shielded_spend_key_held",
         "internal: the engine's shielded spends read the spend key under the call permit's key hold (m4 §2.13); never a host's",
     ),

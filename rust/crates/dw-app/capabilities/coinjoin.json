@@ -20,6 +20,7 @@
     "allow-mixed-coins-sweep-plan",
     "allow-move-mixed-coins",
     "allow-mixed-coins-consolidation-plan",
-    "allow-consolidate-mixed-coins"
+    "allow-consolidate-mixed-coins",
+    "allow-resend-mixed-coins"
   ]
 }

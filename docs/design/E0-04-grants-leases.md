@@ -870,11 +870,13 @@ call permit when its task lands.
   library that broadcast first, or stored only after the call ended, would leave the lock unrecorded; the second
   stops the process (a lock of an ended call reaching the store unrecorded), the first is a pin change §2a.7's
   file:line list must catch.
-- A "Move mixed coins" chunk whose broadcast outcome is unknown keeps its coins reserved until the wallet sees it
-  or a block spends one of them in another transaction, across restarts (its signed bytes are recorded in app.sqlite
-  before the first broadcast, and sent again on every reconnect and by `resend_mixed_coins`). No time limit releases
-  it. `MixedCoinsSweepResult.unknown_txid` names it, so the user can check on it (review F5, the CoinJoin owner's
-  ruling); there is no call to abandon it. Fail closed.
+- A "Move mixed coins" chunk whose broadcast outcome is unknown keeps its coins reserved until a block or an
+  InstantSend lock shows it (its mempool sighting is the wallet's own, BL-76) or a block spends one of them in
+  another transaction, across restarts (its signed bytes are recorded in app.sqlite before the first broadcast, and
+  sent again on every reconnect and by `resend_mixed_coins`). No time limit releases it, and neither does abandoning
+  it in the activity list (`abandon_transaction`): the record still holds its coins.
+  `MixedCoinsSweepResult.unknown_txid` names it, so the user can check on it (review F5, the CoinJoin owner's
+  ruling). Fail closed.
 - A top-up step has no funding key of its own after a lost journal: the draft's own key is a registration's, and
   every top-up of an identity shares one key. Until the credit task gives top-ups their own key,
   `funding_call_permit` refuses `topup/...` steps (review M-3); `dispatch_status` still answers them.
