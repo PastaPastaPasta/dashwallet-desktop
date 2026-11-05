@@ -25,6 +25,7 @@ import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
 import { PlatformMoveCard } from "./PlatformMoveSheet";
 import { ShieldedCard } from "./ShieldedSheet";
+import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
 
 /** dash-qt's overview shows this many recent transactions. */
 const RECENT_COUNT = 5;
@@ -198,6 +199,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         <HomeDashPayCard walletId={walletId} network={network} />
         <ShieldedCard walletId={walletId} network={network} />
         <PlatformMoveCard walletId={walletId} network={network} platform={pools.platform} dustCredits={pools.platformDust} />
+        <UnfinishedTransfersCard walletId={walletId} network={network} />
         <CoinJoinCard walletId={walletId} network={network} />
         {/* Who the wallet pays most is payment history: discreet mode hides it too (D8). */}
         {!discreet && <HomeFrequent walletId={walletId} />}

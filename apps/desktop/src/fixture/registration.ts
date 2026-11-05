@@ -29,6 +29,7 @@ import type { UsernameCheck } from "../api/generated/UsernameCheck";
 import type { UsernameRuleName } from "../api/generated/UsernameRuleName";
 import { IDENTITY, type DashPayWorld } from "./dashpay";
 import type { Ctx, Handlers } from "./handlers";
+import { finishRestored, reportOf } from "./recovery";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import { FIXTURE_NOW, secs } from "./wallet";
 
@@ -398,7 +399,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       changed(ctx, walletId, draft);
       return null;
     },
-    // Tools ▸ Repair "Finish transfers": every row whose funds wait for a decision runs again.
+    // Tools ▸ Repair "Finish transfers": every row whose funds wait for a decision runs again, and so does every ready restored Shielded lock.
     finish_asset_locks: ({ walletId, grant }, ctx) => {
       const { world } = ctx;
       const dp = d.dashpay(world, walletId);
@@ -411,7 +412,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
         dp.runs = [...dp.runs, row.draft];
         changed(ctx, walletId, row.draft);
       }
-      return { resumed: stranded.length, completed: 0, stillPending: 0 };
+      return reportOf({ resumed: stranded.length, completed: 0, stillPending: 0 }, finishRestored(ctx, walletId));
     },
     // names.rs `register_name`: a name for an identity that has one or none, paid from its credits.
     register_name: ({ walletId, identity, label, grant }, ctx) => {

@@ -34,6 +34,7 @@ import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
+import { restoredLock } from "./recovery";
 import { newPendingWorld, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
@@ -662,6 +663,52 @@ const SCENARIOS = {
   "shielded-pool-small": (t) => {
     const w = base(t);
     w.pending.shielded!.poolTooSmall = true;
+    return w;
+  },
+  /** One restored Core → Shielded lock of 0.5 DASH that Platform has not applied: Home offers Finish. */
+  "recovery-one": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000)];
+    return w;
+  },
+  /** Three restored locks: two ready, one that may already be applied. */
+  "recovery-restored-mixed": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000), restoredLock(2, 25_000_000), restoredLock(3, 10_000_000, "checking")];
+    return w;
+  },
+  /** Only a restored lock that may already be applied: "Checking", and Check again (the second one applies it). */
+  "recovery-checking": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "checking")];
+    w.pending.recovery.checksBeforeApply = 1;
+    return w;
+  },
+  /** A restored lock still waiting for its confirmations: Home has no card. */
+  "recovery-confirming": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "confirming")];
+    return w;
+  },
+  /** A restored lock on a network that does not take Shielded yet: Home has no card. */
+  "recovery-not-active": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "notActive")];
+    return w;
+  },
+  /** A ready restored lock, its transaction's second credit output (which this version can't finish) and
+   * a lock worth less than the Platform fee: Home offers Finish for the first only. */
+  "recovery-unsupported": (t) => {
+    const w = base(t);
+    const first = restoredLock(1, 50_000_000);
+    w.pending.recovery.locks = [first, { ...first, vout: 1, duffs: 20_000_000, state: "unsupported" }, { ...restoredLock(2, 5_000), state: "tooSmall" }];
+    return w;
+  },
+  /** The first finish ends `platform.unavailable`; a retry is applied. */
+  "recovery-finish-fails": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000)];
+    w.pending.recovery.failures = 1;
     return w;
   },
   /** A new wallet: no history, zero balance. */

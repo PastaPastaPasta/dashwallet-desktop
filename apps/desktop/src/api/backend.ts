@@ -16,6 +16,8 @@ import type { ChosenNetwork } from "./generated/ChosenNetwork";
 import type { NetworkChoiceView } from "./generated/NetworkChoiceView";
 import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { PlatformAddressBalance } from "./generated/PlatformAddressBalance";
+import type { LockFinish } from "./generated/LockFinish";
+import type { LockKind } from "./generated/LockKind";
 import type { ShieldedActivity } from "./generated/ShieldedActivity";
 import type { ShieldedAddress } from "./generated/ShieldedAddress";
 import type { ShieldedSpendOutcome } from "./generated/ShieldedSpendOutcome";
@@ -23,6 +25,7 @@ import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
 import type { ShieldOutcome } from "./generated/ShieldOutcome";
 import type { ShieldQuote } from "./generated/ShieldQuote";
+import type { UnfinishedTransfers } from "./generated/UnfinishedTransfers";
 import type { Balances } from "./generated/Balances";
 import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { ContactList } from "./generated/ContactList";
@@ -211,6 +214,10 @@ export interface Backend {
   shieldFromCore(walletId: string, duffs: number, grant: string): Promise<ShieldOutcome>;
   /** Applies a pending lock. */
   resumeShield(walletId: string, txid: string, grant: string): Promise<ShieldOutcome>;
+  /** The Core → Shielded locks Platform is not known to have applied; `null` while dw-app has no such command. */
+  unfinishedTransfers(walletId: string): Promise<UnfinishedTransfers | null>;
+  /** Finishes the unfinished transfer of `kind` at `txid`:`vout` under a `platformOp` grant. */
+  finishTransfer(walletId: string, kind: LockKind, txid: string, vout: number, grant: string): Promise<LockFinish>;
   /** Shielded → Shielded; `credits` is a decimal string. */
   shieldedSendQuote(walletId: string, to: string, credits: string): Promise<ShieldedSpendQuote>;
   /** `confirmUnrecorded`: the user confirmed sending from a wallet with a lost-record spend (DEC-1057);

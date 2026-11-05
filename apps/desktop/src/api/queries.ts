@@ -43,6 +43,8 @@ export const keys = {
   shieldedStatus: (walletId: string) => ["dashpay", "shielded", "status", walletId] as const,
   shieldedHistory: (walletId: string) => ["dashpay", "shielded", "history", walletId] as const,
   shieldedAddress: (walletId: string) => ["dashpay", "shielded", "address", walletId] as const,
+  unfinishedTransfers: (walletId: string) => ["dashpay", "unfinished", walletId] as const,
+  unfinishedTransfersAll: ["dashpay", "unfinished"] as const,
   shieldedQuote: (walletId: string, request: string) => ["shieldedQuote", walletId, request] as const,
   // Under "dashpay": a `platform{domain:"platformAddresses"}` event is a domain events.ts does not
   // name, which it answers by invalidating everything under that prefix.
@@ -164,6 +166,12 @@ export function usePlatformMoveQuote(walletId: string, enabled: boolean) {
 export function useShieldedStatus(walletId: string) {
   const b = useBackend();
   return useQuery({ queryKey: keys.shieldedStatus(walletId), queryFn: () => b.shieldedStatus(walletId), retry: false });
+}
+
+/** The Core → Shielded locks not known to be applied; `null` while dw-app has no such command. */
+export function useUnfinishedTransfers(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.unfinishedTransfers(walletId), queryFn: () => b.unfinishedTransfers(walletId), retry: false });
 }
 
 /** The shielded activity rows, pending first; `null` while dw-app has no such command. */
