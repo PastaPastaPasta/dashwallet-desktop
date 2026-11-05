@@ -168,6 +168,28 @@ describe("fixture pending commands", () => {
     expect(await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), null)).toMatchObject({ retryOf: null });
   });
 
+  // Sol R2-A4 (Opus m3): a retry that has not landed supersedes nothing; when the original lands late
+  // the retry is the one replaced, and the payment is debited once.
+  for (const retried of ["failed", "pending"] as const)
+    it(`a ${retried} retry leaves the original live; the original landing late replaces the retry`, async () => {
+      platform().nextSend = "failed";
+      platform().thenSend = retried;
+      const first = await pay(credits("1000000000"));
+      const { quote, outcome } = await pay(credits("1000000000"));
+      expect([quote.retryOf, outcome.state, outcome.mayLand]).toEqual([first.outcome.id, retried, true]);
+      const rows = async () => (await backend.platformActivity(W))!.filter((a) => a.kind === "send");
+      expect((await rows()).find((a) => a.id === first.outcome.id)).toMatchObject({ state: "failed", mayLand: true });
+      const before = BigInt((await backend.platformAddresses(W))!.credits);
+      landSend(platform(), first.outcome.id);
+      expect((await rows()).map((a) => [a.id, a.state, a.mayLand])).toEqual([
+        [outcome.id, "replaced", false],
+        [first.outcome.id, "done", false],
+      ]);
+      expect(before - BigInt((await backend.platformAddresses(W))!.credits)).toBe(1_006_500_000n);
+      // Nothing holds any more.
+      expect(await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), null)).toMatchObject({ retryOf: null });
+    });
+
   it("a Max retry replays the stored terms, not the balance now", async () => {
     platform().nextSend = "failed";
     const first = await pay({ kind: "all" });

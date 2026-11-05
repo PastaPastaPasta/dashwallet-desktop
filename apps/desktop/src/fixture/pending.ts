@@ -203,15 +203,22 @@ function retryTarget(p: PlatformWorld, to: string, amount: WithdrawAmount): Plat
 const moveHeld = (id: string) => fail("credits.move_pending", "a move is pending", { kind: "artifact", artifact: id });
 
 /** What holds a send (`credits.move_pending`), as the engine: a move or send Platform has not
- * answered or that may still land, unless this is the exact retry of the only such send. Returns
- * the send it retries. */
+ * answered or that may still land, unless this is the exact retry of the only such send and its
+ * retries (one group: they share terms). Returns the send it retries. */
 function holdFor(p: PlatformWorld, to: string, amount: WithdrawAmount): PlatformActivity | null {
   const held = p.activity.filter(isHeldOp);
   if (held.length === 0) return null;
   const retry = retryTarget(p, to, amount);
-  const blocking = held.find((a) => a !== retry);
-  if (blocking || !retry) throw moveHeld((blocking ?? held[0]).id);
+  const blocking = held.find((a) => !retry || p.terms[a.id] !== p.terms[retry.id]);
+  if (blocking) throw moveHeld(blocking.id);
   return retry;
+}
+
+/** Settles the group of the send `done` (it executed): every other member that still holds is
+ * replaced, as the engine's `settle` does once a member's nonces are taken. */
+function replaceOthers(p: PlatformWorld, done: string) {
+  const terms = p.terms[done];
+  p.activity = p.activity.map((a) => (a.id !== done && p.terms[a.id] === terms && isHeldOp(a) ? { ...a, state: "replaced" as const, mayLand: false } : a));
 }
 
 /** The send a quote names with `retryOf`, whatever it became: it must be a send of these terms. */
@@ -286,6 +293,7 @@ export function landSend(p: PlatformWorld, id: string) {
   const fee = t.quote.feeFromAmount ? null : t.quote.feeCredits;
   const debit = BigInt(t.quote.amountCredits) + BigInt(fee ?? 0);
   p.activity = p.activity.map((a) => (a.id === id ? { ...a, state: "done" as const, credits: String(debit), feeCredits: fee, mayLand: false } : a));
+  replaceOthers(p, id);
   spend(p, debit);
 }
 
@@ -396,10 +404,14 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
       mayLand: state !== "done",
       estimated: state === "done" && !q.feeFromAmount && !proved,
     };
-    // A retry supersedes the held send it re-signed; of a group at most one executes.
-    p.activity = [row, ...p.activity.map((a) => (target && a.id === target.id ? { ...a, state: "replaced" as const, mayLand: false } : a))];
+    p.activity = [row, ...p.activity];
     p.terms[id] = target ? p.terms[target.id] : { to: q.to, amount: q.feeFromAmount ? { kind: "all" } : { kind: "credits", credits: q.amountCredits }, inputs: `in-${id}`, quote: (({ operation: _o, retryOf: _r, ...rest }) => rest)(q) };
-    if (state === "done") spend(p, BigInt(credits));
+    // Of a group at most one executes: a retry replaces the sends it re-signed only once it is done.
+    // Until a member settles, every member may still land as itself.
+    if (state === "done") {
+      replaceOthers(p, id);
+      spend(p, BigInt(credits));
+    }
     return sendOutcome(p, row);
   },
   platform_move_to_core_quote: ({ walletId, amount }: { walletId: string; amount: WithdrawAmount }, ctx: Ctx) => quote(ctx, walletId, amount),
