@@ -200,8 +200,8 @@ export function coinjoinHandlers({ wallet, grant, useGrant }: CoinJoinDeps): Han
           }
           break;
         }
-        const spent = new Set(c.coins.map((u) => `${u.outpoint.txid}:${u.outpoint.vout}`));
-        w.coins = w.coins.filter((u) => !spent.has(`${u.outpoint.txid}:${u.outpoint.vout}`));
+        const spent = new Set(c.coins);
+        w.coins = w.coins.filter((u) => !spent.has(u));
         w.coins.push({ ...c.coins[0], outpoint: { txid, vout: 0 }, amount: c.chunk.amount, confirmations: 0, coinjoinDenominated: false, coinjoinRounds: null, label: null, reserved: false });
         const b = w.summary.balances;
         if (b) {

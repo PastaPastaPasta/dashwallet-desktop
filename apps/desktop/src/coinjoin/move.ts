@@ -32,6 +32,7 @@ export const MOVE_COPY = {
     message: "Your CoinJoin balance moves to a new address of this wallet. Coins that are not fully mixed yet lose the privacy mixing has given them so far.",
     fullyMixed: "Fully mixed",
     notFullyMixed: "Not fully mixed",
+    combined: "These coins are combined on-chain, so the fully mixed amount loses some of its mixing privacy.",
     fee: "Network fee",
     receive: "You receive",
     transactions: (n: number) => (n === 1 ? "This takes one transaction." : `This takes ${n} transactions.`),
@@ -56,6 +57,7 @@ export const MOVE_COPY = {
   },
   unknown: "One transaction may have reached the network. Its coins stay reserved until the wallet sees them spent; the rest stayed in your CoinJoin balance.",
   nothing: "There are no mixed coins to move.",
+  changed: "Your CoinJoin balance changed. Review the move again.",
   close: "Close",
   again: "Try again",
 } as const;
@@ -66,7 +68,7 @@ export type MoveStep = "plan" | "confirm" | "mixing" | "running" | "done" | "ref
 export const planFee = (p: MixedCoinsSweepPlan) => p.chunks.reduce((sum, c) => sum + c.fee, 0);
 
 /** What the confirm step shows the user receiving: the total less the fees. */
-export const planReceives = (p: MixedCoinsSweepPlan) => p.chunks.reduce((sum, c) => sum + c.amount, 0);
+export const planReceives = (p: MixedCoinsSweepPlan) => p.total - planFee(p);
 
 /** A plan or move refusal, by code. */
 export function moveErrorText(e: unknown): string {
@@ -75,10 +77,17 @@ export function moveErrorText(e: unknown): string {
   if (hasCode(e, "coinjoin.vault_locked")) return CoinJoinText.vaultLocked;
   if (hasCode(e, "coinjoin.watch_only")) return CoinJoinText.watchOnly;
   if (hasCode(e, "coinjoin.no_peers")) return "No peers to send to. Try again once the wallet is connected.";
-  if (hasCode(e, "coinjoin.grant_invalid")) return "The approval ran out. Try again.";
+  if (hasCode(e, "coinjoin.grant_invalid")) return MOVE_COPY.changed;
   if (hasCode(e, "coinjoin.broadcast_rejected")) return "The network refused the transaction. Your coins stayed in your CoinJoin balance.";
   return failureText(e);
 }
+
+/** A refusal the user answers with a fresh plan. */
+export const canRetry = (e: unknown) => hasCode(e, "coinjoin.grant_invalid") || hasCode(e, "coinjoin.no_peers") || hasCode(e, "coinjoin.broadcast_rejected");
+
+/** How long Stop Mixing waits for the engine to stop: the last session winds down. */
+const STOP_RETRIES = 20;
+const STOP_RETRY_MS = 250;
 
 /** The outcome of a move that ran: complete, partial, or with a chunk of unknown outcome. */
 export function resultText(r: MixedCoinsSweepResult, amount: (duffs: number) => string): { title: string; text: string; kind: "done" | "partial" | "unknown" } {
@@ -108,37 +117,51 @@ export class MoveMixedFlow extends Model {
     this.grants.subscribe(() => this.changed());
   }
 
-  /** Opens the sheet: where a running or unseen move is, else at a fresh plan. */
+  /** Opens the sheet: where a running move or its unseen outcome is, else at a fresh plan. */
   begin() {
     this.open = true;
-    if (this.running || this.step === "done") {
+    if (this.running || this.step === "done" || this.step === "refused") {
       this.changed();
       return;
     }
     void this.#plan();
   }
 
-  async #plan() {
+  /** A refusal: Stop Mixing while the wallet mixes, else its text. */
+  #fail(e: unknown) {
+    this.error = e;
+    this.step = hasCode(e, "coinjoin.mixing_active") ? "mixing" : "refused";
+  }
+
+  /** A fresh plan; `retries` more tries while mixing still winds down. */
+  async #plan(retries = 0) {
     const epoch = ++this.#epoch;
     this.step = "plan";
     this.plan = null;
     this.result = null;
     this.error = null;
     this.changed();
-    try {
-      const plan = await this.api.mixedCoinsSweepPlan(this.walletId, "wallet");
-      if (epoch !== this.#epoch) return;
-      this.plan = plan;
-      this.step = "confirm";
-    } catch (e) {
-      if (epoch !== this.#epoch) return;
-      this.error = e;
-      this.step = hasCode(e, "coinjoin.mixing_active") ? "mixing" : "refused";
+    for (;;) {
+      try {
+        const plan = await this.api.mixedCoinsSweepPlan(this.walletId, "wallet");
+        if (epoch !== this.#epoch) return;
+        this.plan = plan;
+        this.step = "confirm";
+      } catch (e) {
+        if (epoch !== this.#epoch) return;
+        if (retries-- > 0 && hasCode(e, "coinjoin.mixing_active")) {
+          await new Promise((r) => setTimeout(r, STOP_RETRY_MS));
+          if (epoch !== this.#epoch) return;
+          continue;
+        }
+        this.#fail(e);
+      }
+      break;
     }
     this.changed();
   }
 
-  /** Stop Mixing from the sheet, then a fresh plan. */
+  /** Stop Mixing from the sheet, then a fresh plan once mixing has wound down. */
   async stopMixing() {
     if (this.running) return;
     this.running = true;
@@ -153,7 +176,7 @@ export class MoveMixedFlow extends Model {
       this.running = false;
       this.changed();
     }
-    await this.#plan();
+    await this.#plan(STOP_RETRIES);
   }
 
   /** Move: a spend grant of the plan's total, then `move_mixed_coins`. */
@@ -174,8 +197,7 @@ export class MoveMixedFlow extends Model {
         this.step = "done";
       } else this.step = "confirm";
     } catch (e) {
-      this.error = e;
-      this.step = hasCode(e, "coinjoin.mixing_active") ? "mixing" : "refused";
+      this.#fail(e);
     } finally {
       this.running = false;
       this.changed();

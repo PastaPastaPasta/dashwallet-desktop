@@ -26,6 +26,7 @@ for (const theme of THEMES) {
     // Two coins of 0.100001 with the network's rounds, one short of them.
     await expect(page.getByTestId("move-mixed-fully")).toContainText("0.200002");
     await expect(page.getByTestId("move-mixed-partly")).toContainText("0.100001");
+    await expect(page.getByTestId("move-mixed-combined")).toHaveText("These coins are combined on-chain, so the fully mixed amount loses some of its mixing privacy.");
     await expect(page.getByTestId("move-mixed-transactions")).toHaveText("This takes one transaction.");
     await fontsReady(page);
     expect(await seriousAxeViolations(page)).toEqual([]);

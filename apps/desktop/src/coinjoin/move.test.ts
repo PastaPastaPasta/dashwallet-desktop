@@ -8,7 +8,9 @@ import * as cmd from "../api/generated/commands";
 import { IpcBackend } from "../api/tauri";
 import { installFixture } from "../fixture/index";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W, type ScenarioName } from "../fixture/scenarios";
-import { MoveMixedFlow, moveErrorText, MOVE_COPY, planFee, planReceives, resultText } from "./move";
+import { appError } from "../onboarding/testWorld";
+import type { MixedCoinsSweepPlan } from "../api/generated/MixedCoinsSweepPlan";
+import { canRetry, MoveMixedFlow, type MoveMixedApi, moveErrorText, MOVE_COPY, planFee, planReceives, resultText } from "./move";
 
 const until = async (cond: () => boolean) => {
   for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 0));
@@ -117,8 +119,57 @@ describe("Move mixed coins to the wallet", () => {
     expect(flow.step).toBe("plan");
   });
 
+  it("a cancelled passphrase moves nothing: back at the confirm", async () => {
+    await open("coinjoin-move");
+    const going = flow.move();
+    await until(() => flow.grants.pending !== null);
+    flow.grants.cancel();
+    await going;
+    expect(flow.step).toBe("confirm");
+    expect((await cmd.mixedCoinsSweepPlan(W, "wallet")).total).toBe(flow.plan!.total);
+  });
+
   it("leaves the shielded destination to the shielded flow", async () => {
     installFixture({ scenario: "coinjoin-move" });
     await expect(cmd.mixedCoinsSweepPlan(W, "shielded")).rejects.toMatchObject({ code: "platform.not_implemented" });
+  });
+});
+
+describe("Move mixed coins, the flow's edges", () => {
+  const PLAN: MixedCoinsSweepPlan = { destination: "wallet", total: 30, chunks: [{ inputs: 3, amount: 27, fee: 3 }], fullyMixed: 20, notFullyMixed: 10 };
+  const stub = (over: Partial<Record<keyof MoveMixedApi, unknown>>) => new MoveMixedFlow({ stopMixing: vi.fn().mockResolvedValue(undefined), ...over } as unknown as MoveMixedApi, W);
+
+  it("after Stop Mixing, plans again while the last session winds down", async () => {
+    const mixing = appError("coinjoin.mixing_active");
+    const plan = vi.fn().mockRejectedValueOnce(mixing).mockRejectedValueOnce(mixing).mockRejectedValueOnce(mixing).mockResolvedValue(PLAN);
+    const f = stub({ mixedCoinsSweepPlan: plan });
+    f.begin();
+    await vi.waitFor(() => expect(f.step).toBe("mixing"));
+    await f.stopMixing();
+    expect([f.step, plan.mock.calls.length]).toEqual(["confirm", 4]);
+  });
+
+  it("a stale approval offers Try again, which plans afresh", async () => {
+    expect(moveErrorText(appError("coinjoin.grant_invalid"))).toBe(MOVE_COPY.changed);
+    expect(canRetry(appError("coinjoin.grant_invalid"))).toBe(true);
+    expect(canRetry(appError("coinjoin.nothing_to_move"))).toBe(false);
+  });
+
+  it("a refusal that came while the sheet was closed waits for it", async () => {
+    let refuse!: (e: unknown) => void;
+    const plan = vi.fn().mockResolvedValueOnce(PLAN).mockResolvedValue(PLAN);
+    const f = stub({ mixedCoinsSweepPlan: plan, moveMixedCoins: vi.fn(() => new Promise((_, no) => (refuse = no))) });
+    f.grants.withGrant = (async (_p: unknown, _w: unknown, run: (g: { id: string }) => Promise<unknown>) => ({ value: await run({ id: "g" }) })) as typeof f.grants.withGrant;
+    f.begin();
+    await vi.waitFor(() => expect(f.step).toBe("confirm"));
+    const going = f.move();
+    await vi.waitFor(() => expect(f.step).toBe("running"));
+    f.close();
+    refuse(appError("coinjoin.no_peers"));
+    await going;
+    f.begin();
+    expect([f.open, f.step, plan.mock.calls.length]).toEqual([true, "refused", 1]);
+    f.close();
+    expect(f.step).toBe("plan");
   });
 });

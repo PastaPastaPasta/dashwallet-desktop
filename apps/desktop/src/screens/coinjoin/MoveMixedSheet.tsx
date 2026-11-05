@@ -5,7 +5,7 @@
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
-import { MOVE_COPY, moveErrorText, planFee, planReceives, resultText, type MoveMixedFlow } from "../../coinjoin/move";
+import { canRetry, MOVE_COPY, moveErrorText, planFee, planReceives, resultText, type MoveMixedFlow } from "../../coinjoin/move";
 import { useCoinJoinAmount, useMaskedAmount } from "../../coinjoin/queries";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
@@ -53,6 +53,9 @@ export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network
                 <Row label={MOVE_COPY.confirm.fee} value={amount(planFee(plan))} testId="move-mixed-fee" />
                 <Row label={MOVE_COPY.confirm.receive} value={amount(planReceives(plan))} testId="move-mixed-receive" total />
               </dl>
+              <p className="sheet-text" data-testid="move-mixed-combined">
+                {MOVE_COPY.confirm.combined}
+              </p>
               <p className="sheet-text" data-testid="move-mixed-transactions">
                 {MOVE_COPY.confirm.transactions(plan.chunks.length)}
               </p>
@@ -113,7 +116,14 @@ export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network
               <p className="form-problem" role="alert" data-testid="move-mixed-refusal">
                 {moveErrorText(flow.error)}
               </p>
-              <div className="sheet-actions">{close}</div>
+              <div className="sheet-actions">
+                {canRetry(flow.error) && (
+                  <DashButton variant="tintedGray" size="large" data-testid="move-mixed-again" onClick={() => flow.again()}>
+                    {MOVE_COPY.again}
+                  </DashButton>
+                )}
+                {close}
+              </div>
             </>
           )}
         </div>
