@@ -28,6 +28,7 @@ use self::invitations::InvitationStatus;
 use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary};
 use self::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformAddressBalance,
+    PlatformReceiveAddress, PlatformSendOutcome, PlatformSendQuote,
 };
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
 use self::registration::{
@@ -460,6 +461,39 @@ commands! {
     ) -> MoveToCoreOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         Ok(dashpay.move_to_core(amount.into(), to, grant).await?.into())
+    }
+
+    /// The wallet's Platform receive address: the lowest unused one.
+    #[facade("DashPay::platform_receive_address")]
+    fn platform_receive_address(state, wallet_id: String) -> PlatformReceiveAddress {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_receive_address().await?.into())
+    }
+
+    /// What sending `amount` to the Platform address `to` takes.
+    #[facade("DashPay::platform_send_quote")]
+    fn platform_send_quote(
+        state,
+        wallet_id: String,
+        to: String,
+        amount: WithdrawAmount,
+    ) -> PlatformSendQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_send_quote(to, amount.into()).await?.into())
+    }
+
+    /// Sends `amount` of the Platform addresses' credits to the Platform
+    /// address `to` (the quote's) under `grant`.
+    #[facade("DashPay::platform_send")]
+    fn platform_send(
+        state,
+        wallet_id: String,
+        to: String,
+        amount: WithdrawAmount,
+        grant: String,
+    ) -> PlatformSendOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_send(to, amount.into(), grant).await?.into())
     }
 
     // Grants, flows and leases.

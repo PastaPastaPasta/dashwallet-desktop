@@ -1,5 +1,6 @@
-//! Platform addresses: the balance, its activity and "Move to Dash wallet"
-//! (m4 §2.12). Credits as decimal strings, duffs as numbers.
+//! Platform addresses: the balance, its activity, "Move to Dash wallet",
+//! the receive address and a send to a Platform address (m4 §2.12).
+//! Credits as decimal strings, duffs as numbers.
 
 use dw_engine::platform as engine;
 use serde::{Deserialize, Serialize};
@@ -70,17 +71,19 @@ impl From<engine::PlatformAddressRow> for PlatformAddressRow {
 }
 
 /// `incoming` and `outgoing`: a balance change a sync pass saw;
-/// `moveToCore`: a "Move to Dash wallet" of this wallet.
+/// `moveToCore`: a "Move to Dash wallet" of this wallet; `send`: a send of
+/// this wallet to a Platform address (`to`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum PlatformActivityKind {
     Incoming,
     Outgoing,
     MoveToCore,
+    Send,
 }
 
 mirror_enum!(engine::PlatformActivityKind => PlatformActivityKind {
-    Incoming, Outgoing, MoveToCore
+    Incoming, Outgoing, MoveToCore, Send
 });
 
 /// `pending`: a move whose outcome is not known yet (never retried);
@@ -217,6 +220,111 @@ impl From<engine::MoveToCoreOutcome> for MoveToCoreOutcome {
             id,
             credits,
             expected_duffs,
+            to,
+            state: state.into(),
+            fee_credits,
+        }
+    }
+}
+
+/// The wallet's Platform receive address (bech32m), shown and put in a QR
+/// code as it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformReceiveAddress {
+    pub address: String,
+    /// Its index in the payment account.
+    pub index: u32,
+}
+
+impl From<engine::PlatformReceiveAddress> for PlatformReceiveAddress {
+    fn from(a: engine::PlatformReceiveAddress) -> Self {
+        let engine::PlatformReceiveAddress { address, index } = a;
+        PlatformReceiveAddress { address, index }
+    }
+}
+
+/// What a send to a Platform address takes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformSendQuote {
+    /// The most the addresses may lose (the grant's credits).
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    /// The transfer's output: what the recipient receives, less the fee
+    /// when `feeFromAmount`.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub amount_credits: u64,
+    /// The fee estimate.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub fee_credits: u64,
+    /// The most fee the send provides for ("up to").
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub max_fee_credits: u64,
+    /// Max: the amount pays the fee.
+    pub fee_from_amount: bool,
+    /// The recipient, normalized: `platformSend` pays it.
+    pub to: String,
+    pub grant: GrantRequest,
+}
+
+impl From<engine::PlatformSendQuote> for PlatformSendQuote {
+    fn from(q: engine::PlatformSendQuote) -> Self {
+        let engine::PlatformSendQuote {
+            credits,
+            amount_credits,
+            fee_credits,
+            max_fee_credits,
+            fee_from_amount,
+            to,
+            grant,
+        } = q;
+        PlatformSendQuote {
+            credits,
+            amount_credits,
+            fee_credits,
+            max_fee_credits,
+            fee_from_amount,
+            to,
+            grant: grant.into(),
+        }
+    }
+}
+
+/// A send's outcome: as a move's. `pending` and `failed` may still
+/// execute, once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformSendOutcome {
+    pub id: String,
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    pub to: Option<String>,
+    pub state: PlatformActivityState,
+    /// Done: the fee taken from the fee source; `null` when the amount
+    /// paid it.
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub fee_credits: Option<u64>,
+}
+
+impl From<engine::PlatformSendOutcome> for PlatformSendOutcome {
+    fn from(o: engine::PlatformSendOutcome) -> Self {
+        let engine::PlatformSendOutcome {
+            id,
+            credits,
+            to,
+            state,
+            fee_credits,
+        } = o;
+        PlatformSendOutcome {
+            id,
+            credits,
             to,
             state: state.into(),
             fee_credits,

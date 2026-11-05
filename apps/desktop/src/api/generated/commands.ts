@@ -116,6 +116,9 @@ import type { PlatformActivity } from "./PlatformActivity";
 import type { PlatformAddressBalance } from "./PlatformAddressBalance";
 import type { PlatformPacing } from "./PlatformPacing";
 import type { PlatformReachability } from "./PlatformReachability";
+import type { PlatformReceiveAddress } from "./PlatformReceiveAddress";
+import type { PlatformSendOutcome } from "./PlatformSendOutcome";
+import type { PlatformSendQuote } from "./PlatformSendQuote";
 import type { PreparedTxHandle } from "./PreparedTxHandle";
 import type { PreparedTxSummary } from "./PreparedTxSummary";
 import type { PrivateContactDetails } from "./PrivateContactDetails";
@@ -1724,6 +1727,28 @@ export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to:
 }
 
 /**
+ * The wallet's Platform receive address: the lowest unused one.
+ */
+export function platformReceiveAddress(walletId: string): Promise<PlatformReceiveAddress> {
+  return invoke<PlatformReceiveAddress>("platform_receive_address", { walletId });
+}
+
+/**
+ * What sending `amount` to the Platform address `to` takes.
+ */
+export function platformSendQuote(walletId: string, to: string, amount: WithdrawAmount): Promise<PlatformSendQuote> {
+  return invoke<PlatformSendQuote>("platform_send_quote", { walletId, to, amount });
+}
+
+/**
+ * Sends `amount` of the Platform addresses' credits to the Platform
+ * address `to` (the quote's) under `grant`.
+ */
+export function platformSend(walletId: string, to: string, amount: WithdrawAmount, grant: string): Promise<PlatformSendOutcome> {
+  return invoke<PlatformSendOutcome>("platform_send", { walletId, to, amount, grant });
+}
+
+/**
  * The caps of the grant `action` needs.
  */
 export function grantRequest(walletId: string, identity: string, action: GrantAction): Promise<GrantRequest> {
@@ -2734,6 +2759,9 @@ export type CommandArgs = {
   platform_addresses_sync: { walletId: string };
   platform_move_to_core_quote: { walletId: string; amount: WithdrawAmount };
   platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; grant: string };
+  platform_receive_address: { walletId: string };
+  platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount };
+  platform_send: { walletId: string; to: string; amount: WithdrawAmount; grant: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
   dispatch_status: { walletId: string; artifact: string };
   resolve_stuck_funding: { walletId: string; step: string; grant: string };
@@ -3027,6 +3055,9 @@ export type CommandResults = {
   platform_addresses_sync: PlatformAddressBalance;
   platform_move_to_core_quote: MoveToCoreQuote;
   platform_move_to_core: MoveToCoreOutcome;
+  platform_receive_address: PlatformReceiveAddress;
+  platform_send_quote: PlatformSendQuote;
+  platform_send: PlatformSendOutcome;
   grant_request: GrantRequest;
   dispatch_status: DispatchStateName | null;
   resolve_stuck_funding: BroadcastOutcome;
@@ -3322,6 +3353,9 @@ export const COMMANDS: Record<CommandName, string> = {
   platform_addresses_sync: "identity",
   platform_move_to_core_quote: "identity",
   platform_move_to_core: "identity",
+  platform_receive_address: "identity",
+  platform_send_quote: "identity",
+  platform_send: "identity",
   grant_request: "identity",
   dispatch_status: "identity",
   resolve_stuck_funding: "identity",
@@ -3646,6 +3680,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.withdrawal_out_of_range",
   "credits.withdrawal_landed",
   "credits.move_pending",
+  "credits.recipient_invalid",
+  "credits.send_out_of_range",
   "shielded.not_active",
   "shielded.not_synced",
   "shielded.invalid_address",
