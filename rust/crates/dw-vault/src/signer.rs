@@ -86,8 +86,10 @@ pub enum SignerScope {
     /// whatever key it signs with, not at the vault's next epoch. The engine
     /// issues it only for a `ShieldDrain` lease, whose life it is. The token
     /// bounds `max_duffs` (not 0, at most the grant's), but the vault signs
-    /// sighashes and cannot see the debit: the engine's drain bounds the
-    /// sum of the lock's inputs by `max_duffs`.
+    /// sighashes and cannot see the debit: whoever builds with the signer
+    /// must refuse, before signing, any input set whose sum passes
+    /// `max_duffs` (the engine's drain does, per signature). An operation
+    /// already under way when the life drops still finishes.
     ///
     /// Threat note: a leaked signer of this scope (one that reached other
     /// code while its life held) signs any digest at these keys. It can
