@@ -1019,22 +1019,7 @@ async fn a_top_up_step_reads_only_its_own_signed_locks_across_a_restart() {
 async fn a_second_fund_does_not_adopt_the_first_funds_lock() {
     const A: &str = "paddr/a/funding";
     const B: &str = "paddr/b/funding";
-    let key = FundingKey {
-        funding_type: AssetLockFundingType::AssetLockAddressTopUp,
-        identity_index: 0,
-        account: 0,
-    };
-    let step = |step: &str| CallStep::Funding {
-        step: step.into(),
-        key,
-    };
-    let lock = |txid: Txid, status| TrackedRow {
-        txid,
-        key,
-        status,
-        trusted: index_trusted(&key, status),
-        ..row(0, 0, status)
-    };
+    let (_, step, lock) = address_fund();
     let (t, _, j, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
 
@@ -1065,6 +1050,141 @@ async fn a_second_fund_does_not_adopt_the_first_funds_lock() {
     src.set_rows(W, vec![lock(a, R::Consumed), lock(b, R::InstantSendLocked)]);
     t2.refresh_funding(W).await;
     assert_eq!(t2.funding_status(W, B), Some(Sent));
+}
+
+/// The address-fund key, its steps and its rows, for the second-fund
+/// cases.
+fn address_fund() -> (
+    FundingKey,
+    impl Fn(&str) -> CallStep,
+    impl Fn(Txid, R) -> TrackedRow,
+) {
+    let key = FundingKey {
+        funding_type: AssetLockFundingType::AssetLockAddressTopUp,
+        identity_index: 0,
+        account: 0,
+    };
+    let step = move |step: &str| CallStep::Funding {
+        step: step.into(),
+        key,
+    };
+    let lock = move |txid: Txid, status| TrackedRow {
+        txid,
+        key,
+        status,
+        trusted: index_trusted(&key, status),
+        ..row(0, 0, status)
+    };
+    (key, step, lock)
+}
+
+/// The first fund ended unknown and its row lands only while the second
+/// runs, after the second's marker: it is still the first's lock, never
+/// the second's, before any restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_first_funds_late_row_is_not_the_second_funds_lock() {
+    const A: &str = "paddr/a/funding";
+    const B: &str = "paddr/b/funding";
+    let (_, step, lock) = address_fund();
+    let (t, _, _, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+
+    let p = l
+        .call_permit_step("funding", quote(10, 0), step(A))
+        .await
+        .unwrap();
+    let a = sign_lost_lock(&t, &p, W);
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, A), Some(MaybeSent));
+
+    let p = l
+        .call_permit_step("funding", quote(10, 0), step(B))
+        .await
+        .unwrap();
+    let b = sign_lost_lock(&t, &p, W);
+    // The first's row lands now.
+    src.set_rows(W, vec![lock(a, R::InstantSendLocked)]);
+    t.refresh_funding(W).await;
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, A), Some(Sent));
+    assert_eq!(t.funding_status(W, B), Some(MaybeSent));
+
+    src.set_rows(W, vec![lock(a, R::Consumed), lock(b, R::Broadcast)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, B), Some(WillBeSent));
+}
+
+/// Two funds both sign before either lock is stored: each step reads the
+/// lock its own call signed (by sighash), whichever row lands first,
+/// across a restart too. The first row of the shared key releases the coin
+/// fence of every running call that released a signature under that key,
+/// both funds' here; that is the fence's release, not attribution.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_funds_signing_before_either_lock_is_stored_keep_their_own() {
+    const A: &str = "paddr/a/funding";
+    const B: &str = "paddr/b/funding";
+    let (key, step, lock) = address_fund();
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+    let (fences_a, fences_b) = (
+        Arc::new(crate::coins::CoinFences::default()),
+        Arc::new(crate::coins::CoinFences::default()),
+    );
+
+    let pa = l
+        .call_permit_step_fenced(
+            "funding",
+            quote(10, 0),
+            step(A),
+            Some(fences_a.acquire(W).await),
+        )
+        .await
+        .unwrap();
+    let pb = l
+        .call_permit_step_fenced(
+            "funding",
+            quote(10, 0),
+            step(B),
+            Some(fences_b.acquire(W).await),
+        )
+        .await
+        .unwrap();
+    let a = sign_lost_lock(&t, &pa, W);
+    let b = sign_lost_lock(&t, &pb, W);
+    pa.note_released();
+    pb.note_released();
+    let waiters = [&fences_a, &fences_b].map(|fences| {
+        let fences = Arc::clone(fences);
+        tokio::spawn(async move { fences.acquire(W).await })
+    });
+
+    // The second's row lands first.
+    t.note_tracked(W, &[(b, key)]);
+    for waiter in waiters {
+        let got = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("released")
+            .unwrap();
+        assert_eq!(got.wallet_id(), W);
+    }
+    assert!(!t.call_holds_fence(W));
+    src.set_rows(W, vec![lock(b, R::Broadcast)]);
+    t.refresh_funding(W).await;
+    assert_eq!(pa.finish(false), FlowOutcome::MaybeSent);
+    assert_eq!(pb.finish(false), FlowOutcome::MaybeSent);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, A), Some(MaybeSent));
+    assert_eq!(t.funding_status(W, B), Some(WillBeSent));
+
+    src.set_rows(W, vec![lock(b, R::Broadcast), lock(a, R::Consumed)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, A), Some(Sent));
+    assert_eq!(t.funding_status(W, B), Some(WillBeSent));
+    let (t2, _) = reload(&j, &src).await;
+    assert_eq!(t2.funding_status(W, A), Some(Sent));
+    assert_eq!(t2.funding_status(W, B), Some(WillBeSent));
 }
 
 /// A funding call's coin fence (E0-04 §2a.6) is released by the first
