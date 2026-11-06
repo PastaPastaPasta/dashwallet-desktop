@@ -589,6 +589,7 @@ impl NetworkSession {
         session.hub.attach_leases(&session.leases);
         session.attach_reconcile();
         session.attach_sweep_resend();
+        session.attach_sweep_news();
         if let Ok(live) = session.live() {
             live.tap.watch_locks(&session.leases);
         }

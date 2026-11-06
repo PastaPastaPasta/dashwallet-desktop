@@ -781,8 +781,7 @@ impl NetworkSession {
                     .filter(|row| row.is_locked())
                     .map(|row| ((row.txid, row.vout), row.reason))
                     .collect();
-                let sweep_outs =
-                    db.settings_with_prefix(&sweep_scope, crate::coinjoin::SWEEP_OUT_PREFIX)?;
+                let sweep_outs = crate::coinjoin::SweepRows::read(db, &sweep_scope)?;
                 Ok((locked, sweep_outs))
             })
             .await?;
@@ -790,11 +789,12 @@ impl NetworkSession {
         self.spends.retain_unspent(&wallet_id, &unspent);
         let reserved = self.spends.snapshot(&wallet_id);
         // A sweep chunk that may be on the network holds its inputs from
-        // every spender, across restarts, until a block or an InstantSend
-        // lock shows it or a block spends one of them otherwise (`coinjoin.rs`
-        // `SweepOut`); a sweep or a resend drops the resolved records.
+        // every spender, across restarts, while it is pending (`coinjoin.rs`
+        // `sweep_out_state`); a sweep or a resend drops the final records.
+        let chainlock = self.hub.best_chainlock().map(|(h, _)| h);
         let swept = (self.hub.history).read(&wallet_id, |txs| {
-            crate::coinjoin::held_inputs(&crate::coinjoin::split_sweep_outs(sweep_outs, txs).0)
+            let pending = crate::coinjoin::split_sweep_outs(sweep_outs, txs, chainlock).0;
+            crate::coinjoin::held_inputs(&pending)
         });
         let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
         // A replay re-credits a coin whose spender is still unconfirmed at
