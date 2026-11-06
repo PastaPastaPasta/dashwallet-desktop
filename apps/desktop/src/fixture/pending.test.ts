@@ -126,6 +126,17 @@ describe("fixture pending commands", () => {
     expect(await backend.platformSend(W, qb.operation, (await grantFor(qb.operation)).id)).toMatchObject({ state: "done" });
   });
 
+  it("revokes the grant a second authorize replaces: it pays nothing, not even a move, and the new one pays the send", async () => {
+    const q = await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("2000000000"), null);
+    const g1 = await grantFor(q.operation);
+    const g2 = await grantFor(q.operation);
+    const move = await backend.platformMoveToCoreQuote(W, credits("1000000000"));
+    expect(BigInt(move.credits) <= BigInt(q.credits)).toBe(true);
+    await expect(backend.platformMoveToCore(W, credits("1000000000"), move.to, g1.id)).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    await expect(backend.platformSend(W, q.operation, g1.id)).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    expect(await backend.platformSend(W, q.operation, g2.id)).toMatchObject({ state: "done" });
+  });
+
   it("refuses a send whose fee source changed since its quote, its grant unused, and the new quote names the new source and pays", async () => {
     const q = await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), null);
     const other = platform().addresses.find((a) => a.address !== q.feeSource)!;

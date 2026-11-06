@@ -372,6 +372,8 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     const op = platformOf(world, "authorize_platform_send").operations[operation];
     if (!op || op.used) throw unknownOperation();
     const [grant] = authorizeSet(world, [{ kind: "platformOp", maxDuffs: 0, maxCredits: op.quote.credits }], walletId, credential);
+    // As the host: the grant an earlier call bound is revoked.
+    if (op.grant) useGrant(world, op.grant);
     op.grant = grant.id;
     return grant;
   },
