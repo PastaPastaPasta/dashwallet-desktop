@@ -259,7 +259,12 @@ pub fn is_asset_lock_credit_key(path: &DerivationPath, network: Network) -> bool
 /// registration, top-up, invitation, Platform address and shielded top-up
 /// subfeatures, and an identity's top-up account `2'/identity'`
 /// ([`is_identity_top_up_account`]). Its private key derives every credit
-/// key below it, so no scope allows `KeyUse::Export` of one either.
+/// key below it, so no scope allows `KeyUse::Export` of one either. Its
+/// ancestors (`m/9'/coin'/5'`, `m/9'/coin'`, `m/9'`) derive them too and are
+/// not refused here, as `m` is not: the only `Export`s are the auto-accept
+/// key (`16'/…`) and the scan's master key (`m`, by design), so no
+/// operation reaches an ancestor, and a new `Export` of one is a new
+/// operation to rule on.
 pub fn is_asset_lock_credit_account(path: &DerivationPath, network: Network) -> bool {
     let p: &[ChildNumber] = path.as_ref();
     if !has_dip9_feature(p, network, FEATURE_PURPOSE_IDENTITIES) {
