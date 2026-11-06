@@ -28,7 +28,14 @@ fn balance_changes_become_rows_once() {
     let mut unseen = BTreeMap::new();
     let held = BTreeSet::new();
     let first = snap(&[("a", 500), ("b", 70)]);
-    let (rows, next) = changes(None, &first, &held, &mut unseen, (10, 1));
+    let (rows, next) = changes(
+        None,
+        &first,
+        &held,
+        &mut unseen,
+        &mut BTreeMap::new(),
+        (10, 1),
+    );
     assert_eq!(
         kinds(&rows),
         vec![
@@ -37,11 +44,25 @@ fn balance_changes_become_rows_once() {
         ]
     );
     assert_eq!(next, first);
-    let (rows, again) = changes(Some(&next), &first, &held, &mut unseen, (11, 2));
+    let (rows, again) = changes(
+        Some(&next),
+        &first,
+        &held,
+        &mut unseen,
+        &mut BTreeMap::new(),
+        (11, 2),
+    );
     assert!(rows.is_empty());
     assert_eq!(again, first);
     let later = snap(&[("a", 650)]);
-    let (rows, next) = changes(Some(&first), &later, &held, &mut unseen, (12, 3));
+    let (rows, next) = changes(
+        Some(&first),
+        &later,
+        &held,
+        &mut unseen,
+        &mut BTreeMap::new(),
+        (12, 3),
+    );
     assert_eq!(
         kinds(&rows),
         vec![
@@ -67,7 +88,14 @@ fn a_moves_own_spend_is_no_outgoing_row() {
     let now = snap(&[("a", 100), ("b", 400)]);
     let held: BTreeSet<String> = ["a".to_owned()].into();
     let mut unseen = BTreeMap::new();
-    let (rows, next) = changes(Some(&before), &now, &held, &mut unseen, (5, 5));
+    let (rows, next) = changes(
+        Some(&before),
+        &now,
+        &held,
+        &mut unseen,
+        &mut BTreeMap::new(),
+        (5, 5),
+    );
     assert!(rows.is_empty());
     assert_eq!(
         next, before,
@@ -75,20 +103,41 @@ fn a_moves_own_spend_is_no_outgoing_row() {
     );
 
     let mut unseen: BTreeMap<String, u64> = [("a".to_owned(), 905)].into();
-    let (rows, next) = changes(Some(&before), &now, &BTreeSet::new(), &mut unseen, (6, 6));
+    let (rows, next) = changes(
+        Some(&before),
+        &now,
+        &BTreeSet::new(),
+        &mut unseen,
+        &mut BTreeMap::new(),
+        (6, 6),
+    );
     assert!(rows.is_empty(), "{rows:?}");
     assert_eq!(next, now);
     assert_eq!(unseen["a"], 0, "spent once read");
 
     let mut unseen: BTreeMap<String, u64> = [("a".to_owned(), 800)].into();
-    let (rows, _) = changes(Some(&before), &now, &BTreeSet::new(), &mut unseen, (7, 7));
+    let (rows, _) = changes(
+        Some(&before),
+        &now,
+        &BTreeSet::new(),
+        &mut unseen,
+        &mut BTreeMap::new(),
+        (7, 7),
+    );
     assert_eq!(
         kinds(&rows),
         vec![(PlatformActivityKind::Outgoing, "a".into(), 100)]
     );
     // Not read yet (the balance did not move): kept for the next read.
     let mut unseen: BTreeMap<String, u64> = [("b".to_owned(), 50)].into();
-    let (_, _) = changes(Some(&before), &now, &BTreeSet::new(), &mut unseen, (8, 8));
+    let (_, _) = changes(
+        Some(&before),
+        &now,
+        &BTreeSet::new(),
+        &mut unseen,
+        &mut BTreeMap::new(),
+        (8, 8),
+    );
     assert_eq!(unseen["b"], 50);
 }
 
@@ -2587,4 +2636,87 @@ fn a_0_1_record_reloads_and_settles() {
         (old.state, old.may_land),
         (PlatformActivityState::Failed, false)
     );
+}
+
+/// 0.2 R2: an "Add from Dash wallet" is its own `from_core` row, never an
+/// `incoming` one. While its apply runs a read does not compare its
+/// address; once the apply is proved, the address's first rise up to what
+/// the fund added is the fund's, and only a rise beyond it, or a later one,
+/// is incoming.
+#[test]
+fn the_rise_after_an_applied_fund_is_no_incoming_row() {
+    let w = World::new();
+    let (id, s) = (w.f.wallet, Arc::clone(&w.f.s));
+    let to = bech32m(&w.address(0), Network::Testnet);
+    w.net.fund(w.address(0), DASH);
+    assert_eq!(
+        kinds(&w.activity()),
+        [(PlatformActivityKind::Incoming, to.clone(), DASH)]
+    );
+    let txid = "ab".repeat(32);
+    let (t, a) = (txid.clone(), to.clone());
+    let s2 = Arc::clone(&s);
+    (w.f.engine)
+        .block_on(async move { record_fund(&s2, id, (t, 1_000_000), a, 999).await })
+        .unwrap();
+    // The apply executes on Platform while a read runs: not compared.
+    let hold = FundHold::new(id, to.clone());
+    w.net.fund(w.address(0), 2 * DASH);
+    let during = w.activity();
+    assert_eq!(during.len(), 2, "{during:?}");
+    let fund = find(&during, PlatformActivityKind::FromCore);
+    assert_eq!(
+        (fund.state, fund.credits, fund.address.as_deref()),
+        (PlatformActivityState::Pending, 999, Some(to.as_str()))
+    );
+    let (t, a) = (txid.clone(), to.clone());
+    (w.f.engine)
+        .block_on(async move { fund_applied(&s, id, (t, 1_000_000), a, 2 * DASH).await })
+        .unwrap();
+    drop(hold);
+    let after = w.activity();
+    let incoming: Vec<_> = (after.iter())
+        .filter(|r| r.kind == PlatformActivityKind::Incoming)
+        .collect();
+    assert_eq!(incoming.len(), 1, "only the first funding: {after:?}");
+    let fund = find(&after, PlatformActivityKind::FromCore);
+    assert_eq!(
+        (fund.id.as_str(), fund.state, fund.credits),
+        (
+            format!("fund-{txid}").as_str(),
+            PlatformActivityState::Done,
+            2 * DASH
+        )
+    );
+    // Read once: the next rise of the address is someone's payment.
+    w.net.fund(w.address(0), 3 * DASH);
+    let later = w.activity();
+    let rows: Vec<_> = (later.iter())
+        .filter(|r| r.kind == PlatformActivityKind::Incoming)
+        .map(|r| r.credits)
+        .collect();
+    assert_eq!(rows.len(), 2, "{later:?}");
+    assert!(rows.contains(&(3 * DASH)));
+}
+
+/// What exceeds an applied fund's credits in the address's first rise is
+/// incoming.
+#[test]
+fn only_a_rise_beyond_an_applied_fund_is_incoming() {
+    let before = snap(&[("a", 100)]);
+    let now = snap(&[("a", 1_150)]);
+    let mut arriving = BTreeMap::from([("a".to_owned(), 1_000)]);
+    let (rows, _) = changes(
+        Some(&before),
+        &now,
+        &BTreeSet::new(),
+        &mut BTreeMap::new(),
+        &mut arriving,
+        (5, 5),
+    );
+    assert_eq!(
+        kinds(&rows),
+        [(PlatformActivityKind::Incoming, "a".into(), 50)]
+    );
+    assert_eq!(arriving["a"], 0, "spent");
 }

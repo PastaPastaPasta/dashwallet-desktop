@@ -363,7 +363,7 @@ async fn authority(
 /// What holds a funding back, as the code the host sees: SPV behind,
 /// the identities not unlocked yet, or not known (the bring-up running or
 /// not answered; the call has it run again).
-fn held(wait: RegistrationWait) -> PlatformError {
+pub(super) fn held(wait: RegistrationWait) -> PlatformError {
     match wait {
         RegistrationWait::Unlock => PlatformError::SignerUnavailable,
         RegistrationWait::Network | RegistrationWait::Startup => PlatformError::Unavailable,

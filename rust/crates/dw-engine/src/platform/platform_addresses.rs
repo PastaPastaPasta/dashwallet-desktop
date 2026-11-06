@@ -1,8 +1,9 @@
 //! Platform addresses (release 0.1, lane E2; 0.2 X1b; m4 §2.12): the
 //! balance of the wallet's DIP-17 payment addresses as the library's sync
 //! loop leaves it, their activity, "Move to Dash wallet", which withdraws it
-//! to the wallet's own Core receive address, the receive address (0.2) and
-//! a send to another Platform address (0.2).
+//! to the wallet's own Core receive address, the receive address (0.2), a
+//! send to another Platform address (0.2) and "Add from Dash wallet", an
+//! asset lock of the Core balance applied to the receive address (0.2).
 
 use std::sync::Arc;
 
@@ -12,6 +13,7 @@ use super::credits::WithdrawAmount;
 use super::dashpay::DashPay;
 use super::errors::{CreditsError, PlatformError};
 use super::flows::GrantRequest;
+use super::platform_fund;
 use super::platform_moves;
 
 /// The wallet's Platform addresses (payment account 0), as the last sync
@@ -58,6 +60,10 @@ pub enum PlatformActivityKind {
     MoveToCore,
     /// A send of this wallet to a Platform address (`to`).
     Send,
+    /// "Add from Dash wallet": an asset lock of the Core balance this
+    /// wallet applied to its Platform address (`address`); `Pending` until
+    /// a proved apply, then `Done` with the credits it added.
+    FromCore,
 }
 
 /// Where an activity row stands.
@@ -272,6 +278,72 @@ pub struct PlatformSendOutcome {
     pub estimated: bool,
 }
 
+/// What "Add from Dash wallet" of `duffs` costs and adds, at the network's
+/// protocol version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformFundQuote {
+    /// The asset lock's value.
+    pub duffs: u64,
+    /// The asset lock transaction's fee bound.
+    pub fee_duffs: u64,
+    /// `duffs + fee_duffs`: what leaves the Core balance at most.
+    pub total_duffs: u64,
+    /// Platform's fee estimate for the apply (dpp's minimum fee for one
+    /// output), taken from the lock's credits. Platform takes the fee it
+    /// meters.
+    pub fee_credits: u64,
+    /// About what the Platform address gains: the lock's credits less
+    /// `fee_credits`.
+    pub credits: u64,
+    /// The wallet's Platform receive address the apply pays (bech32m).
+    pub to: String,
+    /// What to authorize: `total_duffs` duffs, no credits.
+    pub grant: GrantRequest,
+}
+
+/// Where an "Add from Dash wallet" stands when the call returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlatformFundState {
+    /// Platform took the lock: `credits` are on the Platform address.
+    Applied { credits: u64 },
+    /// The lock is out with no proof yet; `resume_platform_fund` applies it.
+    ProofWaiting,
+    /// The lock has its proof and this apply was refused before its
+    /// transition was signed, with `error` (a code): nothing of this attempt
+    /// reached Platform. `resume_platform_fund` tries again.
+    NotApplied { error: String },
+    /// The apply may have executed, unproved: Platform answered that the
+    /// lock is already consumed (any node can say it), or the apply failed
+    /// after its transition was signed. The lock stays pending
+    /// (`consumption_unknown`, "Checking") until a proved apply; it blocks
+    /// no new fund.
+    ConsumptionUnknown,
+}
+
+/// An "Add from Dash wallet" outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformFundOutcome {
+    /// The asset lock's txid (hex, display order).
+    pub txid: String,
+    pub state: PlatformFundState,
+}
+
+/// An "Add from Dash wallet" asset lock of this install not applied yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingPlatformFund {
+    /// The asset lock's txid (hex, display order).
+    pub txid: String,
+    pub duffs: u64,
+    /// The lock has its proof: `resume_platform_fund` applies it at once.
+    pub proved: bool,
+    /// The lock may already be applied ("Checking"): Platform said so
+    /// without proof, or an apply failed after signing. Its credits may
+    /// already be on the Platform address. Only a proved apply clears it; it
+    /// blocks no new fund.
+    pub consumption_unknown: bool,
+}
+
 impl DashPay {
     /// The Platform addresses' balance as the sync loop left it.
     pub async fn platform_addresses(&self) -> Result<PlatformAddressBalance, CreditsError> {
@@ -430,6 +502,68 @@ impl DashPay {
             };
             platform_moves::send(&net, &session, &wallet, wallet_id, &operation, &grant).await
         })
+        .await
+    }
+
+    /// What adding `duffs` of the Core balance to the wallet's Platform
+    /// receive address costs and adds.
+    pub async fn platform_fund_quote(&self, duffs: u64) -> Result<PlatformFundQuote, CreditsError> {
+        let wallet = self.wallet_id;
+        platform_fund::on_lib(&self.session, wallet, false, move |session, lib| async move {
+            platform_fund::quote(&session, wallet, &lib, duffs).await
+        })
+        .await
+    }
+
+    /// "Add from Dash wallet": an asset lock of `duffs` from the Core balance
+    /// under a `PlatformAddressFund` lease begun from `grant`, then Platform's
+    /// AddressFundingFromAssetLock of it to the wallet's Platform receive
+    /// address.
+    pub async fn platform_fund(
+        &self,
+        duffs: u64,
+        grant: String,
+    ) -> Result<PlatformFundOutcome, CreditsError> {
+        let wallet = self.wallet_id;
+        platform_fund::on_lib(
+            &self.session,
+            wallet,
+            true,
+            move |session, lib| async move {
+                platform_fund::fund(&session, wallet, &lib, duffs, &grant).await
+            },
+        )
+        .await
+    }
+
+    /// This install's "Add from Dash wallet" locks not applied yet.
+    pub async fn pending_platform_funds(&self) -> Result<Vec<PendingPlatformFund>, CreditsError> {
+        let wallet = self.wallet_id;
+        platform_fund::on_lib(
+            &self.session,
+            wallet,
+            false,
+            move |session, lib| async move { platform_fund::pending(&session, wallet, &lib).await },
+        )
+        .await
+    }
+
+    /// Applies the pending fund lock `txid` again ("Pending — finish",
+    /// "Check again"): the same outpoint, never a new lock.
+    pub async fn resume_platform_fund(
+        &self,
+        txid: String,
+        grant: String,
+    ) -> Result<PlatformFundOutcome, CreditsError> {
+        let wallet = self.wallet_id;
+        platform_fund::on_lib(
+            &self.session,
+            wallet,
+            true,
+            move |session, lib| async move {
+                platform_fund::resume(&session, wallet, &lib, &txid, &grant).await
+            },
+        )
         .await
     }
 }

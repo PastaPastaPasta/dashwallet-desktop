@@ -124,10 +124,6 @@ pub(crate) enum ApplyReply {
 /// `AssetLockAlreadyConsumed` naming `outpoint` is `AlreadyConsumed`;
 /// one naming another outpoint, a timeout or any other failure is
 /// `Unknown` after a signature and the refusal before one.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "type 4's kind (slice 5) uses it")
-)]
 pub(crate) fn reply_from(
     result: Result<(), PlatformWalletError>,
     outpoint: OutPoint,

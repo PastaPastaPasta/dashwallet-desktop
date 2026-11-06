@@ -21,7 +21,11 @@
 //! one durable transaction. A move's own spend is no `outgoing` row: while
 //! it is pending its inputs are not compared, and once it is done the first
 //! fall of each input, up to what the move took from it (and the fee, on
-//! the fee source), is the move's.
+//! the fee source), is the move's. An "Add from Dash wallet" (0.2,
+//! `platform_fund.rs`) is no `incoming` row either: while its apply runs
+//! its address is not compared, and once the apply is proved the first rise
+//! of the address, up to what the fund added, is the fund's (its own
+//! `from_core` row).
 //!
 //! **Moves.** A move withdraws to the quote's address, one of the wallet's
 //! Core receiving addresses. Its inputs, the nonces it signs at (proved + 1)
@@ -115,6 +119,7 @@ const LEGACY_SNAPSHOT_KEY: &str = "platform_address/snapshot";
 const BASELINE_KEY: &str = "platform_address/baseline";
 const ROW_PREFIX: &str = "platform_address/row/";
 const MOVE_PREFIX: &str = "platform_address/move/";
+const FUND_PREFIX: &str = "platform_address/fund/";
 
 /// What a move pays: the wallet's Core address, or a Platform address.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,6 +248,154 @@ impl Seen {
             .filter_map(|(a, i)| i.filter(|(_, c)| *c > 0).map(|(_, c)| (a.clone(), c)))
             .collect()
     }
+}
+
+/// One "Add from Dash wallet" of this wallet (0.2, `platform_fund.rs`): its
+/// lock and the address its apply pays; recorded once the lock is out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FundRecord {
+    pub(crate) txid: String,
+    pub(crate) duffs: u64,
+    /// bech32m.
+    pub(crate) address: String,
+    /// `Pending` until a proved apply, then `Done`.
+    pub(crate) state: PlatformActivityState,
+    /// Pending: about what it adds (the lock's credits less the fee
+    /// estimate); done: what the apply added, as its proof shows it.
+    pub(crate) credits: u64,
+    /// Once done: the rise of the address still to be read as the fund's
+    /// (module doc), 0 once read.
+    #[serde(default)]
+    pub(crate) unseen: u64,
+    pub(crate) at: u64,
+}
+
+impl FundRecord {
+    fn activity(&self) -> PlatformActivity {
+        PlatformActivity {
+            id: format!("fund-{}", self.txid),
+            kind: PlatformActivityKind::FromCore,
+            state: self.state,
+            credits: self.credits,
+            address: Some(self.address.clone()),
+            to: None,
+            expected_duffs: None,
+            fee_credits: None,
+            at: self.at,
+            may_land: false,
+            estimated: false,
+        }
+    }
+}
+
+/// The addresses whose fund apply runs now, per wallet, with how many runs.
+static FUND_HOLDS: LazyLock<Mutex<HashMap<WalletId, BTreeMap<String, usize>>>> =
+    LazyLock::new(Mutex::default);
+
+/// While it lives, the reads of the wallet's activity do not compare
+/// `address` (module doc): its rise is the fund's once the apply is proved.
+pub(crate) struct FundHold {
+    wallet: WalletId,
+    address: String,
+}
+
+impl FundHold {
+    pub(crate) fn new(wallet: WalletId, address: String) -> Self {
+        let mut holds = FUND_HOLDS.lock().unwrap_or_else(PoisonError::into_inner);
+        *(holds.entry(wallet).or_default())
+            .entry(address.clone())
+            .or_default() += 1;
+        Self { wallet, address }
+    }
+}
+
+impl Drop for FundHold {
+    fn drop(&mut self) {
+        let mut holds = FUND_HOLDS.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(of) = holds.get_mut(&self.wallet) {
+            if let Some(n) = of.get_mut(&self.address) {
+                *n -= 1;
+                if *n == 0 {
+                    of.remove(&self.address);
+                }
+            }
+            if of.is_empty() {
+                holds.remove(&self.wallet);
+            }
+        }
+    }
+}
+
+fn fund_holds(wallet: WalletId) -> BTreeSet<String> {
+    let holds = FUND_HOLDS.lock().unwrap_or_else(PoisonError::into_inner);
+    holds
+        .get(&wallet)
+        .map_or_else(BTreeSet::new, |of| of.keys().cloned().collect())
+}
+
+/// Records fund `txid`'s lock out, paying `address`, about `credits` to
+/// add; a record of it already there stands.
+pub(crate) async fn record_fund(
+    session: &NetworkSession,
+    wallet: WalletId,
+    (txid, duffs): (String, u64),
+    address: String,
+    credits: u64,
+) -> Result<(), PlatformError> {
+    let lock = wallet_lock(wallet);
+    let _one = lock.lock().await;
+    let store = Store::of(session, wallet)?;
+    if store.fund(&txid).await?.is_some() {
+        return Ok(());
+    }
+    let record = FundRecord {
+        txid,
+        duffs,
+        address,
+        state: PlatformActivityState::Pending,
+        credits,
+        unseen: 0,
+        at: unix_now(),
+    };
+    store.commit(vec![fund_write(&record)?]).await
+}
+
+/// The address fund `txid`'s record names, if it has one.
+pub(crate) async fn fund_address(
+    session: &NetworkSession,
+    wallet: WalletId,
+    txid: &str,
+) -> Result<Option<String>, PlatformError> {
+    let store = Store::of(session, wallet)?;
+    Ok(store.fund(txid).await?.map(|r| r.address))
+}
+
+/// Records fund `txid` applied, `credited` added to `address`; once.
+pub(crate) async fn fund_applied(
+    session: &NetworkSession,
+    wallet: WalletId,
+    (txid, duffs): (String, u64),
+    address: String,
+    credited: u64,
+) -> Result<(), PlatformError> {
+    let lock = wallet_lock(wallet);
+    let _one = lock.lock().await;
+    let store = Store::of(session, wallet)?;
+    let at = match store.fund(&txid).await? {
+        Some(r) if r.state == PlatformActivityState::Done => return Ok(()),
+        Some(r) => r.at,
+        None => unix_now(),
+    };
+    let record = FundRecord {
+        txid,
+        duffs,
+        address,
+        state: PlatformActivityState::Done,
+        credits: credited,
+        unseen: credited,
+        at,
+    };
+    store.commit(vec![fund_write(&record)?]).await
 }
 
 impl MoveRecord {
@@ -517,15 +670,17 @@ pub(crate) struct Baseline {
 }
 
 /// The change rows from `before` (`None`: no read yet) to `now`, read at
-/// `height`, and the snapshot to store. `held` (a pending move's inputs) is
-/// not compared and keeps its stored value; `unseen` (address → a done
-/// move's fall still to read) absorbs the first fall of its address and is
-/// then spent.
+/// `height`, and the snapshot to store. `held` (a pending move's inputs, an
+/// address a fund's apply pays while it runs) is not compared and keeps its
+/// stored value; `unseen` (address → a done move's fall still to read)
+/// absorbs the first fall of its address and is then spent, and `arriving`
+/// (address → an applied fund's credits still to read) the first rise.
 pub(crate) fn changes(
     before: Option<&Snapshot>,
     now: &Snapshot,
     held: &BTreeSet<String>,
     unseen: &mut BTreeMap<String, u64>,
+    arriving: &mut BTreeMap<String, u64>,
     (at, height): (u64, u64),
 ) -> (Vec<PlatformActivity>, Snapshot) {
     let empty = Snapshot::new();
@@ -561,7 +716,11 @@ pub(crate) fn changes(
             estimated: false,
         };
         if is > was {
-            rows.push(row(PlatformActivityKind::Incoming, is - was));
+            let rose = is - was;
+            let ours = arriving.get_mut(address).map_or(0, std::mem::take);
+            if rose > ours {
+                rows.push(row(PlatformActivityKind::Incoming, rose - ours));
+            }
         } else if was > is {
             let fell = was - is;
             let ours = unseen.get_mut(address).map_or(0, std::mem::take);
@@ -1178,6 +1337,20 @@ impl Store {
         )
     }
 
+    async fn funds(&self) -> Result<Vec<FundRecord>, PlatformError> {
+        Ok((self.all(FUND_PREFIX).await?.into_iter())
+            .map(|(_, f)| f)
+            .collect())
+    }
+
+    async fn fund(&self, txid: &str) -> Result<Option<FundRecord>, PlatformError> {
+        let key = format!("{FUND_PREFIX}{txid}");
+        let value = self
+            .blocking(move |db, scope| db.setting(scope, &key))
+            .await?;
+        Ok(value.and_then(|v| serde_json::from_str(&v).ok()))
+    }
+
     /// The recorded moves, oldest first. A `pending` one may have been
     /// signed and may execute, whatever the process got to record before
     /// it stopped (module doc, Moves): it holds its inputs' nonces.
@@ -1205,11 +1378,15 @@ fn move_write(record: &MoveRecord) -> Result<(String, Option<String>), PlatformE
     Ok((format!("{MOVE_PREFIX}{}", record.id), Some(json(record)?)))
 }
 
-fn bech32m(address: &PlatformAddress, network: Network) -> String {
+fn fund_write(record: &FundRecord) -> Result<(String, Option<String>), PlatformError> {
+    Ok((format!("{FUND_PREFIX}{}", record.txid), Some(json(record)?)))
+}
+
+pub(super) fn bech32m(address: &PlatformAddress, network: Network) -> String {
     address.to_bech32m_string(network)
 }
 
-fn parse(address: &str) -> Option<PlatformAddress> {
+pub(super) fn parse(address: &str) -> Option<PlatformAddress> {
     PlatformAddress::from_bech32m_string(address).ok()
 }
 
@@ -1329,13 +1506,16 @@ pub(crate) async fn sync(
 }
 
 /// Settles `moves` against `seen` and records the activity it shows, all
-/// in one durable write (module doc). Whether anything changed.
+/// in one durable write (module doc), the addresses of `held_funds` not
+/// compared. Whether anything changed.
 async fn observe(
     store: &Store,
-    moves: &mut [MoveRecord],
+    (moves, funds): (&mut [MoveRecord], &mut [FundRecord]),
+    held_funds: BTreeSet<String>,
     seen: &Seen,
 ) -> Result<bool, PlatformError> {
     let before = moves.to_vec();
+    let funds_before = funds.to_vec();
     settle(moves, seen);
     let baseline = store.baseline().await?;
     let mut writes = Vec::new();
@@ -1345,22 +1525,34 @@ async fn observe(
         let held: BTreeSet<String> = (moves.iter())
             .filter(|m| m.state == PlatformActivityState::Pending)
             .flat_map(|m| m.inputs.iter().map(|i| i.address.clone()))
+            .chain(held_funds)
             .collect();
         let mut unseen: BTreeMap<String, u64> = BTreeMap::new();
         for input in moves.iter().flat_map(|m| &m.inputs) {
             *unseen.entry(input.address.clone()).or_default() += input.unseen;
+        }
+        let mut arriving: BTreeMap<String, u64> = BTreeMap::new();
+        for fund in funds.iter() {
+            *arriving.entry(fund.address.clone()).or_default() += fund.unseen;
         }
         let (found, next) = changes(
             baseline.as_ref().map(|b| &b.balances),
             &seen.balances(),
             &held,
             &mut unseen,
+            &mut arriving,
             (unix_now(), seen.height),
         );
-        // A done move's fall, once read, is spent.
+        // A done move's fall and an applied fund's rise, once read, are
+        // spent.
         for input in moves.iter_mut().flat_map(|m| &mut m.inputs) {
             if unseen.get(&input.address) == Some(&0) {
                 input.unseen = 0;
+            }
+        }
+        for fund in funds.iter_mut() {
+            if arriving.get(&fund.address) == Some(&0) {
+                fund.unseen = 0;
             }
         }
         for row in &found {
@@ -1383,6 +1575,11 @@ async fn observe(
         if m != was {
             writes.push(move_write(m)?);
             changed = true;
+        }
+    }
+    for (f, was) in funds.iter().zip(&funds_before) {
+        if f != was {
+            writes.push(fund_write(f)?);
         }
     }
     store.commit(writes).await?;
@@ -1427,9 +1624,11 @@ pub(crate) async fn activity(
     let _one = lock.lock().await;
     let store = Store::of(session, wallet_id)?;
     let mut moves = store.moves().await?;
+    let mut funds = store.funds().await?;
     let addresses = covered(&pool(wallet).await?, &moves);
+    let held = fund_holds(wallet_id);
     let changed = match read(session, net, addresses, false).await {
-        Ok(seen) => observe(&store, &mut moves, &seen).await?,
+        Ok(seen) => observe(&store, (&mut moves, &mut funds), held, &seen).await?,
         Err(e) => {
             // Nothing is known: what is stored stands.
             tracing::info!("reading the Platform addresses for their activity: {e}");
@@ -1450,6 +1649,7 @@ pub(crate) async fn activity(
     }
     let mut out: Vec<PlatformActivity> = (stored.into_iter().map(|(_, r)| r))
         .chain(moves.iter().map(MoveRecord::activity))
+        .chain(funds.iter().map(FundRecord::activity))
         .collect();
     out.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| b.id.cmp(&a.id)));
     Ok(out)
@@ -1645,7 +1845,7 @@ pub(crate) fn recipient(
 /// Platform sends need address funds transitions
 /// (`ADDRESS_FUNDS_INITIAL_PROTOCOL_VERSION`): below it a send is
 /// `platform.feature_off{feature: "platform_addresses"}`.
-fn sends_active(version: &PlatformVersion) -> Result<(), PlatformError> {
+pub(super) fn sends_active(version: &PlatformVersion) -> Result<(), PlatformError> {
     use dpp::version::feature_initial_protocol_versions::ADDRESS_FUNDS_INITIAL_PROTOCOL_VERSION;
     if version.protocol_version < ADDRESS_FUNDS_INITIAL_PROTOCOL_VERSION {
         return Err(PlatformError::FeatureOff {
@@ -1894,7 +2094,9 @@ async fn run(
     let pool = pool(wallet).await?;
     // Rule 5 and the one read every decision below rests on.
     let seen = read(session, net, covered(&pool, &moves), true).await?;
-    if observe(&store, &mut moves, &seen).await? {
+    let mut funds = store.funds().await?;
+    let held = fund_holds(wallet_id);
+    if observe(&store, (&mut moves, &mut funds), held, &seen).await? {
         session
             .hub
             .pump
