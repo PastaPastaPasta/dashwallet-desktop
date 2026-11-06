@@ -19,6 +19,7 @@ import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
 import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
 import { authorizeSet, checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
+import { newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
 import { newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
 import { FIXTURE_NOW } from "./wallet";
 
@@ -86,6 +87,8 @@ export interface PendingWorld {
   shielded: ShieldedWorld | null;
   /** The Platform addresses; `null`: the commands are absent. */
   platform: PlatformWorld | null;
+  /** The unfinished transfers (fixture/recovery.ts). */
+  recovery: RecoveryWorld;
 }
 
 /** Someone else's Platform address (P2PKH) the fixture's sends can pay. */
@@ -118,6 +121,7 @@ export const newPendingWorld = (): PendingWorld => ({
   networkChoice: { chosen: "testnet", saved: true },
   shielded: newShieldedWorld(),
   platform: newPlatformWorld(),
+  recovery: newRecoveryWorld(),
 });
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
@@ -326,6 +330,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     return networkView(world);
   },
   ...SHIELDED_HANDLERS,
+  ...RECOVERY_HANDLERS,
   platform_addresses: ({ walletId }: { walletId: string }, { world }: Ctx) => {
     wallet(world, walletId);
     return balance(platformOf(world, "platform_addresses"));

@@ -46,6 +46,8 @@ export const keys = {
   shieldedStatus: (walletId: string) => ["dashpay", "shielded", "status", walletId] as const,
   shieldedHistory: (walletId: string) => ["dashpay", "shielded", "history", walletId] as const,
   shieldedAddress: (walletId: string) => ["dashpay", "shielded", "address", walletId] as const,
+  unfinishedTransfers: (walletId: string) => ["dashpay", "unfinished", walletId] as const,
+  unfinishedTransfersAll: ["dashpay", "unfinished"] as const,
   shieldedQuote: (walletId: string, request: string) => ["shieldedQuote", walletId, request] as const,
   // Under "dashpay": a `platform{domain:"platformAddresses"}` event is a domain events.ts does not
   // name, which it answers by invalidating everything under that prefix.
@@ -87,6 +89,10 @@ export const keys = {
   coinjoinSettings: ["coinjoin", "settings"] as const,
   /** Every governance read (the `governance_*` commands, BL-232): a `governance` event makes them all stale. */
   governanceAll: ["governance"] as const,
+  /** Prices (MP-01): `ratesStatus` and `ratesCurrencies`; a `rates` event makes them stale. */
+  ratesAll: ["rates"] as const,
+  ratesStatus: ["rates", "status"] as const,
+  ratesCurrencies: ["rates", "currencies"] as const,
   /** Every DashPay read below: a `platform` or `dashPayNews` signal makes them all stale. */
   dashpayAll: ["dashpay"] as const,
   /** Every wallet's DashPay status: sync moves `noIdentity`'s `waitingForSync` (BL-153 D9). */
@@ -190,6 +196,12 @@ export function usePlatformSendQuote(walletId: string, to: string, amount: Withd
 export function useShieldedStatus(walletId: string) {
   const b = useBackend();
   return useQuery({ queryKey: keys.shieldedStatus(walletId), queryFn: () => b.shieldedStatus(walletId), retry: false });
+}
+
+/** The Core → Shielded locks not known to be applied; `null` while dw-app has no such command. */
+export function useUnfinishedTransfers(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.unfinishedTransfers(walletId), queryFn: () => b.unfinishedTransfers(walletId), retry: false });
 }
 
 /** The shielded activity rows, pending first; `null` while dw-app has no such command. */

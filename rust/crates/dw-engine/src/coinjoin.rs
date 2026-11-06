@@ -2146,6 +2146,27 @@ impl NetworkSession {
 
     // ---- recovery and moving mixed coins ---------------------------------
 
+    /// The recovery scan's raise: wallet `wallet_id`'s lookahead to
+    /// [`RECOVERY_LOOKAHEAD`], re-placing the coins the load left outside
+    /// their account (the rescan with the larger gap would credit them
+    /// again), then the hub reads the wallet, even on an error: a partial
+    /// raise may already have moved coins. The lookahead is stored, for
+    /// later sessions as a restore's is, only once all of it succeeded.
+    pub(crate) async fn raise_for_recovery(
+        &self,
+        manager: &crate::session::Manager,
+        wallet_id: WalletId,
+    ) -> Result<(), EngineError> {
+        let raised = (self.raise_lookahead(manager, wallet_id, RECOVERY_LOOKAHEAD)).await;
+        self.refresh_wallet_state(manager, wallet_id).await;
+        if let Err(e) = &raised {
+            tracing::warn!(%wallet_id, error = %e, "the recovery scan could not raise the lookahead");
+        }
+        raised?;
+        self.store_lookahead(wallet_id, RECOVERY_LOOKAHEAD).await;
+        Ok(())
+    }
+
     /// IOS-057 recovery scan: raises the CoinJoin account's and the BIP44
     /// chains' lookahead to 1000 and rescans from the wallet's birth.
     pub async fn coinjoin_recovery_scan(
@@ -2165,10 +2186,7 @@ impl NetworkSession {
                         "another rescan is running".into(),
                     ));
                 }
-                let wallet = this.wallet(&wallet_id).await?;
-                crate::keys::apply_lookahead(&wallet, RECOVERY_LOOKAHEAD).await?;
-                // Kept for later sessions, as a restore's lookahead is.
-                this.store_lookahead(wallet_id, RECOVERY_LOOKAHEAD).await;
+                this.raise_for_recovery(&manager, wallet_id).await?;
                 let birth = this
                     .hub
                     .wallet_state(&wallet_id)

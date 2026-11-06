@@ -48,6 +48,7 @@ import type { CostTable } from "./CostTable";
 import type { CreatedWallet } from "./CreatedWallet";
 import type { CredentialSpec } from "./CredentialSpec";
 import type { CsvUnitName } from "./CsvUnitName";
+import type { CurrencyRate } from "./CurrencyRate";
 import type { CurrentVoteRow } from "./CurrentVoteRow";
 import type { DashPayEventPage } from "./DashPayEventPage";
 import type { DashPayProfile } from "./DashPayProfile";
@@ -86,6 +87,8 @@ import type { KeyMaterialInput } from "./KeyMaterialInput";
 import type { LaunchInfo } from "./LaunchInfo";
 import type { Lease } from "./Lease";
 import type { LinkRoute } from "./LinkRoute";
+import type { LockFinish } from "./LockFinish";
+import type { LockKind } from "./LockKind";
 import type { LockOutcome } from "./LockOutcome";
 import type { LockResolutionName } from "./LockResolutionName";
 import type { LockStatus } from "./LockStatus";
@@ -133,6 +136,8 @@ import type { PublishStateName } from "./PublishStateName";
 import type { QrMatrix } from "./QrMatrix";
 import type { QuickUnlockPolicy } from "./QuickUnlockPolicy";
 import type { QuorumSource } from "./QuorumSource";
+import type { RatesSettings } from "./RatesSettings";
+import type { RatesView } from "./RatesView";
 import type { ReceiveRequest } from "./ReceiveRequest";
 import type { RecentNotice } from "./RecentNotice";
 import type { Recipient } from "./Recipient";
@@ -170,6 +175,7 @@ import type { TxEstimate } from "./TxEstimate";
 import type { TxNoticeRow } from "./TxNoticeRow";
 import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
+import type { UnfinishedTransfers } from "./UnfinishedTransfers";
 import type { UriParse } from "./UriParse";
 import type { UserHit } from "./UserHit";
 import type { UsernameCheck } from "./UsernameCheck";
@@ -1976,6 +1982,22 @@ export function shieldedHistory(walletId: string, offset: number, limit: number)
 }
 
 /**
+ * The wallet's funding locks whose Platform side is not known to have
+ * happened (its own and those a restore read back).
+ */
+export function unfinishedTransfers(walletId: string): Promise<UnfinishedTransfers> {
+  return invoke<UnfinishedTransfers>("unfinished_transfers", { walletId });
+}
+
+/**
+ * Finishes the unfinished transfer of `kind` at `txid`:`vout` under
+ * `grant`, on the same lock; only a proved apply finishes it.
+ */
+export function finishTransfer(walletId: string, kind: LockKind, txid: string, vout: number, grant: string): Promise<LockFinish> {
+  return invoke<LockFinish>("finish_transfer", { walletId, kind, txid, vout, grant });
+}
+
+/**
  * The contacts of `identity` in the sections `query` selects.
  */
 export function dashpayContacts(walletId: string, identity: string, query: ContactQueryArgs): Promise<ContactList> {
@@ -2530,6 +2552,37 @@ export function governanceSubmitProposal(walletId: string, hash: string): Promis
 }
 
 /**
+ * The settings and the chosen currency's price and state now.
+ */
+export function ratesStatus(): Promise<RatesView> {
+  return invoke<RatesView>("rates_status");
+}
+
+/**
+ * Every currency with a price that has not expired, for the picker;
+ * empty while prices are off.
+ */
+export function ratesCurrencies(): Promise<Array<CurrencyRate>> {
+  return invoke<Array<CurrencyRate>>("rates_currencies");
+}
+
+/**
+ * Saves and applies the settings: off stops every request at once.
+ * `rates.invalid_currency` for a code that is not three capital letters.
+ */
+export function setRatesSettings(settings: RatesSettings): Promise<RatesView> {
+  return invoke<RatesView>("set_rates_settings", { settings });
+}
+
+/**
+ * "Update now": one attempt; `rates.off` while no request may be made,
+ * `rates.throttled` within 30 seconds of the last attempt.
+ */
+export function refreshRates(): Promise<RatesView> {
+  return invoke<RatesView>("refresh_rates");
+}
+
+/**
  * `--selftest`: writes the renderer's report, and exits once the report
  * is final (`"final": false` is a checkpoint before a probe that could
  * end the page).
@@ -2806,6 +2859,8 @@ export type CommandArgs = {
   unshield_quote: { walletId: string; credits: string; to: string | null };
   unshield_to_core: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
   shielded_history: { walletId: string; offset: number; limit: number };
+  unfinished_transfers: { walletId: string };
+  finish_transfer: { walletId: string; kind: LockKind; txid: string; vout: number; grant: string };
   dashpay_contacts: { walletId: string; identity: string; query: ContactQueryArgs };
   dashpay_contact: { walletId: string; identity: string; contact: string };
   dashpay_pending_setup_count: { walletId: string };
@@ -2872,6 +2927,10 @@ export type CommandArgs = {
   governance_create_proposal: { walletId: string; draft: ProposalDraft; grant: string };
   governance_my_proposals: { walletId: string };
   governance_submit_proposal: { walletId: string; hash: string };
+  rates_status: {  };
+  rates_currencies: {  };
+  set_rates_settings: { settings: RatesSettings };
+  refresh_rates: {  };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
@@ -3103,6 +3162,8 @@ export type CommandResults = {
   unshield_quote: ShieldedSpendQuote;
   unshield_to_core: ShieldedSpendOutcome;
   shielded_history: Array<ShieldedActivity>;
+  unfinished_transfers: UnfinishedTransfers;
+  finish_transfer: LockFinish;
   dashpay_contacts: ContactList;
   dashpay_contact: ContactDetailInfo | null;
   dashpay_pending_setup_count: number;
@@ -3169,6 +3230,10 @@ export type CommandResults = {
   governance_create_proposal: MyProposal;
   governance_my_proposals: Array<MyProposal>;
   governance_submit_proposal: MyProposal;
+  rates_status: RatesView;
+  rates_currencies: Array<CurrencyRate>;
+  set_rates_settings: RatesView;
+  refresh_rates: RatesView;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
@@ -3402,6 +3467,8 @@ export const COMMANDS: Record<CommandName, string> = {
   unshield_quote: "identity",
   unshield_to_core: "identity",
   shielded_history: "identity",
+  unfinished_transfers: "identity",
+  finish_transfer: "identity",
   dashpay_contacts: "social",
   dashpay_contact: "social",
   dashpay_pending_setup_count: "social",
@@ -3468,6 +3535,10 @@ export const COMMANDS: Record<CommandName, string> = {
   governance_create_proposal: "governance",
   governance_my_proposals: "governance",
   governance_submit_proposal: "governance",
+  rates_status: "rates",
+  rates_currencies: "rates",
+  set_rates_settings: "rates",
+  refresh_rates: "rates",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",
@@ -3724,4 +3795,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "governance.contest_closed",
   "governance.not_a_contender",
   "governance.not_implemented",
+  "rates.invalid_currency",
+  "rates.throttled",
+  "rates.off",
+  "rates.storage",
 ];

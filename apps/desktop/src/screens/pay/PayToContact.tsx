@@ -25,7 +25,7 @@ import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, resolveText, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
-import { AmountFields, draftSpec, FormField, PayFooter, useAmountField, useAvailable, useEstimate, useMax, type Phase } from "./form";
+import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, usePayAmount, type Phase } from "./form";
 import { confirmedOf, DEFAULT_ADVANCED, type Advanced, type Outcome } from "./model";
 import { ResultSheet } from "./ResultSheet";
 import { useDraft } from "./useDraft";
@@ -225,7 +225,7 @@ function ContactForm({
   const summary = detail.data?.summary;
   const payee = summary ? payeeOf(summary) : (shownAs ?? payeeOf({ contact, alias: null, displayName: null, username: null }));
 
-  const amount = useAmountField(shown, "");
+  const amount = usePayAmount(shown, "");
   const subtractFeeByDefault = () => ui.get().prefs.subtractFeeByDefault;
   const [subtractFee, setSubtractFee] = useState(subtractFeeByDefault);
   const [note, setNote] = useState("");
@@ -241,7 +241,7 @@ function ContactForm({
   const spec = draftSpec(recipient, advanced);
   const available = useAvailable(walletId, advanced);
   const { estimate, general, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked || held, shown);
-  const ready = estimated && amount.settled;
+  const ready = estimated && amount.settled && !amount.fiat.error;
   const max = useMax(walletId, advanced, shown, (text) => {
     amount.setText(text);
     setSubtractFee(true);

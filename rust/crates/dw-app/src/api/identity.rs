@@ -16,6 +16,7 @@ mod platform_addresses;
 mod registration;
 mod shielded;
 mod startup;
+mod unfinished;
 
 use dw_engine::platform::{BearerSecret, FlowKind};
 
@@ -39,6 +40,7 @@ use self::shielded::{
     ShieldedSpendQuote, ShieldedStatus,
 };
 use self::startup::{DashPayStatus, DashPaySyncStatus, QuorumSource, SyncPassReport};
+use self::unfinished::{LockFinish, LockKind, UnfinishedTransfers};
 use crate::api::send::BroadcastOutcome;
 use crate::dto::platform::{DispatchStateName, FlowKindName, Lease};
 use crate::ipc::commands;
@@ -764,5 +766,30 @@ commands! {
         let dashpay = state.dashpay(&wallet_id).await?;
         let rows = dashpay.shielded_history(offset, limit).await?;
         Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    // Unfinished transfers (m4 §2.14).
+
+    /// The wallet's funding locks whose Platform side is not known to have
+    /// happened (its own and those a restore read back).
+    #[facade("DashPay::unfinished_transfers")]
+    fn unfinished_transfers(state, wallet_id: String) -> UnfinishedTransfers {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.unfinished_transfers().await?.into())
+    }
+
+    /// Finishes the unfinished transfer of `kind` at `txid`:`vout` under
+    /// `grant`, on the same lock; only a proved apply finishes it.
+    #[facade("DashPay::finish_transfer")]
+    fn finish_transfer(
+        state,
+        wallet_id: String,
+        kind: LockKind,
+        txid: String,
+        vout: u32,
+        grant: String,
+    ) -> LockFinish {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.finish_transfer(kind.into(), txid, vout, grant).await?.into())
     }
 }

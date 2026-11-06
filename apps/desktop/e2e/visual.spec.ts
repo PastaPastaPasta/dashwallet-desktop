@@ -195,6 +195,95 @@ for (const theme of THEMES) {
   }
 }
 
+// MP-01: Home with prices on Mainnet (fresh, stale, unavailable, the one-time disclosure),
+// Settings ▸ General's Local currency card with its picker, Activity's rows and table with their
+// values, and the transaction detail with its price stamp and value now.
+const FIAT_HOME = ["fiat", "fiat-stale", "fiat-unavailable", "fiat-disclosure"];
+
+for (const theme of THEMES) {
+  for (const scenario of FIAT_HOME) {
+    test(`visual home-${scenario} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(scenario, theme));
+      await page.getByTestId("hero").waitFor();
+      await page.locator("[data-testid=hero-fiat-row], [data-testid=rates-consent-card]").first().waitFor();
+      await shoot(page, `home-${scenario}`, theme);
+    });
+  }
+  test(`visual settings-currency ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("fiat", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+    const card = page.getByTestId("settings-currency");
+    await card.getByTestId("settings-currency-USD").waitFor();
+    await card.scrollIntoViewIfNeeded();
+    await fontsReady(page);
+    await expect(card).toHaveScreenshot(`${theme}-settings-currency.png`, { animations: "disabled", caret: "hide" });
+  });
+  for (const mode of ["list", "table"] as const) {
+    test(`visual activity-fiat-${mode} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl("fiat", theme));
+      await page.getByTestId("hero").waitFor();
+      await page.getByTestId("sidebar-activity").click();
+      await page.getByTestId(`tx-mode-${mode}`).click();
+      await page.locator(mode === "table" ? "[data-testid=tx-table-value]" : ".tx-row-fiat").first().waitFor();
+      await page.mouse.move(0, 0);
+      await shoot(page, `activity-fiat-${mode}`, theme);
+    });
+  }
+  // Pay to an address with 10.00 typed in USD, its Confirm with the values, and a Receive request in USD.
+  for (const view of ["pay-fiat", "pay-confirm-fiat", "receive-fiat"] as const) {
+    test(`visual ${view} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl("fiat", theme));
+      await page.getByTestId("hero").waitFor();
+      const where = view === "receive-fiat" ? "request" : "pay";
+      if (where === "pay") {
+        await page.getByTestId("sidebar-pay").click();
+        await page.getByTestId("pay-tabs-address").click();
+        await page.getByTestId("pay-address").fill("XXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd");
+      } else {
+        await page.getByTestId("sidebar-receive").click();
+      }
+      await page.getByTestId(`${where}-amount-toggle`).click();
+      await page.getByTestId(`${where}-amount`).fill(where === "pay" ? "10.00" : "25.50");
+      await page.getByTestId(`${where}-amount-other`).waitFor();
+      if (view === "pay-confirm-fiat") {
+        await page.getByTestId("pay-continue").and(page.locator(":enabled")).waitFor();
+        await page.getByTestId("pay-continue").click();
+        await page.getByTestId("pay-confirm-passphrase").waitFor();
+      } else if (where === "pay") {
+        await page.getByTestId("pay-fee-line").waitFor();
+      }
+      await page.mouse.move(0, 0);
+      await shoot(page, view, theme);
+    });
+  }
+  // Receive's stored requests with their value now.
+  test(`visual receive-requests-fiat ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("fiat", theme));
+    await page.getByTestId("hero").waitFor();
+    await page.getByTestId("sidebar-receive").click();
+    await page.getByTestId("request-label").fill("Dinner");
+    await page.getByTestId("request-amount").fill("1.5");
+    await page.getByTestId("request-create").and(page.locator(":enabled")).waitFor();
+    await page.getByTestId("request-create").click();
+    await page.getByTestId("request-sheet").waitFor();
+    await page.keyboard.press("Escape");
+    await page.getByTestId("request-sheet").waitFor({ state: "detached" });
+    await page.locator("[data-testid^=request-fiat-]").first().waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "receive-requests-fiat", theme);
+  });
+  test(`visual tx-detail-fiat ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("fiat", theme));
+    await page.getByTestId("hero").waitFor();
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(".tx-row").first().click();
+    await page.getByTestId("tx-detail-fiat-then").waitFor();
+    await page.getByTestId("tx-detail-value-now").waitFor();
+    await shoot(page, "tx-detail-fiat", theme);
+  });
+}
+
 const SETTINGS: SettingsView[] = ["general", "security", "wallets", "backups", "about", "exportSheet"];
 
 for (const theme of THEMES) {
@@ -811,5 +900,30 @@ for (const theme of THEMES) {
     await page.getByTestId("name-vote-result").waitFor();
     await page.mouse.move(0, 0);
     await shoot(page, "names-vote-result", theme);
+  });
+}
+
+// Unfinished transfers on Home: the card for a restored Core → Shielded lock in each state, and
+// the Details sheet with a lock this version can't finish.
+for (const theme of THEMES) {
+  for (const scenario of ["recovery-one", "recovery-restored-mixed", "recovery-checking"]) {
+    test(`visual unfinished-card ${scenario} ${theme}`, async ({ page }) => {
+      await page.clock.setFixedTime(FIXTURE_NOW);
+      await page.goto(fixtureUrl(scenario, theme));
+      const card = page.getByTestId("unfinished-card");
+      await expect(card.getByTestId("unfinished-text")).toBeVisible();
+      await fontsReady(page);
+      await expect(card).toHaveScreenshot(`${theme}-unfinished-card-${scenario}.png`, SHOT);
+    });
+  }
+  test(`visual unfinished-sheet recovery-unsupported ${theme}`, async ({ page }) => {
+    await page.clock.setFixedTime(FIXTURE_NOW);
+    await page.goto(fixtureUrl("recovery-unsupported", theme));
+    await page.getByTestId("unfinished-details").click();
+    const sheet = page.getByTestId("unfinished-sheet");
+    await expect(sheet.getByTestId("unfinished-row").first()).toBeVisible();
+    await page.mouse.move(0, 0);
+    await fontsReady(page);
+    await expect(sheet).toHaveScreenshot(`${theme}-unfinished-sheet-recovery-unsupported.png`, SHOT);
   });
 }

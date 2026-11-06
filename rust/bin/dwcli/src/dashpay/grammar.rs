@@ -93,7 +93,8 @@ fn value_type(cmd: &str, arg: &str) -> Option<Ty> {
         (_, "cursor" | "up_to" | "max_duffs" | "max_credits" | "duffs" | "credits" | "amount") => {
             Ty::U64
         }
-        (_, "limit" | "offset") => Ty::U32,
+        (_, "limit" | "offset" | "vout") => Ty::U32,
+        ("finish-transfer", "kind") => Ty::Enum(&["shielded", "platform-address"]),
         (_, "sections") => Ty::Enum(SECTIONS),
         (_, "sort") => Ty::Enum(SORTS),
         (_, "filter") => Ty::Enum(FILTERS),

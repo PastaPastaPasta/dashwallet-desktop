@@ -165,7 +165,7 @@ export function RepairTab({ grants, wallet }: { grants: GrantModel; wallet: Wall
       )}
       <ToolCard title="Finish transfers" testId="repair-finish">
         <p className="placeholder-note">
-          Finishes username registrations and credit top-ups whose payment was sent but never completed. Nothing more is paid.
+          Finishes username registrations, credit top-ups, and transfers to Shielded whose payment was sent but never completed. Nothing more is paid.
         </p>
         <div className="tool-actions">
           <DashButton variant="tintedBlue" size="small" data-testid="repair-finish-transfers" disabled={model.busy} onClick={() => void model.finishTransfers()}>

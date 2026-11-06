@@ -64,6 +64,8 @@
     "allow-unshield-quote",
     "allow-unshield-to-core",
     "allow-shielded-history",
+    "allow-unfinished-transfers",
+    "allow-finish-transfer",
     "allow-grant-request",
     "allow-dispatch-status",
     "allow-resolve-stuck-funding",

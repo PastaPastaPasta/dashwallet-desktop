@@ -3018,8 +3018,8 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
     // removed wallets with their triggers, DP2-05's page index, DP3-01's
     // payment-lock inputs, BL-229's governance registrations, MG-06's
     // proposals, MG-04's ProTx operations, MG-04b's shared sessions and
-    // standbys), which such a build never had, or the runner refuses the gap
-    // below them.
+    // standbys, MP-01's price stamps), which such a build never had, or the
+    // runner refuses the gap below them.
     let conn = rusqlite::Connection::open(&appdb).unwrap();
     let drop_triggers: String = conn
         .query_row(
@@ -3045,6 +3045,7 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
              DROP TABLE shared_mn_standby;
              DROP TABLE mg_proposals;
              DROP TABLE mg_proposals_kept;
+             DROP TABLE tx_fiat;
              DELETE FROM refinery_schema_history WHERE version >= 2026101101;
              DELETE FROM settings_kv WHERE key = 'trust.fallback_used_at';",
     )
@@ -3222,6 +3223,75 @@ fn a_first_seen_write_held_past_a_removal_leaves_nothing() {
     a_write_held_past_the_removal(&engine, &s, (id, wipe), &pause, None, || {
         db.tx_seen_times(&id.to_string()).unwrap().is_empty()
     });
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// The pump's first-seen write (events.rs `flush_history`) on Mainnet with
+/// a fresh price: it stamps what it writes, and an Off while the write is
+/// held stamps nothing (rates-engine §6), although the rate was read before.
+#[test]
+fn an_off_while_the_first_seen_write_is_held_stamps_nothing() {
+    use key_wallet::transaction_checking::TransactionContext;
+
+    let dir = dw_testutil::private_tempdir();
+    let now = crate::coins::now_secs();
+    crate::rates::fresh_rates_file_for_tests(&dir.path().join("data"), "USD", "49.0967", now);
+    let engine = engine(dir.path());
+    let s = engine
+        .block_on(engine.open_network(
+            DashNetwork::Mainnet,
+            SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let id = restore(&engine, &s);
+    let db = s.live().unwrap().appdb;
+    let stamped = |txid: dashcore::Txid| {
+        db.tx_fiat(&id.to_string())
+            .unwrap()
+            .iter()
+            .any(|r| r.txid == txid.to_string())
+    };
+    let seen = |txid: dashcore::Txid| {
+        db.tx_seen_times(&id.to_string())
+            .unwrap()
+            .iter()
+            .any(|(t, _)| *t == txid.to_string())
+    };
+
+    for (n, off) in [(5, false), (6, true)] {
+        let txid = crate::rates::tests::stamps::add_seen_to(
+            &s.hub,
+            id,
+            n,
+            TransactionContext::Mempool,
+            Some(now),
+        );
+        let pause = Arc::new(JobPause::default());
+        *guard(&s.hub.pause_seen) = Some(Arc::clone(&pause));
+        let _release = ReleaseOnDrop(Arc::clone(&pause));
+        s.hub.pump.mark_history(id, Some(&[txid]));
+        wait_until("the held write", || pause.reached.load(Ordering::SeqCst));
+        if off {
+            engine
+                .rates()
+                .set_settings(crate::rates::RatesSettings {
+                    enabled: false,
+                    currency: Some("USD".into()),
+                    disclosed: true,
+                })
+                .unwrap();
+        }
+        pause.release.notify_one();
+        wait_until("the write", || pause.done.load(Ordering::SeqCst));
+        assert!(seen(txid), "the first-seen time is written either way");
+        assert_eq!(stamped(txid), !off, "stamped unless turned off meanwhile");
+    }
     engine.block_on(engine.shutdown()).unwrap();
 }
 

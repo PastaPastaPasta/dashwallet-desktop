@@ -18,6 +18,7 @@ mod engine;
 mod governance;
 mod nested;
 mod platform;
+mod rates;
 
 use serde::Serialize;
 use ts_rs::TS;
@@ -38,6 +39,7 @@ pub use platform::{
     AvatarCode, ContactCode, CreditsCode, IdentityCode, InvitationCode, NameCode, PlatformCode,
     ProfileCode, RegistrationCode, ShieldedCode,
 };
+pub use rates::RatesCode;
 
 /// Error returned by every command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS, thiserror::Error)]
@@ -79,6 +81,7 @@ pub enum ErrorCode {
     Credits(CreditsCode),
     Shielded(ShieldedCode),
     Governance(GovernanceCode),
+    Rates(RatesCode),
 }
 
 /// Declares a code enum: each variant serialises as its string, and
@@ -494,6 +497,7 @@ into_code!(
     Credits(CreditsCode),
     Shielded(ShieldedCode),
     Governance(GovernanceCode),
+    Rates(RatesCode),
 );
 
 #[cfg(test)]

@@ -268,7 +268,8 @@ impl EngineEvent {
             | E::LeaseChanged { .. }
             | E::LockProgress { .. }
             | E::DispatchResolved { .. }
-            | E::Governance { .. } => return None,
+            | E::Governance { .. }
+            | E::Rates => return None,
         })
     }
 }

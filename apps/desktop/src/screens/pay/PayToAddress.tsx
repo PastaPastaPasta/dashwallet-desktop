@@ -14,7 +14,7 @@ import { useDisplay } from "../../format/display";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { PayFromPlatform } from "./PayFromPlatform";
-import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAmountField, useAvailable, useEstimate, useMax, type Phase } from "./form";
+import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, usePayAmount, type Phase } from "./form";
 import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, type Advanced, type Outcome } from "./model";
 import { ResultSheet } from "./ResultSheet";
 import { useDraft } from "./useDraft";
@@ -38,7 +38,7 @@ export function PayToAddress({
   const draft = useDraft(walletId, locked);
 
   const [address, setAddress] = useState(prefill?.address ?? "");
-  const amount = useAmountField(shown, prefill?.amount ? shown.full(prefill.amount) : "");
+  const amount = usePayAmount(shown, prefill?.amount ? shown.full(prefill.amount) : "");
   // Settings ▸ General's default starts each new form (U-04 D5); Max still turns it on.
   const subtractFeeByDefault = () => ui.get().prefs.subtractFeeByDefault;
   const [subtractFee, setSubtractFee] = useState(subtractFeeByDefault);
@@ -83,7 +83,7 @@ export function PayToAddress({
   const available = useAvailable(walletId, advanced);
 
   const { estimate, general: generalError, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked, shown);
-  const ready = estimated && settled;
+  const ready = estimated && settled && !amount.fiat.error;
   const max = useMax(walletId, advanced, shown, (text) => {
     amount.setText(text);
     setSubtractFee(true);

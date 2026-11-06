@@ -34,9 +34,11 @@ import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
+import { restoredLock } from "./recovery";
 import { newPendingWorld, PLATFORM_PAYEE, sendTerms, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
+import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { buildRows, caughtUp, FIXTURE_NOW, FUNDED_BALANCES, makeIds, prng, secs, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
@@ -113,6 +115,8 @@ export interface World {
   coinjoin: CoinJoinWorld;
   /** Governance: sync, proposals, voting masternodes and own proposals (governance.ts, MG-09). */
   governance: GovernanceWorld;
+  /** Prices in fiat: settings, rates.json and the next attempt (rates.ts, MP-01). */
+  rates: RatesWorld;
   /** The commands dw-app does not have yet: network choice, shielded and Platform balances (pending.ts). */
   pending: PendingWorld;
 }
@@ -210,6 +214,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     scan: scanWorld(),
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
+    rates: newRatesWorld(),
     pending: newPendingWorld(),
   };
 }
@@ -709,6 +714,52 @@ const SCENARIOS = {
     w.pending.shielded!.poolTooSmall = true;
     return w;
   },
+  /** One restored Core → Shielded lock of 0.5 DASH that Platform has not applied: Home offers Finish. */
+  "recovery-one": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000)];
+    return w;
+  },
+  /** Three restored locks: two ready, one that may already be applied. */
+  "recovery-restored-mixed": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000), restoredLock(2, 25_000_000), restoredLock(3, 10_000_000, "checking")];
+    return w;
+  },
+  /** Only a restored lock that may already be applied: "Checking", and Check again (the second one applies it). */
+  "recovery-checking": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "checking")];
+    w.pending.recovery.checksBeforeApply = 1;
+    return w;
+  },
+  /** A restored lock still waiting for its confirmations: Home has no card. */
+  "recovery-confirming": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "confirming")];
+    return w;
+  },
+  /** A restored lock on a network that does not take Shielded yet: Home has no card. */
+  "recovery-not-active": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "notActive")];
+    return w;
+  },
+  /** A ready restored lock, its transaction's second credit output (which this version can't finish) and
+   * a lock worth less than the Platform fee: Home offers Finish for the first only. */
+  "recovery-unsupported": (t) => {
+    const w = base(t);
+    const first = restoredLock(1, 50_000_000);
+    w.pending.recovery.locks = [first, { ...first, vout: 1, duffs: 20_000_000, state: "unsupported" }, { ...restoredLock(2, 5_000), state: "tooSmall" }];
+    return w;
+  },
+  /** The first finish ends `platform.unavailable`; a retry is applied. */
+  "recovery-finish-fails": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000)];
+    w.pending.recovery.failures = 1;
+    return w;
+  },
   /** A new wallet: no history, zero balance. */
   empty: (t) => base(t, "empty"),
   /** No wallet on the network yet, and no vault. */
@@ -1181,6 +1232,12 @@ const SCENARIOS = {
   ...coinjoinScenarios(base),
   // Governance (MG-09): governance.ts.
   ...governanceScenarios(base),
+  // Prices in fiat (MP-01): rates.ts.
+  ...ratesScenarios(base),
+  /** A new install on Mainnet: onboarding's last step carries the price disclosure. */
+  "fiat-first-run": (t): World => onMainnet(buildWorld("no-wallet", t)),
+  /** `dashpay-registered` with prices: paying a contact with the fiat toggle. */
+  "fiat-contacts": (t): World => withPrices(buildWorld("dashpay-registered", t)),
 } satisfies Record<string, (theme: ThemeName | null) => World>;
 
 export type ScenarioName = keyof typeof SCENARIOS;

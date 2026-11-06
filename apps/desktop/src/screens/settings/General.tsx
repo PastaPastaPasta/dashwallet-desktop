@@ -1,6 +1,6 @@
 // Settings ▸ General (QT-135…141, QT-075, IOS-104…106): the display settings (saved as they
 // change, D2), dust protection, the username in payment requests (DP3-03b), the window's network
-// (D6), the rows that come later (D7) and Reset Options (D8).
+// (D6), local currency (MP-01), the rows that come later (D7) and Reset Options (D8).
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useMemo, useState } from "react";
@@ -19,6 +19,7 @@ import { DEFAULT_DUST, dustThreshold, OptionsText, UNIT_CHOICES } from "../../se
 import { savePrefs, settledPending } from "../../settings/prefs";
 import { SettingsDashPayCard } from "../dashpay/MyProfile";
 import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./parts";
+import { LocalCurrencyCard } from "./LocalCurrency";
 import { PrivacyCard } from "./Privacy";
 
 const THEMES: { theme: ThemeName | null; label: string; id: string }[] = [
@@ -115,13 +116,13 @@ export function GeneralTab() {
         </label>
         <ShowMasternodesRow checked={prefs.showMasternodes} save={save} />
       </SettingsCard>
+      <LocalCurrencyCard />
       <DustCard />
       <PrivacyCard />
       <NetworkCard />
       <SettingsDashPayCard />
       <SettingsCard title="Coming later" testId="settings-not-yet">
         <NotYetRow testId="settings-language" title="User interface language" why="Dash Wallet is in English only until the translations (MP-14)." />
-        <NotYetRow testId="settings-currency" title="Local currency" why="exchange rates come with MP-01." />
         <NotYetRow testId="settings-notifications" title="Notifications" why="DashPay notifications come with DP2-09, Windows notifications with W-02." />
         <NotYetRow testId="settings-start-on-login" title="Start Dash Wallet on system login" why="it comes with the installers (W-02, PK)." />
         <NotYetRow testId="settings-proxy" title="Connect through a SOCKS5 proxy or Tor" why="the engine has no proxy setting yet." />

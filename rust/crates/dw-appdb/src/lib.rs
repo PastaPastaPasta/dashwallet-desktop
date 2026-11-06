@@ -35,6 +35,20 @@ mod rows;
 mod shared_sessions;
 mod shared_standby;
 pub use avatar::AvatarRow;
+
+/// A `tx_fiat` row: the price a transaction was first seen at (MP-01).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxFiat {
+    pub txid: String,
+    /// ISO 4217.
+    pub currency: String,
+    /// Fiat per 1 DASH, an exact decimal string.
+    pub price: String,
+    /// UNIX seconds the price is from.
+    pub rate_at: u64,
+    /// `ctx` or `bitPayDashCentral`.
+    pub source: String,
+}
 pub use dashpay_journal::{ContestWatch, JournalEntry, JournalPage, JournalRow};
 pub use holds::Holder;
 pub use proposals::ProposalRow;
@@ -215,7 +229,7 @@ pub(crate) static CHILD_STARTS: std::sync::RwLock<()> = std::sync::RwLock::new((
 /// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
 /// with an insert trigger that skips rows of a removed wallet (migration
 /// `V2026101302`, DEC-210). Settings are cleared by scope.
-pub(crate) const WALLET_TABLES: [&str; 18] = [
+pub(crate) const WALLET_TABLES: [&str; 19] = [
     "wallets",
     "address_book",
     "labels",
@@ -234,6 +248,7 @@ pub(crate) const WALLET_TABLES: [&str; 18] = [
     "masternode_ops",
     "shared_mn_sessions",
     "shared_mn_standby",
+    "tx_fiat",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -848,6 +863,51 @@ impl AppDb {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Stamps each transaction with the price it was first seen at
+    /// (`tx_fiat`, MP-01): a transaction that has a stamp keeps it.
+    pub fn stamp_tx_fiat(&self, wallet_id: &str, stamps: &[TxFiat], now: u64) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO tx_fiat (wallet_id, txid, currency, price, rate_at, source, stamped_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT (wallet_id, txid) DO NOTHING",
+            )?;
+            for s in stamps {
+                stmt.execute(params![
+                    wallet_id,
+                    s.txid,
+                    s.currency,
+                    s.price,
+                    s.rate_at as i64,
+                    s.source,
+                    now as i64
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every `tx_fiat` stamp of a wallet.
+    pub fn tx_fiat(&self, wallet_id: &str) -> Result<Vec<TxFiat>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT txid, currency, price, rate_at, source FROM tx_fiat WHERE wallet_id = ?1",
+        )?;
+        let rows = stmt.query_map([wallet_id], |r| {
+            Ok(TxFiat {
+                txid: r.get(0)?,
+                currency: r.get(1)?,
+                price: r.get(2)?,
+                rate_at: r.get::<_, i64>(3)? as u64,
+                source: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// `(txid, created_at)` of every `tx_meta` row of a wallet: when this
@@ -1580,7 +1640,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026103001);
+        assert_eq!(db.schema_version().unwrap(), 2026110501);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();
@@ -1884,6 +1944,101 @@ mod tests {
         assert_eq!(
             db.wallets().unwrap(),
             vec![(W.to_string(), "Savings".to_string(), 3)]
+        );
+    }
+
+    #[test]
+    fn a_fiat_stamp_is_written_once() {
+        let db = AppDb::open_in_memory().unwrap();
+        let t1 = "a".repeat(64);
+        let stamp = |price: &str, currency: &str| TxFiat {
+            txid: t1.clone(),
+            currency: currency.into(),
+            price: price.into(),
+            rate_at: 100,
+            source: "ctx".into(),
+        };
+        db.stamp_tx_fiat(W, &[stamp("49.0967", "USD")], 110)
+            .unwrap();
+        // A later price, or another currency, never replaces it.
+        db.stamp_tx_fiat(W, &[stamp("52.1", "EUR")], 500).unwrap();
+        assert_eq!(db.tx_fiat(W).unwrap(), vec![stamp("49.0967", "USD")]);
+        assert!(db.tx_fiat(W2).unwrap().is_empty());
+        // The schema refuses what is not a stamp: a price that is not the
+        // engine's decimal (1 to 15 digits, a dot and 1 to 12 more, above
+        // zero) among them.
+        for price in [
+            ".",
+            "1.2.3",
+            "1.",
+            ".5",
+            "0",
+            "0.000",
+            "1234567890123456",
+            "1.1234567890123",
+            "1e3",
+            "",
+        ] {
+            assert!(
+                db.stamp_tx_fiat(
+                    W,
+                    &[TxFiat {
+                        txid: "c".repeat(64),
+                        ..stamp(price, "USD")
+                    }],
+                    1
+                )
+                .is_err(),
+                "{price:?}"
+            );
+        }
+        for (i, price) in ["123456789012345", "0.000000000001", "1.123456789012"]
+            .into_iter()
+            .enumerate()
+        {
+            let txid = format!("{i:0>64}");
+            db.stamp_tx_fiat(
+                W,
+                &[TxFiat {
+                    txid,
+                    ..stamp(price, "USD")
+                }],
+                1,
+            )
+            .unwrap();
+        }
+        assert!(
+            db.stamp_tx_fiat(
+                W,
+                &[TxFiat {
+                    txid: "b".repeat(64),
+                    ..stamp("-1", "USD")
+                }],
+                1
+            )
+            .is_err()
+        );
+        assert!(
+            db.stamp_tx_fiat(
+                W,
+                &[TxFiat {
+                    txid: "b".repeat(64),
+                    ..stamp("1", "usd")
+                }],
+                1
+            )
+            .is_err()
+        );
+        assert!(
+            db.stamp_tx_fiat(
+                W,
+                &[TxFiat {
+                    txid: "short".into(),
+                    ..stamp("1", "USD")
+                }],
+                1
+            )
+            .is_err()
         );
     }
 
