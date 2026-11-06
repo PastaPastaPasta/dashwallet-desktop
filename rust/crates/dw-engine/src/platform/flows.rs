@@ -74,8 +74,7 @@ pub enum FlowKind {
     ShieldedSpend,
     /// "Move mixed coins" to Shielded (0.2 MIX-SHIELD): the drain of the
     /// CoinJoin account into one Core → Shielded lock under a `Spend`
-    /// grant's `max_duffs` (no `PlatformOp` grant), then its
-    /// ShieldFromAssetLock. Its funding
+    /// grant's `max_duffs`, then its ShieldFromAssetLock. Its funding
     /// signer is `ShieldDrainFunding` (CoinJoin account 0's address keys
     /// and the shielded credit keys), and nothing else.
     ShieldDrain,

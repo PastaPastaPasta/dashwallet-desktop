@@ -101,7 +101,7 @@ pub struct ShieldQuote {
 }
 
 /// What moving CoinJoin account 0's mixed coins into the pool ("Move mixed
-/// coins" to Shielded, 0.2 MIX-SHIELD) takes and buys: one asset lock
+/// coins" to Shielded) takes and buys: one asset lock
 /// spending every coin of the account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MixedShieldQuote {
@@ -412,7 +412,7 @@ impl DashPay {
     }
 
     /// What "Move mixed coins" to Shielded would move: CoinJoin account
-    /// 0's coins in one asset lock (0.2 MIX-SHIELD). Reads coins only.
+    /// 0's coins in one asset lock. Reads coins only.
     pub async fn shield_mixed_quote(&self) -> Result<MixedShieldQuote, ShieldedError> {
         let wallet = self.wallet_id;
         on_pool(&self.session, wallet, move |session, lib| async move {

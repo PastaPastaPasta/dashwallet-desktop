@@ -2653,7 +2653,9 @@ impl NetworkSession {
         .await
     }
 
-    /// Whether `wallet_id` mixes ("Move mixed coins" to Shielded refuses).
+    /// Whether `wallet_id` mixes or a session of it is open: a move of its
+    /// CoinJoin coins (a sweep, the drain to Shielded, Repair's self-spend
+    /// of a drain) refuses.
     pub(crate) fn mixing(&self, wallet_id: WalletId) -> bool {
         self.coinjoin.busy(&wallet_id)
     }
@@ -2663,7 +2665,7 @@ impl NetworkSession {
     /// the one mixing writes. The sweep itself takes the wallet's claim
     /// ([`CoinJoinRuntime::claim_sweep`]).
     fn refuse_while_mixing(&self, wallet_id: WalletId) -> Result<(), EngineError> {
-        if self.coinjoin.busy(&wallet_id) {
+        if self.mixing(wallet_id) {
             return Err(CoinJoinFailure::MixingActive.into());
         }
         Ok(())

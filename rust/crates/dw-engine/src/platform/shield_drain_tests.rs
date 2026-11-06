@@ -1,4 +1,4 @@
-//! "Move mixed coins" to Shielded (0.2 MIX-SHIELD, `shield_drain.rs`) over
+//! "Move mixed coins" to Shielded (`shield_drain.rs`) over
 //! the scripted library: the plan's refusals, the drain of every coin into
 //! one shield lock under a `Spend` grant, the signer that signs only the
 //! planned coins, and the lock pending and resumed as any shield's.

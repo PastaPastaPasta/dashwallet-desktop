@@ -1941,8 +1941,8 @@ impl NetworkSession {
             .await
     }
 
-    /// [`Self::funding_call_permit`] for a drain of the CoinJoin account
-    /// (0.2 MIX-SHIELD): the lock's fee comes out of its inputs, so the
+    /// [`Self::funding_call_permit`] for a drain of the CoinJoin account:
+    /// the lock's fee comes out of its inputs, so the
     /// quote is `inputs_duffs`, their sum, with no fee bound added.
     pub(crate) async fn drain_call_permit(
         &self,

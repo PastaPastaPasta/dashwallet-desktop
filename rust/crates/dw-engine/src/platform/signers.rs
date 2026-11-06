@@ -37,6 +37,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use dashcore::secp256k1::{PublicKey, SecretKey, ecdsa};
@@ -389,14 +390,15 @@ pub struct CountingFundingSigner {
     drain: Option<Arc<DrainCap>>,
 }
 
-/// The coins one drain may sign (0.2 MIX-SHIELD): at each path at most as
-/// many distinct sighashes as its plan has coins there, each standing for
-/// the next largest of their values, and at most `max_duffs` in all. The
-/// vault signs sighashes and cannot see the debit; a drain's builder
-/// selects every final coin of the account under the wallet's write lock,
-/// where nothing can be read, so this is where its debit is bounded.
+/// Per path, the sighashes a drain signed there.
 type SignedByPath = BTreeMap<DerivationPath, BTreeSet<[u8; 32]>>;
 
+/// The coins one drain may sign: at each path at most as many distinct
+/// sighashes as its plan has coins there, each standing for the next
+/// largest of their values, and at most `max_duffs` in all. The vault
+/// signs sighashes and cannot see the debit; a drain's builder selects
+/// every final coin of the account under the wallet's write lock, where
+/// nothing can be read, so this is where its debit is bounded.
 #[derive(Debug)]
 struct DrainCap {
     max_duffs: u64,
@@ -404,10 +406,27 @@ struct DrainCap {
     coins: BTreeMap<DerivationPath, Vec<u64>>,
     /// Per path, the sighashes signed there; and their values' sum.
     signed: std::sync::Mutex<(SignedByPath, u64)>,
-    refused: std::sync::atomic::AtomicBool,
+    refused: AtomicBool,
 }
 
 impl DrainCap {
+    /// The cap of `coins` (path, value) within `max_duffs`.
+    fn new(coins: impl IntoIterator<Item = (DerivationPath, u64)>, max_duffs: u64) -> Self {
+        let mut by_path: BTreeMap<DerivationPath, Vec<u64>> = BTreeMap::new();
+        for (path, value) in coins {
+            by_path.entry(path).or_default().push(value);
+        }
+        for values in by_path.values_mut() {
+            values.sort_unstable_by(|a, b| b.cmp(a));
+        }
+        Self {
+            max_duffs,
+            coins: by_path,
+            signed: std::sync::Mutex::default(),
+            refused: AtomicBool::new(false),
+        }
+    }
+
     /// Whether `sighash` may be signed at `path`: one already signed there
     /// (an identical retry), or a planned coin's within the grant.
     fn admits(&self, path: &DerivationPath, sighash: [u8; 32]) -> bool {
@@ -428,8 +447,7 @@ impl DrainCap {
                 true
             }
             None => {
-                self.refused
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                self.refused.store(true, Ordering::SeqCst);
                 false
             }
         }
@@ -477,25 +495,13 @@ impl CountingFundingSigner {
         coins: impl IntoIterator<Item = (DerivationPath, u64)>,
         max_duffs: u64,
     ) -> Self {
-        let mut by_path: BTreeMap<DerivationPath, Vec<u64>> = BTreeMap::new();
-        for (path, value) in coins {
-            by_path.entry(path).or_default().push(value);
-        }
-        for values in by_path.values_mut() {
-            values.sort_unstable_by(|a, b| b.cmp(a));
-        }
-        self.drain = Some(Arc::new(DrainCap {
-            max_duffs,
-            coins: by_path,
-            signed: std::sync::Mutex::default(),
-            refused: std::sync::atomic::AtomicBool::new(false),
-        }));
+        self.drain = Some(Arc::new(DrainCap::new(coins, max_duffs)));
         self
     }
 
     /// Whether the drain cap refused an input.
     pub(crate) fn drain_refused(&self) -> bool {
-        (self.drain.as_ref()).is_some_and(|d| d.refused.load(std::sync::atomic::Ordering::SeqCst))
+        (self.drain.as_ref()).is_some_and(|d| d.refused.load(Ordering::SeqCst))
     }
 
     /// Signs at most `max` inputs: the first input past it is refused
@@ -953,24 +959,12 @@ mod drain_cap_tests {
     }
 
     fn cap(coins: &[(u32, u64)], max_duffs: u64) -> DrainCap {
-        let mut by_path: BTreeMap<DerivationPath, Vec<u64>> = BTreeMap::new();
-        for (i, v) in coins {
-            by_path.entry(path(*i)).or_default().push(*v);
-        }
-        for values in by_path.values_mut() {
-            values.sort_unstable_by(|a, b| b.cmp(a));
-        }
-        DrainCap {
-            max_duffs,
-            coins: by_path,
-            signed: std::sync::Mutex::default(),
-            refused: std::sync::atomic::AtomicBool::new(false),
-        }
+        DrainCap::new(coins.iter().map(|(i, v)| (path(*i), *v)), max_duffs)
     }
 
-    /// 0.2 MIX-SHIELD: a drain's signer signs each planned coin once (a
-    /// retry of the same sighash again), no path outside the plan, no more
-    /// coins at a path than planned, and nothing past the grant.
+    /// A drain's signer signs each planned coin once (a retry of the same
+    /// sighash again), no path outside the plan, no more coins at a path
+    /// than planned, and nothing past the grant.
     #[test]
     fn a_drain_cap_admits_the_planned_coins_within_the_grant_only() {
         // A grant well above the coins: only the plan bounds these.
@@ -979,12 +973,12 @@ mod drain_cap_tests {
         assert!(c.admits(&path(0), [1; 32]), "an identical retry");
         assert!(c.admits(&path(1), [2; 32]));
         assert!(c.admits(&path(1), [3; 32]));
-        assert!(!c.refused.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!c.refused.load(Ordering::SeqCst));
         assert!(
             !c.admits(&path(1), [4; 32]),
             "a third coin at a two-coin path"
         );
-        assert!(c.refused.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(c.refused.load(Ordering::SeqCst));
         assert!(
             !cap(&[(0, 100)], 100).admits(&path(7), [1; 32]),
             "an unplanned path"
@@ -994,6 +988,6 @@ mod drain_cap_tests {
         let c = cap(&[(0, 100), (1, 50)], 120);
         assert!(c.admits(&path(0), [1; 32]));
         assert!(!c.admits(&path(1), [2; 32]));
-        assert!(c.refused.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(c.refused.load(Ordering::SeqCst));
     }
 }

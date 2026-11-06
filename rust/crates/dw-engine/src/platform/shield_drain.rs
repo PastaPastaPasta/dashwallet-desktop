@@ -1,4 +1,4 @@
-//! "Move mixed coins" to Shielded (0.2 MIX-SHIELD): one Core → Shielded
+//! "Move mixed coins" to Shielded: one Core → Shielded
 //! asset lock that drains CoinJoin account 0, then its apply to the
 //! wallet's own shielded address, as a shield's (`shielded_pool.rs`).
 //!
@@ -63,13 +63,13 @@ pub(crate) struct DrainCoin {
 
 /// The smallest lock a drain may build against a pool fee of `pool_fee`
 /// credits: one that leaves a credit after the fee.
-pub(crate) fn drain_floor(pool_fee: u64) -> u64 {
+pub(super) fn drain_floor(pool_fee: u64) -> u64 {
     pool_fee / CREDITS_PER_DUFF + 1
 }
 
 /// The drain of `coins` against a pool fee of `pool_fee` credits: its
 /// quote, or why there is none.
-pub(crate) fn plan_of(
+pub(super) fn plan_of(
     coins: &[DrainCoin],
     pool_fee: u64,
 ) -> Result<MixedShieldQuote, ShieldedError> {
@@ -185,7 +185,7 @@ async fn drain_cap(
 
 /// The funding signer of a drain's call: `permit`'s, signing at most
 /// [`MAX_LOCK_INPUTS`] inputs, and only `coins`, worth `total_duffs`.
-pub(crate) fn drain_signer(
+pub(super) fn drain_signer(
     permit: &CallPermit,
     coins: &[DrainCoin],
     total_duffs: u64,
@@ -280,7 +280,7 @@ pub(crate) async fn drain(
 /// sign it, so the plan refuses rather than leave it out. An immature
 /// coinbase output reads unconfirmed: the library's drain skips it, and
 /// it is final once mature.
-pub(crate) fn drain_coins_of(
+pub(super) fn drain_coins_of(
     view: crate::coinjoin::MixView,
     network: dashcore::Network,
 ) -> Vec<DrainCoin> {

@@ -310,7 +310,7 @@ pub(crate) trait ShieldedLib: Send + Sync {
     ) -> impl Future<Output = Option<dashcore::ScriptBuf>> + Send {
         async { None }
     }
-    /// "Move mixed coins" (0.2 MIX-SHIELD): the coins of CoinJoin account
+    /// "Move mixed coins": the coins of CoinJoin account
     /// 0, read under `fence` (`shield_drain.rs`).
     fn drain_coins(
         &self,
