@@ -69,7 +69,7 @@ export const restoredLock = (n: number, duffs: number, state: UnfinishedLock["st
   state,
 });
 
-/** A restored "Add from Dash wallet" lock (a seed restore, another device's, or a wallet imported again). */
+/** A restored "Add from Dash wallet" lock: one no fund step of this install signed (a seed restored on a new install, or another device's). */
 export const restoredFundLock = (n: number, duffs: number, state: UnfinishedLock["state"] = "ready"): UnfinishedLock => ({
   ...restoredLock(n, duffs, state),
   txid: `${n.toString(16).padStart(2, "0")}fa11ed`.repeat(8).slice(0, 64),

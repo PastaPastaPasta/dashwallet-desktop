@@ -134,7 +134,7 @@ describe("unfinished transfers sheet", () => {
   it("says what each finish came to", () => {
     expect(resultText({ kind: "applied" }, errorText)).toBe("Added to Shielded");
     expect(resultText({ kind: "checking" }, errorText)).toBe("Checking: this amount may already be in your balance; we can't confirm it yet.");
-    expect(resultText({ kind: "reportedUsed" }, errorText)).toBe(C.sheet.done.checking);
+    expect(resultText({ kind: "reportedUsed" }, errorText)).toBe("The network says this was already added. There's nothing left to finish.");
     expect(resultText({ kind: "proofWaiting" }, errorText)).toBe("Waiting for the network to confirm");
     expect(resultText({ kind: "notApplied", error: "platform.unavailable" }, errorText)).toBe("error platform.unavailable");
   });

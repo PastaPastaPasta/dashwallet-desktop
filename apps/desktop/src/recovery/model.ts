@@ -72,6 +72,7 @@ export const RECOVERY_COPY = {
       applied: (kind: LockKind = "shielded") => (kind === "platformAddress" ? "Added to your Platform address" : "Added to Shielded"),
       checking: "Checking: this amount may already be in your balance; we can't confirm it yet.",
       proofWaiting: "Waiting for the network to confirm",
+      reportedUsed: "The network says this was already added. There's nothing left to finish.",
     },
   },
 } as const;
@@ -154,8 +155,9 @@ export function resultText(r: RowResult, errorText: (e: unknown) => string, kind
     case "applied":
       return RECOVERY_COPY.sheet.done.applied(kind);
     case "checking":
-    case "reportedUsed":
       return RECOVERY_COPY.sheet.done.checking;
+    case "reportedUsed":
+      return RECOVERY_COPY.sheet.done.reportedUsed;
     case "proofWaiting":
       return RECOVERY_COPY.sheet.done.proofWaiting;
     case "notApplied":
