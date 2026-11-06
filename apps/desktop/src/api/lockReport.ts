@@ -53,6 +53,8 @@ export const FLOW_NAME: Record<FlowKindName, string> = {
   proposal: "Proposal fee",
   // 0.1 lane E2: "Move to Dash wallet" from the Platform addresses.
   platformAddressMove: "Move to Dash wallet",
+  // 0.2 X1b: a payment to another Platform address.
+  platformAddressSend: "Payment from Platform",
   // 0.1 E1: Core → Shielded, and a shielded send or unshield.
   shield: "Shielding",
   shieldedSpend: "Shielded payment",

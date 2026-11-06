@@ -57,6 +57,10 @@ pub enum FlowKind {
     /// addresses to its Core receive address under a `PlatformOp` grant
     /// (m4 §7 item 67), signed with the payment-address keys alone.
     PlatformAddressMove,
+    /// A send to someone else's Platform address (m4 §2.12, 0.2): the same
+    /// payment-address keys as `PlatformAddressMove`, from a fresh
+    /// `PlatformOp` grant redeemed for that one send (never a held lease).
+    PlatformAddressSend,
     /// Core → Shielded (m4 §2.13): the asset lock under a `PlatformOp`
     /// grant's `max_duffs`, then its ShieldFromAssetLock.
     Shield,

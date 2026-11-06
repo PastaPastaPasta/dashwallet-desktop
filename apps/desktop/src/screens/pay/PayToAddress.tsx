@@ -13,7 +13,8 @@ import { AddressBookPicker } from "../tools/AddressBook";
 import { useDisplay } from "../../format/display";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
-import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAmountField, useAvailable, useEstimate, useMax, type Phase } from "./form";
+import { PayFromPlatform } from "./PayFromPlatform";
+import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, usePayAmount, type Phase } from "./form";
 import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, type Advanced, type Outcome } from "./model";
 import { ResultSheet } from "./ResultSheet";
 import { useDraft } from "./useDraft";
@@ -37,7 +38,7 @@ export function PayToAddress({
   const draft = useDraft(walletId, locked);
 
   const [address, setAddress] = useState(prefill?.address ?? "");
-  const amount = useAmountField(shown, prefill?.amount ? shown.full(prefill.amount) : "");
+  const amount = usePayAmount(shown, prefill?.amount ? shown.full(prefill.amount) : "");
   // Settings ▸ General's default starts each new form (U-04 D5); Max still turns it on.
   const subtractFeeByDefault = () => ui.get().prefs.subtractFeeByDefault;
   const [subtractFee, setSubtractFee] = useState(subtractFeeByDefault);
@@ -70,6 +71,8 @@ export function PayToAddress({
   });
 
   const addrError = checkedAddr !== "" && addrClass.data ? addressProblem(addrClass.data) : null;
+  // A Platform address is paid from the Platform balance (platform/send.ts), not by a Core draft.
+  const platform = checkedAddr !== "" && checkedAddr === addr && addrClass.data?.kind === "platform";
   const { duffs } = amount;
 
   const recipient =
@@ -80,7 +83,7 @@ export function PayToAddress({
   const available = useAvailable(walletId, advanced);
 
   const { estimate, general: generalError, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked, shown);
-  const ready = estimated && settled;
+  const ready = estimated && settled && !amount.fiat.error;
   const max = useMax(walletId, advanced, shown, (text) => {
     amount.setText(text);
     setSubtractFee(true);
@@ -145,6 +148,10 @@ export function PayToAddress({
               </span>
             )}
           </FormField>
+          {platform ? (
+            <PayFromPlatform walletId={walletId} network={network} to={checkedAddr} amount={amount} onSent={() => setAddress("")} />
+          ) : (
+            <>
           <AmountFields
             shown={shown}
             amount={amount}
@@ -161,9 +168,15 @@ export function PayToAddress({
           <FormField label="Message" hint="Kept with the transaction in this wallet; not sent to the payee.">
             {(p) => <input {...p} data-testid="pay-message" value={message} autoComplete="off" onChange={(e) => setMessage(e.target.value)} />}
           </FormField>
+            </>
+          )}
         </section>
-        <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" ? duffs : null} />
-        <PayFooter problem={generalError} offer={offer === null || !settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
+        {!platform && (
+          <>
+            <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" ? duffs : null} />
+            <PayFooter problem={generalError} offer={offer === null || !settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
+          </>
+        )}
       </form>
       {picking && <AddressBookPicker walletId={walletId} network={network} purpose="send" onChoose={chosen} onClose={() => setPicking(false)} />}
       {phase.kind === "confirm" && (

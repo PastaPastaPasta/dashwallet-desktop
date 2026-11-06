@@ -16,6 +16,7 @@ mod platform_addresses;
 mod registration;
 mod shielded;
 mod startup;
+mod unfinished;
 
 use dw_engine::platform::{BearerSecret, FlowKind};
 
@@ -28,6 +29,7 @@ use self::invitations::InvitationStatus;
 use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary};
 use self::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformAddressBalance,
+    PlatformReceiveAddress, PlatformSendOutcome, PlatformSendQuote,
 };
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
 use self::registration::{
@@ -38,6 +40,7 @@ use self::shielded::{
     ShieldedSpendQuote, ShieldedStatus,
 };
 use self::startup::{DashPayStatus, DashPaySyncStatus, QuorumSource, SyncPassReport};
+use self::unfinished::{LockFinish, LockKind, UnfinishedTransfers};
 use crate::api::send::BroadcastOutcome;
 use crate::dto::platform::{DispatchStateName, FlowKindName, Lease};
 use crate::ipc::commands;
@@ -47,6 +50,14 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     (
         "NetworkSession::fund_platform_addresses_for_test",
         "test only: dwcli's testnet smoke funds a Platform address; the 0.1 app has no receive or fund path",
+    ),
+    (
+        "NetworkSession::quote_send_for_test",
+        "test only: dw-app's IPC tests quote a send without the network to authorize its grant",
+    ),
+    (
+        "NetworkSession::forget_send_for_test",
+        "test only: dw-app's IPC tests drop a quoted send between a grant's issue and its bind",
     ),
     (
         "NetworkSession::dashpay",
@@ -462,6 +473,40 @@ commands! {
         Ok(dashpay.move_to_core(amount.into(), to, grant).await?.into())
     }
 
+    /// The wallet's Platform receive address: the lowest unused one.
+    #[facade("DashPay::platform_receive_address")]
+    fn platform_receive_address(state, wallet_id: String) -> PlatformReceiveAddress {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_receive_address().await?.into())
+    }
+
+    /// What sending `amount` to the Platform address `to` takes; `retryOf`
+    /// names the send this retries ("Retry this payment"), else `null`.
+    #[facade("DashPay::platform_send_quote")]
+    fn platform_send_quote(
+        state,
+        wallet_id: String,
+        to: String,
+        amount: WithdrawAmount,
+        retry_of: Option<String>,
+    ) -> PlatformSendQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_send_quote(to, amount.into(), retry_of).await?.into())
+    }
+
+    /// Sends the quoted `operation` (its recipient and amount, once) under
+    /// `grant`, a fresh `platformOp` grant.
+    #[facade("DashPay::platform_send")]
+    fn platform_send(
+        state,
+        wallet_id: String,
+        operation: String,
+        grant: String,
+    ) -> PlatformSendOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_send(operation, grant).await?.into())
+    }
+
     // Grants, flows and leases.
 
     /// The caps of the grant `action` needs.
@@ -729,5 +774,30 @@ commands! {
         let dashpay = state.dashpay(&wallet_id).await?;
         let rows = dashpay.shielded_history(offset, limit).await?;
         Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    // Unfinished transfers (m4 §2.14).
+
+    /// The wallet's funding locks whose Platform side is not known to have
+    /// happened (its own and those a restore read back).
+    #[facade("DashPay::unfinished_transfers")]
+    fn unfinished_transfers(state, wallet_id: String) -> UnfinishedTransfers {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.unfinished_transfers().await?.into())
+    }
+
+    /// Finishes the unfinished transfer of `kind` at `txid`:`vout` under
+    /// `grant`, on the same lock; only a proved apply finishes it.
+    #[facade("DashPay::finish_transfer")]
+    fn finish_transfer(
+        state,
+        wallet_id: String,
+        kind: LockKind,
+        txid: String,
+        vout: u32,
+        grant: String,
+    ) -> LockFinish {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.finish_transfer(kind.into(), txid, vout, grant).await?.into())
     }
 }

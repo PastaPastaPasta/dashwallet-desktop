@@ -7,14 +7,17 @@ import type { Backend } from "./backend";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
 import type { ShieldQuote } from "./generated/ShieldQuote";
+import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import { creditsToDuffs } from "./pending";
 import { feedSync, rawSync, readTicket, useShownSync } from "./syncDisplay";
 import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRequest } from "./generated/HistoryRequest";
 import type { IdentitySummary } from "./generated/IdentitySummary";
+import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { LockOutcome } from "./generated/LockOutcome";
 import type { LockProgress } from "./generated/LockProgress";
+import { hasPendingMove } from "../platform/move";
 import { reconcileLockReport } from "./lockReport";
 import { isChangingUsernameInRequests } from "./username";
 
@@ -43,6 +46,8 @@ export const keys = {
   shieldedStatus: (walletId: string) => ["dashpay", "shielded", "status", walletId] as const,
   shieldedHistory: (walletId: string) => ["dashpay", "shielded", "history", walletId] as const,
   shieldedAddress: (walletId: string) => ["dashpay", "shielded", "address", walletId] as const,
+  unfinishedTransfers: (walletId: string) => ["dashpay", "unfinished", walletId] as const,
+  unfinishedTransfersAll: ["dashpay", "unfinished"] as const,
   shieldedQuote: (walletId: string, request: string) => ["shieldedQuote", walletId, request] as const,
   // Under "dashpay": a `platform{domain:"platformAddresses"}` event is a domain events.ts does not
   // name, which it answers by invalidating everything under that prefix.
@@ -50,6 +55,8 @@ export const keys = {
   platformActivity: (walletId: string) => ["dashpay", "platformActivity", walletId] as const,
   // Not under "dashpay": a quote is a proven network read, which a signal must not repeat while Confirm is open.
   platformMoveQuote: (walletId: string) => ["platformMoveQuote", walletId] as const,
+  platformReceiveAddress: (walletId: string) => ["dashpay", "platformReceiveAddress", walletId] as const,
+  platformSendQuote: (walletId: string, to: string, amount: string) => ["platformSendQuote", walletId, to, amount] as const,
   networkChoice: ["networkChoice"] as const,
   sync: ["sync"] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
@@ -82,6 +89,10 @@ export const keys = {
   coinjoinSettings: ["coinjoin", "settings"] as const,
   /** Every governance read (the `governance_*` commands, BL-232): a `governance` event makes them all stale. */
   governanceAll: ["governance"] as const,
+  /** Prices (MP-01): `ratesStatus` and `ratesCurrencies`; a `rates` event makes them stale. */
+  ratesAll: ["rates"] as const,
+  ratesStatus: ["rates", "status"] as const,
+  ratesCurrencies: ["rates", "currencies"] as const,
   /** Every DashPay read below: a `platform` or `dashPayNews` signal makes them all stale. */
   dashpayAll: ["dashpay"] as const,
   /** Every wallet's DashPay status: sync moves `noIdentity`'s `waitingForSync` (BL-153 D9). */
@@ -134,7 +145,10 @@ export function usePlatformAddresses(walletId: string) {
   return useQuery({ queryKey: keys.platformAddresses(walletId), queryFn: () => b.platformAddresses(walletId), retry: false });
 }
 
-const PENDING_MOVE_REFETCH_MS = 30_000;
+export const PENDING_MOVE_REFETCH_MS = 30_000;
+
+/** How soon Platform activity is read again: while a move or send is pending or may still land (it settles in the engine within minutes). */
+export const platformActivityRefetchMs = (data: readonly PlatformActivity[] | null | undefined): number | false => (hasPendingMove(data) ? PENDING_MOVE_REFETCH_MS : false);
 
 /** The Platform-address activity rows, newest first; `null` while dw-app has no such command. */
 export function usePlatformActivity(walletId: string) {
@@ -143,8 +157,7 @@ export function usePlatformActivity(walletId: string) {
     queryKey: keys.platformActivity(walletId),
     queryFn: () => b.platformActivity(walletId),
     retry: false,
-    // A move Platform has not confirmed settles in the engine within minutes: look again.
-    refetchInterval: (q) => (q.state.data?.some((a) => a.kind === "moveToCore" && a.state === "pending") ? PENDING_MOVE_REFETCH_MS : false),
+    refetchInterval: (q) => platformActivityRefetchMs(q.state.data),
   });
 }
 
@@ -160,10 +173,35 @@ export function usePlatformMoveQuote(walletId: string, enabled: boolean) {
   });
 }
 
+/** The wallet's Platform receive address, read while Receive's "Receive on Platform" card is open.
+ * Under "dashpay": a Platform sync event reads it again (it changes once the address is funded). */
+export function usePlatformReceiveAddress(walletId: string, enabled: boolean) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.platformReceiveAddress(walletId), queryFn: () => b.platformReceiveAddress(walletId), enabled, retry: false });
+}
+
+/** What sending `amount` to the Platform address `to` takes; `null` amount: no quote yet. */
+export function usePlatformSendQuote(walletId: string, to: string, amount: WithdrawAmount | null) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.platformSendQuote(walletId, to, amount === null ? "" : amount.kind === "all" ? "all" : amount.credits),
+    queryFn: () => b.platformSendQuote(walletId, to, amount!, null),
+    enabled: amount !== null && to !== "",
+    retry: false,
+    gcTime: 0,
+  });
+}
+
 /** The shielded account's status; `null` while dw-app has no such command (api/pending.ts). */
 export function useShieldedStatus(walletId: string) {
   const b = useBackend();
   return useQuery({ queryKey: keys.shieldedStatus(walletId), queryFn: () => b.shieldedStatus(walletId), retry: false });
+}
+
+/** The Core → Shielded locks not known to be applied; `null` while dw-app has no such command. */
+export function useUnfinishedTransfers(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.unfinishedTransfers(walletId), queryFn: () => b.unfinishedTransfers(walletId), retry: false });
 }
 
 /** The shielded activity rows, pending first; `null` while dw-app has no such command. */

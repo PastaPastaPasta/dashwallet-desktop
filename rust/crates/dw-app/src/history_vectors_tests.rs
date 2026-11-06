@@ -414,6 +414,7 @@ fn records() -> Vec<TxRecord> {
                 counts_toward_balance: s.kind != TxStatusKind::Abandoned,
                 involves_watch_only: s.watch,
                 counterparty: None,
+                fiat_then: None,
             }
         })
         .collect();

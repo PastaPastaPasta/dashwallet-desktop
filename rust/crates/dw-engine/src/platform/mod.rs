@@ -95,6 +95,13 @@ mod topup_tests;
 pub(crate) mod trust;
 #[cfg(test)]
 mod trust_tests;
+mod unfinished;
+#[cfg(test)]
+mod unfinished_conformance;
+pub(crate) mod unfinished_locks;
+#[cfg(test)]
+mod unfinished_locks_tests;
+mod unfinished_shields;
 mod users;
 #[cfg(test)]
 mod users_tests;
@@ -138,7 +145,8 @@ pub use payments::{
 };
 pub use platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformActivityKind,
-    PlatformActivityState, PlatformAddressBalance, PlatformAddressRow,
+    PlatformActivityState, PlatformAddressBalance, PlatformAddressRow, PlatformReceiveAddress,
+    PlatformSendOutcome, PlatformSendQuote, RecipientProblem,
 };
 pub use profile::{
     AvatarCandidate, AvatarChange, AvatarImage, AvatarSize, AvatarSource, CropRect, Profile,
@@ -165,3 +173,7 @@ pub use startup::{
 };
 pub use startup_status::{DashPayStartup, PlatformCadence, SpvState};
 pub use status::PlatformStatus;
+pub use unfinished::{
+    LockFinish, LockKindId, LockOrigin, TransfersReport, UnfinishedLock, UnfinishedState,
+    UnfinishedTransfers,
+};

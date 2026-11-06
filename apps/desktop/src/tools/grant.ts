@@ -5,18 +5,24 @@
 
 import { hasCode, type Backend } from "../api/backend";
 import type { AuthGrant } from "../api/generated/AuthGrant";
+import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { LockStatus } from "../api/generated/LockStatus";
 import { LockModel } from "../onboarding/lock";
 import { Model } from "../onboarding/model";
 
-type Api = Pick<Backend, "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
+/** `authorizePlatformSend` only where a tool asks for a `platformSend` grant (Pay from Platform). */
+type Api = Pick<Backend, "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"> & Partial<Pick<Backend, "authorizePlatformSend">>;
+
+/** What a grant is asked for: a vault purpose, or the quoted Platform send `operation`, whose
+ * `platformOp` grant the engine sizes from the quote and binds to it: the only grant that send takes. */
+export type GrantAsk = GrantPurposeSpec | { kind: "platformSend"; operation: string };
 
 /** Payments and Platform spends follow "Require authentication for every payment" (E0-13 D11);
  * the rest need the passphrase only while the vault is not fully unlocked. */
-export function needsPassphrase(purpose: GrantPurposeSpec, lock: LockStatus, paymentAuth: boolean): boolean {
+export function needsPassphrase(purpose: GrantAsk, lock: LockStatus, paymentAuth: boolean): boolean {
   if (!lock.encrypted) return false;
-  if (purpose.kind === "spend" || purpose.kind === "platformOp") return paymentAuth || lock.state !== "unlocked";
+  if (purpose.kind === "spend" || purpose.kind === "platformOp" || purpose.kind === "platformSend") return paymentAuth || lock.state !== "unlocked";
   return lock.state !== "unlocked";
 }
 
@@ -25,7 +31,7 @@ export function needsPassphrase(purpose: GrantPurposeSpec, lock: LockStatus, pay
 export const PAYMENT_PROMPT = "Enter your passphrase to authorize this payment.";
 
 export interface GrantRequest {
-  purpose: GrantPurposeSpec;
+  purpose: GrantAsk;
   walletId: string | null;
 }
 
@@ -56,7 +62,7 @@ export class GrantModel extends Model {
   /** A grant for `purpose`: at once when the vault's credential will do, else once the user
    * entered the passphrase; `null` when they cancelled, or when a cancel came after `since`
    * (the action's `epoch`). Other refusals throw. */
-  async obtain(purpose: GrantPurposeSpec, walletId: string | null, since = this.#epoch): Promise<AuthGrant | null> {
+  async obtain(purpose: GrantAsk, walletId: string | null, since = this.#epoch): Promise<AuthGrant | null> {
     if (since !== this.#epoch) return null;
     if (this.#asking) throw new Error("a grant is already being asked for");
     this.#asking = true;
@@ -66,7 +72,7 @@ export class GrantModel extends Model {
       if (epoch !== this.#epoch) return null;
       if (!needsPassphrase(purpose, lock, paymentAuth)) {
         try {
-          const grant = await this.api.authorize(purpose, walletId, { kind: "unencrypted" });
+          const grant = await this.#issue(purpose, walletId, { kind: "unencrypted" });
           if (epoch === this.#epoch) return grant;
           this.revoke(grant);
           return null;
@@ -92,7 +98,7 @@ export class GrantModel extends Model {
     if (!request) return false;
     let grant: AuthGrant | null = null;
     const ok = await this.lock.attempt(passphrase, async (p) => {
-      grant = await this.api.authorize(request.purpose, request.walletId, { kind: "passphrase", passphrase: p });
+      grant = await this.#issue(request.purpose, request.walletId, { kind: "passphrase", passphrase: p });
     });
     if (!grant) return ok;
     // Cancelled (or another request began) while the passphrase was checked: this grant has
@@ -113,7 +119,7 @@ export class GrantModel extends Model {
   /** `run` under a grant for `purpose`; a grant `run` did not use (it threw) is revoked. `null`
    * when the request was cancelled (`since` as for `obtain`); a refusal throws. */
   async withGrant<T>(
-    purpose: GrantPurposeSpec,
+    purpose: GrantAsk,
     walletId: string | null,
     run: (grant: AuthGrant) => Promise<T>,
     since = this.#epoch,
@@ -126,6 +132,12 @@ export class GrantModel extends Model {
       this.revoke(grant);
       throw e;
     }
+  }
+
+  #issue(ask: GrantAsk, walletId: string | null, credential: CredentialSpec): Promise<AuthGrant> {
+    if (ask.kind !== "platformSend") return this.api.authorize(ask, walletId, credential);
+    if (walletId === null || !this.api.authorizePlatformSend) throw new Error("no send grant here");
+    return this.api.authorizePlatformSend(walletId, ask.operation, credential);
   }
 
   /** Drops a grant the call did not use (unknown or spent ids are ignored). */

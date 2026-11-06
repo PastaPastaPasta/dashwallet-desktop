@@ -6,7 +6,7 @@ import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { hasPendingMove, invalidArgumentText, moveBlock, moveCanRetry, moveErrorText, moveFor, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
+import { hasPendingMove, hasUnansweredOp, sendHolds, invalidArgumentText, moveBlock, moveCanRetry, moveErrorText, moveFor, MOVE_COPY, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
 
 const TO = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
 const OUTCOME: MoveToCoreOutcome = { id: "pm-1", credits: "40000000000", expectedDuffs: 39_998_000, to: TO, state: "done", feeCredits: "2000000" };
@@ -63,7 +63,7 @@ describe("Move to Dash wallet", () => {
 
   it("keeps a pending result, and its warning, after the sheet is dismissed, until Activity shows the move settled", async () => {
     const { flow, answer } = setup();
-    const row = (state: PlatformActivity["state"]): PlatformActivity => ({ id: OUTCOME.id, kind: "moveToCore", state, credits: OUTCOME.credits, address: null, to: TO, expectedDuffs: OUTCOME.expectedDuffs, feeCredits: null, at: 1 });
+    const row = (state: PlatformActivity["state"]): PlatformActivity => ({ id: OUTCOME.id, kind: "moveToCore", state, credits: OUTCOME.credits, address: null, to: TO, expectedDuffs: OUTCOME.expectedDuffs, feeCredits: null, at: 1, mayLand: state === "pending", estimated: false });
     flow.begin();
     const going = flow.move(GRANT, TO);
     await vi.waitFor(() => expect(flow.step).toBe("running"));
@@ -88,10 +88,48 @@ describe("Move to Dash wallet", () => {
   });
 
   it("reads a pending move off Activity's rows", () => {
-    const base = { id: "pm-1", credits: "1", address: null, to: null, expectedDuffs: null, feeCredits: null, at: 1 } as const;
+    const base = { id: "pm-1", credits: "1", address: null, to: null, expectedDuffs: null, feeCredits: null, at: 1, mayLand: false, estimated: false } as const;
     expect(hasPendingMove([{ ...base, kind: "moveToCore", state: "pending" }])).toBe(true);
     expect(hasPendingMove([{ ...base, kind: "moveToCore", state: "done" }, { ...base, kind: "incoming", state: "pending" }])).toBe(false);
+    // A send shares the hold: a pending one holds a move too.
+    expect(hasPendingMove([{ ...base, kind: "send", state: "pending" }])).toBe(true);
     expect(hasPendingMove(null)).toBe(false);
+  });
+
+  it("counts a failed move or send that may still land as holding, and one that never will as not", () => {
+    const base = { id: "ps-1", credits: "1", address: null, to: null, expectedDuffs: null, feeCredits: null, at: 1, estimated: false } as const;
+    expect(hasPendingMove([{ ...base, kind: "send", state: "failed", mayLand: true }])).toBe(true);
+    expect(hasPendingMove([{ ...base, kind: "moveToCore", state: "failed", mayLand: true }])).toBe(true);
+    expect(hasPendingMove([{ ...base, kind: "send", state: "failed", mayLand: false }])).toBe(false);
+    expect(hasPendingMove([{ ...base, kind: "send", state: "replaced", mayLand: false }])).toBe(false);
+    expect(hasPendingMove([{ ...base, kind: "incoming", state: "failed", mayLand: true }])).toBe(false);
+    // Only a `pending` one is unanswered: a failed one that may land can still be retried.
+    expect(hasUnansweredOp([{ ...base, kind: "send", state: "failed", mayLand: true }])).toBe(false);
+    expect(hasUnansweredOp([{ ...base, kind: "send", state: "pending", mayLand: true }])).toBe(true);
+  });
+
+  it("the Move card waits only for an unanswered op: a held move (failed by height) leaves Move offered, a held send is named", () => {
+    const base = { id: "x-1", credits: "1", address: null, to: null, expectedDuffs: null, feeCredits: null, at: 1, estimated: false } as const;
+    const heldMove = { ...base, kind: "moveToCore", state: "failed", mayLand: true } as const;
+    const heldSend = { ...base, kind: "send", state: "failed", mayLand: true } as const;
+    // The card gates Move on hasUnansweredOp: a failed op that may land does not hide Move.
+    expect([hasUnansweredOp([heldMove]), hasUnansweredOp([heldSend]), hasUnansweredOp([{ ...heldMove, state: "pending" }])]).toEqual([false, false, true]);
+    expect([sendHolds([heldSend]), sendHolds([{ ...heldSend, state: "pending" }])]).toEqual([true, true]);
+    expect([sendHolds([heldMove]), sendHolds([heldMove, heldSend]), sendHolds([{ ...heldSend, mayLand: false }]), sendHolds(null)]).toEqual([false, false, false, false]);
+    expect(MOVE_COPY.waiting.sendHeld).toBe("A payment from Platform may still go through. Moving waits until it settles.");
+  });
+
+  it("names the held one in a refused move", () => {
+    const base = { id: "x-1", credits: "1", address: null, to: null, expectedDuffs: null, feeCredits: null, at: 1, estimated: false } as const;
+    const heldMove = { ...base, kind: "moveToCore", state: "failed", mayLand: true } as const;
+    const heldSend = { ...base, kind: "send", state: "failed", mayLand: true } as const;
+    const held = appError("credits.move_pending", { kind: "artifact", artifact: heldSend.id });
+    expect(moveErrorText(held, credits)).toBe("An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.");
+    expect(moveErrorText(held, credits, [heldMove])).toBe("An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.");
+    // A held payment's own retry, in Pay, is the way out.
+    expect(moveErrorText(held, credits, [heldSend])).toBe(
+      "An earlier payment from Platform may still go through. Wait for it to finish, or send that same payment again from Pay and press Retry that payment, then move again.",
+    );
   });
 
   it("a cancelled passphrase ran nothing: back at the quote, nothing read again", async () => {

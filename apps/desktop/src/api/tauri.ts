@@ -42,6 +42,7 @@ export class IpcBackend implements Backend {
   importWallet = cmd.importWallet;
   authorize = cmd.authorize;
   authorizeSet = cmd.authorizeSet;
+  authorizePlatformSend = (...a: Parameters<typeof cmd.authorizePlatformSend>) => orUnavailable(cmd.authorizePlatformSend(...a));
   beginFlow = cmd.beginFlow;
   endFlow = cmd.endFlow;
   revokeGrant = cmd.revokeGrant;
@@ -62,6 +63,8 @@ export class IpcBackend implements Backend {
   shieldQuote = (...a: Parameters<typeof cmd.shieldQuote>) => orUnavailable(cmd.shieldQuote(...a));
   shieldFromCore = (...a: Parameters<typeof cmd.shieldFromCore>) => orUnavailable(cmd.shieldFromCore(...a));
   resumeShield = (...a: Parameters<typeof cmd.resumeShield>) => orUnavailable(cmd.resumeShield(...a));
+  unfinishedTransfers = (walletId: string) => orAbsent(cmd.unfinishedTransfers(walletId));
+  finishTransfer = (...a: Parameters<typeof cmd.finishTransfer>) => orUnavailable(cmd.finishTransfer(...a));
   shieldedSendQuote = (...a: Parameters<typeof cmd.shieldedSendQuote>) => orUnavailable(cmd.shieldedSendQuote(...a));
   shieldedSend = (...a: Parameters<typeof cmd.shieldedSend>) => orUnavailable(cmd.shieldedSend(...a));
   unshieldQuote = (...a: Parameters<typeof cmd.unshieldQuote>) => orUnavailable(cmd.unshieldQuote(...a));
@@ -71,6 +74,10 @@ export class IpcBackend implements Backend {
   platformActivity = (walletId: string) => orAbsent(cmd.platformActivity(walletId));
   platformMoveToCoreQuote = (...a: Parameters<typeof cmd.platformMoveToCoreQuote>) => orUnavailable(cmd.platformMoveToCoreQuote(...a));
   platformMoveToCore = (...a: Parameters<typeof cmd.platformMoveToCore>) => orUnavailable(cmd.platformMoveToCore(...a));
+  platformAddressesSync = (...a: Parameters<typeof cmd.platformAddressesSync>) => orUnavailable(cmd.platformAddressesSync(...a));
+  platformReceiveAddress = (...a: Parameters<typeof cmd.platformReceiveAddress>) => orUnavailable(cmd.platformReceiveAddress(...a));
+  platformSendQuote = (...a: Parameters<typeof cmd.platformSendQuote>) => orUnavailable(cmd.platformSendQuote(...a));
+  platformSend = (...a: Parameters<typeof cmd.platformSend>) => orUnavailable(cmd.platformSend(...a));
   txDetail = cmd.txDetail;
   txDetailExtras = cmd.txDetailExtras;
   setTxLabel = cmd.setTxLabel;
@@ -107,6 +114,10 @@ export class IpcBackend implements Backend {
   paymentAuthentication = () => cmd.paymentAuthentication();
   uiSettings = () => cmd.uiSettings();
   setUiSettings = cmd.setUiSettings;
+  ratesStatus = () => cmd.ratesStatus();
+  ratesCurrencies = () => cmd.ratesCurrencies();
+  setRatesSettings = cmd.setRatesSettings;
+  refreshRates = () => cmd.refreshRates();
   encryptVault = cmd.encryptVault;
   changePassphrase = cmd.changePassphrase;
   setPaymentAuthentication = cmd.setPaymentAuthentication;

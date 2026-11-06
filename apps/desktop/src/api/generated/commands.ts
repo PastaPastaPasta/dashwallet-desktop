@@ -48,6 +48,7 @@ import type { CostTable } from "./CostTable";
 import type { CreatedWallet } from "./CreatedWallet";
 import type { CredentialSpec } from "./CredentialSpec";
 import type { CsvUnitName } from "./CsvUnitName";
+import type { CurrencyRate } from "./CurrencyRate";
 import type { CurrentVoteRow } from "./CurrentVoteRow";
 import type { DashPayEventPage } from "./DashPayEventPage";
 import type { DashPayProfile } from "./DashPayProfile";
@@ -86,6 +87,8 @@ import type { KeyMaterialInput } from "./KeyMaterialInput";
 import type { LaunchInfo } from "./LaunchInfo";
 import type { Lease } from "./Lease";
 import type { LinkRoute } from "./LinkRoute";
+import type { LockFinish } from "./LockFinish";
+import type { LockKind } from "./LockKind";
 import type { LockOutcome } from "./LockOutcome";
 import type { LockResolutionName } from "./LockResolutionName";
 import type { LockStatus } from "./LockStatus";
@@ -118,6 +121,9 @@ import type { PlatformActivity } from "./PlatformActivity";
 import type { PlatformAddressBalance } from "./PlatformAddressBalance";
 import type { PlatformPacing } from "./PlatformPacing";
 import type { PlatformReachability } from "./PlatformReachability";
+import type { PlatformReceiveAddress } from "./PlatformReceiveAddress";
+import type { PlatformSendOutcome } from "./PlatformSendOutcome";
+import type { PlatformSendQuote } from "./PlatformSendQuote";
 import type { PreparedTxHandle } from "./PreparedTxHandle";
 import type { PreparedTxSummary } from "./PreparedTxSummary";
 import type { PrivateContactDetails } from "./PrivateContactDetails";
@@ -132,6 +138,8 @@ import type { PublishStateName } from "./PublishStateName";
 import type { QrMatrix } from "./QrMatrix";
 import type { QuickUnlockPolicy } from "./QuickUnlockPolicy";
 import type { QuorumSource } from "./QuorumSource";
+import type { RatesSettings } from "./RatesSettings";
+import type { RatesView } from "./RatesView";
 import type { ReceiveRequest } from "./ReceiveRequest";
 import type { RecentNotice } from "./RecentNotice";
 import type { Recipient } from "./Recipient";
@@ -169,6 +177,7 @@ import type { TxEstimate } from "./TxEstimate";
 import type { TxNoticeRow } from "./TxNoticeRow";
 import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
+import type { UnfinishedTransfers } from "./UnfinishedTransfers";
 import type { UriParse } from "./UriParse";
 import type { UserHit } from "./UserHit";
 import type { UsernameCheck } from "./UsernameCheck";
@@ -396,6 +405,21 @@ export function changePassphrase(oldPassphrase: string, newPassphrase: string): 
  */
 export function authorize(purpose: GrantPurposeSpec, walletId: string | null, credential: CredentialSpec): Promise<AuthGrant> {
   return invoke<AuthGrant>("authorize", { purpose, walletId, credential });
+}
+
+/**
+ * `authorize` for the quoted Platform send `operation`
+ * (`platformSendQuote`): a `platformOp` grant with no duffs and the
+ * quote's `credits` (its planned debit), bound to that operation:
+ * `platformSend` refuses any other grant for it, the grant left unused
+ * (`platform.grant_invalid`). It is an ordinary `platformOp` grant
+ * otherwise, as `authorize` issues. A grant an earlier call bound is
+ * revoked, and so is this one if the bind fails. An unknown or sent
+ * operation is `invalid_argument`, and nothing is issued. The payment
+ * rule is `authorize`'s.
+ */
+export function authorizePlatformSend(walletId: string, operation: string, credential: CredentialSpec): Promise<AuthGrant> {
+  return invoke<AuthGrant>("authorize_platform_send", { walletId, operation, credential });
 }
 
 /**
@@ -1755,6 +1779,29 @@ export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to:
 }
 
 /**
+ * The wallet's Platform receive address: the lowest unused one.
+ */
+export function platformReceiveAddress(walletId: string): Promise<PlatformReceiveAddress> {
+  return invoke<PlatformReceiveAddress>("platform_receive_address", { walletId });
+}
+
+/**
+ * What sending `amount` to the Platform address `to` takes; `retryOf`
+ * names the send this retries ("Retry this payment"), else `null`.
+ */
+export function platformSendQuote(walletId: string, to: string, amount: WithdrawAmount, retryOf: string | null): Promise<PlatformSendQuote> {
+  return invoke<PlatformSendQuote>("platform_send_quote", { walletId, to, amount, retryOf });
+}
+
+/**
+ * Sends the quoted `operation` (its recipient and amount, once) under
+ * `grant`, a fresh `platformOp` grant.
+ */
+export function platformSend(walletId: string, operation: string, grant: string): Promise<PlatformSendOutcome> {
+  return invoke<PlatformSendOutcome>("platform_send", { walletId, operation, grant });
+}
+
+/**
  * The caps of the grant `action` needs.
  */
 export function grantRequest(walletId: string, identity: string, action: GrantAction): Promise<GrantRequest> {
@@ -1963,6 +2010,22 @@ export function unshieldToCore(walletId: string, credits: string, to: string | n
  */
 export function shieldedHistory(walletId: string, offset: number, limit: number): Promise<Array<ShieldedActivity>> {
   return invoke<Array<ShieldedActivity>>("shielded_history", { walletId, offset, limit });
+}
+
+/**
+ * The wallet's funding locks whose Platform side is not known to have
+ * happened (its own and those a restore read back).
+ */
+export function unfinishedTransfers(walletId: string): Promise<UnfinishedTransfers> {
+  return invoke<UnfinishedTransfers>("unfinished_transfers", { walletId });
+}
+
+/**
+ * Finishes the unfinished transfer of `kind` at `txid`:`vout` under
+ * `grant`, on the same lock; only a proved apply finishes it.
+ */
+export function finishTransfer(walletId: string, kind: LockKind, txid: string, vout: number, grant: string): Promise<LockFinish> {
+  return invoke<LockFinish>("finish_transfer", { walletId, kind, txid, vout, grant });
 }
 
 /**
@@ -2520,6 +2583,37 @@ export function governanceSubmitProposal(walletId: string, hash: string): Promis
 }
 
 /**
+ * The settings and the chosen currency's price and state now.
+ */
+export function ratesStatus(): Promise<RatesView> {
+  return invoke<RatesView>("rates_status");
+}
+
+/**
+ * Every currency with a price that has not expired, for the picker;
+ * empty while prices are off.
+ */
+export function ratesCurrencies(): Promise<Array<CurrencyRate>> {
+  return invoke<Array<CurrencyRate>>("rates_currencies");
+}
+
+/**
+ * Saves and applies the settings: off stops every request at once.
+ * `rates.invalid_currency` for a code that is not three capital letters.
+ */
+export function setRatesSettings(settings: RatesSettings): Promise<RatesView> {
+  return invoke<RatesView>("set_rates_settings", { settings });
+}
+
+/**
+ * "Update now": one attempt; `rates.off` while no request may be made,
+ * `rates.throttled` within 30 seconds of the last attempt.
+ */
+export function refreshRates(): Promise<RatesView> {
+  return invoke<RatesView>("refresh_rates");
+}
+
+/**
  * `--selftest`: writes the renderer's report, and exits once the report
  * is final (`"final": false` is a checkpoint before a probe that could
  * end the page).
@@ -2598,6 +2692,7 @@ export type CommandArgs = {
   encrypt_vault: { newPassphrase: string; grantId: string };
   change_passphrase: { oldPassphrase: string; newPassphrase: string };
   authorize: { purpose: GrantPurposeSpec; walletId: string | null; credential: CredentialSpec };
+  authorize_platform_send: { walletId: string; operation: string; credential: CredentialSpec };
   authorize_set: { purposes: Array<GrantPurposeSpec>; walletId: string | null; credential: CredentialSpec };
   revoke_grant: { grantId: string };
   reveal_mnemonic: { walletId: string; grantId: string };
@@ -2768,6 +2863,9 @@ export type CommandArgs = {
   platform_addresses_sync: { walletId: string };
   platform_move_to_core_quote: { walletId: string; amount: WithdrawAmount };
   platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; grant: string };
+  platform_receive_address: { walletId: string };
+  platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount; retryOf: string | null };
+  platform_send: { walletId: string; operation: string; grant: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
   dispatch_status: { walletId: string; artifact: string };
   resolve_stuck_funding: { walletId: string; step: string; grant: string };
@@ -2795,6 +2893,8 @@ export type CommandArgs = {
   unshield_quote: { walletId: string; credits: string; to: string | null };
   unshield_to_core: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
   shielded_history: { walletId: string; offset: number; limit: number };
+  unfinished_transfers: { walletId: string };
+  finish_transfer: { walletId: string; kind: LockKind; txid: string; vout: number; grant: string };
   dashpay_contacts: { walletId: string; identity: string; query: ContactQueryArgs };
   dashpay_contact: { walletId: string; identity: string; contact: string };
   dashpay_pending_setup_count: { walletId: string };
@@ -2861,6 +2961,10 @@ export type CommandArgs = {
   governance_create_proposal: { walletId: string; draft: ProposalDraft; grant: string };
   governance_my_proposals: { walletId: string };
   governance_submit_proposal: { walletId: string; hash: string };
+  rates_status: {  };
+  rates_currencies: {  };
+  set_rates_settings: { settings: RatesSettings };
+  refresh_rates: {  };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
@@ -2894,6 +2998,7 @@ export type CommandResults = {
   encrypt_vault: LockStatus;
   change_passphrase: LockStatus;
   authorize: AuthGrant;
+  authorize_platform_send: AuthGrant;
   authorize_set: Array<AuthGrant>;
   revoke_grant: null;
   reveal_mnemonic: RevealedMnemonic;
@@ -3064,6 +3169,9 @@ export type CommandResults = {
   platform_addresses_sync: PlatformAddressBalance;
   platform_move_to_core_quote: MoveToCoreQuote;
   platform_move_to_core: MoveToCoreOutcome;
+  platform_receive_address: PlatformReceiveAddress;
+  platform_send_quote: PlatformSendQuote;
+  platform_send: PlatformSendOutcome;
   grant_request: GrantRequest;
   dispatch_status: DispatchStateName | null;
   resolve_stuck_funding: BroadcastOutcome;
@@ -3091,6 +3199,8 @@ export type CommandResults = {
   unshield_quote: ShieldedSpendQuote;
   unshield_to_core: ShieldedSpendOutcome;
   shielded_history: Array<ShieldedActivity>;
+  unfinished_transfers: UnfinishedTransfers;
+  finish_transfer: LockFinish;
   dashpay_contacts: ContactList;
   dashpay_contact: ContactDetailInfo | null;
   dashpay_pending_setup_count: number;
@@ -3157,6 +3267,10 @@ export type CommandResults = {
   governance_create_proposal: MyProposal;
   governance_my_proposals: Array<MyProposal>;
   governance_submit_proposal: MyProposal;
+  rates_status: RatesView;
+  rates_currencies: Array<CurrencyRate>;
+  set_rates_settings: RatesView;
+  refresh_rates: RatesView;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
@@ -3192,6 +3306,7 @@ export const COMMANDS: Record<CommandName, string> = {
   encrypt_vault: "vault",
   change_passphrase: "vault",
   authorize: "vault",
+  authorize_platform_send: "vault",
   authorize_set: "vault",
   revoke_grant: "vault",
   reveal_mnemonic: "vault",
@@ -3362,6 +3477,9 @@ export const COMMANDS: Record<CommandName, string> = {
   platform_addresses_sync: "identity",
   platform_move_to_core_quote: "identity",
   platform_move_to_core: "identity",
+  platform_receive_address: "identity",
+  platform_send_quote: "identity",
+  platform_send: "identity",
   grant_request: "identity",
   dispatch_status: "identity",
   resolve_stuck_funding: "identity",
@@ -3389,6 +3507,8 @@ export const COMMANDS: Record<CommandName, string> = {
   unshield_quote: "identity",
   unshield_to_core: "identity",
   shielded_history: "identity",
+  unfinished_transfers: "identity",
+  finish_transfer: "identity",
   dashpay_contacts: "social",
   dashpay_contact: "social",
   dashpay_pending_setup_count: "social",
@@ -3455,6 +3575,10 @@ export const COMMANDS: Record<CommandName, string> = {
   governance_create_proposal: "governance",
   governance_my_proposals: "governance",
   governance_submit_proposal: "governance",
+  rates_status: "rates",
+  rates_currencies: "rates",
+  set_rates_settings: "rates",
+  refresh_rates: "rates",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",
@@ -3689,6 +3813,9 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.withdrawal_out_of_range",
   "credits.withdrawal_landed",
   "credits.move_pending",
+  "credits.recipient_invalid",
+  "credits.send_out_of_range",
+  "credits.quote_changed",
   "shielded.not_active",
   "shielded.not_synced",
   "shielded.invalid_address",
@@ -3712,4 +3839,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "governance.contest_closed",
   "governance.not_a_contender",
   "governance.not_implemented",
+  "rates.invalid_currency",
+  "rates.throttled",
+  "rates.off",
+  "rates.storage",
 ];

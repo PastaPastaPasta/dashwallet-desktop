@@ -47,6 +47,7 @@ import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
 import { toolsHandlers } from "./tools";
 import { topUpHandlers } from "./topup";
+import { ratesHandlers } from "./rates";
 import { identitiesHandlers } from "./identities";
 import { isClosed, settingsHandlers } from "./settings";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
@@ -231,7 +232,7 @@ function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPu
 
 /** `Vault::authorize_set`: one credential check, one single-use grant per purpose, all or none.
  * A grant issued while the vault holds no data key carries its own. */
-function authorizeSet(w: World, purposes: GrantPurposeSpec[], walletId: string | null, credential: CredentialSpec): AuthGrant[] {
+export function authorizeSet(w: World, purposes: GrantPurposeSpec[], walletId: string | null, credential: CredentialSpec): AuthGrant[] {
   if (walletId !== null && !/^[0-9a-f]{64}$/i.test(walletId)) throw fail("invalid_argument", `not a wallet id: ${walletId}`);
   if (purposes.length === 0) throw fail("invalid_argument", "no grant purpose");
   const unbound = purposes.find((p) => (p.kind !== "changeCredential") !== (walletId !== null));
@@ -649,6 +650,8 @@ export const HANDLERS: Handlers = {
   ...topUpHandlers({ wallet, dashpay, grant: checkGrant, useGrant, costs: COST_TABLE }),
   // Settings ▸ Advanced ▸ Identities (DP6-01): identities.ts.
   ...identitiesHandlers({ dashpay, grant: checkGrant, useGrant }),
+  // Prices in fiat (MP-01): rates.ts.
+  ...ratesHandlers(),
 
   // App and network
   launch_info: (_, { world }) => world.launch,

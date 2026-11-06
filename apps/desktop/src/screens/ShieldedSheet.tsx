@@ -25,7 +25,7 @@ import { GrantSheet } from "./tools/common";
 const MEMO_BYTES = 36;
 
 /** Formats for the sheet: Dash in the display unit, masked in discreet mode. */
-function useFormats(network: NetworkInfo) {
+export function useFormats(network: NetworkInfo) {
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
   const duffs = (d: number) => (discreet ? shown.masked() : `${shown.compact(d)} ${shown.name}`);

@@ -258,6 +258,22 @@ impl NetworkSession {
             Ok::<_, dw_appdb::AppDbError>(Labels {
                 tx: appdb.labels(&w, LabelKind::Tx)?.into_iter().collect(),
                 address: appdb.labels(&w, LabelKind::Address)?.into_iter().collect(),
+                fiat: appdb
+                    .tx_fiat(&w)?
+                    .into_iter()
+                    .filter_map(|s| {
+                        let source = crate::rates::RateSourceId::from_stored(&s.source)?;
+                        Some((
+                            s.txid,
+                            crate::rates::TxFiat {
+                                currency: s.currency,
+                                price: s.price,
+                                rate_at: s.rate_at,
+                                source,
+                            },
+                        ))
+                    })
+                    .collect(),
             })
         })
         .await?

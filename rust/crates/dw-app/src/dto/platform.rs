@@ -45,6 +45,9 @@ pub enum FlowKindName {
     /// "Move to Dash wallet": Platform-address credits to Core, under a
     /// `platformOp` grant.
     PlatformAddressMove,
+    /// A send to a Platform address under a fresh `platformOp` grant: one
+    /// send, never a lease.
+    PlatformAddressSend,
     /// Core → Shielded: an asset lock under a `platformOp` grant's duffs.
     Shield,
     /// A shielded send or an unshield to Core under a `platformOp` grant's
@@ -59,13 +62,13 @@ mirror_enum!(FlowKind => FlowKindName {
     Registration, TopUp, Withdraw, NameRegistration, ProfileEdit, ContactRequest, Accept,
     AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment, Voting,
     MasternodeRegistration, KeyChange, SharedMasternode, Dissolution, Proposal,
-    PlatformAddressMove, Shield, ShieldedSpend, ShieldDrain
+    PlatformAddressMove, PlatformAddressSend, Shield, ShieldedSpend, ShieldDrain
 });
 mirror_enum!(FlowKindName => FlowKind {
     Registration, TopUp, Withdraw, NameRegistration, ProfileEdit, ContactRequest, Accept,
     AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment, Voting,
     MasternodeRegistration, KeyChange, SharedMasternode, Dissolution, Proposal,
-    PlatformAddressMove, Shield, ShieldedSpend, ShieldDrain
+    PlatformAddressMove, PlatformAddressSend, Shield, ShieldedSpend, ShieldDrain
 });
 
 /// A lease budget: `funding`, `spend` and `masternode` are duffs, `credits`

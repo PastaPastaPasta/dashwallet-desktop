@@ -23,6 +23,7 @@ const MG_PROPOSALS: i64 = 2026102001;
 const PROTX_OPS: i64 = 2026102101;
 const SHARED_SESSIONS: i64 = 2026102201;
 const SHARED_STANDBY: i64 = 2026103001;
+const TX_FIAT: i64 = 2026110501;
 
 const DP_TABLES: [&str; 10] = [
     "dp_avatar",
@@ -84,7 +85,7 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), SHARED_STANDBY);
+    assert_eq!(db.schema_version().unwrap(), TX_FIAT);
     drop(db);
 
     let conn = Connection::open(&path).unwrap();
@@ -105,7 +106,8 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
             MG_PROPOSALS,
             PROTX_OPS,
             SHARED_SESSIONS,
-            SHARED_STANDBY
+            SHARED_STANDBY,
+            TX_FIAT
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -147,7 +149,7 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
     }
 
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), SHARED_STANDBY);
+    assert_eq!(db.schema_version().unwrap(), TX_FIAT);
     assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "Main".into())]);
     assert_eq!(
         db.label(W, crate::LabelKind::Tx, "t").unwrap().as_deref(),
@@ -177,7 +179,8 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
             MG_PROPOSALS,
             PROTX_OPS,
             SHARED_SESSIONS,
-            SHARED_STANDBY
+            SHARED_STANDBY,
+            TX_FIAT
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -195,7 +198,7 @@ fn reopening_and_rerunning_change_nothing() {
     }
     for _ in 0..3 {
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), SHARED_STANDBY);
+        assert_eq!(db.schema_version().unwrap(), TX_FIAT);
         db.conn()
             .execute(
                 "INSERT OR IGNORE INTO dp_main_identity (wallet_id, identity) VALUES (?1, 'id1')",
@@ -229,7 +232,8 @@ fn reopening_and_rerunning_change_nothing() {
             MG_PROPOSALS,
             PROTX_OPS,
             SHARED_SESSIONS,
-            SHARED_STANDBY
+            SHARED_STANDBY,
+            TX_FIAT
         ]
     );
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_main_identity"), 1);
@@ -307,6 +311,7 @@ fn shipped_migrations_are_unchanged() {
                 "mg_shared_standby".to_string(),
                 CHECKSUM_SHARED_STANDBY
             ),
+            (TX_FIAT, "tx_fiat".to_string(), CHECKSUM_TX_FIAT),
         ]
     );
 }
@@ -326,6 +331,7 @@ const CHECKSUM_MG_PROPOSALS: u64 = 6981014660522877648;
 const CHECKSUM_PROTX_OPS: u64 = 8127766132692660851;
 const CHECKSUM_SHARED_SESSIONS: u64 = 10802667430796242021;
 const CHECKSUM_SHARED_STANDBY: u64 = 6265244453823859058;
+const CHECKSUM_TX_FIAT: u64 = 16250844939786173904;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -776,7 +782,7 @@ fn verification_records_without_a_digest_verify_nothing() {
         .unwrap();
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), SHARED_STANDBY);
+    assert_eq!(db.schema_version().unwrap(), TX_FIAT);
     assert!(db.verified_entities().unwrap().is_empty(), "the old row");
     assert_eq!(
         count(
@@ -883,6 +889,12 @@ fn insert_any_row(conn: &Connection, table: &str, wallet: &str) -> usize {
             ("pro_tx_hash", _) if table == "shared_mn_standby" => {
                 "'0000000000000000000000000000000000000000000000000000000000000000'"
             }
+            ("txid", _) if table == "tx_fiat" => {
+                "'0000000000000000000000000000000000000000000000000000000000000000'"
+            }
+            ("currency", _) if table == "tx_fiat" => "'USD'",
+            ("price", _) if table == "tx_fiat" => "'49.0967'",
+            ("source", _) if table == "tx_fiat" => "'ctx'",
             ("source", _) => "'created'",
             ("role", _) => "'coordinator'",
             ("kind", _) if table == "labels" => "'tx'",

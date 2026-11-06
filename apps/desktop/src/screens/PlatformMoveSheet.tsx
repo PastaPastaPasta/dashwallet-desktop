@@ -11,11 +11,12 @@ import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
-import { hasPendingMove, moveBlock, moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
+import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
 import { GrantSheet } from "./tools/common";
 
 function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string; block: MoveBlock | null }) {
   const quote = usePlatformMoveQuote(walletId, true);
+  const activity = usePlatformActivity(walletId);
   const q = quote.data;
   const warning = q ? feeWarning(BigInt(q.feeCredits), BigInt(q.credits)) : null;
   return (
@@ -30,7 +31,7 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
       )}
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="platform-move-quote-error">
-          {moveErrorText(quote.error, credits)}
+          {moveErrorText(quote.error, credits, activity.data)}
         </p>
       ) : !q ? (
         <p className="sheet-text" role="status">
@@ -82,7 +83,7 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
             variant="filledBlue"
             size="large"
             data-testid="platform-move-go"
-            why={block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : quote.isError ? C.quoteFailed : flow.running ? C.running.title : C.quoting}
+            why={block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : quote.isError ? moveErrorText(quote.error, credits, activity.data) : flow.running ? C.running.title : C.quoting}
             disabled={block !== null || !q || quote.isError || quote.isFetching || flow.running}
             onClick={() => block === null && q && void flow.move(q.grant, q.to)}
           >
@@ -98,6 +99,7 @@ export function PlatformMoveSheet({ flow, walletId, network, block }: { flow: Pl
   useModel(flow);
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
+  const activity = usePlatformActivity(walletId);
   if (!flow.open) return <GrantSheet grants={flow.grants} />;
   const amount = (duffs: number) => (discreet ? shown.masked() : `${shown.compact(duffs)} ${shown.name}`);
   const credits = (c: string) => amount(creditsToDuffs(c));
@@ -142,7 +144,7 @@ export function PlatformMoveSheet({ flow, walletId, network, block }: { flow: Pl
           {step === "refused" && (
             <>
               <p className="form-problem" role="alert" data-testid="platform-move-refusal">
-                {moveErrorText(flow.error, credits)}
+                {moveErrorText(flow.error, credits, activity.data)}
               </p>
               <div className="sheet-actions">
                 {moveCanRetry(flow.error) && (
@@ -180,7 +182,10 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
   const dustText = C.card.dust(discreet ? shown.masked() : `${shown.compact(creditsToDuffs(dustCredits))} ${shown.name}`);
   // A move Platform has not confirmed: this session's result, or (after a restart) Activity's record.
   // Until Activity has answered, a fresh Move is not offered either (and an open confirmation waits).
-  const waiting = flow.pending || hasPendingMove(activity.data);
+  // Only an unanswered move or send waits here: one that failed by height and may still land leaves Move
+  // offered (a move at the same inputs follows a held move and frees it); the engine refuses the rest.
+  const waiting = flow.pending || hasUnansweredOp(activity.data);
+  const sendHeld = !flow.pending && sendHolds(activity.data);
   const block = moveBlock(waiting, activity);
   const sheet = <PlatformMoveSheet flow={flow} walletId={walletId} network={network} block={block} />;
   const holdReason = flow.running ? C.running.text : block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : null;
@@ -192,8 +197,13 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
           <h2 className="platform-card-title">{C.card.title}</h2>
           <p className="platform-card-text">
             {funded && <span data-testid="platform-card-amount">{discreet ? shown.masked() : shown.withUnit(platform)}. </span>}
-            {waiting ? C.waiting.text : flow.unseen ? C.unseen : funded ? C.card.text : dustText}
+            {waiting ? (sendHeld ? C.waiting.sendHeld : C.waiting.text) : flow.unseen ? C.unseen : funded ? C.card.text : dustText}
           </p>
+          {sendHeld && !waiting && (
+            <p className="platform-card-text" data-testid="platform-card-send-held">
+              {C.waiting.sendHeld}
+            </p>
+          )}
           {funded && dust && !waiting && (
             <p className="platform-card-text" data-testid="platform-card-dust">
               {dustText}

@@ -858,6 +858,63 @@ commands! {
         Ok(grant.into())
     }
 
+    /// `authorize` for the quoted Platform send `operation`
+    /// (`platformSendQuote`): a `platformOp` grant with no duffs and the
+    /// quote's `credits` (its planned debit), bound to that operation:
+    /// `platformSend` refuses any other grant for it, the grant left unused
+    /// (`platform.grant_invalid`). It is an ordinary `platformOp` grant
+    /// otherwise, as `authorize` issues. A grant an earlier call bound is
+    /// revoked, and so is this one if the bind fails. An unknown or sent
+    /// operation is `invalid_argument`, and nothing is issued. The payment
+    /// rule is `authorize`'s.
+    #[facade(
+        "DashPay::platform_send_grant",
+        "NetworkSession::vault_op",
+        "Vault::authorize",
+        "DashPay::platform_send_bind"
+    )]
+    fn authorize_platform_send(
+        state,
+        wallet_id: String,
+        operation: String,
+        credential: CredentialSpec
+    ) -> AuthGrant {
+        // The secret first: an early return must not drop it unwrapped.
+        let credential = OwnedCredential::from(credential);
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let session = state.session().await?;
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let cap = dashpay.platform_send_grant(operation.clone()).await?;
+        let purpose = GrantPurpose::PlatformOp {
+            max_duffs: cap.max_duffs,
+            max_credits: cap.max_credits,
+        };
+        let grant = issue_grants(&state, &[purpose], credential, move |v, credential| {
+            v.authorize(purpose, Some(&wallet.0), credential)
+                .map(|g| vec![g])
+        })
+        .await?
+        .pop()
+        .ok_or_else(|| AppError::new(EngineCode::Internal, "no grant issued"))?;
+        #[cfg(test)]
+        {
+            *state.send_grant_issued.lock().unwrap() = Some(grant.id.clone());
+            crate::state::Seam::pass_slot(&state.send_bind_seam).await;
+        }
+        match dashpay.platform_send_bind(operation, grant.id.clone()).await {
+            Ok(replaced) => {
+                if let Some(old) = replaced {
+                    session.vault().revoke_grant(&old);
+                }
+            }
+            Err(e) => {
+                session.vault().revoke_grant(&grant.id);
+                return Err(e.into());
+            }
+        }
+        Ok(grant.into())
+    }
+
     /// One credential check for several grants (E0-04 §3.3), one Argon2id
     /// run and one throttle count: "Accept and pay" asks for a `platformOp`
     /// and a `spend` together. Grants come back in the order of `purposes`;

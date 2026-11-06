@@ -1011,6 +1011,62 @@ async fn a_top_up_step_reads_only_its_own_signed_locks_across_a_restart() {
     assert_eq!(t2.funding_status(W, B), Some(Sent));
 }
 
+/// 0.2 X1b: every Platform address fund locks under the one
+/// `AssetLockAddressTopUp` key of account 0, so a fund's step reads only
+/// the locks its calls signed: the first fund's `Consumed` row never
+/// answers for the second, across a restart too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_fund_does_not_adopt_the_first_funds_lock() {
+    const A: &str = "paddr/a/funding";
+    const B: &str = "paddr/b/funding";
+    let key = FundingKey {
+        funding_type: AssetLockFundingType::AssetLockAddressTopUp,
+        identity_index: 0,
+        account: 0,
+    };
+    let step = |step: &str| CallStep::Funding {
+        step: step.into(),
+        key,
+    };
+    let lock = |txid: Txid, status| TrackedRow {
+        txid,
+        key,
+        status,
+        trusted: index_trusted(&key, status),
+        ..row(0, 0, status)
+    };
+    let (t, _, j, src) = setup().await;
+    let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
+
+    // The first fund's lock went out and was consumed.
+    let p = l
+        .call_permit_step("funding", quote(10, 0), step(A))
+        .await
+        .unwrap();
+    let a = sign_lost_lock(&t, &p, W);
+    assert_eq!(p.finish(true), FlowOutcome::Sent);
+    src.set_rows(W, vec![lock(a, R::Consumed)]);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, A), Some(Sent));
+
+    // The second signed a lock no row shows, and failed: the first's row
+    // is not its lock.
+    let p = l
+        .call_permit_step("funding", quote(10, 0), step(B))
+        .await
+        .unwrap();
+    let b = sign_lost_lock(&t, &p, W);
+    assert_eq!(p.finish(false), FlowOutcome::MaybeSent);
+    t.refresh_funding(W).await;
+    assert_eq!(t.funding_status(W, B), Some(MaybeSent));
+    let (t2, _) = reload(&j, &src).await;
+    assert_eq!(t2.funding_status(W, B), Some(MaybeSent));
+    // Its own lock, once tracked, is.
+    src.set_rows(W, vec![lock(a, R::Consumed), lock(b, R::InstantSendLocked)]);
+    t2.refresh_funding(W).await;
+    assert_eq!(t2.funding_status(W, B), Some(Sent));
+}
+
 /// A funding call's coin fence (E0-04 §2a.6) is released by the first
 /// tracked row the changeset tap reports under the call's key in its
 /// wallet that is not foreign to its step, once the call released a

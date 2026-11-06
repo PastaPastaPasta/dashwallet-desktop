@@ -27,7 +27,7 @@ export const MOVE_COPY = {
   },
   title: "Move to Dash wallet",
   message: "Everything on your Platform addresses moves to your Dash wallet. Dash Platform pays it to the address below.",
-  rows: { taken: "Taken from Platform", fee: "Network fee", receive: "You receive about", to: "To your Dash wallet" },
+  rows: { taken: "Taken from Platform, about", fee: "Network fee, about", receive: "You receive about", to: "To your Dash wallet" },
   quoting: "Working out the fee…",
   quoteFailed: "The fee could not be worked out.",
   back: "Back",
@@ -51,6 +51,11 @@ export const MOVE_COPY = {
   unseen: "Your move has an update.",
   waiting: {
     text: "A move to your Dash wallet is not confirmed yet. Do not move again until Activity shows that it went through.",
+    held: "An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.",
+    /** A payment (not a move) from Platform is unsettled: Move waits until it settles. */
+    sendHeld: "A payment from Platform may still go through. Moving waits until it settles.",
+    /** Move refused beside a held payment: that payment's own retry (in Pay) is the way out. */
+    heldSend: "An earlier payment from Platform may still go through. Wait for it to finish, or send that same payment again from Pay and press Retry that payment, then move again.",
     action: "View in Activity",
   },
   /** Before Move is offered, Activity must say no move is unfinished (after a relaunch the flow remembers nothing). */
@@ -81,13 +86,17 @@ export function invalidArgumentText(e: { message: string; data: { kind: string; 
 }
 
 /** A move's refusal, by code. `credits` shows a credit figure as Dash. */
-export function moveErrorText(e: unknown, credits: (c: string) => string): string {
+export function moveErrorText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null): string {
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "platform.insufficient_credits":
       return e.data?.kind === "credits" ? `Not enough on your Platform addresses: ${credits(e.data.needed)} needed with the fee, ${credits(e.data.available)} available.` : "There is not enough on your Platform addresses to cover the fee.";
     case "credits.withdrawal_out_of_range":
       return e.data?.kind === "creditRange" ? `Dash Platform moves between ${credits(e.data.min)} and ${credits(e.data.max)} at a time.` : "Dash Platform does not take a move of this amount.";
+    case "credits.move_pending": {
+      const id = e.data?.kind === "artifact" ? e.data.artifact : null;
+      return activity?.find((a) => a.id === id)?.kind === "send" ? MOVE_COPY.waiting.heldSend : MOVE_COPY.waiting.held;
+    }
     case "platform.broadcast_unknown":
       return "It may have been sent. Check Activity before trying again.";
     case "platform.context_unavailable":
@@ -113,10 +122,23 @@ export function moveErrorText(e: unknown, credits: (c: string) => string): strin
 /** Back is offered when a new quote may pass. */
 export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "platform.insufficient_credits");
 
-/** Whether a move of this wallet is recorded `pending` in the Platform activity (it settles to
- * `done` or `failed` within minutes: the engine's `platform_activity` settles it). */
-export const hasPendingMove = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
-  !!activity?.some((a) => a.kind === "moveToCore" && a.state === "pending");
+/** A move or send Platform has not answered (`pending`) or that may still execute (`mayLand`: also a
+ * `failed` one by height). Moves and sends share one hold on the wallet's Platform addresses. */
+export const isHeldOp = (a: PlatformActivity): boolean => (a.kind === "moveToCore" || a.kind === "send") && (a.state === "pending" || a.mayLand);
+
+/** Whether a move or send of this wallet holds the Platform addresses: recorded `pending` or able to
+ * execute still (it settles within minutes: the engine's `platform_activity` settles it). While one
+ * does, the engine refuses any other move or send that is not its exact retry. */
+export const hasPendingMove = (activity: readonly PlatformActivity[] | null | undefined): boolean => !!activity?.some(isHeldOp);
+
+/** Whether a move or send is recorded `pending`: Platform has not answered, so not even its retry
+ * is taken yet. */
+export const hasUnansweredOp = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
+  !!activity?.some((a) => (a.kind === "moveToCore" || a.kind === "send") && a.state === "pending");
+
+/** Whether a payment (a `send`, not a move) holds the Platform addresses and no move does: the Move card says so. */
+export const sendHolds = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
+  !!activity?.some((a) => a.kind === "send" && isHeldOp(a)) && !activity.some((a) => a.kind === "moveToCore" && isHeldOp(a));
 
 const settledListeners = new Set<() => void>();
 
@@ -125,6 +147,11 @@ const settledListeners = new Set<() => void>();
 export function onMoveSettled(f: () => void): () => void {
   settledListeners.add(f);
   return () => settledListeners.delete(f);
+}
+
+/** Tells the listeners a move or send that ran has ended. */
+export function onMoveSettledNotify() {
+  for (const f of settledListeners) queueMicrotask(f);
 }
 
 export class PlatformMoveFlow extends Model {
@@ -227,7 +254,7 @@ export class PlatformMoveFlow extends Model {
     } finally {
       this.running = false;
       // A cancelled passphrase ran nothing: nothing to read again.
-      if (ran) for (const f of settledListeners) queueMicrotask(f);
+      if (ran) onMoveSettledNotify();
       this.changed();
     }
   }

@@ -286,6 +286,15 @@ fn all_paths(coin: u32, other: u32) -> Vec<(&'static str, DerivationPath)> {
         ),
         ("invitation credit key", c("m/9'/{c}'/5'/3'/2")),
         ("address top-up credit key", c("m/9'/{c}'/5'/4'/2")),
+        (
+            "address top-up credit key, hardened",
+            c("m/9'/{c}'/5'/4'/2'"),
+        ),
+        (
+            "address top-up credit key other network",
+            c("m/9'/{o}'/5'/4'/2"),
+        ),
+        ("address top-up account", c("m/9'/{c}'/5'/4'")),
         ("shielded credit key", c("m/9'/{c}'/5'/5'/2")),
         ("shielded credit key, hardened", c("m/9'/{c}'/5'/5'/2'")),
         ("shielded top-up account", c("m/9'/{c}'/5'/5'")),
@@ -343,6 +352,7 @@ fn expected(scope: SignerScope, name: &str) -> Uses {
             | "registration credit key"
             | "top-up credit key"
             | "invitation credit key"
+            | "address top-up credit key"
             | "shielded credit key"
             | "receiving address",
         ) => sign_public_key,

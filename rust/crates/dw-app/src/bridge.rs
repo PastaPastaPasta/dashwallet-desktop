@@ -211,6 +211,10 @@ pub enum AppEvent {
     Governance {
         network: String,
     },
+    /// Prices changed (MP-01: a fetch, a setting, a price turning stale or
+    /// expiring, mainnet opened or closed): re-read `ratesStatus`. Prices
+    /// are the app's, not a network's.
+    Rates,
 }
 
 /// The domain of a `platform` event. Identities are Base58.
@@ -431,6 +435,7 @@ impl From<EngineEvent> for AppEvent {
             EngineEvent::Governance { network } => AppEvent::Governance {
                 network: net(network),
             },
+            EngineEvent::Rates => AppEvent::Rates,
             EngineEvent::DashPayNews {
                 network,
                 wallet_id,
@@ -928,6 +933,7 @@ mod tests {
                 },
                 EngineEvent::Masternodes { network: network() },
                 EngineEvent::Governance { network: network() },
+                EngineEvent::Rates,
                 // More than the engine sends: the bridge cuts too.
                 EngineEvent::DashPayNews {
                     network: network(),
@@ -978,9 +984,10 @@ mod tests {
                 AppEvent::DashPayNews { .. } => 18,
                 AppEvent::Masternodes { .. } => 19,
                 AppEvent::Governance { .. } => 20,
+                AppEvent::Rates => 21,
             };
             let seen: std::collections::BTreeSet<_> = events.iter().map(variant).collect();
-            assert_eq!(seen, (0..21).collect());
+            assert_eq!(seen, (0..22).collect());
 
             let mut largest = (0, None);
             for event in &events {

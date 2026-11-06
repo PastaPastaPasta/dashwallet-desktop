@@ -176,6 +176,8 @@ pub(crate) struct PlatformRuntime {
     pub(crate) avatars: super::avatar::AvatarRuntime,
     /// The registration flows running in this process (DP1-02).
     pub(crate) registrations: Arc<super::registration_flow::Flows>,
+    /// The quoted Platform sends not yet sent (`platform_moves::SendOps`).
+    pub(crate) send_ops: super::platform_moves::SendOps,
     /// A test's network for the invitation checks (DP5-02).
     #[cfg(test)]
     pub(crate) invitation_net: Mutex<Option<Arc<dyn super::invitation_check::InvitationNet>>>,
@@ -438,6 +440,7 @@ impl PlatformRuntime {
             users: Default::default(),
             avatars: Default::default(),
             registrations: Default::default(),
+            send_ops: Default::default(),
             #[cfg(test)]
             invitation_net: Mutex::new(None),
             contests: Default::default(),

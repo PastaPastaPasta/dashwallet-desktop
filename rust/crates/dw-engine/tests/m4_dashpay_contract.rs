@@ -139,6 +139,12 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.sync_platform_addresses",
     "DashPay.move_to_core_quote",
     "DashPay.move_to_core",
+    // 0.2 X1b slice 1: Platform receive and sends.
+    "DashPay.platform_receive_address",
+    "DashPay.platform_send_quote",
+    "DashPay.platform_send",
+    "DashPay.platform_send_grant",
+    "DashPay.platform_send_bind",
     // 0.1 E1: shielded funds.
     "DashPay.shielded_status",
     "DashPay.shielded_sync",
@@ -151,6 +157,9 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.unshield_quote",
     "DashPay.unshield_to_core",
     "DashPay.shielded_history",
+    // 0.2 RECOVERY: unfinished transfers.
+    "DashPay.unfinished_transfers",
+    "DashPay.finish_transfer",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -171,6 +180,7 @@ const FACADE: &[&str] = &[
     "registration.rs",
     "shielded.rs",
     "startup.rs",
+    "unfinished.rs",
 ];
 
 /// Files of `src/platform/` that are not part of the facade: the module
@@ -194,8 +204,9 @@ const FACADE: &[&str] = &[
 /// wallets' dHash (DP4-03 D27), the Identities page's reads with their
 /// tests (DP6-01), the withdrawal with its network seam and tests (DP6-02),
 /// the invitation checks with their tests (DP5-02), the network's
-/// protocol version (release 0.1), and the shielded funds' library side
-/// with its tests (0.1 E1).
+/// protocol version (release 0.1), the shielded funds' library side
+/// with its tests (0.1 E1), and the unfinished transfers' kinds and runner
+/// with their tests (0.2 recovery).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -257,6 +268,7 @@ const NOT_FACADE: &[&str] = &[
     "runtime_tests.rs",
     "shielded_close_tests.rs",
     "shielded_pool.rs",
+    "shielded_tests",
     "shielded_tests.rs",
     "signers.rs",
     "startup_status.rs",
@@ -265,6 +277,10 @@ const NOT_FACADE: &[&str] = &[
     "topup_tests.rs",
     "trust.rs",
     "trust_tests.rs",
+    "unfinished_conformance.rs",
+    "unfinished_locks.rs",
+    "unfinished_locks_tests.rs",
+    "unfinished_shields.rs",
     "users.rs",
     "users_tests.rs",
     "withdrawal.rs",
@@ -1065,6 +1081,11 @@ fn error_codes_match_the_contract() {
                 artifact: String::new(),
             },
             CreditsError::MovePending { id: String::new() },
+            CreditsError::RecipientInvalid {
+                reason: dw_engine::platform::RecipientProblem::Own,
+            },
+            CreditsError::SendOutOfRange { min: 0 },
+            CreditsError::QuoteChanged,
         ],
         CreditsError::code,
     );
@@ -1545,6 +1566,18 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.unshield_quote(1, None).await.map(drop),
             dp.unshield_to_core(1, None, s(), false).await.map(drop),
             dp.shielded_history(0, 10).await.map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
+        // 0.2 RECOVERY: unfinished transfers refuse an unknown wallet.
+        for refused in [
+            dp.unfinished_transfers().await.map(drop),
+            dp.finish_transfer(LockKindId::Shielded, s(), 0, s())
+                .await
+                .map(drop),
+            dp.finish_transfer(LockKindId::PlatformAddress, s(), 0, s())
+                .await
+                .map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }

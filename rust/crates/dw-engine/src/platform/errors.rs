@@ -511,6 +511,23 @@ pub enum CreditsError {
     /// credits are not spent twice.
     #[error("the move {id} is still pending")]
     MovePending { id: String },
+    /// A send's recipient is no Platform address it may pay (0.2, m4
+    /// §2.12): a Core or shielded address, one of another network, one of
+    /// the wallet's own, or none.
+    #[error("not a Platform address a send may pay: {}", reason.as_str())]
+    RecipientInvalid {
+        reason: super::platform_addresses::RecipientProblem,
+    },
+    /// A send of fewer than `min` credits (Platform's output minimum), or
+    /// an amount the addresses' inputs cannot carry at the input minimum.
+    #[error("a Platform send takes at least {min} credits")]
+    SendOutOfRange { min: u64 },
+    /// The balances changed since the send was quoted, so signing it now
+    /// would take its fee from another address than the one its Confirm
+    /// named, or take another amount from that address. Nothing was signed
+    /// and the grant is unredeemed: quote it again and review it.
+    #[error("the balances changed since this send was quoted; quote it again")]
+    QuoteChanged,
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -525,6 +542,9 @@ impl CreditsError {
             Self::WithdrawalOutOfRange { .. } => "credits.withdrawal_out_of_range",
             Self::WithdrawalLanded { .. } => "credits.withdrawal_landed",
             Self::MovePending { .. } => "credits.move_pending",
+            Self::RecipientInvalid { .. } => "credits.recipient_invalid",
+            Self::SendOutOfRange { .. } => "credits.send_out_of_range",
+            Self::QuoteChanged => "credits.quote_changed",
             Self::Platform(e) => e.code(),
         }
     }

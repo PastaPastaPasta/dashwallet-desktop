@@ -80,7 +80,9 @@ describe("the form's draft", () => {
 
   it("explains addresses it cannot pay", () => {
     expect(addressProblem({ kind: "core", scriptHash: false })).toBeNull();
-    expect(addressProblem({ kind: "platform" })).toMatch(/Platform address/);
+    // Paid from the Platform balance (PayFromPlatform), not refused.
+    expect(addressProblem({ kind: "platform" })).toBeNull();
+    expect(addressProblem({ kind: "shielded" })).toMatch(/shielded address/);
     expect(addressProblem({ kind: "invalid", problem: { kind: "invalidBase58Prefix" } })).toBe("This address is not valid on this network.");
     expect(addressProblem({ kind: "invalid", problem: { kind: "invalidBase58Length" } })).toMatch(/not valid/);
   });
