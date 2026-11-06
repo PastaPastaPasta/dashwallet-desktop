@@ -948,6 +948,8 @@ fn credits_params(e: &CreditsError) -> Value {
         CreditsError::MovePending { id } => json!({"id": id}),
         CreditsError::RecipientInvalid { reason } => json!({"reason": reason.as_str()}),
         CreditsError::SendOutOfRange { min } => json!({"min": min}),
+        CreditsError::FundPending { txid } => json!({"txid": txid}),
+        CreditsError::TooManyInputs { inputs, max } => json!({"inputs": inputs, "max": max}),
         CreditsError::Platform(p) => platform_params(p),
     }
 }

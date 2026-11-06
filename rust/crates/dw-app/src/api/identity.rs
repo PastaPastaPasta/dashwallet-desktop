@@ -29,7 +29,8 @@ use self::invitations::InvitationStatus;
 use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary};
 use self::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformAddressBalance,
-    PlatformReceiveAddress, PlatformSendOutcome, PlatformSendQuote,
+    PendingPlatformFund, PlatformFundOutcome, PlatformFundQuote, PlatformReceiveAddress,
+    PlatformSendOutcome, PlatformSendQuote,
 };
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
 use self::registration::{
@@ -505,6 +506,43 @@ commands! {
     ) -> PlatformSendOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         Ok(dashpay.platform_send(operation, grant).await?.into())
+    }
+
+    /// What adding `duffs` of the Core balance to the wallet's Platform
+    /// address costs and adds.
+    #[facade("DashPay::platform_fund_quote")]
+    fn platform_fund_quote(state, wallet_id: String, duffs: u64) -> PlatformFundQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_fund_quote(duffs).await?.into())
+    }
+
+    /// "Add from Dash wallet": adds `duffs` of the Core balance to the
+    /// wallet's Platform address under `grant`.
+    #[facade("DashPay::platform_fund")]
+    fn platform_fund(state, wallet_id: String, duffs: u64, grant: String) -> PlatformFundOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_fund(duffs, grant).await?.into())
+    }
+
+    /// This install's "Add from Dash wallet" locks not applied yet.
+    #[facade("DashPay::pending_platform_funds")]
+    fn pending_platform_funds(state, wallet_id: String) -> Vec<PendingPlatformFund> {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let pending = dashpay.pending_platform_funds().await?;
+        Ok(pending.into_iter().map(Into::into).collect())
+    }
+
+    /// Applies the pending fund lock `txid` under `grant` ("Pending —
+    /// finish", "Check again").
+    #[facade("DashPay::resume_platform_fund")]
+    fn resume_platform_fund(
+        state,
+        wallet_id: String,
+        txid: String,
+        grant: String,
+    ) -> PlatformFundOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.resume_platform_fund(txid, grant).await?.into())
     }
 
     // Grants, flows and leases.

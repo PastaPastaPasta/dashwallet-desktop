@@ -1,5 +1,6 @@
 //! Platform addresses: the balance, its activity, "Move to Dash wallet",
-//! the receive address and a send to a Platform address (m4 §2.12).
+//! the receive address, a send to a Platform address and "Add from Dash
+//! wallet" (m4 §2.12).
 //! Credits as decimal strings, duffs as numbers.
 
 use dw_engine::platform as engine;
@@ -72,7 +73,9 @@ impl From<engine::PlatformAddressRow> for PlatformAddressRow {
 
 /// `incoming` and `outgoing`: a balance change a sync pass saw;
 /// `moveToCore`: a "Move to Dash wallet" of this wallet; `send`: a send of
-/// this wallet to a Platform address (`to`).
+/// this wallet to a Platform address (`to`); `fromCore`: an "Add from Dash
+/// wallet" of this wallet to its Platform address (`address`), pending
+/// until Platform proves it applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum PlatformActivityKind {
@@ -80,10 +83,11 @@ pub enum PlatformActivityKind {
     Outgoing,
     MoveToCore,
     Send,
+    FromCore,
 }
 
 mirror_enum!(engine::PlatformActivityKind => PlatformActivityKind {
-    Incoming, Outgoing, MoveToCore, Send
+    Incoming, Outgoing, MoveToCore, Send, FromCore
 });
 
 /// `pending`: a move whose outcome is not known yet (never retried);
@@ -374,6 +378,137 @@ impl From<engine::PlatformSendOutcome> for PlatformSendOutcome {
             may_land,
             fee_credits,
             estimated,
+        }
+    }
+}
+
+/// What "Add from Dash wallet" of `duffs` costs and adds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformFundQuote {
+    /// The asset lock's value.
+    pub duffs: u64,
+    /// The lock transaction's fee bound.
+    pub fee_duffs: u64,
+    /// What leaves the Core balance at most.
+    pub total_duffs: u64,
+    /// Platform's fee estimate, out of the lock's credits.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub fee_credits: u64,
+    /// About what the Platform address gains.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    /// The wallet's Platform receive address the fund pays (bech32m).
+    pub to: String,
+    pub grant: GrantRequest,
+}
+
+impl From<engine::PlatformFundQuote> for PlatformFundQuote {
+    fn from(q: engine::PlatformFundQuote) -> Self {
+        let engine::PlatformFundQuote {
+            duffs,
+            fee_duffs,
+            total_duffs,
+            fee_credits,
+            credits,
+            to,
+            grant,
+        } = q;
+        PlatformFundQuote {
+            duffs,
+            fee_duffs,
+            total_duffs,
+            fee_credits,
+            credits,
+            to,
+            grant: grant.into(),
+        }
+    }
+}
+
+/// Where an "Add from Dash wallet" stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlatformFundState {
+    /// `credits` are on the Platform address.
+    Applied {
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        credits: u64,
+    },
+    /// The lock waits for its proof (`resumePlatformFund`).
+    ProofWaiting,
+    /// The apply was refused before its transition was signed, with `error`
+    /// (a code): nothing reached Platform. `resumePlatformFund` tries again.
+    NotApplied { error: String },
+    /// The apply may have executed, unproved: it stays pending
+    /// (`consumptionUnknown`, "Checking") until a proved apply; it blocks
+    /// no new fund.
+    ConsumptionUnknown,
+}
+
+impl From<engine::PlatformFundState> for PlatformFundState {
+    fn from(s: engine::PlatformFundState) -> Self {
+        use engine::PlatformFundState as S;
+        match s {
+            S::Applied { credits } => PlatformFundState::Applied { credits },
+            S::ProofWaiting => PlatformFundState::ProofWaiting,
+            S::NotApplied { error } => PlatformFundState::NotApplied { error },
+            S::ConsumptionUnknown => PlatformFundState::ConsumptionUnknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformFundOutcome {
+    /// The asset lock's txid (hex).
+    pub txid: String,
+    pub state: PlatformFundState,
+}
+
+impl From<engine::PlatformFundOutcome> for PlatformFundOutcome {
+    fn from(o: engine::PlatformFundOutcome) -> Self {
+        let engine::PlatformFundOutcome { txid, state } = o;
+        PlatformFundOutcome {
+            txid,
+            state: state.into(),
+        }
+    }
+}
+
+/// An "Add from Dash wallet" lock of this install not applied yet
+/// ("Pending — finish").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingPlatformFund {
+    pub txid: String,
+    pub duffs: u64,
+    pub proved: bool,
+    /// The lock may already be applied ("Checking"); only a proved apply
+    /// clears it. It blocks no new fund.
+    pub consumption_unknown: bool,
+}
+
+impl From<engine::PendingPlatformFund> for PendingPlatformFund {
+    fn from(p: engine::PendingPlatformFund) -> Self {
+        let engine::PendingPlatformFund {
+            txid,
+            duffs,
+            proved,
+            consumption_unknown,
+        } = p;
+        PendingPlatformFund {
+            txid,
+            duffs,
+            proved,
+            consumption_unknown,
         }
     }
 }

@@ -3,6 +3,8 @@
 /**
  * `incoming` and `outgoing`: a balance change a sync pass saw;
  * `moveToCore`: a "Move to Dash wallet" of this wallet; `send`: a send of
- * this wallet to a Platform address (`to`).
+ * this wallet to a Platform address (`to`); `fromCore`: an "Add from Dash
+ * wallet" of this wallet to its Platform address (`address`), pending
+ * until Platform proves it applied.
  */
-export type PlatformActivityKind = "incoming" | "outgoing" | "moveToCore" | "send";
+export type PlatformActivityKind = "incoming" | "outgoing" | "moveToCore" | "send" | "fromCore";
