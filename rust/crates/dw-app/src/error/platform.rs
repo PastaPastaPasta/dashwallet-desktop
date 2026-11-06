@@ -118,6 +118,7 @@ codes! {
         MovePending = "credits.move_pending",
         RecipientInvalid = "credits.recipient_invalid",
         SendOutOfRange = "credits.send_out_of_range",
+        QuoteChanged = "credits.quote_changed",
     }
 }
 
@@ -473,6 +474,7 @@ impl From<CreditsError> for AppError {
                 CreditsCode::SendOutOfRange,
                 Some(ErrorData::CreditMinimum { min }),
             ),
+            C::QuoteChanged => (CreditsCode::QuoteChanged, None),
             C::Platform(e) => return e.into(),
         };
         AppError {
@@ -644,6 +646,7 @@ mod tests {
                 reason: RecipientProblem::Network,
             },
             CreditsError::SendOutOfRange { min: 1 },
+            CreditsError::QuoteChanged,
             CreditsError::Platform(PlatformError::Unavailable),
         ];
         for e in credits {

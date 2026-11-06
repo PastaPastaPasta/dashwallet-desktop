@@ -78,6 +78,8 @@ export const SEND_COPY = {
   heldOther: "An earlier payment or move from Platform may still go through. Wait for it to finish.",
   /** `invalid_argument` from the send: its operation is unknown or used. */
   expired: "This payment's details expired. Review it again.",
+  quoteChanged: "Balances changed since you reviewed this payment; review it again.",
+  reviewAgain: "Review again",
   retry: "Retry this payment",
   retrying: "Working out the fee…",
   back: "Back",
@@ -131,6 +133,8 @@ export function sendErrorText(e: unknown, credits: (c: string) => string, activi
           return SEND_COPY.heldOther;
       }
     }
+    case "credits.quote_changed":
+      return SEND_COPY.quoteChanged;
     case "platform.trust_mismatch":
       return "Your Platform addresses could not be verified against the network. Nothing was sent.";
     case "invalid_argument":
@@ -146,8 +150,9 @@ export function sendRefusalText(e: unknown, credits: (c: string) => string, acti
   return hasCode(e, "invalid_argument") ? SEND_COPY.expired : sendErrorText(e, credits, activity);
 }
 
-/** Back is offered when a new quote may pass (as for a move), and after an expired operation. */
-export const sendCanRetry = (e: unknown) => moveCanRetry(e) || hasCode(e, "invalid_argument");
+/** Back is offered when a new quote may pass (as for a move), after an expired operation, and when
+ * the balances changed since the review (the form has quoted again). */
+export const sendCanRetry = (e: unknown) => moveCanRetry(e) || hasCode(e, "invalid_argument") || hasCode(e, "credits.quote_changed");
 
 /** The amount a send asks for: Max is `all` (the output pays the fee); otherwise the duffs as credits. */
 export function sendAmount(max: boolean, duffs: number | null | undefined): WithdrawAmount | null {

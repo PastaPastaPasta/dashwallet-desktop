@@ -57,6 +57,29 @@ export interface SendOperation {
   quote: PlatformSendQuote;
   used: boolean;
   grant: string | null;
+  /** A new send's fee source as quoted, and what it gives (`null`: Max, or a retry on stored terms). */
+  source: SendSource | null;
+}
+
+/** A send's fee source: the address and what it gives to the inputs. */
+export interface SendSource {
+  address: string;
+  gives: bigint;
+  keeps: bigint;
+}
+
+/** How a send of `credits` is planned on the balances now: inputs largest first; the fee comes from
+ * the first address that keeps enough for it after giving (`null`: the balances cannot carry it). */
+function sendPlan(p: PlatformWorld, credits: bigint): SendSource | null {
+  let left = credits;
+  let source: SendSource | null = null;
+  for (const a of [...p.addresses].sort((x, y) => Number(BigInt(y.credits) - BigInt(x.credits)))) {
+    const gives = left < BigInt(a.credits) ? left : BigInt(a.credits);
+    left -= gives;
+    const keeps = BigInt(a.credits) - gives;
+    if (source === null && keeps >= SEND_FEE_CREDITS) source = { address: a.address, gives, keeps };
+  }
+  return left > 0n ? null : source;
 }
 
 export interface PlatformWorld {
@@ -246,9 +269,9 @@ function sendQuote(ctx: Ctx, walletId: string, to: string, amount: WithdrawAmoun
   const address = recipient(ctx.world, p, to);
   const retry = retryOf === null ? holdFor(p, address, amount) : namedRetry(p, retryOf, address, amount);
   const operation = `op-${p.nextOperation++}`;
-  const keep = (q: Omit<PlatformSendQuote, "operation" | "retryOf">, retryOf: string | null): PlatformSendQuote => {
+  const keep = (q: Omit<PlatformSendQuote, "operation" | "retryOf">, retryOf: string | null, source: SendSource | null = null): PlatformSendQuote => {
     const quote = { ...q, operation, retryOf };
-    p.operations[operation] = { quote, used: false, grant: null };
+    p.operations[operation] = { quote, used: false, grant: null, source };
     return quote;
   };
   // The exact retry is quoted on the held send's stored terms (a settled one is answered when sent).
@@ -263,18 +286,10 @@ function sendQuote(ctx: Ctx, walletId: string, to: string, amount: WithdrawAmoun
   }
   const credits = BigInt(amount.credits);
   if (credits < SEND_MIN_CREDITS) throw fail("credits.send_out_of_range", "below the minimum", { kind: "creditMinimum", min: String(SEND_MIN_CREDITS) });
-  // Inputs largest first; the fee comes from the first address that keeps enough for it after giving.
-  let left = credits;
-  let kept: { address: string; credits: bigint } | null = null;
-  for (const a of [...p.addresses].sort((x, y) => Number(BigInt(y.credits) - BigInt(x.credits)))) {
-    const give = left < BigInt(a.credits) ? left : BigInt(a.credits);
-    left -= give;
-    const rest = BigInt(a.credits) - give;
-    if (kept === null && rest >= SEND_FEE_CREDITS) kept = { address: a.address, credits: rest };
-  }
-  if (left > 0n || kept === null) throw short(credits + SEND_FEE_CREDITS);
-  const debit = credits + kept.credits;
-  return keep({ credits: String(debit), amountCredits: String(credits), feeCredits: String(SEND_FEE_CREDITS), feeSourceCredits: String(kept.credits), feeSource: kept.address, feeFromAmount: false, to: address, grant: grant(debit) }, null);
+  const source = sendPlan(p, credits);
+  if (source === null) throw short(credits + SEND_FEE_CREDITS);
+  const debit = credits + source.keeps;
+  return keep({ credits: String(debit), amountCredits: String(credits), feeCredits: String(SEND_FEE_CREDITS), feeSourceCredits: String(source.keeps), feeSource: source.address, feeFromAmount: false, to: address, grant: grant(debit) }, null, source);
 }
 
 /** A send's outcome, from its activity row and terms. */
@@ -381,6 +396,10 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     if (target === null) {
       // A new send, or a hold that appeared after its quote.
       if (held.length > 0) throw moveHeld(held[0].id);
+      // As the engine: a new send takes its fee as its Confirm showed, or is quoted again.
+      const now = op.source && sendPlan(p, BigInt(q.amountCredits));
+      if (op.source && (now?.address !== op.source.address || now.gives !== op.source.gives))
+        throw fail("credits.quote_changed", "the balances changed since this send was quoted");
     } else if (target.state === "pending") throw moveHeld(target.id);
     else if (!isHeldOp(target)) {
       // It landed, was replaced by its identical retry, or can never land: its settled outcome, nothing signed or paid.

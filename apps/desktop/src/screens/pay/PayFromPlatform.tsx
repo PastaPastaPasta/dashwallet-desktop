@@ -3,6 +3,7 @@
 // shows how it ended.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { hasCode } from "../../api/backend";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { PlatformActivity } from "../../api/generated/PlatformActivity";
 import type { PlatformSendOutcome } from "../../api/generated/PlatformSendOutcome";
@@ -185,7 +186,7 @@ function SendSheet({
             <div className="sheet-actions">
               {sendCanRetry(flow.error) && (
                 <DashButton variant="tintedGray" size="large" data-testid="platform-send-refused-back" onClick={() => onClose(false)}>
-                  {C.back}
+                  {hasCode(flow.error, "credits.quote_changed") ? C.reviewAgain : C.back}
                 </DashButton>
               )}
               <DashButton variant="filledBlue" size="large" data-testid="platform-send-close" onClick={close}>

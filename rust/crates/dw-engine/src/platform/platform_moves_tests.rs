@@ -2066,6 +2066,108 @@ fn a_deposit_after_signing_can_pay_a_larger_fee() {
     assert!(row.credits <= gross);
 }
 
+/// The quote names the fee source Confirm shows. A deposit to another
+/// address between the quote and the send makes that one the better fee
+/// source; the send is refused rather than signed with it: nothing signed,
+/// the grant unused, and a new quote names the new source and pays.
+#[test]
+fn a_deposit_elsewhere_after_the_quote_refuses_the_reviewed_send() {
+    let estimate = Limits::transfer_at(PlatformVersion::latest()).fee(1);
+    let w = World::new();
+    // Platform meters the estimate, which the new fee source covers.
+    w.net.fee.store(estimate, Ordering::SeqCst);
+    let (a, b) = (w.address(0), w.address(1));
+    let (them, to) = w.theirs(9);
+    w.net.fund(a, 3 * DASH);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let quote = w.send_quote(one, &to).unwrap();
+    assert_eq!(quote.fee_source, Some(a.to_bech32m_string(w.network())));
+    assert_eq!(quote.credits, 3 * DASH);
+    w.net.fund(b, DASH + 3 * estimate);
+    let grant = w.f.grant(quote.credits);
+    let e = w.confirm(&quote.operation, &grant).unwrap_err();
+    assert_eq!(e.code(), "credits.quote_changed", "{e}");
+    assert!(w.net.sent.lock().unwrap().is_empty(), "nothing signed");
+    assert!(w.f.unused(&grant), "nothing redeemed");
+    assert!(w.moves().is_empty());
+    let again = w.send_quote(one, &to).unwrap();
+    assert_eq!(again.fee_source, Some(b.to_bech32m_string(w.network())));
+    w.confirm(&again.operation, &w.f.grant(again.credits))
+        .unwrap();
+    assert_eq!(w.net.credits(them), DASH);
+}
+
+/// A deposit to the quoted fee source itself leaves the reviewed plan's fee
+/// as it was (Confirm said a later deposit to it is reachable), so the fee
+/// check passes. The deposit still raises the planned debit by what the
+/// source now keeps: under the quote's own grant that is
+/// `platform.grant_exceeded`, nothing signed; under a grant that covers it,
+/// the send goes.
+#[test]
+fn a_deposit_to_the_quoted_fee_source_keeps_the_reviewed_fee() {
+    let estimate = Limits::transfer_at(PlatformVersion::latest()).fee(1);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let deposited = |grant: &dyn Fn(&World, u64) -> String| {
+        let w = World::new();
+        let a = w.address(0);
+        let (them, to) = w.theirs(9);
+        w.net.fund(a, 3 * DASH);
+        let quote = w.send_quote(one, &to).unwrap();
+        w.net.fund(a, 2 * estimate);
+        let grant = grant(&w, quote.credits);
+        let out = w.confirm(&quote.operation, &grant);
+        (w, them, grant, out)
+    };
+    let (w, them, grant, out) = deposited(&|w, cap| w.f.grant(cap));
+    assert_eq!(out.unwrap_err().code(), "platform.grant_exceeded");
+    assert!(w.f.unused(&grant));
+    assert!(w.net.sent.lock().unwrap().is_empty());
+    assert_eq!(w.net.credits(them), 0);
+    let (w, them, _, out) = deposited(&|w, _| w.f.grant(20 * DASH));
+    out.unwrap();
+    assert_eq!(w.net.credits(them), DASH);
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1);
+}
+
+/// Platform's answer to an address-funds transition is a proved snapshot of
+/// the addresses, not proof that this transition executed. A send it
+/// answered whose fee source cannot cover the metered fee executed nothing:
+/// it reads pending and may still land, never done, and is done once a
+/// proof shows its nonces.
+#[test]
+fn an_answered_send_that_executed_nothing_reads_pending() {
+    let estimate = Limits::transfer_at(PlatformVersion::latest()).fee(1);
+    let w = World::new();
+    let a = w.address(0);
+    let (them, to) = w.theirs(9);
+    w.net.fund(a, DASH + 3 * estimate);
+    w.net.fee.store(5 * estimate, Ordering::SeqCst);
+    let quote = w
+        .send_quote(WithdrawAmount::Credits { credits: DASH }, &to)
+        .unwrap();
+    let out = (w.confirm(&quote.operation, &w.f.grant(quote.credits))).unwrap();
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1, "signed and answered");
+    assert_eq!(
+        (out.state, out.may_land),
+        (PlatformActivityState::Pending, true)
+    );
+    assert_eq!(
+        (w.net.credits(them), w.net.credits(a)),
+        (0, DASH + 3 * estimate)
+    );
+    let row = w.activity().into_iter().find(|r| r.id == out.id).unwrap();
+    assert_eq!(
+        (row.state, row.may_land),
+        (PlatformActivityState::Pending, true)
+    );
+    // It lands once its fee source covers the fee.
+    w.net.fund(a, 2 * estimate);
+    w.lands(0);
+    assert_eq!(w.net.credits(them), DASH);
+    let row = w.activity().into_iter().find(|r| r.id == out.id).unwrap();
+    assert_eq!(row.state, PlatformActivityState::Done);
+}
+
 /// A send failed by height may still go through, in Activity too, read
 /// afresh; one Platform refused for good never does; one its identical
 /// retry superseded reads as replaced.

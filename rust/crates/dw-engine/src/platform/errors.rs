@@ -522,6 +522,12 @@ pub enum CreditsError {
     /// an amount the addresses' inputs cannot carry at the input minimum.
     #[error("a Platform send takes at least {min} credits")]
     SendOutOfRange { min: u64 },
+    /// The balances changed since the send was quoted, so signing it now
+    /// would take its fee from another address than the one its Confirm
+    /// named, or take another amount from that address. Nothing was signed
+    /// and the grant is unredeemed: quote it again and review it.
+    #[error("the balances changed since this send was quoted; quote it again")]
+    QuoteChanged,
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -538,6 +544,7 @@ impl CreditsError {
             Self::MovePending { .. } => "credits.move_pending",
             Self::RecipientInvalid { .. } => "credits.recipient_invalid",
             Self::SendOutOfRange { .. } => "credits.send_out_of_range",
+            Self::QuoteChanged => "credits.quote_changed",
             Self::Platform(e) => e.code(),
         }
     }

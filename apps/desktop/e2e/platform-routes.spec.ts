@@ -231,6 +231,30 @@ test.describe("Pay from Platform", () => {
     expect(await page.evaluate(() => window.__dwFixture!.world.pending.platform!.activity.filter((a) => a.kind === "send").map((a) => a.state))).toEqual(["done"]);
   });
 
+  test("a payment whose fee source changed since its review is refused unsigned, and reviewing it again names the new one", async ({ page }) => {
+    await open(page, "funded");
+    await payTo(page, PAYEE);
+    await page.getByTestId("pay-amount").fill("0.01");
+    await page.getByTestId("pay-continue").click();
+    const [first, second] = await page.evaluate(() => window.__dwFixture!.world.pending.platform!.addresses.map((a) => a.address));
+    await expect(page.getByTestId("platform-send-confirm-fee-source")).toHaveText(first);
+    // A payment to the other address while Confirm is open makes it the better fee source.
+    await page.evaluate(() => {
+      window.__dwFixture!.world.pending.platform!.addresses[1].credits = "50000000000";
+    });
+    await page.getByTestId("platform-send-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-send-refusal")).toHaveText("Balances changed since you reviewed this payment; review it again.");
+    expect(await page.evaluate(() => window.__dwFixture!.world.pending.platform!.activity.filter((a) => a.kind === "send").length)).toBe(0);
+    await page.getByTestId("platform-send-refused-back").click();
+    await page.getByTestId("pay-continue").click();
+    await expect(page.getByTestId("platform-send-confirm-fee-source")).toHaveText(second);
+    await page.getByTestId("platform-send-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-send-outcome-title")).toHaveText("Sent");
+    expect(await page.evaluate(() => window.__dwFixture!.world.pending.platform!.activity.filter((a) => a.kind === "send").length)).toBe(1);
+  });
+
   test("a result sheet follows Activity: the held payment went through, so no Retry is offered", async ({ page }) => {
     await open(page, "platform-send-failed");
     await payTo(page, PAYEE);

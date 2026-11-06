@@ -141,6 +141,9 @@ describe("Pay from Platform", () => {
     expect(sendCanRetry(appError("platform.grant_exceeded"))).toBe(true);
     expect(sendCanRetry(appError("platform.insufficient_credits"))).toBe(true);
     expect(sendCanRetry(appError("invalid_argument", { kind: "reason", reason: "unknown or used operation" }))).toBe(true);
+    // Balances moved since the review: nothing signed, review the new quote.
+    expect(sendCanRetry(appError("credits.quote_changed"))).toBe(true);
+    expect(sendRefusalText(appError("credits.quote_changed"), credits)).toBe("Balances changed since you reviewed this payment; review it again.");
   });
 
   it("an unknown or used operation says the details expired, and Back re-quotes", async () => {

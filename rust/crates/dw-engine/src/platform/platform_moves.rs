@@ -675,6 +675,17 @@ impl Plan {
         self.credits().saturating_add(self.reserve)
     }
 
+    /// Whether `other` takes its fee as this plan does: from the output
+    /// for both, or from the same fee source giving the same amount. Its
+    /// other inputs may differ: the grant still caps the debit, and Confirm
+    /// names only the fee source.
+    fn takes_fee_as(&self, other: &Plan) -> bool {
+        self.fee_from_output == other.fee_from_output
+            && (self.fee_from_output
+                || (self.fee_source == other.fee_source
+                    && self.inputs.get(&self.fee_source) == other.inputs.get(&other.fee_source)))
+    }
+
     fn fee_strategy(&self) -> AddressFundsFeeStrategy {
         if self.fee_from_output {
             return vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];
@@ -1504,6 +1515,8 @@ fn plan_beside(
 /// pays, once. `retry_of`: the held send it re-signs; `None`, a new send,
 /// which any hold refuses. `credits`: the quote's planned debit, the cap
 /// of the grant issued for it; `grant`: that grant, the one that pays it.
+/// `plan`: what the quote showed; a new send signs only a plan that takes
+/// its fee the same way.
 #[derive(Debug)]
 struct SendOp {
     wallet: WalletId,
@@ -1512,6 +1525,7 @@ struct SendOp {
     retry_of: Option<String>,
     credits: u64,
     grant: Option<String>,
+    plan: Plan,
 }
 
 /// The session's quoted sends not yet sent, the newest [`OPS_KEPT`]. Ids
@@ -1731,6 +1745,7 @@ pub(crate) async fn send_quote(
         retry_of: retry_of.clone(),
         credits,
         grant: None,
+        plan: planned.clone(),
     });
     Ok(PlatformSendQuote {
         credits,
@@ -1763,7 +1778,7 @@ pub(crate) async fn move_to_core(
         session,
         wallet,
         wallet_id,
-        (amount, Target::Core(to), None),
+        (amount, Target::Core(to), None, None),
         grant,
     )
     .await?;
@@ -1792,7 +1807,12 @@ pub(crate) async fn send(
     let address = recipient(session.vault.network(), &op.to, &pool(wallet).await?)
         .map_err(|reason| CreditsError::RecipientInvalid { reason })?;
     sends_active(net.sends_version().await)?;
-    let ask = (op.amount, Target::Platform(address), op.retry_of.as_deref());
+    let ask = (
+        op.amount,
+        Target::Platform(address),
+        op.retry_of.as_deref(),
+        Some(&op.plan),
+    );
     let record = run(net, session, wallet, wallet_id, ask, grant).await?;
     let row = record.activity();
     Ok(PlatformSendOutcome {
@@ -1863,7 +1883,7 @@ async fn run(
     session: &Arc<NetworkSession>,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
-    (amount, target, retry_of): (WithdrawAmount, Target<'_>, Option<&str>),
+    (amount, target, retry_of, quoted): (WithdrawAmount, Target<'_>, Option<&str>, Option<&Plan>),
     grant: &str,
 ) -> Result<MoveRecord, CreditsError> {
     let lock = wallet_lock(wallet_id);
@@ -1911,6 +1931,11 @@ async fn run(
                 return Err(CreditsError::MovePending { id: h.id.clone() });
             }
             let planned = plan_beside(&target, balances, amount, &limits, held, network)?;
+            // A new send signs the fee its Confirm showed or nothing: the
+            // read since the quote may pick another fee source.
+            if quoted.is_some_and(|q| !q.takes_fee_as(&planned)) {
+                return Err(CreditsError::QuoteChanged);
+            }
             (held, planned)
         }
     };

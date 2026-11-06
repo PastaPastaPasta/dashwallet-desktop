@@ -126,6 +126,19 @@ describe("fixture pending commands", () => {
     expect(await backend.platformSend(W, qb.operation, (await grantFor(qb.operation)).id)).toMatchObject({ state: "done" });
   });
 
+  it("refuses a send whose fee source changed since its quote, its grant unused, and the new quote names the new source and pays", async () => {
+    const q = await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), null);
+    const other = platform().addresses.find((a) => a.address !== q.feeSource)!;
+    other.credits = "50000000000";
+    const g = await grantFor(q.operation);
+    await expect(backend.platformSend(W, q.operation, g.id)).rejects.toMatchObject({ code: "credits.quote_changed" });
+    expect(fixture.world.grants.find((x) => x.grant.id === g.id)?.used).toBe(false);
+    expect(platform().activity.filter((a) => a.kind === "send")).toHaveLength(0);
+    const again = await backend.platformSendQuote(W, PLATFORM_PAYEE, credits("1000000000"), null);
+    expect(again.feeSource).toBe(other.address);
+    expect(await backend.platformSend(W, again.operation, (await grantFor(again.operation)).id)).toMatchObject({ state: "done" });
+  });
+
   it("records a send in the activity and holds the next one while it is pending", async () => {
     platform().nextSend = "pending";
     const { outcome } = await pay(credits("1000000000"));

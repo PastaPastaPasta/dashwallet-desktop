@@ -3772,6 +3772,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.move_pending",
   "credits.recipient_invalid",
   "credits.send_out_of_range",
+  "credits.quote_changed",
   "shielded.not_active",
   "shielded.not_synced",
   "shielded.invalid_address",

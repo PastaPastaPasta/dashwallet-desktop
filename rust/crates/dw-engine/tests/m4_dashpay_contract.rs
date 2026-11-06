@@ -1085,6 +1085,7 @@ fn error_codes_match_the_contract() {
                 reason: dw_engine::platform::RecipientProblem::Own,
             },
             CreditsError::SendOutOfRange { min: 0 },
+            CreditsError::QuoteChanged,
         ],
         CreditsError::code,
     );
