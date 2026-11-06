@@ -87,6 +87,16 @@ const LATER: Record<string, { scenario: string; go: (page: Page) => Promise<void
       await page.getByTestId("platform-send-confirm").waitFor();
     },
   },
+  "platform-fund": {
+    scenario: "funded",
+    go: async (page) => {
+      await page.getByTestId("platform-fund").click();
+      await page.getByTestId("platform-fund-amount").fill("0.5");
+      await page.getByTestId("platform-fund-next").click();
+      await page.getByTestId("platform-fund-confirm").waitFor();
+      await expect(page.getByTestId("platform-fund-confirm")).toContainText("You receive about");
+    },
+  },
   "lock-wait": { scenario: "locked-throttled", go: (page) => page.getByTestId("lock-error").getByText("try again").waitFor() },
   forgot: {
     scenario: "locked-two-wallets",

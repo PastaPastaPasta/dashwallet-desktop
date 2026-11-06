@@ -343,3 +343,83 @@ describe("fixture pending commands", () => {
     expect(received).toContain("Amount (duffs)");
   });
 });
+
+describe("fixture Add from Dash wallet", () => {
+  const passphrase = { kind: "passphrase" as const, passphrase: FIXTURE_PASSPHRASE };
+  const duffsGrant = (maxDuffs: number) => backend.authorize({ kind: "platformOp", maxDuffs, maxCredits: "0" }, W, passphrase);
+  const platform = () => fixture.world.pending.platform!;
+  const add = async (duffs: number) => {
+    const q = await backend.platformFundQuote(W, duffs);
+    const grant = await duffsGrant(q.grant.maxDuffs);
+    return { q, outcome: await backend.platformFund(W, duffs, grant.id) };
+  };
+
+  it("quotes the lock fee, Platform's fee and what arrives, to the wallet's receive address", async () => {
+    const q = await backend.platformFundQuote(W, 50_000_000);
+    expect(q).toEqual({ duffs: 50_000_000, feeDuffs: 1_000, totalDuffs: 50_001_000, feeCredits: "56000000", credits: "49944000000", to: platform().receive.address, grant: { maxDuffs: 50_001_000, maxCredits: "0" } });
+  });
+
+  it("refuses an amount below the minimum, more than the Core balance, and a new add while one is waiting", async () => {
+    await expect(backend.platformFundQuote(W, 56_000)).rejects.toMatchObject({ code: "credits.below_minimum", data: { kind: "number", value: 56_001 } });
+    await expect(backend.platformFundQuote(W, 9_000_000_000_000)).rejects.toMatchObject({ code: "credits.funding_insufficient", data: { kind: "duffs" } });
+    platform().nextFund = "proofWaiting";
+    const { outcome } = await add(50_000_000);
+    expect(outcome.state).toEqual({ kind: "proofWaiting" });
+    await expect(backend.platformFundQuote(W, 50_000_000)).rejects.toMatchObject({ code: "credits.fund_pending", data: { kind: "txid", txid: outcome.txid } });
+  });
+
+  it("applies an add: the receive address gains the credits and Activity has a done fromCore row", async () => {
+    const before = BigInt((await backend.platformAddresses(W))!.credits);
+    const { q, outcome } = await add(50_000_000);
+    expect(outcome.state).toEqual({ kind: "applied", credits: q.credits });
+    expect(BigInt((await backend.platformAddresses(W))!.credits)).toBe(before + BigInt(q.credits));
+    expect((await backend.platformActivity(W))![0]).toMatchObject({ id: `fund-${outcome.txid}`, kind: "fromCore", state: "done", credits: q.credits, address: q.to, to: null });
+    expect(await backend.pendingPlatformFunds(W)).toEqual([]);
+  });
+
+  it("refuses a grant that is too small, a lease id, and a grant it already used, unused", async () => {
+    const q = await backend.platformFundQuote(W, 50_000_000);
+    const small = await duffsGrant(q.totalDuffs - 1);
+    await expect(backend.platformFund(W, 50_000_000, small.id)).rejects.toMatchObject({ code: "platform.grant_exceeded" });
+    await expect(backend.platformFund(W, 50_000_000, "lease-1")).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    expect(platform().funds).toEqual([]);
+    expect(platform().activity.some((a) => a.kind === "fromCore")).toBe(false);
+  });
+
+  it("leaves a waiting lock pending until Finish applies it with one duff of grant", async () => {
+    platform().nextFund = "proofWaiting";
+    const before = BigInt((await backend.platformAddresses(W))!.credits);
+    const { q, outcome } = await add(50_000_000);
+    expect(await backend.pendingPlatformFunds(W)).toEqual([{ txid: outcome.txid, duffs: 50_000_000, proved: false, consumptionUnknown: false }]);
+    expect((await backend.platformActivity(W))![0]).toMatchObject({ kind: "fromCore", state: "pending", credits: q.credits });
+    expect(BigInt((await backend.platformAddresses(W))!.credits)).toBe(before);
+    await expect(backend.resumePlatformFund(W, outcome.txid, (await duffsGrant(0)).id)).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    await expect(backend.resumePlatformFund(W, "nope", (await duffsGrant(1)).id)).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(await backend.resumePlatformFund(W, outcome.txid, (await duffsGrant(1)).id)).toEqual({ txid: outcome.txid, state: { kind: "applied", credits: q.credits } });
+    expect(await backend.pendingPlatformFunds(W)).toEqual([]);
+    expect((await backend.platformActivity(W))![0]).toMatchObject({ kind: "fromCore", state: "done" });
+    expect(BigInt((await backend.platformAddresses(W))!.credits)).toBe(before + BigInt(q.credits));
+  });
+
+  it("a lock that may already be applied is Checking and blocks no new add", async () => {
+    platform().nextFund = "checking";
+    const { outcome } = await add(50_000_000);
+    expect(outcome.state).toEqual({ kind: "consumptionUnknown" });
+    expect(await backend.pendingPlatformFunds(W)).toMatchObject([{ proved: true, consumptionUnknown: true }]);
+    await expect(backend.platformFundQuote(W, 50_000_000)).resolves.toMatchObject({ duffs: 50_000_000 });
+  });
+
+  it("a lock Platform refused stays pending with the error", async () => {
+    platform().nextFund = "notApplied";
+    const { outcome } = await add(50_000_000);
+    expect(outcome.state).toMatchObject({ kind: "notApplied" });
+    expect(await backend.pendingPlatformFunds(W)).toHaveLength(1);
+  });
+
+  it("answers null for the unfinished locks, and rejects the calls, while the Platform commands are absent", async () => {
+    fixture.world.pending.platform = null;
+    expect(await backend.pendingPlatformFunds(W)).toBeNull();
+    await expect(backend.platformFundQuote(W, 50_000_000)).rejects.toThrow("not available");
+  });
+});
+

@@ -641,6 +641,30 @@ const SCENARIOS = {
     p.activity = [{ id: "pm-held", kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
     return w;
   },
+  /** The next "Add from Dash wallet" is applied (as the base world does). */
+  "paddr-fund-applies": (t) => {
+    const w = base(t);
+    w.pending.platform!.nextFund = "done";
+    return w;
+  },
+  /** A lock of "Add from Dash wallet" waiting for its proof: the card shows Finish. */
+  "paddr-fund-proof-waiting": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const txid = "f0aa".padEnd(64, "d");
+    p.funds = [{ txid, duffs: 50_000_000, proved: false, consumptionUnknown: false }];
+    p.activity = [{ id: `fund-${txid}`, kind: "fromCore", state: "pending", credits: String(50_000_000n * 1000n - 56_000_000n), address: p.receive.address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 600, mayLand: false, estimated: true }, ...p.activity];
+    return w;
+  },
+  /** A lock that may already be applied (`consumption_unknown`): "Checking", and Check again. */
+  "paddr-fund-checking": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const txid = "f0bb".padEnd(64, "d");
+    p.funds = [{ txid, duffs: 50_000_000, proved: true, consumptionUnknown: true }];
+    p.activity = [{ id: `fund-${txid}`, kind: "fromCore", state: "pending", credits: String(50_000_000n * 1000n - 56_000_000n), address: p.receive.address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 600, mayLand: false, estimated: true }, ...p.activity];
+    return w;
+  },
   /** A send Platform has not confirmed: Pay from Platform and Move wait for it. */
   "platform-send-held": (t) => {
     const w = base(t);
