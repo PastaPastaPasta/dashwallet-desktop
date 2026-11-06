@@ -658,6 +658,27 @@ fn payment_authentication_is_enforced_over_ipc() {
     );
 }
 
+/// `authorize_platform_send` sizes the grant from the engine's quote: an
+/// operation the engine never quoted is refused before the credential is
+/// checked or any grant issued.
+#[test]
+fn a_platform_send_grant_needs_a_quoted_operation() {
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    for credential in [
+        json!({ "kind": "passphrase", "passphrase": "pw" }),
+        json!({ "kind": "passphrase", "passphrase": "wrong" }),
+    ] {
+        demo.err(
+            "authorize_platform_send",
+            json!({ "walletId": wallet, "operation": format!("op-{:032x}", 7), "credential": credential }),
+            "invalid_argument",
+        );
+    }
+}
+
 /// On an unencrypted vault there is no credential to ask for: the setting
 /// changes nothing and cannot be changed, so no value stored without a
 /// credential carries over to the vault once encrypted.

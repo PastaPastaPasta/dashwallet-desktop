@@ -402,11 +402,13 @@ export function authorize(purpose: GrantPurposeSpec, walletId: string | null, cr
 /**
  * `authorize` for the quoted Platform send `operation`
  * (`platformSendQuote`): a `platformOp` grant with no duffs and the
- * quote's `credits` (its planned debit), which pays that operation
- * alone. `platformSend` refuses any other grant for it, the grant left
- * unused (`platform.grant_invalid`). An unknown or sent operation is
- * `invalid_argument`, and nothing is issued. The payment rule is
- * `authorize`'s.
+ * quote's `credits` (its planned debit), bound to that operation:
+ * `platformSend` refuses any other grant for it, the grant left unused
+ * (`platform.grant_invalid`). It is an ordinary `platformOp` grant
+ * otherwise, as `authorize` issues. A grant an earlier call bound is
+ * revoked, and so is this one if the bind fails. An unknown or sent
+ * operation is `invalid_argument`, and nothing is issued. The payment
+ * rule is `authorize`'s.
  */
 export function authorizePlatformSend(walletId: string, operation: string, credential: CredentialSpec): Promise<AuthGrant> {
   return invoke<AuthGrant>("authorize_platform_send", { walletId, operation, credential });

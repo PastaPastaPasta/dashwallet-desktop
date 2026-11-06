@@ -1562,16 +1562,16 @@ impl SendOps {
         self.with(id, wallet, |ops, at| Ok(ops[at].1.credits))
     }
 
-    /// Makes `grant`, just issued for it, the grant that pays `id`.
+    /// Makes `grant`, just issued for it, the grant that pays `id`, and
+    /// returns the grant it replaces, which no longer pays it.
     pub(crate) fn bind(
         &self,
         id: &str,
         wallet: WalletId,
         grant: &str,
-    ) -> Result<(), PlatformError> {
+    ) -> Result<Option<String>, PlatformError> {
         self.with(id, wallet, |ops, at| {
-            ops[at].1.grant = Some(grant.to_owned());
-            Ok(())
+            Ok(ops[at].1.grant.replace(grant.to_owned()))
         })
     }
 

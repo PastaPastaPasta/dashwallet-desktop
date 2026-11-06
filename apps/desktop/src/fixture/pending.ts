@@ -345,7 +345,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     return platformOf(world, "platform_receive_address").receive;
   },
   platform_send_quote: ({ walletId, to, amount, retryOf }: { walletId: string; to: string; amount: WithdrawAmount; retryOf?: string | null }, ctx: Ctx) => sendQuote(ctx, walletId, to, amount, retryOf ?? null),
-  // As the engine: a `platformOp` grant of the quote's credits, bound to its operation alone.
+  // As the engine: a `platformOp` grant of the quote's credits, the only grant its operation's send takes.
   authorize_platform_send: ({ walletId, operation, credential }: { walletId: string; operation: string; credential: CredentialSpec }, ctx: Ctx): AuthGrant => {
     const { world } = ctx;
     wallet(world, walletId);

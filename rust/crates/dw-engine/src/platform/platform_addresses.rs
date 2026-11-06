@@ -403,15 +403,15 @@ impl DashPay {
 
     /// Binds `grant`, which `authorize_platform_send` has just issued for
     /// the quoted send `operation`, to it: `platform_send` pays the
-    /// operation under that grant only. An unknown or sent operation is
+    /// operation under that grant only. Returns the grant an earlier bind
+    /// made, for the host to revoke. An unknown or sent operation is
     /// `invalid_argument`.
     pub async fn platform_send_bind(
         &self,
         operation: String,
         grant: String,
-    ) -> Result<(), CreditsError> {
-        (self.session.platform.send_ops).bind(&operation, self.wallet_id, &grant)?;
-        Ok(())
+    ) -> Result<Option<String>, CreditsError> {
+        Ok((self.session.platform.send_ops).bind(&operation, self.wallet_id, &grant)?)
     }
 
     /// Sends the quoted `operation` (its recipient and amount) under

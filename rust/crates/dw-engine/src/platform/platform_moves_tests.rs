@@ -2245,6 +2245,30 @@ fn a_grant_pays_only_the_operation_it_was_issued_for() {
     assert_eq!((w.net.credits(alice), w.net.credits(bob)), (DASH, DASH));
 }
 
+/// A second bind replaces the first and hands it back for the host to
+/// revoke: the replaced grant no longer pays the send, the new one does.
+#[test]
+fn a_rebind_returns_the_grant_it_replaces() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (them, to) = w.theirs(9);
+    let q = w
+        .send_quote(WithdrawAmount::Credits { credits: DASH }, &to)
+        .unwrap();
+    let ops = &w.f.s.platform.send_ops;
+    let (first, second) = (w.f.grant(q.credits), w.f.grant(q.credits));
+    assert_eq!(ops.bind(&q.operation, w.f.wallet, &first).unwrap(), None);
+    assert_eq!(
+        ops.bind(&q.operation, w.f.wallet, &second).unwrap(),
+        Some(first.clone())
+    );
+    let e = w.pay(&q.operation, &first).unwrap_err();
+    assert_eq!(e.code(), "platform.grant_invalid", "{e}");
+    assert!(w.f.unused(&first));
+    w.pay(&q.operation, &second).unwrap();
+    assert_eq!(w.net.credits(them), DASH);
+}
+
 /// A send pays someone else, so only a fresh grant pays it, once:
 /// no lease (a move's, or a send flow's a caller holds), and no grant
 /// twice.

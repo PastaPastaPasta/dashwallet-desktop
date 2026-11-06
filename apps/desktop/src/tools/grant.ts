@@ -15,7 +15,7 @@ import { Model } from "../onboarding/model";
 type Api = Pick<Backend, "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"> & Partial<Pick<Backend, "authorizePlatformSend">>;
 
 /** What a grant is asked for: a vault purpose, or the quoted Platform send `operation`, whose
- * `platformOp` grant the engine sizes from the quote and binds to that operation alone. */
+ * `platformOp` grant the engine sizes from the quote and binds to it: the only grant that send takes. */
 export type GrantAsk = GrantPurposeSpec | { kind: "platformSend"; operation: string };
 
 /** Payments and Platform spends follow "Require authentication for every payment" (E0-13 D11);

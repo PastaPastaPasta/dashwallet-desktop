@@ -852,11 +852,13 @@ commands! {
 
     /// `authorize` for the quoted Platform send `operation`
     /// (`platformSendQuote`): a `platformOp` grant with no duffs and the
-    /// quote's `credits` (its planned debit), which pays that operation
-    /// alone. `platformSend` refuses any other grant for it, the grant left
-    /// unused (`platform.grant_invalid`). An unknown or sent operation is
-    /// `invalid_argument`, and nothing is issued. The payment rule is
-    /// `authorize`'s.
+    /// quote's `credits` (its planned debit), bound to that operation:
+    /// `platformSend` refuses any other grant for it, the grant left unused
+    /// (`platform.grant_invalid`). It is an ordinary `platformOp` grant
+    /// otherwise, as `authorize` issues. A grant an earlier call bound is
+    /// revoked, and so is this one if the bind fails. An unknown or sent
+    /// operation is `invalid_argument`, and nothing is issued. The payment
+    /// rule is `authorize`'s.
     #[facade(
         "DashPay::platform_send_grant",
         "NetworkSession::vault_op",
@@ -872,6 +874,7 @@ commands! {
         // The secret first: an early return must not drop it unwrapped.
         let credential = OwnedCredential::from(credential);
         let wallet = parse_wallet_id(&wallet_id)?;
+        let session = state.session().await?;
         let dashpay = state.dashpay(&wallet_id).await?;
         let cap = dashpay.platform_send_grant(operation.clone()).await?;
         let purpose = GrantPurpose::PlatformOp {
@@ -885,9 +888,16 @@ commands! {
         .await?
         .pop()
         .ok_or_else(|| AppError::new(EngineCode::Internal, "no grant issued"))?;
-        if let Err(e) = dashpay.platform_send_bind(operation, grant.id.clone()).await {
-            state.session().await?.vault().revoke_grant(&grant.id);
-            return Err(e.into());
+        match dashpay.platform_send_bind(operation, grant.id.clone()).await {
+            Ok(replaced) => {
+                if let Some(old) = replaced {
+                    session.vault().revoke_grant(&old);
+                }
+            }
+            Err(e) => {
+                session.vault().revoke_grant(&grant.id);
+                return Err(e.into());
+            }
         }
         Ok(grant.into())
     }
