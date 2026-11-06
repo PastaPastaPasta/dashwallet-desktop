@@ -987,6 +987,33 @@ pub(crate) fn outcome_write_fails(appdb: &Arc<dw_appdb::AppDb>) -> bool {
 }
 
 impl World {
+    /// Closes the session and opens it again over the same `app.sqlite`,
+    /// `wallet.sqlite` and journal (a restart).
+    pub(crate) fn reopen(&mut self) {
+        (self.f.engine)
+            .block_on(self.f.engine.close_network(crate::DashNetwork::Regtest))
+            .unwrap();
+        let options = crate::SessionOptions {
+            dapi_addresses: vec!["http://127.0.0.1:1".into()],
+            quorum_url: Some("http://127.0.0.1:1".into()),
+            spv_peers: vec!["127.0.0.1:1".into()],
+            no_platform: true,
+            ..Default::default()
+        };
+        self.f.s = (self.f.engine)
+            .block_on(
+                self.f
+                    .engine
+                    .open_network(crate::DashNetwork::Regtest, options),
+            )
+            .unwrap();
+        let live = self.f.s.live().unwrap();
+        *self.net.store.lock().unwrap() = Some((
+            live.appdb,
+            dw_appdb::local_scope(&self.f.wallet.to_string()),
+        ));
+    }
+
     pub(crate) fn fail_next_outcome_write(&self) {
         let appdb = self.f.s.live().unwrap().appdb;
         let key = Arc::as_ptr(&appdb) as usize;
@@ -2678,10 +2705,13 @@ fn the_rise_after_an_applied_fund_is_no_incoming_row() {
         [(PlatformActivityKind::Incoming, to.clone(), DASH)]
     );
     let txid = "ab".repeat(32);
-    let (t, a) = (txid.clone(), to.clone());
+    let (at, a) = (
+        dashcore::OutPoint::new(txid.parse().unwrap(), 0),
+        to.clone(),
+    );
     let s2 = Arc::clone(&s);
     (w.f.engine)
-        .block_on(async move { record_fund(&s2, id, (t, 1_000_000), a, 999).await })
+        .block_on(async move { record_fund(&s2, id, (at, 1_000_000), a, 999).await })
         .unwrap();
     // The apply executes on Platform while a read runs: not compared.
     let hold = FundHold::new(&s.platform.fund_holds, id, to.clone());
@@ -2693,9 +2723,9 @@ fn the_rise_after_an_applied_fund_is_no_incoming_row() {
         (fund.state, fund.credits, fund.address.as_deref()),
         (PlatformActivityState::Pending, 999, Some(to.as_str()))
     );
-    let (t, a) = (txid.clone(), to.clone());
+    let a = to.clone();
     (w.f.engine)
-        .block_on(async move { fund_applied(&s, id, (t, 1_000_000), a, (2 * DASH, false)).await })
+        .block_on(async move { fund_applied(&s, id, (at, 1_000_000), a, (2 * DASH, false)).await })
         .unwrap();
     drop(hold);
     let after = w.activity();

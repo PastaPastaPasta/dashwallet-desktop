@@ -78,6 +78,11 @@ pub(crate) trait Rig {
     fn marks(&self) -> (Marks, Marks);
     /// The kind's [`LockKind::minimum`](locks::LockKind::minimum).
     fn minimum(&self) -> Option<Minimum>;
+    /// Whether the kind takes Platform's "already consumed" as finished
+    /// elsewhere ([`LockKind::reported_locks`](locks::LockKind::reported_locks)).
+    fn reports_used(&self) -> bool {
+        false
+    }
 }
 
 /// A lock transaction `n` of `outputs` credit outputs of `duffs` each, every
@@ -169,7 +174,9 @@ pub(crate) fn conformance(rig: &impl Rig) {
     // unproved answer, or a failure after the signature however the kind
     // returns it, reads Checking, recorded by outpoint, its call
     // `MaybeSent` (each on a lock of its own, so no earlier record answers
-    // for it).
+    // for it). A kind that takes "already consumed" as finished elsewhere
+    // reads it as reported used instead: the lock leaves the list, settled
+    // nowhere.
     let ends = [End::Unknown, End::AlreadyConsumed, End::SignedThenFailed];
     for (n, end) in (0xE1..).zip(ends) {
         let lock = proved(&proved_tx(n, 1), 0);
@@ -178,12 +185,17 @@ pub(crate) fn conformance(rig: &impl Rig) {
         assert_eq!(state(rig, at), Some(UnfinishedState::Ready), "{end:?}");
         rig.next(end);
         let (finished, asked) = rig.finish(at);
-        assert_eq!(finished.unwrap(), LockFinish::Checking, "{end:?}");
         assert!(asked, "{end:?}");
         assert_eq!(rig.outcomes(), [FlowOutcome::MaybeSent], "{end:?}");
-        assert_eq!(state(rig, at), Some(UnfinishedState::Checking), "{end:?}");
         let (settled, unknown) = rig.marks();
         assert!(!settled.holds(&row(&lock)), "{end:?} settles nothing");
+        if end == End::AlreadyConsumed && rig.reports_used() {
+            assert_eq!(finished.unwrap(), LockFinish::ReportedUsed);
+            assert_eq!(state(rig, at), None, "reported used leaves the list");
+            continue;
+        }
+        assert_eq!(finished.unwrap(), LockFinish::Checking, "{end:?}");
+        assert_eq!(state(rig, at), Some(UnfinishedState::Checking), "{end:?}");
         assert!(unknown.outpoints.contains(&at), "{end:?} is recorded");
     }
 

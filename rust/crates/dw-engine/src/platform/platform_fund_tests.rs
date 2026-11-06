@@ -124,6 +124,8 @@ struct FakeFund {
     in_fund: AtomicBool,
     /// The next funding waits for this once it is in.
     fund_gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// The next apply locks the vault before it signs.
+    lock_vault_in_apply: AtomicBool,
 }
 
 impl FakeFund {
@@ -151,6 +153,7 @@ impl FakeFund {
             receive: PlatformAddress::P2pkh([0x42; 20]),
             in_fund: AtomicBool::new(false),
             fund_gate: Mutex::default(),
+            lock_vault_in_apply: AtomicBool::new(false),
         }
     }
 
@@ -329,6 +332,9 @@ impl FundLib for FakeFund {
         self.applied.lock().unwrap().push((outpoint, to));
         let (sign, answer) = (self.answers.lock().unwrap().pop_front()).expect("a scripted apply");
         if sign {
+            if self.lock_vault_in_apply.swap(false, Ordering::SeqCst) {
+                self.session.vault.lock();
+            }
             let path = self.key.lock().unwrap().clone();
             let signed = key_wallet::Signer::sign_ecdsa(signer, &path, [7; 32]).await;
             self.signed.lock().unwrap().push(signed.is_ok());
@@ -471,7 +477,7 @@ fn finish(
 fn listed(fx: &Fixture, lib: &Arc<FakeFund>) -> Result<Vec<UnfinishedLock>, PlatformError> {
     let wallet = fx.wallet;
     run(fx, lib, move |s, lib| async move {
-        locks::detect(&FundLocks::new(&s, wallet, &*lib), &HashSet::new()).await
+        locks::detect(&FundLocks::new(&s, wallet, &*lib)).await
     })
 }
 
@@ -487,6 +493,14 @@ fn marks(fx: &Fixture, lib: &Arc<FakeFund>) -> (Marks, Marks) {
     run(fx, lib, move |s, lib| async move {
         let kind = FundLocks::new(&s, wallet, &*lib);
         (kind.settled_locks().await, kind.unknown_locks().await)
+    })
+}
+
+/// The kind's locks Platform reported used, as a read finds them.
+fn reported(fx: &Fixture, lib: &Arc<FakeFund>) -> HashSet<OutPoint> {
+    let wallet = fx.wallet;
+    run(fx, lib, move |s, lib| async move {
+        FundLocks::new(&s, wallet, &*lib).reported_locks().await
     })
 }
 
@@ -680,15 +694,16 @@ fn an_interrupted_fund_resumes_the_same_outpoint_never_a_new_lock() {
     assert!(pending_of(&fx, &lib).is_empty());
 }
 
-/// Platform's unproved "already consumed", or a failure after signing, is
-/// no settle evidence: the lock pends "Checking" however often a resume
-/// hears it, blocks no new fund, and each resume applies the same outpoint
-/// until a proved apply settles it.
+/// A failure after signing is no settle evidence: the lock pends
+/// "Checking" however often a resume hears it, blocks no new fund, and
+/// each resume applies the same outpoint. Platform's unproved "already
+/// consumed" for that outpoint is kept as reported, not settled: the lock
+/// leaves the pending list (finished elsewhere) and is not applied again.
 #[test]
-fn already_consumed_reads_checking_and_does_not_block() {
+fn already_consumed_finishes_the_lock_elsewhere_and_a_failure_reads_checking() {
     let fx = Fixture::new(0);
     let lib = Arc::new(FakeFund::new(&fx));
-    lib.answer(Answer::Consumed { of: None });
+    lib.answer(Answer::Failed);
     let out = fund_of(&fx, &lib).unwrap();
     assert_eq!(out.state, PlatformFundState::ConsumptionUnknown);
     let outpoint = lib.outpoint(0);
@@ -699,16 +714,20 @@ fn already_consumed_reads_checking_and_does_not_block() {
         resume_of(&fx, &lib, outpoint).unwrap(),
         PlatformFundState::ConsumptionUnknown
     );
-    assert!(!settled(&fx).contains(&outpoint.txid));
     assert!(marks(&fx, &lib).1.outpoints.contains(&outpoint));
-    lib.answer(Answer::Done(None));
-    assert!(matches!(
+    assert!(reported(&fx, &lib).is_empty());
+    lib.answer(Answer::Consumed { of: None });
+    assert_eq!(
         resume_of(&fx, &lib, outpoint).unwrap(),
-        PlatformFundState::Applied { .. }
-    ));
-    assert_eq!(lib.applied(), [outpoint; 3]);
-    assert!(settled(&fx).contains(&outpoint.txid));
+        PlatformFundState::ConsumptionUnknown
+    );
+    assert_eq!(reported(&fx, &lib), HashSet::from([outpoint]));
+    assert!(!settled(&fx).contains(&outpoint.txid));
+    assert!(marks(&fx, &lib).0.outpoints.is_empty());
     assert!(pending_of(&fx, &lib).is_empty());
+    quote_of(&fx, &lib, 1_000_000).unwrap();
+    assert_eq!(code(resume_of(&fx, &lib, outpoint)), "invalid_argument");
+    assert_eq!(lib.applied(), [outpoint; 3]);
 }
 
 /// A refusal before the lock's key signed anything is `NotApplied`: the
@@ -793,9 +812,10 @@ fn the_recovery_finishes_a_lock_no_fund_step_signed() {
 }
 
 /// Only Platform's "already consumed" naming the applied outpoint is the
-/// kind's unproved answer: one naming another outpoint is a failure like
-/// any other, unknown after the lock key's signature (Checking) and the
-/// refusal before it (the lock stays Ready, its call `Cancelled`).
+/// kind's unproved answer, signed or not (the lock reported used, finished
+/// elsewhere): one naming another outpoint is a failure like any other,
+/// unknown after the lock key's signature (Checking) and the refusal
+/// before it (the lock stays Ready, its call `Cancelled`).
 #[test]
 fn already_consumed_counts_only_for_the_applied_outpoint() {
     let fx = Fixture::new(0);
@@ -807,7 +827,7 @@ fn already_consumed_counts_only_for_the_applied_outpoint() {
     let (own, signed, unsigned) = (lib.outpoint(0), lib.outpoint(1), lib.outpoint(2));
 
     lib.refuse(Answer::Consumed { of: None });
-    assert_eq!(finish(&fx, &lib, own).0.unwrap(), LockFinish::Checking);
+    assert_eq!(finish(&fx, &lib, own).0.unwrap(), LockFinish::ReportedUsed);
     lib.answer(Answer::Consumed { of: Some(other) });
     assert_eq!(finish(&fx, &lib, signed).0.unwrap(), LockFinish::Checking);
     lib.refuse(Answer::Consumed { of: Some(other) });
@@ -820,14 +840,14 @@ fn already_consumed_counts_only_for_the_applied_outpoint() {
     assert_eq!(
         state_of(&fx, &lib),
         [
-            (own, UnfinishedState::Checking),
             (signed, UnfinishedState::Checking),
             (unsigned, UnfinishedState::Ready),
         ]
     );
     let (settled, unknown) = marks(&fx, &lib);
     assert!(settled.outpoints.is_empty());
-    assert_eq!(unknown.outpoints, HashSet::from([own, signed]));
+    assert_eq!(unknown.outpoints, HashSet::from([signed]));
+    assert_eq!(reported(&fx, &lib), HashSet::from([own]));
 }
 
 /// The apply's signer gives the lock's own credit key only: another credit
@@ -855,6 +875,10 @@ fn the_apply_signs_with_the_locks_credit_key_only() {
         );
     }
     assert_eq!(*lib.signed.lock().unwrap(), [false; 3]);
+    assert!(
+        fund_record(&fx, at.txid).is_none(),
+        "the record arming made is removed when nothing was signed"
+    );
     *lib.key.lock().unwrap() = DerivationPath::from_str(LOCK_KEY).unwrap();
     lib.answer(Answer::Failed);
     assert_eq!(finish(&fx, &lib, at).0.unwrap(), LockFinish::Checking);
@@ -977,6 +1001,10 @@ impl Rig for FundRig {
         run(&self.fx, &self.lib, move |s, lib| async move {
             FundLocks::new(&s, wallet, &*lib).minimum()
         })
+    }
+
+    fn reports_used(&self) -> bool {
+        true
     }
 }
 
@@ -1151,67 +1179,32 @@ fn a_fund_lock_without_this_installs_step_is_listed_and_finished_by_the_recovery
     assert_eq!(lib.funds.load(Ordering::SeqCst), 0, "no new lock");
 }
 
-/// `DashPay::unfinished_transfers` lists a type-4 lock the library tracks
-/// and no step of this install signed, and `DashPay::finish_transfer` and
-/// `DashPay::finish_asset_locks` reach it through the kind, all with the
-/// shielded side failing to open: that kind is `unread`, this one listed
-/// and finished all the same (offline: the apply itself cannot run, so it
-/// is not applied, and nothing is settled).
-#[test]
-fn the_facade_lists_and_finishes_a_restored_fund_lock_without_the_shielded_side() {
+/// A restored lock of `kind` (no step of this install signed it) in a
+/// real session's wallet, with the other kind's side failing to open:
+/// `DashPay::unfinished_transfers` lists it and names the other kind
+/// unread; `DashPay::finish_transfer` and `DashPay::finish_asset_locks`
+/// reach it through `kind`'s path alone. Offline the apply itself cannot
+/// run, so nothing is applied or settled and the lock stays listed. The
+/// single Finish's answer is returned.
+fn facade_with_the_other_side_down(kind: LockKindId) -> Result<LockFinish, PlatformError> {
+    let (other, key, flow, funding) = match kind {
+        LockKindId::PlatformAddress => (
+            LockKindId::Shielded,
+            LOCK_KEY,
+            FlowKind::PlatformAddressFund,
+            AssetLockFundingType::AssetLockAddressTopUp,
+        ),
+        LockKindId::Shielded => (
+            LockKindId::PlatformAddress,
+            "m/9'/1'/5'/5'/0",
+            FlowKind::Shield,
+            AssetLockFundingType::AssetLockShieldedAddressTopUp,
+        ),
+    };
     let dir = dw_testutil::private_tempdir();
     let events = Arc::new(super::journal_tests::Recorder::default());
     let engine = super::journal_tests::engine(dir.path(), events as Arc<dyn crate::EventSink>);
     let (s, wallet) = super::journal_tests::session(&engine, false);
-    let script = {
-        let s = Arc::clone(&s);
-        let grant = (s.vault)
-            .authorize(
-                dw_vault::GrantPurpose::PlatformOp {
-                    max_duffs: 1,
-                    max_credits: 0,
-                },
-                Some(&wallet.0),
-                dw_vault::Credential::None,
-            )
-            .unwrap()
-            .id;
-        engine.block_on(async move {
-            let lease = (s.begin_lease(wallet, FlowKind::PlatformAddressFund, &[grant]))
-                .await
-                .unwrap();
-            let funding = lease.uncounted_funding_signer().unwrap();
-            let path = DerivationPath::from_str(LOCK_KEY).unwrap();
-            let key = key_wallet::Signer::public_key(&funding, &path)
-                .await
-                .unwrap();
-            ScriptBuf::new_p2pkh(&dashcore::PublicKey::new(key).pubkey_hash())
-        })
-    };
-    let tx = conformance::transaction(0x51, 1, 1_000_000, &script);
-    let row = conformance::tracked(
-        &tx,
-        0,
-        AssetLockFundingType::AssetLockAddressTopUp,
-        AssetLockStatus::RecoveredFromChain,
-        true,
-    );
-    let at = row.out_point;
-    engine.block_on(track_in_wallet(&s, wallet, row));
-    let dp = s.dashpay(wallet);
-    super::shielded_pool::open_fails::set(&s, true);
-
-    let listed = engine.block_on(dp.unfinished_transfers()).unwrap();
-    assert_eq!(listed.unread, [LockKindId::Shielded]);
-    let ours: Vec<_> = (listed.locks.iter())
-        .filter(|l| l.txid == at.txid.to_string())
-        .map(|l| (l.kind, l.origin, l.duffs))
-        .collect();
-    assert_eq!(
-        ours,
-        [(LockKindId::PlatformAddress, LockOrigin::Restored, 1_000_000)]
-    );
-
     let grant = |max_duffs| {
         (s.vault)
             .authorize(
@@ -1225,25 +1218,43 @@ fn the_facade_lists_and_finishes_a_restored_fund_lock_without_the_shielded_side(
             .unwrap()
             .id
     };
-    let one = engine.block_on(dp.finish_transfer(
-        LockKindId::PlatformAddress,
-        at.txid.to_string(),
-        0,
-        grant(1),
-    ));
-    match one {
-        Ok(LockFinish::Applied) => panic!("applied offline"),
-        Ok(_) => {}
-        Err(e) => assert_ne!(e.code(), "invalid_argument", "{e:?}"),
-    }
+    let script = {
+        let (s, grant) = (Arc::clone(&s), grant(1));
+        engine.block_on(async move {
+            let lease = (s.begin_lease(wallet, flow, &[grant])).await.unwrap();
+            let funding = lease.uncounted_funding_signer().unwrap();
+            let path = DerivationPath::from_str(key).unwrap();
+            let key = key_wallet::Signer::public_key(&funding, &path)
+                .await
+                .unwrap();
+            ScriptBuf::new_p2pkh(&dashcore::PublicKey::new(key).pubkey_hash())
+        })
+    };
+    let tx = conformance::transaction(0x51, 1, 1_000_000, &script);
+    let row = conformance::tracked(&tx, 0, funding, AssetLockStatus::RecoveredFromChain, true);
+    let at = row.out_point;
+    engine.block_on(track_in_wallet(&s, wallet, row));
+    let dp = s.dashpay(wallet);
+    super::unfinished::open_fails::set(&s, other, true);
+
+    let listed = engine.block_on(dp.unfinished_transfers()).unwrap();
+    assert_eq!(listed.unread, [other]);
+    let ours: Vec<_> = (listed.locks.iter())
+        .filter(|l| l.txid == at.txid.to_string())
+        .map(|l| (l.kind, l.origin, l.duffs))
+        .collect();
+    assert_eq!(ours, [(kind, LockOrigin::Restored, 1_000_000)]);
+
+    let one = engine.block_on(dp.finish_transfer(kind, at.txid.to_string(), 0, grant(1)));
     let report = engine.block_on(dp.finish_asset_locks(grant(1))).unwrap();
-    assert_eq!(report.unread, [LockKindId::Shielded], "{report:?}");
-    assert!(
-        (report.by_kind.iter()).any(|k| k.kind == LockKindId::PlatformAddress),
+    assert_eq!(report.unread, [other], "{report:?}");
+    assert_eq!(
+        (report.by_kind.iter()).map(|k| k.kind).collect::<Vec<_>>(),
+        [kind],
         "{report:?}"
     );
     assert_eq!(report.completed, 0);
-    super::shielded_pool::open_fails::set(&s, false);
+    super::unfinished::open_fails::set(&s, other, false);
     let listed = engine.block_on(dp.unfinished_transfers()).unwrap();
     assert!(
         (listed.locks.iter()).any(|l| l.txid == at.txid.to_string()),
@@ -1252,6 +1263,31 @@ fn the_facade_lists_and_finishes_a_restored_fund_lock_without_the_shielded_side(
     engine
         .block_on(engine.close_network(crate::DashNetwork::Regtest))
         .unwrap();
+    one
+}
+
+/// The type-4 side lists and finishes with the shielded side down: the
+/// single Finish runs the fund kind's apply, which offline is refused
+/// before any signature as Platform's context is unavailable (the shield
+/// path answers `Checking`).
+#[test]
+fn the_facade_lists_and_finishes_a_restored_fund_lock_without_the_shielded_side() {
+    let one = facade_with_the_other_side_down(LockKindId::PlatformAddress);
+    assert_eq!(
+        one.unwrap(),
+        LockFinish::NotApplied {
+            error: "platform.context_unavailable".into()
+        }
+    );
+}
+
+/// The reverse: the shielded side lists and finishes a restored shield
+/// lock with the type-4 side down. Offline its apply fails after its
+/// signature: `Checking`.
+#[test]
+fn the_facade_lists_and_finishes_a_restored_shield_lock_without_the_fund_side() {
+    let one = facade_with_the_other_side_down(LockKindId::Shielded);
+    assert_eq!(one.unwrap(), LockFinish::Checking);
 }
 
 /// A lock whose minimum rose above it (TooSmall) is listed with its state,
@@ -1322,8 +1358,8 @@ fn a_fund_in_the_handoff_to_the_apply_refuses_the_next() {
 }
 
 /// The apply's hold on its address ends with the apply whatever it
-/// answered: unknown, already consumed, proved (after the settle), or a
-/// panic.
+/// answered: unknown, a panic, proved (after the settle), or already
+/// consumed.
 #[test]
 fn every_apply_releases_its_hold() {
     let fx = Fixture::new(0);
@@ -1334,12 +1370,6 @@ fn every_apply_releases_its_hold() {
     assert_eq!(out.state, PlatformFundState::ConsumptionUnknown);
     assert!(held().is_empty(), "unknown");
     let outpoint = lib.outpoint(0);
-    lib.answer(Answer::Consumed { of: None });
-    assert_eq!(
-        resume_of(&fx, &lib, outpoint).unwrap(),
-        PlatformFundState::ConsumptionUnknown
-    );
-    assert!(held().is_empty(), "already consumed");
 
     lib.answer(Answer::Panics);
     let (wallet, grant_id, txid) = (fx.wallet, grant(&fx, 1, 0), outpoint.txid.to_string());
@@ -1360,6 +1390,11 @@ fn every_apply_releases_its_hold() {
         PlatformFundState::Applied { .. }
     ));
     assert!(held().is_empty(), "proved");
+
+    lib.answer(Answer::Consumed { of: None });
+    let out = fund_of(&fx, &lib).unwrap();
+    assert_eq!(out.state, PlatformFundState::ConsumptionUnknown);
+    assert!(held().is_empty(), "already consumed");
 }
 
 /// Two "Check again"s of one lock at once apply it once.
@@ -1408,18 +1443,6 @@ fn fund_world() -> (World, Arc<FakeFund>) {
 /// proved), no rise of its address as incoming, and then an external
 /// payment to the address in full.
 fn counted_once(w: &World, credits: u64, estimated: bool) {
-    let fund_rows = |rows: &[PlatformActivity]| -> Vec<_> {
-        (rows.iter())
-            .filter(|r| r.kind == PlatformActivityKind::FromCore)
-            .map(|r| (r.state, r.credits, r.estimated))
-            .collect()
-    };
-    let incoming = |rows: &[PlatformActivity]| -> Vec<u64> {
-        (rows.iter())
-            .filter(|r| r.kind == PlatformActivityKind::Incoming)
-            .map(|r| r.credits)
-            .collect()
-    };
     let done = [(PlatformActivityState::Done, credits, estimated)];
     let rows = w.activity();
     assert_eq!(fund_rows(&rows), done, "{rows:?}");
@@ -1445,6 +1468,36 @@ fn a_fund_consumed_before_its_settle_completes_on_the_next_read() {
     w.f.engine.block_on(track_in_wallet(&s, wallet, row));
     counted_once(&w, estimate(), true);
     assert!(lib.applied().is_empty(), "no apply again");
+}
+
+/// Reopened after the library stored the lock consumed and before the
+/// settle: the reopened wallet no longer loads the lock, and its stored
+/// `Consumed` row completes the fund with its estimate, never applying it
+/// again.
+#[test]
+fn a_fund_whose_stored_lock_is_consumed_completes_after_a_reopen() {
+    let (mut w, lib) = fund_world();
+    let outpoint = own_checking_fund(&w.f, &lib);
+    w.net.fund(w.address(0), estimate());
+    let mut row = lib.tracked.lock().unwrap()[0].clone();
+    row.status = AssetLockStatus::Consumed;
+    let (s, wallet) = (Arc::clone(&w.f.s), w.f.wallet);
+    w.f.engine.block_on(track_in_wallet(&s, wallet, row));
+    let applied = lib.applied().len();
+    drop((s, lib));
+    w.reopen();
+    let (s, wallet) = (Arc::clone(&w.f.s), w.f.wallet);
+    let loaded = (w.f.engine).block_on(async move {
+        let pw = s.wallet(&wallet).await.unwrap();
+        (pw.asset_locks().list_tracked_locks().await)
+            .iter()
+            .any(|l| l.out_point == outpoint)
+    });
+    assert!(!loaded, "a consumed lock is not loaded again");
+    let record = fund_record(&w.f, outpoint.txid).unwrap();
+    assert_eq!(record.state, PlatformActivityState::Pending);
+    counted_once(&w, estimate(), true);
+    assert_eq!(applied, 1, "applied once, before the reopen");
 }
 
 /// Restarted after the settled record and before the activity's: the
@@ -1538,10 +1591,10 @@ fn an_activity_read_in_flight_keeps_the_apply_out() {
                 let early = tokio::time::timeout(Duration::from_secs(2), &mut resume).await;
                 assert!(early.is_err(), "the resume ran past the read");
                 let during = fake.applied().len();
-                // The read answers late, after the apply's rise.
-                net.fund(to, estimate());
                 net.read_release.notify_one();
-                (resume.await, during)
+                let resumed = resume.await;
+                net.fund(to, estimate());
+                (resumed, during)
             };
             let (read, apply) = tokio::join!(read, apply);
             Ok((read, apply))
@@ -1611,4 +1664,483 @@ fn a_resume_refuses_a_grant_with_no_funding_budget_unredeemed() {
     assert_eq!(code(refused), "platform.needs_grant");
     assert!(fx.unused(&empty));
     assert!(lib.applied().is_empty());
+}
+
+/// SPV's reading caught up, as the hub records it.
+fn caught_up(fx: &Fixture) {
+    use dash_spv::sync::{BlockHeadersProgress, SyncProgress, SyncState};
+    let mut headers = BlockHeadersProgress::default();
+    headers.update_target_height(1000);
+    headers.update_tip_height(1000);
+    headers.set_state(SyncState::Synced);
+    let mut progress = SyncProgress::default();
+    progress.update_headers(headers);
+    let mut tracker = fx.s.hub.tracker.lock().unwrap();
+    tracker.set_running(true);
+    tracker.on_progress(&progress);
+    assert!(tracker.caught_up());
+}
+
+fn fund_rows(rows: &[PlatformActivity]) -> Vec<(PlatformActivityState, u64, bool)> {
+    (rows.iter())
+        .filter(|r| r.kind == PlatformActivityKind::FromCore)
+        .map(|r| (r.state, r.credits, r.estimated))
+        .collect()
+}
+
+fn incoming(rows: &[PlatformActivity]) -> Vec<u64> {
+    (rows.iter())
+        .filter(|r| r.kind == PlatformActivityKind::Incoming)
+        .map(|r| r.credits)
+        .collect()
+}
+
+fn record_mark(fx: &Fixture, mark: Mark, outpoint: OutPoint) {
+    let (s, wallet) = (Arc::clone(&fx.s), fx.wallet);
+    fx.engine.block_on(async move {
+        locks::record(&s, wallet, LockKindId::PlatformAddress, mark, outpoint).await;
+    });
+}
+
+fn fund_record(fx: &Fixture, txid: Txid) -> Option<platform_moves::FundRecord> {
+    let (s, wallet) = (Arc::clone(&fx.s), fx.wallet);
+    (fx.engine)
+        .block_on(async move { platform_moves::fund_record(&s, wallet, &txid.to_string()).await })
+        .unwrap()
+}
+
+/// An own fund whose apply released a signature and failed: Checking, its
+/// record armed.
+fn own_checking_fund(fx: &Fixture, lib: &Arc<FakeFund>) -> OutPoint {
+    let outpoint = own_open_fund(fx, lib);
+    lib.answer(Answer::Failed);
+    assert_eq!(
+        resume_of(fx, lib, outpoint).unwrap(),
+        PlatformFundState::ConsumptionUnknown
+    );
+    assert!(fund_record(fx, outpoint.txid).unwrap().armed);
+    outpoint
+}
+
+/// Finish of a restored lock Platform answers is already used (applied
+/// from another install), signed or not, single or by Finish transfers:
+/// no activity row and no allowance; the lock leaves the recovery (and is
+/// on no card), and a later payment to the address is incoming in full.
+#[test]
+fn a_restored_lock_used_elsewhere_leaves_no_activity_and_no_allowance() {
+    for (bulk, signs) in [(false, true), (true, true), (false, false)] {
+        let (w, lib) = fund_world();
+        lib.track(lib.lock(1, 1_000_000, AssetLockStatus::RecoveredFromChain, true));
+        let at = lib.outpoint(0);
+        let answer = Answer::Consumed { of: None };
+        if signs {
+            lib.answer(answer);
+        } else {
+            lib.refuse(answer);
+        }
+        if bulk {
+            let report = finish_transfers(&w.f, &lib);
+            assert_eq!(report.already_used, 1, "{report:?}");
+            assert_eq!(report.completed, 0, "{report:?}");
+        } else {
+            assert_eq!(finish(&w.f, &lib, at).0.unwrap(), LockFinish::ReportedUsed);
+        }
+        assert_eq!(lib.applied(), [at]);
+        assert_eq!(
+            *lib.signed.lock().unwrap(),
+            [signs].repeat(usize::from(signs))
+        );
+        assert!(state_of(&w.f, &lib).is_empty(), "bulk {bulk}");
+        assert!(pending_of(&w.f, &lib).is_empty(), "bulk {bulk}");
+        assert!(fund_record(&w.f, at.txid).is_none(), "bulk {bulk}");
+        let rows = w.activity();
+        assert!(fund_rows(&rows).is_empty(), "{rows:?}");
+        w.net.fund(w.address(0), 7 * 100_000_000_000);
+        assert_eq!(incoming(&w.activity()), [7 * 100_000_000_000]);
+        assert!(!settled(&w.f).contains(&at.txid));
+    }
+}
+
+/// The same restored lock applied here, proved: its fund is recorded once
+/// with what the proof showed added.
+#[test]
+fn a_restored_lock_applied_here_records_its_proved_done() {
+    let (w, lib) = fund_world();
+    lib.track(lib.lock(1, 1_000_000, AssetLockStatus::RecoveredFromChain, true));
+    let at = lib.outpoint(0);
+    w.net.fund(w.address(0), estimate());
+    lib.answer(Answer::Done(Some(estimate())));
+    assert_eq!(finish(&w.f, &lib, at).0.unwrap(), LockFinish::Applied);
+    counted_once(&w, estimate(), false);
+}
+
+/// A fund waiting for its proof, or refused before any signature, is not
+/// armed: a payment to its address meanwhile is incoming in full.
+#[test]
+fn a_fund_that_never_signed_absorbs_no_payment() {
+    let (w, lib) = fund_world();
+    *lib.funding.lock().unwrap() = Script::Unproved;
+    let out = fund_of(&w.f, &lib).unwrap();
+    assert_eq!(out.state, PlatformFundState::ProofWaiting);
+    w.net.fund(w.address(0), estimate());
+    let rows = w.activity();
+    assert_eq!(incoming(&rows), [estimate()], "{rows:?}");
+    assert_eq!(
+        fund_rows(&rows),
+        [(PlatformActivityState::Pending, estimate(), false)]
+    );
+
+    let outpoint = lib.outpoint(0);
+    lib.prove(outpoint);
+    lib.refuse(Answer::Failed);
+    assert!(matches!(
+        resume_of(&w.f, &lib, outpoint).unwrap(),
+        PlatformFundState::NotApplied { .. }
+    ));
+    assert!(!fund_record(&w.f, outpoint.txid).unwrap().armed);
+    w.net.fund(w.address(0), 3 * 100_000_000_000);
+    let rows = w.activity();
+    assert_eq!(
+        incoming(&rows),
+        [3 * 100_000_000_000, estimate()],
+        "{rows:?}"
+    );
+}
+
+/// A lock swept by a conflicting transaction leaves the library's tracked
+/// set (platform-wallet `sync/reconstruction.rs`); once SPV caught up, its
+/// fund that never signed closes (`failed`). Still tracked, or not caught
+/// up, it pends.
+#[test]
+fn a_swept_lock_closes_its_unsigned_fund() {
+    let (w, lib) = fund_world();
+    *lib.funding.lock().unwrap() = Script::Unproved;
+    fund_of(&w.f, &lib).unwrap();
+    let row = lib.tracked.lock().unwrap()[0].clone();
+    let outpoint = row.out_point;
+    let pending = [(PlatformActivityState::Pending, estimate(), false)];
+    assert_eq!(fund_rows(&w.activity()), pending, "not caught up");
+
+    let (s, wallet) = (Arc::clone(&w.f.s), w.f.wallet);
+    w.f.engine.block_on(track_in_wallet(&s, wallet, row));
+    caught_up(&w.f);
+    assert_eq!(fund_rows(&w.activity()), pending, "tracked");
+
+    w.f.engine.block_on(async move {
+        let w = s.wallet(&wallet).await.unwrap();
+        w.state_mut().await.tracked_asset_locks.remove(&outpoint);
+    });
+    let rows = w.activity();
+    assert_eq!(
+        fund_rows(&rows),
+        [(PlatformActivityState::Failed, estimate(), false)],
+        "{rows:?}"
+    );
+    w.net.fund(w.address(0), estimate());
+    assert_eq!(incoming(&w.activity()), [estimate()]);
+}
+
+/// Platform's "already consumed" is kept for the outpoint before the
+/// fund's record is written: with that write failed, a read after a
+/// restart completes the armed fund from it, never applying again.
+#[test]
+fn a_reported_fund_whose_record_write_failed_completes_after_a_restart() {
+    let (mut w, lib) = fund_world();
+    let outpoint = own_checking_fund(&w.f, &lib);
+    w.net.fund(w.address(0), estimate());
+    w.fail_next_outcome_write();
+    lib.answer(Answer::Consumed { of: None });
+    assert_eq!(
+        resume_of(&w.f, &lib, outpoint).unwrap(),
+        PlatformFundState::ConsumptionUnknown
+    );
+    let record = fund_record(&w.f, outpoint.txid).unwrap();
+    assert_eq!(
+        record.state,
+        PlatformActivityState::Pending,
+        "the write failed"
+    );
+    assert_eq!(lib.applied(), [outpoint; 2]);
+    drop(lib);
+    w.reopen();
+    counted_once(&w, estimate(), true);
+}
+
+/// Evidence is by the fund's own output: a sibling output of its
+/// transaction settled or reported used leaves the fund pending; its own
+/// output settled completes it.
+#[test]
+fn a_fund_ends_on_its_own_outputs_evidence_only() {
+    let (w, lib) = fund_world();
+    let outpoint = own_checking_fund(&w.f, &lib);
+    w.net.fund(w.address(0), estimate());
+    let sibling = OutPoint::new(outpoint.txid, outpoint.vout + 1);
+    record_mark(&w.f, Mark::Settled, sibling);
+    record_mark(&w.f, Mark::Reported, sibling);
+    let rows = w.activity();
+    assert_eq!(
+        fund_rows(&rows),
+        [(PlatformActivityState::Pending, estimate(), false)],
+        "{rows:?}"
+    );
+    assert!(incoming(&rows).is_empty(), "{rows:?}");
+    record_mark(&w.f, Mark::Settled, outpoint);
+    counted_once(&w, estimate(), true);
+}
+
+/// A read while the fund's apply still holds its address (its settle not
+/// run yet) leaves the fund to that settle, whatever the lock's evidence
+/// says; the first read after completes it.
+#[test]
+fn a_read_leaves_a_fund_whose_apply_holds_its_address_to_its_settle() {
+    let (w, lib) = fund_world();
+    let outpoint = own_checking_fund(&w.f, &lib);
+    w.net.fund(w.address(0), estimate());
+    let address = fund_record(&w.f, outpoint.txid).unwrap().address;
+    let (s, wallet) = (Arc::clone(&w.f.s), w.f.wallet);
+    let hold = (w.f.engine).block_on(platform_moves::hold_fund(&s, wallet, address));
+    record_mark(&w.f, Mark::Settled, outpoint);
+    let rows = w.activity();
+    assert_eq!(
+        fund_rows(&rows),
+        [(PlatformActivityState::Pending, estimate(), false)],
+        "{rows:?}"
+    );
+    drop(hold);
+    counted_once(&w, estimate(), true);
+}
+
+/// The fund completed with its estimate takes what of the address's rise
+/// it absorbed: a rise below the estimate leaves the rest as an allowance
+/// a later payment fills first (at most the estimate's excess over the
+/// rise); a rise above it, up to the lock's credits, is all the fund's.
+#[test]
+fn a_completed_funds_rise_below_or_above_its_estimate() {
+    const SHORT: u64 = 1_000;
+    for rise in [estimate() - SHORT, estimate() + SHORT] {
+        let (w, lib) = fund_world();
+        let outpoint = own_checking_fund(&w.f, &lib);
+        w.net.fund(w.address(0), rise);
+        let rows = w.activity();
+        assert!(incoming(&rows).is_empty(), "{rows:?}");
+        record_mark(&w.f, Mark::Settled, outpoint);
+        let rows = w.activity();
+        assert_eq!(
+            fund_rows(&rows),
+            [(PlatformActivityState::Done, estimate(), true)],
+            "{rows:?}"
+        );
+        w.net.fund(w.address(0), 7 * 100_000_000_000);
+        let left = estimate().saturating_sub(rise);
+        assert_eq!(
+            incoming(&w.activity()),
+            [7 * 100_000_000_000 - left],
+            "rise {rise}"
+        );
+    }
+}
+
+/// How a later apply gets no signature: it asks for another credit key
+/// (refused by the lock-key signer), or for the lock's own key with the
+/// vault locked meanwhile (refused by the vault).
+#[derive(Debug, Clone, Copy)]
+enum NoSignature {
+    OtherKey,
+    VaultLocked,
+}
+
+impl NoSignature {
+    fn set(self, lib: &FakeFund) {
+        match self {
+            Self::OtherKey => {
+                *lib.key.lock().unwrap() = DerivationPath::from_str("m/9'/1'/5'/5'/0").unwrap();
+            }
+            Self::VaultLocked => lib.lock_vault_in_apply.store(true, Ordering::SeqCst),
+        }
+    }
+}
+
+/// A later apply that asks for a signature and gets none leaves the
+/// arming an earlier signed apply wrote: that signature may still
+/// execute, so the fund still absorbs the rise of its address.
+#[test]
+fn an_apply_that_signs_nothing_keeps_an_earlier_signatures_arming() {
+    for how in [NoSignature::OtherKey, NoSignature::VaultLocked] {
+        let (w, lib) = fund_world();
+        let outpoint = own_checking_fund(&w.f, &lib);
+        how.set(&lib);
+        lib.answer(Answer::Failed);
+        assert!(
+            matches!(
+                resume_of(&w.f, &lib, outpoint).unwrap(),
+                PlatformFundState::NotApplied { .. }
+            ),
+            "{how:?}"
+        );
+        assert_eq!(lib.signed.lock().unwrap().last(), Some(&false), "{how:?}");
+        assert!(fund_record(&w.f, outpoint.txid).unwrap().armed, "{how:?}");
+        w.net.fund(w.address(0), estimate());
+        let rows = w.activity();
+        assert!(incoming(&rows).is_empty(), "{how:?}: {rows:?}");
+        assert_eq!(
+            fund_rows(&rows),
+            [(PlatformActivityState::Pending, estimate(), false)]
+        );
+    }
+}
+
+/// A lock Platform reported used is finished elsewhere for every later
+/// Finish too: never `Applied`, and never applied again.
+#[test]
+fn a_reported_lock_finishes_as_reported_every_time() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    lib.track(lib.lock(1, 1_000_000, AssetLockStatus::RecoveredFromChain, true));
+    let at = lib.outpoint(0);
+    lib.answer(Answer::Consumed { of: None });
+    assert_eq!(finish(&fx, &lib, at).0.unwrap(), LockFinish::ReportedUsed);
+    assert_eq!(finish(&fx, &lib, at).0.unwrap(), LockFinish::ReportedUsed);
+    assert_eq!(lib.applied(), [at]);
+}
+
+/// What a restored lock's armed record absorbed of a payment is the
+/// payment's again when the record is removed on Platform's "already
+/// consumed": incoming in full, nothing lost.
+#[test]
+fn a_removed_restored_record_gives_back_what_it_absorbed() {
+    let (w, lib) = fund_world();
+    lib.track(lib.lock(1, 1_000_000, AssetLockStatus::RecoveredFromChain, true));
+    let at = lib.outpoint(0);
+    lib.answer(Answer::Failed);
+    assert_eq!(finish(&w.f, &lib, at).0.unwrap(), LockFinish::Checking);
+    assert!(fund_record(&w.f, at.txid).unwrap().armed);
+    let paid = 3 * 100_000_000_000;
+    w.net.fund(w.address(0), paid);
+    let rows = w.activity();
+    assert_eq!(
+        incoming(&rows).iter().sum::<u64>(),
+        paid - 1_000_000_000,
+        "{rows:?}"
+    );
+    lib.answer(Answer::Consumed { of: None });
+    assert_eq!(finish(&w.f, &lib, at).0.unwrap(), LockFinish::ReportedUsed);
+    let rows = w.activity();
+    assert!(fund_rows(&rows).is_empty(), "{rows:?}");
+    assert_eq!(incoming(&rows).iter().sum::<u64>(), paid, "{rows:?}");
+}
+
+/// The journal's settled record of a lock alone in its transaction is
+/// the fund's evidence too (its outpoint mark unwritten).
+#[test]
+fn a_fund_settled_by_txid_alone_completes_on_the_next_read() {
+    let (w, lib) = fund_world();
+    let outpoint = own_checking_fund(&w.f, &lib);
+    w.net.fund(w.address(0), estimate());
+    let row = lib.tracked.lock().unwrap()[0].clone();
+    let (s, wallet) = (Arc::clone(&w.f.s), w.f.wallet);
+    w.f.engine.block_on(track_in_wallet(&s, wallet, row));
+    let rows = w.activity();
+    assert_eq!(
+        fund_rows(&rows),
+        [(PlatformActivityState::Pending, estimate(), false)],
+        "tracked, not settled: {rows:?}"
+    );
+    (w.f.engine)
+        .block_on(async move {
+            (s.leases)
+                .settle_top_up(wallet, outpoint.txid, TopUpSettled::Applied)
+                .await
+        })
+        .unwrap();
+    counted_once(&w, estimate(), true);
+}
+
+/// A fund closed as its lock left the library is armed again (pending)
+/// by a later apply that signs: the lock came back, and that signature
+/// may execute.
+#[test]
+fn a_closed_fund_is_armed_again_by_a_later_signature() {
+    let (w, lib) = fund_world();
+    *lib.funding.lock().unwrap() = Script::Unproved;
+    fund_of(&w.f, &lib).unwrap();
+    let row = lib.tracked.lock().unwrap()[0].clone();
+    let outpoint = row.out_point;
+    let (s, wallet) = (Arc::clone(&w.f.s), w.f.wallet);
+    caught_up(&w.f);
+    let failed = [(PlatformActivityState::Failed, estimate(), false)];
+    assert_eq!(fund_rows(&w.activity()), failed, "untracked");
+    w.f.engine.block_on(track_in_wallet(&s, wallet, row));
+    lib.prove(outpoint);
+    lib.answer(Answer::Failed);
+    assert_eq!(
+        resume_of(&w.f, &lib, outpoint).unwrap(),
+        PlatformFundState::ConsumptionUnknown
+    );
+    assert!(fund_record(&w.f, outpoint.txid).unwrap().armed);
+    w.net.fund(w.address(0), estimate());
+    let rows = w.activity();
+    assert!(incoming(&rows).is_empty(), "{rows:?}");
+    assert_eq!(
+        fund_rows(&rows),
+        [(PlatformActivityState::Pending, estimate(), false)]
+    );
+}
+
+/// Platform's "already consumed" after an apply asked for a signature and
+/// got none: the fund never signed, so it closes rather than completing.
+#[test]
+fn already_consumed_with_no_signature_closes_the_fund() {
+    for how in [NoSignature::OtherKey, NoSignature::VaultLocked] {
+        let (w, lib) = fund_world();
+        let outpoint = own_open_fund(&w.f, &lib);
+        how.set(&lib);
+        lib.answer(Answer::Consumed { of: None });
+        assert_eq!(
+            resume_of(&w.f, &lib, outpoint).unwrap(),
+            PlatformFundState::ConsumptionUnknown,
+            "{how:?}"
+        );
+        assert_eq!(lib.signed.lock().unwrap().last(), Some(&false), "{how:?}");
+        assert_eq!(
+            fund_rows(&w.activity()),
+            [(PlatformActivityState::Failed, estimate(), false)],
+            "{how:?}"
+        );
+    }
+}
+
+/// Arming says what it did, and undoing touches only that: a second
+/// arming changes nothing and undoing it leaves the first's; a restored
+/// lock's record is made, and undoing that removes it.
+#[test]
+fn arming_names_what_it_did_and_undoing_touches_only_that() {
+    use platform_moves::{Arming, arm_fund, disarm_fund};
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let own = own_open_fund(&fx, &lib);
+    lib.track(lib.lock(1, 1_000_000, AssetLockStatus::RecoveredFromChain, true));
+    let restored = lib.outpoint(1);
+    let wallet = fx.wallet;
+    let arm = |at: OutPoint| {
+        let s = Arc::clone(&fx.s);
+        (fx.engine)
+            .block_on(async move { arm_fund(&s, wallet, (at, 1_000_000), "a".into(), 1).await })
+            .unwrap()
+    };
+    let disarm = |at: OutPoint, arming| {
+        let s = Arc::clone(&fx.s);
+        (fx.engine)
+            .block_on(async move { disarm_fund(&s, wallet, &at.txid.to_string(), arming).await })
+            .unwrap();
+    };
+    assert_eq!(arm(own), Arming::Armed);
+    assert_eq!(arm(own), Arming::Unchanged);
+    disarm(own, Arming::Unchanged);
+    assert!(fund_record(&fx, own.txid).unwrap().armed);
+    disarm(own, Arming::Armed);
+    assert!(!fund_record(&fx, own.txid).unwrap().armed);
+    assert_eq!(arm(restored), Arming::Made);
+    assert!(fund_record(&fx, restored.txid).unwrap().restored);
+    disarm(restored, Arming::Made);
+    assert!(fund_record(&fx, restored.txid).is_none());
 }

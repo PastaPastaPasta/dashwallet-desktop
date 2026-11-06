@@ -7,7 +7,6 @@
 //! proved execution finishes a lock; nothing here funds, builds a lock or
 //! changes a balance.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use dashcore::{OutPoint, Txid};
@@ -94,9 +93,11 @@ pub struct UnfinishedLock {
 pub enum LockFinish {
     /// Platform's proved execution: the lock is settled.
     Applied,
-    /// Platform answered "already consumed" for this restored lock,
-    /// unproved: nothing settled, nothing counted. Reserved: not returned
-    /// in this version (the lock reads `Checking`).
+    /// Platform answered "already consumed" for this lock's outpoint,
+    /// unproved, and its kind takes that as finished elsewhere (type 4): the
+    /// lock leaves the lists, and nothing is settled or counted as this
+    /// wallet's but an own fund that had signed. Shielded locks read
+    /// `Checking` instead.
     ReportedUsed,
     /// The apply may have executed, unproved.
     Checking,
@@ -213,10 +214,7 @@ impl DashPay {
 pub(crate) async fn kind_transfers(
     kind: &impl LockKind,
 ) -> Result<(Vec<UnfinishedLock>, bool), PlatformError> {
-    Ok((
-        locks::detect(kind, &HashSet::new()).await?,
-        kind.caught_up(),
-    ))
+    Ok((locks::detect(kind).await?, kind.caught_up()))
 }
 
 /// The kinds' unfinished transfers together, by txid, then output: a kind
@@ -342,5 +340,33 @@ fn platform(e: ShieldedError) -> PlatformError {
         e => PlatformError::Internal {
             detail: e.to_string(),
         },
+    }
+}
+
+/// Tests make one kind's opener fail for one session.
+#[cfg(test)]
+pub(crate) mod open_fails {
+    use std::collections::HashSet;
+    use std::sync::{LazyLock, Mutex};
+
+    use super::LockKindId;
+    use crate::NetworkSession;
+
+    static FAILING: LazyLock<Mutex<HashSet<(usize, LockKindId)>>> = LazyLock::new(Mutex::default);
+
+    fn key(session: &NetworkSession, kind: LockKindId) -> (usize, LockKindId) {
+        (std::ptr::from_ref(session) as usize, kind)
+    }
+
+    pub(crate) fn set(session: &NetworkSession, kind: LockKindId, fails: bool) {
+        let mut failing = FAILING.lock().unwrap();
+        match fails {
+            true => failing.insert(key(session, kind)),
+            false => failing.remove(&key(session, kind)),
+        };
+    }
+
+    pub(crate) fn get(session: &NetworkSession, kind: LockKindId) -> bool {
+        FAILING.lock().unwrap().contains(&key(session, kind))
     }
 }

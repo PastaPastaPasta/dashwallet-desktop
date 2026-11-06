@@ -314,11 +314,13 @@ pub enum PlatformFundState {
     /// transition was signed, with `error` (a code): nothing of this attempt
     /// reached Platform. `resume_platform_fund` tries again.
     NotApplied { error: String },
-    /// The apply may have executed, unproved: Platform answered that the
-    /// lock is already consumed (any node can say it), or the apply failed
-    /// after its transition was signed. The lock stays pending
-    /// (`consumption_unknown`, "Checking") until a proved apply; it blocks
-    /// no new fund.
+    /// The apply may have executed, unproved: the apply failed after its
+    /// transition was signed, and the lock stays pending
+    /// (`consumption_unknown`, "Checking") until a proved apply; or
+    /// Platform answered that the lock is already consumed (any node can
+    /// say it), and the lock is taken as finished elsewhere: no longer
+    /// pending, its activity ending as an unproved report does. Neither
+    /// blocks a new fund.
     ConsumptionUnknown,
 }
 

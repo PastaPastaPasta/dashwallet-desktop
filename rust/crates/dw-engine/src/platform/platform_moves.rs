@@ -25,15 +25,32 @@
 //! `platform_fund.rs`) is no `incoming` row either: while its apply runs
 //! its address is not compared, and once the apply is proved the first rise
 //! of the address, up to what the fund added, is the fund's (its own
-//! `from_core` row). Until then (a fund pending, or checking after an
-//! unproved apply) a rise of its address up to the lock's credits is read
-//! as the fund's (`absorbed`), so the fund done takes only the rest. A
-//! pending fund whose lock is known finished (the library's proved
-//! `Consumed`, recorded settled, or Platform's answer that it is used) is
-//! completed on the next read with its estimate, marked `estimated`, never
-//! by a second lock or apply. The hold is taken under the read's lock
-//! ([`hold_fund`]), so a read ran wholly before it or sees it.
+//! `from_core` row). Before that, a rise of its address up to the lock's
+//! credits is read as the fund's (`absorbed`, so the fund done takes only
+//! the rest) only once the fund is *armed*: recorded durably just before an
+//! apply asks for the lock key's signature ([`Arming`]), and undone if that
+//! apply released none. A fund
+//! still waiting for its proof, refused before its signature, or never
+//! tried absorbs nothing. A restored lock (no fund step of this install
+//! signed it) has no record until its apply is armed.
 //!
+//! A pending fund ends on the lock's evidence, read by its exact outpoint
+//! (`unfinished_funds::fund_evidence`), never by a second lock or apply:
+//! the library's proved `Consumed` (live, or stored for a lock a reload no
+//! longer loads) or a settled record completes it with
+//! its estimate, marked `estimated`; Platform's unproved "already consumed"
+//! (kept as a record of its own) completes an own fund only once an apply
+//! of it released a signature, else closes it (`failed`), and removes a
+//! restored lock's record (only a proved apply completes one: no row, no
+//! allowance), a record closed or removed giving what it absorbed back as
+//! `incoming`; and a lock the library no
+//! longer tracks once SPV and the scan caught up closes an unarmed fund (a
+//! lock swept by a conflicting transaction, or untracked as never sent:
+//! platform-wallet's `sync/reconstruction.rs` and `sync/tracking.rs`). An
+//! armed fund whose lock is neither tracked nor stored `Consumed` stays
+//! pending. The hold is taken under the
+//! read's lock ([`hold_fund`]), so a read ran wholly before it or sees it.
+
 //! **Moves.** A move withdraws to the quote's address, one of the wallet's
 //! Core receiving addresses. Its inputs, the nonces it signs at (proved + 1)
 //! and the credits it takes are fixed first, and recorded `pending` durably
@@ -80,6 +97,7 @@ use std::time::Duration;
 
 use dash_sdk::platform::FetchMany;
 use dash_sdk::query_types::AddressInfo;
+use dashcore::OutPoint;
 use dpp::address_funds::{AddressFundsFeeStrategy, AddressFundsFeeStrategyStep, PlatformAddress};
 use dpp::balances::credits::CREDITS_PER_DUFF;
 use dpp::consensus::ConsensusError;
@@ -281,6 +299,19 @@ pub(crate) struct FundRecord {
     /// Done with the estimate, not what an apply's proof showed added.
     #[serde(default)]
     pub(crate) estimated: bool,
+    /// The lock's credit output: the fund's lock is the outpoint
+    /// (`txid`, `vout`), and evidence about it is by that outpoint.
+    #[serde(default)]
+    pub(crate) vout: u32,
+    /// An apply of its lock released a signature (recorded just before
+    /// it): only then may a rise of its address be the fund's while it is
+    /// pending.
+    #[serde(default)]
+    pub(crate) armed: bool,
+    /// Made by an apply's arming, for a lock no fund step of this install
+    /// recorded (a restored one): only a proved apply completes it.
+    #[serde(default)]
+    pub(crate) restored: bool,
     pub(crate) at: u64,
 }
 
@@ -301,9 +332,10 @@ impl FundRecord {
         }
     }
 
-    /// While pending: what of the address's rise may still be the fund's.
+    /// While pending and armed: what of the address's rise may still be
+    /// the fund's.
     fn expects(&self) -> u64 {
-        if self.state == PlatformActivityState::Pending {
+        if self.state == PlatformActivityState::Pending && self.armed {
             (self.duffs.saturating_mul(CREDITS_PER_DUFF)).saturating_sub(self.absorbed)
         } else {
             0
@@ -311,13 +343,108 @@ impl FundRecord {
     }
 
     /// Done as `credits` added, of which what was read while pending is no
-    /// longer to read.
+    /// longer to read. Completed with the estimate after a smaller rise was
+    /// read, the rest stays to read: at most the estimate's excess over
+    /// the rise (Platform's fee above its minimum), it comes off the next
+    /// rise of the address.
     fn complete(&mut self, credits: u64, estimated: bool) {
         self.state = PlatformActivityState::Done;
         self.credits = credits;
         self.unseen = credits.saturating_sub(self.absorbed);
         self.estimated = estimated;
     }
+
+    /// A pending, unarmed record of the fund lock at `outpoint`.
+    fn pending((outpoint, duffs): (OutPoint, u64), address: String, credits: u64) -> Self {
+        Self {
+            txid: outpoint.txid.to_string(),
+            duffs,
+            address,
+            state: PlatformActivityState::Pending,
+            credits,
+            unseen: 0,
+            absorbed: 0,
+            estimated: false,
+            vout: outpoint.vout,
+            armed: false,
+            restored: false,
+            at: unix_now(),
+        }
+    }
+
+    /// Ended without an apply of this install's (module doc): no rise is
+    /// the fund's, and what it absorbed is given back
+    /// ([`Self::give_back`]). Its writes.
+    fn close(&mut self) -> Result<Vec<Write>, PlatformError> {
+        let mut writes = self.give_back()?;
+        self.state = PlatformActivityState::Failed;
+        self.unseen = 0;
+        self.armed = false;
+        writes.push(fund_write(self)?);
+        Ok(writes)
+    }
+
+    /// What it absorbed of its address's rise (as the fund's, while
+    /// pending), an `incoming` row again, once.
+    fn give_back(&mut self) -> Result<Vec<Write>, PlatformError> {
+        let credits = std::mem::take(&mut self.absorbed);
+        if credits == 0 {
+            return Ok(Vec::new());
+        }
+        let at = unix_now();
+        let row = PlatformActivity {
+            id: format!("released-{at}-{}", self.txid),
+            kind: PlatformActivityKind::Incoming,
+            state: PlatformActivityState::Done,
+            credits,
+            address: Some(self.address.clone()),
+            to: None,
+            expected_duffs: None,
+            fee_credits: None,
+            at,
+            may_land: false,
+            estimated: false,
+        };
+        let key = format!("{ROW_PREFIX}{at:020}/released/{}", self.txid);
+        Ok(vec![(key, Some(json(&row)?))])
+    }
+
+    /// After Platform's unproved "already consumed" of its lock, its
+    /// writes and whether the record is kept: an own fund whose apply
+    /// released a signature completes with `estimate`; one that never
+    /// signed closes; a restored lock's record is removed, as no fund of
+    /// this install's is shown to have reached the address. Closed or
+    /// removed, what it absorbed is given back.
+    fn reported(&mut self, estimate: u64) -> Result<(Vec<Write>, bool), PlatformError> {
+        if self.restored {
+            let mut writes = self.give_back()?;
+            writes.push(fund_delete(&self.txid));
+            return Ok((writes, false));
+        }
+        if self.armed {
+            self.complete(estimate, true);
+            return Ok((vec![fund_write(self)?], true));
+        }
+        Ok((self.close()?, true))
+    }
+
+    fn outpoint(&self) -> Option<OutPoint> {
+        Some(OutPoint::new(self.txid.parse().ok()?, self.vout))
+    }
+}
+
+/// What a read knows of the wallet's fund locks
+/// (`unfinished_funds::fund_evidence`), each by outpoint.
+#[derive(Debug, Default)]
+pub(crate) struct FundEvidence {
+    /// Applied: the library's proved `Consumed`, or recorded settled.
+    pub(crate) done: HashSet<OutPoint>,
+    /// Platform's "already consumed" for that outpoint, unproved.
+    pub(crate) reported: HashSet<OutPoint>,
+    /// Every fund lock the library tracks, any status.
+    pub(crate) tracked: HashSet<OutPoint>,
+    /// SPV and the wallet's scan caught up: a lock not tracked now is gone.
+    pub(crate) caught_up: bool,
 }
 
 /// The addresses whose fund apply runs now, per wallet, with how many runs.
@@ -388,28 +515,129 @@ pub(crate) fn fund_holds(session: &NetworkSession, wallet: WalletId) -> BTreeSet
 pub(crate) async fn record_fund(
     session: &NetworkSession,
     wallet: WalletId,
-    (txid, duffs): (String, u64),
+    (outpoint, duffs): (OutPoint, u64),
     address: String,
     credits: u64,
 ) -> Result<(), PlatformError> {
     let lock = wallet_lock(wallet);
     let _one = lock.lock().await;
     let store = Store::of(session, wallet)?;
+    let txid = outpoint.txid.to_string();
     if store.fund(&txid).await?.is_some() {
         return Ok(());
     }
-    let record = FundRecord {
-        txid,
-        duffs,
-        address,
-        state: PlatformActivityState::Pending,
-        credits,
-        unseen: 0,
-        absorbed: 0,
-        estimated: false,
-        at: unix_now(),
-    };
+    let record = FundRecord::pending((outpoint, duffs), address, credits);
     store.commit(vec![fund_write(&record)?]).await
+}
+
+/// Fund `txid`'s record, if it has one.
+pub(crate) async fn fund_record(
+    session: &NetworkSession,
+    wallet: WalletId,
+    txid: &str,
+) -> Result<Option<FundRecord>, PlatformError> {
+    let store = Store::of(session, wallet)?;
+    store.fund(txid).await
+}
+
+/// What [`arm_fund`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Arming {
+    /// The lock had no record (a restored one): made, armed.
+    Made,
+    /// Its record armed now: pending unarmed, or closed (the lock came
+    /// back), pending again.
+    Armed,
+    /// Already armed, or done: nothing written.
+    Unchanged,
+}
+
+/// Records that an apply of the fund lock at `outpoint` is about to
+/// release a signature: its record armed (module doc), made first for a
+/// lock that has none (a restored one: paying `address`, about
+/// `credits`).
+pub(crate) async fn arm_fund(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lock: (OutPoint, u64),
+    address: String,
+    credits: u64,
+) -> Result<Arming, PlatformError> {
+    let one = wallet_lock(wallet);
+    let _one = one.lock().await;
+    let store = Store::of(session, wallet)?;
+    let (record, arming) = match store.fund(&lock.0.txid.to_string()).await? {
+        Some(r)
+            if r.state == PlatformActivityState::Failed
+                || (r.state == PlatformActivityState::Pending && !r.armed) =>
+        {
+            let r = FundRecord {
+                state: PlatformActivityState::Pending,
+                armed: true,
+                ..r
+            };
+            (r, Arming::Armed)
+        }
+        Some(_) => return Ok(Arming::Unchanged),
+        None => {
+            let r = FundRecord {
+                armed: true,
+                restored: true,
+                ..FundRecord::pending(lock, address, credits)
+            };
+            (r, Arming::Made)
+        }
+    };
+    store.commit(vec![fund_write(&record)?]).await?;
+    Ok(arming)
+}
+
+/// Undoes [`arm_fund`]'s `arming` when no signature was released after
+/// all: the record it made is removed, the one it armed disarmed.
+pub(crate) async fn disarm_fund(
+    session: &NetworkSession,
+    wallet: WalletId,
+    txid: &str,
+    arming: Arming,
+) -> Result<(), PlatformError> {
+    let lock = wallet_lock(wallet);
+    let _one = lock.lock().await;
+    let store = Store::of(session, wallet)?;
+    let Some(record) = pending_fund(&store, txid).await? else {
+        return Ok(());
+    };
+    let write = match arming {
+        Arming::Unchanged => return Ok(()),
+        Arming::Made => fund_delete(txid),
+        Arming::Armed => fund_write(&FundRecord {
+            armed: false,
+            ..record
+        })?,
+    };
+    store.commit(vec![write]).await
+}
+
+/// Platform answered "already consumed" for fund `txid`'s lock
+/// ([`FundRecord::reported`]).
+pub(crate) async fn fund_used(
+    session: &NetworkSession,
+    wallet: WalletId,
+    txid: &str,
+    estimate: u64,
+) -> Result<(), PlatformError> {
+    let lock = wallet_lock(wallet);
+    let _one = lock.lock().await;
+    let store = Store::of(session, wallet)?;
+    let Some(mut record) = pending_fund(&store, txid).await? else {
+        return Ok(());
+    };
+    let (writes, _) = record.reported(estimate)?;
+    commit_outcome(&store, writes).await
+}
+
+/// Fund `txid`'s record while it is pending.
+async fn pending_fund(store: &Store, txid: &str) -> Result<Option<FundRecord>, PlatformError> {
+    Ok((store.fund(txid).await?).filter(|r| r.state == PlatformActivityState::Pending))
 }
 
 /// The address fund `txid`'s record names, if it has one.
@@ -418,8 +646,7 @@ pub(crate) async fn fund_address(
     wallet: WalletId,
     txid: &str,
 ) -> Result<Option<String>, PlatformError> {
-    let store = Store::of(session, wallet)?;
-    Ok(store.fund(txid).await?.map(|r| r.address))
+    Ok(fund_record(session, wallet, txid).await?.map(|r| r.address))
 }
 
 /// Records fund `txid` applied, `credited` added to `address` (the
@@ -427,50 +654,59 @@ pub(crate) async fn fund_address(
 pub(crate) async fn fund_applied(
     session: &NetworkSession,
     wallet: WalletId,
-    (txid, duffs): (String, u64),
+    lock: (OutPoint, u64),
     address: String,
     (credited, estimated): (u64, bool),
 ) -> Result<(), PlatformError> {
-    let lock = wallet_lock(wallet);
-    let _one = lock.lock().await;
+    let one = wallet_lock(wallet);
+    let _one = one.lock().await;
     let store = Store::of(session, wallet)?;
-    let mut record = match store.fund(&txid).await? {
+    let mut record = match store.fund(&lock.0.txid.to_string()).await? {
         Some(r) if r.state == PlatformActivityState::Done => return Ok(()),
         Some(r) => r,
         None => FundRecord {
-            txid,
-            duffs,
-            address,
-            state: PlatformActivityState::Pending,
-            credits: credited,
-            unseen: 0,
-            absorbed: 0,
-            estimated,
-            at: unix_now(),
+            armed: true,
+            ..FundRecord::pending(lock, address, credited)
         },
     };
     record.complete(credited, estimated);
     commit_outcome(&store, vec![fund_write(&record)?]).await
 }
 
-/// Completes each pending fund of `funds` whose lock `finished` names (by
-/// txid) with its estimate (module doc), but not one whose apply runs now
-/// (its address `held`): its settle records it.
+/// Ends each pending fund of `funds` its lock's evidence `ev` decides
+/// (module doc), but not one whose apply runs now (its address `held`: its
+/// settle records it): applied, it completes with its estimate; reported
+/// used, as [`FundRecord::reported`]; gone from the library unarmed, it
+/// closes.
 async fn reconcile(
     store: &Store,
-    funds: &mut [FundRecord],
-    finished: &HashSet<String>,
+    funds: &mut Vec<FundRecord>,
+    ev: &FundEvidence,
     held: &BTreeSet<String>,
 ) -> Result<bool, PlatformError> {
     let mut writes = Vec::new();
-    for fund in funds.iter_mut().filter(|f| {
-        f.state == PlatformActivityState::Pending
-            && finished.contains(&f.txid)
-            && !held.contains(&f.address)
-    }) {
-        fund.complete(fund.credits, true);
-        writes.push(fund_write(fund)?);
+    let mut removed = HashSet::new();
+    for fund in funds.iter_mut() {
+        let at = (fund.state == PlatformActivityState::Pending && !held.contains(&fund.address))
+            .then(|| fund.outpoint())
+            .flatten();
+        let Some(at) = at else {
+            continue;
+        };
+        if ev.done.contains(&at) {
+            fund.complete(fund.credits, true);
+            writes.push(fund_write(fund)?);
+        } else if ev.reported.contains(&at) {
+            let (ended, kept) = fund.reported(fund.credits)?;
+            writes.extend(ended);
+            if !kept {
+                removed.insert(fund.txid.clone());
+            }
+        } else if !fund.armed && ev.caught_up && !ev.tracked.contains(&at) {
+            writes.extend(fund.close()?);
+        }
     }
+    funds.retain(|f| !removed.contains(&f.txid));
     let changed = !writes.is_empty();
     if changed {
         store.commit(writes).await?;
@@ -1467,8 +1703,16 @@ fn move_write(record: &MoveRecord) -> Result<(String, Option<String>), PlatformE
     Ok((format!("{MOVE_PREFIX}{}", record.id), Some(json(record)?)))
 }
 
-fn fund_write(record: &FundRecord) -> Result<(String, Option<String>), PlatformError> {
+/// A write of the app.sqlite settings: the key and its value (`None`
+/// deletes it).
+type Write = (String, Option<String>);
+
+fn fund_write(record: &FundRecord) -> Result<Write, PlatformError> {
     Ok((format!("{FUND_PREFIX}{}", record.txid), Some(json(record)?)))
+}
+
+fn fund_delete(txid: &str) -> Write {
+    (format!("{FUND_PREFIX}{txid}"), None)
 }
 
 pub(super) fn bech32m(address: &PlatformAddress, network: Network) -> String {
@@ -1737,8 +1981,11 @@ pub(crate) async fn activity(
     let mut funds = store.funds().await?;
     let addresses = covered(&pool(wallet).await?, &moves);
     let held = fund_holds(session, wallet_id);
-    let finished = super::unfinished_funds::finished_funds(session, wallet_id, wallet).await;
-    let completed = reconcile(&store, &mut funds, &finished, &held).await?;
+    let pending = (funds.iter())
+        .filter(|f| f.state == PlatformActivityState::Pending)
+        .filter_map(FundRecord::outpoint);
+    let ev = super::unfinished_funds::fund_evidence(session, wallet_id, wallet, pending).await;
+    let completed = reconcile(&store, &mut funds, &ev, &held).await?;
     let observed = match read(session, net, addresses, false).await {
         Ok(seen) => observe(&store, (&mut moves, &mut funds), held, &seen).await?,
         Err(e) => {

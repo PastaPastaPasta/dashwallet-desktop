@@ -10,13 +10,17 @@
 //! consumption (no release wrote any).
 //!
 //! The apply pays the address the fund's activity record names, else the
-//! receive address, and records the lock's `from_core` row first when it
-//! has none (a restored lock). While it runs that address is held out of
-//! the activity reads; after a proved apply the settle records the rise as
-//! the fund's, at most the lock's credits. Platform's answer that the
-//! lock is used completes the record with its estimate, as the activity
-//! does for any lock known finished ([`finished_funds`]); neither settles
-//! the lock.
+//! receive address. While it runs that address is held out of the activity
+//! reads; just before it releases a signature the fund's record is armed
+//! (made then for a restored lock, paying that address), and disarmed
+//! again if none was released. After a proved apply the settle records the
+//! rise as the fund's, at most the lock's credits. Platform's "already
+//! consumed" for the exact outpoint is kept ([`Mark::Reported`]) apart from
+//! an unknown outcome: the kind takes the lock as finished elsewhere, so it
+//! leaves the lists ([`locks::LockFinish::ReportedUsed`]), and the record ends as
+//! `platform_moves::fund_used` says (completed with its estimate only for an
+//! own fund whose apply released a signature; a restored lock's record is
+//! removed). Neither settles the lock.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -25,12 +29,15 @@ use dashcore::{OutPoint, ScriptBuf, Txid};
 use dpp::balances::credits::CREDITS_PER_DUFF;
 use dpp::version::PlatformVersion;
 use dw_appdb::dispatch::TopUpSettled;
+use dw_vault::{SignerError, VaultError};
+use key_wallet::bip32::{DerivationPath, ExtendedPubKey};
 use platform_wallet::PlatformWallet;
+use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
 
 use super::errors::{CreditsError, PlatformError};
 use super::flows::FlowKind;
 use super::platform_fund::{self as fund, FundLib};
-use super::platform_moves::{self, FundHold};
+use super::platform_moves::{self, FundEvidence, FundHold};
 use super::registration_flow::LockStatus;
 use super::unfinished_locks::{
     self as locks, ApplyReply, KindLock, LockKeySigner, LockKind, LockKindId, Mark, Marks, Minimum,
@@ -96,28 +103,17 @@ impl<'a, L: FundLib> FundLocks<'a, L> {
         })
     }
 
-    /// The address the fund `txid` pays: its record's, else the receive
-    /// address, recorded then as the lock's `from_core` row of `duffs`.
+    /// The address the fund paying `recorded` (its record's address, if
+    /// any) pays: that one, else the receive address.
     async fn destination(
         &self,
-        txid: Txid,
-        duffs: u64,
+        recorded: Option<&str>,
     ) -> Result<(dpp::address_funds::PlatformAddress, String), PlatformError> {
-        let txid = txid.to_string();
-        let recorded = platform_moves::fund_address(self.session, self.wallet, &txid).await?;
-        if let Some(to) = recorded.as_deref().and_then(platform_moves::parse) {
-            return Ok((to, recorded.unwrap_or_default()));
+        if let Some(to) = recorded.and_then(platform_moves::parse) {
+            return Ok((to, recorded.unwrap_or_default().to_owned()));
         }
         let to = self.lib.receive_address().await?;
         let address = platform_moves::bech32m(&to, self.lib.network());
-        let estimate = fund::estimate(self.lib, duffs);
-        let at = (txid.clone(), duffs);
-        if let Err(e) =
-            platform_moves::record_fund(self.session, self.wallet, at, address.clone(), estimate)
-                .await
-        {
-            tracing::warn!(%txid, error = %e, "could not record a fund in the Platform activity");
-        }
         Ok((to, address))
     }
 }
@@ -152,6 +148,10 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
             outpoints: self.marks(Mark::Unknown).await,
             txids: HashSet::new(),
         }
+    }
+
+    async fn reported_locks(&self) -> HashSet<OutPoint> {
+        self.marks(Mark::Reported).await
     }
 
     async fn mark_unknown(&self, lock: &KindLock) {
@@ -212,13 +212,32 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
             .ok_or_else(|| PlatformError::InvalidArgument {
                 detail: "no tracked fund lock has that outpoint".into(),
             })?;
-        let (to, address) = self.destination(outpoint.txid, duffs).await?;
+        let txid = outpoint.txid.to_string();
+        let before = platform_moves::fund_record(self.session, self.wallet, &txid).await?;
+        let (to, address) = (self.destination(before.as_ref().map(|r| r.address.as_str()))).await?;
+        let estimate = fund::estimate(self.lib, duffs);
         // Until the settle says what the rise is (module doc).
         let hold = platform_moves::hold_fund(self.session, self.wallet, address.clone()).await;
-        let applied = self.lib.apply(outpoint, to, signer).await;
+        let signer = ArmingSigner {
+            inner: signer,
+            session: self.session,
+            wallet: self.wallet,
+            lock: (outpoint, duffs),
+            fund: (&address, estimate),
+            arming: tokio::sync::OnceCell::new(),
+        };
+        let applied = self.lib.apply(outpoint, to, &signer).await;
         (self.session.hub.pump).mark_platform(self.wallet, [PlatformChange::PlatformAddresses]);
         let gained = applied.as_ref().ok().copied().flatten();
-        let reply = reply_from(applied.map(drop), outpoint, signer.signed());
+        let reply = reply_from(applied.map(drop), outpoint, signer.inner.signed());
+        let arming = signer.arming.get().copied();
+        if !signer.inner.signed()
+            && let Some(arming) = arming
+            && let Err(e) =
+                platform_moves::disarm_fund(self.session, self.wallet, &txid, arming).await
+        {
+            tracing::warn!(%outpoint, error = %e, "could not disarm a fund that signed nothing");
+        }
         match reply {
             Ok(ApplyReply::Done) => {
                 *self.applied.lock().unwrap_or_else(PoisonError::into_inner) = Some(Applied {
@@ -228,11 +247,17 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
                 });
             }
             Ok(ApplyReply::AlreadyConsumed) => {
-                let estimate = (fund::estimate(self.lib, duffs), true);
-                let row = (outpoint.txid.to_string(), duffs);
+                // Kept first: a failed record write is retried from it.
+                locks::record(
+                    self.session,
+                    self.wallet,
+                    LockKindId::PlatformAddress,
+                    Mark::Reported,
+                    outpoint,
+                )
+                .await;
                 if let Err(e) =
-                    platform_moves::fund_applied(self.session, self.wallet, row, address, estimate)
-                        .await
+                    platform_moves::fund_used(self.session, self.wallet, &txid, estimate).await
                 {
                     tracing::warn!(%outpoint, error = %e, "could not record a used fund lock in the Platform activity");
                 }
@@ -272,7 +297,7 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
                 .flatten(),
         };
         if let Some(address) = address {
-            let row = (at.txid.to_string(), lock.info.amount);
+            let row = (at, lock.info.amount);
             if let Err(e) =
                 platform_moves::fund_applied(self.session, self.wallet, row, address, credits).await
             {
@@ -286,24 +311,131 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
     }
 }
 
-/// The txids of the wallet's fund locks known finished: the library's
-/// proved `Consumed`, or recorded settled (by outpoint or by txid).
-pub(crate) async fn finished_funds(
+/// What the wallet's fund locks' evidence says, by outpoint
+/// ([`FundEvidence`]): the library's proved `Consumed` (live, or persisted
+/// for a `pending` fund's lock a reopen no longer loads) and the settled
+/// records (applied), the reported-used records, the tracked locks, and
+/// whether SPV and the wallet's scan caught up. The journal's settled txid
+/// counts for a lock alone in its transaction only.
+pub(crate) async fn fund_evidence(
     session: &NetworkSession,
     wallet: WalletId,
     pw: &PlatformWallet,
-) -> HashSet<String> {
+    pending: impl IntoIterator<Item = OutPoint>,
+) -> FundEvidence {
     let rows = fund::fund_rows(&pw.asset_locks().list_tracked_locks().await);
-    let consumed = (rows.into_iter())
+    let consumed = (rows.iter())
         .filter(|l| l.info.status == LockStatus::Consumed)
-        .map(|l| l.info.outpoint.txid);
-    let marked = locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Settled).await;
-    let settled = (session.leases.top_ups_settled(wallet).await).unwrap_or_else(|e| {
-        tracing::warn!(wallet_id = %wallet, error = %e, "could not read the settled funds");
-        HashSet::new()
-    });
-    (consumed.chain(marked.into_iter().map(|o| o.txid)))
-        .chain(settled)
-        .map(|t| t.to_string())
+        .map(|l| l.info.outpoint);
+    let persisted = persisted_consumed(session, wallet, pending);
+    let settled =
+        locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Settled).await;
+    let by_txid = (session.leases.top_ups_settled(wallet).await).unwrap_or_default();
+    let alone = (rows.iter())
+        .filter(|l| l.alone() && by_txid.contains(&l.info.outpoint.txid))
+        .map(|l| l.info.outpoint);
+    FundEvidence {
+        done: consumed
+            .chain(persisted)
+            .chain(settled)
+            .chain(alone)
+            .collect(),
+        reported: locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Reported)
+            .await,
+        tracked: rows.iter().map(|l| l.info.outpoint).collect(),
+        caught_up: super::registration_flow::wallet_synced(session, wallet),
+    }
+}
+
+/// The outpoints among `pending` whose persisted lock row is `Consumed`.
+/// A failed read is no evidence: those funds stay as they are.
+fn persisted_consumed(
+    session: &NetworkSession,
+    wallet: WalletId,
+    pending: impl IntoIterator<Item = OutPoint>,
+) -> Vec<OutPoint> {
+    let persister = match session.live() {
+        Ok(live) => live.persister,
+        Err(_) => return Vec::new(),
+    };
+    (pending.into_iter())
+        .filter(|at| match persister.asset_lock_status(&wallet.0, at) {
+            Ok(status) => status == Some(AssetLockStatus::Consumed),
+            Err(e) => {
+                tracing::warn!(%at, error = %e, "reading a fund lock's stored status");
+                false
+            }
+        })
         .collect()
+}
+
+/// The apply's signer: [`LockKeySigner`], arming the fund's record
+/// ([`platform_moves::arm_fund`]) durably before the first signature it
+/// asks for, and refusing to sign when that write fails.
+struct ArmingSigner<'s, 'a> {
+    inner: &'s LockKeySigner<'a>,
+    session: &'s NetworkSession,
+    wallet: WalletId,
+    lock: (OutPoint, u64),
+    /// The address the apply pays and the fund's estimate.
+    fund: (&'s str, u64),
+    /// What arming did, once it ran.
+    arming: tokio::sync::OnceCell<platform_moves::Arming>,
+}
+
+#[async_trait::async_trait]
+impl key_wallet::Signer for ArmingSigner<'_, '_> {
+    type Error = SignerError;
+
+    fn supported_methods(&self) -> &[key_wallet::SignerMethod] {
+        key_wallet::Signer::supported_methods(self.inner)
+    }
+
+    async fn sign_ecdsa(
+        &self,
+        path: &DerivationPath,
+        sighash: [u8; 32],
+    ) -> Result<
+        (
+            dashcore::secp256k1::ecdsa::Signature,
+            dashcore::secp256k1::PublicKey,
+        ),
+        SignerError,
+    > {
+        // Another key is refused below with nothing released: not armed.
+        let key = key_wallet::Signer::public_key(self.inner, path).await?;
+        if self.inner.is_the_lock_key(&key) {
+            let (address, credits) = self.fund;
+            let arm = || async {
+                platform_moves::arm_fund(
+                    self.session,
+                    self.wallet,
+                    self.lock,
+                    address.into(),
+                    credits,
+                )
+                .await
+                .map_err(|e| SignerError::Vault(VaultError::Storage(e.to_string())))
+            };
+            self.arming.get_or_try_init(arm).await?;
+        }
+        key_wallet::Signer::sign_ecdsa(self.inner, path, sighash).await
+    }
+
+    async fn public_key(
+        &self,
+        path: &DerivationPath,
+    ) -> Result<dashcore::secp256k1::PublicKey, SignerError> {
+        key_wallet::Signer::public_key(self.inner, path).await
+    }
+}
+
+#[async_trait::async_trait]
+impl key_wallet::ExtendedPubKeySigner for ArmingSigner<'_, '_> {
+    async fn extended_public_key(
+        &self,
+        path: &DerivationPath,
+    ) -> Result<ExtendedPubKey, SignerError> {
+        key_wallet::ExtendedPubKeySigner::extended_public_key(self.inner, path).await
+    }
 }

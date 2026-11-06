@@ -54,7 +54,7 @@
 //!   library's call is not cancellation-safe
 //!   (`fund_from_asset_lock.rs:135-159`).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
@@ -248,7 +248,7 @@ async fn own_open(
     lib: &impl FundLib,
 ) -> Result<Vec<UnfinishedLock>, PlatformError> {
     let kind = FundLocks::new(session, wallet, lib);
-    Ok((locks::detect(&kind, &HashSet::new()).await?.into_iter())
+    Ok((locks::detect(&kind).await?.into_iter())
         .filter(|l| l.origin == LockOrigin::ThisDevice)
         .collect())
 }
@@ -465,7 +465,7 @@ pub(crate) async fn fund(
     if let Err(e) = platform_moves::record_fund(
         session,
         wallet,
-        (txid.clone(), duffs),
+        (outpoint, duffs),
         plan.to.clone(),
         credits_of(duffs, plan.fee_credits),
     )
@@ -551,8 +551,7 @@ where
             credits: (kind.credited()).unwrap_or_else(|| estimate(lib, duffs)),
         },
         LockFinish::ProofWaiting => PlatformFundState::ProofWaiting,
-        // Neither settles (SR1): the lock pends, checking, until a proved
-        // apply.
+        // Neither settles (SR1).
         LockFinish::Checking | LockFinish::ReportedUsed => PlatformFundState::ConsumptionUnknown,
         LockFinish::NotApplied { error } => PlatformFundState::NotApplied { error },
     })
@@ -611,6 +610,15 @@ impl PwFund {
         session: &Arc<NetworkSession>,
         wallet: WalletId,
     ) -> Result<Self, PlatformError> {
+        #[cfg(test)]
+        if super::unfinished::open_fails::get(
+            session,
+            super::unfinished::LockKindId::PlatformAddress,
+        ) {
+            return Err(PlatformError::Storage {
+                detail: "injected".into(),
+            });
+        }
         let (_, pw) = PwLib::open(session, wallet).await?;
         Ok(Self { pw })
     }
