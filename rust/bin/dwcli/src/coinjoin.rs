@@ -416,10 +416,7 @@ pub fn run(
                 );
             }
             if !plan_only {
-                println!("{COMBINED_PRIVACY}");
-                if !yes {
-                    return Err("pass --yes to combine them".into());
-                }
+                confirm_combine(yes, &mut std::io::stdout())?;
                 let grant = session
                     .vault()
                     .authorize(
@@ -470,10 +467,7 @@ pub fn run(
                 );
             }
             if !plan_only {
-                println!("{COMBINED_PRIVACY}");
-                if !yes {
-                    return Err("pass --yes to combine them".into());
-                }
+                confirm_combine(yes, &mut std::io::stdout())?;
                 let grant = session
                     .vault()
                     .authorize(
@@ -515,6 +509,16 @@ fn print_sweep(r: &SweepResult) {
 
 /// The sentence "Move mixed coins" shows before coins are combined on-chain.
 const COMBINED_PRIVACY: &str = "These coins are combined on-chain, so the fully mixed amount loses some of its mixing privacy.";
+
+/// States what combining the coins costs in privacy, and refuses unless
+/// the caller passed `--yes`: before any grant is asked for.
+fn confirm_combine(yes: bool, out: &mut impl std::io::Write) -> Result<(), String> {
+    writeln!(out, "{COMBINED_PRIVACY}").map_err(|e| e.to_string())?;
+    if !yes {
+        return Err("pass --yes to combine them".into());
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -578,5 +582,22 @@ mod tests {
             assert!(!yes(parse(&[])), "{command}");
             assert!(yes(parse(&["--yes"])), "{command}");
         }
+    }
+
+    /// The sweeps' confirmation states the privacy cost either way and
+    /// goes on only with `--yes`.
+    #[test]
+    fn a_sweep_without_yes_states_the_privacy_cost_and_stops() {
+        for (yes, ok) in [(false, false), (true, true)] {
+            let mut out = Vec::new();
+            let r = super::confirm_combine(yes, &mut out);
+            assert_eq!(r.is_ok(), ok, "yes={yes}");
+            let printed = String::from_utf8(out).unwrap();
+            assert_eq!(printed.trim_end(), super::COMBINED_PRIVACY, "yes={yes}");
+        }
+        assert_eq!(
+            super::confirm_combine(false, &mut Vec::new()).unwrap_err(),
+            "pass --yes to combine them"
+        );
     }
 }
