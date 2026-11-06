@@ -2585,7 +2585,7 @@ mod tests {
         ),
         (
             "identity unfinished-transfers",
-            r#"{"ok":true,"result":{"locks":[],"complete":false}}"#,
+            r#"{"ok":true,"result":{"locks":[],"complete":false,"unread":[]}}"#,
         ),
         (
             "identity finish-transfer ab12",
