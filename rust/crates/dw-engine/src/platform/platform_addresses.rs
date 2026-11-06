@@ -15,6 +15,7 @@ use super::errors::{CreditsError, PlatformError};
 use super::flows::GrantRequest;
 use super::platform_fund;
 use super::platform_moves;
+use super::unfinished::UnfinishedState;
 
 /// The wallet's Platform addresses (payment account 0), as the last sync
 /// pass left them; no network read.
@@ -342,6 +343,10 @@ pub struct PendingPlatformFund {
     /// already be on the Platform address. Only a proved apply clears it; it
     /// blocks no new fund.
     pub consumption_unknown: bool,
+    /// The recovery's state of the lock (§2.14): `tooSmall` and
+    /// `unsupported` can't be finished in this version, so the host offers
+    /// no Finish, and neither blocks a new fund.
+    pub state: UnfinishedState,
 }
 
 impl DashPay {

@@ -28,22 +28,27 @@
 //!   a failure after the transition was signed, leaves it pending,
 //!   `consumption_unknown` ("Checking", kept in `app.sqlite`), blocking no
 //!   new fund; a refusal before the signature is `NotApplied`; a lock with
-//!   no proof yet is `ProofWaiting`. An open lock that is not of unknown
-//!   consumption refuses the next fund (`credits.fund_pending`) until
-//!   [`resume`] applies it.
+//!   no proof yet is `ProofWaiting`. An open lock that can still be
+//!   finished (not of unknown consumption, not too small, not unsupported)
+//!   refuses the next fund (`credits.fund_pending`) until [`resume`]
+//!   applies it.
 //! - **One apply path.** A fund's apply, "Check again" and the recovery's
 //!   Finish all run the recovery's runner (`unfinished_locks::finish`) over
 //!   the kind [`FundLocks`]: the lease's funding signer narrowed to the
 //!   lock's credit key, one call permit, settled only on Platform's proved
 //!   execution, its records by outpoint.
 //! - **Only this install's locks.** A lock no `paddr/` step of this
-//!   install signed (a restore, another app on the seed) is not listed here:
-//!   it is the recovery's to list and finish (`unfinished_locks::detect`).
+//!   install signed (a restore on a new install, another app on the seed)
+//!   is not listed here and blocks no fund: the
+//!   recovery lists and finishes it (`unfinished.rs`: `unfinished_transfers`,
+//!   `finish_transfer(PlatformAddress, …)` and Repair's Finish transfers),
+//!   through the same kind.
 //! - **Activity.** The lock's record (`platform_moves.rs`, `FundRecord`) is
 //!   a `from_core` row: pending until a proved apply, then done with the
-//!   credits the apply's proof shows added. While an apply runs its address
-//!   is not compared by the activity reads, and the first rise read after a
-//!   proved apply is the fund's, so it is no `incoming` row.
+//!   credits the apply's proof shows added, or with the estimate once the
+//!   lock is known used another way (`platform_moves::activity`). Its
+//!   address's rise is the fund's, never `incoming` (`platform_moves.rs`'s
+//!   module doc).
 //! - **No abort.** Every call runs in a task of the session runtime, which
 //!   the close waits for and never aborts, under no engine timeout: the
 //!   library's call is not cancellation-safe
@@ -259,6 +264,7 @@ pub(crate) async fn pending(
             duffs: l.duffs,
             proved: l.state != UnfinishedState::Confirming,
             consumption_unknown: l.state == UnfinishedState::Checking,
+            state: l.state,
         })
         .collect())
 }
@@ -279,11 +285,15 @@ async fn plan(
     if duffs < min {
         return Err(CreditsError::BelowMinimum { min });
     }
-    // A lock of unknown consumption may never settle: it stays listed,
-    // resumable, and blocks nothing (as a shield's).
-    if let Some(open) = (own_open(session, wallet, lib).await?.into_iter())
-        .find(|l| l.state != UnfinishedState::Checking)
-    {
+    // A lock of unknown consumption may never settle, and one too small or
+    // unsupported can't be finished: each stays listed and blocks nothing
+    // (as a shield's).
+    if let Some(open) = (own_open(session, wallet, lib).await?.into_iter()).find(|l| {
+        !matches!(
+            l.state,
+            UnfinishedState::Checking | UnfinishedState::TooSmall | UnfinishedState::Unsupported
+        )
+    }) {
         return Err(CreditsError::FundPending { txid: open.txid });
     }
     let fee_duffs = lib.fee_bound().await?;
@@ -369,24 +379,14 @@ pub(crate) fn fund_lock(wallet: WalletId) -> Arc<tokio::sync::Mutex<()>> {
 }
 
 /// The `PlatformAddressFund` lease `grant` names, or a new one redeemed
-/// from it.
+/// from it; a grant with no funding budget is refused before it is
+/// redeemed ([`super::unfinished::authority`]).
 async fn authority(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
     grant: &str,
 ) -> Result<Lease, PlatformError> {
-    match session.lease_for(&wallet, grant) {
-        Some(lease) => {
-            let lease = lease?;
-            if lease.flow() != FlowKind::PlatformAddressFund {
-                return Err(PlatformError::GrantInvalid);
-            }
-            Ok(lease)
-        }
-        None => Ok(session
-            .begin_lease(wallet, FlowKind::PlatformAddressFund, &[grant.to_owned()])
-            .await?),
-    }
+    super::unfinished::authority(session, wallet, grant, FlowKind::PlatformAddressFund).await
 }
 
 /// The address funding key: account 0, index 0 (the library's).
@@ -398,7 +398,9 @@ fn funding_key() -> FundingKey {
     }
 }
 
-/// `DashPay::platform_fund`.
+/// `DashPay::platform_fund`. The fund plans again under the fund lock, so
+/// the address it records and pays can be a newer receive address of the
+/// account than its quote's `to`.
 pub(crate) async fn fund(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
@@ -590,8 +592,8 @@ where
             }
             .into());
         }
-        let (_, pw) = PwLib::open(&session, wallet).await?;
-        body(Arc::clone(&session), PwFund { pw }).await
+        let lib = PwFund::open(&session, wallet).await?;
+        body(Arc::clone(&session), lib).await
     })
     .await
     .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
@@ -600,6 +602,18 @@ where
 /// The real [`FundLib`]: the wallet's library handles.
 pub(crate) struct PwFund {
     pw: PwLib,
+}
+
+impl PwFund {
+    /// The wallet's library handles, for a caller already admitted to the
+    /// session (the recovery's list and Finish transfers).
+    pub(crate) async fn open(
+        session: &Arc<NetworkSession>,
+        wallet: WalletId,
+    ) -> Result<Self, PlatformError> {
+        let (_, pw) = PwLib::open(session, wallet).await?;
+        Ok(Self { pw })
+    }
 }
 
 /// The address-input signer of an apply: it has no address inputs, so it
