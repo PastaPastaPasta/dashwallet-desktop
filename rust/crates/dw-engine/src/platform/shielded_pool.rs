@@ -1533,6 +1533,10 @@ impl PwShielded {
         session: &Arc<NetworkSession>,
         wallet_id: WalletId,
     ) -> Result<Self, PlatformError> {
+        #[cfg(test)]
+        if open_fails::get(session) {
+            return Err(store_error("injected"));
+        }
         let (manager, pw) = PwLib::open(session, wallet_id).await?;
         let coordinator = coordinator(session, &manager).await?;
         Ok(Self {
@@ -2408,4 +2412,31 @@ pub(crate) fn warm_prover() {
 /// coordinator is configured (an active network's Platform start did).
 pub(crate) async fn runs_sync(manager: &Manager) -> bool {
     manager.shielded_coordinator().await.is_some()
+}
+
+/// Tests make the shielded side's opener fail for one session.
+#[cfg(test)]
+pub(crate) mod open_fails {
+    use std::collections::HashSet;
+    use std::sync::{LazyLock, Mutex};
+
+    use crate::NetworkSession;
+
+    static FAILING: LazyLock<Mutex<HashSet<usize>>> = LazyLock::new(Mutex::default);
+
+    fn key(session: &NetworkSession) -> usize {
+        std::ptr::from_ref(session) as usize
+    }
+
+    pub(crate) fn set(session: &NetworkSession, fails: bool) {
+        let mut failing = FAILING.lock().unwrap();
+        match fails {
+            true => failing.insert(key(session)),
+            false => failing.remove(&key(session)),
+        };
+    }
+
+    pub(crate) fn get(session: &NetworkSession) -> bool {
+        FAILING.lock().unwrap().contains(&key(session))
+    }
 }
