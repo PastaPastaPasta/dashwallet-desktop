@@ -319,11 +319,13 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// Drains CoinJoin account 0 into one shield lock, signed by
     /// `permit`'s funding signer limited to `coins` worth `total_duffs`
     /// ([`super::shield_drain::drain_signer`]): built, tracked, broadcast,
-    /// and waited for its proof.
+    /// and waited for its proof. A built lock below `minimum_lock_duffs`
+    /// is dropped before it is tracked or sent.
     fn fund_drain(
         &self,
         coins: &[DrainCoin],
         total_duffs: u64,
+        minimum_lock_duffs: u64,
         permit: &CallPermit,
     ) -> impl Future<Output = Result<OutPoint, FundError>> + Send;
 }
@@ -2084,16 +2086,26 @@ impl ShieldedLib for PwShielded {
 
     async fn fund_drain(
         &self,
-        _: &[DrainCoin],
-        _: u64,
-        _: &CallPermit,
+        coins: &[DrainCoin],
+        total_duffs: u64,
+        minimum_lock_duffs: u64,
+        permit: &CallPermit,
     ) -> Result<OutPoint, FundError> {
-        // The pinned library builds a drain only through a type it does not
-        // export (`AssetLockBuildAmount`, wallet/asset_lock/build.rs:39); its
-        // one public drain funds and applies in one call.
-        Err(FundError::Refused(PlatformError::NotImplemented {
-            call: "DashPay.shield_mixed_coins".into(),
-        }))
+        let signer = super::shield_drain::drain_signer(permit, coins, total_duffs)?;
+        let funded = self.pw.fund_drain_with(minimum_lock_duffs, &signer).await;
+        match funded {
+            Ok(outpoint) => Ok(outpoint),
+            // A coin outside the plan, or past the grant: the signer refused
+            // before the transaction was complete, so nothing can be out.
+            Err(_) if signer.drain_refused() => {
+                permit.abort_unsent();
+                Err(FundError::NotSent(super::shield_drain::drain_changed()))
+            }
+            Err(_) if signer.capped() => Err(FundError::TooManyInputs {
+                max: MAX_LOCK_INPUTS as u64,
+            }),
+            Err(e) => Err(e),
+        }
     }
 }
 

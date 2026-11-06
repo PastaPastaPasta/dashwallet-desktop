@@ -166,6 +166,11 @@ fn a_drain_funds_one_lock_of_every_coin_and_applies_it() {
     assert!(own.contains(&lock.txid));
     // The funding ran under the wallet's claim, given back after it.
     assert_eq!(*lib.drain_claimed.lock().unwrap(), [true]);
+    // The library drops a built lock the pool fee would leave nothing of.
+    assert_eq!(
+        *lib.drain_floors.lock().unwrap(),
+        [drain::drain_floor(pool_fee())]
+    );
     drop(fx.s.coinjoin.claim_sweep(fx.wallet).unwrap());
 }
 

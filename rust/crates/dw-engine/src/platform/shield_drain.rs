@@ -70,6 +70,12 @@ pub(crate) const DRAIN_KEY: FundingKey = FundingKey {
     account: 0,
 };
 
+/// The smallest lock a drain may build against a pool fee of `pool_fee`
+/// credits: one that leaves a credit after the fee.
+pub(crate) fn drain_floor(pool_fee: u64) -> u64 {
+    pool_fee / CREDITS_PER_DUFF + 1
+}
+
 /// The drain of `coins` against a pool fee of `pool_fee` credits: its
 /// quote, or why there is none.
 pub(crate) fn plan_of(
@@ -100,7 +106,7 @@ pub(crate) fn plan_of(
         .sum();
     let fee_duffs = crate::fees::asset_lock_fee_bound(coins.len());
     let duffs = total_duffs.saturating_sub(fee_duffs);
-    let min = pool_fee / CREDITS_PER_DUFF + 1;
+    let min = drain_floor(pool_fee);
     if duffs < min {
         return Err(ShieldedError::BelowMinimum { min });
     }
@@ -188,10 +194,6 @@ async fn drain_cap(
 
 /// The funding signer of a drain's call: `permit`'s, signing at most
 /// [`MAX_LOCK_INPUTS`] inputs, and only `coins`, worth `total_duffs`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no pinned drain call signs yet")
-)]
 pub(crate) fn drain_signer(
     permit: &CallPermit,
     coins: &[DrainCoin],
@@ -217,10 +219,6 @@ fn claim_refused(e: CoinJoinFailure) -> ShieldedError {
 
 /// The refusal of a drain whose signer refused a coin outside its plan or
 /// past its grant: the account changed after the plan.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no pinned drain call signs yet")
-)]
 pub(crate) fn drain_changed() -> PlatformError {
     PlatformError::InvalidArgument {
         detail: "the mixed coins changed since the move was planned: review it again".into(),
@@ -293,7 +291,8 @@ pub(crate) async fn drain(
             ))
             .await
             .map_err(FundError::Refused)?;
-            let funded = lib.fund_drain(&coins, quote.total_duffs, &permit).await;
+            let floor = drain_floor(pool_fee);
+            let funded = (lib.fund_drain(&coins, quote.total_duffs, floor, &permit)).await;
             permit.finish(funded.is_ok());
             funded
         })
