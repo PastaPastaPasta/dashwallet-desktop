@@ -1282,17 +1282,7 @@ pub(crate) async fn shield(
     duffs: u64,
     grant: &str,
 ) -> Result<ShieldOutcome, ShieldedError> {
-    gate(lib).await?;
-    if let Some(wait) = lib.funding_hold() {
-        let refusal = held(lib, wait);
-        if wait == RegistrationWait::Startup {
-            session.platform.retry_startup(wallet);
-        }
-        return Err(refusal);
-    }
-    if !lib.bind().await? {
-        return Err(ShieldedError::not_synced(Wait::Account));
-    }
+    open_for_funding(session, wallet, lib).await?;
     let lock = wallet_lock(session, wallet);
     let _shielding = lock.lock().await;
     let plan = shield_plan(session, lib, duffs).await?;
@@ -1314,20 +1304,57 @@ pub(crate) async fn shield(
     let signer = lease
         .uncounted_funding_signer()
         .map_err(PlatformError::from)?;
-    let key = FundingKey {
-        funding_type: AssetLockFundingType::AssetLockShieldedAddressTopUp,
-        identity_index: 0,
-        account: 0,
-    };
     let funded = lease
         .scope_step(Some(step.clone()), async {
-            let permit = lib.funding_permit(&lease, step.clone(), key, duffs).await?;
+            let permit = (lib.funding_permit(&lease, step.clone(), SHIELD_KEY, duffs)).await?;
             let funded = lib.fund(duffs, &permit).await;
             permit.finish(funded.is_ok());
             funded
         })
         .await;
-    // The step's own lock decides, never the call's result alone.
+    finish_lock(session, wallet, lib, &lease, &signer, step, funded).await
+}
+
+/// The shield's funding key: a drain's lock is a shield's too.
+pub(super) const SHIELD_KEY: FundingKey = FundingKey {
+    funding_type: AssetLockFundingType::AssetLockShieldedAddressTopUp,
+    identity_index: 0,
+    account: 0,
+};
+
+/// The checks before a shield's or a drain's funding takes the wallet's
+/// lock: the pool's gate, what holds a funding back, the bound keys.
+pub(super) async fn open_for_funding(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+) -> Result<(), ShieldedError> {
+    gate(lib).await?;
+    if let Some(wait) = lib.funding_hold() {
+        let refusal = held(lib, wait);
+        if wait == RegistrationWait::Startup {
+            session.platform.retry_startup(wallet);
+        }
+        return Err(refusal);
+    }
+    if !lib.bind().await? {
+        return Err(ShieldedError::not_synced(Wait::Account));
+    }
+    Ok(())
+}
+
+/// After a shield's or a drain's funding call of `step`: the step's own
+/// lock decides, never the call's result alone. Its lock applied, or
+/// waiting for its proof; without one, why.
+pub(super) async fn finish_lock(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+    lease: &Lease,
+    signer: &VaultSigner,
+    step: String,
+    funded: Result<OutPoint, FundError>,
+) -> Result<ShieldOutcome, ShieldedError> {
     let signed = session.leases.signed_lock_txids(wallet, &step);
     let own = (lib.shield_locks().await.into_iter()).find(|l| signed.contains(&l.outpoint.txid));
     let Some(lock) = own else {
@@ -1350,7 +1377,7 @@ pub(crate) async fn shield(
             state: ShieldState::ProofWaiting,
         });
     }
-    let state = apply(session, wallet, lib, &lease, &signer, lock.outpoint).await;
+    let state = apply(session, wallet, lib, lease, signer, lock.outpoint).await;
     Ok(ShieldOutcome { txid, state })
 }
 

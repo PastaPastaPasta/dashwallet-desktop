@@ -3324,6 +3324,7 @@ impl PwLib {
         minimum_lock_duffs: u64,
         signer: &super::signers::CountingFundingSigner,
     ) -> Result<OutPoint, FundError> {
+        use super::shielded_pool::SHIELD_KEY;
         use key_wallet::wallet::managed_wallet_info::asset_lock_builder::AssetLockFundingAccount;
         use platform_wallet::wallet::asset_lock::AssetLockBuildAmount;
         self.replay_permit().await?;
@@ -3334,8 +3335,8 @@ impl PwLib {
                     minimum_lock_duffs: Some(minimum_lock_duffs),
                 },
                 AssetLockFundingAccount::CoinJoin { account_index: 0 },
-                platform_wallet::AssetLockFundingType::AssetLockShieldedAddressTopUp,
-                0,
+                SHIELD_KEY.funding_type,
+                SHIELD_KEY.identity_index,
                 signer,
             )
             .await

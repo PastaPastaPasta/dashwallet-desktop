@@ -29,18 +29,16 @@ use dashcore::OutPoint;
 use dpp::balances::credits::CREDITS_PER_DUFF;
 use dw_vault::GrantKind;
 use key_wallet::bip32::DerivationPath;
-use platform_wallet::AssetLockFundingType;
 use std::sync::Arc;
 
-use super::errors::{PlatformError, ShieldedError, ShieldedSyncWait as Wait};
+use super::errors::{PlatformError, ShieldedError};
 use super::flows::{BudgetPurpose, FlowKind};
-use super::lease::{CallPermit, FundingKey};
-use super::registration::RegistrationWait;
+use super::lease::CallPermit;
 use super::registration_flow::FundError;
-use super::shielded::{MixedShieldQuote, ShieldOutcome, ShieldState};
+use super::shielded::{MixedShieldQuote, ShieldOutcome};
 use super::shielded_pool::{
-    self as pool, MAX_LOCK_INPUTS, ShieldedLib, gate, held, journal_unread, next_step,
-    open_shields, priced_gate, shield_pool_fee, wallet_lock,
+    self as pool, MAX_LOCK_INPUTS, ShieldedLib, journal_unread, next_step, open_shields,
+    priced_gate, shield_pool_fee, wallet_lock,
 };
 use super::signers::CountingFundingSigner;
 use crate::coinjoin::CoinJoinFailure;
@@ -62,13 +60,6 @@ pub(crate) struct DrainCoin {
     /// holds.
     pub held: bool,
 }
-
-/// The shield's funding key: a drain's lock is a shield's.
-pub(crate) const DRAIN_KEY: FundingKey = FundingKey {
-    funding_type: AssetLockFundingType::AssetLockShieldedAddressTopUp,
-    identity_index: 0,
-    account: 0,
-};
 
 /// The smallest lock a drain may build against a pool fee of `pool_fee`
 /// credits: one that leaves a credit after the fee.
@@ -234,17 +225,7 @@ pub(crate) async fn drain(
     lib: &impl ShieldedLib,
     grant: &str,
 ) -> Result<ShieldOutcome, ShieldedError> {
-    gate(lib).await?;
-    if let Some(wait) = lib.funding_hold() {
-        let refusal = held(lib, wait);
-        if wait == RegistrationWait::Startup {
-            session.platform.retry_startup(wallet);
-        }
-        return Err(refusal);
-    }
-    if !lib.bind().await? {
-        return Err(ShieldedError::not_synced(Wait::Account));
-    }
+    pool::open_for_funding(session, wallet, lib).await?;
     let lock = wallet_lock(session, wallet);
     let _shielding = lock.lock().await;
     let pool_fee = precheck(session, wallet, lib).await?;
@@ -286,7 +267,7 @@ pub(crate) async fn drain(
                 step.clone(),
                 quote.total_duffs,
                 step.clone(),
-                DRAIN_KEY,
+                pool::SHIELD_KEY,
                 fence,
             ))
             .await
@@ -298,30 +279,7 @@ pub(crate) async fn drain(
         })
         .await;
     drop(claim);
-    // The step's own lock decides, never the call's result alone.
-    let signed = session.leases.signed_lock_txids(wallet, &step);
-    let own = (lib.shield_locks().await.into_iter()).find(|l| signed.contains(&l.outpoint.txid));
-    let Some(lock) = own else {
-        return Err(match funded {
-            Err(FundError::Refused(e) | FundError::NotSent(e)) => e.into(),
-            Err(FundError::CoinsLocked) => ShieldedError::CoinsLocked,
-            Err(FundError::TooManyInputs { max }) => ShieldedError::TooManyInputs {
-                inputs: max + 1,
-                max,
-            },
-            _ => PlatformError::BroadcastUnknown { artifact: step }.into(),
-        });
-    };
-    let txid = lock.outpoint.txid.to_string();
-    if !lock.status.has_proof() {
-        tracing::info!(%txid, ?funded, "a drain's lock waits for its proof");
-        return Ok(ShieldOutcome {
-            txid,
-            state: ShieldState::ProofWaiting,
-        });
-    }
-    let state = pool::apply(session, wallet, lib, &lease, &signer, lock.outpoint).await;
-    Ok(ShieldOutcome { txid, state })
+    pool::finish_lock(session, wallet, lib, &lease, &signer, step, funded).await
 }
 
 /// The coins of CoinJoin account 0 in `view` ([`NetworkSession::mix_view`]).
