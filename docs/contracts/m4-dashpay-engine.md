@@ -608,15 +608,16 @@ pays no one twice, and a send the downgrade skipped settles when 0.2 reads it ag
 
 **0.2 rulings (version 55, review round 2).** The quote names one operation, and the send pays only it: a retry is
 the quote of a held send's exact retry, decided again under the lock, so a send that landed between the quote and
-Confirm pays nothing more. The fee bound is what the fee's input keeps at the quote (a snapshot, not a ceiling: the review round 3 ruling below), made as small as
-the band allows by the choice of that input; no smaller cap exists at the pin without a second output (a change
+Confirm pays nothing more. What the fee's input keeps at the quote is a snapshot, not a ceiling (the review round 3
+ruling below); the choice of that input makes it as small as the band allows; no smaller cap exists at the pin without a second output (a change
 output reduced by `ReduceOutput` would cap it, at a second output's fee and minimum; not done). The bound holds at
 the quote: a deposit to the fee input afterwards raises what it keeps, and a send whose bound then exceeds its grant
-is `platform.grant_exceeded` before anything is signed. "Move to Dash wallet" deducts the same way: its fee is
-bounded by what its fee input keeps after the move, the estimate when the move takes all but that, more for a
-partial move whose fee input keeps more. The release of a held send compares its inputs, nonces, terms and protocol
+is `platform.grant_exceeded` before anything is signed. "Move to Dash wallet" deducts the same way: Platform
+meters its fee and takes it from its fee input at execution, up to what that input then holds; the quote shows the
+estimate. The release of a held send compares its inputs, nonces, terms and protocol
 version: at one protocol version those fix the transition (dpp's serialization is the version's, the signatures are
 deterministic), so another build's refusal of the identical transition is this one's.
+
 **0.2 rulings (version 55, review round 3).** The fee is Platform's to meter and take from the fee source at execution, so what the quote shows is no maximum: `fee_source_credits` is what that address keeps at the quote, and a deposit to it after signing can pay a larger fee, also for a held send that lands late. The grant's cap is the user's consent to the planned debit, the amount plus that remainder; it does not bound what a signed transition may take later. The host shows the estimate and the source ("usually about X; Platform takes the actual fee from <address>"), and the outcome's debit as "about". A hard cap would need a construction whose signed amounts enforce it: one extra output of the wallet's own, with the fee taken from it by `ReduceOutput` (a second output's fee and minimum; not done). Operation ids are random and per session, and a send's grant is issued for its operation, so neither a stale id nor another quote's grant pays it. The release of a held send compares the protocol version it was signed at; Platform validates at the version it runs, so a later version that relaxed a stateless rule could accept a released payload. A send from other addresses would then not meet it at the nonces. No such relaxation is known; the risk is noted.
 ### 2.13 Shielded funds (`shielded.rs`; 0.1 E1, RELEASE-PLAN §1 "Shielded")
 

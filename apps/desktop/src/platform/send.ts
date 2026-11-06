@@ -1,6 +1,6 @@
 // Pay from Platform (0.2 X1b; contract m4 §2.12 `platform_send_quote`, `platform_send`): Pay's
 // address tab, given a Platform address, pays it from the wallet's Platform addresses. The quote
-// names the amount, the fee estimate and the most the fee can take, and Confirm runs
+// names the amount, the fee estimate and the address the fee is taken from, and Confirm runs
 // `platform_send` for the quote's single-use operation under a grant issued for that operation. One flow
 // per wallet, kept while the app runs (as move.ts), so leaving Pay while a send runs keeps its result.
 

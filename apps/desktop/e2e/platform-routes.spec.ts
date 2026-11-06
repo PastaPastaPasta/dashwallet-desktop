@@ -308,7 +308,9 @@ test.describe("Pay from Platform", () => {
     await open(page, "platform-send-failed-may-land");
     await expect(page.getByTestId("platform-card-send-held")).toHaveText("A payment from Platform may still go through. Moving waits until it settles.");
     await page.getByTestId("platform-move").click();
-    await expect(page.getByTestId("platform-move-quote-error")).toHaveText("An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.");
+    await expect(page.getByTestId("platform-move-quote-error")).toHaveText(
+      "An earlier payment from Platform may still go through. Wait for it to finish, or send that same payment again from Pay and press Retry that payment, then move again.",
+    );
     await expect(page.getByTestId("platform-move-go")).toBeDisabled();
     await expect(page.getByTestId("grant-sheet")).toHaveCount(0);
     expect(await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_move_to_core").length)).toBe(0);

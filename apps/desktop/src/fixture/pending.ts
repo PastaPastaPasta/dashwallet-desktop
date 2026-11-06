@@ -28,7 +28,7 @@ const CREDITS_PER_DUFF = 1000n;
 /** What a move costs the fixture's wallet, in credits. */
 const MOVE_FEE_CREDITS = 2_000_000n;
 /** A send's fee estimate (dpp's: 500,000 per input, 6,000,000 for the output, one input); the least
- * a send pays (dpp's minimum output). The most the fee can take is what its source address keeps. */
+ * a send pays (dpp's minimum output). The fee is taken from its source address, whatever it holds then. */
 const SEND_FEE_CREDITS = 6_500_000n;
 const SEND_MIN_CREDITS = 500_000n;
 

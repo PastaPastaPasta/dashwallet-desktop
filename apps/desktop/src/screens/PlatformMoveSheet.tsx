@@ -16,6 +16,7 @@ import { GrantSheet } from "./tools/common";
 
 function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string; block: MoveBlock | null }) {
   const quote = usePlatformMoveQuote(walletId, true);
+  const activity = usePlatformActivity(walletId);
   const q = quote.data;
   const warning = q ? feeWarning(BigInt(q.feeCredits), BigInt(q.credits)) : null;
   return (
@@ -30,7 +31,7 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
       )}
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="platform-move-quote-error">
-          {moveErrorText(quote.error, credits)}
+          {moveErrorText(quote.error, credits, activity.data)}
         </p>
       ) : !q ? (
         <p className="sheet-text" role="status">
@@ -82,7 +83,7 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
             variant="filledBlue"
             size="large"
             data-testid="platform-move-go"
-            why={block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : quote.isError ? moveErrorText(quote.error, credits) : flow.running ? C.running.title : C.quoting}
+            why={block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : quote.isError ? moveErrorText(quote.error, credits, activity.data) : flow.running ? C.running.title : C.quoting}
             disabled={block !== null || !q || quote.isError || quote.isFetching || flow.running}
             onClick={() => block === null && q && void flow.move(q.grant, q.to)}
           >
@@ -98,6 +99,7 @@ export function PlatformMoveSheet({ flow, walletId, network, block }: { flow: Pl
   useModel(flow);
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
+  const activity = usePlatformActivity(walletId);
   if (!flow.open) return <GrantSheet grants={flow.grants} />;
   const amount = (duffs: number) => (discreet ? shown.masked() : `${shown.compact(duffs)} ${shown.name}`);
   const credits = (c: string) => amount(creditsToDuffs(c));
@@ -142,7 +144,7 @@ export function PlatformMoveSheet({ flow, walletId, network, block }: { flow: Pl
           {step === "refused" && (
             <>
               <p className="form-problem" role="alert" data-testid="platform-move-refusal">
-                {moveErrorText(flow.error, credits)}
+                {moveErrorText(flow.error, credits, activity.data)}
               </p>
               <div className="sheet-actions">
                 {moveCanRetry(flow.error) && (

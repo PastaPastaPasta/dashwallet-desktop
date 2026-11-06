@@ -120,8 +120,15 @@ describe("Move to Dash wallet", () => {
   });
 
   it("names the held one in a refused move", () => {
-    expect(moveErrorText(appError("credits.move_pending", { kind: "artifact", artifact: "ps-1" }), credits)).toBe(
-      "An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.",
+    const base = { id: "x-1", credits: "1", address: null, to: null, expectedDuffs: null, feeCredits: null, at: 1, estimated: false } as const;
+    const heldMove = { ...base, kind: "moveToCore", state: "failed", mayLand: true } as const;
+    const heldSend = { ...base, kind: "send", state: "failed", mayLand: true } as const;
+    const held = appError("credits.move_pending", { kind: "artifact", artifact: heldSend.id });
+    expect(moveErrorText(held, credits)).toBe("An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.");
+    expect(moveErrorText(held, credits, [heldMove])).toBe("An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.");
+    // A held payment's own retry, in Pay, is the way out.
+    expect(moveErrorText(held, credits, [heldSend])).toBe(
+      "An earlier payment from Platform may still go through. Wait for it to finish, or send that same payment again from Pay and press Retry that payment, then move again.",
     );
   });
 
