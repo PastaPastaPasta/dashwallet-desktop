@@ -13,7 +13,10 @@
 //! receive address, and records the lock's `from_core` row first when it
 //! has none (a restored lock). While it runs that address is held out of
 //! the activity reads; after a proved apply the settle records the rise as
-//! the fund's, at most the lock's credits.
+//! the fund's, at most the lock's credits. Platform's answer that the
+//! lock is used completes the record with its estimate, as the activity
+//! does for any lock known finished ([`finished_funds`]); neither settles
+//! the lock.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -22,11 +25,13 @@ use dashcore::{OutPoint, ScriptBuf, Txid};
 use dpp::balances::credits::CREDITS_PER_DUFF;
 use dpp::version::PlatformVersion;
 use dw_appdb::dispatch::TopUpSettled;
+use platform_wallet::PlatformWallet;
 
 use super::errors::{CreditsError, PlatformError};
 use super::flows::FlowKind;
 use super::platform_fund::{self as fund, FundLib};
 use super::platform_moves::{self, FundHold};
+use super::registration_flow::LockStatus;
 use super::unfinished_locks::{
     self as locks, ApplyReply, KindLock, LockKeySigner, LockKind, LockKindId, Mark, Marks, Minimum,
     Readiness, reply_from,
@@ -209,17 +214,30 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
             })?;
         let (to, address) = self.destination(outpoint.txid, duffs).await?;
         // Until the settle says what the rise is (module doc).
-        let hold = FundHold::new(self.wallet, address.clone());
+        let hold = platform_moves::hold_fund(self.session, self.wallet, address.clone()).await;
         let applied = self.lib.apply(outpoint, to, signer).await;
         (self.session.hub.pump).mark_platform(self.wallet, [PlatformChange::PlatformAddresses]);
         let gained = applied.as_ref().ok().copied().flatten();
         let reply = reply_from(applied.map(drop), outpoint, signer.signed());
-        if matches!(reply, Ok(ApplyReply::Done)) {
-            *self.applied.lock().unwrap_or_else(PoisonError::into_inner) = Some(Applied {
-                address,
-                gained,
-                _hold: hold,
-            });
+        match reply {
+            Ok(ApplyReply::Done) => {
+                *self.applied.lock().unwrap_or_else(PoisonError::into_inner) = Some(Applied {
+                    address,
+                    gained,
+                    _hold: hold,
+                });
+            }
+            Ok(ApplyReply::AlreadyConsumed) => {
+                let estimate = (fund::estimate(self.lib, duffs), true);
+                let row = (outpoint.txid.to_string(), duffs);
+                if let Err(e) =
+                    platform_moves::fund_applied(self.session, self.wallet, row, address, estimate)
+                        .await
+                {
+                    tracing::warn!(%outpoint, error = %e, "could not record a used fund lock in the Platform activity");
+                }
+            }
+            _ => {}
         }
         reply
     }
@@ -243,8 +261,8 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
         // not show is not the fund's beyond them.
         let lock_credits = lock.info.amount.saturating_mul(CREDITS_PER_DUFF);
         let credits = (applied.as_ref().and_then(|a| a.gained)).map_or_else(
-            || fund::estimate(self.lib, lock.info.amount),
-            |g| g.min(lock_credits),
+            || (fund::estimate(self.lib, lock.info.amount), true),
+            |g| (g.min(lock_credits), false),
         );
         let address = match &applied {
             Some(a) => Some(a.address.clone()),
@@ -261,9 +279,31 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
                 tracing::warn!(%at, error = %e, "could not record a fund applied in the Platform activity");
             }
         }
-        *self.credited.lock().unwrap_or_else(PoisonError::into_inner) = Some(credits);
+        *self.credited.lock().unwrap_or_else(PoisonError::into_inner) = Some(credits.0);
         drop(applied);
         self.lib.sync_now().await;
         (self.session.hub.pump).mark_platform(self.wallet, [PlatformChange::PlatformAddresses]);
     }
+}
+
+/// The txids of the wallet's fund locks known finished: the library's
+/// proved `Consumed`, or recorded settled (by outpoint or by txid).
+pub(crate) async fn finished_funds(
+    session: &NetworkSession,
+    wallet: WalletId,
+    pw: &PlatformWallet,
+) -> HashSet<String> {
+    let rows = fund::fund_rows(&pw.asset_locks().list_tracked_locks().await);
+    let consumed = (rows.into_iter())
+        .filter(|l| l.info.status == LockStatus::Consumed)
+        .map(|l| l.info.outpoint.txid);
+    let marked = locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Settled).await;
+    let settled = (session.leases.top_ups_settled(wallet).await).unwrap_or_else(|e| {
+        tracing::warn!(wallet_id = %wallet, error = %e, "could not read the settled funds");
+        HashSet::new()
+    });
+    (consumed.chain(marked.into_iter().map(|o| o.txid)))
+        .chain(settled)
+        .map(|t| t.to_string())
+        .collect()
 }
