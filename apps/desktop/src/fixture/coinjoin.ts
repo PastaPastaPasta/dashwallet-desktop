@@ -180,7 +180,7 @@ function sweepPlanOf(world: World, w: FixtureWallet, destination: string) {
   const coins = account.filter((u) => u.confirmations > 0);
   const unconfirmed = account.length - coins.length;
   const chunks = sweepChunks(coins);
-  if (chunks.length === 0) throw fail("coinjoin.nothing_to_move", "no mixed coins to move");
+  if (chunks.length === 0) throw fail("coinjoin.nothing_to_move", "fixture: the CoinJoin account has nothing to sweep");
   const swept = chunks.flatMap((c) => c.coins);
   const fullyMixed = swept.filter((u) => (u.coinjoinRounds ?? 0) >= world.coinjoin.settings.rounds).reduce((n, u) => n + u.amount, 0);
   const total = swept.reduce((n, u) => n + u.amount, 0);
