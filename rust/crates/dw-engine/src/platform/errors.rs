@@ -647,6 +647,11 @@ pub enum ShieldedError {
     /// sweep, a consolidation, a send again of its chunks) runs.
     #[error("a move of the mixed coins is running")]
     MoveRunning,
+    /// "Move mixed coins": the drain's signer met a coin outside its plan
+    /// or past its grant, so the CoinJoin account changed since the quote;
+    /// nothing was tracked or sent. Quote again.
+    #[error("the mixed coins changed since the move was planned: review it again")]
+    CoinsChanged,
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -674,6 +679,7 @@ impl ShieldedError {
             Self::NothingToMove => "shielded.nothing_to_move",
             Self::CoinsUnconfirmed { .. } => "shielded.coins_unconfirmed",
             Self::MoveRunning => "shielded.move_running",
+            Self::CoinsChanged => "shielded.coins_changed",
             Self::Platform(e) => e.code(),
         }
     }

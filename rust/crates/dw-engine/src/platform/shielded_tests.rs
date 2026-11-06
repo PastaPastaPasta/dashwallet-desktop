@@ -935,7 +935,7 @@ impl ShieldedLib for FakeShielded {
         }
         if signer.drain_refused() {
             permit.abort_unsent();
-            return Err(FundError::NotSent(drain::drain_changed()));
+            return Err(FundError::CoinsChanged);
         }
         if signer.capped() {
             return Err(FundError::TooManyInputs {

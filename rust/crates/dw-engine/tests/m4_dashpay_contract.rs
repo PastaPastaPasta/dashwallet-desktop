@@ -1138,6 +1138,7 @@ fn error_codes_match_the_contract() {
             ShieldedError::NothingToMove,
             ShieldedError::CoinsUnconfirmed { coins: 0 },
             ShieldedError::MoveRunning,
+            ShieldedError::CoinsChanged,
         ],
         ShieldedError::code,
     );

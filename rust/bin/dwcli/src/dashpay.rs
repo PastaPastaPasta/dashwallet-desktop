@@ -967,7 +967,8 @@ fn shielded_params(e: &ShieldedError) -> Value {
         | ShieldedError::UnrecordedSpend
         | ShieldedError::MixingActive
         | ShieldedError::NothingToMove
-        | ShieldedError::MoveRunning => json!({}),
+        | ShieldedError::MoveRunning
+        | ShieldedError::CoinsChanged => json!({}),
         ShieldedError::CoinsUnconfirmed { coins } => json!({"coins": coins}),
         ShieldedError::InvalidAddress { detail } => json!({"detail": detail}),
         ShieldedError::InsufficientFunds { needed, available }

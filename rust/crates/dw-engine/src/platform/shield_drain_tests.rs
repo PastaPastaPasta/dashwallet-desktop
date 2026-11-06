@@ -256,7 +256,7 @@ fn a_coin_outside_the_plan_stops_the_drain_before_its_lock_exists() {
     let sum = total(&coins());
     assert_eq!(
         code(drain_with(&fx, &lib, spend_grant(&fx, sum))),
-        "invalid_argument"
+        "shielded.coins_changed"
     );
     assert!(lib.funded.lock().unwrap().is_empty());
     assert!(
@@ -269,7 +269,7 @@ fn a_coin_outside_the_plan_stops_the_drain_before_its_lock_exists() {
     *lib.drain_extra.lock().unwrap() = vec![coins()[0].path.clone()];
     assert_eq!(
         code(drain_with(&fx, &lib, spend_grant(&fx, sum))),
-        "invalid_argument"
+        "shielded.coins_changed"
     );
 
     lib.drain_extra.lock().unwrap().clear();

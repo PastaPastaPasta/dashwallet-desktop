@@ -141,6 +141,7 @@ codes! {
         NothingToMove = "shielded.nothing_to_move",
         CoinsUnconfirmed = "shielded.coins_unconfirmed",
         MoveRunning = "shielded.move_running",
+        CoinsChanged = "shielded.coins_changed",
     }
 }
 
@@ -204,6 +205,7 @@ impl From<ShieldedError> for AppError {
                 Some(ErrorData::Number { value: coins }),
             ),
             S::MoveRunning => (ShieldedCode::MoveRunning, None),
+            S::CoinsChanged => (ShieldedCode::CoinsChanged, None),
             S::Platform(e) => return e.into(),
         };
         AppError {
@@ -708,6 +710,7 @@ mod tests {
             ShieldedError::NothingToMove,
             ShieldedError::CoinsUnconfirmed { coins: 2 },
             ShieldedError::MoveRunning,
+            ShieldedError::CoinsChanged,
             ShieldedError::Platform(PlatformError::Unavailable),
         ];
         for e in shielded {

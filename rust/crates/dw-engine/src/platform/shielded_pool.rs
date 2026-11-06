@@ -1361,6 +1361,7 @@ pub(super) async fn finish_lock(
         return Err(match funded {
             Err(FundError::Refused(e) | FundError::NotSent(e)) => e.into(),
             Err(FundError::CoinsLocked) => ShieldedError::CoinsLocked,
+            Err(FundError::CoinsChanged) => ShieldedError::CoinsChanged,
             // "Combine coins first": at least one coin past the cap.
             Err(FundError::TooManyInputs { max }) => ShieldedError::TooManyInputs {
                 inputs: max + 1,
@@ -2130,7 +2131,7 @@ impl ShieldedLib for PwShielded {
             // before the transaction was complete, so nothing can be out.
             Err(_) if signer.drain_refused() => {
                 permit.abort_unsent();
-                Err(FundError::NotSent(super::shield_drain::drain_changed()))
+                Err(FundError::CoinsChanged)
             }
             Err(_) if signer.capped() => Err(FundError::TooManyInputs {
                 max: MAX_LOCK_INPUTS as u64,

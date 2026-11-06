@@ -251,6 +251,10 @@ pub(crate) enum FundError {
     /// needing more than `max` coins): nothing tracked or sent, the inputs
     /// free, the call `Cancelled` (`CountingFundingSigner::with_input_cap`).
     TooManyInputs { max: u64 },
+    /// A drain's signer refused a coin outside its plan or past its grant
+    /// (`CountingFundingSigner::with_drain_cap`): nothing tracked or sent,
+    /// the call `Cancelled`.
+    CoinsChanged,
     /// Any other failure after the call started.
     Failed(PlatformError),
 }
@@ -2754,9 +2758,11 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             }
             Err(FundError::CoinsLocked) => Step::Fail(RegistrationError::CoinsLocked.code(), true),
             // A shield's funding only; no proof wait returns it.
-            Err(e @ FundError::TooManyInputs { .. }) => self.failed(&PlatformError::Internal {
-                detail: format!("{e:?}"),
-            }),
+            Err(e @ (FundError::TooManyInputs { .. } | FundError::CoinsChanged)) => {
+                self.failed(&PlatformError::Internal {
+                    detail: format!("{e:?}"),
+                })
+            }
         }
     }
 

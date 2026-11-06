@@ -208,14 +208,6 @@ fn claim_refused(e: CoinJoinFailure) -> ShieldedError {
     }
 }
 
-/// The refusal of a drain whose signer refused a coin outside its plan or
-/// past its grant: the account changed after the plan.
-pub(crate) fn drain_changed() -> PlatformError {
-    PlatformError::InvalidArgument {
-        detail: "the mixed coins changed since the move was planned: review it again".into(),
-    }
-}
-
 /// Drains CoinJoin account 0 into one shield lock under a `ShieldDrain`
 /// lease begun from `grant` (a `Spend` grant of at least the coins' sum),
 /// then applies it, as `shield` does its lock.
