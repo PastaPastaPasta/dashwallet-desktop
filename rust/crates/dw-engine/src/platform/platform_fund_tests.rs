@@ -28,9 +28,10 @@ use platform_wallet::{
 use super::errors::{CreditsError, PlatformError};
 use super::flows::{BudgetPurpose, FlowKind};
 use super::lease::{CallPermit, FlowOutcome, FundingKey, Lease, StoredLock};
+use super::platform_addresses::{PlatformActivity, PlatformActivityKind, PlatformActivityState};
 use super::platform_addresses::{PlatformFundOutcome, PlatformFundQuote, PlatformFundState};
 use super::platform_fund::{self as fund, FundLib};
-use super::platform_moves;
+use super::platform_moves::{self, tests::World};
 use super::registration::RegistrationWait;
 use super::registration_flow::{FundError, Spendable};
 use super::requests::tests::Fixture;
@@ -88,6 +89,8 @@ enum Answer {
     Consumed { of: Option<OutPoint> },
     /// A broadcast failure.
     Failed,
+    /// The apply panics.
+    Panics,
 }
 
 /// platform-wallet's side of a fund, scripted; the journal, the lease and
@@ -117,6 +120,10 @@ struct FakeFund {
     coins: Vec<u64>,
     hold: Option<RegistrationWait>,
     receive: PlatformAddress,
+    /// A fund is in [`FundLib::fund`] (under the fund lock).
+    in_fund: AtomicBool,
+    /// The next funding waits for this once it is in.
+    fund_gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
 
 impl FakeFund {
@@ -142,6 +149,8 @@ impl FakeFund {
             coins: vec![10_000_000_000],
             hold: None,
             receive: PlatformAddress::P2pkh([0x42; 20]),
+            in_fund: AtomicBool::new(false),
+            fund_gate: Mutex::default(),
         }
     }
 
@@ -257,6 +266,11 @@ impl FundLib for FakeFund {
         permit
             .funding_signer()
             .map_err(|e| FundError::Refused(e.into()))?;
+        self.in_fund.store(true, Ordering::SeqCst);
+        let gate = self.fund_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            gate.notified().await;
+        }
         let n = self.funds.fetch_add(1, Ordering::SeqCst) as u8 + 0x70;
         let (status, proof) = match *self.funding.lock().unwrap() {
             Script::LostUntracked => {
@@ -327,6 +341,7 @@ impl FundLib for FakeFund {
             Answer::Failed => Err(PlatformWalletError::TransactionBroadcast(
                 "broadcast failed".into(),
             )),
+            Answer::Panics => panic!("the apply panics"),
         }
     }
 
@@ -982,4 +997,618 @@ fn fund_locks_conform() {
         !signed.is_empty() && signed.iter().all(|s| *s),
         "{signed:?}"
     );
+}
+
+// MARK: the recovery's type 4, the activity, concurrency
+
+/// The pending funds' states.
+fn states_of(fx: &Fixture, lib: &Arc<FakeFund>) -> Vec<(String, UnfinishedState)> {
+    let wallet = fx.wallet;
+    let pending = run(fx, lib, move |s, lib| async move {
+        fund::pending(&s, wallet, &*lib).await.unwrap()
+    });
+    (pending.into_iter()).map(|p| (p.txid, p.state)).collect()
+}
+
+/// An own fund's lock out with its proof, not applied yet.
+fn own_open_fund(fx: &Fixture, lib: &Arc<FakeFund>) -> OutPoint {
+    *lib.funding.lock().unwrap() = Script::Unproved;
+    fund_of(fx, lib).unwrap();
+    let n = lib.tracked.lock().unwrap().len();
+    let outpoint = lib.outpoint(n - 1);
+    lib.prove(outpoint);
+    *lib.funding.lock().unwrap() = Script::Proved;
+    outpoint
+}
+
+/// The address fund of 1,000,000 duffs adds about this much.
+fn estimate() -> u64 {
+    1_000_000_000 - fee()
+}
+
+/// Tracks `row` in the wallet as the library does: its state and, through
+/// the session's store, `wallet.sqlite`.
+async fn track_in_wallet(s: &Arc<NetworkSession>, wallet: WalletId, row: TrackedAssetLock) {
+    use platform_wallet::changeset::{
+        AssetLockChangeSet, AssetLockEntry, PlatformWalletChangeSet, PlatformWalletPersistence,
+    };
+    let (outpoint, entry) = (row.out_point, AssetLockEntry::from(&row));
+    let w = s.wallet(&wallet).await.unwrap();
+    w.state_mut()
+        .await
+        .tracked_asset_locks
+        .insert(outpoint, row);
+    let changes = PlatformWalletChangeSet {
+        asset_locks: Some(AssetLockChangeSet {
+            asset_locks: [(outpoint, entry)].into(),
+            removed: Default::default(),
+        }),
+        ..Default::default()
+    };
+    (s.live().unwrap().store).store(wallet.0, changes).unwrap();
+}
+
+/// A wipe of the wallet, then the same seed imported again.
+fn remove_and_reimport(fx: &Fixture) {
+    let s = Arc::clone(&fx.s);
+    let wipe = (fx.s.vault)
+        .authorize(
+            dw_vault::GrantPurpose::Wipe,
+            Some(&fx.wallet.0),
+            dw_vault::Credential::None,
+        )
+        .unwrap()
+        .id;
+    fx.engine
+        .block_on(s.remove_wallet(fx.wallet, wipe))
+        .unwrap();
+    let again = fx.engine.block_on(s.import_wallet(
+        zeroize::Zeroizing::new(super::journal_tests::ABANDON_12.to_vec()),
+        zeroize::Zeroizing::new(Vec::new()),
+        crate::ImportOptions::default(),
+    ));
+    assert_eq!(again.unwrap(), fx.wallet);
+}
+
+/// Repair's "Finish transfers" over the kind alone, under a Registration
+/// lease, as `unfinished::finish_all` runs it.
+fn finish_transfers(fx: &Fixture, lib: &Arc<FakeFund>) -> super::FinishReport {
+    let (wallet, grant) = (fx.wallet, grant(fx, 1, 0));
+    run(fx, lib, move |s, lib| async move {
+        let lease = (s.begin_lease(wallet, FlowKind::Registration, &[grant]))
+            .await
+            .unwrap();
+        let mut report = super::FinishReport::default();
+        locks::finish_kind(&FundLocks::new(&s, wallet, &*lib), &lease, &mut report).await;
+        report
+    })
+}
+
+/// A wallet removed and imported again keeps the journal's `paddr/` steps:
+/// its open lock is still this install's, listed and resumed by the fund.
+/// The same seed on a new install has no such step: its lock is the
+/// recovery's, listed as restored, finished by `finish_transfer`'s body on
+/// the same outpoint and by Finish transfers, and it blocks no fund.
+#[test]
+fn a_fund_lock_without_this_installs_step_is_listed_and_finished_by_the_recovery() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let first = own_open_fund(&fx, &lib);
+    remove_and_reimport(&fx);
+    assert_eq!(
+        states_of(&fx, &lib),
+        [(first.txid.to_string(), UnfinishedState::Ready)]
+    );
+    assert_eq!(code(quote_of(&fx, &lib, 1_000_000)), "credits.fund_pending");
+
+    // The seed restored on a new install: the library's locks, no steps.
+    let fresh = Fixture::new(0);
+    let mut other = FakeFund::new(&fresh);
+    *other.tracked.get_mut().unwrap() = lib.tracked.lock().unwrap().clone();
+    let lib = Arc::new(other);
+    let second = lib.lock(9, 2_000_000, AssetLockStatus::RecoveredFromChain, true);
+    let second = {
+        let at = second.out_point;
+        lib.track(second);
+        at
+    };
+    let fx = fresh;
+    assert!(states_of(&fx, &lib).is_empty());
+    quote_of(&fx, &lib, 1_000_000).unwrap();
+    let restored = listed(&fx, &lib).unwrap();
+    assert_eq!(
+        (restored.iter())
+            .map(|l| (l.kind, l.origin, l.state))
+            .collect::<Vec<_>>(),
+        [(
+            LockKindId::PlatformAddress,
+            LockOrigin::Restored,
+            UnfinishedState::Ready
+        ); 2]
+    );
+
+    lib.answer(Answer::Done(Some(900_000_000)));
+    let (wallet, grant) = (fx.wallet, grant(&fx, 1, 0));
+    let finished = run(&fx, &lib, move |s, lib| async move {
+        super::unfinished::finish_fund(&s, wallet, &*lib, first, &grant).await
+    });
+    assert_eq!(finished.unwrap(), LockFinish::Applied);
+    assert_eq!(lib.applied(), [first]);
+
+    lib.answer(Answer::Done(None));
+    let report = finish_transfers(&fx, &lib);
+    assert_eq!(
+        report.by_kind,
+        [locks::TransfersReport {
+            kind: LockKindId::PlatformAddress,
+            resumed: 1,
+            completed: 1,
+            still_pending: 0,
+        }]
+    );
+    assert_eq!(lib.applied(), [first, second]);
+    assert!(listed(&fx, &lib).unwrap().is_empty());
+    assert_eq!(lib.funds.load(Ordering::SeqCst), 0, "no new lock");
+}
+
+/// `DashPay::unfinished_transfers` lists a type-4 lock the library tracks
+/// and no step of this install signed, and `DashPay::finish_transfer` and
+/// `DashPay::finish_asset_locks` reach it through the kind, all with the
+/// shielded side failing to open: that kind is `unread`, this one listed
+/// and finished all the same (offline: the apply itself cannot run, so it
+/// is not applied, and nothing is settled).
+#[test]
+fn the_facade_lists_and_finishes_a_restored_fund_lock_without_the_shielded_side() {
+    let dir = dw_testutil::private_tempdir();
+    let events = Arc::new(super::journal_tests::Recorder::default());
+    let engine = super::journal_tests::engine(dir.path(), events as Arc<dyn crate::EventSink>);
+    let (s, wallet) = super::journal_tests::session(&engine, false);
+    let script = {
+        let s = Arc::clone(&s);
+        let grant = (s.vault)
+            .authorize(
+                dw_vault::GrantPurpose::PlatformOp {
+                    max_duffs: 1,
+                    max_credits: 0,
+                },
+                Some(&wallet.0),
+                dw_vault::Credential::None,
+            )
+            .unwrap()
+            .id;
+        engine.block_on(async move {
+            let lease = (s.begin_lease(wallet, FlowKind::PlatformAddressFund, &[grant]))
+                .await
+                .unwrap();
+            let funding = lease.uncounted_funding_signer().unwrap();
+            let path = DerivationPath::from_str(LOCK_KEY).unwrap();
+            let key = key_wallet::Signer::public_key(&funding, &path)
+                .await
+                .unwrap();
+            ScriptBuf::new_p2pkh(&dashcore::PublicKey::new(key).pubkey_hash())
+        })
+    };
+    let tx = conformance::transaction(0x51, 1, 1_000_000, &script);
+    let row = conformance::tracked(
+        &tx,
+        0,
+        AssetLockFundingType::AssetLockAddressTopUp,
+        AssetLockStatus::RecoveredFromChain,
+        true,
+    );
+    let at = row.out_point;
+    engine.block_on(track_in_wallet(&s, wallet, row));
+    let dp = s.dashpay(wallet);
+    super::shielded_pool::open_fails::set(&s, true);
+
+    let listed = engine.block_on(dp.unfinished_transfers()).unwrap();
+    assert_eq!(listed.unread, [LockKindId::Shielded]);
+    let ours: Vec<_> = (listed.locks.iter())
+        .filter(|l| l.txid == at.txid.to_string())
+        .map(|l| (l.kind, l.origin, l.duffs))
+        .collect();
+    assert_eq!(
+        ours,
+        [(LockKindId::PlatformAddress, LockOrigin::Restored, 1_000_000)]
+    );
+
+    let grant = |max_duffs| {
+        (s.vault)
+            .authorize(
+                dw_vault::GrantPurpose::PlatformOp {
+                    max_duffs,
+                    max_credits: 0,
+                },
+                Some(&wallet.0),
+                dw_vault::Credential::None,
+            )
+            .unwrap()
+            .id
+    };
+    let one = engine.block_on(dp.finish_transfer(
+        LockKindId::PlatformAddress,
+        at.txid.to_string(),
+        0,
+        grant(1),
+    ));
+    match one {
+        Ok(LockFinish::Applied) => panic!("applied offline"),
+        Ok(_) => {}
+        Err(e) => assert_ne!(e.code(), "invalid_argument", "{e:?}"),
+    }
+    let report = engine.block_on(dp.finish_asset_locks(grant(1))).unwrap();
+    assert_eq!(report.unread, [LockKindId::Shielded], "{report:?}");
+    assert!(
+        (report.by_kind.iter()).any(|k| k.kind == LockKindId::PlatformAddress),
+        "{report:?}"
+    );
+    assert_eq!(report.completed, 0);
+    super::shielded_pool::open_fails::set(&s, false);
+    let listed = engine.block_on(dp.unfinished_transfers()).unwrap();
+    assert!(
+        (listed.locks.iter()).any(|l| l.txid == at.txid.to_string()),
+        "still unfinished"
+    );
+    engine
+        .block_on(engine.close_network(crate::DashNetwork::Regtest))
+        .unwrap();
+}
+
+/// A lock whose minimum rose above it (TooSmall) is listed with its state,
+/// offers no Finish and blocks no fund: the next fund builds its own lock.
+#[test]
+fn a_too_small_own_lock_blocks_no_fund() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let small = own_open_fund(&fx, &lib);
+    assert_eq!(code(quote_of(&fx, &lib, 1_000_000)), "credits.fund_pending");
+    lib.tracked.lock().unwrap()[0].amount = 1_000;
+    assert_eq!(
+        states_of(&fx, &lib),
+        [(small.txid.to_string(), UnfinishedState::TooSmall)]
+    );
+    quote_of(&fx, &lib, 1_000_000).unwrap();
+    lib.answer(Answer::Done(None));
+    let out = fund_of(&fx, &lib).unwrap();
+    assert!(matches!(out.state, PlatformFundState::Applied { .. }));
+    assert_eq!(lib.funds.load(Ordering::SeqCst), 2);
+    assert_eq!(lib.applied(), [lib.outpoint(1)]);
+}
+
+/// A fund that gets the fund lock between another fund's lock and that
+/// fund's apply (the lock dropped, the runner not in yet) finds the open
+/// lock and is refused, never building a second one.
+#[test]
+fn a_fund_in_the_handoff_to_the_apply_refuses_the_next() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let release = Arc::new(tokio::sync::Notify::new());
+    *lib.fund_gate.lock().unwrap() = Some(Arc::clone(&release));
+    lib.answer(Answer::Done(None));
+    let (wallet, ga, gb) = (
+        fx.wallet,
+        grant(&fx, 2_000_000, 0),
+        grant(&fx, 2_000_000, 0),
+    );
+    let (a, b) = run(&fx, &lib, move |s, lib| async move {
+        let first = fund::fund(&s, wallet, &*lib, 1_000_000, &ga);
+        let in_fund = || lib.in_fund.load(Ordering::SeqCst);
+        let second = async {
+            while !in_fund() {
+                tokio::task::yield_now().await;
+            }
+            // Queued on the fund lock while the first holds it: the lock is
+            // fair, so this one has it before the first's runner.
+            fund::fund(&s, wallet, &*lib, 1_000_000, &gb).await
+        };
+        let open = async {
+            while !in_fund() {
+                tokio::task::yield_now().await;
+            }
+            for _ in 0..100 {
+                tokio::task::yield_now().await;
+            }
+            release.notify_one();
+        };
+        let (a, b, ()) = tokio::join!(first, second, open);
+        (a, b)
+    });
+    assert!(matches!(
+        a.unwrap().state,
+        PlatformFundState::Applied { .. }
+    ));
+    assert_eq!(code(b), "credits.fund_pending");
+    assert_eq!(lib.funds.load(Ordering::SeqCst), 1);
+}
+
+/// The apply's hold on its address ends with the apply whatever it
+/// answered: unknown, already consumed, proved (after the settle), or a
+/// panic.
+#[test]
+fn every_apply_releases_its_hold() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let held = || platform_moves::fund_holds(&fx.s, fx.wallet);
+    lib.answer(Answer::Failed);
+    let out = fund_of(&fx, &lib).unwrap();
+    assert_eq!(out.state, PlatformFundState::ConsumptionUnknown);
+    assert!(held().is_empty(), "unknown");
+    let outpoint = lib.outpoint(0);
+    lib.answer(Answer::Consumed { of: None });
+    assert_eq!(
+        resume_of(&fx, &lib, outpoint).unwrap(),
+        PlatformFundState::ConsumptionUnknown
+    );
+    assert!(held().is_empty(), "already consumed");
+
+    lib.answer(Answer::Panics);
+    let (wallet, grant_id, txid) = (fx.wallet, grant(&fx, 1, 0), outpoint.txid.to_string());
+    let joined = run(&fx, &lib, move |s, lib| async move {
+        tokio::spawn(async move {
+            fund::resume(&s, wallet, &*lib, &txid, &grant_id)
+                .await
+                .map(drop)
+        })
+        .await
+    });
+    assert!(joined.unwrap_err().is_panic());
+    assert!(held().is_empty(), "a panic");
+
+    lib.answer(Answer::Done(None));
+    assert!(matches!(
+        resume_of(&fx, &lib, outpoint).unwrap(),
+        PlatformFundState::Applied { .. }
+    ));
+    assert!(held().is_empty(), "proved");
+}
+
+/// Two "Check again"s of one lock at once apply it once.
+#[test]
+fn two_resumes_at_once_apply_the_lock_once() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let outpoint = own_open_fund(&fx, &lib);
+    lib.answer(Answer::Done(None));
+    let (wallet, ga, gb, txid) = (
+        fx.wallet,
+        grant(&fx, 1, 0),
+        grant(&fx, 1, 0),
+        outpoint.txid.to_string(),
+    );
+    let (a, b) = run(&fx, &lib, move |s, lib| async move {
+        tokio::join!(
+            fund::resume(&s, wallet, &*lib, &txid, &ga),
+            fund::resume(&s, wallet, &*lib, &txid, &gb),
+        )
+    });
+    for r in [a, b] {
+        match r {
+            Ok(o) => assert!(
+                matches!(o.state, PlatformFundState::Applied { .. }),
+                "{o:?}"
+            ),
+            Err(e) => assert_eq!(e.code(), "invalid_argument", "finished meanwhile"),
+        }
+    }
+    assert_eq!(lib.applied(), [outpoint]);
+    assert_eq!(lib.funds.load(Ordering::SeqCst), 1);
+}
+
+/// A fund over `World`'s wallet (its activity read through `FakeMoves`),
+/// paying the wallet's first Platform address; one read already taken.
+fn fund_world() -> (World, Arc<FakeFund>) {
+    let w = World::new();
+    let mut lib = FakeFund::new(&w.f);
+    lib.receive = w.address(0);
+    w.activity();
+    (w, Arc::new(lib))
+}
+
+/// The activity counts the fund once, as `credits` (`estimated` or
+/// proved), no rise of its address as incoming, and then an external
+/// payment to the address in full.
+fn counted_once(w: &World, credits: u64, estimated: bool) {
+    let fund_rows = |rows: &[PlatformActivity]| -> Vec<_> {
+        (rows.iter())
+            .filter(|r| r.kind == PlatformActivityKind::FromCore)
+            .map(|r| (r.state, r.credits, r.estimated))
+            .collect()
+    };
+    let incoming = |rows: &[PlatformActivity]| -> Vec<u64> {
+        (rows.iter())
+            .filter(|r| r.kind == PlatformActivityKind::Incoming)
+            .map(|r| r.credits)
+            .collect()
+    };
+    let done = [(PlatformActivityState::Done, credits, estimated)];
+    let rows = w.activity();
+    assert_eq!(fund_rows(&rows), done, "{rows:?}");
+    assert!(incoming(&rows).is_empty(), "{rows:?}");
+    w.net.fund(w.address(0), 7 * 100_000_000_000);
+    let rows = w.activity();
+    assert_eq!(fund_rows(&rows), done, "{rows:?}");
+    assert_eq!(incoming(&rows), [7 * 100_000_000_000], "{rows:?}");
+}
+
+/// Restarted after the library marked the lock consumed (the apply
+/// executed) and before the settle: the next read completes the fund with
+/// its estimate.
+#[test]
+fn a_fund_consumed_before_its_settle_completes_on_the_next_read() {
+    let (w, lib) = fund_world();
+    let outpoint = own_open_fund(&w.f, &lib);
+    w.net.fund(w.address(0), estimate());
+    let mut row = lib.tracked.lock().unwrap()[0].clone();
+    row.status = AssetLockStatus::Consumed;
+    assert_eq!(row.out_point, outpoint);
+    let (s, wallet) = (Arc::clone(&w.f.s), w.f.wallet);
+    w.f.engine.block_on(track_in_wallet(&s, wallet, row));
+    counted_once(&w, estimate(), true);
+    assert!(lib.applied().is_empty(), "no apply again");
+}
+
+/// Restarted after the settled record and before the activity's: the
+/// next read completes the fund with its estimate.
+#[test]
+fn a_fund_settled_before_its_activity_record_completes_on_the_next_read() {
+    let (w, lib) = fund_world();
+    let outpoint = own_open_fund(&w.f, &lib);
+    w.net.fund(w.address(0), estimate());
+    let (s, wallet) = (Arc::clone(&w.f.s), w.f.wallet);
+    w.f.engine.block_on(async move {
+        locks::record(
+            &s,
+            wallet,
+            LockKindId::PlatformAddress,
+            Mark::Settled,
+            outpoint,
+        )
+        .await
+    });
+    counted_once(&w, estimate(), true);
+    assert!(lib.applied().is_empty(), "no apply again");
+}
+
+/// The proved apply's activity record failed to write: the next read
+/// completes it from the settled record, never by applying again.
+#[test]
+fn a_failed_fund_record_write_completes_on_the_next_read() {
+    let (w, lib) = fund_world();
+    w.net.fund(w.address(0), estimate());
+    w.fail_next_outcome_write();
+    lib.answer(Answer::Done(Some(estimate())));
+    let out = fund_of(&w.f, &lib).unwrap();
+    assert_eq!(
+        out.state,
+        PlatformFundState::Applied {
+            credits: estimate()
+        }
+    );
+    counted_once(&w, estimate(), true);
+    assert_eq!(lib.applied().len(), 1);
+    assert_eq!(lib.funds.load(Ordering::SeqCst), 1);
+}
+
+/// A lost reply reads Checking; the rise while it checks is the fund's,
+/// and Platform's later "already consumed" completes the fund with its
+/// estimate.
+#[test]
+fn a_checking_fund_completes_when_platform_says_its_lock_is_used() {
+    let (w, lib) = fund_world();
+    lib.answer(Answer::Failed);
+    let out = fund_of(&w.f, &lib).unwrap();
+    assert_eq!(out.state, PlatformFundState::ConsumptionUnknown);
+    w.net.fund(w.address(0), estimate());
+    let rows = w.activity();
+    assert!(
+        !(rows.iter()).any(|r| r.kind == PlatformActivityKind::Incoming),
+        "{rows:?}"
+    );
+    let fund = (rows.iter())
+        .find(|r| r.kind == PlatformActivityKind::FromCore)
+        .unwrap();
+    assert_eq!(fund.state, PlatformActivityState::Pending);
+    lib.answer(Answer::Consumed { of: None });
+    assert_eq!(
+        resume_of(&w.f, &lib, lib.outpoint(0)).unwrap(),
+        PlatformFundState::ConsumptionUnknown
+    );
+    counted_once(&w, estimate(), true);
+}
+
+/// An activity read that took its view of the holds before an apply holds
+/// the address keeps the apply out until it is done: the apply waits for
+/// it, so the read never sees the apply's rise as unheld. The fund is
+/// counted once and a later payment in full.
+#[test]
+fn an_activity_read_in_flight_keeps_the_apply_out() {
+    let (w, lib) = fund_world();
+    let outpoint = own_open_fund(&w.f, &lib);
+    lib.answer(Answer::Done(Some(estimate())));
+    w.net.block_next_read();
+    let (grant_id, txid, to) = (grant(&w.f, 1, 0), outpoint.txid.to_string(), w.address(0));
+    let fake = Arc::clone(&lib);
+    let (read, (resumed, applied_during)) = w
+        .call(move |net, s, wallet, id| async move {
+            let read = platform_moves::activity(&*net, &s, &wallet, id);
+            let apply = async {
+                net.read_entered.notified().await;
+                let resume = fund::resume(&s, id, &*fake, &txid, &grant_id);
+                tokio::pin!(resume);
+                let early = tokio::time::timeout(Duration::from_secs(2), &mut resume).await;
+                assert!(early.is_err(), "the resume ran past the read");
+                let during = fake.applied().len();
+                // The read answers late, after the apply's rise.
+                net.fund(to, estimate());
+                net.read_release.notify_one();
+                (resume.await, during)
+            };
+            let (read, apply) = tokio::join!(read, apply);
+            Ok((read, apply))
+        })
+        .unwrap();
+    read.unwrap();
+    assert_eq!(applied_during, 0, "the apply waited for the read");
+    assert!(matches!(
+        resumed.unwrap().state,
+        PlatformFundState::Applied { .. }
+    ));
+    counted_once(&w, estimate(), false);
+}
+
+/// The list joins the kinds read and names the ones that were not; only
+/// with none read is it refused.
+#[test]
+fn a_kind_that_cannot_be_read_does_not_hide_the_others() {
+    let lock = |kind, n: u8| UnfinishedLock {
+        txid: format!("{n:02x}").repeat(32),
+        vout: 0,
+        kind,
+        duffs: 1_000_000,
+        origin: LockOrigin::Restored,
+        state: UnfinishedState::Ready,
+    };
+    let fund = lock(LockKindId::PlatformAddress, 2);
+    let shield = lock(LockKindId::Shielded, 1);
+    let read = super::unfinished::transfers([
+        (LockKindId::Shielded, Err(PlatformError::Unavailable)),
+        (LockKindId::PlatformAddress, Ok((vec![fund.clone()], true))),
+    ])
+    .unwrap();
+    assert_eq!(
+        (read.locks, read.complete, read.unread),
+        (vec![fund.clone()], true, vec![LockKindId::Shielded])
+    );
+    let both = super::unfinished::transfers([
+        (LockKindId::Shielded, Ok((vec![shield.clone()], false))),
+        (LockKindId::PlatformAddress, Ok((vec![fund.clone()], true))),
+    ])
+    .unwrap();
+    assert_eq!(
+        (both.locks, both.complete, both.unread),
+        (vec![shield, fund], false, vec![])
+    );
+    let none = super::unfinished::transfers([
+        (LockKindId::Shielded, Err(PlatformError::WalletNotFound)),
+        (LockKindId::PlatformAddress, Err(PlatformError::Unavailable)),
+    ]);
+    assert_eq!(none.unwrap_err().code(), "wallet_not_found");
+}
+
+/// "Check again" needs a grant with a funding budget (the lock's key is a
+/// funding key): one without is refused before it is redeemed, and stays
+/// usable.
+#[test]
+fn a_resume_refuses_a_grant_with_no_funding_budget_unredeemed() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let outpoint = own_open_fund(&fx, &lib);
+    let (wallet, empty, txid) = (fx.wallet, grant(&fx, 0, 0), outpoint.txid.to_string());
+    let held = empty.clone();
+    let refused = run(&fx, &lib, move |s, lib| async move {
+        fund::resume(&s, wallet, &*lib, &txid, &held).await
+    });
+    assert_eq!(code(refused), "platform.needs_grant");
+    assert!(fx.unused(&empty));
+    assert!(lib.applied().is_empty());
 }
