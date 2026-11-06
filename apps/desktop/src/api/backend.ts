@@ -12,6 +12,9 @@ import type { HistoryFilterRequest } from "./generated/HistoryFilterRequest";
 import type { HistorySortName } from "./generated/HistorySortName";
 import type { MoveToCoreOutcome } from "./generated/MoveToCoreOutcome";
 import type { MoveToCoreQuote } from "./generated/MoveToCoreQuote";
+import type { PlatformReceiveAddress } from "./generated/PlatformReceiveAddress";
+import type { PlatformSendOutcome } from "./generated/PlatformSendOutcome";
+import type { PlatformSendQuote } from "./generated/PlatformSendQuote";
 import type { ChosenNetwork } from "./generated/ChosenNetwork";
 import type { NetworkChoiceView } from "./generated/NetworkChoiceView";
 import type { PlatformActivity } from "./generated/PlatformActivity";
@@ -190,6 +193,9 @@ export interface Backend {
   importWallet(mnemonic: string, bip39Passphrase: string | null, options: ImportOptions): Promise<string>;
   /** `walletId` is `null` only for `changeCredential` (vault.rs). */
   authorize(purpose: GrantPurposeSpec, walletId: string | null, credential: CredentialSpec): Promise<AuthGrant>;
+  /** A grant for the quoted Platform send `operation` alone (its planned debit); `platformSend`
+   * refuses any other grant for it. */
+  authorizePlatformSend(walletId: string, operation: string, credential: CredentialSpec): Promise<AuthGrant>;
   /** One credential check for several grants, all or none (E0-04: "Accept and pay"). */
   authorizeSet(purposes: GrantPurposeSpec[], walletId: string | null, credential: CredentialSpec): Promise<AuthGrant[]>;
   /** Redeems grants into a flow's lease; returns the lease id a write or a prepare takes. */
@@ -240,6 +246,15 @@ export interface Backend {
   /** Moves the Platform addresses' credits to `to`, one of the wallet's own receive addresses (the
    * quote's), under `grant`. */
   platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, grant: string): Promise<MoveToCoreOutcome>;
+  /** Reads the Platform addresses from the network now (`platform_addresses_sync`). */
+  platformAddressesSync(walletId: string): Promise<PlatformAddressBalance>;
+  /** The payment account's lowest unused Platform address (`platform_receive_address`), bech32m. */
+  platformReceiveAddress(walletId: string): Promise<PlatformReceiveAddress>;
+  /** What sending `amount` to the Platform address `to` takes (`platform_send_quote`); `retryOf`: the
+   * send this retries ("Retry this payment"), else `null`. */
+  platformSendQuote(walletId: string, to: string, amount: WithdrawAmount, retryOf: string | null): Promise<PlatformSendQuote>;
+  /** Sends the quoted `operation` (single use) from the Platform addresses under a fresh `platformOp` `grant` (`platform_send`). */
+  platformSend(walletId: string, operation: string, grant: string): Promise<PlatformSendOutcome>;
   syncStatus(): Promise<SyncStatus>;
   historyPage(walletId: string, request: HistoryRequest): Promise<HistoryRows>;
   /** dash-qt's CSV of the history `filter` and `sort` select (every field quoted, `\n` ends);

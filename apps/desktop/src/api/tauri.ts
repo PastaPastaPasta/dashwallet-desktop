@@ -42,6 +42,7 @@ export class IpcBackend implements Backend {
   importWallet = cmd.importWallet;
   authorize = cmd.authorize;
   authorizeSet = cmd.authorizeSet;
+  authorizePlatformSend = (...a: Parameters<typeof cmd.authorizePlatformSend>) => orUnavailable(cmd.authorizePlatformSend(...a));
   beginFlow = cmd.beginFlow;
   endFlow = cmd.endFlow;
   revokeGrant = cmd.revokeGrant;
@@ -73,6 +74,10 @@ export class IpcBackend implements Backend {
   platformActivity = (walletId: string) => orAbsent(cmd.platformActivity(walletId));
   platformMoveToCoreQuote = (...a: Parameters<typeof cmd.platformMoveToCoreQuote>) => orUnavailable(cmd.platformMoveToCoreQuote(...a));
   platformMoveToCore = (...a: Parameters<typeof cmd.platformMoveToCore>) => orUnavailable(cmd.platformMoveToCore(...a));
+  platformAddressesSync = (...a: Parameters<typeof cmd.platformAddressesSync>) => orUnavailable(cmd.platformAddressesSync(...a));
+  platformReceiveAddress = (...a: Parameters<typeof cmd.platformReceiveAddress>) => orUnavailable(cmd.platformReceiveAddress(...a));
+  platformSendQuote = (...a: Parameters<typeof cmd.platformSendQuote>) => orUnavailable(cmd.platformSendQuote(...a));
+  platformSend = (...a: Parameters<typeof cmd.platformSend>) => orUnavailable(cmd.platformSend(...a));
   txDetail = cmd.txDetail;
   txDetailExtras = cmd.txDetailExtras;
   setTxLabel = cmd.setTxLabel;

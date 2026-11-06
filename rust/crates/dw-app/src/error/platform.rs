@@ -116,6 +116,9 @@ codes! {
         WithdrawalOutOfRange = "credits.withdrawal_out_of_range",
         WithdrawalLanded = "credits.withdrawal_landed",
         MovePending = "credits.move_pending",
+        RecipientInvalid = "credits.recipient_invalid",
+        SendOutOfRange = "credits.send_out_of_range",
+        QuoteChanged = "credits.quote_changed",
     }
 }
 
@@ -461,6 +464,17 @@ impl From<CreditsError> for AppError {
                 CreditsCode::MovePending,
                 Some(ErrorData::Artifact { artifact: id }),
             ),
+            C::RecipientInvalid { reason } => (
+                CreditsCode::RecipientInvalid,
+                Some(ErrorData::Reason {
+                    reason: reason.as_str().into(),
+                }),
+            ),
+            C::SendOutOfRange { min } => (
+                CreditsCode::SendOutOfRange,
+                Some(ErrorData::CreditMinimum { min }),
+            ),
+            C::QuoteChanged => (CreditsCode::QuoteChanged, None),
             C::Platform(e) => return e.into(),
         };
         AppError {
@@ -474,8 +488,8 @@ impl From<CreditsError> for AppError {
 #[cfg(test)]
 mod tests {
     use dw_engine::platform::{
-        BudgetPurpose, Eligibility, KeyPurpose, ProfileField, RevokeCause, ShieldedSyncWait,
-        UsernameRule,
+        BudgetPurpose, Eligibility, KeyPurpose, ProfileField, RecipientProblem, RevokeCause,
+        ShieldedSyncWait, UsernameRule,
     };
 
     use super::*;
@@ -628,6 +642,11 @@ mod tests {
             CreditsError::WithdrawalOutOfRange { min: 1, max: 2 },
             CreditsError::WithdrawalLanded { artifact: s() },
             CreditsError::MovePending { id: s() },
+            CreditsError::RecipientInvalid {
+                reason: RecipientProblem::Network,
+            },
+            CreditsError::SendOutOfRange { min: 1 },
+            CreditsError::QuoteChanged,
             CreditsError::Platform(PlatformError::Unavailable),
         ];
         for e in credits {

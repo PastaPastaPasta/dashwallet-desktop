@@ -54,7 +54,7 @@ test.describe("item 2: Move waits for Activity's check", () => {
     await expect(page.getByTestId("platform-move-go")).toBeEnabled();
     await world(page, (w) => {
       const p = w.pending.platform!;
-      p.activity = [{ id: "pm-9", kind: "moveToCore", state: "pending", credits: "40000000000", address: null, to: "y", expectedDuffs: null, feeCredits: null, at: 1 }, ...p.activity];
+      p.activity = [{ id: "pm-9", kind: "moveToCore", state: "pending", credits: "40000000000", address: null, to: "y", expectedDuffs: null, feeCredits: null, at: 1, mayLand: true, estimated: false }, ...p.activity];
     });
     await refreshPlatform(page);
     await expect(page.getByTestId("platform-move-blocked")).toContainText("Do not move again");

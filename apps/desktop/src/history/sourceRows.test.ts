@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { TxRow } from "../api/generated/TxRow";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
-import { filterExtra, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, sourceRowTitle } from "./sourceRows";
+import { filterExtra, isMayLandRow, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, sourceRowTitle } from "./sourceRows";
 
 const act = (id: string, over: Partial<PlatformActivity> = {}): PlatformActivity => ({
   id,
@@ -14,6 +14,8 @@ const act = (id: string, over: Partial<PlatformActivity> = {}): PlatformActivity
   expectedDuffs: null,
   feeCredits: null,
   at: 1000,
+  mayLand: false,
+  estimated: false,
   ...over,
 });
 
@@ -63,9 +65,36 @@ describe("platform activity rows", () => {
     expect([rowSource(move), rowSource(core("abc", 1))]).toEqual(["platform", null]);
   });
 
+  it("shows a send to a Platform address as a payment to its recipient", () => {
+    const send = platformRow(act("s", { kind: "send", address: null, to: "tdash1kpayee", credits: "1006500000" }));
+    expect(send).toMatchObject({ txid: "platform:send:s", txType: "sendToAddress", category: "sent", amount: -1_006_500, address: "tdash1kpayee" });
+    expect(sourceRowTitle(send)).toBe("Sent to a Platform address");
+    expect(platformRow(act("sp", { kind: "send", state: "pending", to: "tdash1kpayee" })).status.kind).toBe("unconfirmed");
+  });
+
   it("shows a pending move as pending and a failed one as a problem", () => {
     expect(platformRow(act("p", { state: "pending" })).status.kind).toBe("unconfirmed");
     expect(platformRow(act("f", { state: "failed" })).status.kind).toBe("notAccepted");
+  });
+
+  it("shows a failed send or move that may still land as unconfirmed with its amount, never as not accepted", () => {
+    const send = platformRow(act("s", { kind: "send", state: "failed", mayLand: true, address: null, to: "tdash1kpayee", credits: "1019500000" }));
+    expect(send).toMatchObject({ txid: "platform:send:s:mayland", amount: -1_019_500, status: { kind: "unconfirmed" }, address: "tdash1kpayee" });
+    expect(isMayLandRow(send)).toBe(true);
+    expect(sourceRowTitle(send)).toBe("Sent to a Platform address");
+    const move = platformRow(act("m", { kind: "moveToCore", state: "failed", mayLand: true, to: "ycore", expectedDuffs: null, credits: "40000000000" }));
+    expect(move).toMatchObject({ status: { kind: "unconfirmed" }, amount: 40_000_000 });
+    expect(isMayLandRow(move)).toBe(true);
+    // One that never will stays a problem; a pending one is a plain pending row.
+    const gone = platformRow(act("g", { kind: "send", state: "failed", mayLand: false, to: "tdash1kpayee" }));
+    expect([gone.status.kind, isMayLandRow(gone)]).toEqual(["notAccepted", false]);
+    expect(isMayLandRow(platformRow(act("p", { kind: "send", state: "pending", mayLand: true, to: "tdash1kpayee" })))).toBe(false);
+  });
+
+  it("shows a replaced send like a replaced move: no amount, no problem", () => {
+    const row = platformRow(act("r", { kind: "send", state: "replaced", to: "tdash1kpayee" }));
+    expect(row).toMatchObject({ amount: 0, status: { kind: "confirmed" } });
+    expect(isReplacedRow(row)).toBe(true);
   });
 
   it("shows a replaced move as neither a problem nor an amount", () => {

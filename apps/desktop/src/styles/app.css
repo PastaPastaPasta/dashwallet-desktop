@@ -2138,6 +2138,19 @@ button {
   margin-bottom: var(--dw-layout-section-gap);
 }
 
+/* Receive on Platform (0.2 X1b): collapsed under the Dash address. */
+.platform-receive {
+  margin-bottom: var(--dw-layout-section-gap);
+}
+
+.platform-receive-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-m);
+  padding: 0 var(--dw-layout-card-padding) var(--dw-layout-card-padding);
+}
+
 .receive-card {
   display: flex;
   flex-direction: column;

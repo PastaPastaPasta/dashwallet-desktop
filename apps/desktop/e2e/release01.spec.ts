@@ -499,7 +499,7 @@ test.describe("Move to Dash wallet", () => {
     await page.evaluate(() => {
       const f = window.__dwFixture!;
       const p = f.world.pending.platform!;
-      p.activity = p.activity.map((a) => (a.kind === "moveToCore" ? { ...a, state: "done" as const } : a));
+      p.activity = p.activity.map((a) => (a.kind === "moveToCore" ? { ...a, state: "done" as const, mayLand: false } : a));
       p.addresses = [];
       f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "identities" } });
     });
@@ -519,7 +519,7 @@ test.describe("Move to Dash wallet", () => {
     await page.evaluate(() => {
       const f = window.__dwFixture!;
       const p = f.world.pending.platform!;
-      p.activity = p.activity.map((a) => (a.kind === "moveToCore" ? { ...a, state: "done" as const } : a));
+      p.activity = p.activity.map((a) => (a.kind === "moveToCore" ? { ...a, state: "done" as const, mayLand: false } : a));
       p.addresses = [];
       f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "identities" } });
     });

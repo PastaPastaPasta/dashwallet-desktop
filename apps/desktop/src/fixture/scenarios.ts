@@ -35,7 +35,7 @@ import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type Send
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
 import { restoredLock } from "./recovery";
-import { newPendingWorld, type PendingWorld } from "./pending";
+import { newPendingWorld, PLATFORM_PAYEE, sendTerms, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
@@ -611,14 +611,59 @@ const SCENARIOS = {
     w.pending.platform!.dust = "1500000";
     return w;
   },
+  /** The next send to a Platform address gets no answer from Platform: it stays pending. */
+  "platform-send-pending": (t) => {
+    const w = base(t);
+    w.pending.platform!.nextSend = "pending";
+    return w;
+  },
+  /** The next send is not taken in time (failed by height): it may still land. Its retry is taken. */
+  "platform-send-failed": (t) => {
+    const w = base(t);
+    w.pending.platform!.nextSend = "failed";
+    w.pending.platform!.thenSend = "done";
+    return w;
+  },
+  /** A send that failed by height and may still land (0.01 to the fixture's payee): only its exact retry is taken. */
+  "platform-send-failed-may-land": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [{ id: "ps-held", kind: "send", state: "failed", credits: "1000000000", address: null, to: PLATFORM_PAYEE, expectedDuffs: null, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
+    p.terms["ps-held"] = sendTerms(PLATFORM_PAYEE, 1_000_000_000n);
+    return w;
+  },
+  /** A move that failed by height and may still land: Move stays offered (a move at the same inputs follows it). */
+  "platform-move-failed-may-land": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [{ id: "pm-held", kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
+    return w;
+  },
+  /** A send Platform has not confirmed: Pay from Platform and Move wait for it. */
+  "platform-send-held": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [{ id: "ps-held", kind: "send", state: "pending", credits: "1000000000", address: null, to: PLATFORM_PAYEE, expectedDuffs: null, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
+    return w;
+  },
+  /** No credits on the Platform addresses: Pay from Platform says so. */
+  "platform-empty": (t) => {
+    const w = base(t);
+    w.pending.platform!.addresses = [];
+    w.pending.platform!.activity = [];
+    return w;
+  },
   /** A move the engine replaced with a retry (done), among the Platform activity. */
   "platform-replaced": (t) => {
     const w = base(t);
     const p = w.pending.platform!;
     const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
     p.activity = [
-      { id: "pm-retry", kind: "moveToCore", state: "done", credits: "30000000000", address: null, to: p.activity[0].address, expectedDuffs: 29_998_000, feeCredits: "2000000", at: at - 3600 },
-      { id: "pm-old", kind: "moveToCore", state: "replaced", credits: "30000000000", address: null, to: null, expectedDuffs: null, feeCredits: null, at: at - 7200 },
+      { id: "pm-retry", kind: "moveToCore", state: "done", credits: "30000000000", address: null, to: p.activity[0].address, expectedDuffs: 29_998_000, feeCredits: "2000000", at: at - 3600, mayLand: false, estimated: false },
+      { id: "pm-old", kind: "moveToCore", state: "replaced", credits: "30000000000", address: null, to: null, expectedDuffs: null, feeCredits: null, at: at - 7200, mayLand: false, estimated: false },
       ...p.activity,
     ];
     return w;

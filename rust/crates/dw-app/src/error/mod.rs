@@ -203,6 +203,12 @@ pub enum ErrorData {
         #[serde(with = "crate::dto::credits")]
         max: u64,
     },
+    /// `credits.send_out_of_range`: the least a Platform send may pay, in credits.
+    CreditMinimum {
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        min: u64,
+    },
     /// `insufficient_credits`: the identity (Base58) whose balance is short.
     IdentityCredits {
         identity: String,
@@ -295,7 +301,8 @@ pub enum ErrorData {
     /// `governance.submit_refused`: why (`public`, `expired`, `fee_failed`,
     /// `in_flight`)
     /// (mg-engine §4); `shielded.not_synced`: what Shielded is still
-    /// syncing (`account`, `tree`, `journal`, `core`, `startup`; m4 §2.13).
+    /// syncing (`account`, `tree`, `journal`, `core`, `startup`; m4 §2.13);
+    /// `credits.recipient_invalid`: why the address cannot be paid (m4 §2.12).
     Reason { reason: String },
     /// `tx_action_refused`: why the abandon or resend was refused.
     TxAction { refusal: TxActionRefusalName },

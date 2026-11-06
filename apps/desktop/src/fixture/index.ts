@@ -14,7 +14,7 @@ import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { ThemeName } from "../api/generated/ThemeName";
 import { isErrorClass, sampleError, type ErrorClass } from "./errors";
-import { PENDING_HANDLERS } from "./pending";
+import { landSend, PENDING_HANDLERS } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
 import { restarted } from "./registration";
 import { buildWorld, DEFAULT_SCENARIO, FIXTURE_WALLET_ID, isScenario, type ScenarioName, type World } from "./scenarios";
@@ -60,6 +60,9 @@ export interface FixtureHandle {
   release(command: CommandName): void;
   /** Every command called so far, in order. */
   readonly calls: string[];
+  /** Platform takes a held send after all (its row becomes `done`, the credits are debited), with
+   * no signal to the app, as the engine settles it between two reads. */
+  landPlatformSend(id: string): void;
   /** One step of `draft`'s registration run, where the network would answer (DP1-09);
    * `false` when it has no run. */
   advanceRegistration(draft: string, walletId?: string): boolean;
@@ -148,6 +151,9 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
       location.reload();
     },
     calls,
+    landPlatformSend: (id) => {
+      if (world.pending.platform) landSend(world.pending.platform, id);
+    },
     now: FIXTURE_NOW,
     locale: "en-US",
   };

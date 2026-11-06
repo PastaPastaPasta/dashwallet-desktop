@@ -2,13 +2,13 @@
 // address; Request payment stores a request on a fresh address and shows it; the requested
 // payments list keeps them (dash-qt's Receive tab, QT-081…085).
 
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { errorMessage, hasCode } from "../api/backend";
 import type { AddressInfo } from "../api/generated/AddressInfo";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ReceiveRequest } from "../api/generated/ReceiveRequest";
-import { keys, useBackend, useQrMatrix, useReceiveAddress, useReceiveRequests, useReceiveUsername, useUsernameAllowed } from "../api/queries";
+import { keys, useBackend, usePlatformAddresses, usePlatformReceiveAddress, useQrMatrix, useReceiveAddress, useReceiveRequests, useReceiveUsername, useUsernameAllowed } from "../api/queries";
 import { withoutUsername } from "../api/username";
 import { useDebounced } from "../app/useDebounced";
 import { AmountText, DashButton } from "../components/basics";
@@ -137,6 +137,71 @@ function AddressCard({ walletId, network }: { walletId: string; network: Network
         </p>
       )}
     </section>
+  );
+}
+
+export const PLATFORM_RECEIVE_COPY = {
+  title: "Receive on Platform",
+  text: "A Dash Platform address. Platform funds are spent from Platform: send them to another Platform address or move them to your Dash wallet.",
+  warning: "Most Dash wallets and exchanges cannot pay this address. Give it only to someone paying from Dash Platform.",
+  loading: "Loading Platform address",
+  copy: "Copy address",
+  failed: "Could not load the Platform address:",
+} as const;
+
+/** Receive on Platform (0.2 X1b): collapsed, so a Core payer is not shown a second address. Open, it
+ * shows the payment account's lowest unused address as a bare QR (no `dash:` URI carries one) and
+ * reads the Platform addresses once, so a payment the user waits for shows soon. Hidden while the
+ * build has no Platform addresses. */
+function PlatformReceiveCard({ walletId }: { walletId: string }) {
+  const b = useBackend();
+  const client = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const balance = usePlatformAddresses(walletId);
+  const address = usePlatformReceiveAddress(walletId, open);
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    b.platformAddressesSync(walletId)
+      .then(() => live && void client.invalidateQueries({ queryKey: ["dashpay"] }))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [b, client, open, walletId]);
+  if (balance.data === null) return null;
+  const C = PLATFORM_RECEIVE_COPY;
+  return (
+    <details className="disclosure card-l1 platform-receive" data-testid="platform-receive" onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary data-testid="platform-receive-toggle">{C.title}</summary>
+      <div className="platform-receive-body">
+        <p className="sheet-text">{C.text}</p>
+        <p className="field-hint" data-testid="platform-receive-warning">
+          {C.warning}
+        </p>
+        {address.isError ? (
+          <p className="form-problem" role="alert" data-testid="platform-receive-error">
+            {C.failed} {errorMessage(address.error)}
+          </p>
+        ) : !address.data ? (
+          open && <LoadingState testId="platform-receive-loading" text={C.loading} />
+        ) : (
+          <>
+            <div className="receive-qr">
+              <Qr text={address.data.address} label={`QR code of ${address.data.address}`} testId="platform-receive-qr" />
+            </div>
+            <p className="address-full" data-testid="platform-receive-address">
+              {address.data.address}
+            </p>
+            <div className="card-actions">
+              <CopyDashButton variant="tintedBlue" data-testid="platform-receive-copy" text={address.data.address}>
+                {C.copy}
+              </CopyDashButton>
+            </div>
+          </>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -379,6 +444,7 @@ export function ReceivePage({ walletId, network }: { walletId: string; network: 
         <AddressCard walletId={walletId} network={network} />
         <RequestForm walletId={walletId} network={network} onCreated={setShown} />
       </div>
+      <PlatformReceiveCard walletId={walletId} />
       <RequestList walletId={walletId} network={network} onShow={setShown} />
       {shown && <RequestSheet walletId={walletId} request={shown} network={network} onClose={() => setShown(null)} />}
     </Page>

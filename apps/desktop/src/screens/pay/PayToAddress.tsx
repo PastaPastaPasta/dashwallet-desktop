@@ -13,6 +13,7 @@ import { AddressBookPicker } from "../tools/AddressBook";
 import { useDisplay } from "../../format/display";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
+import { PayFromPlatform } from "./PayFromPlatform";
 import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, usePayAmount, type Phase } from "./form";
 import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, type Advanced, type Outcome } from "./model";
 import { ResultSheet } from "./ResultSheet";
@@ -70,6 +71,8 @@ export function PayToAddress({
   });
 
   const addrError = checkedAddr !== "" && addrClass.data ? addressProblem(addrClass.data) : null;
+  // A Platform address is paid from the Platform balance (platform/send.ts), not by a Core draft.
+  const platform = checkedAddr !== "" && checkedAddr === addr && addrClass.data?.kind === "platform";
   const { duffs } = amount;
 
   const recipient =
@@ -145,6 +148,10 @@ export function PayToAddress({
               </span>
             )}
           </FormField>
+          {platform ? (
+            <PayFromPlatform walletId={walletId} network={network} to={checkedAddr} amount={amount} onSent={() => setAddress("")} />
+          ) : (
+            <>
           <AmountFields
             shown={shown}
             amount={amount}
@@ -161,9 +168,15 @@ export function PayToAddress({
           <FormField label="Message" hint="Kept with the transaction in this wallet; not sent to the payee.">
             {(p) => <input {...p} data-testid="pay-message" value={message} autoComplete="off" onChange={(e) => setMessage(e.target.value)} />}
           </FormField>
+            </>
+          )}
         </section>
-        <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" ? duffs : null} />
-        <PayFooter problem={generalError} offer={offer === null || !settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
+        {!platform && (
+          <>
+            <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" ? duffs : null} />
+            <PayFooter problem={generalError} offer={offer === null || !settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
+          </>
+        )}
       </form>
       {picking && <AddressBookPicker walletId={walletId} network={network} purpose="send" onChoose={chosen} onClose={() => setPicking(false)} />}
       {phase.kind === "confirm" && (

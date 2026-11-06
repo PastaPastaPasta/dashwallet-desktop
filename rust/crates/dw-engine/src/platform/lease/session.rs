@@ -46,6 +46,7 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         | FlowKind::PrivateDetails
         | FlowKind::EnableDashPayKeys
         | FlowKind::PlatformAddressMove
+        | FlowKind::PlatformAddressSend
         | FlowKind::Shield
         | FlowKind::ShieldedSpend => &[GrantKind::PlatformOp],
     }
@@ -133,10 +134,14 @@ pub(crate) fn issue(
         };
         match token.purpose() {
             GrantPurpose::PlatformOp { max_credits, .. }
-                if flow == FlowKind::PlatformAddressMove =>
+                if matches!(
+                    flow,
+                    FlowKind::PlatformAddressMove | FlowKind::PlatformAddressSend
+                ) =>
             {
-                // "Move to Dash wallet" (release 0.1): the DIP-17 payment
-                // keys alone, no identity key and no contact crypto.
+                // "Move to Dash wallet" (release 0.1) and a send to a
+                // Platform address (0.2): the DIP-17 payment keys alone, no
+                // identity key and no contact crypto.
                 out.credits = max_credits;
                 if max_credits > 0 {
                     out.signers.platform_address =
