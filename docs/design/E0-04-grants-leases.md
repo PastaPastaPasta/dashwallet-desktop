@@ -879,7 +879,14 @@ call permit when its task lands.
   again (the row reads Abandoned until a block or an InstantSend lock shows it).
   `MixedCoinsSweepResult.unknown_txid` names it, so the user can check on it (review F5, the CoinJoin owner's
   ruling). The record is dropped only when that resolution is final (a ChainLocked block or an InstantSend
-  lock); before then it holds nothing, and a `ChainTruncated` above the block makes it pending again. A chunk
+  lock); before then it holds nothing, and a `ChainTruncated` above the block makes it pending again. Evidence
+  in a block counts only while the SPV header chain holds that block at its height (`SpvRuntime::header_hash_at`
+  `Found` with the same hash; absent, unreadable or no SPV reads pending): the pinned persister mirrors no
+  truncation (platform `core_bridge.rs` `ChainTruncated`, TODO #5380), so a restart reloads a record of a
+  replaced block, which key-wallet then promotes by height under the new branch's ChainLock. A winner that pays
+  no wallet address is recorded with the hash its height had when `TransactionsSwept` came (looked up off the
+  event task; a truncation in between, or no header, records nothing). A beaten row a failed truncation left
+  names a replaced block and is no evidence; it is deleted on the wallet's next event or by the next read. A chunk
   key-wallet never recorded (no `TransactionsSwept` for it) that a transaction paying no wallet address beats
   stays pending, held: the dead-tx unit's abandon is the way out. Fail closed.
 - A top-up step has no funding key of its own after a lost journal: the draft's own key is a registration's, and

@@ -41,6 +41,40 @@ pub(crate) struct Fixture {
     rec: Arc<Recorder>,
     pub(crate) session: Arc<NetworkSession>,
     pub(crate) wallet: WalletId,
+    /// The SPV header chain the session reads, across reopens.
+    pub(crate) chain: Arc<TestChain>,
+}
+
+/// A stand-in SPV header chain with a header at every height: each fork
+/// replaces every block above its height with a new one.
+#[derive(Default)]
+pub(crate) struct TestChain {
+    forks: std::sync::Mutex<Vec<u32>>,
+}
+
+impl TestChain {
+    /// The hash of the block the chain holds at `height` now.
+    pub(crate) fn hash(&self, height: u32) -> dashcore::BlockHash {
+        let forks = self.forks.lock().unwrap();
+        let branch = forks.iter().filter(|f| **f < height).count();
+        let mut bytes = [0xc4; 32];
+        bytes[..4].copy_from_slice(&height.to_le_bytes());
+        bytes[4..12].copy_from_slice(&(branch as u64).to_le_bytes());
+        dashcore::BlockHash::from_byte_array(bytes)
+    }
+
+    /// A fork replaces the blocks above `height`.
+    pub(crate) fn fork_above(&self, height: u32) {
+        self.forks.lock().unwrap().push(height);
+    }
+
+    fn install(self: &Arc<Self>, session: &NetworkSession) {
+        let chain = Arc::clone(self);
+        session.hub.attach_headers(Arc::new(move |height| {
+            let hash = chain.hash(height);
+            Box::pin(async move { Some(hash) })
+        }));
+    }
 }
 
 /// The fixture's session options: every address unreachable.
@@ -87,12 +121,15 @@ pub(crate) fn fixture(encrypted: bool) -> Fixture {
             },
         ))
         .unwrap();
+    let chain = Arc::new(TestChain::default());
+    chain.install(&session);
     Fixture {
         _dir: dir,
         engine,
         rec,
         session,
         wallet,
+        chain,
     }
 }
 
@@ -108,6 +145,7 @@ impl Fixture {
             .engine
             .block_on(self.engine.open_network(DashNetwork::Regtest, options()))
             .unwrap();
+        self.chain.install(&self.session);
     }
 
     pub(crate) fn grant(&self, purpose: GrantPurpose, credential: Credential<'_>) -> String {

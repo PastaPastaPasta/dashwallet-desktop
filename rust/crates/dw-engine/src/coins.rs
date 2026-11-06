@@ -785,17 +785,18 @@ impl NetworkSession {
                 Ok((locked, sweep_outs))
             })
             .await?;
-        let unspent: HashSet<OutPoint> = snapshot.coins.iter().map(|c| c.utxo.outpoint).collect();
-        self.spends.retain_unspent(&wallet_id, &unspent);
-        let reserved = self.spends.snapshot(&wallet_id);
         // A sweep chunk that may be on the network holds its inputs from
         // every spender, across restarts, while it is pending (`coinjoin.rs`
         // `sweep_out_state`); a sweep or a resend drops the final records.
-        let chainlock = self.hub.best_chainlock().map(|(h, _)| h);
-        let swept = (self.hub.history).read(&wallet_id, |txs| {
-            let pending = crate::coinjoin::split_sweep_outs(sweep_outs, txs, chainlock).0;
-            crate::coinjoin::held_inputs(&pending)
-        });
+        let (states, _) = self.sweep_view(wallet_id, sweep_outs).await;
+        let pending: Vec<_> = (states.into_iter())
+            .filter(|(_, state)| *state == crate::coinjoin::SweepOutState::Pending)
+            .map(|(o, _)| o)
+            .collect();
+        let swept = crate::coinjoin::held_inputs(&pending);
+        let unspent: HashSet<OutPoint> = snapshot.coins.iter().map(|c| c.utxo.outpoint).collect();
+        self.spends.retain_unspent(&wallet_id, &unspent);
+        let reserved = self.spends.snapshot(&wallet_id);
         let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
         // A replay re-credits a coin whose spender is still unconfirmed at
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.

@@ -29,14 +29,14 @@
 //! inputs of a final transaction are counted, not checked against a UTXO
 //! set.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 use dashcore::blockdata::transaction::outpoint::OutPoint;
 use dashcore::hashes::Hash;
 use dashcore::sighash::SighashCache;
-use dashcore::{Address, ScriptBuf, Transaction, TxIn, TxOut, Txid};
+use dashcore::{Address, BlockHash, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dw_appdb::{AppDb, AppDbError, GLOBAL_SCOPE};
 use dw_coinjoin::client::{
     MixCoin, MixingWallet, SessionOutcome, SessionParams, SessionProgress, WalletError,
@@ -2535,24 +2535,94 @@ impl NetworkSession {
     ) -> Result<(Vec<(SweepOut, SweepOutState)>, Vec<String>), EngineError> {
         let scope = dw_appdb::local_scope(&wallet_id.to_string());
         let rows = self.appdb_op(move |db| SweepRows::read(db, &scope)).await?;
-        let chainlock = self.hub.best_chainlock().map(|(h, _)| h);
-        Ok((self.hub.history).read(&wallet_id, |txs| sweep_out_states(rows, txs, chainlock)))
+        Ok(self.sweep_view(wallet_id, rows).await)
     }
 
-    /// Records the news of `wallet_id`'s event stream in its sweep rows
-    /// ([`note_sweep_news`]), from the event handler: a truncation clears a
-    /// beaten row before the next read can trust it.
+    /// [`sweep_out_states`] of `rows` against `wallet_id`'s history and the
+    /// SPV header chain at every height its evidence names.
+    pub(crate) async fn sweep_view(
+        &self,
+        wallet_id: WalletId,
+        rows: SweepRows,
+    ) -> (Vec<(SweepOut, SweepOutState)>, Vec<String>) {
+        if rows.records.is_empty() && rows.beaten.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let heights = (self.hub.history).read(&wallet_id, |txs| sweep_heights(&rows, txs));
+        let chain = SweepChain {
+            chainlock: self.hub.best_chainlock().map(|(h, _)| h),
+            active: self.hub.header_hashes(heights).await,
+        };
+        (self.hub.history).read(&wallet_id, |txs| sweep_out_states(rows, txs, &chain))
+    }
+
+    /// Records the news of `wallet_id`'s event stream in its sweep rows,
+    /// from the event handler. A truncation deletes the beaten rows above
+    /// it at once ([`delete_beaten_above`]); a winner in a block is recorded
+    /// with the hash the SPV header chain holds at its height, looked up
+    /// off the event task and written only if no truncation came in
+    /// between ([`crate::events::SessionHub::with_sweep_epoch`]). Until
+    /// then, and if no header
+    /// answers, the chunk stays pending.
     pub(crate) fn attach_sweep_news(self: &Arc<Self>) {
         let Ok(live) = self.live() else {
             return;
         };
         let appdb = Arc::clone(&live.appdb);
-        self.hub.attach_sweep_news(Box::new(move |wallet_id, news| {
+        let (hub, rt) = (Arc::downgrade(&self.hub), self.rt.clone());
+        self.hub.attach_sweep_news(Box::new(move |wallet_id, news, epoch| {
             let scope = dw_appdb::local_scope(&wallet_id.to_string());
-            note_sweep_news(&appdb, &scope, news).unwrap_or_else(|e| {
-                tracing::warn!(%wallet_id, error = %e, ?news, "sweep records not updated");
-                false
-            })
+            let written = match news {
+                SweepNews::Truncated { height } => delete_beaten_above(&appdb, &scope, height),
+                SweepNews::Beaten {
+                    txids,
+                    winner,
+                    winner_height: None,
+                } => write_beaten(&appdb, &scope, txids, winner, BeatenAt::Is),
+                SweepNews::Beaten {
+                    txids,
+                    winner,
+                    winner_height: Some(height),
+                } => {
+                    let (task, appdb, txids) = (hub.clone(), Arc::clone(&appdb), txids.to_vec());
+                    let stamp = rt.spawn(async move {
+                        stamp_beaten(task, appdb, wallet_id, txids, winner, height, epoch).await;
+                    });
+                    #[cfg(test)]
+                    if let Some(hub) = hub.upgrade() {
+                        hub.stamps.lock().unwrap_or_else(|p| p.into_inner()).push(stamp);
+                    }
+                    #[cfg(not(test))]
+                    drop(stamp);
+                    return Some(false);
+                }
+            };
+            written
+                .inspect_err(|e| tracing::warn!(%wallet_id, error = %e, ?news, "sweep records not updated"))
+                .ok()
+        }));
+        let weak = Arc::downgrade(self);
+        let rt = self.rt.clone();
+        self.hub.attach_sweep_retry(Box::new(move |wallet_id| {
+            let task = weak.clone();
+            let check = rt.spawn(async move {
+                let Some(session) = task.upgrade() else {
+                    return;
+                };
+                match session.prune_sweep_outs(wallet_id).await {
+                    Ok(()) => tracing::info!(%wallet_id, "sweep rows a failed truncation left checked again"),
+                    Err(e) => {
+                        tracing::warn!(%wallet_id, error = %e, "sweep rows a failed truncation left not checked");
+                        session.hub.retry_sweep_rows(wallet_id);
+                    }
+                }
+            });
+            #[cfg(test)]
+            if let Some(session) = weak.upgrade() {
+                session.hub.stamps.lock().unwrap_or_else(|p| p.into_inner()).push(check);
+            }
+            #[cfg(not(test))]
+            drop(check);
         }));
     }
 
@@ -2777,10 +2847,16 @@ impl NetworkSession {
                     state: SweepResendState::Resolved,
                 });
             }
+            // The chunks went out: a delete that fails now is checked again
+            // on the wallet's next event, and every read re-derives it.
             let dropped = !gone.is_empty();
-            this.drop_sweep_outs(wallet_id, gone).await?;
-            if dropped {
-                this.hub.pump.mark_balances(wallet_id);
+            match this.drop_sweep_outs(wallet_id, gone).await {
+                Ok(()) if dropped => this.hub.pump.mark_balances(wallet_id),
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::warn!(%wallet_id, error = %e, "resolved sweep rows not deleted");
+                    this.hub.retry_sweep_rows(wallet_id);
+                }
             }
             Ok(out)
         })
@@ -3161,8 +3237,10 @@ pub(crate) const SWEEP_OUT_PREFIX: &str = "coinjoin.sweep_out.";
 
 /// The key prefix, beside [`SWEEP_OUT_PREFIX`], of the chunks a
 /// transaction the wallet may not record beat to an input
-/// (`WalletEvent::TransactionsSwept`): the value is the winner's mined
-/// height (`is` for an InstantSend-locked winner) and its txid.
+/// (`WalletEvent::TransactionsSwept`): the value is `is <winner txid>` for
+/// an InstantSend-locked winner, or `<height> <block hash> <winner txid>`,
+/// the hash the SPV header chain held at the winner's height when the
+/// event came ([`BeatenAt`]).
 pub(crate) const SWEEP_BEATEN_PREFIX: &str = "coinjoin.sweep_beaten.";
 
 /// A sweep chunk that may be on the network, with its signed bytes:
@@ -3209,12 +3287,34 @@ impl SweepOut {
     }
 }
 
-/// The winner's mined height in a [`SWEEP_BEATEN_PREFIX`] row: `Some(None)`
-/// for an InstantSend-locked winner, `None` for a row that does not parse.
-fn beaten_height(value: &str) -> Option<Option<u32>> {
-    match value.split_whitespace().next()? {
-        "is" => Some(None),
-        h => h.parse().ok().map(Some),
+/// What beat a chunk, as its [`SWEEP_BEATEN_PREFIX`] row says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BeatenAt {
+    /// An InstantSend-locked winner: no reorg undoes it.
+    Is,
+    /// A winner in the block `hash` at `height`: evidence only while the
+    /// active chain holds that block there.
+    Mined { height: u32, hash: BlockHash },
+}
+
+impl BeatenAt {
+    fn value(&self, winner: Txid) -> String {
+        match self {
+            Self::Is => format!("is {winner}"),
+            Self::Mined { height, hash } => format!("{height} {hash} {winner}"),
+        }
+    }
+
+    /// The row's value read back; `None` for one that does not parse.
+    fn parse(value: &str) -> Option<Self> {
+        let mut parts = value.split_whitespace();
+        match parts.next()? {
+            "is" => Some(Self::Is),
+            h => Some(Self::Mined {
+                height: h.parse().ok()?,
+                hash: parts.next()?.parse().ok()?,
+            }),
+        }
     }
 }
 
@@ -3232,53 +3332,109 @@ pub(crate) enum SweepNews<'a> {
     Truncated { height: u32 },
 }
 
-/// Applies `news` to the sweep rows of `scope`, durably: a beaten chunk
-/// gets a [`SWEEP_BEATEN_PREFIX`] row; a truncation deletes those whose
-/// winner's block it replaced, so their chunks are pending again. Whether
-/// any row changed.
-pub(crate) fn note_sweep_news(
+/// Gives each of `txids` that has a sweep record in `scope` a beaten row
+/// saying `at`, durably. Whether any row was written.
+pub(crate) fn write_beaten(
     db: &AppDb,
     scope: &str,
-    news: SweepNews<'_>,
+    txids: &[Txid],
+    winner: Txid,
+    at: BeatenAt,
 ) -> Result<bool, AppDbError> {
-    let writes: Vec<(String, Option<String>)> = match news {
-        SweepNews::Beaten {
-            txids,
-            winner,
-            winner_height,
-        } => {
-            let height = winner_height.map_or_else(|| "is".to_string(), |h| h.to_string());
-            let mut writes = Vec::new();
-            for t in txids {
-                if db
-                    .setting(scope, &format!("{SWEEP_OUT_PREFIX}{t}"))?
-                    .is_some()
-                {
-                    let value = format!("{height} {winner}");
-                    writes.push((format!("{SWEEP_BEATEN_PREFIX}{t}"), Some(value)));
-                }
-            }
-            writes
+    let mut writes = Vec::new();
+    for t in txids {
+        if db
+            .setting(scope, &format!("{SWEEP_OUT_PREFIX}{t}"))?
+            .is_some()
+        {
+            writes.push((format!("{SWEEP_BEATEN_PREFIX}{t}"), at.value(winner)));
         }
-        SweepNews::Truncated { height } => (db.settings_with_prefix(scope, SWEEP_BEATEN_PREFIX)?)
-            .into_iter()
-            .filter(|(_, v)| match beaten_height(v) {
-                Some(Some(h)) => h > height,
-                Some(None) => false,
-                None => true,
-            })
-            .map(|(k, _)| (k, None))
-            .collect(),
-    };
+    }
     if writes.is_empty() {
         return Ok(false);
     }
-    let writes: Vec<(&str, Option<&str>)> = writes
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_deref()))
+    let writes: Vec<(&str, Option<&str>)> = (writes.iter())
+        .map(|(k, v)| (k.as_str(), Some(v.as_str())))
         .collect();
     db.set_settings_durable(scope, &writes)?;
     Ok(true)
+}
+
+/// Deletes the beaten rows of `scope` whose winner's block a fork above
+/// `height` replaced, and those that do not parse, durably. Whether any
+/// was deleted. One a failed delete leaves is no evidence: its block hash
+/// no longer matches the chain ([`sweep_out_state`]).
+pub(crate) fn delete_beaten_above(
+    db: &AppDb,
+    scope: &str,
+    height: u32,
+) -> Result<bool, AppDbError> {
+    let gone: Vec<String> = (db.settings_with_prefix(scope, SWEEP_BEATEN_PREFIX)?)
+        .into_iter()
+        .filter(|(_, v)| match BeatenAt::parse(v) {
+            Some(BeatenAt::Mined { height: h, .. }) => h > height,
+            Some(BeatenAt::Is) => false,
+            None => true,
+        })
+        .map(|(k, _)| k)
+        .collect();
+    if gone.is_empty() {
+        return Ok(false);
+    }
+    let writes: Vec<(&str, Option<&str>)> = gone.iter().map(|k| (k.as_str(), None)).collect();
+    db.set_settings_durable(scope, &writes)?;
+    Ok(true)
+}
+
+/// Records that `winner`, mined at `height`, beat `txids`, with the hash
+/// the SPV header chain holds there, unless a truncation came after the
+/// event (`epoch`, [`crate::events::SessionHub::with_sweep_epoch`]). No
+/// header, no row: the chunks stay pending.
+async fn stamp_beaten(
+    hub: Weak<crate::events::SessionHub>,
+    appdb: Arc<AppDb>,
+    wallet_id: WalletId,
+    txids: Vec<Txid>,
+    winner: Txid,
+    height: u32,
+    epoch: u64,
+) {
+    const TRIES: u32 = 3;
+    for attempt in 1..=TRIES {
+        let Some(hub) = hub.upgrade() else {
+            return;
+        };
+        if let Some(hash) = hub.header_hash(height).await {
+            let scope = dw_appdb::local_scope(&wallet_id.to_string());
+            let at = BeatenAt::Mined { height, hash };
+            let marks = Arc::clone(&hub);
+            let wrote = tokio::task::spawn_blocking(move || {
+                hub.with_sweep_epoch(|now| {
+                    if now != epoch {
+                        return Ok(false);
+                    }
+                    write_beaten(&appdb, &scope, &txids, winner, at)
+                })
+            })
+            .await;
+            match wrote {
+                Ok(Ok(true)) => marks.pump.mark_balances(wallet_id),
+                Ok(Ok(false)) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(%wallet_id, %winner, error = %e, "beaten sweep chunks not recorded");
+                }
+                Err(e) => {
+                    tracing::warn!(%wallet_id, error = %e, "beaten sweep chunks not recorded")
+                }
+            }
+            return;
+        }
+        drop(hub);
+        if attempt < TRIES {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+    tracing::warn!(%wallet_id, %winner, height, "no header at the winner's height: its chunks stay pending");
 }
 
 /// A wallet's sweep rows in `app.sqlite`: its records ([`SweepOut`]) and
@@ -3315,49 +3471,77 @@ pub(crate) enum SweepOutState {
     Final,
 }
 
-/// Whether `e` can no longer leave the chain: InstantSend-locked, or in a
-/// block at or below the best ChainLock (`chainlock`).
-fn is_final(e: &TxEntry, chainlock: Option<u32>) -> bool {
-    e.instant_locked
-        || matches!(
-            e.context,
-            TransactionContext::InstantSend(_) | TransactionContext::InChainLockedBlock(_)
-        )
-        || (e.context.block_info()).is_some_and(|b| chainlock.is_some_and(|cl| b.height() <= cl))
+/// What a sweep record's evidence is checked against: the best
+/// ChainLock's height and the block hash the SPV header chain holds at
+/// each height the evidence names (only headers the store has).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SweepChain {
+    pub(crate) chainlock: Option<u32>,
+    pub(crate) active: HashMap<u32, BlockHash>,
 }
 
-/// [`SweepOutState`] of `o` against the wallet's history `txs`, the best
-/// ChainLock's height and the winner's height `beaten` if a transaction the
-/// wallet may not record beat it ([`SWEEP_BEATEN_PREFIX`]).
+impl SweepChain {
+    /// Whether the active chain holds block `hash` at `height`.
+    fn holds(&self, height: u32, hash: &BlockHash) -> bool {
+        self.active.get(&height) == Some(hash)
+    }
+
+    /// Whether the active chain holds another block than `hash` at
+    /// `height`: a fork replaced it.
+    fn replaced(&self, height: u32, hash: &BlockHash) -> bool {
+        self.active.get(&height).is_some_and(|h| h != hash)
+    }
+
+    fn chainlocked(&self, height: u32) -> bool {
+        self.chainlock.is_some_and(|cl| height <= cl)
+    }
+}
+
+/// Whether `e`'s block is on the active chain. A record of a block a fork
+/// replaced comes back from wallet.sqlite after a restart (the pinned
+/// persister does not mirror a truncation): no evidence.
+fn on_chain(e: &TxEntry, chain: &SweepChain) -> bool {
+    (e.context.block_info()).is_some_and(|b| chain.holds(b.height(), &b.block_hash()))
+}
+
+/// Whether `e` can no longer leave the chain: InstantSend-locked, or in a
+/// ChainLocked block of the active chain (promoted, or at or below the
+/// best ChainLock). key-wallet promotes by height, so a stale record can
+/// read ChainLocked: its block is checked as any other.
+fn is_final(e: &TxEntry, chain: &SweepChain) -> bool {
+    e.instant_locked
+        || matches!(e.context, TransactionContext::InstantSend(_))
+        || (on_chain(e, chain)
+            && (matches!(e.context, TransactionContext::InChainLockedBlock(_))
+                || (e.context.block_info()).is_some_and(|b| chain.chainlocked(b.height()))))
+}
+
+/// [`SweepOutState`] of `o` against the wallet's history `txs`, `chain`,
+/// and what beat it if the wallet may not record the winner
+/// ([`SWEEP_BEATEN_PREFIX`]). Evidence in a block counts only while the
+/// active chain holds that block.
 pub(crate) fn sweep_out_state(
     o: &SweepOut,
     txs: &HashMap<Txid, TxEntry>,
-    chainlock: Option<u32>,
-    beaten: Option<Option<u32>>,
+    chain: &SweepChain,
+    beaten: Option<BeatenAt>,
 ) -> SweepOutState {
-    let txid = o.txid();
-    let inputs: HashSet<OutPoint> = o.inputs().collect();
-    let own = txs.get(&txid).into_iter();
-    let rivals = txs.iter().filter_map(|(t, e)| {
-        (*t != txid
-            && e.tx
-                .input
-                .iter()
-                .any(|i| inputs.contains(&i.previous_output)))
-        .then_some(e)
-    });
     let mut resolved = false;
-    for e in own.chain(rivals) {
-        if is_final(e, chainlock) {
+    for e in own_and_rivals(o, txs) {
+        if is_final(e, chain) {
             return SweepOutState::Final;
         }
-        resolved |= e.context.block_info().is_some();
+        resolved |= on_chain(e, chain);
     }
     match beaten {
-        Some(None) => return SweepOutState::Final,
-        Some(Some(h)) if chainlock.is_some_and(|cl| h <= cl) => return SweepOutState::Final,
-        Some(Some(_)) => resolved = true,
-        None => {}
+        Some(BeatenAt::Is) => return SweepOutState::Final,
+        Some(BeatenAt::Mined { height, hash }) if chain.holds(height, &hash) => {
+            if chain.chainlocked(height) {
+                return SweepOutState::Final;
+            }
+            resolved = true;
+        }
+        Some(BeatenAt::Mined { .. }) | None => {}
     }
     if resolved {
         SweepOutState::Resolved
@@ -3366,31 +3550,73 @@ pub(crate) fn sweep_out_state(
     }
 }
 
+/// `o`'s own entry in `txs` and every other transaction there spending one
+/// of its inputs.
+fn own_and_rivals<'a>(
+    o: &'a SweepOut,
+    txs: &'a HashMap<Txid, TxEntry>,
+) -> impl Iterator<Item = &'a TxEntry> + 'a {
+    let txid = o.txid();
+    let inputs: HashSet<OutPoint> = o.inputs().collect();
+    let rivals = txs.iter().filter_map(move |(t, e)| {
+        (*t != txid
+            && e.tx
+                .input
+                .iter()
+                .any(|i| inputs.contains(&i.previous_output)))
+        .then_some(e)
+    });
+    txs.get(&txid).into_iter().chain(rivals)
+}
+
+/// The heights whose block the evidence of `rows` names: each record's own
+/// transaction and its rivals in `txs`, and the winners of its beaten rows.
+pub(crate) fn sweep_heights(rows: &SweepRows, txs: &HashMap<Txid, TxEntry>) -> BTreeSet<u32> {
+    let mut heights = BTreeSet::new();
+    for o in (rows.records.iter()).filter_map(|(k, v)| SweepOut::decode(k, v)) {
+        heights.extend(
+            own_and_rivals(&o, txs).filter_map(|e| e.context.block_info().map(|b| b.height())),
+        );
+    }
+    for (_, v) in &rows.beaten {
+        if let Some(BeatenAt::Mined { height, .. }) = BeatenAt::parse(v) {
+            heights.insert(height);
+        }
+    }
+    heights
+}
+
 /// The state of each record in `rows` that decodes, and the keys to drop:
 /// records that are final or do not decode (no inputs to hold, nothing to
-/// send), with their beaten rows, and beaten rows of no record.
+/// send) with their beaten rows, and beaten rows of no record, that do not
+/// parse, or whose block the active chain replaced.
 pub(crate) fn sweep_out_states(
     rows: SweepRows,
     txs: &HashMap<Txid, TxEntry>,
-    chainlock: Option<u32>,
+    chain: &SweepChain,
 ) -> (Vec<(SweepOut, SweepOutState)>, Vec<String>) {
-    let mut beaten: HashMap<Txid, (String, Option<Option<u32>>)> = rows
-        .beaten
-        .into_iter()
-        .filter_map(|(key, value)| {
-            let txid: Txid = key.strip_prefix(SWEEP_BEATEN_PREFIX)?.parse().ok()?;
-            let height = beaten_height(&value);
-            Some((txid, (key, height)))
-        })
-        .collect();
     let (mut states, mut gone) = (Vec::new(), Vec::new());
+    let mut beaten: HashMap<Txid, (String, BeatenAt)> = HashMap::new();
+    for (key, value) in rows.beaten {
+        let txid: Option<Txid> =
+            (key.strip_prefix(SWEEP_BEATEN_PREFIX)).and_then(|t| t.parse().ok());
+        match (txid, BeatenAt::parse(&value)) {
+            (Some(_), Some(BeatenAt::Mined { height, hash })) if chain.replaced(height, &hash) => {
+                gone.push(key);
+            }
+            (Some(txid), Some(at)) => {
+                beaten.insert(txid, (key, at));
+            }
+            _ => gone.push(key),
+        }
+    }
     for (key, value) in rows.records {
         let Some(o) = SweepOut::decode(&key, &value) else {
             gone.push(key);
             continue;
         };
         let row = beaten.remove(&o.txid());
-        let state = sweep_out_state(&o, txs, chainlock, row.as_ref().and_then(|r| r.1));
+        let state = sweep_out_state(&o, txs, chain, row.as_ref().map(|r| r.1));
         if state == SweepOutState::Final {
             gone.push(key);
             gone.extend(row.map(|r| r.0));
@@ -3403,12 +3629,13 @@ pub(crate) fn sweep_out_states(
 
 /// Splits a wallet's sweep rows into the pending records, whose inputs stay
 /// held, and the keys to drop ([`sweep_out_states`]).
+#[cfg(test)]
 pub(crate) fn split_sweep_outs(
     rows: SweepRows,
     txs: &HashMap<Txid, TxEntry>,
-    chainlock: Option<u32>,
+    chain: &SweepChain,
 ) -> (Vec<SweepOut>, Vec<String>) {
-    let (states, gone) = sweep_out_states(rows, txs, chainlock);
+    let (states, gone) = sweep_out_states(rows, txs, chain);
     let pending = (states.into_iter())
         .filter(|(_, s)| *s == SweepOutState::Pending)
         .map(|(o, _)| o)

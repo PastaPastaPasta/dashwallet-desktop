@@ -808,11 +808,11 @@ fn an_unseen_chunk_stays_held_past_the_old_expiry_across_a_reopen() {
     assert!(sweep_out_keys(&f).contains(&sent[0].txid()));
 }
 
-/// The wallet's history holds `tx`, in the mempool or (`Some(height)`) a
-/// block.
+/// The wallet's history holds `tx`, in the mempool or (`Some(height)`) the
+/// block the chain holds at that height.
 fn record_history(f: &Fixture, tx: &Transaction, height: Option<u32>) {
     let context = match height {
-        Some(h) => TransactionContext::InBlock(BlockInfo::new(h, BlockHash::all_zeros(), 0)),
+        Some(h) => TransactionContext::InBlock(BlockInfo::new(h, f.chain.hash(h), 0)),
         None => TransactionContext::Mempool,
     };
     (f.session.hub.history).with_wallet(f.wallet, |h| {
@@ -883,9 +883,11 @@ fn chainlock(f: &Fixture, height: u32) {
     });
 }
 
-/// A fork replaces the blocks above `height`: key-wallet drops `removed`,
-/// the transactions they held, and gives back the coins they spent.
+/// A fork replaces the blocks above `height`: the header chain holds new
+/// blocks there, and key-wallet drops `removed`, the transactions they
+/// held, and gives back the coins they spent.
 fn truncate(f: &Fixture, height: u32, removed: &[Txid]) {
+    f.chain.fork_above(height);
     (f.session.hub).apply_wallet_event(&WalletEvent::ChainTruncated {
         wallet_id: f.wallet.0,
         height,
@@ -910,6 +912,17 @@ fn swept(f: &Fixture, loser: Txid, winner: Txid, height: Option<u32>) {
         released_outpoints: Vec::new(),
         balance: WalletCoreBalance::default(),
         account_balances: std::collections::BTreeMap::new(),
+    });
+    settle(f);
+}
+
+/// Waits for the beaten rows the session is recording.
+fn settle(f: &Fixture) {
+    let stamps = f.session.hub.take_stamps();
+    f.engine.block_on(async {
+        for s in stamps {
+            s.await.unwrap();
+        }
     });
 }
 
@@ -1238,6 +1251,197 @@ fn a_chunk_whose_unrecorded_winner_a_fork_replaces_is_pending_again() {
     assert_eq!(wire.txs(), sent, "the recorded bytes");
 }
 
+/// The wallet's store records `tx` mined in the block the chain holds at
+/// `height`, as SPV's persister does, and the session's history sees it.
+fn store_mined(f: &Fixture, tx: &Transaction, height: u32) {
+    use key_wallet::managed_account::transaction_record::{
+        TransactionDirection, TransactionRecord,
+    };
+    use key_wallet::transaction_checking::transaction_router::TransactionType;
+    let record = TransactionRecord::new(
+        tx.clone(),
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        },
+        TransactionContext::InBlock(BlockInfo::new(height, f.chain.hash(height), 0)),
+        TransactionType::Standard,
+        TransactionDirection::Internal,
+        Vec::new(),
+        Vec::new(),
+        0,
+    );
+    store_core(
+        f,
+        platform_wallet::changeset::CoreChangeSet {
+            records: vec![record.clone()],
+            ..Default::default()
+        },
+    );
+    (f.session.hub.history).with_wallet(f.wallet, |h| {
+        h.upsert(&record, None);
+    });
+}
+
+/// Writes `core` to the wallet's store, durably.
+fn store_core(f: &Fixture, core: platform_wallet::changeset::CoreChangeSet) {
+    use platform_wallet::changeset::{PlatformWalletChangeSet, PlatformWalletPersistence};
+    let live = f.session.live().unwrap();
+    live.persister
+        .store(
+            f.wallet.0,
+            PlatformWalletChangeSet {
+                core: Some(core),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    live.persister.flush(f.wallet.0).unwrap();
+}
+
+/// Whether `app.sqlite` refuses to delete a beaten row (a storage failure
+/// on the truncation's write).
+fn refuse_beaten_deletes(f: &Fixture, refuse: bool) {
+    let db = rusqlite::Connection::open(f.session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+    if refuse {
+        db.execute_batch(
+            "CREATE TRIGGER refuse_beaten_delete BEFORE DELETE ON settings_kv
+             WHEN old.key LIKE 'coinjoin.sweep_beaten.%'
+             BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .unwrap();
+    } else {
+        db.execute_batch("DROP TRIGGER refuse_beaten_delete;")
+            .unwrap();
+    }
+}
+
+/// The chunk is mined in a block the wallet's store records, and a fork
+/// replaces that block. The pinned persister keeps the record (it mirrors
+/// no truncation), so a restart reloads it in its old block: no evidence,
+/// as the chain holds another block there. The chunk is pending again, its
+/// inputs held and its bytes sent again, also once the replacement chain's
+/// ChainLock passes that height (which promotes the stale record).
+#[test]
+fn a_resolution_a_fork_replaced_is_no_evidence_after_a_restart() {
+    let mut f = fixture(false);
+    f.credit_coinjoin(1, COIN);
+    f.credit_coinjoin(2, COIN);
+    let wire = hook(&f, 500, &[Outcome::Unknown]);
+    move_to_wallet(&f).unwrap();
+    let sent = wire.txs();
+    let txid = sent[0].txid();
+    drop_coins(&f, &inputs(&sent));
+    store_mined(&f, &sent[0], 900);
+    assert_eq!(
+        resend(&f, None).unwrap(),
+        resent(txid, SweepResendState::Resolved)
+    );
+    truncate(&f, 899, &[txid]);
+
+    f.reopen();
+    f.credit_coinjoin(1, COIN);
+    f.credit_coinjoin(2, COIN);
+    let reloaded = (f.session.hub.history).read(&f.wallet, |txs| {
+        txs.get(&txid)
+            .and_then(|e| e.context.block_info())
+            .map(|b| b.height())
+    });
+    assert_eq!(reloaded, Some(900), "the store keeps the replaced branch");
+    for chainlocked in [false, true] {
+        if chainlocked {
+            chainlock(&f, 901);
+        }
+        assert_held(&f, &sent[0]);
+        let wire = hook(&f, 500, &[]);
+        assert_eq!(
+            resend(&f, Some(txid)).unwrap(),
+            resent(txid, SweepResendState::Sent),
+            "chainlocked={chainlocked}"
+        );
+        assert_eq!(wire.txs(), sent, "the recorded bytes");
+        assert!(sweep_out_keys(&f).contains(&txid), "no prune");
+    }
+}
+
+/// How the sweep rows recover from a truncation whose write failed.
+#[derive(Debug, Clone, Copy)]
+enum Recover {
+    /// The wallet's next event checks them again.
+    NextEvent,
+    /// A restart: the next read checks them against the header chain.
+    Restart,
+}
+
+/// A winner that pays no address of the wallet beats the chunk in a block
+/// a fork then replaces, and `app.sqlite` refuses the truncation's delete
+/// of the beaten row. The row names a block the chain no longer holds, so
+/// it is no evidence: the chunk is pending at once, its inputs held after
+/// the storage recovers and the session restarts, its bytes sent again,
+/// and the replacement chain's ChainLock finalizes nothing. The row is
+/// deleted on the wallet's next event, or by the first read after a
+/// restart.
+#[test]
+fn a_beaten_row_a_failed_truncation_left_is_no_evidence() {
+    for recover in [Recover::NextEvent, Recover::Restart] {
+        let mut f = fixture(false);
+        f.credit_coinjoin(1, COIN);
+        f.credit_coinjoin(2, COIN);
+        let wire = hook(&f, 500, &[Outcome::Unknown]);
+        move_to_wallet(&f).unwrap();
+        let sent = wire.txs();
+        let txid = sent[0].txid();
+        forget_claims(&f, &sent);
+        let input = sent[0].input[0].previous_output;
+        drop_coins(&f, &HashSet::from([input]));
+        swept(&f, txid, conflict(input).txid(), Some(900));
+        assert_eq!(
+            resend(&f, None).unwrap(),
+            resent(txid, SweepResendState::Resolved)
+        );
+
+        refuse_beaten_deletes(&f, true);
+        truncate(&f, 899, &[]);
+        assert_eq!(
+            beaten_keys(&f),
+            HashSet::from([txid]),
+            "the delete was refused"
+        );
+        let wire = hook(&f, 500, &[]);
+        assert_eq!(
+            resend(&f, None).unwrap(),
+            resent(txid, SweepResendState::Sent),
+            "{recover:?}: pending at once"
+        );
+        assert_eq!(wire.txs(), sent);
+
+        refuse_beaten_deletes(&f, false);
+        if let Recover::NextEvent = recover {
+            (f.session.hub).apply_wallet_event(&WalletEvent::SyncHeightAdvanced {
+                wallet_id: f.wallet.0,
+                height: 902,
+            });
+            settle(&f);
+            assert!(beaten_keys(&f).is_empty(), "the next event deleted it");
+        }
+        f.reopen();
+        f.credit_coinjoin(1, COIN);
+        f.credit_coinjoin(2, COIN);
+        chainlock(&f, 901);
+        assert_held(&f, &sent[0]);
+        let wire = hook(&f, 500, &[]);
+        assert_eq!(
+            resend(&f, None).unwrap(),
+            resent(txid, SweepResendState::Sent),
+            "{recover:?}"
+        );
+        assert_eq!(wire.txs(), sent, "the recorded bytes");
+        assert!(beaten_keys(&f).is_empty(), "{recover:?}: deleted");
+        assert!(sweep_out_keys(&f).contains(&txid), "{recover:?}: no prune");
+    }
+}
+
 /// A final resolution clears the record: the chunk in a block that is then
 /// ChainLocked, or InstantSend-locked; a conflict of the wallet's in a
 /// ChainLocked block frees the chunk's other inputs.
@@ -1286,18 +1490,22 @@ fn a_final_resolution_drops_the_record() {
     assert!(!sweep_out_keys(&f).contains(&sent[0].txid()));
 }
 
-/// Where each sweep record stands. Pending (held): neither in a block nor
-/// InstantSend-locked, nor beaten to an input in one; the wallet's own
-/// mempool record and a mempool conflict are no evidence. Resolved (kept,
-/// not held): in a block above the best ChainLock, or beaten there. Final
-/// (dropped): in a ChainLocked block (promoted, or at or below the best
-/// ChainLock's height), InstantSend-locked, or beaten so. Rows that do not
-/// decode, whose bytes are not the transaction the key names, or that
-/// record a beaten chunk with no record are dropped too.
+/// Where each sweep record stands. Pending (held): neither in a block of
+/// the active chain nor InstantSend-locked, nor beaten to an input in one;
+/// the wallet's own mempool record, a mempool conflict, and a record or
+/// beaten row whose block the chain replaced or has no header for are no
+/// evidence. Resolved (kept, not held): in a block of the active chain
+/// above the best ChainLock, or beaten there. Final (dropped): in a
+/// ChainLocked block of the active chain (promoted, or at or below the
+/// best ChainLock's height), InstantSend-locked (flag or context), or
+/// beaten so. Rows that do not decode, whose bytes are not the transaction
+/// the key names, that record a beaten chunk with no record, or whose
+/// winner's block the chain replaced are dropped too.
 #[test]
 fn a_sweep_record_is_dropped_only_when_its_resolution_is_final() {
     use crate::coinjoin::{
-        SweepOut, SweepOutState, SweepRows, held_inputs, split_sweep_outs, sweep_out_states,
+        SweepChain, SweepOut, SweepOutState, SweepRows, held_inputs, split_sweep_outs,
+        sweep_out_states,
     };
     let op = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
     let chunk = |ins: &[u8]| {
@@ -1309,13 +1517,17 @@ fn a_sweep_record_is_dropped_only_when_its_resolution_is_final() {
         SweepOut { tx }
     };
     let row = |o: &SweepOut| (o.key(), o.value());
+    let hash = |h: u32| BlockHash::from_byte_array([h as u8; 32]);
+    let stale = |h: u32| BlockHash::from_byte_array([h as u8 + 100; 32]);
+    let winner = Txid::from_byte_array([9; 32]);
     let beaten = |o: &SweepOut, v: &str| {
         (
             format!("coinjoin.sweep_beaten.{}", o.txid()),
-            format!("{v} {}", Txid::from_byte_array([9; 32])),
+            format!("{v} {winner}"),
         )
     };
-    let block = |h: u32| TransactionContext::InBlock(BlockInfo::new(h, BlockHash::all_zeros(), 0));
+    let mined_at = |h: u32, b: BlockHash| format!("{h} {b}");
+    let block = |h: u32| TransactionContext::InBlock(BlockInfo::new(h, hash(h), 0));
     let rival = |n: u8, lock_time: u32| {
         let mut tx = conflict(op(n));
         tx.lock_time = lock_time;
@@ -1333,7 +1545,15 @@ fn a_sweep_record_is_dropped_only_when_its_resolution_is_final() {
     let beaten_high = chunk(&[13]);
     let beaten_low = chunk(&[14]);
     let beaten_locked = chunk(&[15]);
-    let orphan = beaten(&chunk(&[16]), "5");
+    let locked_context = chunk(&[17]);
+    let promoted_conflict = chunk(&[18]);
+    let replaced = chunk(&[19]);
+    let replaced_promoted = chunk(&[20]);
+    let replaced_conflict = chunk(&[21]);
+    let headerless = chunk(&[22]);
+    let beaten_replaced = chunk(&[23]);
+    let beaten_headerless = chunk(&[24]);
+    let orphan = beaten(&chunk(&[16]), &mined_at(5, hash(5)));
     let bad = ("coinjoin.sweep_out.nope".to_string(), "00".to_string());
     let renamed = (pending.key(), mined.value());
 
@@ -1347,7 +1567,7 @@ fn a_sweep_record_is_dropped_only_when_its_resolution_is_final() {
     put(mined_low.tx.clone(), block(9), false);
     put(
         promoted.tx.clone(),
-        TransactionContext::InChainLockedBlock(BlockInfo::new(30, BlockHash::all_zeros(), 0)),
+        TransactionContext::InChainLockedBlock(BlockInfo::new(30, hash(30), 0)),
         false,
     );
     put(locked.tx.clone(), TransactionContext::Mempool, true);
@@ -1355,6 +1575,33 @@ fn a_sweep_record_is_dropped_only_when_its_resolution_is_final() {
     put(rival(5, 1), block(20), false);
     put(rival(6, 2), TransactionContext::Mempool, false);
     put(rival(12, 3), TransactionContext::Mempool, true);
+    put(
+        locked_context.tx.clone(),
+        TransactionContext::InstantSend(dashcore::InstantLock::default()),
+        false,
+    );
+    put(
+        rival(18, 4),
+        TransactionContext::InChainLockedBlock(BlockInfo::new(30, hash(30), 0)),
+        false,
+    );
+    // Reloaded from wallet.sqlite after a fork: their blocks are gone.
+    put(
+        replaced.tx.clone(),
+        TransactionContext::InBlock(BlockInfo::new(21, stale(21), 0)),
+        false,
+    );
+    put(
+        replaced_promoted.tx.clone(),
+        TransactionContext::InChainLockedBlock(BlockInfo::new(8, stale(8), 0)),
+        false,
+    );
+    put(
+        rival(21, 5),
+        TransactionContext::InBlock(BlockInfo::new(22, stale(22), 0)),
+        false,
+    );
+    put(headerless.tx.clone(), block(40), false);
 
     let rows = SweepRows {
         records: vec![
@@ -1370,17 +1617,34 @@ fn a_sweep_record_is_dropped_only_when_its_resolution_is_final() {
             row(&beaten_high),
             row(&beaten_low),
             row(&beaten_locked),
+            row(&locked_context),
+            row(&promoted_conflict),
+            row(&replaced),
+            row(&replaced_promoted),
+            row(&replaced_conflict),
+            row(&headerless),
+            row(&beaten_replaced),
+            row(&beaten_headerless),
             bad.clone(),
         ],
         beaten: vec![
-            beaten(&beaten_high, "20"),
-            beaten(&beaten_low, "9"),
+            beaten(&beaten_high, &mined_at(20, hash(20))),
+            beaten(&beaten_low, &mined_at(9, hash(9))),
             beaten(&beaten_locked, "is"),
+            beaten(&beaten_replaced, &mined_at(21, stale(21))),
+            beaten(&beaten_headerless, &mined_at(41, hash(41))),
             orphan.clone(),
         ],
     };
-    let chainlock = Some(10);
-    let (states, mut gone) = sweep_out_states(rows.clone(), &txs, chainlock);
+    // The header store holds every height but 40 and 41.
+    let chain = |chainlock| SweepChain {
+        chainlock,
+        active: [5, 8, 9, 20, 21, 22, 30]
+            .into_iter()
+            .map(|h| (h, hash(h)))
+            .collect(),
+    };
+    let (states, mut gone) = sweep_out_states(rows.clone(), &txs, &chain(Some(10)));
     let state = |o: &SweepOut| {
         (states.iter())
             .find(|(s, _)| s.txid() == o.txid())
@@ -1400,6 +1664,14 @@ fn a_sweep_record_is_dropped_only_when_its_resolution_is_final() {
         (&beaten_high, Resolved),
         (&beaten_low, Final),
         (&beaten_locked, Final),
+        (&locked_context, Final),
+        (&promoted_conflict, Final),
+        (&replaced, Pending),
+        (&replaced_promoted, Pending),
+        (&replaced_conflict, Pending),
+        (&headerless, Pending),
+        (&beaten_replaced, Pending),
+        (&beaten_headerless, Pending),
     ] {
         assert_eq!(state(o), Some(want), "{}", o.txid());
     }
@@ -1413,24 +1685,40 @@ fn a_sweep_record_is_dropped_only_when_its_resolution_is_final() {
         beaten(&beaten_low, "").0,
         beaten_locked.key(),
         beaten(&beaten_locked, "").0,
+        locked_context.key(),
+        promoted_conflict.key(),
+        beaten(&beaten_replaced, "").0,
         orphan.0,
         bad.0,
     ];
     want.sort();
     assert_eq!(gone, want);
 
-    let (held, _) = split_sweep_outs(rows, &txs, chainlock);
+    let (held, _) = split_sweep_outs(rows, &txs, &chain(Some(10)));
     assert_eq!(
         held,
-        vec![pending.clone(), mempool_conflict.clone(), local.clone()]
+        vec![
+            pending.clone(),
+            mempool_conflict.clone(),
+            local.clone(),
+            replaced.clone(),
+            replaced_promoted.clone(),
+            replaced_conflict.clone(),
+            headerless.clone(),
+            beaten_replaced.clone(),
+            beaten_headerless.clone(),
+        ]
     );
-    assert_eq!(held_inputs(&held), [1, 2, 6, 8].map(op).into());
+    assert_eq!(
+        held_inputs(&held),
+        [1, 2, 6, 8, 19, 20, 21, 22, 23, 24].map(op).into()
+    );
     let renamed = SweepRows {
         records: vec![renamed.clone()],
         beaten: Vec::new(),
     };
     assert_eq!(
-        split_sweep_outs(renamed.clone(), &txs, None).1,
+        split_sweep_outs(renamed.clone(), &txs, &chain(None)).1,
         vec![renamed.records[0].0.clone()]
     );
 
@@ -1438,10 +1726,23 @@ fn a_sweep_record_is_dropped_only_when_its_resolution_is_final() {
     // are final.
     let rows = SweepRows {
         records: vec![row(&mined_low), row(&beaten_low)],
-        beaten: vec![beaten(&beaten_low, "9")],
+        beaten: vec![beaten(&beaten_low, &mined_at(9, hash(9)))],
     };
-    let (states, gone) = sweep_out_states(rows, &txs, None);
+    let (states, gone) = sweep_out_states(rows, &txs, &chain(None));
     assert!(states.iter().all(|(_, s)| *s == Resolved));
+    assert!(gone.is_empty());
+
+    // No header store at all: nothing in a block is evidence.
+    let rows = SweepRows {
+        records: vec![row(&mined), row(&promoted), row(&beaten_high)],
+        beaten: vec![beaten(&beaten_high, &mined_at(20, hash(20)))],
+    };
+    let none = SweepChain {
+        chainlock: Some(100),
+        active: Default::default(),
+    };
+    let (states, gone) = sweep_out_states(rows, &txs, &none);
+    assert!(states.iter().all(|(_, s)| *s == Pending));
     assert!(gone.is_empty());
 }
 
