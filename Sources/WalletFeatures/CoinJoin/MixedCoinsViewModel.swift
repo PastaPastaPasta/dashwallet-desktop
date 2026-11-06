@@ -50,6 +50,17 @@ public final class MixedCoinsViewModel {
         return L10n.CoinJoin.movePlan(total: amountText(plan.total), transactions: plan.chunks.count, fee: amountText(fee))
     }
 
+    /// The plan's coins that wait for a confirmation and stay behind; `nil`
+    /// when there are none.
+    public var waitingText: String? {
+        switch flow {
+        case .planned(let p), .needsPassphrase(let p):
+            p.unconfirmed > 0 ? L10n.CoinJoin.moveWaiting(p.unconfirmed) : nil
+        default:
+            nil
+        }
+    }
+
     /// What the scan or the move did.
     public var resultText: String? {
         switch flow {

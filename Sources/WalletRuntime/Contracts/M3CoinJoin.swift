@@ -275,13 +275,19 @@ public struct MixedCoinsSweepPlan: Sendable, Hashable {
     public let destination: MixedCoinsDestination
     public let total: Amount
     public let chunks: [MixedCoinsChunk]
+    /// Coins the plan leaves for now: they wait for a confirmation.
+    public let unconfirmed: Int
     /// The engine's id of this plan: the move runs only on its coins.
     public let quoteId: String
 
-    public init(destination: MixedCoinsDestination, total: Amount, chunks: [MixedCoinsChunk], quoteId: String = "") {
+    public init(
+        destination: MixedCoinsDestination, total: Amount, chunks: [MixedCoinsChunk], unconfirmed: Int = 0,
+        quoteId: String = ""
+    ) {
         self.destination = destination
         self.total = total
         self.chunks = chunks
+        self.unconfirmed = unconfirmed
         self.quoteId = quoteId
     }
 }

@@ -185,6 +185,11 @@ extension L10n {
         public static func movePlan(total: String, transactions: Int, fee: String) -> String {
             "\(total) in \(transactions) transaction\(transactions == 1 ? "" : "s"), fee \(fee)"
         }
+        public static func moveWaiting(_ coins: Int) -> String {
+            coins == 1
+                ? "1 coin waits for a confirmation and stays in your CoinJoin balance."
+                : "\(coins) coins wait for a confirmation and stay in your CoinJoin balance."
+        }
         public static let moveButton = "Move"
         public static let later = "Later"
         public static let moving = "Moving mixed coins…"

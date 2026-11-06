@@ -314,6 +314,9 @@ pub struct MixedCoinsSweepPlan {
     /// 1000-duff threshold, mixed or not).
     pub total: u64,
     pub chunks: Vec<MixedCoinsChunk>,
+    /// Coins of the account the plan leaves for now: they wait for a
+    /// confirmation (a chunk spends confirmed coins only).
+    pub unconfirmed: u32,
     /// What `move_mixed_coins` takes to run exactly this plan.
     pub quote_id: String,
 }
@@ -744,6 +747,7 @@ impl NetworkSession {
                     fee: c.fee,
                 })
                 .collect(),
+            unconfirmed: p.unconfirmed,
             quote_id: p.quote_id,
         })
     }

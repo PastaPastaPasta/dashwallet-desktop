@@ -131,7 +131,7 @@ public final class CoinJoinService: CoinJoinControlling, MixedCoinsMoving {
             destination: destination, total: Amount(p.total),
             chunks: p.chunks.map {
                 MixedCoinsChunk(inputs: Int($0.inputs), amount: Amount($0.amount), fee: Amount($0.fee))
-            }, quoteId: p.quoteID)
+            }, unconfirmed: p.unconfirmed, quoteId: p.quoteID)
     }
 
     public func move(wallet: WalletID, plan: MixedCoinsSweepPlan, grant: AuthGrant)

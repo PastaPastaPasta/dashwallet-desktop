@@ -250,6 +250,8 @@ public struct MixedCoinsPlanChunk: Sendable, Hashable {
 public struct MixedCoinsPlan: Sendable, Hashable {
     public let total: Amount
     public let chunks: [MixedCoinsPlanChunk]
+    /// Coins the plan leaves for now: they wait for a confirmation.
+    public let unconfirmed: Int
     /// What `moveMixedCoins` takes to run exactly this plan.
     public let quoteID: String
 }
@@ -368,7 +370,7 @@ extension EngineClient {
                 MixedCoinsPlanChunk(
                     inputs: $0.inputs, amount: Amount(duffs: Int64(clamping: $0.amount)),
                     fee: Amount(duffs: Int64(clamping: $0.fee)))
-            }, quoteID: p.quoteId)
+            }, unconfirmed: Int(p.unconfirmed), quoteID: p.quoteId)
     }
 
     public func moveMixedCoins(
