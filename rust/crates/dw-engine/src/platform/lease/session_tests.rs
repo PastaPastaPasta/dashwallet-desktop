@@ -458,6 +458,32 @@ impl Fixture {
         assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
     }
 
+    /// Shield step `step` after a drain's funding call (a `ShieldDrain`
+    /// lease) signed lock `seed` spending the CoinJoin coins `inputs` and
+    /// failed: `MaybeSent`, its marker standing, its row not tracked.
+    fn stuck_drain(&self, step: &str, seed: u8, inputs: &[OutPoint]) {
+        let grant = self.grant(
+            GrantPurpose::Spend {
+                max_duffs: 10 * COIN,
+            },
+            Credential::None,
+        );
+        let l = self.lease(FlowKind::ShieldDrain, &[grant]).unwrap();
+        let permit = self
+            .engine
+            .block_on(self.session.drain_call_permit(
+                &l,
+                step,
+                COIN,
+                step.into(),
+                crate::platform::shielded_pool::SHIELD_KEY,
+                self.fence(),
+            ))
+            .unwrap();
+        self.record_lock(&permit, seed, inputs);
+        assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
+    }
+
     /// `permit`'s funding signer signs a lock over `inputs` (sighash and
     /// txid `[seed; 32]`), which the tap records as its step's.
     fn record_lock(&self, permit: &CallPermit, seed: u8, inputs: &[OutPoint]) {
@@ -1856,6 +1882,81 @@ impl crate::send::TestBroadcaster for SelfSpendSeam {
         let txid = tx.txid();
         Box::pin(async move { Ok(txid) })
     }
+}
+
+/// Repair of a stuck drain (a shield step whose lock spent CoinJoin
+/// coins): the self-spend takes exactly the CoinJoin coins the lock's
+/// record names that are still unspent, whether or not the wallet holds
+/// other coins (never pooled with them), so it conflicts with the lock;
+/// once it is ChainLocked the step reads not sent and its coins are free.
+#[test]
+fn repair_of_a_stuck_drain_spends_the_locks_coinjoin_inputs_alone() {
+    const STEP: &str = "shield/0/funding";
+    for ordinary in [false, true] {
+        let f = fixture(false);
+        let a = f.credit_coinjoin(1, COIN);
+        let b = f.credit_coinjoin(2, COIN / 10);
+        // A CoinJoin coin the lock did not spend, and a coin of the wallet.
+        f.credit_coinjoin(3, COIN / 100);
+        if ordinary {
+            f.credit(4, COIN);
+        }
+        f.stuck_drain(STEP, 70, &[a, b]);
+        f.refresh();
+        let status = || f.session.leases.funding_status(f.wallet, STEP);
+        assert_eq!(status(), Some(DispatchState::MaybeSent));
+        let tx = f.repair(STEP);
+        let spent: std::collections::HashSet<OutPoint> =
+            tx.input.iter().map(|i| i.previous_output).collect();
+        assert_eq!(spent, [a, b].into(), "ordinary balance: {ordinary}");
+        assert_eq!(status(), Some(DispatchState::NotSent), "{ordinary}");
+        assert!(f.session.leases.unresolved_lock_inputs(f.wallet).is_empty());
+    }
+}
+
+/// Repair of a stuck drain waits for mixing to stop and for another move
+/// of the CoinJoin coins to end: nothing is signed or reserved, and the
+/// grant stays unused.
+#[test]
+fn repair_of_a_stuck_drain_is_refused_while_mixing_or_a_move_runs() {
+    use crate::coinjoin::CoinJoinFailure;
+    const STEP: &str = "shield/0/funding";
+    let f = fixture(false);
+    let a = f.credit_coinjoin(1, COIN);
+    f.stuck_drain(STEP, 70, &[a]);
+    f.refresh();
+    let s = &f.session;
+    s.coinjoin.set_mixing_for_test(f.wallet, true);
+    let mixing = f.engine.block_on(s.stuck_funding_draft(f.wallet, STEP));
+    assert!(
+        matches!(
+            mixing,
+            Err(EngineError::CoinJoin(CoinJoinFailure::MixingActive))
+        ),
+        "{:?}",
+        mixing.map(drop)
+    );
+    s.coinjoin.set_mixing_for_test(f.wallet, false);
+
+    let claim = s.coinjoin.claim_sweep(f.wallet).unwrap();
+    let grant = f.grant(GrantPurpose::Spend { max_duffs: 10_000 }, Credential::None);
+    let moving = (f.engine).block_on(s.resolve_stuck_funding(f.wallet, STEP.into(), grant.clone()));
+    assert!(
+        matches!(
+            moving,
+            Err(EngineError::CoinJoin(CoinJoinFailure::MoveRunning))
+        ),
+        "{moving:?}"
+    );
+    drop(claim);
+    assert!(s.spends.snapshot(&f.wallet).is_empty(), "nothing reserved");
+    (s.vault())
+        .grant_purpose(&grant, dw_vault::GrantKind::Spend, Some(&f.wallet.0))
+        .unwrap();
+    assert_eq!(
+        s.leases.funding_status(f.wallet, STEP),
+        Some(DispatchState::MaybeSent)
+    );
 }
 
 /// E0-04 §6.5 (C9), commit 7, on a real session: Repair's "Resolve stuck
