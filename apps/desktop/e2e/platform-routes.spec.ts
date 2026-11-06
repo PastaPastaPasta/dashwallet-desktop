@@ -361,8 +361,12 @@ test.describe("Home", () => {
     await page.getByTestId("platform-fund-next").click();
     const confirm = page.getByTestId("platform-fund-confirm");
     await expect(confirm).toContainText("Your Dash wallet");
-    await expect(confirm).toContainText("Your Platform address");
-    await expect(page.getByTestId("platform-fund-confirm-to")).toContainText("tdash1k9w4v7d2n8x3c5m0q6z8r2t4y6u8p0s2a4d6f8h0");
+    await expect(page.getByTestId("platform-fund-confirm-to-label")).toHaveText("Your Platform address");
+    const to = page.getByTestId("platform-fund-confirm-to");
+    await expect(to).toHaveText("tdash1k9w4v7d2n8x3c5m0q6z8r2t4y6u8p0s2a4d6f8h0");
+    // The address sits on its own line, below its name, never run into it.
+    const [label, address] = [await page.getByTestId("platform-fund-confirm-to-label").boundingBox(), await to.boundingBox()];
+    expect(address!.y).toBeGreaterThanOrEqual(label!.y + label!.height);
     await expect(confirm).toContainText("Total from your wallet");
     await expect(confirm).toContainText("Platform fee");
     await expect(confirm).toContainText("You receive about");

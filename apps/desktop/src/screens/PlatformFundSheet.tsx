@@ -110,8 +110,8 @@ function ConfirmStep({ flow, walletId, fmt }: { flow: PlatformFundFlow; walletId
           <div className="detail-row">
             <dt className="detail-label">{C.confirm.rows.to}</dt>
             <dd className="detail-value">
-              {C.confirm.rows.toValue}
-              <span className="withdraw-to" data-testid="platform-fund-confirm-to">
+              <span data-testid="platform-fund-confirm-to-label">{C.confirm.rows.toValue}</span>
+              <span className="withdraw-to destination-line" data-testid="platform-fund-confirm-to">
                 {q.to}
               </span>
             </dd>
