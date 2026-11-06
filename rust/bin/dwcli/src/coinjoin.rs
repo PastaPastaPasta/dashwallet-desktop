@@ -85,6 +85,9 @@ pub enum CoinJoinCommand {
         plan_only: bool,
         #[arg(long)]
         sync_height: Option<u32>,
+        /// Combine the coins: they lose some of their mixing privacy.
+        #[arg(long)]
+        yes: bool,
     },
     /// The consolidation round before a move to Shielded: the CoinJoin
     /// account's final coins swept onto fresh addresses of the same account;
@@ -389,6 +392,7 @@ pub fn run(
             wallet,
             plan_only,
             sync_height,
+            yes,
         } => {
             let id = wallet_id(&wallet)?;
             if let Some(h) = sync_height {
@@ -397,7 +401,14 @@ pub fn run(
             let plan = engine
                 .block_on(session.mixed_coins_sweep_plan(id, SweepDestination::Wallet))
                 .map_err(e)?;
-            println!("plan total={} chunks={}", plan.total, plan.chunks.len());
+            println!(
+                "plan total={} chunks={} fully_mixed={} not_fully_mixed={} unconfirmed={}",
+                plan.total,
+                plan.chunks.len(),
+                plan.fully_mixed,
+                plan.not_fully_mixed,
+                plan.unconfirmed
+            );
             for c in &plan.chunks {
                 println!(
                     "chunk inputs={} amount={} fee={}",
@@ -405,6 +416,10 @@ pub fn run(
                 );
             }
             if !plan_only {
+                println!("{COMBINED_PRIVACY}");
+                if !yes {
+                    return Err("pass --yes to combine them".into());
+                }
                 let grant = session
                     .vault()
                     .authorize(
@@ -540,5 +555,28 @@ mod tests {
         let consolidate =
             crate::Cli::try_parse_from(["dwcli", "--datadir", "d", "consolidate-mixed", "w"]);
         assert!(consolidate.is_ok(), "consolidate-mixed is a normal command");
+    }
+
+    /// Both sweeps combine the coins on-chain: each takes `--yes`.
+    #[test]
+    fn the_sweeps_take_yes() {
+        use clap::Parser;
+        for command in ["move-mixed", "consolidate-mixed"] {
+            let parse = |extra: &[&str]| {
+                let args = ["dwcli", "--datadir", "d", command, "w"];
+                let cli = crate::Cli::try_parse_from(args.iter().chain(extra)).unwrap();
+                let crate::Command::CoinJoin(c) = cli.command else {
+                    panic!("{command} is a CoinJoin command");
+                };
+                c
+            };
+            let yes = |c: CoinJoinCommand| match c {
+                CoinJoinCommand::MoveMixed { yes, .. }
+                | CoinJoinCommand::ConsolidateMixed { yes, .. } => yes,
+                _ => panic!("{command}"),
+            };
+            assert!(!yes(parse(&[])), "{command}");
+            assert!(yes(parse(&["--yes"])), "{command}");
+        }
     }
 }

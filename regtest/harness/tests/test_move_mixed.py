@@ -157,7 +157,7 @@ def test_a_move_to_the_wallet_empties_the_coinjoin_account(dw, regtest_node, fun
     value = int(head["total"])
     assert value > 0, head
 
-    out, mined = sweep_in_background(dw, regtest_node, "move-mixed", dw.wallet, "--sync-height", str(height))
+    out, mined = sweep_in_background(dw, regtest_node, "move-mixed", dw.wallet, "--sync-height", str(height), "--yes")
     moved = fields(dw.line("moved", out))
     assert moved["failure"] == "-", out
     [txid] = moved["txids"].split(",")
