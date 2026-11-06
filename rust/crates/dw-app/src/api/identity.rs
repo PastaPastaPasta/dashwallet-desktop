@@ -36,7 +36,7 @@ use self::registration::{
     FaucetLockKey, FinishReport, RegistrationQuote, RegistrationRequest, RegistrationStatus,
 };
 use self::shielded::{
-    ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome,
+    MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome,
     ShieldedSpendQuote, ShieldedStatus,
 };
 use self::startup::{DashPayStatus, DashPaySyncStatus, QuorumSource, SyncPassReport};
@@ -687,6 +687,21 @@ commands! {
     fn shield_from_core(state, wallet_id: String, duffs: u64, grant: String) -> ShieldOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         Ok(dashpay.shield_from_core(duffs, grant).await?.into())
+    }
+
+    /// What "Move mixed coins" to Shielded would move: the CoinJoin
+    /// account's coins in one asset lock.
+    #[facade("DashPay::shield_mixed_quote")]
+    fn shield_mixed_quote(state, wallet_id: String) -> MixedShieldQuote {
+        Ok(state.dashpay(&wallet_id).await?.shield_mixed_quote().await?.into())
+    }
+
+    /// "Move mixed coins" to Shielded under `grant`, a `Spend` grant of the
+    /// quote's `totalDuffs`.
+    #[facade("DashPay::shield_mixed_coins")]
+    fn shield_mixed_coins(state, wallet_id: String, grant: String) -> ShieldOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.shield_mixed_coins(grant).await?.into())
     }
 
     /// Applies the pending Core → Shielded lock `txid` under `grant`, or

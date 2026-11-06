@@ -135,6 +135,10 @@ codes! {
         PoolTooSmall = "shielded.pool_too_small",
         TooManyInputs = "shielded.too_many_inputs",
         UnrecordedSpend = "shielded.unrecorded_spend",
+        MixingActive = "shielded.mixing_active",
+        NothingToMove = "shielded.nothing_to_move",
+        CoinsUnconfirmed = "shielded.coins_unconfirmed",
+        MoveRunning = "shielded.move_running",
     }
 }
 
@@ -191,6 +195,13 @@ impl From<ShieldedError> for AppError {
                 Some(ErrorData::Number { value: inputs }),
             ),
             S::UnrecordedSpend => (ShieldedCode::UnrecordedSpend, None),
+            S::MixingActive => (ShieldedCode::MixingActive, None),
+            S::NothingToMove => (ShieldedCode::NothingToMove, None),
+            S::CoinsUnconfirmed { coins } => (
+                ShieldedCode::CoinsUnconfirmed,
+                Some(ErrorData::Number { value: coins }),
+            ),
+            S::MoveRunning => (ShieldedCode::MoveRunning, None),
             S::Platform(e) => return e.into(),
         };
         AppError {
@@ -681,6 +692,10 @@ mod tests {
                 max: 50,
             },
             ShieldedError::UnrecordedSpend,
+            ShieldedError::MixingActive,
+            ShieldedError::NothingToMove,
+            ShieldedError::CoinsUnconfirmed { coins: 2 },
+            ShieldedError::MoveRunning,
             ShieldedError::Platform(PlatformError::Unavailable),
         ];
         for e in shielded {
