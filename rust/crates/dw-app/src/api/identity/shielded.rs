@@ -148,6 +148,52 @@ impl From<engine::ShieldQuote> for ShieldQuote {
     }
 }
 
+/// What "Move mixed coins" to Shielded takes and buys: one asset lock
+/// spending every coin of the CoinJoin account. Its grant is a `Spend`
+/// grant of `totalDuffs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MixedShieldQuote {
+    pub inputs: u32,
+    pub total_duffs: u64,
+    pub fee_duffs: u64,
+    pub duffs: u64,
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub pool_fee_credits: u64,
+    /// What the shielded balance gains, at least.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    pub fully_mixed_duffs: u64,
+    pub not_fully_mixed_duffs: u64,
+}
+
+impl From<engine::MixedShieldQuote> for MixedShieldQuote {
+    fn from(q: engine::MixedShieldQuote) -> Self {
+        let engine::MixedShieldQuote {
+            inputs,
+            total_duffs,
+            fee_duffs,
+            duffs,
+            pool_fee_credits,
+            credits,
+            fully_mixed_duffs,
+            not_fully_mixed_duffs,
+        } = q;
+        MixedShieldQuote {
+            inputs,
+            total_duffs,
+            fee_duffs,
+            duffs,
+            pool_fee_credits,
+            credits,
+            fully_mixed_duffs,
+            not_fully_mixed_duffs,
+        }
+    }
+}
+
 /// Where a Core → Shielded move stands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(

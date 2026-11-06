@@ -97,6 +97,7 @@ import type { MixedCoinsDestination } from "./MixedCoinsDestination";
 import type { MixedCoinsResend } from "./MixedCoinsResend";
 import type { MixedCoinsSweepPlan } from "./MixedCoinsSweepPlan";
 import type { MixedCoinsSweepResult } from "./MixedCoinsSweepResult";
+import type { MixedShieldQuote } from "./MixedShieldQuote";
 import type { MnemonicCheck } from "./MnemonicCheck";
 import type { MnemonicLanguageName } from "./MnemonicLanguageName";
 import type { MoveToCoreOutcome } from "./MoveToCoreOutcome";
@@ -2001,6 +2002,22 @@ export function shieldFromCore(walletId: string, duffs: number, grant: string): 
 }
 
 /**
+ * What "Move mixed coins" to Shielded would move: the CoinJoin
+ * account's coins in one asset lock.
+ */
+export function shieldMixedQuote(walletId: string): Promise<MixedShieldQuote> {
+  return invoke<MixedShieldQuote>("shield_mixed_quote", { walletId });
+}
+
+/**
+ * "Move mixed coins" to Shielded under `grant`, a `Spend` grant of the
+ * quote's `totalDuffs`.
+ */
+export function shieldMixedCoins(walletId: string, grant: string): Promise<ShieldOutcome> {
+  return invoke<ShieldOutcome>("shield_mixed_coins", { walletId, grant });
+}
+
+/**
  * Applies the pending Core → Shielded lock `txid` under `grant`, or
  * checks one of unknown consumption again ("Check again").
  */
@@ -2925,6 +2942,8 @@ export type CommandArgs = {
   shielded_receive_address: { walletId: string };
   shield_quote: { walletId: string; duffs: number };
   shield_from_core: { walletId: string; duffs: number; grant: string };
+  shield_mixed_quote: { walletId: string };
+  shield_mixed_coins: { walletId: string; grant: string };
   resume_shield: { walletId: string; txid: string; grant: string };
   shielded_send_quote: { walletId: string; to: string; credits: string };
   shielded_send: { walletId: string; to: string; credits: string; memo: string | null; grant: string; confirmUnrecorded: boolean };
@@ -3235,6 +3254,8 @@ export type CommandResults = {
   shielded_receive_address: ShieldedAddress;
   shield_quote: ShieldQuote;
   shield_from_core: ShieldOutcome;
+  shield_mixed_quote: MixedShieldQuote;
+  shield_mixed_coins: ShieldOutcome;
   resume_shield: ShieldOutcome;
   shielded_send_quote: ShieldedSpendQuote;
   shielded_send: ShieldedSpendOutcome;
@@ -3547,6 +3568,8 @@ export const COMMANDS: Record<CommandName, string> = {
   shielded_receive_address: "identity",
   shield_quote: "identity",
   shield_from_core: "identity",
+  shield_mixed_quote: "identity",
+  shield_mixed_coins: "identity",
   resume_shield: "identity",
   shielded_send_quote: "identity",
   shielded_send: "identity",
@@ -3875,6 +3898,10 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "shielded.pool_too_small",
   "shielded.too_many_inputs",
   "shielded.unrecorded_spend",
+  "shielded.mixing_active",
+  "shielded.nothing_to_move",
+  "shielded.coins_unconfirmed",
+  "shielded.move_running",
   "governance.sync_disabled",
   "governance.not_synced",
   "governance.proposal_not_found",
