@@ -2089,7 +2089,8 @@ impl Vault {
     /// [`SignerScope::Full`], so this one reaches nothing it does not. Any
     /// other grant is `GrantPurposeMismatch`, and so is a `max_duffs` of 0
     /// or above the grant's. A token with its own key issues one only
-    /// through its hold ([`Self::shield_drain_signer_held`]).
+    /// through its hold ([`Self::shield_drain_signer_held`]): here it is
+    /// `InvalidArgument`, though its own `Spend` signer issues directly.
     ///
     /// The signer stops when `life` drops, whatever key it signs with, as
     /// well as when the vault locks or changes unlock scope.
@@ -2129,6 +2130,11 @@ impl Vault {
         };
         if max_duffs == 0 || max_duffs > cap {
             return Err(VaultError::GrantPurposeMismatch);
+        }
+        if hold.is_none() && matches!(token.key, KeySource::Own(_)) {
+            return Err(VaultError::InvalidArgument(
+                "an own-key token issues the drain signer through its hold".into(),
+            ));
         }
         let scope = SignerScope::ShieldDrainFunding { max_duffs };
         Ok(self

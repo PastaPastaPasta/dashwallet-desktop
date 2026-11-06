@@ -1010,4 +1010,18 @@ async fn a_shield_drain_signer_ends_with_its_life() {
         SignerError::Locked,
         "an unlock is an epoch change"
     );
+
+    // An own-key token issues it only through its hold, though its own
+    // `Spend` signer issues directly.
+    v.lock();
+    let grant = v
+        .authorize(SPEND, Some(&wallet(1)), Credential::Passphrase(PASS))
+        .unwrap();
+    let token = v
+        .redeem_grant(&grant.id, GrantKind::Spend, Some(&wallet(1)))
+        .unwrap();
+    assert!(matches!(
+        v.shield_drain_signer(&wallet(1), &token, 100_000, &SignerLife::new()),
+        Err(VaultError::InvalidArgument(_))
+    ));
 }
