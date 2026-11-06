@@ -599,6 +599,9 @@ for (const theme of THEMES) {
 // Settings ▸ CoinJoin.
 const COINJOIN_PAGES = ["off", "mixing", "paused", "locked"] as const;
 
+/** The CoinJoin page's move card, where it shows, knows whether Shielded is offered. */
+const moveCardSettled = (page: Page) => page.waitForFunction(() => document.querySelector("[data-testid=coinjoin-move][data-shielded=loading]") === null);
+
 for (const theme of THEMES) {
   for (const [state, { scenario, start, home }] of Object.entries(COINJOIN)) {
     if (!home) continue;
@@ -621,20 +624,25 @@ for (const theme of THEMES) {
       await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
       await page.locator(`[data-testid=coinjoin-status][data-state=${state}]`).waitFor();
       await page.getByTestId("coinjoin-levels").locator("fieldset").waitFor();
+      await moveCardSettled(page);
       await shoot(page, `coinjoin-page-${state}`, theme);
     });
   }
-  // "Move mixed coins" (IOS-057): the plan, the refusal while mixing, a partial outcome.
-  for (const [name, scenario, ready] of [
-    ["move-mixed-confirm", "coinjoin-move", "[data-testid=move-mixed-body][data-step=confirm]"],
-    ["move-mixed-mixing", "coinjoin-move-mixing", "[data-testid=move-mixed-body][data-step=mixing]"],
+  // "Move mixed coins" (IOS-057, MIX-SHIELD): the plan, the refusal while mixing, a partial outcome;
+  // into Shielded, the quote and the consolidation round.
+  for (const [name, scenario, button, ready] of [
+    ["move-mixed-confirm", "coinjoin-move", "coinjoin-move-open", "[data-testid=move-mixed-body][data-step=confirm]"],
+    ["move-mixed-mixing", "coinjoin-move-mixing", "coinjoin-move-open", "[data-testid=move-mixed-body][data-step=mixing]"],
+    ["move-mixed-shield", "coinjoin-move", "coinjoin-move-shield", "[data-testid=move-mixed-body][data-step=confirm]"],
+    ["move-mixed-combine", "coinjoin-move-many", "coinjoin-move-shield", "[data-testid=move-mixed-body][data-step=combine]"],
   ] as const) {
     test(`visual ${name} ${theme}`, async ({ page }) => {
       await page.goto(fixtureUrl(scenario, theme));
       await page.getByTestId("toolbar").waitFor();
       await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
-      await page.getByTestId("coinjoin-move-open").click();
+      await page.getByTestId(button).click();
       await page.locator(ready).waitFor();
+      await moveCardSettled(page);
       await shoot(page, name, theme);
     });
   }
@@ -646,6 +654,7 @@ for (const theme of THEMES) {
     await page.getByTestId("move-mixed-confirm").click();
     await authorize(page);
     await page.locator("[data-testid=move-mixed-body][data-outcome=partial]").waitFor();
+    await moveCardSettled(page);
     await shoot(page, "move-mixed-partial", theme);
   });
   test(`visual settings-coinjoin ${theme}`, async ({ page }) => {
