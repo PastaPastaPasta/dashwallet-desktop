@@ -15,9 +15,11 @@ pub enum EngineError {
     InvalidArgument(String),
     #[error("network session is not open: {0}")]
     NetworkNotOpen(String),
-    /// The wallet database for this network is still held by a previous
-    /// session in this process (SqlitePersister's open-path registry).
-    #[error("wallet storage already open in this process: {0}")]
+    /// The data root is held by another process (its instance lock,
+    /// `dw_fs::instance`), or the wallet database for this network is still
+    /// held by a previous session in this process (SqlitePersister's
+    /// open-path registry).
+    #[error("wallet storage in use: {0}")]
     StorageInUse(String),
     #[error("storage error: {0}")]
     Storage(String),

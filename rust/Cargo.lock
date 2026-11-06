@@ -2748,6 +2748,7 @@ dependencies = [
  "dashcore",
  "dw-console",
  "dw-engine",
+ "dw-fs",
  "dw-message",
  "dw-protx",
  "dw-psbt",

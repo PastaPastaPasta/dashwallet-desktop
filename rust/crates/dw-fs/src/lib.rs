@@ -37,6 +37,8 @@
 //! Windows keeps its per-user ACLs under the profile: there these functions
 //! only create what is missing.
 
+pub mod instance;
+
 use std::io;
 use std::path::Path;
 

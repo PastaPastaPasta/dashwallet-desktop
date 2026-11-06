@@ -64,6 +64,10 @@ struct Shared {
     /// Lifecycle operations (open/close) are serialised by this lock, the
     /// desktop analogue of iOS's `SerialAsyncLifecycleQueue` at engine level.
     sessions: Mutex<HashMap<DashNetwork, Arc<NetworkSession>>>,
+    /// The data root's instance lock (`dw_fs::instance`): another process's
+    /// engine, dwcli's or an app's, is refused the root while this one has
+    /// it.
+    _instance: dw_fs::instance::InstanceLock,
 }
 
 /// Owns the tokio runtime and the open network sessions.
@@ -84,6 +88,14 @@ impl Engine {
             ));
         }
         create_private_dir(&config.data_root)?;
+        let instance =
+            dw_fs::instance::InstanceLock::share(&config.data_root).map_err(|e| match e {
+                dw_fs::instance::InstanceError::Busy => EngineError::StorageInUse(format!(
+                    "{} is in use by another process",
+                    config.data_root.display()
+                )),
+                dw_fs::instance::InstanceError::Io(e) => EngineError::from(e),
+            })?;
         install_poison_hook();
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         // Applies to the async workers and the blocking pool alike.
@@ -116,6 +128,7 @@ impl Engine {
                 rates,
                 sink,
                 sessions: Mutex::new(HashMap::new()),
+                _instance: instance,
             }),
         })
     }
