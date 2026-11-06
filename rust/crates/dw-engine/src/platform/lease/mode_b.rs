@@ -1937,6 +1937,38 @@ impl NetworkSession {
         key: FundingKey,
         fence: CoinFence,
     ) -> Result<CallPermit, PlatformError> {
+        self.quoted_funding_call_permit(lease, label, amount, None, step, key, fence)
+            .await
+    }
+
+    /// [`Self::funding_call_permit`] for a drain of the CoinJoin account
+    /// (0.2 MIX-SHIELD): the lock's fee comes out of its inputs, so the
+    /// quote is `inputs_duffs`, their sum, with no fee bound added.
+    pub(crate) async fn drain_call_permit(
+        &self,
+        lease: &Lease,
+        label: impl Into<String>,
+        inputs_duffs: u64,
+        step: String,
+        key: FundingKey,
+        fence: CoinFence,
+    ) -> Result<CallPermit, PlatformError> {
+        self.quoted_funding_call_permit(lease, label, inputs_duffs, Some(0), step, key, fence)
+            .await
+    }
+
+    /// The permit of both: `fee_bound_worst` the wallet's when `None`.
+    #[allow(clippy::too_many_arguments)]
+    async fn quoted_funding_call_permit(
+        &self,
+        lease: &Lease,
+        label: impl Into<String>,
+        amount: u64,
+        fee_bound_worst: Option<u64>,
+        step: String,
+        key: FundingKey,
+        fence: CoinFence,
+    ) -> Result<CallPermit, PlatformError> {
         let refuse = |detail: String| Err(PlatformError::InvalidArgument { detail });
         if fence.wallet_id() != lease.wallet() {
             return refuse("the coin fence is another wallet's".into());
@@ -1966,7 +1998,10 @@ impl NetworkSession {
         }
         let top_up = own_key.is_some();
         let wallet = lease.wallet();
-        let fee_bound_worst = self.fee_bound_worst(wallet).await?;
+        let fee_bound_worst = match fee_bound_worst {
+            Some(bound) => bound,
+            None => self.fee_bound_worst(wallet).await?,
+        };
         if !self.leases.refresh_funding(wallet).await {
             return Err(LeaseError::FundingBlocked(FundingBlock::RowsUnknown).into());
         }

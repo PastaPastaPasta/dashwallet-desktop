@@ -75,7 +75,7 @@ type is `pub(crate)`.
 | `platform_addresses.rs` | release 0.1, lane E2; 0.2 X1b | `platform_addresses`, `platform_activity`, `sync_platform_addresses`, `move_to_core_quote`, `move_to_core`, `platform_receive_address`, `platform_send_quote`, `platform_send`, `platform_fund_quote`, `platform_fund`, `pending_platform_funds`, `resume_platform_fund` |
 | `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_link`, `stashed_links`, `take_stashed_link`, `forget_stashed_link`, `stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
-| `shielded.rs` | 0.1 E1 (RELEASE-PLAN §1 "Shielded") | `shielded_status`, `shielded_sync`, `shielded_receive_address`, `shield_quote`, `shield_from_core`, `resume_shield`, `shielded_send_quote`, `shielded_send`, `unshield_quote`, `unshield_to_core`, `shielded_history` |
+| `shielded.rs` | 0.1 E1 (RELEASE-PLAN §1 "Shielded") | `shielded_status`, `shielded_sync`, `shielded_receive_address`, `shield_quote`, `shield_from_core`, `resume_shield`, `shield_mixed_quote`, `shield_mixed_coins`, `shielded_send_quote`, `shielded_send`, `unshield_quote`, `unshield_to_core`, `shielded_history` |
 | `unfinished.rs` | 0.2 RECOVERY | `unfinished_transfers`, `finish_transfer` |
 | `errors.rs` | E0-05 (the mapping, §6) and each domain's owner | the error enums of §4 |
 
@@ -775,6 +775,8 @@ again after a restart (the step's signed-lock record, the library's tracked row,
 | `shield_quote(duffs)` | async | `ShieldQuote`: the lock's fee bound and total in duffs, Platform's flat `pool_fee_credits` for the shield, the `credits` the balance gains, and the `grant` (`max_duffs` = total). The gate; `shielded.below_minimum{min}` for a lock whose credits do not clear the pool fee (`min` in duffs); `shielded.funding_insufficient{needed, available}` above the spendable Core balance; `shielded.coins_locked`; `shielded.too_many_inputs{inputs, max}` when the fewest coins that cover the lock are more than 50 ("combine coins first"); `shielded.shield_pending{txid}` while an earlier shield is not applied; `shielded.not_synced{journal}` while the dispatch journal is not read (only a closing session's, §2.13) (`platform.unavailable` if it cannot be). | `ShieldedError` |
 | `shield_from_core(duffs, grant)` | async | Core → Shielded: the quote's refusals, then under the `Shield` lease an asset lock of `duffs` from the Core balance (funding type `AssetLockShieldedAddressTopUp`, step `shield/<k>/funding`, held at most once as a top-up's is), then Platform's ShieldFromAssetLock of the proved lock to the account's own address (the lock's credits less the pool fee). Returns `ShieldOutcome{txid, state}`: `Applied{balance}`, `ProofWaiting` (no InstantSend lock in its window), `NotApplied{error}` (refused before the transition was signed: nothing reached Platform) or `ConsumptionUnknown` (the apply may have executed, unproved: Platform said the lock is already consumed, or the apply failed after signing; "Checking", "This amount may already be in your shielded balance; we can't confirm it yet"); nothing is lost in the last three (`pending_shields`, `resume_shield`). A resume never moves a lock's funds twice: Platform takes a lock once. A `consumption_unknown` lock does not block a new shield; any other pending one is `shielded.shield_pending{txid}`. Held back as a top-up is, as Shielded still syncing: `shielded.not_synced{core}` while a running SPV is not caught up or Platform writes wait for masternode sync (`platform.context_unavailable` with SPV stopped), `shielded.not_synced{startup}` while the DashPay bring-up runs (`platform.unavailable` once it ended without Platform's answers; the call has it run again), and `shielded.not_synced{account}` until the keys are bound. A lock spends at most 50 coins: the quote refuses one whose fewest coins (largest first) are more, and the funding signer refuses the 51st input of the build key-wallet's coin selection makes, before anything is tracked or sent, its coins free and the step not left pending: `shielded.too_many_inputs{inputs, max}` (combine coins first; `inputs` is then `max + 1`, at least). A funding whose outcome is unknown is `platform.broadcast_unknown{artifact}` with its step. | `ShieldedError` |
 | `resume_shield(txid, grant)` | async | Applies the pending shield lock `txid` (waiting up to 30 s for its proof), the outcome as `shield_from_core`'s: for a `consumption_unknown` lock this is "Check again", on the same outpoint with any proof the library derives for it, never a new lock, new funding or other coins, and only a proved apply settles it. `invalid_argument` for a txid that is not a pending shield of the wallet; `shielded.not_synced{account}` until the keys are bound; `shielded.not_synced{journal}` while the dispatch journal is not read (only a closing session's, §2.13) (`platform.unavailable` if it cannot be). The grant needs `max_duffs` ≥ 1 (the lock's one-time key), none of which is spent: the lock's credit key signs a new bundle, so "Check again" asks for the same confirmation as any signing action. | `ShieldedError` |
+| `shield_mixed_quote()` | async | `MixedShieldQuote` ("Move mixed coins" to Shielded, 0.2 MIX-SHIELD): one asset lock of every coin of CoinJoin account 0 (its CoinJoin addresses' coins): `inputs`, their sum `total_duffs` (the `Spend` grant's `max_duffs`), the lock's `fee_duffs` bound, the lock's `duffs` (total less the fee bound, at least), Platform's `pool_fee_credits`, the `credits` the shielded balance gains, and `total_duffs` split into `fully_mixed_duffs` and `not_fully_mixed_duffs` (the confirm names both: the coins are combined on-chain). Reads coins only. The gate; `shielded.mixing_active` while the wallet mixes (stop mixing first); `shielded.nothing_to_move` for no coin; `shielded.coins_locked` for a coin the user locked or a flow holds; `shielded.coins_unconfirmed{coins}` while coins are not in a block yet (the move takes them all; an InstantSend lock is not enough, as for a sweep: SPV cannot see a mixing transaction's foreign unconfirmed ancestors); `shielded.too_many_inputs{inputs, max}` above 50 coins (combine coins first); `shielded.below_minimum{min}` for a lock whose credits do not clear the pool fee; `shielded.shield_pending{txid}` and `shielded.not_synced{journal}` as `shield_quote`'s. | `ShieldedError` |
+| `shield_mixed_coins(grant)` | async | The quote's refusals, read again under the coin fence and the wallet's lock, then under a `ShieldDrain` lease begun from `grant` (a `Spend` grant whose `max_duffs` covers `total_duffs`, else `platform.grant_exceeded`; any other grant `platform.grant_invalid`; a refusal leaves the grant unused) and the wallet's claim on its CoinJoin account, held through the funding (`shielded.move_running` while a sweep, consolidation or send again of its chunks runs, `shielded.mixing_active` while it mixes; no mixing starts meanwhile, m3 `start_mixing`), one asset lock spending every planned coin, signed by the drain scope `ShieldDrainFunding` (item 75), which signs only the planned coins, one signature each, their sum within the grant: a coin that arrived after the plan stops the build before the lock exists (`invalid_argument`, "the mixed coins changed since the move was planned: review it again"; nothing tracked or sent). The lock is a shield's (funding type `AssetLockShieldedAddressTopUp`, step `shield/<k>/funding`): applied as `shield_from_core`'s, `ShieldOutcome` with the same states, pending in `pending_shields`, resumed by `resume_shield`, and a pending one blocks a new drain (`shielded.shield_pending{txid}`). | `ShieldedError` |
 | `shielded_send_quote(to, credits)` | async | `ShieldedSpendQuote`: `credits`, Platform's `fee_credits` for the transfer, `total_credits` and the `grant` (`max_credits` = total). The gate; `shielded.invalid_address{detail}` for `to` that is not a shielded address of the network; `shielded.not_synced{account}` until the account is established; `shielded.below_minimum{min}` for 0; `shielded.insufficient_funds{needed, available}` above the spendable balance. | `ShieldedError` |
 | `shielded_send(to, credits, memo, grant, confirm_unrecorded)` | async | Shielded → Shielded: `invalid_argument` for a memo over 36 bytes and `shielded.invalid_address`, then `shielded.not_synced{journal}` while the dispatch journal is not read (only a closing session's, §2.13) (`platform.unavailable` if it cannot be) and `shielded.unrecorded_spend` while the wallet holds an unrecorded spend and `confirm_unrecorded` is false (DEC-1057, above), then the quote's refusals, then under the `ShieldedSpend` lease, quoted again once no sync pass can move the notes and charged that total (a fee above what the grant confirmed is `platform.grant_exceeded`, nothing signed), the library's `transfer` from account 0's notes to `to` (change to the account's own address), proved and broadcast, waiting for Platform's proved result. Returns `ShieldedSpendOutcome{credits, balance, to, state, unresolved}`: `state` `done`, or `pending` for a broadcast with no proved answer ("Unconfirmed spends" above; no retry). | `ShieldedError` |
 | `unshield_quote(credits, to)` | async | As `shielded_send_quote` for a withdrawal to Core: `to` a P2PKH or P2SH address of the network, or the wallet's next receive address when `None` (`shielded.invalid_address` otherwise), plus `expected_duffs`, what reaches the address. | `ShieldedError` |
@@ -1297,6 +1299,10 @@ pub enum ShieldedError {
     TooManyInputs { inputs: u64, max: u64 },
     PoolTooSmall { notes: u64, required: u64 },
     UnrecordedSpend,
+    MixingActive,
+    NothingToMove,
+    CoinsUnconfirmed { coins: u64 },
+    MoveRunning,
     Platform(PlatformError),
 }
 impl ShieldedError {
@@ -2141,6 +2147,17 @@ pub struct ShieldQuote {
     pub credits: u64,
     pub grant: GrantRequest,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MixedShieldQuote {
+    pub inputs: u32,
+    pub total_duffs: u64,
+    pub fee_duffs: u64,
+    pub duffs: u64,
+    pub pool_fee_credits: u64,
+    pub credits: u64,
+    pub fully_mixed_duffs: u64,
+    pub not_fully_mixed_duffs: u64,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ShieldState {
@@ -2254,6 +2271,8 @@ impl DashPay {
     pub async fn shielded_receive_address(&self) -> Result<ShieldedAddress, ShieldedError>;
     pub async fn shield_quote(&self, duffs: u64) -> Result<ShieldQuote, ShieldedError>;
     pub async fn shield_from_core(&self, duffs: u64, grant: String) -> Result<ShieldOutcome, ShieldedError>;
+    pub async fn shield_mixed_quote(&self) -> Result<MixedShieldQuote, ShieldedError>;
+    pub async fn shield_mixed_coins(&self, grant: String) -> Result<ShieldOutcome, ShieldedError>;
     pub async fn resume_shield(&self, txid: String, grant: String) -> Result<ShieldOutcome, ShieldedError>;
     pub async fn shielded_send_quote(&self, to: String, credits: u64) -> Result<ShieldedSpendQuote, ShieldedError>;
     pub async fn shielded_send(&self, to: String, credits: u64, memo: Option<String>, grant: String, confirm_unrecorded: bool) -> Result<ShieldedSpendOutcome, ShieldedError>;
@@ -2414,7 +2433,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
 | `AvatarError` | `avatar.too_large`, `avatar.unsupported`, `avatar.fetch_failed`, `avatar.hash_mismatch`, `avatar.upload_unconfigured` |
 | `CreditsError` | `credits.funding_insufficient`, `credits.below_minimum`, `credits.coins_locked`, `credits.top_up_pending`, `credits.withdrawal_out_of_range`, `credits.withdrawal_landed`, `credits.move_pending`, `credits.recipient_invalid`, `credits.send_out_of_range`, `credits.fund_pending`, `credits.too_many_inputs`, `credits.quote_changed` |
-| `ShieldedError` | `shielded.not_active`, `shielded.not_synced`, `shielded.invalid_address`, `shielded.insufficient_funds`, `shielded.funding_insufficient`, `shielded.below_minimum`, `shielded.coins_locked`, `shielded.shield_pending`, `shielded.too_many_inputs`, `shielded.pool_too_small`, `shielded.unrecorded_spend` |
+| `ShieldedError` | `shielded.not_active`, `shielded.not_synced`, `shielded.invalid_address`, `shielded.insufficient_funds`, `shielded.funding_insufficient`, `shielded.below_minimum`, `shielded.coins_locked`, `shielded.shield_pending`, `shielded.too_many_inputs`, `shielded.pool_too_small`, `shielded.unrecorded_spend`, `shielded.mixing_active`, `shielded.nothing_to_move`, `shielded.coins_unconfirmed`, `shielded.move_running` |
 
 - `PlatformError` carries the m1 common codes (`invalid_argument`, `network_not_open`, `wallet_not_found`, `storage`,
   `internal`), unprefixed as in m1 §4. m1's common `not_implemented` is `platform.not_implemented{call}` here, so a
@@ -4099,8 +4118,15 @@ renames or reshapes them takes the next version bump:
     duffs' funding signer, the vault scope `ShieldDrainFunding{max_duffs}` (m1 §scopes: CoinJoin account 0's address keys
     and the shielded top-up credit keys, nothing else); no spend signer, contact crypto, identity key or credits. The
     signer is bound to the lease's life, so it stops when the lease ends, on the vault's key too. Registration refuses
-    a drain lease `platform.grant_invalid` before a row exists; the flows that read a lease's funding signer check its
-    flow. `dw-app`'s `FlowKindName` mirrors it as `shieldDrain`.
+    a drain lease `platform.grant_invalid` before a row exists (start, resume and "Finish transfers"); top-up and
+    shield take only a lease of their own flow. `dw-app`'s `FlowKindName` mirrors it as `shieldDrain`.
+80. **"Move mixed coins" to Shielded (0.2 MIX-SHIELD, version 57).** `shield_mixed_quote` and `shield_mixed_coins`
+    (§2.13 rows, `MixedShieldQuote`): every coin of CoinJoin account 0 in one shield lock under the item-79 lease, the
+    coins planned under the coin fence and the drain signer bounded to them (one signature per planned coin, the sum
+    within the `Spend` grant), the lock pending and resumed as any shield's. `ShieldedError` gains
+    `shielded.mixing_active`, `shielded.nothing_to_move`, `shielded.coins_unconfirmed{coins}` and
+    `shielded.move_running`. The drain takes the wallet's claim (m3 `start_mixing`, `move_mixed_coins`) and confirmed
+    coins only, as a sweep.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

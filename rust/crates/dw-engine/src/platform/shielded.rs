@@ -100,6 +100,29 @@ pub struct ShieldQuote {
     pub grant: GrantRequest,
 }
 
+/// What moving CoinJoin account 0's mixed coins into the pool ("Move mixed
+/// coins" to Shielded, 0.2 MIX-SHIELD) takes and buys: one asset lock
+/// spending every coin of the account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MixedShieldQuote {
+    /// The coins the lock spends.
+    pub inputs: u32,
+    /// Their sum: what leaves the CoinJoin account, and the `Spend`
+    /// grant's `max_duffs`.
+    pub total_duffs: u64,
+    /// The lock transaction's fee bound, out of `total_duffs`.
+    pub fee_duffs: u64,
+    /// The lock's value, at least: `total_duffs - fee_duffs`.
+    pub duffs: u64,
+    /// Platform's flat fee for the shield, out of the lock's credits.
+    pub pool_fee_credits: u64,
+    /// What the shielded balance gains, at least.
+    pub credits: u64,
+    /// Of `total_duffs`, the fully mixed coins' and the others'.
+    pub fully_mixed_duffs: u64,
+    pub not_fully_mixed_duffs: u64,
+}
+
 /// Where a Core → Shielded move stands when the call returns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -384,6 +407,30 @@ impl DashPay {
         let wallet = self.wallet_id;
         on_pool_signing(&self.session, wallet, move |session, lib| async move {
             pool::shield(&session, wallet, &lib, duffs, &grant).await
+        })
+        .await
+    }
+
+    /// What "Move mixed coins" to Shielded would move: CoinJoin account
+    /// 0's coins in one asset lock (0.2 MIX-SHIELD). Reads coins only.
+    pub async fn shield_mixed_quote(&self) -> Result<MixedShieldQuote, ShieldedError> {
+        let wallet = self.wallet_id;
+        on_pool(&self.session, wallet, move |session, lib| async move {
+            super::shield_drain::quote(&session, wallet, &lib).await
+        })
+        .await
+    }
+
+    /// "Move mixed coins" to Shielded: one asset lock spending every coin
+    /// of CoinJoin account 0 under a `ShieldDrain` lease begun from
+    /// `grant` (a `Spend` grant of at least the quote's `total_duffs`),
+    /// then Platform's ShieldFromAssetLock of it to the wallet's own
+    /// shielded address. The lock is a shield's: `pending_shields` lists
+    /// it and `resume_shield` applies it.
+    pub async fn shield_mixed_coins(&self, grant: String) -> Result<ShieldOutcome, ShieldedError> {
+        let wallet = self.wallet_id;
+        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+            super::shield_drain::drain(&session, wallet, &lib, &grant).await
         })
         .await
     }

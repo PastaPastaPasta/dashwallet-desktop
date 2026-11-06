@@ -113,6 +113,7 @@ use super::registration_flow::{
     FundError, LockInfo, LockStatus, PwLib, RegistrationLib as Reg, Spendable,
 };
 use super::requests::{leased, write_permit};
+use super::shield_drain::DrainCoin;
 use super::shielded::{
     PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote, ShieldState,
     ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus, ShieldedAddress,
@@ -309,6 +310,22 @@ pub(crate) trait ShieldedLib: Send + Sync {
     ) -> impl Future<Output = Option<dashcore::ScriptBuf>> + Send {
         async { None }
     }
+    /// "Move mixed coins" (0.2 MIX-SHIELD): the coins of CoinJoin account
+    /// 0, read under `fence` (`shield_drain.rs`).
+    fn drain_coins(
+        &self,
+        fence: &crate::coins::CoinFence,
+    ) -> impl Future<Output = Result<Vec<DrainCoin>, ShieldedError>> + Send;
+    /// Drains CoinJoin account 0 into one shield lock, signed by
+    /// `permit`'s funding signer limited to `coins` worth `total_duffs`
+    /// ([`super::shield_drain::drain_signer`]): built, tracked, broadcast,
+    /// and waited for its proof.
+    fn fund_drain(
+        &self,
+        coins: &[DrainCoin],
+        total_duffs: u64,
+        permit: &CallPermit,
+    ) -> impl Future<Output = Result<OutPoint, FundError>> + Send;
 }
 
 /// How an apply ended without an error.
@@ -377,7 +394,9 @@ pub(crate) async fn gate(lib: &impl ShieldedLib) -> Result<u32, ShieldedError> {
 /// The SDK holds the network's floor until a proof raises it, and the
 /// library builds at the version it holds by then, so a quote at the floor
 /// would price another version's fee (13's above 14's on testnet).
-async fn priced_gate(lib: &impl ShieldedLib) -> Result<&'static PlatformVersion, ShieldedError> {
+pub(super) async fn priced_gate(
+    lib: &impl ShieldedLib,
+) -> Result<&'static PlatformVersion, ShieldedError> {
     rules_at(active(lib.refresh_protocol_version().await)?)
 }
 
@@ -411,7 +430,7 @@ async fn ready_ledger(lib: &impl ShieldedLib) -> Result<Ledger, ShieldedError> {
 /// is not read (only a closing session's: one reads it before it opens);
 /// `platform.unavailable` once it was found unopenable or of a newer
 /// schema, which does not clear.
-fn journal_unread(session: &NetworkSession) -> ShieldedError {
+pub(super) fn journal_unread(session: &NetworkSession) -> ShieldedError {
     if session.leases.journal_loading() {
         ShieldedError::not_synced(Wait::Journal)
     } else {
@@ -750,7 +769,7 @@ pub(crate) async fn unshield_quote(
 
 /// The lease `grant` names (a `flow` lease of this wallet), or a new one
 /// redeemed from it.
-async fn authority(
+pub(super) async fn authority(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
     grant: &str,
@@ -1069,11 +1088,11 @@ pub(crate) fn shield_pool_fee(version: &PlatformVersion) -> Result<u64, Shielded
 }
 
 /// A shield lock Platform has not been seen to take.
-struct OpenShield {
-    lock: LockInfo,
+pub(super) struct OpenShield {
+    pub(super) lock: LockInfo,
     /// It may be taken: Platform said so unproved, or a restore read it
     /// back from the chain (`RecoveredFromChain`).
-    consumption_unknown: bool,
+    pub(super) consumption_unknown: bool,
 }
 
 /// The wallet's shield locks Platform has not been seen to take (module
@@ -1082,7 +1101,7 @@ struct OpenShield {
 /// in a later session (the row comes back `Broadcast`, then proved), so a
 /// proved apply is also recorded in the dispatch journal (`top_up_settled`,
 /// as `topup.rs` records its own).
-async fn open_shields(lib: &impl ShieldedLib) -> Result<Vec<OpenShield>, ShieldedError> {
+pub(super) async fn open_shields(lib: &impl ShieldedLib) -> Result<Vec<OpenShield>, ShieldedError> {
     let ours = lib.own_locks().ok_or(PlatformError::Unavailable)?;
     let settled = lib.settled_locks().await;
     let unknown = lib.unknown_locks().await;
@@ -1212,7 +1231,7 @@ pub(crate) async fn shield_quote(
 /// bring-up that ended without Platform's answers (none, partial, or
 /// discovery failed locally) stays `platform.unavailable`: only a run again
 /// changes it, which the call asks for. Read before that run starts.
-fn held(lib: &impl ShieldedLib, wait: RegistrationWait) -> ShieldedError {
+pub(super) fn held(lib: &impl ShieldedLib, wait: RegistrationWait) -> ShieldedError {
     match wait {
         RegistrationWait::Unlock => PlatformError::SignerUnavailable.into(),
         RegistrationWait::Sync if lib.spv_running() => ShieldedError::not_synced(Wait::Core),
@@ -1334,7 +1353,7 @@ pub(crate) async fn shield(
 }
 
 /// Applies the proved lock at `outpoint` under a call permit of `lease`.
-async fn apply(
+pub(super) async fn apply(
     session: &NetworkSession,
     wallet: WalletId,
     lib: &impl ShieldedLib,
@@ -2058,6 +2077,27 @@ impl ShieldedLib for PwShielded {
             )
             .await;
         applied_from(applied, outpoint, signer.signed())
+    }
+
+    async fn drain_coins(
+        &self,
+        fence: &crate::coins::CoinFence,
+    ) -> Result<Vec<DrainCoin>, ShieldedError> {
+        super::shield_drain::read_drain_coins(&self.pw.session, fence).await
+    }
+
+    async fn fund_drain(
+        &self,
+        _: &[DrainCoin],
+        _: u64,
+        _: &CallPermit,
+    ) -> Result<OutPoint, FundError> {
+        // The pinned library builds a drain only through a type it does not
+        // export (`AssetLockBuildAmount`, wallet/asset_lock/build.rs:39); its
+        // one public drain funds and applies in one call.
+        Err(FundError::Refused(PlatformError::NotImplemented {
+            call: "DashPay.shield_mixed_coins".into(),
+        }))
     }
 }
 

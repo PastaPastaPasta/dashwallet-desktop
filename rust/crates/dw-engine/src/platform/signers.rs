@@ -385,6 +385,55 @@ pub struct CountingFundingSigner {
     release: Arc<FundingRelease>,
     /// At most this many inputs signed ([`Self::with_input_cap`]).
     cap: Option<Arc<InputCap>>,
+    /// Only a drain's planned coins, within its grant ([`Self::with_drain_cap`]).
+    drain: Option<Arc<DrainCap>>,
+}
+
+/// The coins one drain may sign (0.2 MIX-SHIELD): at each path at most as
+/// many distinct sighashes as its plan has coins there, each standing for
+/// the next largest of their values, and at most `max_duffs` in all. The
+/// vault signs sighashes and cannot see the debit; a drain's builder
+/// selects every final coin of the account under the wallet's write lock,
+/// where nothing can be read, so this is where its debit is bounded.
+type SignedByPath = BTreeMap<DerivationPath, BTreeSet<[u8; 32]>>;
+
+#[derive(Debug)]
+struct DrainCap {
+    max_duffs: u64,
+    /// Per path, the plan's coin values there, largest first.
+    coins: BTreeMap<DerivationPath, Vec<u64>>,
+    /// Per path, the sighashes signed there; and their values' sum.
+    signed: std::sync::Mutex<(SignedByPath, u64)>,
+    refused: std::sync::atomic::AtomicBool,
+}
+
+impl DrainCap {
+    /// Whether `sighash` may be signed at `path`: one already signed there
+    /// (an identical retry), or a planned coin's within the grant.
+    fn admits(&self, path: &DerivationPath, sighash: [u8; 32]) -> bool {
+        let mut signed = self.signed.lock().unwrap_or_else(|p| p.into_inner());
+        let (by_path, sum) = &mut *signed;
+        let at = by_path.entry(path.clone()).or_default();
+        if at.contains(&sighash) {
+            return true;
+        }
+        let next = (self.coins.get(path))
+            .and_then(|values| values.get(at.len()))
+            .map(|value| sum.saturating_add(*value))
+            .filter(|next| *next <= self.max_duffs);
+        match next {
+            Some(next) => {
+                at.insert(sighash);
+                *sum = next;
+                true
+            }
+            None => {
+                self.refused
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                false
+            }
+        }
+    }
 }
 
 /// The input cap of one funding call's signer: the distinct sighashes it
@@ -415,7 +464,46 @@ impl CountingFundingSigner {
             count,
             release,
             cap: None,
+            drain: None,
         }
+    }
+
+    /// Signs only `coins` (path, value), worth at most `max_duffs` in all:
+    /// a signature at a path past its planned coins, or past the grant, is
+    /// refused before the vault is asked and the call is abandoned, as
+    /// [`Self::with_input_cap`]'s.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no pinned drain call signs yet")
+    )]
+    pub(crate) fn with_drain_cap(
+        mut self,
+        coins: impl IntoIterator<Item = (DerivationPath, u64)>,
+        max_duffs: u64,
+    ) -> Self {
+        let mut by_path: BTreeMap<DerivationPath, Vec<u64>> = BTreeMap::new();
+        for (path, value) in coins {
+            by_path.entry(path).or_default().push(value);
+        }
+        for values in by_path.values_mut() {
+            values.sort_unstable_by(|a, b| b.cmp(a));
+        }
+        self.drain = Some(Arc::new(DrainCap {
+            max_duffs,
+            coins: by_path,
+            signed: std::sync::Mutex::default(),
+            refused: std::sync::atomic::AtomicBool::new(false),
+        }));
+        self
+    }
+
+    /// Whether the drain cap refused an input.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no pinned drain call signs yet")
+    )]
+    pub(crate) fn drain_refused(&self) -> bool {
+        (self.drain.as_ref()).is_some_and(|d| d.refused.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// Signs at most `max` inputs: the first input past it is refused
@@ -472,6 +560,14 @@ impl key_wallet::Signer for CountingFundingSigner {
             return Err(SignerError::PathNotAllowed(format!(
                 "{path}: more than {} inputs",
                 cap.max
+            )));
+        }
+        if let Some(drain) = &self.drain
+            && !drain.admits(path, sighash)
+        {
+            self.count.abandon();
+            return Err(SignerError::PathNotAllowed(format!(
+                "{path}: no coin of the drain's plan within its grant"
             )));
         }
         let Some(signing) = self.count.begin() else {
@@ -851,5 +947,61 @@ mod tests {
                 "self.signer copied out: {shown}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod drain_cap_tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    fn path(i: u32) -> DerivationPath {
+        DerivationPath::from_str(&format!("m/9'/1'/4'/0'/0/{i}")).unwrap()
+    }
+
+    fn cap(coins: &[(u32, u64)], max_duffs: u64) -> DrainCap {
+        let mut by_path: BTreeMap<DerivationPath, Vec<u64>> = BTreeMap::new();
+        for (i, v) in coins {
+            by_path.entry(path(*i)).or_default().push(*v);
+        }
+        for values in by_path.values_mut() {
+            values.sort_unstable_by(|a, b| b.cmp(a));
+        }
+        DrainCap {
+            max_duffs,
+            coins: by_path,
+            signed: std::sync::Mutex::default(),
+            refused: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// 0.2 MIX-SHIELD: a drain's signer signs each planned coin once (a
+    /// retry of the same sighash again), no path outside the plan, no more
+    /// coins at a path than planned, and nothing past the grant.
+    #[test]
+    fn a_drain_cap_admits_the_planned_coins_within_the_grant_only() {
+        // A grant well above the coins: only the plan bounds these.
+        let c = cap(&[(0, 100), (1, 50), (1, 30)], 1_000);
+        assert!(c.admits(&path(0), [1; 32]));
+        assert!(c.admits(&path(0), [1; 32]), "an identical retry");
+        assert!(c.admits(&path(1), [2; 32]));
+        assert!(c.admits(&path(1), [3; 32]));
+        assert!(!c.refused.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            !c.admits(&path(1), [4; 32]),
+            "a third coin at a two-coin path"
+        );
+        assert!(c.refused.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            !cap(&[(0, 100)], 100).admits(&path(7), [1; 32]),
+            "an unplanned path"
+        );
+
+        // The grant: the next coin's value would pass it.
+        let c = cap(&[(0, 100), (1, 50)], 120);
+        assert!(c.admits(&path(0), [1; 32]));
+        assert!(!c.admits(&path(1), [2; 32]));
+        assert!(c.refused.load(std::sync::atomic::Ordering::SeqCst));
     }
 }
