@@ -16,7 +16,10 @@ import type { UnrecordedSpend } from "../api/generated/UnrecordedSpend";
 import type { UnresolvedSpend } from "../api/generated/UnresolvedSpend";
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
 import type { ShieldQuote } from "../api/generated/ShieldQuote";
+import type { MixedShieldQuote } from "../api/generated/MixedShieldQuote";
+import type { Utxo } from "../api/generated/Utxo";
 import { SHIELDED_CODES } from "../api/pending";
+import { coinJoinAccount, mixerBusy, SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
 import { FIXTURE_NOW } from "./wallet";
 
@@ -123,6 +126,34 @@ function shieldQuote(ctx: Ctx, walletId: string, duffs: number): ShieldQuote {
   return { duffs, feeDuffs: LOCK_FEE_DUFFS, totalDuffs: total, poolFeeCredits: String(POOL_FEE_CREDITS), credits: String(BigInt(duffs) * CREDITS_PER_DUFF - POOL_FEE_CREDITS), grant: { maxDuffs: total, maxCredits: "0" } };
 }
 
+/** A drain lock's fee bound (`asset_lock_fee_bound`), in duffs. */
+const drainFee = (inputs: number) => 1_000 + 148 * Math.min(inputs, SHIELD_LOCK_INPUTS);
+
+/** "Move mixed coins" to Shielded (`shield_drain.rs`): the drain's checks, then `plan_of` over every
+ * coin of the CoinJoin account, which the lock takes all of. */
+function drainQuote(ctx: Ctx, walletId: string, call: string): { quote: MixedShieldQuote; coins: Utxo[] } {
+  const s = shieldedOf(ctx, walletId, call);
+  if (!s.ready) raise("platform.unavailable", "the fixture account is not established yet");
+  if (mixerBusy(ctx.world, walletId)) raise(SHIELDED_CODES.mixingActive, "stop mixing first");
+  const blocking = s.pendingShields.find((p) => !p.consumptionUnknown);
+  if (blocking) raise(SHIELDED_CODES.shieldPending, "an earlier shield is pending", { kind: "txid", txid: blocking.txid });
+  const coins = coinJoinAccount(wallet(ctx.world, walletId));
+  if (coins.some((u) => u.reserved)) raise(SHIELDED_CODES.coinsLocked, "coins locked");
+  const unconfirmed = coins.filter((u) => u.confirmations === 0).length;
+  if (unconfirmed > 0) raise(SHIELDED_CODES.coinsUnconfirmed, `${unconfirmed} mixed coins are not confirmed yet`, { kind: "number", value: unconfirmed });
+  if (coins.length === 0) raise(SHIELDED_CODES.nothingToMove, "fixture: the CoinJoin account has nothing to drain");
+  if (coins.length > SHIELD_LOCK_INPUTS) raise(SHIELDED_CODES.tooManyInputs, "too many inputs", { kind: "number", value: coins.length });
+  const totalDuffs = coins.reduce((n, u) => n + u.amount, 0);
+  const fullyMixedDuffs = coins.filter((u) => (u.coinjoinRounds ?? 0) >= ctx.world.coinjoin.settings.rounds).reduce((n, u) => n + u.amount, 0);
+  const feeDuffs = drainFee(coins.length);
+  const duffs = totalDuffs - feeDuffs;
+  const min = Number(POOL_FEE_CREDITS / CREDITS_PER_DUFF) + 1;
+  if (duffs < min) raise(SHIELDED_CODES.belowMinimum, "below the minimum", { kind: "number", value: min });
+  const credits = String(BigInt(duffs) * CREDITS_PER_DUFF - POOL_FEE_CREDITS);
+  const quote = { inputs: coins.length, totalDuffs, feeDuffs, duffs, poolFeeCredits: String(POOL_FEE_CREDITS), credits, fullyMixedDuffs, notFullyMixedDuffs: totalDuffs - fullyMixedDuffs };
+  return { quote, coins };
+}
+
 function spendQuote(ctx: Ctx, walletId: string, credits: string, expected: boolean, call: string): ShieldedSpendQuote {
   const s = shieldedOf(ctx, walletId, call);
   ready(s);
@@ -200,6 +231,25 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     useGrant(ctx.world, grant);
     s.shield = "applied";
     return shieldEnd(s, txid, pending.duffs);
+  },
+  shield_mixed_quote: ({ walletId }: { walletId: string }, ctx: Ctx): MixedShieldQuote => drainQuote(ctx, walletId, "shield_mixed_quote").quote,
+  // The lock spends every coin of the CoinJoin account under a `spend` grant of their sum.
+  shield_mixed_coins: ({ walletId, grant }: { walletId: string; grant: string }, ctx: Ctx): ShieldOutcome => {
+    const { quote, coins } = drainQuote(ctx, walletId, "shield_mixed_coins");
+    const g = checkGrant(ctx.world, grant, walletId, ["spend"]);
+    if (g?.grant.purpose.kind !== "spend") return raise("platform.grant_invalid", "grant invalid");
+    if (g.grant.purpose.maxDuffs < quote.totalDuffs) raise("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "funding", needed: String(quote.totalDuffs), remaining: String(g.grant.purpose.maxDuffs) });
+    useGrant(ctx.world, grant);
+    const w = wallet(ctx.world, walletId);
+    const spent = new Set(coins);
+    w.coins = w.coins.filter((u) => !spent.has(u));
+    const b = w.summary.balances;
+    if (b) w.summary = { ...w.summary, balances: { ...b, confirmed: b.confirmed - quote.totalDuffs, total: b.total - quote.totalDuffs, coinjoin: Math.max(0, b.coinjoin - quote.totalDuffs) } };
+    const network = ctx.world.launch.network.dirName;
+    ctx.emit({ kind: "coinJoin", network, walletId });
+    ctx.emit({ kind: "balances", network, walletId, balances: w.summary.balances });
+    const s = ctx.world.pending.shielded!;
+    return shieldEnd(s, `drain${(s.activity.length + 1).toString(16).padStart(8, "0")}`, quote.duffs);
   },
   shielded_send_quote: ({ walletId, to, credits }: { walletId: string; to: string; credits: string }, ctx: Ctx) => {
     return sendQuote(ctx, walletId, to, credits);
