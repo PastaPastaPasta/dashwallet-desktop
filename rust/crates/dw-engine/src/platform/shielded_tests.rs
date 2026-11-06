@@ -269,6 +269,8 @@ struct FakeShielded {
     /// Per drain funding: whether the wallet's CoinJoin account was
     /// claimed for it (`claim_sweep` refused `MoveRunning`).
     drain_claimed: Mutex<Vec<bool>>,
+    /// Per drain funding: the smallest lock it may build.
+    pub(super) drain_floors: Mutex<Vec<u64>>,
 }
 
 /// What a library call leaves of a lock's tracked row (`real_rows`), as
@@ -349,6 +351,7 @@ impl Default for FakeShielded {
             drain_extra: Mutex::default(),
             drained: Mutex::default(),
             drain_claimed: Mutex::default(),
+            drain_floors: Mutex::default(),
         }
     }
 }
@@ -830,8 +833,10 @@ impl ShieldedLib for FakeShielded {
         &self,
         coins: &[DrainCoin],
         total_duffs: u64,
+        minimum_lock_duffs: u64,
         permit: &CallPermit,
     ) -> Result<OutPoint, FundError> {
+        self.drain_floors.lock().unwrap().push(minimum_lock_duffs);
         let (session, wallet) = self.funder();
         self.drain_claimed.lock().unwrap().push(matches!(
             session.coinjoin.claim_sweep(wallet),

@@ -472,10 +472,6 @@ impl CountingFundingSigner {
     /// a signature at a path past its planned coins, or past the grant, is
     /// refused before the vault is asked and the call is abandoned, as
     /// [`Self::with_input_cap`]'s.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no pinned drain call signs yet")
-    )]
     pub(crate) fn with_drain_cap(
         mut self,
         coins: impl IntoIterator<Item = (DerivationPath, u64)>,
@@ -498,10 +494,6 @@ impl CountingFundingSigner {
     }
 
     /// Whether the drain cap refused an input.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no pinned drain call signs yet")
-    )]
     pub(crate) fn drain_refused(&self) -> bool {
         (self.drain.as_ref()).is_some_and(|d| d.refused.load(std::sync::atomic::Ordering::SeqCst))
     }
