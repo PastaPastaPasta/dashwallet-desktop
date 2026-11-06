@@ -271,6 +271,42 @@ struct FakeShielded {
     drain_claimed: Mutex<Vec<bool>>,
     /// Per drain funding: the smallest lock it may build.
     pub(super) drain_floors: Mutex<Vec<u64>>,
+    /// How the next funding (a shield's or a drain's) ends once its
+    /// inputs are signed; it funds a proved lock when unset.
+    pub(super) fund_end: Mutex<Option<FundEnd>>,
+}
+
+/// A funding that fails after its signatures, as platform-wallet ends one
+/// at the pin (`build.rs` `broadcast_funded_asset_lock_with_funding`),
+/// mapped by the engine's own `fund_error`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FundEnd {
+    /// The broadcaster refused the lock: its tracked row removed and its
+    /// inputs released (`TransactionBroadcast`).
+    Rejected,
+    /// A drain built below its floor, dropped before it was tracked or
+    /// sent (`AssetLockTransaction`).
+    BelowFloor,
+    /// No verdict from the broadcaster (`TransactionBroadcastUnconfirmed`);
+    /// the row is lost here, so only the step's record knows the lock.
+    Unknown,
+}
+
+impl FundEnd {
+    /// Whether the library tracked the lock first, so the session's tap
+    /// recorded it as the step's.
+    fn tracked(self) -> bool {
+        self != Self::BelowFloor
+    }
+
+    fn error(self) -> FundError {
+        use platform_wallet::PlatformWalletError as E;
+        super::registration_flow::fund_error(match self {
+            Self::Rejected => E::TransactionBroadcast("rejected".into()),
+            Self::BelowFloor => E::AssetLockTransaction("below the required minimum".into()),
+            Self::Unknown => E::TransactionBroadcastUnconfirmed("no verdict".into()),
+        })
+    }
 }
 
 /// What a library call leaves of a lock's tracked row (`real_rows`), as
@@ -352,11 +388,36 @@ impl Default for FakeShielded {
             drained: Mutex::default(),
             drain_claimed: Mutex::default(),
             drain_floors: Mutex::default(),
+            fund_end: Mutex::default(),
         }
     }
 }
 
 impl FakeShielded {
+    /// A funding whose lock `txid` over `inputs` was signed, then failed
+    /// as `end`: recorded as its step's when the library tracked it.
+    fn signed_and_failed(
+        &self,
+        end: FundEnd,
+        txid: Txid,
+        inputs: Vec<OutPoint>,
+        sighashes: Vec<[u8; 32]>,
+    ) -> FundError {
+        if end.tracked() {
+            let (session, wallet) = self.funder();
+            session.leases.record_signed_locks(
+                wallet,
+                &[super::lease::StoredLock {
+                    txid,
+                    inputs,
+                    sighashes: Some(sighashes),
+                    built: true,
+                }],
+            );
+        }
+        end.error()
+    }
+
     /// The session and wallet a shield's funding records its lock for.
     fn funder(&self) -> (Arc<NetworkSession>, crate::WalletId) {
         let funder = self.funder.lock().unwrap().clone();
@@ -728,6 +789,11 @@ impl ShieldedLib for FakeShielded {
                 None,
             ),
         };
+        if let Some(end) = self.fund_end.lock().unwrap().take() {
+            let txid = Txid::from_byte_array([n; 32]);
+            permit.note_signed(txid.to_byte_array());
+            return Err(self.signed_and_failed(end, txid, inputs, vec![txid.to_byte_array()]));
+        }
         let outpoint = if self.real_rows {
             use dashcore::transaction::special_transaction::TransactionPayload;
             let mut transaction = lock_transaction(n);
@@ -879,6 +945,9 @@ impl ShieldedLib for FakeShielded {
         let n = self.funded.lock().unwrap().len() as u8 + 0x90;
         let outpoint = OutPoint::new(Txid::from_byte_array([n; 32]), 0);
         let inputs: Vec<OutPoint> = coins.iter().map(|c| c.outpoint).collect();
+        if let Some(end) = self.fund_end.lock().unwrap().take() {
+            return Err(self.signed_and_failed(end, outpoint.txid, inputs, sighashes));
+        }
         session.leases.record_signed_locks(
             wallet,
             &[super::lease::StoredLock {
@@ -2924,6 +2993,50 @@ fn check_again_keeps_the_outpoint_whatever_proof_the_library_derives() {
     assert!(pending_of(&fx, &lib).is_empty());
     let before = (before.0 + 2, before.1, before.2); // the two Checking quotes
     assert_no_funding(&lib, before);
+}
+
+/// A shield of 1,000,000 duffs on `lib` (no real rows), its apply answered
+/// as scripted.
+fn shield_with(fx: &Fixture, lib: &Arc<FakeShielded>) -> Result<ShieldState, ShieldedError> {
+    let (wallet, grant) = (fx.wallet, shield_grant(fx, 2_000_000));
+    run(fx, lib, move |s, lib| async move {
+        pool::shield(&s, wallet, &*lib, 1_000_000, &grant).await
+    })
+    .map(|o| o.state)
+}
+
+/// A shield whose lock signed and then failed may be out, whatever the
+/// library said of it: a stored lock is the step's until Repair's
+/// self-spend shows the conflict, and a rebuild of the same lock on the
+/// step would carry the ended call's signatures. Its step stays possibly
+/// sent, a stored lock's inputs held, and the next shield is refused.
+#[test]
+fn a_shield_failing_after_its_signature_stays_possibly_sent() {
+    use super::flows::DispatchState;
+    let step = pool::shield_step(0);
+    for (end, error) in [
+        (FundEnd::BelowFloor, "internal"),
+        (FundEnd::Rejected, "internal"),
+        (FundEnd::Unknown, "platform.broadcast_unknown"),
+    ] {
+        let fx = Fixture::new(0);
+        let lib = Arc::new(FakeShielded::default());
+        *lib.funder.lock().unwrap() = Some((Arc::downgrade(&fx.s), fx.wallet));
+        *lib.fund_end.lock().unwrap() = Some(end);
+        assert_eq!(code(shield_with(&fx, &lib)), error, "{end:?}");
+        assert_eq!(
+            fx.s.leases.funding_status(fx.wallet, &step),
+            Some(DispatchState::MaybeSent),
+            "{end:?}"
+        );
+        assert_eq!(
+            fx.s.leases.unresolved_lock_inputs(fx.wallet).is_empty(),
+            end == FundEnd::BelowFloor,
+            "{end:?}"
+        );
+        assert_eq!(code(shield_with(&fx, &lib)), "platform.broadcast_unknown");
+        assert!(lib.funded.lock().unwrap().is_empty());
+    }
 }
 
 #[path = "shield_drain_tests.rs"]

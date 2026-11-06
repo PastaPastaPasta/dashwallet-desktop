@@ -278,6 +278,49 @@ fn a_coin_outside_the_plan_stops_the_drain_before_its_lock_exists() {
     assert_eq!(lib.funded.lock().unwrap().len(), 1);
 }
 
+/// A drain whose lock signed and then failed (the library's floor, a
+/// rejected broadcast, no verdict) may be out, as a shield's: its step
+/// stays possibly sent, a stored lock's coins held for Repair, and the
+/// next drain is refused until the step resolves.
+#[test]
+fn a_drain_failing_after_its_signatures_stays_possibly_sent() {
+    use super::super::flows::DispatchState;
+    for (end, error) in [
+        (FundEnd::BelowFloor, "internal"),
+        (FundEnd::Rejected, "internal"),
+        (FundEnd::Unknown, "platform.broadcast_unknown"),
+    ] {
+        let fx = Fixture::new(0);
+        let lib = drainer(&fx, coins());
+        *lib.fund_end.lock().unwrap() = Some(end);
+        let sum = total(&coins());
+        assert_eq!(
+            code(drain_with(&fx, &lib, spend_grant(&fx, sum))),
+            error,
+            "{end:?}"
+        );
+        assert_eq!(
+            fx.s.leases.funding_status(fx.wallet, &pool::shield_step(0)),
+            Some(DispatchState::MaybeSent),
+            "{end:?}"
+        );
+        let held: std::collections::HashSet<OutPoint> = match end {
+            FundEnd::BelowFloor => Default::default(),
+            _ => coins().iter().map(|c| c.outpoint).collect(),
+        };
+        assert_eq!(
+            fx.s.leases.unresolved_lock_inputs(fx.wallet),
+            held,
+            "{end:?}"
+        );
+        assert_eq!(
+            code(drain_with(&fx, &lib, spend_grant(&fx, sum))),
+            "platform.broadcast_unknown"
+        );
+        assert!(lib.funded.lock().unwrap().is_empty());
+    }
+}
+
 /// A drain whose apply failed leaves its lock pending, as a shield's: it
 /// blocks a new drain (no second lock of the coins), and "Check again"
 /// applies the same outpoint, never a new funding.

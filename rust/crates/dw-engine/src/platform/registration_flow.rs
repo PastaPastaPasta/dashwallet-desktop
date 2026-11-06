@@ -3183,7 +3183,7 @@ pub(crate) fn lock_status(
     }
 }
 
-fn fund_error(e: platform_wallet::PlatformWalletError) -> FundError {
+pub(super) fn fund_error(e: platform_wallet::PlatformWalletError) -> FundError {
     use platform_wallet::PlatformWalletError as E;
     match e {
         E::FinalityTimeout(_) => FundError::IsTimeout,
