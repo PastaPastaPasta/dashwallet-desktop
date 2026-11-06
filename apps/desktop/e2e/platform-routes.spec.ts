@@ -394,6 +394,32 @@ test.describe("Home", () => {
     expect(errors).toEqual([]);
   });
 
+  test("a lock below the Platform fee says why, has no Finish, and Add from Dash wallet still opens and quotes", async ({ page }) => {
+    const errors = await open(page, "paddr-fund-too-small");
+    const row = page.getByTestId("platform-fund-stuck");
+    await expect(row).toHaveText("0.00005 tDASH was locked to add to Platform, but it's worth less than the Platform fee, so it can't be added.");
+    await expect(page.getByTestId("platform-fund-finish")).toHaveCount(0);
+    await expect(page.getByTestId("platform-fund-unfinished")).toHaveCount(0);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await expect(page.getByTestId("platform-fund")).toBeEnabled();
+    await page.getByTestId("platform-fund").click();
+    await page.getByTestId("platform-fund-amount").fill("0.5");
+    await page.getByTestId("platform-fund-next").click();
+    await expect(page.getByTestId("platform-fund-confirm")).toContainText("You receive about");
+    await expect(page.getByTestId("platform-fund-quote-error")).toHaveCount(0);
+    await expect(page.getByTestId("platform-fund-go")).toBeEnabled();
+    expect(errors).toEqual([]);
+  });
+
+  test("an amount below the minimum names the minimum in the refusal", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("platform-fund").click();
+    await page.getByTestId("platform-fund-amount").fill("0.0001");
+    await page.getByTestId("platform-fund-next").click();
+    await expect(page.getByTestId("platform-fund-quote-error")).toHaveText("Too small to add: the smallest amount is 0.00056001 tDASH.");
+    await expect(page.getByTestId("platform-fund-go")).toBeDisabled();
+  });
+
   test("a lock that may already be applied says Checking, and Check again resumes it", async ({ page }) => {
     await open(page, "paddr-fund-checking");
     const row = page.getByTestId("platform-fund-checking");

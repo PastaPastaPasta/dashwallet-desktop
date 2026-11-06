@@ -22,12 +22,10 @@ import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
 import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
 import { authorizeSet, checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
-import { newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
+import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
 import { newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
 import { FIXTURE_NOW } from "./wallet";
 
-/** Platform's credits per duff (dpp's `CREDITS_PER_DUFF`), as the fixture's cost table has it. */
-const CREDITS_PER_DUFF = 1000n;
 /** What a move costs the fixture's wallet, in credits. */
 const MOVE_FEE_CREDITS = 2_000_000n;
 /** A send's fee estimate (dpp's: 500,000 per input, 6,000,000 for the output, one input); the least
@@ -44,9 +42,6 @@ export type MoveResult = "done" | "pending" | "refused" | "unproved" | "tooManyC
  * possibly already applied (`checking`), or locked and refused by Platform (`notApplied`). */
 export type FundResult = "done" | "proofWaiting" | "checking" | "notApplied";
 
-/** Platform's fee for adding a lock, in credits, and the least a lock must carry to clear it. */
-const FUND_FEE_CREDITS = 56_000_000n;
-const FUND_MIN_DUFFS = 56_001;
 /** The Core fee bound of the lock, in duffs. */
 const FUND_LOCK_FEE_DUFFS = 1_000;
 
@@ -352,27 +347,19 @@ function spend(p: PlatformWorld, credits: bigint) {
     .filter((a) => a.credits !== "0");
 }
 
-const fundCredits = (duffs: number) => BigInt(duffs) * CREDITS_PER_DUFF - FUND_FEE_CREDITS;
+const NOT_BLOCKING: readonly PendingPlatformFund["state"][] = ["checking", "tooSmall", "unsupported"];
 
 function fundQuote(ctx: Ctx, walletId: string, duffs: number, call: string): PlatformFundQuote {
   const w = wallet(ctx.world, walletId);
   const p = platformOf(ctx.world, call);
-  if (duffs < FUND_MIN_DUFFS) throw fail("credits.below_minimum", "below the minimum", { kind: "number", value: FUND_MIN_DUFFS });
-  const blocking = p.funds.find((f) => !f.consumptionUnknown);
+  if (duffs < FUND_MIN_DUFFS) throw fail("credits.below_minimum", "below the minimum", { kind: "limit", duffs: FUND_MIN_DUFFS });
+  // As the engine: a lock that is checking, too small or unsupported blocks no new add.
+  const blocking = p.funds.find((f) => !NOT_BLOCKING.includes(f.state));
   if (blocking) throw fail("credits.fund_pending", "an earlier add is pending", { kind: "txid", txid: blocking.txid });
   const totalDuffs = duffs + FUND_LOCK_FEE_DUFFS;
   const available = w.summary.balances?.confirmed ?? 0;
   if (totalDuffs > available) throw fail("credits.funding_insufficient", "insufficient funds", { kind: "duffs", needed: totalDuffs, available });
   return { duffs, feeDuffs: FUND_LOCK_FEE_DUFFS, totalDuffs, feeCredits: String(FUND_FEE_CREDITS), credits: String(fundCredits(duffs)), to: p.receive.address, grant: { maxDuffs: totalDuffs, maxCredits: "0" } };
-}
-
-/** The lock `txid` of `duffs` is applied: the receive address gains the credits and its row turns `done`. */
-function applyFund(p: PlatformWorld, txid: string, credits: bigint) {
-  p.funds = p.funds.filter((f) => f.txid !== txid);
-  const held = p.addresses.find((a) => a.address === p.receive.address);
-  if (held) held.credits = String(BigInt(held.credits) + credits);
-  else p.addresses = [...p.addresses, { address: p.receive.address, credits: String(credits) }];
-  p.activity = p.activity.map((a) => (a.id === `fund-${txid}` ? { ...a, state: "done" as const, credits: String(credits) } : a));
 }
 
 export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
@@ -505,13 +492,13 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
         applyFund(p, txid, credits);
         return { txid, state: { kind: "applied", credits: q.credits } };
       case "proofWaiting":
-        p.funds = [...p.funds, { txid, duffs, proved: false, consumptionUnknown: false }];
+        p.funds = [...p.funds, { txid, duffs, proved: false, consumptionUnknown: false, state: "confirming" }];
         return { txid, state: { kind: "proofWaiting" } };
       case "checking":
-        p.funds = [...p.funds, { txid, duffs, proved: true, consumptionUnknown: true }];
+        p.funds = [...p.funds, { txid, duffs, proved: true, consumptionUnknown: true, state: "checking" }];
         return { txid, state: { kind: "consumptionUnknown" } };
       case "notApplied":
-        p.funds = [...p.funds, { txid, duffs, proved: true, consumptionUnknown: false }];
+        p.funds = [...p.funds, { txid, duffs, proved: true, consumptionUnknown: false, state: "ready" }];
         return { txid, state: { kind: "notApplied", error: "platform.unavailable" } };
     }
   },
@@ -524,6 +511,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     const p = platformOf(world, "resume_platform_fund");
     const fund = p.funds.find((f) => f.txid === txid);
     if (!fund) throw fail("invalid_argument", "not a pending add", { kind: "reason", reason: "not a pending add" });
+    if (fund.state === "tooSmall" || fund.state === "unsupported") throw fail("invalid_argument", "can't be finished in this version", { kind: "reason", reason: "can't be finished in this version" });
     const g = checkGrant(world, grant, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp" || g.grant.purpose.maxDuffs < 1) throw fail("platform.grant_invalid", "grant invalid");
     useGrant(world, grant);

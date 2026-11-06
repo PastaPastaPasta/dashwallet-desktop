@@ -9,6 +9,7 @@ import type { Backend } from "../api/backend";
 import { isAppError } from "../api/backend";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { GrantRequest } from "../api/generated/GrantRequest";
+import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "../api/generated/PlatformFundOutcome";
 import { platformOp } from "../dashpay/topup";
 import { failureText, Model } from "../onboarding/model";
@@ -28,6 +29,10 @@ export const FUND_COPY = {
   card: {
     empty: "Nothing on your Platform addresses yet. Add Dash from your wallet to use it on Dash Platform.",
     unfinished: (amount: string) => `${amount} was locked to add to Platform and is not applied yet.`,
+    stuck: {
+      tooSmall: (amount: string) => `${amount} was locked to add to Platform, but it's worth less than the Platform fee, so it can't be added.`,
+      unsupported: (amount: string) => `${amount} was locked to add to Platform, and this version can't finish it.`,
+    },
     finish: "Finish",
     checkAgain: "Check again",
     busy: "Another add to Platform is running.",
@@ -74,13 +79,29 @@ export const FUND_COPY = {
   back: "Back",
 } as const;
 
+export interface FundRowView {
+  kind: "stuck" | "checking" | "unfinished";
+  /** The text after the title; `checking` also shows its own title. */
+  text: string;
+  /** The button, `null` for a lock this version can't finish. */
+  action: "finish" | "checkAgain" | null;
+}
+
+/** The Platform card's row for an add that is not applied: Finish for one that can be finished, Check
+ * again for one that may already be applied, and only the reason for one that can't be finished. */
+export function fundRowView(p: Pick<PendingPlatformFund, "duffs" | "state" | "consumptionUnknown">, amount: (duffs: number) => string): FundRowView {
+  if (p.state === "tooSmall" || p.state === "unsupported") return { kind: "stuck", text: FUND_COPY.card.stuck[p.state](amount(p.duffs)), action: null };
+  if (p.consumptionUnknown) return { kind: "checking", text: FUND_COPY.done.checking.text, action: "checkAgain" };
+  return { kind: "unfinished", text: FUND_COPY.card.unfinished(amount(p.duffs)), action: "finish" };
+}
+
 /** A refusal of the quote or the call, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. */
 export function fundErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string): string {
   if (!isAppError(e)) return failureText(e);
   const d = e.data;
   switch (e.code) {
     case "credits.below_minimum":
-      return d?.kind === "number" ? `Too small to add: the smallest amount is ${duffs(d.value)}.` : "Too small to add.";
+      return d?.kind === "limit" ? `Too small to add: the smallest amount is ${duffs(d.duffs)}.` : "Too small to add.";
     case "credits.funding_insufficient":
       return d?.kind === "duffs" && d.needed !== null
         ? `Not enough Dash in your wallet: ${duffs(d.needed)} needed with the fee, ${duffs(d.available)} available.`

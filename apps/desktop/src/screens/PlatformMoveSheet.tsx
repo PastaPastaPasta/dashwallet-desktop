@@ -12,7 +12,7 @@ import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
-import { fundFor, FUND_COPY as F } from "../platform/fund";
+import { fundFor, fundRowView, FUND_COPY as F } from "../platform/fund";
 import { PlatformFundSheet } from "./PlatformFundSheet";
 import { GrantSheet } from "./tools/common";
 
@@ -221,20 +221,27 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
               {dustText}
             </p>
           )}
-          {unfinished.map((p) => (
-            <p key={p.txid} className="platform-card-text" data-testid={p.consumptionUnknown ? "platform-fund-checking" : "platform-fund-unfinished"}>
-              {p.consumptionUnknown ? (
-                <>
-                  <strong>{F.done.checking.title}.</strong> {F.done.checking.text}
-                </>
-              ) : (
-                F.card.unfinished(amountText(p.duffs))
-              )}{" "}
-              <DashButton variant="plainBlue" size="small" data-testid="platform-fund-finish" disabled={fund.running} why={fund.running ? F.card.busy : null} onClick={() => void fund.resume(p.txid)}>
-                {p.consumptionUnknown ? F.card.checkAgain : F.card.finish}
-              </DashButton>
-            </p>
-          ))}
+          {unfinished.map((p) => {
+            const row = fundRowView(p, amountText);
+            return (
+              <p key={p.txid} className="platform-card-text" data-testid={`platform-fund-${row.kind}`} data-state={p.state}>
+                {row.kind === "checking" && (
+                  <>
+                    <strong>{F.done.checking.title}.</strong>{" "}
+                  </>
+                )}
+                {row.text}
+                {row.action && (
+                  <>
+                    {" "}
+                    <DashButton variant="plainBlue" size="small" data-testid="platform-fund-finish" disabled={fund.running} why={fund.running ? F.card.busy : null} onClick={() => void fund.resume(p.txid)}>
+                      {row.action === "checkAgain" ? F.card.checkAgain : F.card.finish}
+                    </DashButton>
+                  </>
+                )}
+              </p>
+            );
+          })}
           {fund.unseen && (
             <p className="platform-card-text" data-testid="platform-fund-unseen">
               {F.unseen}{" "}

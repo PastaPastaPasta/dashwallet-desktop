@@ -412,7 +412,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
         dp.runs = [...dp.runs, row.draft];
         changed(ctx, walletId, row.draft);
       }
-      return reportOf({ resumed: stranded.length, completed: 0, stillPending: 0 }, finishRestored(ctx, walletId));
+      return reportOf({ resumed: stranded.length, completed: 0, stillPending: 0 }, finishRestored(ctx, walletId), world.pending.recovery.unread);
     },
     // names.rs `register_name`: a name for an identity that has one or none, paid from its credits.
     register_name: ({ walletId, identity, label, grant }, ctx) => {

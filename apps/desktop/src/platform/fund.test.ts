@@ -3,10 +3,11 @@
 // their words.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "../api/generated/PlatformFundOutcome";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { fundCanChange, fundErrorText, fundFor, PlatformFundFlow, resetPlatformFunds } from "./fund";
+import { fundCanChange, fundErrorText, fundFor, fundRowView, PlatformFundFlow, resetPlatformFunds } from "./fund";
 import { onMoveSettled } from "./move";
 
 const APPLIED: PlatformFundOutcome = { txid: "lock1", state: { kind: "applied", credits: "49944000000" } };
@@ -96,7 +97,7 @@ describe("the Add from Dash wallet flow", () => {
     const { flow, api } = setup();
     const settled = vi.fn();
     const stop = onMoveSettled(settled);
-    api.platformFund.mockRejectedValueOnce(appError("credits.below_minimum", { kind: "number", value: 56_001 }));
+    api.platformFund.mockRejectedValueOnce(appError("credits.below_minimum", { kind: "limit", duffs: 56_001 }));
     flow.begin();
     flow.next(10);
     await flow.run(GRANT);
@@ -120,7 +121,9 @@ describe("the Add from Dash wallet flow", () => {
 
 describe("the Add from Dash wallet error texts", () => {
   it("names the minimum and what is short", () => {
-    expect(text(appError("credits.below_minimum", { kind: "number", value: 56_001 }))).toBe("Too small to add: the smallest amount is 0.00056001 tDASH.");
+    expect(text(appError("credits.below_minimum", { kind: "limit", duffs: 56_001 }))).toBe("Too small to add: the smallest amount is 0.00056001 tDASH.");
+    expect(text(appError("credits.below_minimum", { kind: "number", value: 56_001 }))).toBe("Too small to add.");
+    expect(text(appError("credits.below_minimum"))).toBe("Too small to add.");
     expect(text(appError("credits.funding_insufficient", { kind: "duffs", needed: 200_000_000, available: 100_000_000 }))).toBe("Not enough Dash in your wallet: 2 tDASH needed with the fee, 1 tDASH available.");
   });
 
@@ -133,5 +136,22 @@ describe("the Add from Dash wallet error texts", () => {
   it("offers Back for amount-related refusals only", () => {
     for (const code of ["credits.below_minimum", "credits.funding_insufficient", "platform.grant_exceeded", "credits.too_many_inputs"] as const) expect(fundCanChange(appError(code))).toBe(true);
     for (const code of ["credits.fund_pending", "platform.feature_off", "credits.coins_locked"] as const) expect(fundCanChange(appError(code))).toBe(false);
+  });
+});
+
+describe("the Platform card's rows for adds that are not applied", () => {
+  const row = (state: PendingPlatformFund["state"], consumptionUnknown = false) => fundRowView({ duffs: 5_000, state, consumptionUnknown }, duffs);
+
+  it("a lock that can be finished has Finish", () => {
+    for (const state of ["ready", "confirming"] as const) expect(row(state)).toEqual({ kind: "unfinished", text: "0.00005 tDASH was locked to add to Platform and is not applied yet.", action: "finish" });
+  });
+
+  it("a lock that may already be applied has Check again", () => {
+    expect(row("checking", true)).toMatchObject({ kind: "checking", action: "checkAgain" });
+  });
+
+  it("a lock below the Platform fee, or one this version can't finish, says why and has no button", () => {
+    expect(row("tooSmall")).toEqual({ kind: "stuck", text: "0.00005 tDASH was locked to add to Platform, but it's worth less than the Platform fee, so it can't be added.", action: null });
+    expect(row("unsupported")).toEqual({ kind: "stuck", text: "0.00005 tDASH was locked to add to Platform, and this version can't finish it.", action: null });
   });
 });

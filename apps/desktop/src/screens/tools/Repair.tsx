@@ -7,7 +7,8 @@
 import { useEffect, useId, useState } from "react";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useQueryClient } from "@tanstack/react-query";
-import { keys, useBackend } from "../../api/queries";
+import { keys, useBackend, useUnfinishedTransfers } from "../../api/queries";
+import { unreadText } from "../../dashpay/registration";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
 import { useModel } from "../../onboarding/model";
@@ -28,6 +29,7 @@ export function RepairTab({ grants, wallet }: { grants: GrantModel; wallet: Wall
   const b = useBackend();
   const client = useQueryClient();
   const [model] = useState(() => new RepairModel(b, grants, wallet.walletId));
+  const unfinished = useUnfinishedTransfers(wallet.walletId);
   useModel(model);
   const [from, setFrom] = useState("");
   const [birth, setBirth] = useState("");
@@ -165,8 +167,13 @@ export function RepairTab({ grants, wallet }: { grants: GrantModel; wallet: Wall
       )}
       <ToolCard title="Finish transfers" testId="repair-finish">
         <p className="placeholder-note">
-          Finishes username registrations, credit top-ups, and transfers to Shielded whose payment was sent but never completed. Nothing more is paid.
+          Finishes username registrations, credit top-ups, and transfers to Shielded or to your Platform addresses whose payment was sent but never completed. Nothing more is paid.
         </p>
+        {unfinished.data && unfinished.data.unread.length > 0 && (
+          <p className="placeholder-note" role="status" data-testid="repair-unfinished-unread">
+            {unreadText(unfinished.data.unread)}
+          </p>
+        )}
         <div className="tool-actions">
           <DashButton variant="tintedBlue" size="small" data-testid="repair-finish-transfers" disabled={model.busy} onClick={() => void model.finishTransfers()}>
             Finish transfers

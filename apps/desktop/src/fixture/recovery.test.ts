@@ -27,7 +27,19 @@ afterEach(() => {
 
 describe("fixture unfinished transfers", () => {
   it("lists nothing in an ordinary scenario", async () => {
-    expect(await cmd.unfinishedTransfers(W)).toEqual({ locks: [], complete: true });
+    expect(await cmd.unfinishedTransfers(W)).toEqual({ locks: [], complete: true, unread: [] });
+  });
+
+  it("a kind that can't be read is unread, neither listed nor finished; the other kind is both", async () => {
+    open("paddr-recovery-shielded-unread");
+    fixture.world.pending.recovery.locks.push({ txid: "ab".repeat(32), vout: 0, kind: "shielded", duffs: 1_000_000, origin: "restored", state: "ready" });
+    const listed = await cmd.unfinishedTransfers(W);
+    expect(listed.unread).toEqual(["shielded"]);
+    expect(listed.locks.map((l) => l.kind)).toEqual(["platformAddress"]);
+    const report = await cmd.finishAssetLocks(W, await grant());
+    expect(report.unread).toEqual(["shielded"]);
+    expect(report.byKind).toEqual([{ kind: "platformAddress", resumed: 1, completed: 1, stillPending: 0 }]);
+    expect(fixture.world.pending.recovery.locks.map((l) => l.kind)).toEqual(["shielded"]);
   });
 
   it("each scenario lists its restored locks", async () => {
@@ -131,6 +143,61 @@ describe("fixture unfinished transfers", () => {
     expect((await cmd.unfinishedTransfers(W)).locks.map((l) => l.state)).toEqual(["unsupported", "tooSmall"]);
     open("funded");
     expect(await cmd.finishAssetLocks(W, await grant())).toMatchObject({ byKind: [] });
+  });
+
+  it("each Add from Dash wallet scenario lists its restored locks", async () => {
+    const kinds = async (s: ScenarioName) => (open(s), (await cmd.unfinishedTransfers(W)).locks.map((l) => [l.origin, l.kind, l.state]));
+    expect(await kinds("paddr-recovery-restored")).toEqual([["restored", "platformAddress", "ready"]]);
+    expect(await kinds("paddr-recovery-mixed")).toEqual([
+      ["restored", "shielded", "ready"],
+      ["restored", "platformAddress", "ready"],
+    ]);
+  });
+
+  describe("an Add from Dash wallet lock", () => {
+    const platform = () => fixture.world.pending.platform!;
+    const credits = async () => BigInt((await cmd.platformAddresses(W))!.credits);
+    const fromCore = async () => (await cmd.platformActivity(W))!.filter((a) => a.kind === "fromCore");
+
+    it("Finish credits the Platform receive address, records a done fromCore row and leaves the list", async () => {
+      open("paddr-recovery-restored");
+      const [l] = (await cmd.unfinishedTransfers(W)).locks;
+      const before = await credits();
+      const shielded = BigInt((await cmd.shieldedStatus(W)).balance);
+      expect(await cmd.finishTransfer(W, l.kind, l.txid, l.vout, await grant())).toEqual({ kind: "applied" });
+      expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
+      const gained = 50_000_000n * 1000n - 56_000_000n;
+      expect(await credits()).toBe(before + gained);
+      expect(BigInt((await cmd.shieldedStatus(W)).balance)).toBe(shielded);
+      expect(platform().addresses.find((a) => a.address === platform().receive.address)).toBeDefined();
+      expect(await fromCore()).toMatchObject([{ id: `fund-${l.txid}`, state: "done", credits: String(gained), address: platform().receive.address }]);
+    });
+
+    it("Finish transfers applies both kinds and counts each", async () => {
+      open("paddr-recovery-mixed");
+      const before = await credits();
+      expect(await cmd.finishAssetLocks(W, await grant())).toEqual({
+        resumed: 2,
+        completed: 2,
+        stillPending: 0,
+        alreadyUsed: 0,
+        byKind: [
+          { kind: "shielded", resumed: 1, completed: 1, stillPending: 0 },
+          { kind: "platformAddress", resumed: 1, completed: 1, stillPending: 0 },
+        ],
+        unread: [],
+      });
+      expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
+      expect(await credits()).toBe(before + 25_000_000n * 1000n - 56_000_000n);
+      expect(await fromCore()).toHaveLength(1);
+    });
+
+    it("is refused for a kind that does not match the listed lock", async () => {
+      open("paddr-recovery-restored");
+      const [l] = (await cmd.unfinishedTransfers(W)).locks;
+      expect(await code(cmd.finishTransfer(W, "shielded", l.txid, l.vout, await grant()))).toBe("invalid_argument");
+      expect((await cmd.unfinishedTransfers(W)).locks).toHaveLength(1);
+    });
   });
 
   it("reads through the adapter", async () => {

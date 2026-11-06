@@ -360,7 +360,7 @@ describe("fixture Add from Dash wallet", () => {
   });
 
   it("refuses an amount below the minimum, more than the Core balance, and a new add while one is waiting", async () => {
-    await expect(backend.platformFundQuote(W, 56_000)).rejects.toMatchObject({ code: "credits.below_minimum", data: { kind: "number", value: 56_001 } });
+    await expect(backend.platformFundQuote(W, 56_000)).rejects.toMatchObject({ code: "credits.below_minimum", data: { kind: "limit", duffs: 56_001 } });
     await expect(backend.platformFundQuote(W, 9_000_000_000_000)).rejects.toMatchObject({ code: "credits.funding_insufficient", data: { kind: "duffs" } });
     platform().nextFund = "proofWaiting";
     const { outcome } = await add(50_000_000);
@@ -390,7 +390,7 @@ describe("fixture Add from Dash wallet", () => {
     platform().nextFund = "proofWaiting";
     const before = BigInt((await backend.platformAddresses(W))!.credits);
     const { q, outcome } = await add(50_000_000);
-    expect(await backend.pendingPlatformFunds(W)).toEqual([{ txid: outcome.txid, duffs: 50_000_000, proved: false, consumptionUnknown: false }]);
+    expect(await backend.pendingPlatformFunds(W)).toEqual([{ txid: outcome.txid, duffs: 50_000_000, proved: false, consumptionUnknown: false, state: "confirming" }]);
     expect((await backend.platformActivity(W))![0]).toMatchObject({ kind: "fromCore", state: "pending", credits: q.credits });
     expect(BigInt((await backend.platformAddresses(W))!.credits)).toBe(before);
     await expect(backend.resumePlatformFund(W, outcome.txid, (await duffsGrant(0)).id)).rejects.toMatchObject({ code: "platform.grant_invalid" });
@@ -405,7 +405,7 @@ describe("fixture Add from Dash wallet", () => {
     platform().nextFund = "checking";
     const { outcome } = await add(50_000_000);
     expect(outcome.state).toEqual({ kind: "consumptionUnknown" });
-    expect(await backend.pendingPlatformFunds(W)).toMatchObject([{ proved: true, consumptionUnknown: true }]);
+    expect(await backend.pendingPlatformFunds(W)).toMatchObject([{ proved: true, consumptionUnknown: true, state: "checking" }]);
     await expect(backend.platformFundQuote(W, 50_000_000)).resolves.toMatchObject({ duffs: 50_000_000 });
   });
 
@@ -413,7 +413,18 @@ describe("fixture Add from Dash wallet", () => {
     platform().nextFund = "notApplied";
     const { outcome } = await add(50_000_000);
     expect(outcome.state).toMatchObject({ kind: "notApplied" });
-    expect(await backend.pendingPlatformFunds(W)).toHaveLength(1);
+    expect(await backend.pendingPlatformFunds(W)).toMatchObject([{ state: "ready" }]);
+  });
+
+  it("a lock that is too small or unsupported blocks no new add and can't be finished; a ready one still blocks", async () => {
+    for (const state of ["tooSmall", "unsupported"] as const) {
+      platform().funds = [{ txid: "ab".repeat(32), duffs: 5_000, proved: true, consumptionUnknown: false, state }];
+      await expect(backend.platformFundQuote(W, 50_000_000)).resolves.toMatchObject({ duffs: 50_000_000 });
+      await expect(backend.resumePlatformFund(W, "ab".repeat(32), (await duffsGrant(1)).id)).rejects.toMatchObject({ code: "invalid_argument" });
+      expect(platform().funds).toHaveLength(1);
+    }
+    platform().funds = [{ txid: "ab".repeat(32), duffs: 5_000, proved: true, consumptionUnknown: false, state: "ready" }];
+    await expect(backend.platformFundQuote(W, 50_000_000)).rejects.toMatchObject({ code: "credits.fund_pending" });
   });
 
   it("answers null for the unfinished locks, and rejects the calls, while the Platform commands are absent", async () => {
