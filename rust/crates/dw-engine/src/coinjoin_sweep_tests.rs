@@ -1488,6 +1488,86 @@ fn a_beaten_chunk_frees_the_input_its_winner_left_in_the_same_session() {
     assert!(!sweep_out_keys(&f).contains(&txid));
 }
 
+/// A record of a chunk in a block below the ChainLock that key-wallet
+/// stored: after a restart, the stored ChainLock alone drops it, with no
+/// ChainLock event.
+#[test]
+fn a_chainlock_loaded_at_a_restart_drops_a_record_on_its_own() {
+    let mut f = fixture(false);
+    f.credit_coinjoin(1, COIN);
+    f.credit_coinjoin(2, COIN);
+    let wire = hook(&f, 500, &[Outcome::Unknown]);
+    move_to_wallet(&f).unwrap();
+    let sent = wire.txs();
+    let txid = sent[0].txid();
+    drop_coins(&f, &inputs(&sent));
+    store_mined(&f, &sent[0], 900);
+    store_core(
+        &f,
+        platform_wallet::changeset::CoreChangeSet {
+            last_applied_chain_lock: Some(ChainLock {
+                block_height: 900,
+                block_hash: f.chain.hash(900),
+                signature: BLSSignature::from([0; 96]),
+            }),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        resend(&f, None).unwrap(),
+        resent(txid, SweepResendState::Resolved)
+    );
+    assert!(sweep_out_keys(&f).contains(&txid), "no ChainLock seen yet");
+
+    f.reopen();
+    assert_eq!(f.session.hub.best_chainlock().map(|(h, _)| h), Some(900));
+    assert_eq!(
+        resend(&f, None).unwrap(),
+        resent(txid, SweepResendState::Resolved)
+    );
+    assert!(
+        sweep_out_keys(&f).is_empty(),
+        "the stored ChainLock dropped it"
+    );
+}
+
+/// A conflict of the wallet's in a block a fork replaces, then mined again
+/// in the new branch: resolved again, and final under that branch's
+/// ChainLock.
+#[test]
+fn a_conflict_mined_again_after_a_fork_resolves_the_chunk_again() {
+    let f = fixture(false);
+    f.credit_coinjoin(1, COIN);
+    f.credit_coinjoin(2, COIN);
+    let wire = hook(&f, 500, &[Outcome::Unknown]);
+    move_to_wallet(&f).unwrap();
+    let sent = wire.txs();
+    let txid = sent[0].txid();
+    forget_claims(&f, &sent);
+    let ins: Vec<OutPoint> = sent[0].input.iter().map(|i| i.previous_output).collect();
+    let rival = conflict(ins[0]);
+    let rival_id = mine_conflict(&f, ins[0]);
+    assert_eq!(
+        resend(&f, None).unwrap(),
+        resent(txid, SweepResendState::Resolved)
+    );
+    truncate(&f, 899, &[rival_id]);
+    assert!(mix_reserved(&f, ins[1]), "pending again");
+
+    record_history(&f, &rival, Some(901));
+    assert_eq!(
+        resend(&f, None).unwrap(),
+        resent(txid, SweepResendState::Resolved)
+    );
+    assert!(!mix_reserved(&f, ins[1]), "resolved again");
+    chainlock(&f, 901);
+    resend(&f, None).unwrap();
+    assert!(
+        !sweep_out_keys(&f).contains(&txid),
+        "final on the new branch"
+    );
+}
+
 /// A final resolution clears the record: the chunk in a block that is then
 /// ChainLocked, or InstantSend-locked; a conflict of the wallet's in a
 /// ChainLocked block frees the chunk's other inputs.
