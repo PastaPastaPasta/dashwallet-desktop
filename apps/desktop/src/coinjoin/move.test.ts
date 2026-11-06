@@ -1,6 +1,7 @@
-// "Move mixed coins" to the wallet (move.ts) against the fixture's engine rules (fixture/coinjoin.ts):
-// the plan's mixed split, the refusal while mixing and Stop Mixing, the spend grant, and the
-// complete, partial and unknown outcomes.
+// "Move mixed coins" (move.ts) against the fixture's engine rules (fixture/coinjoin.ts, shielded.ts):
+// to the wallet, the plan's mixed split, the refusal while mixing and Stop Mixing, the spend grant,
+// and the complete, partial and unknown outcomes; into Shielded, the drain's quote and grant, the
+// consolidation round above 50 coins, and the refusals of coins that are not ready.
 
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +12,23 @@ import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W, type ScenarioName } from ".
 import { appError } from "../onboarding/testWorld";
 import type { MixedCoinsSweepPlan } from "../api/generated/MixedCoinsSweepPlan";
 import type { CoinJoinStatus } from "../api/generated/CoinJoinStatus";
-import { canRetry, MoveMixedFlow, type MoveMixedApi, moveErrorText, MOVE_COPY, planFee, planReceives, resetMoveMixed, resultText, showsMoveCard } from "./move";
+import type { MixedCoinsDestination } from "../api/generated/MixedCoinsDestination";
+import { SHIELDED_COPY } from "../shielded/flow";
+import {
+  canRetry,
+  combineResultText,
+  consolidationFee,
+  MoveMixedFlow,
+  type MoveMixedApi,
+  moveErrorText,
+  MOVE_COPY,
+  planFee,
+  planReceives,
+  resetMoveMixed,
+  resultText,
+  shieldResultText,
+  showsMoveCard,
+} from "./move";
 
 const until = async (cond: () => boolean) => {
   for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 0));
@@ -19,16 +36,17 @@ const until = async (cond: () => boolean) => {
 };
 
 let flow: MoveMixedFlow;
-const open = async (scenario: ScenarioName) => {
-  installFixture({ scenario });
+const open = async (scenario: ScenarioName, destination: MixedCoinsDestination = "wallet") => {
+  const fixture = installFixture({ scenario });
   flow = new MoveMixedFlow(new IpcBackend("fixture"), W);
-  flow.begin();
+  flow.begin(destination);
   await until(() => flow.step !== "plan");
+  return fixture;
 };
 
-/** Move, answering the passphrase prompt if the vault asks for one. */
-const move = async () => {
-  const done = flow.move();
+/** Move (or combine), answering the passphrase prompt if the vault asks for one. */
+const move = async (run: () => Promise<void> = () => flow.move()) => {
+  const done = run();
   await until(() => flow.grants.pending !== null || !flow.running);
   if (flow.grants.pending) expect(await flow.grants.submit(FIXTURE_PASSPHRASE)).toBe(true);
   await done;
@@ -174,6 +192,79 @@ describe("Move mixed coins to the wallet", () => {
   it("leaves the shielded destination to the shielded flow", async () => {
     installFixture({ scenario: "coinjoin-move" });
     await expect(cmd.mixedCoinsSweepPlan(W, "shielded")).rejects.toMatchObject({ code: "platform.not_implemented" });
+  });
+});
+
+describe("Move mixed coins to Shielded", () => {
+  const credits = (c: string) => `${c} credits`;
+
+  it("quotes every coin of the CoinJoin balance in one lock, then moves it under a spend grant of their sum", async () => {
+    await open("coinjoin-move", "shielded");
+    expect(flow.step).toBe("confirm");
+    const q = flow.shieldQuote!;
+    expect(q).toMatchObject({ inputs: 3, totalDuffs: 3 * 10_000_100, fullyMixedDuffs: 2 * 10_000_100, notFullyMixedDuffs: 10_000_100 });
+    // The lock's fee comes out of the coins, the pool fee out of the credits.
+    expect(q.duffs + q.feeDuffs).toBe(q.totalDuffs);
+    expect(BigInt(q.credits) + BigInt(q.poolFeeCredits)).toBe(BigInt(q.duffs) * 1000n);
+    const short = await cmd.authorize({ kind: "spend", maxDuffs: q.totalDuffs - 1 }, W, { kind: "passphrase", passphrase: FIXTURE_PASSPHRASE });
+    await expect(cmd.shieldMixedCoins(W, short.id)).rejects.toMatchObject({ code: "platform.grant_exceeded" });
+
+    await move();
+    expect(flow.step).toBe("done");
+    expect(flow.shielded!.state.kind).toBe("applied");
+    expect(shieldResultText(flow.shielded!, credits).title).toBe(SHIELDED_COPY.done.add.title);
+    // The CoinJoin account is empty: a new quote has nothing to move.
+    await expect(cmd.shieldMixedQuote(W)).rejects.toMatchObject({ code: "shielded.nothing_to_move" });
+  });
+
+  it("above 50 coins, combines them inside the CoinJoin balance first, then waits for them to confirm", async () => {
+    await open("coinjoin-move-many", "shielded");
+    expect(flow.step).toBe("combine");
+    const plan = flow.consolidation!;
+    expect(plan).toMatchObject({ total: 60 * 10_000_100, coinsAfter: 1, unconfirmed: 0 });
+    expect(plan.chunks).toHaveLength(1);
+
+    await move(() => flow.combine());
+    expect(flow.step).toBe("done");
+    expect(flow.combined).toBe(true);
+    expect(combineResultText(flow.result!, amount)).toEqual({ kind: "done", title: MOVE_COPY.combine.done.title, text: MOVE_COPY.combine.done.text(amount(consolidationFee(plan))) });
+    // One coin is left, in the CoinJoin account, waiting for its confirmation: the move takes every coin.
+    flow.again();
+    await until(() => flow.step !== "plan");
+    expect(flow.step).toBe("refused");
+    expect(moveErrorText(flow.error)).toBe(MOVE_COPY.unconfirmed(1));
+    expect(canRetry(flow.error)).toBe(true);
+  });
+
+  it("is refused while the wallet mixes, and quotes once Stop Mixing ends it", async () => {
+    await open("coinjoin-move-mixing", "shielded");
+    expect(flow.step).toBe("mixing");
+    expect(moveErrorText(flow.error)).toBe(MOVE_COPY.mixing.text);
+    await flow.stopMixing();
+    await until(() => flow.step !== "plan");
+    expect(flow.step).toBe("confirm");
+    expect(flow.shieldQuote).not.toBeNull();
+  });
+
+  it("a coin that came after the quote shows the new quote at the confirm", async () => {
+    const fixture = await open("coinjoin-move", "shielded");
+    const before = flow.shieldQuote!;
+    const w = fixture.world.wallets[0];
+    const coin = w.coins.find((u) => u.coinjoinRounds !== null)!;
+    w.coins.push({ ...coin, outpoint: { txid: "ab".repeat(32), vout: 7 } });
+    await move();
+    expect(flow.step).toBe("confirm");
+    expect(flow.replanned).toBe(true);
+    expect(flow.shieldQuote!.totalDuffs).toBe(before.totalDuffs + coin.amount);
+  });
+
+  it("names the drain's refusals", () => {
+    expect(moveErrorText(appError("shielded.coins_unconfirmed", { kind: "number", value: 2 }))).toBe(MOVE_COPY.unconfirmed(2));
+    expect(moveErrorText(appError("shielded.coins_locked"))).toBe(MOVE_COPY.held);
+    expect(moveErrorText(appError("shielded.move_running"))).toBe(MOVE_COPY.otherMove);
+    expect(moveErrorText(appError("shielded.nothing_to_move"))).toBe(MOVE_COPY.nothing);
+    expect(moveErrorText(appError("shielded.not_active"))).toBe(SHIELDED_COPY.card.inactive);
+    expect(canRetry(appError("shielded.move_running"))).toBe(true);
   });
 });
 
