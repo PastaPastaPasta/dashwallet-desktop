@@ -8,6 +8,11 @@
 //! CoinJoin pools hand out addresses up to their gap of 100 past the last
 //! used one, so the coins sit at indexes 60, 150 and 240, in that order.
 //!
+//! One transaction paying a pool's addresses past its gap (a mixing
+//! wallet's denomination transaction, restored from its seed) is credited
+//! over several passes of its block; every coin of it reloads, and a store
+//! that kept only the first gap of them recovers with one rescan.
+//!
 //! Runs only with `DASHD_PATH` set to a dashd binary with `dash-cli` next
 //! to it (e.g. `~/.rust-dashcore-test/dashcore-24.0.0-rc.3/bin/dashd`);
 //! skipped otherwise.
@@ -15,6 +20,7 @@
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -139,6 +145,16 @@ impl Dashd {
         self.mine(1);
     }
 
+    /// One transaction paying `each` DASH to every address of `to`, mined.
+    fn pay_each(&self, to: &[String], each: &str) {
+        let outputs: serde_json::Map<String, serde_json::Value> = (to.iter())
+            .map(|a| (a.clone(), serde_json::Value::String(each.to_owned())))
+            .collect();
+        let outputs = serde_json::Value::Object(outputs).to_string();
+        self.cli(&["-rpcwallet=miner", "sendmany", "", &outputs]);
+        self.mine(1);
+    }
+
     fn in_mempool(&self, txid: &str) -> bool {
         self.cli(&["getrawmempool"]).contains(txid)
     }
@@ -184,6 +200,12 @@ fn session_options(node: &Dashd) -> SessionOptions {
 /// The CoinJoin account 0 addresses of [`PHRASE`] at `indexes`, derived
 /// here from the phrase, not read from the engine.
 fn coinjoin_addresses(indexes: &[u32]) -> Vec<String> {
+    receive_addresses(AccountType::CoinJoin { index: 0 }, indexes)
+}
+
+/// The external-chain addresses of [`PHRASE`]'s funds account `account` at
+/// `indexes`, derived here from the phrase.
+fn receive_addresses(account: AccountType, indexes: &[u32]) -> Vec<String> {
     let mnemonic = Mnemonic::from_phrase(PHRASE).unwrap();
     let wallet = Wallet::from_mnemonic(
         mnemonic,
@@ -192,15 +214,14 @@ fn coinjoin_addresses(indexes: &[u32]) -> Vec<String> {
     )
     .unwrap();
     let info = ManagedWalletInfo::from_wallet(&wallet, 0);
-    let cj = AccountType::CoinJoin { index: 0 };
-    let mut pool = (info.accounts.funds_account(&cj).unwrap())
+    let mut pool = (info.accounts.funds_account(&account).unwrap())
         .managed_account_type()
         .address_pools()[0]
         .clone();
     let top = *indexes.iter().max().unwrap();
     let have = pool.highest_generated.unwrap_or(0);
     if top > have {
-        pool.generate_addresses(top - have, &wallet.key_source_for_account(cj), true)
+        pool.generate_addresses(top - have, &wallet.key_source_for_account(account), true)
             .unwrap();
     }
     (indexes.iter())
@@ -269,6 +290,32 @@ impl Fixture {
                     .open_network(DashNetwork::Regtest, session_options(node)),
             )
             .unwrap();
+    }
+
+    /// As [`Self::reload`], running `edit` on the wallet's store while the
+    /// network is closed.
+    fn reload_editing_store(&mut self, node: &Dashd, edit: impl FnOnce(&rusqlite::Connection)) {
+        self.engine.block_on(self.session.stop_spv()).unwrap();
+        let db = self.session.data_dir().join("wallet.sqlite");
+        assert!(
+            self.engine
+                .block_on(self.engine.close_network(DashNetwork::Regtest))
+                .unwrap()
+        );
+        edit(&rusqlite::Connection::open(db).unwrap());
+        self.session = self
+            .engine
+            .block_on(
+                self.engine
+                    .open_network(DashNetwork::Regtest, session_options(node)),
+            )
+            .unwrap();
+    }
+
+    /// The wallet's coin count, total and CoinJoin balance.
+    fn holdings(&self) -> (usize, u64, u64) {
+        let b = self.balances();
+        (self.coins().len(), b.total, b.coinjoin)
     }
 
     fn start_spv(&self) {
@@ -643,4 +690,105 @@ fn a_coin_past_a_spent_bridge_counts_once_through_the_recovery_scan_against_dash
     f.wait_scanned(node.height());
     f.assert_counted(COIN, COIN, "after a second recovery scan's replay");
     assert_eq!(f.coin_at(&addrs[1]), deep);
+}
+
+/// A mixing wallet's denomination transaction, restored from its seed:
+/// one transaction paying CoinJoin indexes 0..489, contiguous. The first
+/// pass of its block matches the first 100; the rest are credited as the
+/// block is scanned again for the addresses each pass derives. A reload
+/// holds every coin, before and after SPV catches up.
+#[test]
+fn one_transaction_past_the_coinjoin_gap_reloads_whole_against_dashd() {
+    one_transaction_past_the_gap_reloads_whole(AccountType::CoinJoin { index: 0 }, 490, 49 * COIN);
+}
+
+/// As above on the BIP44 receive chain (gap 30): one payment to 45 of the
+/// wallet's addresses.
+#[test]
+fn one_transaction_past_the_bip44_gap_reloads_whole_against_dashd() {
+    one_transaction_past_the_gap_reloads_whole(
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: key_wallet::account::StandardAccountType::BIP44Account,
+        },
+        45,
+        0,
+    );
+}
+
+fn one_transaction_past_the_gap_reloads_whole(account: AccountType, count: u32, coinjoin: u64) {
+    let dir = dw_testutil::private_tempdir();
+    let Some(node) = funded_node(dir.path()) else {
+        eprintln!("skipped: DASHD_PATH is not set");
+        return;
+    };
+    let mut f = Fixture::new(dir.path(), &node);
+    let indexes: Vec<u32> = (0..count).collect();
+    node.pay_each(&receive_addresses(account, &indexes), "0.1");
+    f.start_spv();
+    f.wait_scanned(node.height());
+    let first_sync = f.holdings();
+    assert_eq!(
+        first_sync,
+        (count as usize, u64::from(count) * COIN / 10, coinjoin)
+    );
+
+    f.reload(&node);
+    let reloaded = f.holdings();
+    assert_eq!(reloaded, first_sync, "reloaded from the store");
+    f.start_spv();
+    f.wait_scanned(node.height());
+    assert_eq!(f.holdings(), first_sync, "after the catch-up sync");
+}
+
+/// A wallet whose store kept only the first 100 coins of such a transaction
+/// (what a build without the fix wrote: every other row is the same) gets
+/// all 490 back with one rescan, and a reload keeps them.
+#[test]
+fn a_store_missing_coins_past_the_gap_recovers_with_one_rescan_against_dashd() {
+    let dir = dw_testutil::private_tempdir();
+    let Some(node) = funded_node(dir.path()) else {
+        eprintln!("skipped: DASHD_PATH is not set");
+        return;
+    };
+    let mut f = Fixture::new(dir.path(), &node);
+    let indexes: Vec<u32> = (0..490).collect();
+    let addresses = receive_addresses(AccountType::CoinJoin { index: 0 }, &indexes);
+    node.pay_each(&addresses, "0.1");
+    f.start_spv();
+    f.wait_scanned(node.height());
+    let whole = (490, 49 * COIN, 49 * COIN);
+    assert_eq!(f.holdings(), whole);
+
+    f.reload_editing_store(&node, |db| {
+        for address in &addresses[100..] {
+            let script = dashcore::Address::from_str(address)
+                .unwrap()
+                .require_network(Network::Regtest)
+                .unwrap()
+                .script_pubkey();
+            let removed = db
+                .execute(
+                    "DELETE FROM core_utxos WHERE script = ?1",
+                    [script.as_bytes()],
+                )
+                .unwrap();
+            assert_eq!(removed, 1, "one stored coin on {address}");
+        }
+    });
+    assert_eq!(
+        f.holdings(),
+        (100, 10 * COIN, 10 * COIN),
+        "the store keeps 100"
+    );
+
+    f.start_spv();
+    f.wait_scanned(node.height());
+    f.engine
+        .block_on(f.session.rescan(RescanFrom::Genesis))
+        .unwrap();
+    f.wait_rescanned(node.height());
+    assert_eq!(f.holdings(), whole, "after one rescan");
+    f.reload(&node);
+    assert_eq!(f.holdings(), whole, "reloaded after the rescan");
 }
