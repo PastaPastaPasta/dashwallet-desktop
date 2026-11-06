@@ -77,6 +77,8 @@ import type { CoinJoinSettings } from "./generated/CoinJoinSettings";
 import type { CoinJoinStatus } from "./generated/CoinJoinStatus";
 import type { MixedCoinsDestination } from "./generated/MixedCoinsDestination";
 import type { MixedCoinsSweepPlan } from "./generated/MixedCoinsSweepPlan";
+import type { MixedCoinsConsolidationPlan } from "./generated/MixedCoinsConsolidationPlan";
+import type { MixedShieldQuote } from "./generated/MixedShieldQuote";
 import type { MixedCoinsResend } from "./generated/MixedCoinsResend";
 import type { MixedCoinsSweepResult } from "./generated/MixedCoinsSweepResult";
 import type { CoinSelectionSummary } from "./generated/CoinSelectionSummary";
@@ -382,6 +384,14 @@ export interface Backend {
   moveMixedCoins(walletId: string, destination: MixedCoinsDestination, quoteId: string, grantId: string): Promise<MixedCoinsSweepResult>;
   /** "Try again" on a chunk of unknown outcome: its recorded bytes again, never a new signature. */
   resendMixedCoins(walletId: string, txid: string | null): Promise<MixedCoinsResend[]>;
+  /** The consolidation round before a move to Shielded of more coins than one lock takes (50). */
+  mixedCoinsConsolidationPlan(walletId: string): Promise<MixedCoinsConsolidationPlan>;
+  /** Runs the confirmed round (`quoteId`): each transaction pays a fresh address of the CoinJoin account. */
+  consolidateMixedCoins(walletId: string, quoteId: string, grantId: string): Promise<MixedCoinsSweepResult>;
+  /** "Move mixed coins" to Shielded: every coin of the CoinJoin account in one asset lock. */
+  shieldMixedQuote(walletId: string): Promise<MixedShieldQuote>;
+  /** Runs it under a `spend` grant of the quote's `totalDuffs`; pending and finished as any shield. */
+  shieldMixedCoins(walletId: string, grant: string): Promise<ShieldOutcome>;
   dashpayStatus(walletId: string): Promise<DashPayStatus>;
   identities(walletId: string): Promise<IdentitySummary[]>;
   dashpayUnreadCount(walletId: string, identity: string): Promise<number>;

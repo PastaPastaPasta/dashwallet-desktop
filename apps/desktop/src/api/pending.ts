@@ -26,6 +26,10 @@ export const SHIELDED_CODES = {
   shieldPending: "shielded.shield_pending",
   poolTooSmall: "shielded.pool_too_small",
   tooManyInputs: "shielded.too_many_inputs",
+  mixingActive: "shielded.mixing_active",
+  nothingToMove: "shielded.nothing_to_move",
+  coinsUnconfirmed: "shielded.coins_unconfirmed",
+  moveRunning: "shielded.move_running",
   unrecordedSpend: "shielded.unrecorded_spend",
 } as const satisfies Record<string, ShieldedCode>;
 

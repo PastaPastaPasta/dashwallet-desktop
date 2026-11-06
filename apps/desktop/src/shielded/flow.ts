@@ -193,6 +193,11 @@ export function onShieldedSettled(f: () => void): () => void {
   return () => settledListeners.delete(f);
 }
 
+/** Tells the listeners a shielded call ran (a move of mixed coins to Shielded too). */
+export function shieldedSettled() {
+  for (const f of settledListeners) queueMicrotask(f);
+}
+
 export class ShieldedFlow extends Model {
   /** The sheet is shown. */
   open = false;
@@ -323,7 +328,7 @@ export class ShieldedFlow extends Model {
     } finally {
       this.running = false;
       // A cancelled passphrase ran nothing: nothing to read again.
-      if (ran) for (const f of settledListeners) queueMicrotask(f);
+      if (ran) shieldedSettled();
       this.changed();
     }
   }
