@@ -225,8 +225,9 @@ fn is_chain_and_index(p: &[ChildNumber]) -> bool {
 /// The wallet holds the `4'` and `5'` account xpubs (platform-wallet builds
 /// those locks from them), so no scope allows `KeyUse::Export` of one of
 /// these keys, `SignerScope::Full` included: a non-hardened child private
-/// key next to its account xpub reveals the account xpriv. A credit key
-/// only signs and gives its public key.
+/// key next to its account xpub reveals the account xpriv. Nor of their
+/// account nodes ([`is_asset_lock_credit_account`]). A credit key only
+/// signs and gives its public key.
 ///
 /// Before invitation creation (roadmap X3) exports an invitation key:
 /// platform-wallet documents it as hardened (`m/9'/coin'/5'/3'/index'`,
@@ -251,6 +252,31 @@ pub fn is_asset_lock_credit_key(path: &DerivationPath, network: Network) -> bool
         }
         _ => false,
     }
+}
+
+/// The account node of an asset-lock credit key
+/// ([`is_asset_lock_credit_key`]): `m/9'/coin'/5'/sub'` for the
+/// registration, top-up, invitation, Platform address and shielded top-up
+/// subfeatures, and an identity's top-up account `2'/identity'`
+/// ([`is_identity_top_up_account`]). Its private key derives every credit
+/// key below it, so no scope allows `KeyUse::Export` of one either.
+pub fn is_asset_lock_credit_account(path: &DerivationPath, network: Network) -> bool {
+    let p: &[ChildNumber] = path.as_ref();
+    if !has_dip9_feature(p, network, FEATURE_PURPOSE_IDENTITIES) {
+        return false;
+    }
+    let subfeature = p.len() == 4
+        && matches!(
+            hardened_index(&p[3]),
+            Some(
+                FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_REGISTRATION
+                    | FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP
+                    | FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_INVITATIONS
+                    | FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_ADDRESS_TOPUP
+                    | FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_SHIELDED_ADDRESS_TOPUP
+            )
+        );
+    subfeature || is_identity_top_up_account(path, network)
 }
 
 /// A DIP-17 Platform payment address key of account 0, key class 0

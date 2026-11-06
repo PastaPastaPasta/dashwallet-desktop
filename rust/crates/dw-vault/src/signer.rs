@@ -163,12 +163,15 @@ impl SignerScope {
             // only (MG-04 D38), and no other signature at an owner key: a
             // ProUpRegTx's owner signature is a plain ECDSA one over the
             // payload's hash, which `Sign` would make for any digest (D50).
-            // No export of an asset-lock credit key
+            // No export of an asset-lock credit key or its account
             // ([`paths::is_asset_lock_credit_key`]).
             SignerScope::Full => match key_use {
                 KeyUse::OwnerPayload => false,
                 KeyUse::Sign | KeyUse::Message => !paths::is_owner_key(path, network),
-                KeyUse::Export => !paths::is_asset_lock_credit_key(path, network),
+                KeyUse::Export => {
+                    !paths::is_asset_lock_credit_key(path, network)
+                        && !paths::is_asset_lock_credit_account(path, network)
+                }
                 _ => true,
             },
             SignerScope::CoinJoinOnly => coinjoin_use && is_coinjoin_path(path, network),
@@ -639,6 +642,7 @@ mod tests {
             .copied()
             .filter(|u| *u != KeyUse::Export)
             .collect();
+        // The credit keys and their accounts.
         for p in [
             "m/9'/1'/5'/1'/0",
             "m/9'/1'/5'/2'/0",
@@ -646,15 +650,17 @@ mod tests {
             "m/9'/1'/5'/3'/2",
             "m/9'/1'/5'/4'/0",
             "m/9'/1'/5'/5'/7",
+            "m/9'/1'/5'/1'",
+            "m/9'/1'/5'/2'",
+            "m/9'/1'/5'/2'/3'",
+            "m/9'/1'/5'/3'",
+            "m/9'/1'/5'/4'",
+            "m/9'/1'/5'/5'",
         ] {
             assert_eq!(uses(SignerScope::Full, p), no_export, "{p}");
         }
-        // The accounts themselves and the identity keys keep it.
-        for p in [
-            "m/9'/1'/5'/4'",
-            "m/9'/1'/5'/2'/3'",
-            "m/9'/1'/5'/0'/0'/0'/0'",
-        ] {
+        // The identity keys and their account keep it.
+        for p in ["m/9'/1'/5'/0'/0'/0'/0'", "m/9'/1'/5'/0'"] {
             assert!(SignerScope::Full.allows(KeyUse::Export, &path(p), T), "{p}");
         }
     }
