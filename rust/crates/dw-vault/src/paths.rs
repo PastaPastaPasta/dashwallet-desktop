@@ -223,10 +223,10 @@ fn is_chain_and_index(p: &[ChildNumber]) -> bool {
 /// ([`is_identity_top_up_account`]).
 ///
 /// The wallet holds the `4'` and `5'` account xpubs (platform-wallet builds
-/// those locks from them), so no scope may ever `KeyUse::Export` one of
-/// these keys: a non-hardened child private key next to its account xpub
-/// reveals the account xpriv. A credit key only signs and gives its
-/// public key.
+/// those locks from them), so no scope allows `KeyUse::Export` of one of
+/// these keys, `SignerScope::Full` included: a non-hardened child private
+/// key next to its account xpub reveals the account xpriv. A credit key
+/// only signs and gives its public key.
 ///
 /// Before invitation creation (roadmap X3) exports an invitation key:
 /// platform-wallet documents it as hardened (`m/9'/coin'/5'/3'/index'`,
