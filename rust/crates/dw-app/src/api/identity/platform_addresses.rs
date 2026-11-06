@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::flows::GrantRequest;
+use super::unfinished::UnfinishedState;
 use crate::dto::mirror_enum;
 
 /// The wallet's Platform addresses as the last sync pass left them.
@@ -494,6 +495,10 @@ pub struct PendingPlatformFund {
     /// The lock may already be applied ("Checking"); only a proved apply
     /// clears it. It blocks no new fund.
     pub consumption_unknown: bool,
+    /// The recovery's state of the lock (§2.14): `tooSmall` and
+    /// `unsupported` can't be finished in this version, so the host offers
+    /// no Finish, and neither blocks a new fund.
+    pub state: UnfinishedState,
 }
 
 impl From<engine::PendingPlatformFund> for PendingPlatformFund {
@@ -503,12 +508,14 @@ impl From<engine::PendingPlatformFund> for PendingPlatformFund {
             duffs,
             proved,
             consumption_unknown,
+            state,
         } = p;
         PendingPlatformFund {
             txid,
             duffs,
             proved,
             consumption_unknown,
+            state: state.into(),
         }
     }
 }

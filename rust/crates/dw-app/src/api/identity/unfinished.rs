@@ -107,6 +107,9 @@ pub struct UnfinishedTransfers {
     /// False while sync or a restore's scan has not caught up: a restored
     /// lock may still be missing.
     pub complete: bool,
+    /// The kinds that couldn't be checked: none of their locks is listed,
+    /// the other kinds' are.
+    pub unread: Vec<LockKind>,
 }
 
 impl From<engine::UnfinishedTransfers> for UnfinishedTransfers {
@@ -114,6 +117,7 @@ impl From<engine::UnfinishedTransfers> for UnfinishedTransfers {
         UnfinishedTransfers {
             locks: t.locks.into_iter().map(Into::into).collect(),
             complete: t.complete,
+            unread: t.unread.into_iter().map(Into::into).collect(),
         }
     }
 }
