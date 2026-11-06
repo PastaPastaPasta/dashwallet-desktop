@@ -357,10 +357,11 @@ fn a_pending_drain_lock_blocks_a_new_drain_and_resumes_as_a_shield() {
 }
 
 /// The real library's coins of the drain ([`drain::drain_coins_of`]): the
-/// CoinJoin account's coins at its address paths, each confirmed or not
-/// (an InstantSend lock is not a block), and
-/// held when the user or dust protection locked it or a spend or lock
-/// reserved it.
+/// CoinJoin account's coins, each confirmed or not (an InstantSend lock is
+/// not a block, an immature coinbase output is not final), and held when
+/// the user or dust protection locked it, a spend or lock reserved it, or
+/// it lies off the account's address paths (the drain would take it, and
+/// its signer could not sign it).
 #[test]
 fn the_drain_reads_the_coinjoin_accounts_coins_and_what_holds_them() {
     use crate::coinjoin::{CoinJoinBalances, MixView, MixViewCoin};
@@ -408,6 +409,11 @@ fn the_drain_reads_the_coinjoin_accounts_coins_and_what_holds_them() {
     user.coin.user_locked = true;
     let mut reserved = mixed(6, true, cj);
     reserved.coin.reserved = true;
+    let mut coinbase = mixed(8, true, cj);
+    coinbase.coin.utxo.is_coinbase = true;
+    coinbase.coin.utxo.height = 150;
+    let mut mature = mixed(9, true, cj);
+    mature.coin.utxo.is_coinbase = true;
     let view = MixView {
         height: 200,
         coins: vec![
@@ -419,6 +425,8 @@ fn the_drain_reads_the_coinjoin_accounts_coins_and_what_holds_them() {
             reserved,
             // In the account, off its address paths.
             mixed(7, true, "m/9'/1'/5'/5'/0"),
+            coinbase,
+            mature,
         ],
         balances: CoinJoinBalances::default(),
         total: 0,
@@ -439,6 +447,9 @@ fn the_drain_reads_the_coinjoin_accounts_coins_and_what_holds_them() {
             (4, true, false, false),
             (5, false, true, true),
             (6, true, true, true),
+            (7, false, true, true),
+            (8, true, false, false),
+            (9, false, true, false),
         ]
     );
 }

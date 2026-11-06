@@ -274,26 +274,32 @@ pub(crate) async fn drain(
     pool::finish_lock(session, wallet, lib, &lease, &signer, step, funded).await
 }
 
-/// The coins of CoinJoin account 0 in `view` ([`NetworkSession::mix_view`]).
+/// The coins of CoinJoin account 0 in `view` ([`NetworkSession::mix_view`]),
+/// every one the library's drain would take. One the wallet cannot place
+/// on the account's address paths reads held: the drain signer could not
+/// sign it, so the plan refuses rather than leave it out. An immature
+/// coinbase output reads unconfirmed: the library's drain skips it, and
+/// it is final once mature.
 pub(crate) fn drain_coins_of(
     view: crate::coinjoin::MixView,
     network: dashcore::Network,
 ) -> Vec<DrainCoin> {
+    let height = view.height;
     (view.coins.into_iter())
         .filter(|c| c.coin.coinjoin_account)
-        .filter_map(|c| {
+        .map(|c| {
             let path = c
                 .path
-                .filter(|p| dw_vault::paths::is_coinjoin_address(p, network))?;
+                .filter(|p| dw_vault::paths::is_coinjoin_address(p, network));
             let utxo = &c.coin.utxo;
-            Some(DrainCoin {
+            DrainCoin {
                 outpoint: utxo.outpoint,
                 value: utxo.value(),
-                path,
                 fully_mixed: c.fully_mixed,
-                confirmed: utxo.is_confirmed,
-                held: c.coin.user_locked || c.coin.reserved,
-            })
+                confirmed: utxo.is_confirmed && utxo.is_mature(height),
+                held: c.coin.user_locked || c.coin.reserved || path.is_none(),
+                path: path.unwrap_or_default(),
+            }
         })
         .collect()
 }
