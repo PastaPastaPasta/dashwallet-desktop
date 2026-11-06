@@ -874,7 +874,8 @@ call permit when its task lands.
   InstantSend lock shows it (its mempool sighting is the wallet's own, BL-76) or a block spends one of them in
   another transaction, across restarts (its signed bytes are recorded in app.sqlite before the first broadcast, and
   sent again on every reconnect and by `resend_mixed_coins`). No time limit releases it, and neither does abandoning
-  it in the activity list (`abandon_transaction`): the record still holds its coins.
+  it in the activity list (`abandon_transaction`): the record still holds its coins and the chunk is still sent
+  again (the row reads Abandoned until a block or an InstantSend lock shows it).
   `MixedCoinsSweepResult.unknown_txid` names it, so the user can check on it (review F5, the CoinJoin owner's
   ruling). Fail closed.
 - A top-up step has no funding key of its own after a lost journal: the draft's own key is a registration's, and

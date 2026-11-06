@@ -101,7 +101,7 @@ export function coinjoinStatusOf(world: World, w: FixtureWallet): CoinJoinStatus
       denominated: Math.floor((total * m.progress.denominatedPercent) / 100),
       normalizedAnonymized: fullyMixed,
       fullyMixed,
-      coinjoinAccount: w.coins.filter((u) => u.coinjoinRounds !== null && !u.reserved).reduce((n, u) => n + u.amount, 0),
+      coinjoinAccount: w.coins.filter((u) => isCoinJoinCoin(u) && u.confirmations > 0).reduce((n, u) => n + u.amount, 0),
     },
     progress: m.progress,
     amountAndRounds: { amount: amount === 0 ? target : amount, rounds: settings.rounds, insufficientInputs: total > 0 && total < target },

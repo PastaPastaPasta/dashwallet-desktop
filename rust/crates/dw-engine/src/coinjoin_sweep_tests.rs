@@ -746,6 +746,8 @@ fn an_unseen_chunk_stays_held_past_the_old_expiry_across_a_reopen() {
             c.coin.utxo.outpoint
         );
     }
+    // The stored history brings the unconfirmed chunk back as Mempool.
+    record_history(&f, &sent[0], None);
     let wire = hook(&f, 2, &[]);
     assert_eq!(
         resend(&f, None).unwrap(),

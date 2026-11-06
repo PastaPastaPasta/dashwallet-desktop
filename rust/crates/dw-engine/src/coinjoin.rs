@@ -165,9 +165,9 @@ pub struct CoinJoinBalances {
     pub denominated: u64,
     pub normalized_anonymized: u64,
     pub fully_mixed: u64,
-    /// Every free confirmed coin of the CoinJoin account, mixed or not
-    /// (collaterals, change, a consolidated output): what "Move mixed
-    /// coins" can take, so what it is offered for.
+    /// Every free confirmed coin of the CoinJoin account above the sweep
+    /// minimum, mixed or not (collaterals, change, a consolidated output):
+    /// what "Move mixed coins" can take, so what it is offered for.
     pub coinjoin_account: u64,
 }
 
@@ -832,7 +832,15 @@ fn compute_balances(
         .sum();
     let average = progress::average_rounds(&capped.iter().map(|(_, r)| *r).collect::<Vec<_>>());
     let coinjoin_account = (view.coins.iter())
-        .filter(|c| c.coin.coinjoin_account && c.free() && c.coin.utxo.is_confirmed)
+        .filter(|c| {
+            c.coin.coinjoin_account
+                && c.free()
+                && c.coin.utxo.is_confirmed
+                && c.value() > dw_coinjoin::recovery::SWEEP_MIN_COIN
+                && c.path
+                    .as_ref()
+                    .is_some_and(|p| is_coinjoin_path(p, network))
+        })
         .map(|c| c.value())
         .sum();
     (
@@ -3345,7 +3353,9 @@ struct SweepSettled {
 /// put it on the network, so its claim stays until the wallet sees its
 /// coins spent (`coinjoin.broadcast_unknown`), as the funding transaction's
 /// does, and its txid is returned for the host to check on (review E0-04
-/// P2b F5). The chunks after `n` were never handed off.
+/// P2b F5); its record ([`SweepOut`]) holds the coins past that, until a
+/// block or an InstantSend lock shows the chunk. The chunks after `n` were
+/// never handed off.
 fn settle_sweep_failure(
     spends: &crate::send::PendingSpends,
     wallet_id: WalletId,
