@@ -10,8 +10,13 @@
 //!
 //! One transaction paying a pool's addresses past its gap (a mixing
 //! wallet's denomination transaction, restored from its seed) is credited
-//! over several passes of its block; every coin of it reloads, and a store
-//! that kept only the first gap of them recovers with one rescan.
+//! over several passes of its block; every coin of it reloads. A store that
+//! kept only the first gap of them recovers with one rescan on this chain,
+//! which has no ChainLocks. On a chainlocked chain one rescan is not enough:
+//! a block at or below the wallet's last ChainLock finalizes the transaction
+//! on its first pass, and key-wallet credits nothing on a later pass of a
+//! finalized transaction (rust-dashcore `key-wallet/src/managed_account/
+//! managed_core_funds_account.rs:938-942` @55663e43).
 //!
 //! Runs only with `DASHD_PATH` set to a dashd binary with `dash-cli` next
 //! to it (e.g. `~/.rust-dashcore-test/dashcore-24.0.0-rc.3/bin/dashd`);
@@ -743,9 +748,13 @@ fn one_transaction_past_the_gap_reloads_whole(account: AccountType, count: u32, 
 
 /// A wallet whose store kept only the first 100 coins of such a transaction
 /// (what a build without the fix wrote: every other row is the same) gets
-/// all 490 back with one rescan, and a reload keeps them.
+/// all 490 back with one rescan, and a reload keeps them, on a chain without
+/// ChainLocks. With the funding block at or below the wallet's last
+/// ChainLock, the rescan's first pass finalizes the transaction and the
+/// passes after it credit nothing (rust-dashcore `key-wallet/src/
+/// managed_account/managed_core_funds_account.rs:938-942` @55663e43).
 #[test]
-fn a_store_missing_coins_past_the_gap_recovers_with_one_rescan_against_dashd() {
+fn a_store_missing_coins_past_the_gap_recovers_with_one_rescan_without_chainlocks_against_dashd() {
     let dir = dw_testutil::private_tempdir();
     let Some(node) = funded_node(dir.path()) else {
         eprintln!("skipped: DASHD_PATH is not set");
