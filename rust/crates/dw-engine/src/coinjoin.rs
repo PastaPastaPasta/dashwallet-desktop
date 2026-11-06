@@ -2673,6 +2673,11 @@ impl NetworkSession {
         .await
     }
 
+    /// Whether `wallet_id` mixes ("Move mixed coins" to Shielded refuses).
+    pub(crate) fn mixing(&self, wallet_id: WalletId) -> bool {
+        self.coinjoin.busy(&wallet_id)
+    }
+
     /// Refuses a sweep's plan while `wallet_id` mixes: a session's coins
     /// may be in a masternode's hands, and the account the sweep reads is
     /// the one mixing writes. The sweep itself takes the wallet's claim

@@ -44,6 +44,7 @@ use super::lease::{CallPermit, FundingKey, Lease};
 use super::registration::RegistrationWait;
 use super::registration_flow::{FundError, LockInfo, LockStatus, Spendable};
 use super::requests::tests::Fixture;
+use super::shield_drain::{self as drain, DrainCoin};
 use super::shielded::{
     SHIELDED_ACTIVATION_VERSION, ShieldState, ShieldedActivityKind, ShieldedActivityStatus,
     ShieldedDirection, ShieldedSpendState, UnresolvedSpend,
@@ -258,6 +259,16 @@ struct FakeShielded {
     hold: Mutex<Option<RegistrationWait>>,
     startup_running: AtomicBool,
     spv_stopped: AtomicBool,
+    /// CoinJoin account 0's coins (`drain_coins`).
+    drain: Vec<DrainCoin>,
+    /// Paths a drain's build signs besides its planned coins': coins that
+    /// came after the plan.
+    drain_extra: Mutex<Vec<key_wallet::bip32::DerivationPath>>,
+    /// Each drain's inputs.
+    drained: Mutex<Vec<Vec<OutPoint>>>,
+    /// Per drain funding: whether the wallet's CoinJoin account was
+    /// claimed for it (`claim_sweep` refused `MoveRunning`).
+    drain_claimed: Mutex<Vec<bool>>,
 }
 
 /// What a library call leaves of a lock's tracked row (`real_rows`), as
@@ -334,6 +345,10 @@ impl Default for FakeShielded {
             hold: Mutex::new(None),
             startup_running: AtomicBool::new(false),
             spv_stopped: AtomicBool::new(false),
+            drain: Vec::new(),
+            drain_extra: Mutex::default(),
+            drained: Mutex::default(),
+            drain_claimed: Mutex::default(),
         }
     }
 }
@@ -799,6 +814,82 @@ impl ShieldedLib for FakeShielded {
         let answer = (self.applies.lock().unwrap().take()).expect("a scripted apply");
         *self.applies.lock().unwrap() = self.queued.lock().unwrap().pop_front();
         answer
+    }
+
+    async fn drain_coins(
+        &self,
+        _: &crate::coins::CoinFence,
+    ) -> Result<Vec<DrainCoin>, ShieldedError> {
+        Ok(self.drain.clone())
+    }
+
+    /// A new lock of the planned coins, each signed through the permit's
+    /// drain signer (then any `drain_extra` path), recorded as the step's
+    /// own, proved.
+    async fn fund_drain(
+        &self,
+        coins: &[DrainCoin],
+        total_duffs: u64,
+        permit: &CallPermit,
+    ) -> Result<OutPoint, FundError> {
+        let (session, wallet) = self.funder();
+        self.drain_claimed.lock().unwrap().push(matches!(
+            session.coinjoin.claim_sweep(wallet),
+            Err(crate::coinjoin::CoinJoinFailure::MoveRunning)
+        ));
+        let signer = drain::drain_signer(permit, coins, total_duffs)?;
+        let extra = self.drain_extra.lock().unwrap().clone();
+        let paths: Vec<_> = (coins.iter().map(|c| c.path.clone()))
+            .chain(extra)
+            .collect();
+        // A sighash commits to the transaction's whole input set.
+        let set: Vec<u8> = paths
+            .iter()
+            .flat_map(|p| p.to_string().into_bytes())
+            .collect();
+        let mut sighashes = Vec::new();
+        for (i, path) in paths.into_iter().enumerate() {
+            let sighash: [u8; 32] = Sha256::new()
+                .chain_update(&set)
+                .chain_update([i as u8])
+                .finalize()
+                .into();
+            if key_wallet::Signer::sign_ecdsa(&signer, &path, sighash)
+                .await
+                .is_err()
+            {
+                break;
+            }
+            sighashes.push(sighash);
+        }
+        if signer.drain_refused() {
+            permit.abort_unsent();
+            return Err(FundError::NotSent(drain::drain_changed()));
+        }
+        if signer.capped() {
+            return Err(FundError::TooManyInputs {
+                max: MAX_LOCK_INPUTS as u64,
+            });
+        }
+        let n = self.funded.lock().unwrap().len() as u8 + 0x90;
+        let outpoint = OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let inputs: Vec<OutPoint> = coins.iter().map(|c| c.outpoint).collect();
+        session.leases.record_signed_locks(
+            wallet,
+            &[super::lease::StoredLock {
+                txid: outpoint.txid,
+                inputs: inputs.clone(),
+                sighashes: Some(sighashes),
+                built: true,
+            }],
+        );
+        self.drained.lock().unwrap().push(inputs);
+        self.funded.lock().unwrap().push(LockInfo {
+            outpoint,
+            amount: total_duffs,
+            ..lock(n, LockStatus::InstantSendLocked)
+        });
+        Ok(outpoint)
     }
 }
 
@@ -1586,6 +1677,8 @@ fn a_refusal_while_shielded_syncs_is_not_synced_with_what_it_waits_for() {
                     "shield_quote" => wait_of(pool::shield_quote(&s, lib, 100_000).await),
                     "shield" => wait_of(pool::shield(&s, wallet, lib, 100_000, &grant).await),
                     "resume" => wait_of(pool::resume(&s, wallet, lib, &txid, &grant).await),
+                    "drain_quote" => wait_of(drain::quote(&s, wallet, lib).await),
+                    "drain" => wait_of(drain::drain(&s, wallet, lib, &grant).await),
                     "send" => {
                         let to = (payee_text(), credits);
                         wait_of(
@@ -1619,6 +1712,7 @@ fn a_refusal_while_shielded_syncs_is_not_synced_with_what_it_waits_for() {
         "unshield_quote",
         "shield",
         "resume",
+        "drain",
         "send",
         "unshield",
         "address",
@@ -1673,8 +1767,8 @@ fn a_refusal_while_shielded_syncs_is_not_synced_with_what_it_waits_for() {
         lib.startup_running.store(running, Ordering::SeqCst);
         lib.spv_stopped.store(stopped, Ordering::SeqCst);
         assert_eq!(
-            all(&fx, &lib, &["shield"]),
-            expect(&["shield"], want),
+            all(&fx, &lib, &["shield", "drain"]),
+            expect(&["shield", "drain"], want),
             "{hold:?} running {running} stopped {stopped}"
         );
     }
@@ -1684,7 +1778,15 @@ fn a_refusal_while_shielded_syncs_is_not_synced_with_what_it_waits_for() {
 
     // The dispatch journal: not read (closed, as a closing session's is),
     // then found unopenable.
-    let journaled = ["shield_quote", "shield", "resume", "send", "unshield"];
+    let journaled = [
+        "shield_quote",
+        "shield",
+        "resume",
+        "drain_quote",
+        "drain",
+        "send",
+        "unshield",
+    ];
     fx.engine.block_on(fx.s.leases.close_journal());
     assert!(fx.s.leases.journal_loading());
     assert_eq!(
@@ -2818,3 +2920,6 @@ fn check_again_keeps_the_outpoint_whatever_proof_the_library_derives() {
     let before = (before.0 + 2, before.1, before.2); // the two Checking quotes
     assert_no_funding(&lib, before);
 }
+
+#[path = "shield_drain_tests.rs"]
+mod drain_tests;

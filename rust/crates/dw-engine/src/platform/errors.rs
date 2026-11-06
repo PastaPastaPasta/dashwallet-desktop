@@ -621,6 +621,20 @@ pub enum ShieldedError {
         "a shielded payment from before the restart may still go through; confirm to send anyway"
     )]
     UnrecordedSpend,
+    /// "Move mixed coins": the wallet mixes; stop mixing first.
+    #[error("stop mixing first")]
+    MixingActive,
+    /// "Move mixed coins": the CoinJoin account has no coins.
+    #[error("no mixed coins to move")]
+    NothingToMove,
+    /// "Move mixed coins": `coins` of the CoinJoin account are not in a
+    /// block yet, and the move takes them all.
+    #[error("{coins} mixed coins are not confirmed yet")]
+    CoinsUnconfirmed { coins: u64 },
+    /// "Move mixed coins": another move of the wallet's mixed coins (a
+    /// sweep, a consolidation, a send again of its chunks) runs.
+    #[error("a move of the mixed coins is running")]
+    MoveRunning,
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -644,6 +658,10 @@ impl ShieldedError {
             Self::PoolTooSmall { .. } => "shielded.pool_too_small",
             Self::TooManyInputs { .. } => "shielded.too_many_inputs",
             Self::UnrecordedSpend => "shielded.unrecorded_spend",
+            Self::MixingActive => "shielded.mixing_active",
+            Self::NothingToMove => "shielded.nothing_to_move",
+            Self::CoinsUnconfirmed { .. } => "shielded.coins_unconfirmed",
+            Self::MoveRunning => "shielded.move_running",
             Self::Platform(e) => e.code(),
         }
     }
