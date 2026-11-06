@@ -311,7 +311,7 @@ fn move_running(r: Result<(), EngineError>) {
     );
 }
 
-/// Review A r1 (Sol R2, Opus m7): mixing and a move claim the CoinJoin
+/// Mixing and a move claim the CoinJoin
 /// account under one lock, the move through its last broadcast. Mixing
 /// does not start while a move holds its coins read under the fence, nor
 /// while a multi-chunk broadcast waits between chunks; a start that read
@@ -686,7 +686,7 @@ fn advance(f: &Fixture, height: u32) {
     });
 }
 
-/// Q1 (Sol R1, Opus M1): a chunk of unknown outcome is never released on
+/// A chunk of unknown outcome is never released on
 /// elapsed height. Recorded at height 0, it still holds its coins at 1_000
 /// (the old 576-block expiry long past) after a real restart: the session
 /// and its SQLite closed and opened again. The next move takes only the
@@ -710,7 +710,7 @@ fn an_unseen_chunk_stays_held_past_the_old_expiry_across_a_reopen() {
     }
     advance(&f, 1_000);
     assert!(f.session.spends.snapshot(&f.wallet).is_empty(), "a restart");
-    // Opus m7: every spender reads the record, not only the next move: a
+    // Every spender reads the record, not only the next move: a
     // send of a held coin and mixing's view of it.
     let held_coin = sent[0].input[0].previous_output;
     let send = f.draft_to("yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n".into(), COIN / 2);
@@ -1045,7 +1045,7 @@ fn instant_lock(f: &Fixture, o: OutPoint) {
         .unwrap();
 }
 
-/// Opus M1 (ancestor limits): a chunk spends confirmed coins only. An
+/// Ancestor limits: a chunk spends confirmed coins only. An
 /// unconfirmed coin's parents, a DSTX's foreign inputs among them, are not
 /// the wallet's to count, so a full chunk with unconfirmed parents could
 /// pass Core's ancestor limits (`-limitancestorcount` 25,
@@ -1100,7 +1100,7 @@ fn the_plans_count_the_coins_that_wait_for_a_confirmation() {
     assert_eq!((plan.unconfirmed, plan.coins_after), (2, 3));
 }
 
-/// Sol R3 / Opus m5: a move runs only on the plan the user confirmed. A
+/// A move runs only on the plan the user confirmed. A
 /// coin that arrives after the plan, the total still under the grant's
 /// cap, refuses it (`PlanChanged`) before anything is signed, sent,
 /// recorded or reserved. A quote is used once, an unknown or replaced one
@@ -1151,7 +1151,7 @@ fn a_move_refuses_coins_other_than_the_confirmed_plans() {
     }
 }
 
-/// Opus m4: a consolidation that buys the drain nothing is refused before
+/// A consolidation that buys the drain nothing is refused before
 /// anything is signed: the coins fit one shield lock (50 inputs), or its
 /// chunks would leave as many coins as it takes.
 #[test]
@@ -1184,7 +1184,7 @@ fn a_pointless_consolidation_is_refused() {
     assert_eq!(wire.txs().len(), 2);
 }
 
-/// Sol R5: a move reports what arrives and the fee apart; `moved` is their
+/// A move reports what arrives and the fee apart; `moved` is their
 /// sum, the coins' value that left the account.
 #[test]
 fn a_moves_result_says_what_arrives_and_the_fee() {

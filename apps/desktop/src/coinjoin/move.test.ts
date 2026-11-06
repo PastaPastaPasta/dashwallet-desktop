@@ -239,7 +239,7 @@ describe("Move mixed coins, the flow's edges", () => {
   });
 });
 
-// Opus m6 / Sol R4: the card follows the CoinJoin account's free coins, not its denominations.
+// The card follows the CoinJoin account's free coins, not its denominations.
 describe("the move card", () => {
   const status = (coinjoinAccount: number, extra: Partial<CoinJoinStatus["balances"]> = {}) =>
     ({ unavailable: null, balances: { anonymizable: 0, denominated: 0, normalizedAnonymized: 0, fullyMixed: 0, coinjoinAccount, ...extra } }) as unknown as CoinJoinStatus;

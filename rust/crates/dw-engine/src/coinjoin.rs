@@ -3056,7 +3056,7 @@ struct SweepCoins {
     unconfirmed: u32,
 }
 
-/// A plan as the user confirms it (Sol R3): its chunks' inputs, and their
+/// A plan as the user confirms it: its chunks' inputs, and their
 /// fee as a ceiling. The sweep it confirms runs only on the same chunks at
 /// no higher fee, compared under the coin fence; the coins may change in
 /// between (a payment arrives, another spend takes one, a fee rule moves).
@@ -3865,7 +3865,7 @@ mod tests {
         assert_eq!(b.coinjoin_account, 3 * d + 40_000);
     }
 
-    /// Opus m6 / Sol R4: the move card's balance counts what the plan
+    /// The move card's balance counts what the plan
     /// moves even when no denomination is left: a collateral alone, or a
     /// consolidated output. A held or unconfirmed coin is not counted.
     #[test]
@@ -3919,7 +3919,7 @@ mod tests {
         assert_eq!((a.fully_mixed, a.not_fully_mixed), (14_000, 7_000));
         assert_eq!(a.fully_mixed + a.not_fully_mixed, picked.total());
 
-        // Sol R3: a quote covers its own chunks at the same or a lower fee
+        // A quote covers its own chunks at the same or a lower fee
         // only: a higher fee, or the same total from other coins, is
         // another plan.
         let quote = SweepQuote::of(&picked);

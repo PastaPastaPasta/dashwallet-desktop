@@ -374,8 +374,8 @@ async fn test_qt_045_a_full_session_signs_with_anyonecanpay_and_succeeds() {
 
 /// Stopped once our signatures are out (`dss` sent, no `dsc`): the
 /// masternode may still broadcast the mixing transaction, so the inputs
-/// stay held and the output scripts kept, nothing released (review
-/// MIX-SHIELD A r1 Opus m2). Stopped before signing, everything is released.
+/// stay held and the output scripts kept, nothing released. Stopped before
+/// signing, everything is released.
 #[tokio::test]
 async fn a_stop_after_our_signatures_holds_the_inputs() {
     let mn = Mn::new().await;
