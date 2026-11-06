@@ -9017,6 +9017,11 @@ public struct MixedCoinsSweepPlan: Equatable, Hashable {
     public let total: UInt64
     public let chunks: [MixedCoinsChunk]
     /**
+     * Coins of the account the plan leaves for now: they wait for a
+     * confirmation (a chunk spends confirmed coins only).
+     */
+    public let unconfirmed: UInt32
+    /**
      * What `move_mixed_coins` takes to run exactly this plan.
      */
     public let quoteId: String
@@ -9029,11 +9034,16 @@ public struct MixedCoinsSweepPlan: Equatable, Hashable {
          * 1000-duff threshold, mixed or not).
          */total: UInt64, chunks: [MixedCoinsChunk], 
         /**
+         * Coins of the account the plan leaves for now: they wait for a
+         * confirmation (a chunk spends confirmed coins only).
+         */unconfirmed: UInt32, 
+        /**
          * What `move_mixed_coins` takes to run exactly this plan.
          */quoteId: String) {
         self.destination = destination
         self.total = total
         self.chunks = chunks
+        self.unconfirmed = unconfirmed
         self.quoteId = quoteId
     }
 
@@ -9056,6 +9066,7 @@ public struct FfiConverterTypeMixedCoinsSweepPlan: FfiConverterRustBuffer {
                 destination: FfiConverterTypeMixedCoinsDestination.read(from: &buf), 
                 total: FfiConverterUInt64.read(from: &buf), 
                 chunks: FfiConverterSequenceTypeMixedCoinsChunk.read(from: &buf), 
+                unconfirmed: FfiConverterUInt32.read(from: &buf), 
                 quoteId: FfiConverterString.read(from: &buf)
         )
     }
@@ -9064,6 +9075,7 @@ public struct FfiConverterTypeMixedCoinsSweepPlan: FfiConverterRustBuffer {
         FfiConverterTypeMixedCoinsDestination.write(value.destination, into: &buf)
         FfiConverterUInt64.write(value.total, into: &buf)
         FfiConverterSequenceTypeMixedCoinsChunk.write(value.chunks, into: &buf)
+        FfiConverterUInt32.write(value.unconfirmed, into: &buf)
         FfiConverterString.write(value.quoteId, into: &buf)
     }
 }
