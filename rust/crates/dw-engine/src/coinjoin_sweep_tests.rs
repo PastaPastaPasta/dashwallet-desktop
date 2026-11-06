@@ -1317,6 +1317,26 @@ fn refuse_beaten_deletes(f: &Fixture, refuse: bool) {
     }
 }
 
+/// Whether mixing's view reads `o` reserved.
+fn mix_reserved(f: &Fixture, o: OutPoint) -> bool {
+    let session = Arc::clone(&f.session);
+    let id = f.wallet;
+    let view = (f.engine)
+        .block_on(session.on_runtime({
+            let s = Arc::clone(&session);
+            async move {
+                let fence = s.coin_fence(id).await?;
+                s.mix_view(&fence).await
+            }
+        }))
+        .unwrap();
+    (view.coins.iter())
+        .find(|c| c.coin.utxo.outpoint == o)
+        .expect("a coin of the wallet")
+        .coin
+        .reserved
+}
+
 /// The chunk is mined in a block the wallet's store records, and a fork
 /// replaces that block. The pinned persister keeps the record (it mirrors
 /// no truncation), so a restart reloads it in its old block: no evidence,
@@ -1440,6 +1460,32 @@ fn a_beaten_row_a_failed_truncation_left_is_no_evidence() {
         assert!(beaten_keys(&f).is_empty(), "{recover:?}: deleted");
         assert!(sweep_out_keys(&f).contains(&txid), "{recover:?}: no prune");
     }
+}
+
+/// A winner that pays no address of the wallet takes one input of a chunk
+/// whose broadcast outcome is unknown. In the same session, with the
+/// sweep's own reservations kept, the input the winner left is free once
+/// the chunk is beaten, and again once that is final.
+#[test]
+fn a_beaten_chunk_frees_the_input_its_winner_left_in_the_same_session() {
+    let f = fixture(false);
+    f.credit_coinjoin(1, COIN);
+    f.credit_coinjoin(2, COIN);
+    let wire = hook(&f, 500, &[Outcome::Unknown]);
+    move_to_wallet(&f).unwrap();
+    let sent = wire.txs();
+    let txid = sent[0].txid();
+    let ins: Vec<OutPoint> = sent[0].input.iter().map(|i| i.previous_output).collect();
+    assert!(mix_reserved(&f, ins[1]), "the sweep holds it");
+    drop_coins(&f, &HashSet::from([ins[0]]));
+    swept(&f, txid, conflict(ins[0]).txid(), Some(900));
+    assert!(!mix_reserved(&f, ins[1]), "beaten: the other input is free");
+    chainlock(&f, 900);
+    assert!(!mix_reserved(&f, ins[1]), "final: still free");
+    let wire = hook(&f, 500, &[]);
+    assert_eq!(move_to_wallet(&f).unwrap().failure_code, None);
+    assert_eq!(inputs(&wire.txs()), HashSet::from([ins[1]]));
+    assert!(!sweep_out_keys(&f).contains(&txid));
 }
 
 /// A final resolution clears the record: the chunk in a block that is then

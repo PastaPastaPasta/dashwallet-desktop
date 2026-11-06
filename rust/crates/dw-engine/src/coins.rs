@@ -788,11 +788,18 @@ impl NetworkSession {
         // A sweep chunk that may be on the network holds its inputs from
         // every spender, across restarts, while it is pending (`coinjoin.rs`
         // `sweep_out_state`); a sweep or a resend drops the final records.
+        // Once resolved it holds nothing: the session's own claim of its
+        // inputs goes too, so an input its rival did not take is free.
         let (states, _) = self.sweep_view(wallet_id, sweep_outs).await;
-        let pending: Vec<_> = (states.into_iter())
-            .filter(|(_, state)| *state == crate::coinjoin::SweepOutState::Pending)
-            .map(|(o, _)| o)
-            .collect();
+        let mut pending = Vec::new();
+        for (o, state) in states {
+            if state == crate::coinjoin::SweepOutState::Pending {
+                pending.push(o);
+            } else {
+                self.spends
+                    .release(&wallet_id, crate::send::SpendOwner::Tx(o.txid()));
+            }
+        }
         let swept = crate::coinjoin::held_inputs(&pending);
         let unspent: HashSet<OutPoint> = snapshot.coins.iter().map(|c| c.utxo.outpoint).collect();
         self.spends.retain_unspent(&wallet_id, &unspent);
