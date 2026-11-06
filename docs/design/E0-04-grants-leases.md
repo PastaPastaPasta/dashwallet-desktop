@@ -886,9 +886,16 @@ call permit when its task lands.
   replaced block, which key-wallet then promotes by height under the new branch's ChainLock. A winner that pays
   no wallet address is recorded with the hash its height had when `TransactionsSwept` came (looked up off the
   event task; a truncation in between, or no header, records nothing). A beaten row a failed truncation left
-  names a replaced block and is no evidence; it is deleted on the wallet's next event or by the next read. A chunk
-  key-wallet never recorded (no `TransactionsSwept` for it) that a transaction paying no wallet address beats
-  stays pending, held: the dead-tx unit's abandon is the way out. Fail closed.
+  names a replaced block and is no evidence; it is deleted on the wallet's next event or by the next read. A
+  winner that pays no wallet address, in a block a fork replaces before a ChainLock and then mined again in the
+  new branch, leaves its chunk pending for good: no event names it again (no recorded transaction spends the
+  input any more), and key-wallet's `observed_spent_outpoints` binds the spend to no block hash and no spender, so
+  it is no evidence (a reloaded entry can come back at a new branch's height). A rescan does not clear it either:
+  the input is not credited again while its spend is observed (key-wallet `take_in_output`). The chunk's other
+  coins stay held and its bytes are sent again. There is no in-app way out short of removing the wallet: its
+  removal deletes the wallet's app rows, the sweep records with them (dw-appdb `delete_wallet_rows`), and an
+  import from the seed starts without them (`a_winner_mined_again_after_a_fork_leaves_its_chunk_pending`). The
+  dead-tx unit's explicit "forget this chunk" is the light way out (BACKLOG). Fail closed.
 - A top-up step has no funding key of its own after a lost journal: the draft's own key is a registration's, and
   every top-up of an identity shares one key. Until the credit task gives top-ups their own key,
   `funding_call_permit` refuses `topup/...` steps (review M-3); `dispatch_status` still answers them.

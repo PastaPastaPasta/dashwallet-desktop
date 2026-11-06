@@ -1568,6 +1568,90 @@ fn a_conflict_mined_again_after_a_fork_resolves_the_chunk_again() {
     );
 }
 
+/// A winner that pays no address of the wallet beats the chunk, a fork
+/// replaces its block, and the new branch mines the same winner again. No
+/// event names it (it pays no wallet address and no recorded transaction
+/// spends the input), so nothing is evidence: the chunk stays pending
+/// (E0-04), held and sent again, past the new branch's ChainLock and a
+/// restart.
+#[test]
+fn a_winner_mined_again_after_a_fork_leaves_its_chunk_pending() {
+    let mut f = fixture(false);
+    f.credit_coinjoin(1, COIN);
+    f.credit_coinjoin(2, COIN);
+    let wire = hook(&f, 500, &[Outcome::Unknown]);
+    move_to_wallet(&f).unwrap();
+    let sent = wire.txs();
+    let txid = sent[0].txid();
+    forget_claims(&f, &sent);
+    let input = sent[0].input[0].previous_output;
+    drop_coins(&f, &HashSet::from([input]));
+    swept(&f, txid, conflict(input).txid(), Some(900));
+    truncate(&f, 899, &[]);
+    chainlock(&f, 905);
+    for restarted in [false, true] {
+        if restarted {
+            f.reopen();
+            f.credit_coinjoin(1, COIN);
+            f.credit_coinjoin(2, COIN);
+            assert_held(&f, &sent[0]);
+        }
+        let wire = hook(&f, 500, &[]);
+        assert_eq!(
+            resend(&f, None).unwrap(),
+            resent(txid, SweepResendState::Sent),
+            "restarted={restarted}"
+        );
+        assert_eq!(wire.txs(), sent);
+        assert!(sweep_out_keys(&f).contains(&txid));
+    }
+
+    // The heavy way out today: removing the wallet deletes its app rows,
+    // the sweep records with them, and an import from the seed starts
+    // without them.
+    remove_and_import_again(&f);
+    f.credit_coinjoin(1, COIN);
+    f.credit_coinjoin(2, COIN);
+    assert!(
+        sweep_out_keys(&f).is_empty(),
+        "the removal dropped the record"
+    );
+    assert!(
+        !mix_reserved(&f, sent[0].input[1].previous_output),
+        "its other input is free"
+    );
+}
+
+/// Removes the wallet (a wipe grant) and imports it again from its seed:
+/// the same wallet id.
+fn remove_and_import_again(f: &Fixture) {
+    let wipe = (f.session.vault())
+        .authorize(GrantPurpose::Wipe, Some(&f.wallet.0), Credential::None)
+        .unwrap()
+        .id;
+    (f.engine)
+        .block_on(f.session.remove_wallet(f.wallet, wipe))
+        .unwrap();
+    let again = (f.engine)
+        .block_on(
+            f.session.import_wallet(
+                zeroize::Zeroizing::new(
+                    crate::platform::lease::session_tests::PHRASE
+                        .as_bytes()
+                        .to_vec(),
+                ),
+                zeroize::Zeroizing::new(Vec::new()),
+                crate::ImportOptions {
+                    birth_height: Some(0),
+                    core_compat: false,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+    assert_eq!(again, f.wallet);
+}
+
 /// A final resolution clears the record: the chunk in a block that is then
 /// ChainLocked, or InstantSend-locked; a conflict of the wallet's in a
 /// ChainLocked block frees the chunk's other inputs.
