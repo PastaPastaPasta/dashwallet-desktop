@@ -330,7 +330,10 @@ pub(crate) async fn fund_evidence(
     let persisted = persisted_consumed(session, wallet, pending);
     let settled =
         locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Settled).await;
-    let by_txid = (session.leases.top_ups_settled(wallet).await).unwrap_or_default();
+    let by_txid = (session.leases.top_ups_settled(wallet).await).unwrap_or_else(|e| {
+        tracing::warn!(wallet_id = %wallet, error = %e, "could not read the settled funds");
+        HashSet::new()
+    });
     let alone = (rows.iter())
         .filter(|l| l.alone() && by_txid.contains(&l.info.outpoint.txid))
         .map(|l| l.info.outpoint);

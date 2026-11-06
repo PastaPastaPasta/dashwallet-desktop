@@ -1728,7 +1728,7 @@ fn own_checking_fund(fx: &Fixture, lib: &Arc<FakeFund>) -> OutPoint {
 /// on no card), and a later payment to the address is incoming in full.
 #[test]
 fn a_restored_lock_used_elsewhere_leaves_no_activity_and_no_allowance() {
-    for (bulk, signs) in [(false, true), (true, true), (false, false)] {
+    for (bulk, signs) in [(false, true), (true, true), (false, false), (true, false)] {
         let (w, lib) = fund_world();
         lib.track(lib.lock(1, 1_000_000, AssetLockStatus::RecoveredFromChain, true));
         let at = lib.outpoint(0);
@@ -2052,6 +2052,46 @@ fn a_fund_settled_by_txid_alone_completes_on_the_next_read() {
                 .await
         })
         .unwrap();
+    counted_once(&w, estimate(), true);
+}
+
+/// The journal's settled record by txid is no evidence for a lock whose
+/// transaction has another credit output: the fund stays pending until its
+/// own output is settled.
+#[test]
+fn a_txid_settled_record_leaves_a_fund_sharing_its_transaction_pending() {
+    let (w, lib) = fund_world();
+    let tx = conformance::transaction(1, 2, 1_000_000, &lib.script);
+    let row = conformance::tracked(
+        &tx,
+        0,
+        AssetLockFundingType::AssetLockAddressTopUp,
+        AssetLockStatus::RecoveredFromChain,
+        true,
+    );
+    let at = row.out_point;
+    lib.track(row.clone());
+    lib.answer(Answer::Failed);
+    assert_eq!(finish(&w.f, &lib, at).0.unwrap(), LockFinish::Checking);
+    assert!(fund_record(&w.f, at.txid).unwrap().armed);
+    w.net.fund(w.address(0), estimate());
+    let (s, wallet) = (Arc::clone(&w.f.s), w.f.wallet);
+    w.f.engine.block_on(track_in_wallet(&s, wallet, row));
+    (w.f.engine)
+        .block_on(async move {
+            (s.leases)
+                .settle_top_up(wallet, at.txid, TopUpSettled::Applied)
+                .await
+        })
+        .unwrap();
+    let rows = w.activity();
+    assert_eq!(
+        fund_rows(&rows),
+        [(PlatformActivityState::Pending, estimate(), false)],
+        "{rows:?}"
+    );
+    assert!(incoming(&rows).is_empty(), "{rows:?}");
+    record_mark(&w.f, Mark::Settled, at);
     counted_once(&w, estimate(), true);
 }
 
