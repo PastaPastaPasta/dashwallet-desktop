@@ -2371,6 +2371,55 @@ fn a_rebind_returns_the_grant_it_replaces() {
     assert_eq!(w.net.credits(them), DASH);
 }
 
+/// An operation is its wallet's: another wallet can neither read its cap,
+/// bind a grant to it nor take it, and the operation stays quoted for its
+/// own wallet, which pays it.
+#[test]
+fn another_wallet_cannot_use_an_operation() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (them, to) = w.theirs(9);
+    let q = w
+        .send_quote(WithdrawAmount::Credits { credits: DASH }, &to)
+        .unwrap();
+    let ops = &w.f.s.platform.send_ops;
+    let other = crate::session::WalletId([7; 32]);
+    let grant = w.f.grant(q.credits);
+    let refused = |e: PlatformError| assert_eq!(e.code(), "invalid_argument", "{e}");
+    refused(ops.cap(&q.operation, other).unwrap_err());
+    refused(ops.bind(&q.operation, other, &grant).unwrap_err());
+    refused(ops.take(&q.operation, other, &grant).unwrap_err());
+    assert_eq!(ops.cap(&q.operation, w.f.wallet).unwrap(), q.credits);
+    w.confirm(&q.operation, &grant).unwrap();
+    assert_eq!(w.net.credits(them), DASH);
+}
+
+/// The session keeps the newest quotes only: the one past them evicts the
+/// oldest, which then names nothing (`invalid_argument`, nothing issued or
+/// paid) and no newer quote, while the next oldest still pays.
+#[test]
+fn a_quote_past_the_kept_ones_evicts_the_oldest() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (them, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let quotes: Vec<_> = (0..=super::OPS_KEPT)
+        .map(|_| w.send_quote(one, &to).unwrap().operation)
+        .collect();
+    let ops = &w.f.s.platform.send_ops;
+    let (oldest, kept) = (&quotes[0], &quotes[1..]);
+    assert!(kept.iter().all(|q| q != oldest));
+    let e = ops.cap(oldest, w.f.wallet).unwrap_err();
+    assert_eq!(e.code(), "invalid_argument", "{e}");
+    let grant = w.f.grant(20 * DASH);
+    let e = w.confirm(oldest, &grant).unwrap_err();
+    assert_eq!(e.code(), "invalid_argument", "{e}");
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.net.credits(them), 0);
+    w.confirm(&kept[0], &w.f.grant(20 * DASH)).unwrap();
+    assert_eq!(w.net.credits(them), DASH);
+}
+
 /// A send pays someone else, so only a fresh grant pays it, once:
 /// no lease (a move's, or a send flow's a caller holds), and no grant
 /// twice.

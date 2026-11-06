@@ -2205,6 +2205,42 @@ async fn commit_outcome(
     store.commit(writes).await
 }
 
+#[cfg(all(feature = "test-support", debug_assertions))]
+impl NetworkSession {
+    /// **Test only** (dw-app's tests of `authorize_platform_send`; no facade
+    /// call): records a quoted send of `credits` for `wallet_id`, as
+    /// `platform_send_quote` does but with no read, and returns its
+    /// operation.
+    #[doc(hidden)]
+    pub fn quote_send_for_test(&self, wallet_id: WalletId, credits: u64) -> String {
+        self.platform.send_ops.issue(SendOp {
+            wallet: wallet_id,
+            to: String::new(),
+            amount: WithdrawAmount::Credits { credits },
+            retry_of: None,
+            credits,
+            grant: None,
+            plan: Plan {
+                inputs: BTreeMap::new(),
+                fee_source: PlatformAddress::P2pkh([0; 20]),
+                fee: 0,
+                reserve: 0,
+                fee_from_output: true,
+            },
+        })
+    }
+
+    /// **Test only**: forgets the quoted send `operation`, as its send or
+    /// an eviction does.
+    #[doc(hidden)]
+    pub fn forget_send_for_test(&self, operation: &str) {
+        self.platform
+            .send_ops
+            .ops()
+            .retain(|(id, _)| id != operation);
+    }
+}
+
 #[cfg(all(feature = "test-fund", debug_assertions))]
 impl NetworkSession {
     /// **Test only** (dwcli `platform-addr fund`, the release-0.1 testnet

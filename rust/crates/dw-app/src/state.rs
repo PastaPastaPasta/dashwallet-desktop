@@ -64,6 +64,12 @@ pub struct AppState {
     /// holding [`PaymentPolicy::gate`].
     #[cfg(test)]
     pub(crate) payment_set_pause: StdMutex<Option<(SetPause, Arc<Seam>)>>,
+    /// Test seam: `authorizePlatformSend` passes it between issuing the
+    /// grant (its id kept in `send_grant_issued`) and binding it.
+    #[cfg(test)]
+    pub(crate) send_bind_seam: StdMutex<Option<Arc<Seam>>>,
+    #[cfg(test)]
+    pub(crate) send_grant_issued: StdMutex<Option<String>>,
 }
 
 /// The single source of "require authentication for every payment" for
@@ -238,6 +244,10 @@ impl AppState {
             payment_gate_seam: StdMutex::default(),
             #[cfg(test)]
             payment_set_pause: StdMutex::default(),
+            #[cfg(test)]
+            send_bind_seam: StdMutex::default(),
+            #[cfg(test)]
+            send_grant_issued: StdMutex::default(),
         })
     }
 

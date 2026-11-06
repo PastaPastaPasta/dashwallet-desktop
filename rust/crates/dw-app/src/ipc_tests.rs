@@ -679,6 +679,94 @@ fn a_platform_send_grant_needs_a_quoted_operation() {
     }
 }
 
+/// A vault, a wallet and a quoted send of it (no network): the wallet's id,
+/// the session and the operation.
+fn quoted_send(
+    demo: &Demo,
+) -> (
+    String,
+    dw_engine::WalletId,
+    std::sync::Arc<dw_engine::NetworkSession>,
+    String,
+) {
+    use tauri::Manager;
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    let id = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let wallet: dw_engine::WalletId = id.parse().unwrap();
+    let state = demo.app.state::<crate::state::AppState>();
+    let session = tauri::async_runtime::block_on(state.session()).unwrap();
+    let operation = session.quote_send_for_test(wallet, 1000);
+    (id, wallet, session, operation)
+}
+
+fn send_grant_ask(wallet: &str, operation: &str) -> Value {
+    json!({ "walletId": wallet, "operation": operation, "credential": { "kind": "passphrase", "passphrase": "pw" } })
+}
+
+/// A second `authorize_platform_send` for one operation revokes the grant
+/// the first bound: it fails even an ordinary `platformOp` check, and the
+/// new one passes.
+#[test]
+fn a_second_platform_send_grant_revokes_the_first() {
+    let demo = Demo::new();
+    let (id, wallet, session, operation) = quoted_send(&demo);
+    let first = demo.ok("authorize_platform_send", send_grant_ask(&id, &operation))["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let second = demo.ok("authorize_platform_send", send_grant_ask(&id, &operation))["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let check = |g: &str| {
+        session
+            .vault()
+            .check_grant(g, dw_vault::GrantKind::PlatformOp, Some(&wallet.0))
+    };
+    assert!(check(&first).is_err(), "the replaced grant is revoked");
+    check(&second).expect("the bound grant is live");
+}
+
+/// A bind that fails after its grant was issued (the operation sent or
+/// evicted in between) revokes that grant.
+#[test]
+fn a_failed_platform_send_bind_revokes_the_grant_it_issued() {
+    use tauri::Manager;
+    let demo = Demo::new();
+    let (id, wallet, session, operation) = quoted_send(&demo);
+    let state = demo.app.state::<crate::state::AppState>();
+    let (seam, at_bind) = crate::state::Seam::new(true);
+    *state.send_bind_seam.lock().unwrap() = Some(seam);
+    let key = demo.app.invoke_key().to_string();
+    let ask = send_grant_ask(&id, &operation);
+    let (webview, key, state, session, operation) =
+        (&demo.webview, &key, &state, &session, &operation);
+    let refused = std::thread::scope(move |s| {
+        let call = s.spawn(move || invoke(webview, key, "authorize_platform_send", ask));
+        at_bind.arrived();
+        *state.send_bind_seam.lock().unwrap() = None;
+        session.forget_send_for_test(operation);
+        at_bind.resume();
+        call.join().unwrap()
+    });
+    assert_eq!(refused.unwrap_err()["code"], "invalid_argument");
+    let issued = state
+        .send_grant_issued
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("a grant was issued");
+    let live =
+        session
+            .vault()
+            .check_grant(&issued, dw_vault::GrantKind::PlatformOp, Some(&wallet.0));
+    assert!(live.is_err(), "the grant the bind refused is revoked");
+}
+
 /// On an unencrypted vault there is no credential to ask for: the setting
 /// changes nothing and cannot be changed, so no value stored without a
 /// credential carries over to the vault once encrypted.

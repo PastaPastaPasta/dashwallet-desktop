@@ -888,6 +888,11 @@ commands! {
         .await?
         .pop()
         .ok_or_else(|| AppError::new(EngineCode::Internal, "no grant issued"))?;
+        #[cfg(test)]
+        {
+            *state.send_grant_issued.lock().unwrap() = Some(grant.id.clone());
+            crate::state::Seam::pass_slot(&state.send_bind_seam).await;
+        }
         match dashpay.platform_send_bind(operation, grant.id.clone()).await {
             Ok(replaced) => {
                 if let Some(old) = replaced {

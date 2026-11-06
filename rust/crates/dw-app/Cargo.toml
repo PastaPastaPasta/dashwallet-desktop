@@ -91,5 +91,7 @@ qrcode = { version = "0.14", default-features = false }
 tempfile = { workspace = true }
 # Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
 dw-vault = { workspace = true, features = ["insecure-test-kdf"] }
+# NetworkSession::quote_send_for_test: a quoted send with no network, for authorize_platform_send's tests.
+dw-engine = { workspace = true, features = ["test-support"] }
 # private_tempdir(): engine data roots that pass the storage permission check under any umask.
 dw-testutil = { workspace = true }

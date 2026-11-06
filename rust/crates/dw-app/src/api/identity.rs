@@ -52,6 +52,14 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "test only: dwcli's testnet smoke funds a Platform address; the 0.1 app has no receive or fund path",
     ),
     (
+        "NetworkSession::quote_send_for_test",
+        "test only: dw-app's IPC tests quote a send without the network to authorize its grant",
+    ),
+    (
+        "NetworkSession::forget_send_for_test",
+        "test only: dw-app's IPC tests drop a quoted send between a grant's issue and its bind",
+    ),
+    (
         "NetworkSession::dashpay",
         "internal: every DashPay command obtains it via state.dashpay",
     ),
