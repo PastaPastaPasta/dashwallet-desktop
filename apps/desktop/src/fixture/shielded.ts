@@ -19,7 +19,7 @@ import type { ShieldQuote } from "../api/generated/ShieldQuote";
 import type { MixedShieldQuote } from "../api/generated/MixedShieldQuote";
 import type { Utxo } from "../api/generated/Utxo";
 import { SHIELDED_CODES } from "../api/pending";
-import { coinJoinAccount, mixerBusy, SHIELD_LOCK_INPUTS } from "./coinjoin";
+import { coinJoinAccount, DRAIN_STEP, mixerBusy, SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
 import { FIXTURE_NOW } from "./wallet";
 
@@ -236,7 +236,7 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
   // The lock spends every coin of the CoinJoin account under a `spend` grant of their sum.
   shield_mixed_coins: ({ walletId, grant }: { walletId: string; grant: string }, ctx: Ctx): ShieldOutcome => {
     const { quote, coins } = drainQuote(ctx, walletId, "shield_mixed_coins");
-    const unknown = () => raise("platform.broadcast_unknown", "funding outcome unknown", { kind: "artifact", artifact: "shield/0/funding" });
+    const unknown = () => raise("platform.broadcast_unknown", "funding outcome unknown", { kind: "artifact", artifact: DRAIN_STEP });
     if (ctx.world.coinjoin.drainUnknown === "stuck") unknown();
     const g = checkGrant(ctx.world, grant, walletId, ["spend"]);
     if (g?.grant.purpose.kind !== "spend") return raise("platform.grant_invalid", "grant invalid");

@@ -79,6 +79,7 @@ import type { MixedCoinsDestination } from "./generated/MixedCoinsDestination";
 import type { MixedCoinsSweepPlan } from "./generated/MixedCoinsSweepPlan";
 import type { MixedCoinsConsolidationPlan } from "./generated/MixedCoinsConsolidationPlan";
 import type { MixedShieldQuote } from "./generated/MixedShieldQuote";
+import type { StuckShieldFunding } from "./generated/StuckShieldFunding";
 import type { MixedCoinsResend } from "./generated/MixedCoinsResend";
 import type { MixedCoinsSweepResult } from "./generated/MixedCoinsSweepResult";
 import type { CoinSelectionSummary } from "./generated/CoinSelectionSummary";
@@ -392,6 +393,9 @@ export interface Backend {
   shieldMixedQuote(walletId: string): Promise<MixedShieldQuote>;
   /** Runs it under a `spend` grant of the quote's `totalDuffs`; pending and finished as any shield. */
   shieldMixedCoins(walletId: string, grant: string): Promise<ShieldOutcome>;
+  /** The moves into Shielded whose payment may have been sent, each with Repair's price
+   * (`resolveStuckFunding` with its `step` settles it). */
+  stuckShieldFundings(walletId: string): Promise<StuckShieldFunding[]>;
   dashpayStatus(walletId: string): Promise<DashPayStatus>;
   identities(walletId: string): Promise<IdentitySummary[]>;
   dashpayUnreadCount(walletId: string, identity: string): Promise<number>;

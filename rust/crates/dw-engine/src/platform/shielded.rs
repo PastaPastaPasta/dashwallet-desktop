@@ -17,8 +17,9 @@ use serde::{Deserialize, Serialize};
 
 use super::dashpay::DashPay;
 use super::errors::ShieldedError;
-use super::flows::GrantRequest;
+use super::flows::{DispatchState, GrantRequest};
 use super::shielded_pool::{self as pool, on_pool, on_pool_signing};
+use crate::EngineError;
 
 /// The protocol version from which Platform takes shielded-pool
 /// transitions (`SHIELDED_POOL_INITIAL_PROTOCOL_VERSION`).
@@ -151,6 +152,35 @@ pub struct ShieldOutcome {
     /// The asset lock's txid (hex, display order).
     pub txid: String,
     pub state: ShieldState,
+}
+
+/// A shield's or a drain's funding whose outcome is unknown: its step
+/// reads `MaybeSent` or `WillBeSent`, so it refuses every later shield and
+/// drain (`platform.broadcast_unknown`, `platform.will_be_sent`) until it
+/// settles or Repair resolves it (`resolve_stuck_funding` with `step`).
+#[derive(Debug)]
+pub struct StuckShieldFunding {
+    /// The funding step, `shield/<k>/funding`.
+    pub step: String,
+    /// `MaybeSent` or `WillBeSent`.
+    pub state: DispatchState,
+    /// What Repair's self-spend for the step would spend now, priced
+    /// without signing or reserving anything; or why Repair refuses the
+    /// step now (its `resolve_stuck_funding` refusal).
+    pub repair: Result<ShieldRepairCost, EngineError>,
+}
+
+/// Repair's self-spend of a stuck shield funding: the coins it would send
+/// back to the wallet and its fee, as `resolve_stuck_funding` would build it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldRepairCost {
+    /// The lock drained the CoinJoin account: the self-spend takes only
+    /// the CoinJoin coins its records name, never the Core balance.
+    pub mixed: bool,
+    pub inputs: u32,
+    /// The inputs' sum; the wallet gets it back less `fee_duffs`.
+    pub total_duffs: u64,
+    pub fee_duffs: u64,
 }
 
 /// A Core → Shielded asset lock not applied to the pool yet.
@@ -421,6 +451,38 @@ impl DashPay {
         .await
     }
 
+    /// The wallet's shield and drain fundings whose outcome is unknown, in
+    /// step order, each with what Repair would spend for it. Reads the
+    /// dispatch journal and the wallet's coins only: no pool, no network.
+    /// `platform.unavailable` until the journal and the tracked rows are
+    /// read.
+    pub async fn stuck_shield_fundings(&self) -> Result<Vec<StuckShieldFunding>, ShieldedError> {
+        let (session, wallet) = (std::sync::Arc::clone(&self.session), self.wallet_id);
+        let read = std::sync::Arc::clone(&session);
+        let steps = session
+            .on_runtime(async move {
+                read.wallet(&wallet).await?;
+                let ready =
+                    read.leases.journal_ready() && read.leases.refresh_funding(wallet).await;
+                Ok(ready
+                    .then(|| read.leases.stuck_shield_steps(wallet).ok())
+                    .flatten())
+            })
+            .await
+            .map_err(super::PlatformError::from)?
+            .ok_or(super::PlatformError::Unavailable)?;
+        let mut out = Vec::with_capacity(steps.len());
+        for (step, state) in steps {
+            let repair = repair_cost(&session, wallet, &step).await;
+            out.push(StuckShieldFunding {
+                step,
+                state,
+                repair,
+            });
+        }
+        Ok(out)
+    }
+
     /// "Move mixed coins" to Shielded: one asset lock spending every coin
     /// of CoinJoin account 0 under a `ShieldDrain` lease begun from
     /// `grant` (a `Spend` grant of at least the quote's `total_duffs`),
@@ -531,4 +593,20 @@ impl DashPay {
         })
         .await
     }
+}
+
+/// [`ShieldRepairCost`] of `step`: Repair's own draft, estimated.
+async fn repair_cost(
+    session: &std::sync::Arc<crate::NetworkSession>,
+    wallet: crate::WalletId,
+    step: &str,
+) -> Result<ShieldRepairCost, EngineError> {
+    let draft = session.stuck_funding_draft(wallet, step).await?;
+    let estimate = draft.estimate().await?;
+    Ok(ShieldRepairCost {
+        mixed: draft.spends_coinjoin(),
+        inputs: estimate.input_count,
+        total_duffs: estimate.total_sent + estimate.fee,
+        fee_duffs: estimate.fee,
+    })
 }

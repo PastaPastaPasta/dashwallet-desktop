@@ -64,6 +64,7 @@
     "allow-shield-from-core",
     "allow-shield-mixed-quote",
     "allow-shield-mixed-coins",
+    "allow-stuck-shield-fundings",
     "allow-resume-shield",
     "allow-shielded-send-quote",
     "allow-shielded-send",

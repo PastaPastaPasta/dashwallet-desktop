@@ -62,16 +62,22 @@ export interface CoinJoinWorld {
   sweepFailure?: { kind: "rejected" | "unknown"; at: number };
   /** Each wallet's last plan's quote: its id and its chunks' coins (`coinjoin.plan_changed` for another). */
   sweepQuote?: Record<string, { id: string; coins: string }>;
-  /** The next move to Shielded meets coins outside its plan as it builds the lock: it spends its
-   * grant and is refused `shielded.coins_changed`, with nothing tracked or sent. */
+  /** The next move to Shielded meets coins outside its plan as it builds the lock: it redeems its
+   * grant (nothing charged against it) and is refused `shielded.coins_changed`, with nothing tracked or sent. */
   drainChanged?: boolean;
-  /** A move to Shielded whose lock signed and got no verdict: `next` spends the next move's grant and
+  /** A move to Shielded whose lock signed and got no verdict: `next` redeems the next move's grant and
    * refuses it `platform.broadcast_unknown`, then `stuck` refuses every later one the same before its
-   * grant (the step reads possibly sent; settling it in Tools ▸ Repair is not modelled). */
+   * grant (the step reads possibly sent) until Tools ▸ Repair sends its coins back. */
   drainUnknown?: "next" | "stuck";
   /** The recorded chunks of unknown outcome, by wallet id: their display txids. */
   sweepUnknown?: Record<string, string[]>;
 }
+
+/** The step of the fixture's drain left possibly sent. */
+export const DRAIN_STEP = "shield/0/funding";
+
+/** Repair's self-spend fee for `inputs` coins: the engine's size estimate at 1 duff per byte. */
+export const selfSpendFee = (inputs: number) => 10 + 148 * inputs + 34;
 
 const NO_PROGRESS: CoinJoinProgress = { overallPercent: 0, denominatedPercent: 0, partiallyMixedPercent: 0, mixedPercent: 0, averageRounds: 0 };
 

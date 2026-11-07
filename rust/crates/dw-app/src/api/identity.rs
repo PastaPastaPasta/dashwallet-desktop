@@ -38,7 +38,7 @@ use self::registration::{
 };
 use self::shielded::{
     MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome,
-    ShieldedSpendQuote, ShieldedStatus,
+    ShieldedSpendQuote, ShieldedStatus, StuckShieldFunding,
 };
 use self::startup::{DashPayStatus, DashPaySyncStatus, QuorumSource, SyncPassReport};
 use self::unfinished::{LockFinish, LockKind, UnfinishedTransfers};
@@ -732,6 +732,14 @@ commands! {
     #[facade("DashPay::shield_mixed_quote")]
     fn shield_mixed_quote(state, wallet_id: String) -> MixedShieldQuote {
         Ok(state.dashpay(&wallet_id).await?.shield_mixed_quote().await?.into())
+    }
+
+    /// The wallet's moves into Shielded whose payment may have been sent,
+    /// each with what Tools ▸ Repair would spend to settle it.
+    #[facade("DashPay::stuck_shield_fundings")]
+    fn stuck_shield_fundings(state, wallet_id: String) -> Vec<StuckShieldFunding> {
+        let stuck = state.dashpay(&wallet_id).await?.stuck_shield_fundings().await?;
+        Ok(stuck.into_iter().map(Into::into).collect())
     }
 
     /// "Move mixed coins" to Shielded under `grant`, a `Spend` grant of the

@@ -83,6 +83,7 @@ or excluded with a reason (`rust/crates/dw-app/src/coverage.rs`).
 | `DashPay::start_registration` | dw-engine/src/platform/registration.rs | `start_registration` |
 | `DashPay::start_registration_past_unknown_funding` | dw-engine/src/platform/registration.rs | `start_registration_past_unknown_funding` |
 | `DashPay::status` | dw-engine/src/platform/startup.rs | `dashpay_status` |
+| `DashPay::stuck_shield_fundings` | dw-engine/src/platform/shielded.rs | `stuck_shield_fundings` |
 | `DashPay::stuck_top_up_fundings` | dw-engine/src/platform/credits.rs | `credits_stuck_top_up_fundings` |
 | `DashPay::sync_now` | dw-engine/src/platform/startup.rs | `dashpay_sync_now` |
 | `DashPay::sync_platform_addresses` | dw-engine/src/platform/platform_addresses.rs | `platform_addresses_sync` |

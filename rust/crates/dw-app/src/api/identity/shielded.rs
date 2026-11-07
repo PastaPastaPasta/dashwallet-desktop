@@ -8,6 +8,7 @@ use ts_rs::TS;
 
 use super::flows::GrantRequest;
 use crate::dto::mirror_enum;
+use crate::dto::platform::DispatchStateName;
 use crate::error::{AppError, EngineCode};
 
 /// A credit amount the renderer sends as a decimal string.
@@ -246,6 +247,69 @@ impl From<engine::ShieldOutcome> for ShieldOutcome {
         ShieldOutcome {
             txid,
             state: state.into(),
+        }
+    }
+}
+
+/// A move into Shielded (a shield or a move of mixed coins) whose payment
+/// may have been sent: it refuses every later one until it settles or
+/// Tools ▸ Repair resolves it (`resolveStuckFunding` with `step`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StuckShieldFunding {
+    /// `shield/<k>/funding`.
+    pub step: String,
+    /// `maybeSent` or `willBeSent`.
+    pub state: DispatchStateName,
+    /// What Repair would spend for it now, or `null` with `blocked`.
+    pub repair: Option<ShieldRepairCost>,
+    /// Why Repair refuses it now (the error `resolveStuckFunding` would
+    /// answer); `null` with `repair`.
+    pub blocked: Option<AppError>,
+}
+
+/// Repair's payment of every coin of a stuck move back to the wallet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ShieldRepairCost {
+    /// A move of mixed coins: Repair spends only those coins, never the
+    /// Core balance.
+    pub mixed: bool,
+    pub inputs: u32,
+    /// The coins' sum; the wallet gets it back less `feeDuffs`.
+    pub total_duffs: u64,
+    pub fee_duffs: u64,
+}
+
+impl From<engine::StuckShieldFunding> for StuckShieldFunding {
+    fn from(s: engine::StuckShieldFunding) -> Self {
+        let engine::StuckShieldFunding {
+            step,
+            state,
+            repair,
+        } = s;
+        let (repair, blocked) = match repair {
+            Ok(engine::ShieldRepairCost {
+                mixed,
+                inputs,
+                total_duffs,
+                fee_duffs,
+            }) => (
+                Some(ShieldRepairCost {
+                    mixed,
+                    inputs,
+                    total_duffs,
+                    fee_duffs,
+                }),
+                None,
+            ),
+            Err(e) => (None, Some(e.into())),
+        };
+        StuckShieldFunding {
+            step,
+            state: state.into(),
+            repair,
+            blocked,
         }
     }
 }

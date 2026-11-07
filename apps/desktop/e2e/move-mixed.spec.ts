@@ -104,6 +104,38 @@ test("MIX-SHIELD a lock that signed with no verdict reads possibly sent and poin
   expect(errors).toEqual([]);
 });
 
+test("MIX-SHIELD Tools ▸ Repair lists the possibly sent move, sends its coins back at the fee it showed, and the next move runs", async ({ page }) => {
+  const errors = await openSheet(page, "coinjoin-move", "light", "coinjoin-move-shield");
+  await page.evaluate(() => void (window.__dwFixture!.world.coinjoin.drainUnknown = "next"));
+  await page.getByTestId("move-mixed-confirm").click();
+  await authorize(page);
+  await expect(body(page)).toHaveAttribute("data-step", "refused");
+  await page.getByTestId("move-mixed-close").click();
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "tools", tab: "repair" }));
+  const row = page.getByTestId("repair-stuck-shield/0/funding");
+  await expect(row).toContainText("A move of mixed coins into Shielded may have been sent.");
+  await expect(row).toContainText(/Repair sends its 3 coins \(0\.300003 t?DASH\) back to your own wallet, at a network fee of 0\.00000488 t?DASH\./);
+  await page.getByTestId("repair-resolve-shield/0/funding").click();
+  const sheet = page.getByTestId("repair-confirm");
+  await expect(sheet).toContainText(/You pay a network fee of 0\.00000488 t?DASH\./);
+  await expect(page.getByTestId("repair-confirm-ok")).toHaveText(/^Send back and pay 0\.00000488 t?DASH$/);
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  await page.getByTestId("repair-confirm-cancel").click();
+  await expect(row).toBeVisible();
+  await page.getByTestId("repair-resolve-shield/0/funding").click();
+  await page.getByTestId("repair-confirm-ok").click();
+  await authorize(page);
+  await expect(page.getByTestId("repair-outcome")).toContainText("You can move Dash into Shielded again once it is confirmed.");
+  await expect(row).toHaveCount(0);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
+  await page.getByTestId("coinjoin-move-shield").click();
+  await expect(body(page)).toHaveAttribute("data-step", "confirm");
+  await page.getByTestId("move-mixed-confirm").click();
+  await authorize(page);
+  await expect(body(page)).toHaveAttribute("data-outcome", "shielded");
+  expect(errors).toEqual([]);
+});
+
 test("MIX-SHIELD above 50 coins, combine first, then wait for them to confirm", async ({ page }) => {
   const errors = await openSheet(page, "coinjoin-move-many", "light", "coinjoin-move-shield");
   await expect(body(page)).toHaveAttribute("data-step", "combine");

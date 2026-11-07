@@ -167,6 +167,7 @@ import type { ShieldedSpendQuote } from "./ShieldedSpendQuote";
 import type { ShieldedStatus } from "./ShieldedStatus";
 import type { SpvStateName } from "./SpvStateName";
 import type { StashedLinkInfo } from "./StashedLinkInfo";
+import type { StuckShieldFunding } from "./StuckShieldFunding";
 import type { StuckTopUpFunding } from "./StuckTopUpFunding";
 import type { SuperblockDate } from "./SuperblockDate";
 import type { SyncLoopStatus } from "./SyncLoopStatus";
@@ -2010,6 +2011,14 @@ export function shieldMixedQuote(walletId: string): Promise<MixedShieldQuote> {
 }
 
 /**
+ * The wallet's moves into Shielded whose payment may have been sent,
+ * each with what Tools ▸ Repair would spend to settle it.
+ */
+export function stuckShieldFundings(walletId: string): Promise<Array<StuckShieldFunding>> {
+  return invoke<Array<StuckShieldFunding>>("stuck_shield_fundings", { walletId });
+}
+
+/**
  * "Move mixed coins" to Shielded under `grant`, a `Spend` grant of the
  * quote's `totalDuffs`.
  */
@@ -2943,6 +2952,7 @@ export type CommandArgs = {
   shield_quote: { walletId: string; duffs: number };
   shield_from_core: { walletId: string; duffs: number; grant: string };
   shield_mixed_quote: { walletId: string };
+  stuck_shield_fundings: { walletId: string };
   shield_mixed_coins: { walletId: string; grant: string };
   resume_shield: { walletId: string; txid: string; grant: string };
   shielded_send_quote: { walletId: string; to: string; credits: string };
@@ -3255,6 +3265,7 @@ export type CommandResults = {
   shield_quote: ShieldQuote;
   shield_from_core: ShieldOutcome;
   shield_mixed_quote: MixedShieldQuote;
+  stuck_shield_fundings: Array<StuckShieldFunding>;
   shield_mixed_coins: ShieldOutcome;
   resume_shield: ShieldOutcome;
   shielded_send_quote: ShieldedSpendQuote;
@@ -3569,6 +3580,7 @@ export const COMMANDS: Record<CommandName, string> = {
   shield_quote: "identity",
   shield_from_core: "identity",
   shield_mixed_quote: "identity",
+  stuck_shield_fundings: "identity",
   shield_mixed_coins: "identity",
   resume_shield: "identity",
   shielded_send_quote: "identity",

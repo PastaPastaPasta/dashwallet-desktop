@@ -2,13 +2,15 @@
 // ported. Rescan from the wallet's birth, genesis or a height with progress and Cancel (U-05 D10);
 // reset chain data, which asks first and stops and restarts sync around it (D11); remove
 // unconfirmed transactions; the birth height; and "send all coins to yourself" for a registration
-// or a credits top-up whose funding is unknown (D12, DP1-10 D16); Finish transfers (DP1-09 D10).
+// or a credits top-up whose funding is unknown (D12, DP1-10 D16), and sending a move into Shielded's
+// coins back to the wallet at a fee shown first; Finish transfers (DP1-09 D10).
 
 import { hasCode, isAppError, type Backend } from "../api/backend";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RescanStart } from "../api/generated/RescanStart";
 import type { RescanStatus } from "../api/generated/RescanStatus";
 import type { StuckFundingRefusalName } from "../api/generated/StuckFundingRefusalName";
+import type { StuckShieldFunding } from "../api/generated/StuckShieldFunding";
 import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
 import { failureText, Model } from "../onboarding/model";
 import { REG_COPY } from "../dashpay/registration";
@@ -42,6 +44,16 @@ export const RepairText = {
   resolveStuckTopUpQuestion:
     "Send every coin of this wallet to yourself? Whether the top-up's payment reached the network is settled either way; the payment costs only its fee.",
   resolvedTopUp: (txid: string) => `All coins were sent to yourself (transaction ${txid}). You can top up again once it is confirmed.`,
+  /** A stuck move into Shielded's line: what happened, and what Repair does about it. */
+  shield: (mixed: boolean) => (mixed ? "A move of mixed coins into Shielded may have been sent" : "A move into Shielded may have been sent"),
+  shieldRepair: (coins: number, total: string, fee: string) =>
+    `Repair sends ${coins === 1 ? "its coin" : `its ${coins} coins`} (${total}) back to your own wallet, at a network fee of ${fee}. You can move Dash into Shielded again once that payment is confirmed.`,
+  /** Why Repair cannot settle it now, with the engine's refusal. */
+  shieldBlocked: (why: string) => `Repair cannot send these coins back yet: ${why}`,
+  resolveStuckShieldQuestion: (coins: number, total: string, fee: string) =>
+    `Send ${coins === 1 ? "the coin" : `the ${coins} coins`} of this move (${total}) back to your own wallet? You pay a network fee of ${fee}. Whether the move's payment reached the network is settled either way.`,
+  resolvedShield: (txid: string) => `The coins were sent back to your wallet (transaction ${txid}). You can move Dash into Shielded again once it is confirmed.`,
+  stuckShieldsUnreadable: "This wallet's moves into Shielded could not be read, so their stuck funding cannot be checked here.",
 };
 
 /** Copy for the engine's Repair refusals (the Swift `L10n.M2Errors`). */
@@ -112,10 +124,13 @@ const ORPHAN_STEP = /^registration\/[^/]+\/funding$/;
  * (f1, Sol r1 P1). */
 export const fundingStep = (r: RegistrationStatus) => (ORPHAN_STEP.test(r.draft) ? r.draft : `registration/${r.draft}/funding`);
 
-/** What "send all coins to yourself" settles: a registration's funding, or a top-up's (D3). */
-export type StuckTarget = RegistrationStatus | StuckTopUpFunding;
+/** What "send all coins to yourself" settles: a registration's funding, a top-up's (D3), or a move
+ * into Shielded's. */
+export type StuckTarget = RegistrationStatus | StuckTopUpFunding | StuckShieldFunding;
 
-export const isTopUp = (t: StuckTarget): t is StuckTopUpFunding => "step" in t;
+export const isTopUp = (t: StuckTarget): t is StuckTopUpFunding => "identityIndex" in t;
+
+export const isShield = (t: StuckTarget): t is StuckShieldFunding => "repair" in t;
 
 /** A stuck top-up and the name of the identity it tops up (`null`: none known). */
 export interface StuckTopUp {
@@ -149,6 +164,7 @@ type Api = Pick<
   | "finishAssetLocks"
   | "creditsStuckTopUpFundings"
   | "identities"
+  | "stuckShieldFundings"
 >;
 
 export class RepairModel extends Model {
@@ -163,6 +179,10 @@ export class RepairModel extends Model {
   stuckTopUps: StuckTopUp[] = [];
   /** `stuck_top_up_fundings` failed while `registrations` read: the screen says so. */
   stuckTopUpsUnreadable = false;
+  /** The wallet's moves into Shielded whose funding is unknown, each with Repair's price. */
+  stuckShields: StuckShieldFunding[] = [];
+  /** `stuck_shield_fundings` failed: the screen says so. */
+  stuckShieldsUnreadable = false;
 
   constructor(
     private readonly api: Api,
@@ -213,6 +233,9 @@ export class RepairModel extends Model {
     const topUps = await this.#stuckTopUps();
     this.stuckTopUps = topUps ?? [];
     this.stuckTopUpsUnreadable = topUps === null && !this.stuckUnreadable;
+    const shields = await this.api.stuckShieldFundings(this.walletId).catch(() => null);
+    this.stuckShields = shields ?? [];
+    this.stuckShieldsUnreadable = shields === null && !this.stuckUnreadable;
     this.changed();
   }
 
@@ -234,8 +257,10 @@ export class RepairModel extends Model {
     await this.refresh();
   }
 
-  /** Each of these asks first (D11, D12); `target` is the stuck funding to resolve. */
+  /** Each of these asks first (D11, D12); `target` is the stuck funding to resolve. A move into
+   * Shielded's is asked only with Repair's price, so the question can show its fee. */
   ask(what: Confirmation, target?: StuckTarget) {
+    if (target && isShield(target) && !target.repair) return;
     if (!this.busy) this.#set({ kind: "confirming", what, target });
   }
 
@@ -285,19 +310,22 @@ export class RepairModel extends Model {
   }
 
   /** Sends every coin of the wallet to itself, so the funding is spent either way; the grant
-   * covers the fee only, capped at the engine's maximum (U-05 D12). */
+   * covers the fee only, capped at the engine's maximum (U-05 D12). A move into Shielded's grant
+   * is the fee its question showed: a dearer payment is refused, not paid. */
   async resolveStuck(t: StuckTarget) {
     if (this.busy) return;
     const since = this.grants.epoch;
     await this.#run(async () => {
-      const { maxTxFee } = await this.api.feePolicy();
+      const maxDuffs = isShield(t) ? t.repair?.feeDuffs : (await this.api.feePolicy()).maxTxFee;
+      if (maxDuffs === undefined) return { kind: "idle" };
       const sent = await this.grants.withGrant(
-        { kind: "spend", maxDuffs: maxTxFee },
+        { kind: "spend", maxDuffs },
         this.walletId,
-        (grant) => this.api.resolveStuckFunding(this.walletId, isTopUp(t) ? t.step : fundingStep(t), grant.id),
+        (grant) => this.api.resolveStuckFunding(this.walletId, "step" in t ? t.step : fundingStep(t), grant.id),
         since,
       );
       if (!sent) return { kind: "idle" };
+      if (isShield(t)) return { kind: "done", text: RepairText.resolvedShield(sent.value.txid) };
       if (!isTopUp(t)) return { kind: "done", text: RepairText.resolved(sent.value.txid) };
       forgetTopUp(this.walletId);
       return { kind: "done", text: RepairText.resolvedTopUp(sent.value.txid) };
