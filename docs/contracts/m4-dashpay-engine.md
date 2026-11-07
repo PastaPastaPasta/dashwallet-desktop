@@ -2372,6 +2372,13 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   host's code table (`ServiceErrorCode`) needs both. It also carries the engine's `rescan_interrupted` (Contract-Version 49,
   0.1.x-bal §1): asset-lock funding after a rescan the user stopped part way, refused until a rescan runs again. A
   replay that runs is `platform.context_unavailable`, a wait for sync.
+- During a replay (a rewind of a wallet's filter checkpoint: a rescan, an abandon's rescan, Rebuild Index, the DashPay
+  backfill), the balance, the coin list and Activity can include a coin spent above the rewound checkpoint until its
+  spend replays. Spends of the wallet's coins are refused until the replay is back (`rescan_in_progress`, or
+  `platform.context_unavailable` for asset-lock funding). The engine stores each replay before its rewind (0.1.x row
+  58): a replay a quit interrupted resumes when the session, or the wallet, opens again, before SPV scans it, and refuses
+  spends the same way; one the user cancelled is not resumed and stays `rescan_interrupted` across the restart, until a
+  rescan from where it began. 0.1.x shows nothing for the transient in the UI.
 - `recovery.unsupported_output` (Contract-Version 54) is no enum's code: it is only a lock finish's
   `notApplied{error}` (§2.14) for a lock at an output other than 0, which this version cannot finish. Nothing is signed.
 - `IdentityError` is reached through `PlatformError::Identity`, so every domain can return `identity.*`.

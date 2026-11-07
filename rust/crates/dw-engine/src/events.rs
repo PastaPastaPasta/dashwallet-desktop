@@ -416,6 +416,8 @@ pub(crate) struct SessionHub {
     reconcile: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// The wallets with a reconcile started and not yet running.
     reconcile_pending: Mutex<HashSet<WalletId>>,
+    /// The session's replay records, told of each fork truncation.
+    replay: OnceLock<std::sync::Weak<crate::replay_record::ReplayRecords>>,
     /// Tests: holds the next first-seen write before it runs.
     #[cfg(test)]
     pub(crate) pause_seen: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -499,6 +501,7 @@ impl SessionHub {
             leases: std::sync::OnceLock::new(),
             reconcile: OnceLock::new(),
             reconcile_pending: Mutex::new(HashSet::new()),
+            replay: OnceLock::new(),
             #[cfg(test)]
             pause_seen: Mutex::new(None),
         }
@@ -512,6 +515,11 @@ impl SessionHub {
 
     fn lease_table(&self) -> Option<Arc<crate::platform::lease::LeaseTable>> {
         self.leases.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    /// Installs the session's replay records (once).
+    pub(crate) fn attach_replay(&self, replay: &Arc<crate::replay_record::ReplayRecords>) {
+        let _ = self.replay.set(Arc::downgrade(replay));
     }
 
     /// Sets what starts a wallet's duplicate-coin reconcile (once).
@@ -839,6 +847,12 @@ impl SessionHub {
                     .history
                     .with_wallet(id, |h| h.truncate(txids, unconfirmed_txids));
                 let flipped = self.lower_heights(id, *height);
+                if let Some(replay) = self.replay.get().and_then(std::sync::Weak::upgrade) {
+                    replay.note(crate::replay_record::ReplayNote::Truncated {
+                        wallet: id,
+                        height: *height,
+                    });
+                }
                 if !changed.is_empty() {
                     self.pump.mark_history(id, Some(&changed));
                 }

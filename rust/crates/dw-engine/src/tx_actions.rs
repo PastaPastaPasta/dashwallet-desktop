@@ -372,11 +372,8 @@ impl NetworkSession {
             .filter_map(|e| e.context.block_info().map(|b| b.height()))
             .min();
         if let Some(height) = rescan_from {
-            let m = self.manager()?;
-            tokio::task::spawn_blocking(move || {
-                m.spv_rescan_filters_blocking(&wallet.0, height.saturating_sub(1))
-            })
-            .await?;
+            self.rewind_recorded(manager, wallet, height.saturating_sub(1))
+                .await?;
         }
         self.refresh_wallet_state(manager, wallet).await;
         let changed: Vec<Txid> = abandoned.iter().copied().collect();

@@ -43,6 +43,7 @@ pub mod platform;
 mod pump;
 pub mod rates;
 mod receive;
+mod replay_record;
 mod restore;
 #[cfg(test)]
 mod restore_tests;

@@ -2512,3 +2512,401 @@ fn a_conflicted_transactions_descendant_frees_its_other_inputs() {
         .unwrap();
     assert_eq!(prepared.summary().inputs[0].outpoint, q);
 }
+
+impl Fixture {
+    /// The persister commits a store whose checkpoint is `height`, through
+    /// the store platform-wallet writes to.
+    fn commit(&self, height: u32) -> Result<(), platform_wallet::changeset::PersistenceError> {
+        use platform_wallet::changeset::{
+            CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
+        };
+        let (store, id) = (Arc::clone(&self.session.live().unwrap().store), self.wallet);
+        self.engine
+            .block_on(self.session.on_runtime(async move {
+                let changeset = PlatformWalletChangeSet {
+                    core: Some(CoreChangeSet {
+                        synced_height: Some(height),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+                Ok(tokio::task::spawn_blocking(move || store.store(id.0, changeset)).await?)
+            }))
+            .unwrap()
+    }
+
+    fn rescan(&self, from: u32) -> Result<(), EngineError> {
+        let (s, id) = (Arc::clone(&self.session), self.wallet);
+        self.engine.block_on(
+            (self.session)
+                .on_runtime(async move { s.start_rescan(vec![id], from, |_| from).await }),
+        )
+    }
+
+    fn synced(&self) -> u32 {
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        let (s, id) = (Arc::clone(&self.session), self.wallet);
+        self.engine
+            .block_on(self.session.on_runtime(async move {
+                let wallet = s.wallet(&id).await?;
+                Ok(wallet.state().await.core_wallet.synced_height())
+            }))
+            .unwrap()
+    }
+
+    fn guard(&self) -> Result<u32, EngineError> {
+        self.engine
+            .block_on(self.session.replay_guard(self.wallet, 0))
+    }
+
+    /// Closes the session and opens it again, as a quit and a relaunch.
+    fn reopen(self) -> Fixture {
+        let Fixture {
+            _dir,
+            engine,
+            session,
+            wallet,
+        } = self;
+        drop(session);
+        assert!(
+            engine
+                .block_on(engine.close_network(DashNetwork::Regtest))
+                .unwrap()
+        );
+        let session = engine
+            .block_on(engine.open_network(
+                DashNetwork::Regtest,
+                crate::SessionOptions {
+                    dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                    quorum_url: Some("http://127.0.0.1:1".into()),
+                    spv_peers: vec!["127.0.0.1:1".into()],
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        Fixture {
+            _dir,
+            engine,
+            session,
+            wallet,
+        }
+    }
+}
+
+/// The replay record's seams.
+impl Fixture {
+    /// The wallet's replay record once the stores so far are applied.
+    fn record(&self) -> Option<crate::replay_record::ReplayRecord> {
+        let (replay, id) = (
+            Arc::clone(&self.session.live().unwrap().replay),
+            self.wallet,
+        );
+        self.engine
+            .block_on(self.session.on_runtime(async move {
+                replay.settled().await;
+                replay.get(id).await
+            }))
+            .unwrap()
+    }
+
+    /// Waits until the stores so far are applied to the record.
+    fn settle(&self) {
+        let replay = Arc::clone(&self.session.live().unwrap().replay);
+        self.engine
+            .block_on(self.session.on_runtime(async move {
+                replay.settled().await;
+                Ok(())
+            }))
+            .unwrap();
+    }
+
+    /// The next rewind stops once its record is stored, as a quit there.
+    fn quit_after_the_record(&self) {
+        (self.session.live().unwrap().replay)
+            .crash_after_write
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// `rescan`'s outcome when it quit after the record.
+    fn assert_quit_before_the_rewind(&self, rescan: Result<(), EngineError>) {
+        assert!(rescan.is_err());
+        assert_eq!(self.synced(), 1_000, "the quit comes before the rewind");
+    }
+}
+
+/// The app quits while a rescan replays below the stored checkpoint. The
+/// reopened session must resume that replay, and hold spends until it is
+/// back at the checkpoint the wallet had reached before the rescan.
+#[test]
+fn a_restart_mid_rescan_resumes_the_replay_and_holds_spends() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    let (session, id) = (Arc::clone(&f.session), f.wallet);
+    let persister = Arc::clone(&session.live().unwrap().persister);
+    f.engine
+        .block_on(session.on_runtime(async move {
+            tokio::task::spawn_blocking(move || {
+                use platform_wallet::changeset::PlatformWalletPersistence;
+                let core = platform_wallet::changeset::CoreChangeSet {
+                    synced_height: Some(1_000),
+                    ..Default::default()
+                };
+                let changeset = platform_wallet::changeset::PlatformWalletChangeSet {
+                    core: Some(core),
+                    ..Default::default()
+                };
+                persister.store(id.0, changeset).unwrap();
+                persister.flush(id.0).unwrap();
+            })
+            .await
+            .unwrap();
+            Ok::<_, EngineError>(())
+        }))
+        .unwrap();
+    let (s, id) = (Arc::clone(&f.session), f.wallet);
+    f.engine
+        .block_on(
+            (f.session).on_runtime(async move { s.start_rescan(vec![id], 400, |_| 400).await }),
+        )
+        .unwrap();
+    assert!(replaying(
+        f.engine.block_on(f.session.replay_guard(f.wallet, 0))
+    ));
+    drop(session);
+
+    assert!(
+        f.engine
+            .block_on(f.engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+    let reopened = f
+        .engine
+        .block_on(f.engine.open_network(
+            DashNetwork::Regtest,
+            crate::SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    let synced = f
+        .engine
+        .block_on({
+            let (s, id) = (Arc::clone(&reopened), f.wallet);
+            reopened.on_runtime(async move {
+                use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+                let wallet = s.wallet(&id).await?;
+                Ok::<_, EngineError>(wallet.state().await.core_wallet.synced_height())
+            })
+        })
+        .unwrap();
+    let guard = f.engine.block_on(reopened.replay_guard(f.wallet, 0));
+    let progress = reopened.rescan_progress().unwrap();
+    eprintln!(
+        "ROW58 desktop restart mid-rescan: filter checkpoint {synced}, replay guard {guard:?}, \
+         rescan progress {progress:?}"
+    );
+    assert!(
+        synced < 400,
+        "the reopened wallet resumes the filter scan at {}, past the rescan's start 400",
+        synced + 1
+    );
+    assert!(
+        replaying(guard),
+        "spends go through after a restart mid-rescan"
+    );
+}
+
+/// A cancelled replay is not resumed after a restart: its hold comes back
+/// and refuses spends, until a rewind to where it began replays what the
+/// cancel skipped.
+#[test]
+fn a_cancelled_replay_stays_held_across_a_restart() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    f.advance(600);
+    assert!(f.engine.block_on(f.session.cancel_rescan()).unwrap());
+    assert!(matches!(f.guard(), Err(EngineError::RescanInterrupted)));
+    let f = f.reopen();
+    let (synced, guard) = (f.synced(), f.guard());
+    eprintln!("ROW58 cancel then restart: filter checkpoint {synced}, replay guard {guard:?}");
+    assert_eq!(synced, 1_000, "a cancelled replay is not resumed");
+    assert!(
+        matches!(guard, Err(EngineError::RescanInterrupted)),
+        "the cancel's hold is gone after a restart: {guard:?}"
+    );
+    f.rescan(400).unwrap();
+    assert!(
+        replaying(f.guard()),
+        "a rescan from its start clears the hold"
+    );
+}
+
+/// A quit after the record is stored and before the rewind: the resume
+/// replays the stored range once, and the record goes when it is back.
+#[test]
+fn a_quit_between_the_record_and_the_rewind_costs_only_a_replay() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.quit_after_the_record();
+    let rescan = f.rescan(400);
+    f.assert_quit_before_the_rewind(rescan);
+    let f = f.reopen();
+    let (synced, guard) = (f.synced(), f.guard());
+    eprintln!(
+        "ROW58 quit between record and rewind: filter checkpoint {synced}, replay guard {guard:?}"
+    );
+    assert!(
+        synced < 400,
+        "the replay is not resumed: checkpoint {synced}"
+    );
+    assert!(replaying(guard));
+    f.advance(1_001);
+    f.commit(1_001).unwrap();
+    assert_eq!(f.record(), None, "the replay is back and stored");
+    assert_eq!(f.guard().unwrap(), 1_001);
+    let f = f.reopen();
+    assert_eq!(f.synced(), 1_001);
+    assert_eq!(f.guard().unwrap(), 1_001);
+}
+
+/// The replay runs past its target in memory while the persister commits
+/// none of it, and a store made before the rewind commits after it: a
+/// restart then resumes at or below what is committed.
+#[test]
+fn a_resume_starts_at_or_below_the_committed_replay() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    let store = Arc::clone(&f.session.live().unwrap().store);
+    *store.fail_store.lock().unwrap() = Some(Box::new(|cs| cs.core.is_some()));
+    f.advance(1_200);
+    assert!(
+        f.commit(1_200).is_err(),
+        "the replay's batch is not flushed"
+    );
+    *store.fail_store.lock().unwrap() = None;
+    drop(store);
+    f.commit(1_000).unwrap();
+    f.settle();
+    let f = f.reopen();
+    let (synced, guard) = (f.synced(), f.guard());
+    eprintln!("ROW58 reached vs commit: filter checkpoint {synced}, replay guard {guard:?}");
+    assert!(
+        synced < 400,
+        "resumed at {}, above the committed replay (nothing above 399)",
+        synced + 1
+    );
+    assert!(replaying(guard));
+}
+
+/// A second rewind while the first's replay is not stored: the record
+/// replays from the lower start to the higher target.
+#[test]
+fn overlapping_rewinds_merge_their_replays() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    f.advance(1_200);
+    f.rescan(800).unwrap();
+    let f = f.reopen();
+    let synced = f.synced();
+    f.advance(1_100);
+    let guard = f.guard();
+    eprintln!(
+        "ROW58 overlapping rewinds: filter checkpoint {synced}, replay guard at 1100 {guard:?}"
+    );
+    assert!(
+        synced < 400,
+        "resumed at {}, past the first start",
+        synced + 1
+    );
+    assert!(replaying(guard), "done below the second rewind's target");
+    f.advance(1_200);
+    assert_eq!(f.guard().unwrap(), 1_200);
+}
+
+/// A rewind no event announces (platform-wallet's DashPay backfill), once
+/// the guard reads it, is resumed after a restart too.
+#[test]
+fn a_hidden_rewind_the_guard_saw_is_resumed_after_a_restart() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.checkpoint(500);
+    assert!(replaying(f.guard()));
+    let f = f.reopen();
+    let (synced, guard) = (f.synced(), f.guard());
+    eprintln!(
+        "ROW58 hidden rewind then restart: filter checkpoint {synced}, replay guard {guard:?}"
+    );
+    assert!(synced <= 500, "resumed at {}, past the rewind", synced + 1);
+    assert!(replaying(guard));
+}
+
+/// The record goes once a store above its target is committed with the
+/// checkpoint back there, not before; a fork lowers its target to the new
+/// chain; removing the wallet deletes it.
+#[test]
+fn a_replay_record_ends_with_its_stored_replay() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    let started = f.record().expect("recorded before the rewind");
+    assert_eq!((started.target, started.reached), (1_000, 399));
+    f.commit(1_001).unwrap();
+    assert!(f.record().is_some(), "the checkpoint is not back yet");
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    assert!(
+        f.record().is_some(),
+        "a store at the target can predate the rewind"
+    );
+    f.advance(1_001);
+    f.commit(1_001).unwrap();
+    assert_eq!(f.record(), None);
+    let f = f.reopen();
+    assert_eq!(f.synced(), 1_001);
+    assert_eq!(f.guard().unwrap(), 1_001);
+
+    f.rescan(400).unwrap();
+    (f.session.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::ChainTruncated {
+        wallet_id: f.wallet.0,
+        height: 900,
+        txids: Vec::new(),
+        unconfirmed_txids: Vec::new(),
+        restored_outpoints: Vec::new(),
+        balance: key_wallet::wallet::balance::WalletCoreBalance::new(COIN, 0, 0, 0),
+        account_balances: Default::default(),
+    });
+    let truncated = f.record().expect("still replaying");
+    assert_eq!((truncated.target, truncated.reached), (900, 399));
+
+    let wipe = (f.session.vault)
+        .authorize(GrantPurpose::Wipe, Some(&f.wallet.0), Credential::None)
+        .unwrap()
+        .id;
+    let appdb = Arc::clone(&f.session.live().unwrap().appdb);
+    f.engine
+        .block_on(f.session.remove_wallet(f.wallet, wipe))
+        .unwrap();
+    assert_eq!(
+        appdb.setting(&f.wallet.to_string(), "replay").unwrap(),
+        None
+    );
+}

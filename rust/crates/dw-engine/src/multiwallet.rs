@@ -352,6 +352,7 @@ impl NetworkSession {
             }
             drop(passes);
             this.restore_loaded_wallet(&live.manager, id).await;
+            this.resume_replay(&live.manager, id).await;
             this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;
             this.load_payment_locks(id).await;

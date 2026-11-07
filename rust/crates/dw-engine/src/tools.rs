@@ -274,21 +274,169 @@ impl NetworkSession {
         // (under the write lock) lowers the target after this raise.
         let state = wallet.state().await;
         let live = state.core_wallet.synced_height();
-        let refused = self.hub.update_wallet_state(wallet_id, |s| {
+        let (refused, target) = self.hub.update_wallet_state(wallet_id, |s| {
+            let target = s.scan_target;
             s.scan_target = s.scan_target.max(live);
             // A cancel sets its hold under the write lock, above which it
             // leaves the checkpoint: a read at or below it is a later rewind,
             // whose replay covers what the cancel skipped. A stale batch
             // event could not tell, so `update_heights` does not do this.
             s.note_rewind(live);
-            match s.replay_cancelled {
+            let refused = match s.replay_cancelled {
                 Some(_) => Some(EngineError::RescanInterrupted),
                 None => {
                     (live < floor || s.replaying_at(live)).then_some(EngineError::RescanInProgress)
                 }
+            };
+            (refused, target)
+        });
+        if live < target {
+            self.record_seen_rewind(wallet_id, live, target, &state)
+                .await;
+        }
+        refused.map_or(Ok(live), Err)
+    }
+
+    /// A rewind the guard reads that no replay record covers (platform-
+    /// wallet's DashPay backfill, which lowers the checkpoint to its
+    /// contacts' lowest funding height, payments.rs:179) is recorded from
+    /// that floor, else from the birth height: the replay may have passed
+    /// blocks since whose stores are not committed. A target above the
+    /// known tip (a fork truncated the chain, its event not yet heard) is
+    /// lowered to the tip.
+    async fn record_seen_rewind(
+        &self,
+        wallet: WalletId,
+        live: u32,
+        target: u32,
+        info: &platform_wallet::PlatformWalletInfo,
+    ) {
+        let Ok(session) = self.live() else {
+            return;
+        };
+        let tip = self.hub.tracker().tip_height();
+        let target = tip.map_or(target, |tip| target.min(tip)).max(live);
+        let floor = || {
+            let contacts = (info.identity_manager.managed_identities())
+                .flat_map(|m| m.dashpay().established_contacts().values())
+                .map(|c| {
+                    (c.outgoing_request.core_height_created_at)
+                        .min(c.incoming_request.core_height_created_at)
+                })
+                .min();
+            match contacts {
+                Some(funding) if funding <= live => funding,
+                _ => info.core_wallet.birth_height().saturating_sub(1),
+            }
+        };
+        if let Err(e) = session.replay.note_seen(wallet, live, target, floor).await {
+            tracing::warn!(error = %e, wallet = %wallet, "could not store the replay record");
+        }
+    }
+
+    /// Lowers `wallet`'s filter checkpoint to `checkpoint`, as
+    /// `spv_rescan_filters_blocking` (accessors.rs:851-875) does, storing
+    /// its replay record first (`crate::replay_record`): a failed write
+    /// leaves the checkpoint. The target is the checkpoint read under the
+    /// same lock as the rewind (or the highest seen), so no store of a
+    /// batch made before the rewind is above it. A wallet with a record is
+    /// recorded even when not lowered. Returns the replay's target, `None`
+    /// when the wallet is not loaded.
+    pub(crate) async fn rewind_recorded(
+        &self,
+        manager: &crate::session::Manager,
+        wallet: WalletId,
+        checkpoint: u32,
+    ) -> Result<Option<u32>, EngineError> {
+        let replay = self.live()?.replay;
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
+            return Ok(None);
+        };
+        let current = info.core_wallet.synced_height();
+        let lowered = checkpoint < current;
+        let seen = self.hub.wallet_state(&wallet).map_or(0, |s| s.scan_target);
+        let target = if lowered || replay.get(wallet).await?.is_some() {
+            (replay.note_rewind(wallet, checkpoint.min(current), current.max(seen)))
+                .await?
+                .target
+        } else {
+            current
+        };
+        #[cfg(test)]
+        if (replay.crash_after_write).swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(EngineError::Internal("quit after the replay record".into()));
+        }
+        if lowered {
+            info.core_wallet.update_synced_height(checkpoint);
+            tracing::info!(wallet = %wallet, checkpoint, target, "rewound the filter checkpoint for a replay");
+        }
+        self.hub.update_wallet_state(wallet, |s| {
+            s.scan_target = s.scan_target.max(target);
+            if lowered {
+                s.note_rewind(checkpoint);
             }
         });
-        refused.map_or(Ok(live), Err)
+        Ok(Some(target))
+    }
+
+    /// Resumes `wallet`'s stored replay as it is loaded, before
+    /// SPV scans it: the checkpoint goes back to the record's start and
+    /// spends wait for the target. A cancelled replay is not resumed: its
+    /// hold comes back. A failed resume keeps the record and holds spends.
+    pub(crate) async fn resume_replay(&self, manager: &crate::session::Manager, wallet: WalletId) {
+        let Ok(live) = self.live() else {
+            return;
+        };
+        let hold = |reached: u32, target: u32| {
+            self.hub.update_wallet_state(wallet, |s| {
+                s.scan_target = s.scan_target.max(target);
+                s.replay_cancelled = Some(s.replay_cancelled.map_or(reached, |h| h.min(reached)));
+            });
+        };
+        let record = match live.replay.get(wallet).await {
+            Ok(Some(record)) => record,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!(error = %e, wallet = %wallet, "could not read the replay record: spends wait for a rescan");
+                hold(0, 0);
+                return;
+            }
+        };
+        if record.cancelled {
+            hold(record.reached, record.target);
+            return;
+        }
+        match self.rewind_recorded(manager, wallet, record.reached).await {
+            Ok(Some(target)) => {
+                let mut rescan = self.hub.rescan();
+                if rescan.as_ref().is_some_and(RescanState::finished) {
+                    *rescan = None;
+                }
+                let state = rescan.get_or_insert_with(|| RescanState {
+                    from_height: record.reached.saturating_add(1),
+                    started_at: unix_now(),
+                    wallets: BTreeMap::new(),
+                });
+                state.from_height = state.from_height.min(record.reached.saturating_add(1));
+                state.wallets.insert(
+                    wallet,
+                    WalletRescan {
+                        resume_height: target,
+                        reached: None,
+                    },
+                );
+            }
+            Ok(None) => {
+                tracing::warn!(wallet = %wallet, "replay not resumed: the wallet is not loaded");
+                hold(record.reached, record.target);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, wallet = %wallet, "replay not resumed: spends wait for a rescan");
+                hold(record.reached, record.target);
+            }
+        }
     }
 
     /// `select` between [`Self::replay_guard`] and its second call.
@@ -320,7 +468,8 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let manager = this.manager()?;
+            let live = this.live()?;
+            let manager = Arc::clone(&live.manager);
             let Some(state) = this.hub.rescan().take() else {
                 return Ok(false);
             };
@@ -341,6 +490,12 @@ impl NetworkSession {
                             s.replay_cancelled =
                                 Some(s.replay_cancelled.map_or(current, |r| r.min(current)));
                         });
+                        if let Err(e) = (live.replay)
+                            .note_cancel(*id, current, w.resume_height)
+                            .await
+                        {
+                            tracing::warn!(error = %e, wallet = %id, "could not store the cancelled replay");
+                        }
                     }
                 }
             }
@@ -441,11 +596,8 @@ impl NetworkSession {
                 self.store_birth_height(id, from).await?;
                 self.refresh_wallet_state(&manager, id).await;
             }
-            let checkpoint = from.saturating_sub(1);
-            let m = Arc::clone(&manager);
-            tokio::task::spawn_blocking(move || m.spv_rescan_filters_blocking(&id.0, checkpoint))
+            self.rewind_recorded(&manager, id, from.saturating_sub(1))
                 .await?;
-            (self.hub).update_wallet_state(id, |s| s.note_rewind(checkpoint));
             self.hub.pump.mark_history(id, None);
         }
         if !state.wallets.is_empty() {
@@ -480,11 +632,8 @@ impl NetworkSession {
             for id in manager.list_wallet_ids_blocking() {
                 let wallet = WalletId(id);
                 let birth = this.hub.wallet_state(&wallet).map_or(0, |s| s.birth_height);
-                let m = Arc::clone(&manager);
-                tokio::task::spawn_blocking(move || {
-                    m.spv_rescan_filters_blocking(&id, birth.saturating_sub(1))
-                })
-                .await?;
+                this.rewind_recorded(&manager, wallet, birth.saturating_sub(1))
+                    .await?;
                 this.refresh_wallet_state(&manager, wallet).await;
                 this.hub.pump.mark_history(wallet, None);
                 this.hub.pump.mark_balances(wallet);

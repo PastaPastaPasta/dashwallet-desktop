@@ -191,6 +191,8 @@ pub(crate) struct Live {
     pub tap: Arc<crate::platform::journal::ChangesetTap>,
     /// Positive provenance (DEC-125): which Platform data counts as verified.
     pub provenance: Arc<crate::platform::provenance::Provenance>,
+    /// The wallets' unfinished replays (`crate::replay_record`).
+    pub replay: Arc<crate::replay_record::ReplayRecords>,
 }
 
 /// The running event pump: its stop signal and task.
@@ -449,6 +451,9 @@ impl NetworkSession {
             unloaded,
             Arc::clone(&tap),
         ));
+        let replay = crate::replay_record::ReplayRecords::new(Arc::clone(&appdb));
+        store.install_replay(&replay);
+        hub.attach_replay(&replay);
         for (order, (id, name, created_at)) in (0u64..).zip(names) {
             match id.parse::<WalletId>() {
                 Ok(id) => hub.set_name(
@@ -467,6 +472,7 @@ impl NetworkSession {
             Arc::clone(&store),
             Arc::clone(&hub) as Arc<dyn platform_wallet::PlatformEventHandler>,
         ));
+        replay.start(Arc::downgrade(&manager));
         trust.attach(
             Arc::new(trust::RuntimeQuorums(Arc::downgrade(&manager.spv_arc()))),
             &provenance,
@@ -533,6 +539,7 @@ impl NetworkSession {
                 appdb: Arc::clone(&appdb),
                 tap,
                 provenance,
+                replay,
             })),
             pump: Mutex::new(None),
             spends: Default::default(),
@@ -623,6 +630,9 @@ impl NetworkSession {
         session.open_avatars(Arc::clone(&appdb)).await;
         // Before SPV starts: no block can replay a coin outside its account.
         session.restore_loaded_wallets(&manager).await;
+        for id in manager.list_wallet_ids_blocking() {
+            session.resume_replay(&manager, WalletId(id)).await;
+        }
         for id in manager.list_wallet_ids_blocking() {
             session.refresh_wallet_state(&manager, WalletId(id)).await;
             session.load_identity_choices(WalletId(id)).await;
