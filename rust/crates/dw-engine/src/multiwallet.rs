@@ -341,18 +341,35 @@ impl NetworkSession {
             // The wallet joins the shielded passes' set: not while one is in
             // flight (R1-3, `PlatformRuntime::shielded_passes`).
             let passes = this.platform.shielded_passes.write().await;
+            // Spends wait from before the wallet is published until its
+            // stored replay is resumed (`WalletState::loading`); a store
+            // SPV commits for it meanwhile ends no record
+            // (`ReplayRecords::committed`).
+            this.hub.update_wallet_state(id, |s| s.loading = true);
             live.store.set_unloaded(id.0, false);
             if let Err(e) = live.manager.load_from_persistor().await {
                 live.store.set_unloaded(id.0, true);
+                this.hub.unload_wallet(&id);
                 return Err(e.into());
             }
             if live.manager.get_wallet(&id.0).await.is_none() {
                 live.store.set_unloaded(id.0, true);
+                this.hub.unload_wallet(&id);
                 return Err(EngineError::WalletNotFound(id.to_string()));
             }
             drop(passes);
             this.restore_loaded_wallet(&live.manager, id).await;
+            #[cfg(test)]
+            let pause = this.hub.pause_load.lock().unwrap().take();
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                pause
+                    .reached
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                pause.release.notified().await;
+            }
             this.resume_replay(&live.manager, id).await;
+            this.hub.update_wallet_state(id, |s| s.loading = false);
             this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;
             this.load_payment_locks(id).await;

@@ -2951,3 +2951,495 @@ fn a_clean_close_after_the_replay_ends_its_record() {
     assert_eq!(guard.unwrap(), 1_000);
     assert_eq!(record, None);
 }
+
+/// Seams for coins the store holds.
+impl Fixture {
+    /// A coin of `value` funded at `height` to a fresh receive address.
+    fn late_coin(&self, seed: u8, value: u64, height: u32) -> Utxo {
+        let (session, id) = (Arc::clone(&self.session), self.wallet);
+        let inner = Arc::clone(&session);
+        self.engine
+            .block_on(session.on_runtime(async move {
+                let wallet = inner.wallet(&id).await?;
+                let address = wallet.core().next_receive_address_for_account(0).await?;
+                let mut utxo = Utxo::new(
+                    OutPoint::new(Txid::from_byte_array([seed; 32]), 0),
+                    TxOut {
+                        value,
+                        script_pubkey: address.script_pubkey(),
+                    },
+                    address,
+                    height,
+                    false,
+                );
+                utxo.is_confirmed = true;
+                Ok(utxo)
+            }))
+            .unwrap()
+    }
+
+    /// Puts `utxo` in key-wallet's unspent set, as a replay of its funding
+    /// block does.
+    fn put_coin(&self, utxo: Utxo) {
+        let (session, id) = (Arc::clone(&self.session), self.wallet);
+        let inner = Arc::clone(&session);
+        self.engine
+            .block_on(session.on_runtime(async move {
+                let wallet = inner.wallet(&id).await?;
+                let mut state = wallet.state_mut().await;
+                (state.core_wallet.accounts.standard_bip44_accounts)
+                    .get_mut(&0)
+                    .expect("BIP44 account 0")
+                    .utxos
+                    .insert(utxo.outpoint, utxo);
+                Ok(())
+            }))
+            .unwrap();
+    }
+
+    /// The persister commits `core` for the wallet, through the store
+    /// platform-wallet writes to.
+    fn store_core(&self, core: platform_wallet::changeset::CoreChangeSet) {
+        use platform_wallet::changeset::{PlatformWalletChangeSet, PlatformWalletPersistence};
+        let (store, id) = (Arc::clone(&self.session.live().unwrap().store), self.wallet);
+        self.engine
+            .block_on(self.session.on_runtime(async move {
+                let changeset = PlatformWalletChangeSet {
+                    core: Some(core),
+                    ..Default::default()
+                };
+                tokio::task::spawn_blocking(move || store.store(id.0, changeset))
+                    .await?
+                    .map_err(|e| EngineError::Storage(e.to_string()))
+            }))
+            .unwrap();
+    }
+
+    /// Whether the coin list offers `outpoint`.
+    fn offers(&self, outpoint: OutPoint) -> bool {
+        let coins = (self.engine)
+            .block_on(self.session.utxos(
+                self.wallet,
+                CoinFilter {
+                    include_locked: true,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        coins.iter().any(|c| c.outpoint == outpoint)
+    }
+
+    fn pay_from_the_draft(&self, draft: &Arc<TxDraft>) -> Result<Arc<PreparedTx>, EngineError> {
+        (self.engine).block_on(draft.prepare(self.spend_grant(10_000_000 + FEE_ROOM)))
+    }
+
+    fn records(&self) -> Arc<crate::replay_record::ReplayRecords> {
+        Arc::clone(&self.session.live().unwrap().replay)
+    }
+}
+
+fn interrupted<T: std::fmt::Debug>(r: &Result<T, EngineError>) -> bool {
+    matches!(r, Err(EngineError::RescanInterrupted))
+}
+
+/// The replay has passed a coin's funding block, so the coin is credited
+/// again and stored unspent, and not yet the block that spent it, when
+/// the app quits. The reopened wallet holds the stored coin: spends wait
+/// for the resumed replay, which spends it again.
+#[test]
+fn a_quit_after_a_late_coin_replayed_holds_it_until_its_spend_replays() {
+    use platform_wallet::changeset::CoreChangeSet;
+    let f = fixture(false);
+    let coin = f.late_coin(7, COIN, 150);
+    f.store_core(CoreChangeSet {
+        new_utxos: vec![coin.clone()],
+        spent_utxos: vec![coin.clone()],
+        synced_height: Some(1_000),
+        ..Default::default()
+    });
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    assert!(!f.offers(coin.outpoint), "spent at 700");
+    f.rescan(100).unwrap();
+    f.put_coin(coin.clone());
+    f.store_core(CoreChangeSet {
+        new_utxos: vec![coin.clone()],
+        synced_height: Some(160),
+        ..Default::default()
+    });
+    f.advance(160);
+    assert!(f.offers(coin.outpoint), "the replay credits the coin again");
+    f.crash_on_close();
+    let f = f.reopen();
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let (synced, offered, payment) = (
+        f.synced(),
+        f.offers(coin.outpoint),
+        f.pay_from_the_draft(&draft),
+    );
+    eprintln!(
+        "ROW58 late coin quit: filter checkpoint {synced}, stored spent coin offered {offered}, \
+         payment {:?}",
+        payment.as_ref().map(|p| p.summary().inputs[0].outpoint)
+    );
+    assert!(offered, "the store keeps the replay's credit");
+    assert!(synced < 100, "resumed at {}, past the replay", synced + 1);
+    assert!(replaying(payment), "the spent coin pays after a restart");
+    f.see_spent(coin.outpoint);
+    f.store_core(CoreChangeSet {
+        spent_utxos: vec![coin.clone()],
+        synced_height: Some(710),
+        ..Default::default()
+    });
+    f.advance(1_001);
+    f.commit(1_001).unwrap();
+    assert_eq!(f.record(), None, "the replay is back and stored");
+    assert!(!f.offers(coin.outpoint));
+    assert!(!replaying(f.pay_from_the_draft(&draft)));
+}
+
+/// A cancel's hold is kept by a later rewind that starts above it, a
+/// rescan or a hidden one (the DashPay backfill on each launch), whatever
+/// the guard reads meanwhile, across restarts and a replay past the
+/// target; a rescan from the hold ends it.
+#[test]
+fn a_rewind_above_a_cancel_hold_keeps_it_across_a_restart() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    f.advance(600);
+    assert!(f.engine.block_on(f.session.cancel_rescan()).unwrap());
+    f.rescan(800).unwrap();
+    assert!(interrupted(&f.guard()));
+    f.crash_on_close();
+    let f = f.reopen();
+    let (synced, guard) = (f.synced(), f.guard());
+    eprintln!(
+        "ROW58 rescan above the hold then restart: filter checkpoint {synced}, replay guard {guard:?}"
+    );
+    assert_eq!(synced, 1_000, "the cancelled replay is resumed");
+    assert!(interrupted(&guard), "the hold is gone: {guard:?}");
+
+    f.checkpoint(800);
+    assert!(interrupted(&f.guard()));
+    f.advance(1_001);
+    f.commit(1_001).unwrap();
+    let f = f.reopen();
+    let (synced, guard) = (f.synced(), f.guard());
+    eprintln!(
+        "ROW58 hidden rewind above the hold then restart: filter checkpoint {synced}, replay guard {guard:?}"
+    );
+    assert_eq!(synced, 1_001, "the cancelled replay is resumed");
+    assert!(interrupted(&guard), "the hold is gone: {guard:?}");
+
+    f.rescan(400).unwrap();
+    assert!(replaying(f.guard()), "a rescan from the hold ends it");
+    f.crash_on_close();
+    let f = f.reopen();
+    assert!(f.synced() < 400);
+    assert!(replaying(f.guard()));
+}
+
+/// A cancel whose hold cannot be stored fails, and the replay goes on as
+/// if it was not cancelled: a clean close keeps its record.
+#[test]
+fn a_cancel_whose_hold_is_not_stored_fails_and_the_replay_goes_on() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    f.advance(600);
+    let records = f.records();
+    records
+        .fail_writes
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let cancel = f.engine.block_on(f.session.cancel_rescan());
+    records
+        .fail_writes
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    drop(records);
+    let (synced, guard) = (f.synced(), f.guard());
+    let progress = f.session.rescan_progress().unwrap();
+    eprintln!(
+        "ROW58 cancel not stored: cancel {cancel:?}, filter checkpoint {synced}, replay guard \
+         {guard:?}, rescan progress {progress:?}"
+    );
+    assert!(cancel.is_err(), "the cancel reports success");
+    assert_eq!(synced, 600, "the cancel moved the checkpoint");
+    assert!(replaying(guard));
+    assert!(progress.is_some(), "the rescan stopped");
+    let f = f.reopen();
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let (synced, record) = (f.synced(), f.record());
+    assert!(record.is_some_and(|r| !r.cancelled));
+    assert!(synced < 400, "resumed at {}", synced + 1);
+    assert!(replaying(f.pay_from_the_draft(&draft)));
+}
+
+/// A record whose replay the hub still holds (here a cancel's hold the
+/// record does not carry) is not ended by a commit above its target or by
+/// a clean close.
+#[test]
+fn a_replay_the_hub_holds_keeps_its_record() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    (f.session.hub).update_wallet_state(f.wallet, |s| s.replay_cancelled = Some(500));
+    f.advance(1_001);
+    f.commit(1_001).unwrap();
+    assert!(f.record().is_some(), "ended in the session");
+    let f = f.reopen();
+    assert!(f.synced() < 400, "ended at the clean close");
+    assert!(replaying(f.guard()));
+}
+
+/// A fork lowers the replay's target to the new chain, and a restart keeps
+/// it lowered: the replay is done at the shorter chain's tip, though the
+/// stored checkpoint stays above it.
+#[test]
+fn a_fork_lowered_replay_target_stays_lowered_after_a_restart() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    (f.session.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::ChainTruncated {
+        wallet_id: f.wallet.0,
+        height: 900,
+        txids: Vec::new(),
+        unconfirmed_txids: Vec::new(),
+        restored_outpoints: Vec::new(),
+        balance: key_wallet::wallet::balance::WalletCoreBalance::new(COIN, 0, 0, 0),
+        account_balances: Default::default(),
+    });
+    assert_eq!(f.record().map(|r| r.target), Some(900));
+    f.crash_on_close();
+    let f = f.reopen();
+    assert!(f.synced() < 400);
+    assert!(replaying(f.guard()));
+    f.advance(900);
+    let guard = f.guard();
+    eprintln!("ROW58 fork then restart: replay guard at the new tip 900 {guard:?}");
+    assert_eq!(guard.unwrap(), 900, "the target went back above the chain");
+    f.advance(901);
+    f.commit(901).unwrap();
+    let f = f.reopen();
+    assert_eq!(f.record(), None);
+    assert!(f.guard().is_ok());
+}
+
+/// Without a fork, a replay resumed after a restart is not done below
+/// its target.
+#[test]
+fn a_resumed_replay_short_of_its_target_still_refuses() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    f.crash_on_close();
+    let f = f.reopen();
+    f.advance(900);
+    assert!(replaying(f.guard()));
+    f.advance(1_000);
+    assert_eq!(f.guard().unwrap(), 1_000);
+}
+
+/// A wallet opened mid-session is published before its stored replay is
+/// resumed: a payment in between is refused, and once resumed the replay
+/// holds spends.
+#[test]
+fn a_wallet_opened_mid_session_refuses_spends_until_its_replay_resumes() {
+    use platform_wallet::changeset::CoreChangeSet;
+    let f = fixture(false);
+    let coin = f.late_coin(7, COIN, 150);
+    f.put_coin(coin.clone());
+    f.store_core(CoreChangeSet {
+        new_utxos: vec![coin.clone()],
+        synced_height: Some(1_000),
+        ..Default::default()
+    });
+    f.advance(1_000);
+    f.rescan(400).unwrap();
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_load.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = {
+        let (s, id) = (Arc::clone(&f.session), f.wallet);
+        f.session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    eventually("the open's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let (synced, payment) = (f.synced(), f.pay_from_the_draft(&draft));
+    eprintln!(
+        "ROW58 wallet opened mid-session: filter checkpoint {synced} before the resume, payment {:?}",
+        payment.as_ref().map(|p| p.summary().inputs[0].outpoint)
+    );
+    assert!(replaying(payment), "a payment before the resume");
+    pause.release.notify_one();
+    f.engine.block_on(load).unwrap().unwrap();
+    assert!(f.synced() < 400);
+    assert!(replaying(f.pay_from_the_draft(&draft)));
+}
+
+/// A stored replay this build cannot read (another format, or a start
+/// above its target), or a read that fails, holds spends until a rescan
+/// from the birth height.
+#[test]
+fn an_unreadable_replay_record_holds_spends_until_a_rescan_from_the_birth_height() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.engine
+        .block_on(f.session.set_birth_height(f.wallet, 500))
+        .unwrap();
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    (f.session.live().unwrap().appdb)
+        .set_setting(&f.wallet.to_string(), "replay", Some("1:1000:1001:0"))
+        .unwrap();
+    f.crash_on_close();
+    let f = f.reopen();
+    let (synced, guard) = (f.synced(), f.guard());
+    eprintln!("ROW58 unreadable record: filter checkpoint {synced}, replay guard {guard:?}");
+    assert_eq!(synced, 1_000);
+    assert!(interrupted(&guard), "{guard:?}");
+    f.rescan(500).unwrap();
+    assert!(
+        replaying(f.guard()),
+        "a rescan from the birth height ends the hold"
+    );
+
+    f.advance(1_001);
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    let records = f.records();
+    records
+        .fail_reads
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    f.engine.block_on(f.session.load_wallet(f.wallet)).unwrap();
+    let guard = f.guard();
+    eprintln!("ROW58 record read failed at open: replay guard {guard:?}");
+    assert!(interrupted(&guard), "{guard:?}");
+    records
+        .fail_reads
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    f.rescan(500).unwrap();
+    assert!(
+        replaying(f.guard()),
+        "a rescan from the birth height ends the hold"
+    );
+}
+
+/// The abandon's replay record is stored before the abandon: when it
+/// cannot be, nothing is abandoned.
+#[test]
+fn an_abandon_whose_replay_is_not_stored_does_not_happen() {
+    use key_wallet::transaction_checking::{
+        BlockInfo, TransactionContext, WalletTransactionChecker,
+    };
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let f = fixture(false);
+    let coin = f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    let funding = dashcore::Transaction {
+        version: 2,
+        lock_time: 0,
+        input: Vec::new(),
+        output: Vec::new(),
+        special_transaction_payload: None,
+    };
+    f.session.hub.history.with_wallet(f.wallet, |h| {
+        h.txs.insert(
+            coin.txid,
+            crate::history::TxEntry {
+                tx: funding,
+                context: TransactionContext::InBlock(BlockInfo::new(
+                    150,
+                    dashcore::BlockHash::all_zeros(),
+                    9,
+                )),
+                instant_locked: false,
+                first_seen: None,
+                own_inputs: Default::default(),
+                abandoned: false,
+            },
+        )
+    });
+    let spend = dashcore::Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: coin,
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value: COIN / 2,
+            script_pubkey: script_of(FOREIGN),
+        }],
+        special_transaction_payload: None,
+    };
+    let txid = spend.txid();
+    f.session.hub.history.with_wallet(f.wallet, |h| {
+        h.txs.insert(
+            txid,
+            crate::history::TxEntry {
+                tx: spend.clone(),
+                context: TransactionContext::Mempool,
+                instant_locked: false,
+                first_seen: None,
+                own_inputs: Default::default(),
+                abandoned: false,
+            },
+        )
+    });
+    let manager = Arc::clone(&f.session.live().unwrap().manager);
+    f.engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let (wallet, info) = wm.get_wallet_and_info_mut(&f.wallet.0).unwrap();
+        let mut wallet = wallet.clone();
+        info.core_wallet
+            .check_core_transaction(&spend, TransactionContext::Mempool, &mut wallet, true, true)
+            .await;
+    });
+    let records = f.records();
+    records
+        .fail_writes
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let abandon = {
+        let (s, id, m) = (Arc::clone(&f.session), f.wallet, Arc::clone(&manager));
+        f.engine.block_on(
+            f.session
+                .on_runtime(async move { s.abandon_inner(&m, id, txid).await }),
+        )
+    };
+    records
+        .fail_writes
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let abandoned = (f.session.hub.history)
+        .get(&f.wallet, &txid)
+        .is_some_and(|e| e.abandoned);
+    let held = f.engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = &wm.get_wallet_info(&f.wallet.0).unwrap().core_wallet;
+        (info.transaction_history().iter()).any(|r| r.txid == txid)
+    });
+    eprintln!(
+        "ROW58 abandon not recorded: {abandon:?}, abandoned {abandoned}, key-wallet holds it {held}"
+    );
+    assert!(abandon.is_err());
+    assert!(!abandoned, "abandoned without its replay record");
+    assert!(held, "key-wallet dropped it");
+}

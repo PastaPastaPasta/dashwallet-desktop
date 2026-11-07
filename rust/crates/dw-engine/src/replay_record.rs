@@ -18,6 +18,7 @@ use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoIn
 use tokio::sync::{Mutex, mpsc};
 
 use crate::coins::appdb_job;
+use crate::events::SessionHub;
 use crate::session::Manager;
 use crate::{EngineError, WalletId};
 
@@ -40,6 +41,15 @@ pub(crate) struct ReplayRecord {
 }
 
 impl ReplayRecord {
+    /// What a stored value this build cannot read stands for: a hold, which
+    /// the resume raises to the wallet's birth height, so that a rescan
+    /// from the birth height replays whatever it was.
+    pub(crate) const UNREADABLE: Self = Self {
+        target: 0,
+        reached: 0,
+        cancelled: true,
+    };
+
     fn encode(&self) -> String {
         format!(
             "1:{}:{}:{}",
@@ -49,8 +59,8 @@ impl ReplayRecord {
         )
     }
 
-    /// A value this build cannot read replays the wallet from its birth
-    /// (the resume raises target 0 to the stored checkpoint).
+    /// A value this build cannot read, or one that starts its replay above
+    /// its target, is [`Self::UNREADABLE`].
     fn decode(value: &str) -> Self {
         let parsed = (|| {
             let mut parts = value.split(':');
@@ -64,7 +74,7 @@ impl ReplayRecord {
                 "1" => true,
                 _ => return None,
             };
-            parts.next().is_none().then_some(Self {
+            (parts.next().is_none() && reached <= target).then_some(Self {
                 target,
                 reached,
                 cancelled,
@@ -73,13 +83,9 @@ impl ReplayRecord {
         parsed.unwrap_or_else(|| {
             tracing::warn!(
                 value,
-                "unreadable replay record: the wallet replays from its birth"
+                "unreadable replay record: spends wait for a rescan from the birth height"
             );
-            Self {
-                target: 0,
-                reached: 0,
-                cancelled: false,
-            }
+            Self::UNREADABLE
         })
     }
 
@@ -126,6 +132,11 @@ pub(crate) struct ReplayRecords {
     /// and whether a store of its Core changes failed (the persistence
     /// adapter then holds its stored checkpoint back for the session).
     commits: std::sync::Mutex<HashMap<WalletId, (u32, bool)>>,
+    /// The highest checkpoint a batch made before one of this session's
+    /// rewinds of the wallet can carry: the in-session clear needs a
+    /// commit above it as well as above the target, which a fork or a
+    /// resume can leave lower.
+    stale: std::sync::Mutex<HashMap<WalletId, u32>>,
     /// Tests: a close clears nothing, as a crash.
     #[cfg(test)]
     pub(crate) crash_on_close: std::sync::atomic::AtomicBool,
@@ -133,6 +144,12 @@ pub(crate) struct ReplayRecords {
     /// as a quit there would leave it.
     #[cfg(test)]
     pub(crate) crash_after_write: std::sync::atomic::AtomicBool,
+    /// Tests: every write fails.
+    #[cfg(test)]
+    pub(crate) fail_writes: std::sync::atomic::AtomicBool,
+    /// Tests: every read fails.
+    #[cfg(test)]
+    pub(crate) fail_reads: std::sync::atomic::AtomicBool,
 }
 
 impl ReplayRecords {
@@ -144,10 +161,15 @@ impl ReplayRecords {
             notes,
             receiver: std::sync::Mutex::new(Some(receiver)),
             commits: Default::default(),
+            stale: Default::default(),
             #[cfg(test)]
             crash_on_close: Default::default(),
             #[cfg(test)]
             crash_after_write: Default::default(),
+            #[cfg(test)]
+            fail_writes: Default::default(),
+            #[cfg(test)]
+            fail_reads: Default::default(),
         })
     }
 
@@ -167,13 +189,31 @@ impl ReplayRecords {
         commits.entry(wallet).or_default().1 = true;
     }
 
+    /// A batch made before a rewind of `wallet` read now can carry
+    /// checkpoint `height`.
+    pub(crate) fn note_stale(&self, wallet: WalletId, height: u32) {
+        let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+        let entry = stale.entry(wallet).or_default();
+        *entry = (*entry).max(height);
+    }
+
+    /// Whether the hub still waits on `wallet`'s replay: a cancel's hold,
+    /// a load not yet resumed, or a rescan not back. No record of such a
+    /// wallet ends.
+    fn held(hub: &SessionHub, wallet: WalletId) -> bool {
+        hub.wallet_state(&wallet)
+            .is_some_and(|s| s.replay_cancelled.is_some() || s.loading)
+            || (hub.rescan().as_ref()).is_some_and(|r| r.replaying(&wallet))
+    }
+
     /// After a clean shutdown of the manager, whose persistence adapter
     /// committed every event before it returned: a replay back at its
     /// target, with a store at the target or above committed and none of
     /// the wallet's failed this session, is stored whole, and its record
-    /// goes. The strict rule of [`Self::committed`] is for a running
-    /// session, whose adapter may still hold a batch made before the rewind.
-    pub(crate) async fn close(&self, manager: &Manager) {
+    /// goes, unless the hub still holds it. The strict rule of
+    /// [`Self::committed`] is for a running session, whose adapter may
+    /// still hold a batch made before the rewind.
+    pub(crate) async fn close(&self, manager: &Manager, hub: &SessionHub) {
         #[cfg(test)]
         if self
             .crash_on_close
@@ -190,7 +230,7 @@ impl ReplayRecords {
         let wm = wm.read().await;
         let mut records = self.records.lock().await;
         for (wallet, (committed, failed)) in commits {
-            if failed {
+            if failed || Self::held(hub, wallet) {
                 continue;
             }
             let Some(live) = (wm.get_wallet_info(&wallet.0)).map(|i| i.core_wallet.synced_height())
@@ -212,7 +252,7 @@ impl ReplayRecords {
     }
 
     /// Applies the notes until the records are dropped (once).
-    pub(crate) fn start(self: &Arc<Self>, manager: Weak<Manager>) {
+    pub(crate) fn start(self: &Arc<Self>, manager: Weak<Manager>, hub: Weak<SessionHub>) {
         let receiver = self
             .receiver
             .lock()
@@ -229,7 +269,7 @@ impl ReplayRecords {
                 };
                 match note {
                     ReplayNote::Committed { wallet, height } => {
-                        records.committed(wallet, height, &manager).await
+                        records.committed(wallet, height, &manager, &hub).await
                     }
                     ReplayNote::Truncated { wallet, height } => {
                         records.truncated(wallet, height).await
@@ -256,6 +296,10 @@ impl ReplayRecords {
         records: &mut HashMap<WalletId, Option<ReplayRecord>>,
         wallet: WalletId,
     ) -> Result<Option<ReplayRecord>, EngineError> {
+        #[cfg(test)]
+        if self.fail_reads.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(EngineError::Storage("replay record read failed".into()));
+        }
         if let Some(record) = records.get(&wallet) {
             return Ok(*record);
         }
@@ -275,6 +319,16 @@ impl ReplayRecords {
     ) -> Result<(), EngineError> {
         let (db, scope) = (Arc::clone(&self.appdb), wallet.to_string());
         let value = record.map(|r| r.encode());
+        #[cfg(test)]
+        let written = if self.fail_writes.load(std::sync::atomic::Ordering::SeqCst) {
+            Err(EngineError::Storage("replay record write failed".into()))
+        } else {
+            appdb_job(db, move |db| {
+                db.set_setting_durable(&scope, KEY, value.as_deref())
+            })
+            .await
+        };
+        #[cfg(not(test))]
         let written = appdb_job(db, move |db| {
             db.set_setting_durable(&scope, KEY, value.as_deref())
         })
@@ -316,7 +370,9 @@ impl ReplayRecords {
 
     /// A read of checkpoint `live` below the highest seen, `target`: a
     /// rewind the record does not explain (none, or one below its start)
-    /// is stored from `floor()`, the lowest checkpoint it can have had.
+    /// is stored from `floor()`, the lowest checkpoint it can have had. A
+    /// cancel's hold stays unless `live` is at it or below: a read above it
+    /// is no sign that the rewind went back that far.
     pub(crate) async fn note_seen(
         &self,
         wallet: WalletId,
@@ -330,7 +386,10 @@ impl ReplayRecords {
             Some(r) if live >= r.reached => r.reached,
             _ => floor().min(live),
         };
-        let record = ReplayRecord::merged(old, checkpoint, target);
+        let record = ReplayRecord {
+            cancelled: old.is_some_and(|r| r.cancelled && live > r.reached),
+            ..ReplayRecord::merged(old, checkpoint, target)
+        };
         if old != Some(record) {
             self.write(&mut records, wallet, Some(record)).await?;
         }
@@ -338,13 +397,13 @@ impl ReplayRecords {
     }
 
     /// The user cancelled `wallet`'s replay, which had got to `reached` of
-    /// `target`: its record becomes a hold.
+    /// `target`: its record becomes a hold. Returns what it replaces.
     pub(crate) async fn note_cancel(
         &self,
         wallet: WalletId,
         reached: u32,
         target: u32,
-    ) -> Result<(), EngineError> {
+    ) -> Result<Option<ReplayRecord>, EngineError> {
         let mut records = self.records.lock().await;
         let old = self.load(&mut records, wallet).await?;
         let record = match old {
@@ -361,7 +420,45 @@ impl ReplayRecords {
         if old != Some(record) {
             self.write(&mut records, wallet, Some(record)).await?;
         }
+        Ok(old)
+    }
+
+    /// Puts back `wallet`'s record as it was before a cancel that did not
+    /// happen.
+    pub(crate) async fn restore(
+        &self,
+        wallet: WalletId,
+        record: Option<ReplayRecord>,
+    ) -> Result<(), EngineError> {
+        let mut records = self.records.lock().await;
+        if self.load(&mut records, wallet).await? != record {
+            self.write(&mut records, wallet, record).await?;
+        }
         Ok(())
+    }
+
+    /// The resume found `wallet`'s hold below `floor`, the lowest
+    /// checkpoint a rescan from its birth height rewinds to: the hold is
+    /// stored at `floor`, so that rescan ends it. Returns the hold.
+    pub(crate) async fn raise_hold(
+        &self,
+        wallet: WalletId,
+        floor: u32,
+    ) -> Result<u32, EngineError> {
+        let mut records = self.records.lock().await;
+        match self.load(&mut records, wallet).await? {
+            Some(r) if r.cancelled && r.reached < floor => {
+                let raised = ReplayRecord {
+                    reached: floor,
+                    target: r.target.max(floor),
+                    ..r
+                };
+                self.write(&mut records, wallet, Some(raised)).await?;
+                Ok(floor)
+            }
+            Some(r) => Ok(r.reached),
+            None => Ok(floor),
+        }
     }
 
     /// Forgets a removed wallet (its app.sqlite rows are deleted with it).
@@ -370,10 +467,39 @@ impl ReplayRecords {
     }
 
     /// A committed store at `height`: above the target, with the wallet's
-    /// checkpoint at the target or above, the replay is done and stored.
-    /// No batch made before a rewind is above its target (it is read under
-    /// the rewind's lock), so this store follows the replay.
-    async fn committed(&self, wallet: WalletId, height: u32, manager: &Weak<Manager>) {
+    /// checkpoint at the target or above, the replay is done and stored. No
+    /// batch made before a rewind is above the checkpoint the rewind read
+    /// under its lock (`stale`), which a new rewind's target is not below,
+    /// so a store above both follows the replay. A fork's lower target, or
+    /// a resume's below the stored checkpoint, waits for a commit above
+    /// `stale` or a clean close. Nothing ends after a failed store of the
+    /// wallet (its later checkpoints are not stored), or while the hub
+    /// holds it.
+    async fn committed(
+        &self,
+        wallet: WalletId,
+        height: u32,
+        manager: &Weak<Manager>,
+        hub: &Weak<SessionHub>,
+    ) {
+        let (committed, stale) = (
+            self.commits
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&wallet)
+                .copied(),
+            self.stale
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&wallet)
+                .copied(),
+        );
+        if committed.is_some_and(|(_, failed)| failed) || height <= stale.unwrap_or(0) {
+            return;
+        }
+        if hub.upgrade().is_none_or(|hub| Self::held(&hub, wallet)) {
+            return;
+        }
         let due = |r: Option<ReplayRecord>| r.filter(|r| !r.cancelled && height > r.target);
         match self.get(wallet).await {
             Ok(r) if due(r).is_some() => {}
@@ -408,7 +534,8 @@ impl ReplayRecords {
     }
 
     /// A fork truncated the wallet to `height`: the replay is done at the
-    /// new chain's height, not above it.
+    /// new chain's height, not above it. The old target stays the bound of
+    /// the in-session clear.
     async fn truncated(&self, wallet: WalletId, height: u32) {
         let mut records = self.records.lock().await;
         let old = match self.load(&mut records, wallet).await {
@@ -419,6 +546,7 @@ impl ReplayRecords {
                 return;
             }
         };
+        self.note_stale(wallet, old.target);
         let record = ReplayRecord {
             target: old.target.min(height),
             reached: old.reached.min(height),
@@ -444,8 +572,16 @@ mod tests {
             cancelled: true,
         };
         assert_eq!(ReplayRecord::decode(&r.encode()), r);
-        let unreadable = ReplayRecord::decode("2:1000:399:0");
-        assert_eq!((unreadable.target, unreadable.reached), (0, 0));
+        assert_eq!(
+            ReplayRecord::decode("2:1000:399:0"),
+            ReplayRecord::UNREADABLE
+        );
+        assert_eq!(
+            ReplayRecord::decode("1:1000:1001:0"),
+            ReplayRecord::UNREADABLE,
+            "a replay that starts above its target"
+        );
+        assert_eq!(ReplayRecord::decode("1:1000:1000:0").reached, 1_000);
         let merged = ReplayRecord::merged(Some(r), 799, 1_200);
         assert_eq!((merged.target, merged.reached), (1_200, 399));
         assert!(merged.cancelled, "a rewind above the hold keeps it");

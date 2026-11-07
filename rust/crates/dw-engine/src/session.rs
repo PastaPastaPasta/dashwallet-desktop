@@ -472,7 +472,7 @@ impl NetworkSession {
             Arc::clone(&store),
             Arc::clone(&hub) as Arc<dyn platform_wallet::PlatformEventHandler>,
         ));
-        replay.start(Arc::downgrade(&manager));
+        replay.start(Arc::downgrade(&manager), Arc::downgrade(&hub));
         trust.attach(
             Arc::new(trust::RuntimeQuorums(Arc::downgrade(&manager.spv_arc()))),
             &provenance,
@@ -905,7 +905,7 @@ impl NetworkSession {
         let report = manager.shutdown().await;
         self.hub.set_spv_running(false);
         if report.all_clean() {
-            live.replay.close(&manager).await;
+            live.replay.close(&manager, &self.hub).await;
         }
         if report.all_clean() && keys_idle {
             let marker = self.data_dir.join(crate::tools::SESSION_MARKER);
