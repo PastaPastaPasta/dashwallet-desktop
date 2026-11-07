@@ -398,7 +398,7 @@ impl Fixture {
 
     /// Repair of stuck `step`: its self-spend, sent and ChainLocked, then
     /// read. Returns the self-spend.
-    fn repair(&self, step: &'static str) -> dashcore::Transaction {
+    pub(crate) fn repair(&self, step: &'static str) -> dashcore::Transaction {
         let s = &self.session;
         let draft = (self.engine)
             .block_on(s.stuck_funding_draft(self.wallet, step))

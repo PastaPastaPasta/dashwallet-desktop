@@ -4,7 +4,7 @@
 //! planned coins, and the lock pending and resumed as any shield's.
 
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
@@ -54,7 +54,7 @@ fn spend_grant(fx: &Fixture, max_duffs: u64) -> String {
 /// A fake holding `coins` in its CoinJoin account, funding for `fx`.
 fn drainer(fx: &Fixture, coins: Vec<DrainCoin>) -> Arc<FakeShielded> {
     let lib = Arc::new(FakeShielded {
-        drain: coins,
+        drain: Mutex::new(coins),
         ..FakeShielded::default()
     });
     *lib.funder.lock().unwrap() = Some((Arc::downgrade(&fx.s), fx.wallet));
@@ -319,6 +319,94 @@ fn a_drain_failing_after_its_signatures_stays_possibly_sent() {
         );
         assert!(lib.funded.lock().unwrap().is_empty());
     }
+}
+
+/// A drain the network rejected after its signatures, end to end on a
+/// session holding the CoinJoin coins: its step reads possibly sent and
+/// refuses the next drain (the grant unused) until Repair's self-spend of
+/// the lock's recorded CoinJoin inputs is ChainLocked. Then the step reads
+/// not sent, nothing stays held, and the next drain funds its own lock on
+/// the next step and applies it.
+#[test]
+fn a_drain_rejected_after_signing_is_repaired_and_the_next_drain_funds() {
+    use super::super::flows::DispatchState;
+    use crate::platform::lease::session_tests::fixture;
+    use dw_vault::{Credential, GrantPurpose};
+    const STEP: &str = "shield/0/funding";
+    assert_eq!(pool::shield_step(0), STEP);
+    let f = fixture(false);
+    let (s, wallet) = (Arc::clone(&f.session), f.wallet);
+    let a = f.credit_coinjoin(1, 100_001_000);
+    let b = f.credit_coinjoin(2, 10_000_100);
+    let lib = Arc::new(FakeShielded::default());
+    *lib.funder.lock().unwrap() = Some((Arc::downgrade(&s), wallet));
+    // The library's drain reads the wallet's own CoinJoin coins.
+    let read_coins = || {
+        let inner = Arc::clone(&s);
+        let coins = (f.engine).block_on(s.on_runtime(async move {
+            let fence = inner.coin_fence(wallet).await?;
+            Ok(drain::read_drain_coins(&inner, &fence).await.unwrap())
+        }));
+        *lib.drain.lock().unwrap() = coins.unwrap();
+        let outpoints: std::collections::HashSet<OutPoint> = (lib.drain.lock().unwrap().iter())
+            .map(|c| c.outpoint)
+            .collect();
+        outpoints
+    };
+    let spend = |max_duffs| f.grant(GrantPurpose::Spend { max_duffs }, Credential::None);
+    let drain = |grant: String| {
+        let (s, lib) = (Arc::clone(&s), Arc::clone(&lib));
+        (f.engine).block_on(async move { drain::drain(&s, wallet, &*lib, &grant).await })
+    };
+    let status = |step: &str| s.leases.funding_status(wallet, step);
+
+    assert_eq!(read_coins(), [a, b].into());
+    let sum = 100_001_000 + 10_000_100;
+    *lib.fund_end.lock().unwrap() = Some(FundEnd::Rejected);
+    assert_eq!(code(drain(spend(sum))), "internal");
+    assert_eq!(status(STEP), Some(DispatchState::MaybeSent));
+    assert_eq!(s.leases.unresolved_lock_inputs(wallet), [a, b].into());
+    let refused = spend(sum);
+    assert_eq!(code(drain(refused.clone())), "platform.broadcast_unknown");
+    (s.vault())
+        .grant_purpose(&refused, dw_vault::GrantKind::Spend, Some(&wallet.0))
+        .unwrap();
+
+    let tx = f.repair(STEP);
+    let spent: std::collections::HashSet<OutPoint> =
+        tx.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(spent, [a, b].into());
+    assert_eq!(status(STEP), Some(DispatchState::NotSent));
+    assert!(s.leases.unresolved_lock_inputs(wallet).is_empty());
+
+    // key-wallet drops the coins the self-spend took; new mixed coins come.
+    let inner = Arc::clone(&s);
+    (f.engine)
+        .block_on(s.on_runtime(async move {
+            let w = inner.wallet(&wallet).await?;
+            let mut state = w.state_mut().await;
+            let account = (state.core_wallet.accounts.coinjoin_accounts.get_mut(&0)).unwrap();
+            assert!(account.utxos.remove(&a).is_some() && account.utxos.remove(&b).is_some());
+            Ok(())
+        }))
+        .unwrap();
+    let c = f.credit_coinjoin(3, 100_001_000);
+    assert_eq!(read_coins(), [c].into());
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    let outcome = drain(spend(100_001_000)).unwrap();
+    assert!(
+        matches!(outcome.state, ShieldState::Applied { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(*lib.drained.lock().unwrap(), [vec![c]]);
+    let lock = lib.funded.lock().unwrap()[0].outpoint;
+    assert_eq!(outcome.txid, lock.txid.to_string());
+    assert!(
+        (s.leases)
+            .signed_lock_txids(wallet, &pool::shield_step(1))
+            .contains(&lock.txid)
+    );
+    assert_eq!(status(STEP), Some(DispatchState::NotSent));
 }
 
 /// A drain whose apply failed leaves its lock pending, as a shield's: it

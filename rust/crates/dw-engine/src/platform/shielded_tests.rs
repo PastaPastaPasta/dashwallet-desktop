@@ -260,7 +260,7 @@ struct FakeShielded {
     startup_running: AtomicBool,
     spv_stopped: AtomicBool,
     /// CoinJoin account 0's coins (`drain_coins`).
-    drain: Vec<DrainCoin>,
+    drain: Mutex<Vec<DrainCoin>>,
     /// Paths a drain's build signs besides its planned coins': coins that
     /// came after the plan.
     drain_extra: Mutex<Vec<key_wallet::bip32::DerivationPath>>,
@@ -383,7 +383,7 @@ impl Default for FakeShielded {
             hold: Mutex::new(None),
             startup_running: AtomicBool::new(false),
             spv_stopped: AtomicBool::new(false),
-            drain: Vec::new(),
+            drain: Mutex::default(),
             drain_extra: Mutex::default(),
             drained: Mutex::default(),
             drain_claimed: Mutex::default(),
@@ -889,7 +889,7 @@ impl ShieldedLib for FakeShielded {
         &self,
         _: &crate::coins::CoinFence,
     ) -> Result<Vec<DrainCoin>, ShieldedError> {
-        Ok(self.drain.clone())
+        Ok(self.drain.lock().unwrap().clone())
     }
 
     /// A new lock of the planned coins, each signed through the permit's
