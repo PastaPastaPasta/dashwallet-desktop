@@ -54,7 +54,7 @@ fn finish(
 fn listed(fx: &Fixture, lib: &Arc<FakeShielded>) -> Result<Vec<UnfinishedLock>, PlatformError> {
     let wallet = fx.wallet;
     run(fx, lib, move |s, lib| async move {
-        locks::detect(&ShieldLocks::new(&s, wallet, &*lib), &HashSet::new()).await
+        locks::detect(&ShieldLocks::new(&s, wallet, &*lib)).await
     })
 }
 
@@ -464,6 +464,7 @@ impl Rig for ShieldRig {
             match mark {
                 Mark::Settled => lib.settle(txid).await.unwrap(),
                 Mark::Unknown => lib.mark_unknown(txid).await,
+                Mark::Reported => unreachable!("no record by txid of a report"),
             }
         });
     }

@@ -34,7 +34,8 @@ use crate::vault::masternode::{ROLE_OWNER, ROLE_VOTING};
 /// Which derivations a signer may use, and for what.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SignerScope {
-    /// Every path of the wallet.
+    /// Every path of the wallet, but no owner signature beyond the owner
+    /// payload's and no export of an asset-lock credit key.
     Full,
     /// Only the DIP9 CoinJoin account `m/9'/coin'/4'/account'/…` (QT-112).
     CoinJoinOnly,
@@ -58,9 +59,10 @@ pub enum SignerScope {
     /// `65536'`/`65537'` under an identity key; and the export of an
     /// auto-accept key.
     DashPayCrypto,
-    /// Asset-lock funding (registration, top-up): signatures and public keys
-    /// (no chain codes) of BIP44, BIP32 and DashPay-receiving addresses and
-    /// of the credit keys `m/9'/coin'/5'/{1',2',3',5'}/…`, plus the extended
+    /// Asset-lock funding (registration, top-up, Platform-address and
+    /// shielded funding): signatures and public keys (no chain codes) of
+    /// BIP44, BIP32 and DashPay-receiving addresses and of the credit keys
+    /// `m/9'/coin'/5'/{1',2',3',4',5'}/…`, plus the extended
     /// public key of an identity's top-up account `m/9'/coin'/5'/2'/i'`
     /// (platform-wallet adds that account through the signer). The cap is
     /// bounded by the token ([`crate::Vault::platform_signer`] refuses a
@@ -161,9 +163,15 @@ impl SignerScope {
             // only (MG-04 D38), and no other signature at an owner key: a
             // ProUpRegTx's owner signature is a plain ECDSA one over the
             // payload's hash, which `Sign` would make for any digest (D50).
+            // No export of an asset-lock credit key or its account
+            // ([`paths::is_asset_lock_credit_key`]).
             SignerScope::Full => match key_use {
                 KeyUse::OwnerPayload => false,
                 KeyUse::Sign | KeyUse::Message => !paths::is_owner_key(path, network),
+                KeyUse::Export => {
+                    !paths::is_asset_lock_credit_key(path, network)
+                        && !paths::is_asset_lock_credit_account(path, network)
+                }
                 _ => true,
             },
             SignerScope::CoinJoinOnly => coinjoin_use && is_coinjoin_path(path, network),
@@ -612,9 +620,10 @@ mod tests {
     }
 
     /// Everything but an owner payload signature, which only a
-    /// `MasternodeOp` grant's signer makes (MG-04 D38), and no signature or
-    /// message signature at an owner key (D50). A voting key keeps every
-    /// use but the owner payload.
+    /// `MasternodeOp` grant's signer makes (MG-04 D38), no signature or
+    /// message signature at an owner key (D50), and no export of an
+    /// asset-lock credit key. A voting key keeps every use but the owner
+    /// payload.
     #[test]
     fn full_scope_allows_everything_but_owner_signatures() {
         for p in ["m/0", "m/44'/1'/0'/0/0", "m/9'/1'/3'/1'/0"] {
@@ -627,6 +636,32 @@ mod tests {
             .collect();
         for p in ["m/9'/1'/3'/2'/0", "m/9'/1'/3'/2'/7"] {
             assert_eq!(uses(SignerScope::Full, p), owner, "{p}");
+        }
+        let no_export: Vec<KeyUse> = ALL_USES[..8]
+            .iter()
+            .copied()
+            .filter(|u| *u != KeyUse::Export)
+            .collect();
+        // The credit keys and their accounts.
+        for p in [
+            "m/9'/1'/5'/1'/0",
+            "m/9'/1'/5'/2'/0",
+            "m/9'/1'/5'/2'/3'/1",
+            "m/9'/1'/5'/3'/2",
+            "m/9'/1'/5'/4'/0",
+            "m/9'/1'/5'/5'/7",
+            "m/9'/1'/5'/1'",
+            "m/9'/1'/5'/2'",
+            "m/9'/1'/5'/2'/3'",
+            "m/9'/1'/5'/3'",
+            "m/9'/1'/5'/4'",
+            "m/9'/1'/5'/5'",
+        ] {
+            assert_eq!(uses(SignerScope::Full, p), no_export, "{p}");
+        }
+        // The identity keys and their account keep it.
+        for p in ["m/9'/1'/5'/0'/0'/0'/0'", "m/9'/1'/5'/0'"] {
+            assert!(SignerScope::Full.allows(KeyUse::Export, &path(p), T), "{p}");
         }
     }
 
@@ -703,6 +738,8 @@ mod tests {
             "m/9'/1'/5'/1'/0",
             "m/9'/1'/5'/2'/0'/1",
             "m/9'/1'/5'/3'/2",
+            "m/9'/1'/5'/4'/0",
+            "m/9'/1'/5'/5'/0",
         ] {
             assert_eq!(uses(s, ok), vec![KeyUse::Sign, KeyUse::PublicKey], "{ok}");
         }

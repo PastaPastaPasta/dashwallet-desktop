@@ -114,9 +114,12 @@ import type { OpenedNetwork } from "./OpenedNetwork";
 import type { OutPoint } from "./OutPoint";
 import type { PaymentLockInfo } from "./PaymentLockInfo";
 import type { PeerSummary } from "./PeerSummary";
+import type { PendingPlatformFund } from "./PendingPlatformFund";
 import type { PendingTopUp } from "./PendingTopUp";
 import type { PlatformActivity } from "./PlatformActivity";
 import type { PlatformAddressBalance } from "./PlatformAddressBalance";
+import type { PlatformFundOutcome } from "./PlatformFundOutcome";
+import type { PlatformFundQuote } from "./PlatformFundQuote";
 import type { PlatformPacing } from "./PlatformPacing";
 import type { PlatformReachability } from "./PlatformReachability";
 import type { PlatformReceiveAddress } from "./PlatformReceiveAddress";
@@ -1771,6 +1774,37 @@ export function platformSend(walletId: string, operation: string, grant: string)
 }
 
 /**
+ * What adding `duffs` of the Core balance to the wallet's Platform
+ * address costs and adds.
+ */
+export function platformFundQuote(walletId: string, duffs: number): Promise<PlatformFundQuote> {
+  return invoke<PlatformFundQuote>("platform_fund_quote", { walletId, duffs });
+}
+
+/**
+ * "Add from Dash wallet": adds `duffs` of the Core balance to the
+ * wallet's Platform address under `grant`.
+ */
+export function platformFund(walletId: string, duffs: number, grant: string): Promise<PlatformFundOutcome> {
+  return invoke<PlatformFundOutcome>("platform_fund", { walletId, duffs, grant });
+}
+
+/**
+ * This install's "Add from Dash wallet" locks not applied yet.
+ */
+export function pendingPlatformFunds(walletId: string): Promise<Array<PendingPlatformFund>> {
+  return invoke<Array<PendingPlatformFund>>("pending_platform_funds", { walletId });
+}
+
+/**
+ * Applies the pending fund lock `txid` under `grant` ("Pending —
+ * finish", "Check again").
+ */
+export function resumePlatformFund(walletId: string, txid: string, grant: string): Promise<PlatformFundOutcome> {
+  return invoke<PlatformFundOutcome>("resume_platform_fund", { walletId, txid, grant });
+}
+
+/**
  * The caps of the grant `action` needs.
  */
 export function grantRequest(walletId: string, identity: string, action: GrantAction): Promise<GrantRequest> {
@@ -2832,6 +2866,10 @@ export type CommandArgs = {
   platform_receive_address: { walletId: string };
   platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount; retryOf: string | null };
   platform_send: { walletId: string; operation: string; grant: string };
+  platform_fund_quote: { walletId: string; duffs: number };
+  platform_fund: { walletId: string; duffs: number; grant: string };
+  pending_platform_funds: { walletId: string };
+  resume_platform_fund: { walletId: string; txid: string; grant: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
   dispatch_status: { walletId: string; artifact: string };
   resolve_stuck_funding: { walletId: string; step: string; grant: string };
@@ -3135,6 +3173,10 @@ export type CommandResults = {
   platform_receive_address: PlatformReceiveAddress;
   platform_send_quote: PlatformSendQuote;
   platform_send: PlatformSendOutcome;
+  platform_fund_quote: PlatformFundQuote;
+  platform_fund: PlatformFundOutcome;
+  pending_platform_funds: Array<PendingPlatformFund>;
+  resume_platform_fund: PlatformFundOutcome;
   grant_request: GrantRequest;
   dispatch_status: DispatchStateName | null;
   resolve_stuck_funding: BroadcastOutcome;
@@ -3440,6 +3482,10 @@ export const COMMANDS: Record<CommandName, string> = {
   platform_receive_address: "identity",
   platform_send_quote: "identity",
   platform_send: "identity",
+  platform_fund_quote: "identity",
+  platform_fund: "identity",
+  pending_platform_funds: "identity",
+  resume_platform_fund: "identity",
   grant_request: "identity",
   dispatch_status: "identity",
   resolve_stuck_funding: "identity",
@@ -3773,6 +3819,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.recipient_invalid",
   "credits.send_out_of_range",
   "credits.quote_changed",
+  "credits.fund_pending",
+  "credits.too_many_inputs",
   "shielded.not_active",
   "shielded.not_synced",
   "shielded.invalid_address",

@@ -8,8 +8,9 @@ import type { TransfersReport } from "./TransfersReport";
  */
 export type FinishReport = { resumed: number, completed: number, stillPending: number,
 /**
- * Restored transfers Platform reported already used (unproved).
- * Reserved: 0 for now.
+ * Transfers Platform reported already used for their exact output
+ * (unproved; type-4 Core → Platform address locks): taken as finished
+ * elsewhere, no longer listed, not settled.
  */
 alreadyUsed: number, byKind: Array<TransfersReport>,
 /**

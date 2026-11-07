@@ -55,6 +55,9 @@ mod payments;
 #[cfg(test)]
 mod payments_tests;
 mod platform_addresses;
+mod platform_fund;
+#[cfg(test)]
+mod platform_fund_tests;
 mod platform_moves;
 mod private_details;
 #[cfg(test)]
@@ -98,6 +101,7 @@ mod trust_tests;
 mod unfinished;
 #[cfg(test)]
 mod unfinished_conformance;
+mod unfinished_funds;
 pub(crate) mod unfinished_locks;
 #[cfg(test)]
 mod unfinished_locks_tests;
@@ -144,8 +148,9 @@ pub use payments::{
     PaymentLock,
 };
 pub use platform_addresses::{
-    MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformActivityKind,
-    PlatformActivityState, PlatformAddressBalance, PlatformAddressRow, PlatformReceiveAddress,
+    MoveToCoreOutcome, MoveToCoreQuote, PendingPlatformFund, PlatformActivity,
+    PlatformActivityKind, PlatformActivityState, PlatformAddressBalance, PlatformAddressRow,
+    PlatformFundOutcome, PlatformFundQuote, PlatformFundState, PlatformReceiveAddress,
     PlatformSendOutcome, PlatformSendQuote, RecipientProblem,
 };
 pub use profile::{

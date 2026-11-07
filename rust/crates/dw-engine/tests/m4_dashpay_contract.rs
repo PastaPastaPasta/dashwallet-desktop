@@ -145,6 +145,11 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.platform_send",
     "DashPay.platform_send_grant",
     "DashPay.platform_send_bind",
+    // 0.2 X1b slice 1: "Add from Dash wallet".
+    "DashPay.platform_fund_quote",
+    "DashPay.platform_fund",
+    "DashPay.pending_platform_funds",
+    "DashPay.resume_platform_fund",
     // 0.1 E1: shielded funds.
     "DashPay.shielded_status",
     "DashPay.shielded_sync",
@@ -248,6 +253,8 @@ const NOT_FACADE: &[&str] = &[
     "private_details_tests.rs",
     "profile_tests.rs",
     "profiles.rs",
+    "platform_fund.rs",
+    "platform_fund_tests.rs",
     "platform_moves.rs",
     "platform_moves_tests.rs",
     "protocol.rs",
@@ -278,6 +285,7 @@ const NOT_FACADE: &[&str] = &[
     "trust.rs",
     "trust_tests.rs",
     "unfinished_conformance.rs",
+    "unfinished_funds.rs",
     "unfinished_locks.rs",
     "unfinished_locks_tests.rs",
     "unfinished_shields.rs",
@@ -1086,6 +1094,10 @@ fn error_codes_match_the_contract() {
             },
             CreditsError::SendOutOfRange { min: 0 },
             CreditsError::QuoteChanged,
+            CreditsError::FundPending {
+                txid: String::new(),
+            },
+            CreditsError::TooManyInputs { inputs: 0, max: 0 },
         ],
         CreditsError::code,
     );

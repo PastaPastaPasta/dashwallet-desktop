@@ -3386,16 +3386,7 @@ impl RegistrationLib for PwLib {
     }
 
     fn funding_hold(&self) -> Option<RegistrationWait> {
-        let synced = self
-            .session
-            .hub
-            .tracker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .caught_up();
-        // A replay as the hub saw it; `fence` reads it live (0.1.x-bal §1).
-        let state = self.session.hub.wallet_state(&self.wallet_id);
-        if !synced || state.is_some_and(|s| s.synced_height < s.scan_target) {
+        if !wallet_synced(&self.session, self.wallet_id) {
             return Some(RegistrationWait::Sync);
         }
         self.claim_hold()
@@ -3697,6 +3688,16 @@ impl RegistrationLib for PwLib {
         let id = parse_identity(identity)?;
         Ok(IdentityBalance::fetch(&self.sdk, id).await?)
     }
+}
+
+/// SPV and `wallet`'s scan have caught up, as the session's hub saw them
+/// (a replay; `fence` reads it live, 0.1.x-bal §1).
+pub(crate) fn wallet_synced(session: &NetworkSession, wallet: WalletId) -> bool {
+    let synced = (session.hub.tracker.lock())
+        .unwrap_or_else(PoisonError::into_inner)
+        .caught_up();
+    let state = session.hub.wallet_state(&wallet);
+    synced && !state.is_some_and(|s| s.synced_height < s.scan_target)
 }
 
 #[cfg(test)]

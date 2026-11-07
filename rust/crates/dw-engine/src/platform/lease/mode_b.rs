@@ -1408,6 +1408,18 @@ impl LeaseTable {
         })
     }
 
+    /// The txids of the asset locks `wallet`'s Platform address fund steps
+    /// (`paddr/<k>/funding`) signed: every lock a dw "Add from Dash wallet"
+    /// funded (0.2). `None` until the dispatch journal is read.
+    pub(crate) fn fund_lock_txids(&self, wallet: WalletId) -> Option<HashSet<Txid>> {
+        self.with_j(|i, _| {
+            (i.fence.journal == JournalState::Ready).then(|| {
+                i.fence
+                    .signed_lock_txids_where(&wallet, |s| s.starts_with("paddr/"))
+            })
+        })
+    }
+
     /// The top-up locks of `wallet` the journal records settled (schema 8,
     /// DP1-06): a proved apply or the user's word, kept as long as the
     /// journal keeps those locks' `signed_lock` rows (a wallet's removal
@@ -1905,14 +1917,17 @@ impl NetworkSession {
     ///
     /// Refused `invalid_argument` before anything is charged or marked
     /// (review M-3, M-4): a step that is no funding step; a top-up step
-    /// whose `key` is no `IdentityTopUp` key, or a shield step (0.1 E1)
-    /// whose `key` is no `AssetLockShieldedAddressTopUp` key; a registration step whose
+    /// whose `key` is no `IdentityTopUp` key, a shield step (0.1 E1)
+    /// whose `key` is no `AssetLockShieldedAddressTopUp` key, or a Platform
+    /// address fund step (0.2) whose `key` is no `AssetLockAddressTopUp`
+    /// key; a registration step whose
     /// `key` is not its draft's own (`DraftKey`, from `app.sqlite`), or
     /// whose draft has no known key: a row under another key would be
     /// found by neither the marker nor the draft; and a `fence` of another
-    /// wallet. A top-up or shield step needs no draft: its rows are its own
-    /// signed locks (module doc), and neither flow calls a step again unless
-    /// it reads `None` or `NotSent` (`topup.rs`, `shielded_pool.rs`).
+    /// wallet. A top-up, shield or fund step needs no draft: its rows are
+    /// its own signed locks (module doc), and none of those flows calls a
+    /// step again unless it reads `None` or `NotSent` (`topup.rs`,
+    /// `shielded_pool.rs`, `platform_fund.rs`).
     pub async fn funding_call_permit(
         &self,
         lease: &Lease,
@@ -1935,6 +1950,11 @@ impl NetworkSession {
             Some((
                 AssetLockFundingType::AssetLockShieldedAddressTopUp,
                 "shield",
+            ))
+        } else if step.starts_with("paddr/") {
+            Some((
+                AssetLockFundingType::AssetLockAddressTopUp,
+                "Platform address fund",
             ))
         } else {
             None

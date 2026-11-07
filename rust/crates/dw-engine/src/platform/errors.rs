@@ -528,6 +528,16 @@ pub enum CreditsError {
     /// and the grant is unredeemed: quote it again and review it.
     #[error("the balances changed since this send was quoted; quote it again")]
     QuoteChanged,
+    /// An earlier "Add from Dash wallet" of the wallet is not applied yet:
+    /// its lock `txid` waits for its proof or for `resume_platform_fund`,
+    /// and a new one would fund a second lock while it pends.
+    #[error("the fund {txid} is not applied yet")]
+    FundPending { txid: String },
+    /// The asset lock would spend `inputs` coins, more than `max`: its
+    /// InstantSend proof would no longer fit the transition. Combine coins
+    /// first.
+    #[error("the asset lock would spend {inputs} coins, at most {max}")]
+    TooManyInputs { inputs: u64, max: u64 },
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -545,6 +555,8 @@ impl CreditsError {
             Self::RecipientInvalid { .. } => "credits.recipient_invalid",
             Self::SendOutOfRange { .. } => "credits.send_out_of_range",
             Self::QuoteChanged => "credits.quote_changed",
+            Self::FundPending { .. } => "credits.fund_pending",
+            Self::TooManyInputs { .. } => "credits.too_many_inputs",
             Self::Platform(e) => e.code(),
         }
     }

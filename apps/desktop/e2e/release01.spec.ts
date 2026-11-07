@@ -455,7 +455,9 @@ test.describe("Move to Dash wallet", () => {
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
     await shot(page, "light-platform-move-done");
     await page.getByTestId("platform-move-done").click();
-    await expect(page.getByTestId("platform-card")).toHaveCount(0);
+    await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
+    await expect(page.getByTestId("platform-move")).toHaveCount(0);
+    await expect(page.getByTestId("platform-fund")).toBeEnabled();
     await expect(page.getByTestId("breakdown-platform")).toContainText("0.00");
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
@@ -504,7 +506,9 @@ test.describe("Move to Dash wallet", () => {
       f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "identities" } });
     });
     await page.getByTestId("sidebar-home").click();
-    await expect(page.getByTestId("platform-card")).toHaveCount(0);
+    await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
+    await expect(page.getByTestId("platform-move")).toHaveCount(0);
+    await expect(page.getByTestId("platform-fund")).toBeEnabled();
   });
 
   test("a pending move that settles while Home is shown frees the card again", async ({ page }) => {
@@ -525,7 +529,9 @@ test.describe("Move to Dash wallet", () => {
     });
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
     await page.getByTestId("platform-move-done").click();
-    await expect(page.getByTestId("platform-card")).toHaveCount(0);
+    await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
+    await expect(page.getByTestId("platform-move")).toHaveCount(0);
+    await expect(page.getByTestId("platform-fund")).toBeEnabled();
     await expect(page.getByTestId("platform-move-sheet")).toHaveCount(0);
   });
 

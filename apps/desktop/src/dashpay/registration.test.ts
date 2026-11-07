@@ -220,4 +220,14 @@ describe("REG_COPY.finished", () => {
     expect(REG_COPY.finished({ ...report, alreadyUsed: 1 })).toBe("3 resumed, 2 completed, 1 still pending, 1 already used.");
     expect(REG_COPY.finished({ ...report, unread: ["shielded"] })).toBe("3 resumed, 2 completed, 1 still pending. Shielded transfers couldn't be checked; try again.");
   });
+
+  it("a Shielded-only report reads as before; one with an Add from Dash wallet row names each kind", () => {
+    const shielded = { kind: "shielded" as const, resumed: 3, completed: 2, stillPending: 1 };
+    expect(REG_COPY.finished({ ...report, byKind: [shielded] })).toBe("3 resumed, 2 completed, 1 still pending.");
+    const fund = { kind: "platformAddress" as const, resumed: 1, completed: 1, stillPending: 0 };
+    expect(REG_COPY.finished({ ...report, resumed: 1, completed: 1, stillPending: 0, byKind: [fund] })).toBe("1 resumed, 1 completed, 0 still pending. Add from Dash wallet: 1 completed.");
+    expect(REG_COPY.finished({ ...report, byKind: [shielded, { ...fund, completed: 0, stillPending: 1 }] })).toBe(
+      "3 resumed, 2 completed, 1 still pending. Shielded: 2 completed, 1 still pending. Add from Dash wallet: 0 completed, 1 still pending.",
+    );
+  });
 });

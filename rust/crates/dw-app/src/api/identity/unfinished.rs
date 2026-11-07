@@ -50,8 +50,8 @@ pub enum UnfinishedState {
     Ready,
     /// The apply may have executed, unproved ("Checking").
     Checking,
-    /// Platform reported it already used, unproved ("Check again").
-    /// Reserved: not set yet.
+    /// Not listed in this version: a lock Platform reported already used
+    /// leaves the list, and its finish reads [`LockFinish::ReportedUsed`].
     ReportedUsed,
     /// The kind is not active on this network yet.
     NotActive,
@@ -107,6 +107,9 @@ pub struct UnfinishedTransfers {
     /// False while sync or a restore's scan has not caught up: a restored
     /// lock may still be missing.
     pub complete: bool,
+    /// The kinds that couldn't be checked: none of their locks is listed,
+    /// the other kinds' are.
+    pub unread: Vec<LockKind>,
 }
 
 impl From<engine::UnfinishedTransfers> for UnfinishedTransfers {
@@ -114,6 +117,7 @@ impl From<engine::UnfinishedTransfers> for UnfinishedTransfers {
         UnfinishedTransfers {
             locks: t.locks.into_iter().map(Into::into).collect(),
             complete: t.complete,
+            unread: t.unread.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -128,8 +132,9 @@ impl From<engine::UnfinishedTransfers> for UnfinishedTransfers {
 pub enum LockFinish {
     /// Platform's proved execution: finished.
     Applied,
-    /// Platform reported it already used, unproved. Reserved: not returned
-    /// yet.
+    /// Platform answered "already consumed" for this lock's exact output,
+    /// unproved (type 4): taken as finished elsewhere, the lock leaves the
+    /// lists and nothing is settled. Shielded locks read `Checking` instead.
     ReportedUsed,
     /// The apply may have executed, unproved ("Checking").
     Checking,
