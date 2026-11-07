@@ -124,7 +124,7 @@ export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network
               <p className="sheet-text">{MOVE_COPY.shielded.message}</p>
               <dl className="detail-list topup-quote" data-testid="move-mixed-plan">
                 {mixedRows(quote.fullyMixedDuffs, quote.notFullyMixedDuffs)}
-                <Row label={MOVE_COPY.confirm.fee} value={amount(quote.feeDuffs)} testId="move-mixed-fee" />
+                <Row label={MOVE_COPY.shielded.fee} value={amount(quote.feeDuffs)} testId="move-mixed-fee" />
                 <Row label={MOVE_COPY.shielded.poolFee} value={credits(quote.poolFeeCredits)} testId="move-mixed-pool-fee" />
                 <Row label={MOVE_COPY.shielded.gain} value={credits(quote.credits)} testId="move-mixed-receive" total />
               </dl>

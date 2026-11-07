@@ -93,8 +93,9 @@ export const MOVE_COPY = {
   } satisfies Record<MixedCoinsResendState, string>,
   shielded: {
     message: "Your whole CoinJoin balance goes into Shielded in one transaction. Dash Platform adds it to your private balance once the network has locked it.",
+    fee: "Network fee, at most",
     poolFee: "Platform pool fee",
-    gain: "Added to Shielded",
+    gain: "Added to Shielded, at least",
   },
   combine: {
     text: (coins: number) =>

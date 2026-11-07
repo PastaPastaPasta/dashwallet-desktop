@@ -63,6 +63,8 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("move-mixed-fully")).toContainText("0.200002");
     await expect(page.getByTestId("move-mixed-partly")).toContainText("0.100001");
     await expect(page.getByTestId("move-mixed-pool-fee")).toBeVisible();
+    await expect(page.getByTestId("move-mixed-plan")).toContainText("Network fee, at most");
+    await expect(page.getByTestId("move-mixed-plan")).toContainText("Added to Shielded, at least");
     await expect(page.getByTestId("move-mixed-combined")).toBeVisible();
     await fontsReady(page);
     expect(await seriousAxeViolations(page)).toEqual([]);
