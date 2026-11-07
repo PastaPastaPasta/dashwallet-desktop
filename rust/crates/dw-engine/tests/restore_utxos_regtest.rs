@@ -11,9 +11,10 @@
 //! One transaction paying a pool's addresses past its gap (a mixing
 //! wallet's denomination transaction, restored from its seed) has every coin
 //! credited, and every coin of it reloads. A store that kept only the first
-//! gap of them recovers with one rescan. A transaction whose far output only
-//! a later payment's addresses reach is credited by the re-scan pass of its
-//! block, also when a ChainLock in the store has already finalized it.
+//! gap of them recovers with one rescan on a chain without ChainLocks, as
+//! this one is. A transaction whose far output only a later payment's
+//! addresses reach is credited by the re-scan pass of its block, also when a
+//! ChainLock in the store has already finalized it.
 //!
 //! Runs only with `DASHD_PATH` set to a dashd binary with `dash-cli` next
 //! to it (e.g. `~/.rust-dashcore-test/dashcore-24.0.0-rc.3/bin/dashd`);
@@ -803,8 +804,9 @@ fn a_store_missing_coins_past_the_gap_recovers_with_one_rescan_without_chainlock
 /// derives index 40. The store carries a ChainLock above both blocks (as
 /// after a restart on a chainlocked chain), so the first transaction is
 /// finalized on its first pass; only the re-scan pass for the derived
-/// addresses finds its far output. Every coin is held after the scan, after
-/// a reload, and after the catch-up sync.
+/// addresses finds its far output. Both blocks are in the first filter
+/// batch, so that re-scan revisits the first one. Every coin is held after
+/// the scan, after a reload, and after the catch-up sync.
 #[test]
 fn a_rescan_pass_credits_a_chainlocked_transactions_output_a_later_payment_derives_against_dashd() {
     let dir = dw_testutil::private_tempdir();

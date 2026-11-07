@@ -19,7 +19,8 @@ publish = false
 # = dw/0.1.x-core-bridge-updated-utxos@7537f4a264 merged with
 #   dw/0.2-asset-lock-status-by-outpoint@5e74bd8c82.
 # dw/0.1.x-core-bridge-updated-utxos@7537f4a264 = @8411b4e1d5 below, which carries
-# dashpay/platform#5792, with rust-dashcore pinned to the backport of #1326 (issue #1361).
+# dashpay/platform#5792, with rust-dashcore pinned to the rust-dashcore #1326 backport;
+# the gaps it leaves are tracked in rust-dashcore #1361.
 # dw/0.2-asset-lock-status-by-outpoint@5e74bd8c82
 # = dw/0.2-asset-lock-status-by-outpoint@4eef80c9fc merged with
 #   dw/0.1.x-core-bridge-updated-utxos@8411b4e1d5:
@@ -81,8 +82,10 @@ platform-encryption = { git = "https://github.com/PastaPastaPasta/platform", rev
 # ---- rust-dashcore: EXACTLY the revision platform pins (platform Cargo.toml) ----
 # A different revision would duplicate every dashcore type in the graph.
 # PastaPastaPasta/rust-dashcore dw/0.1.x-confirm-credits-rescan-outputs@846ffe54 = dashpay
-# 626c91d1 + #1112, #1105, #1295 (`ManagedWalletInfo::restore_utxos`) and #1326 (issue
-# #1361), cherry-picked; back to a dashpay revision at the next platform re-pin.
+# 626c91d1 + #1112, #1105, #1295 (`ManagedWalletInfo::restore_utxos`) and the #1326
+# backport, cherry-picked, + the fork's own test and doc commits on it (f0f5cd08,
+# 846ffe54); the gaps #1326 leaves are tracked in #1361. Back to a dashpay revision at
+# the next platform re-pin.
 dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "846ffe54fe4d0bf1b4e6d4683a7a57989860a1df" }
 key-wallet = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "846ffe54fe4d0bf1b4e6d4683a7a57989860a1df" }
 key-wallet-manager = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "846ffe54fe4d0bf1b4e6d4683a7a57989860a1df" }
