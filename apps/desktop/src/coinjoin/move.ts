@@ -121,14 +121,11 @@ export type MoveStep = "plan" | "confirm" | "combine" | "mixing" | "running" | "
 /** What a plan read found, for one destination. */
 type MovePlan = { kind: "wallet"; plan: MixedCoinsSweepPlan } | { kind: "shielded"; quote: MixedShieldQuote } | { kind: "combine"; consolidation: MixedCoinsConsolidationPlan };
 
-/** The plan's fee: what its chunks pay together. */
-export const planFee = (p: MixedCoinsSweepPlan) => p.chunks.reduce((sum, c) => sum + c.fee, 0);
+/** A sweep or consolidation plan's fee: what its chunks pay together. */
+export const planFee = (p: { chunks: { fee: number }[] }) => p.chunks.reduce((sum, c) => sum + c.fee, 0);
 
 /** What the confirm step shows the user receiving: the total less the fees. */
 export const planReceives = (p: MixedCoinsSweepPlan) => p.total - planFee(p);
-
-/** The fee a consolidation round pays. */
-export const consolidationFee = (p: MixedCoinsConsolidationPlan) => p.chunks.reduce((sum, c) => sum + c.fee, 0);
 
 /** The coins a refusal names (`data.value`), or 0. */
 const countOf = (e: unknown): number => {

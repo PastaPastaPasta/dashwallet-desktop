@@ -19,7 +19,6 @@ import { SHIELDED_COPY } from "../shielded/flow";
 import {
   canRetry,
   combineResultText,
-  consolidationFee,
   MoveMixedFlow,
   type MoveMixedApi,
   moveErrorText,
@@ -229,7 +228,7 @@ describe("Move mixed coins to Shielded", () => {
     await move(() => flow.combine());
     expect(flow.step).toBe("done");
     expect(flow.combined).toBe(true);
-    expect(combineResultText(flow.result!, amount)).toEqual({ kind: "done", title: MOVE_COPY.combine.done.title, text: MOVE_COPY.combine.done.text(amount(consolidationFee(plan))) });
+    expect(combineResultText(flow.result!, amount)).toEqual({ kind: "done", title: MOVE_COPY.combine.done.title, text: MOVE_COPY.combine.done.text(amount(planFee(plan))) });
     // One coin is left, in the CoinJoin account, waiting for its confirmation: the move takes every coin.
     flow.again();
     await until(() => flow.step !== "plan");

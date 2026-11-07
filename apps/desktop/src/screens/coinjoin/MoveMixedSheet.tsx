@@ -11,7 +11,6 @@ import { creditsToDuffs } from "../../api/pending";
 import {
   canRetry,
   combineResultText,
-  consolidationFee,
   MOVE_COPY,
   moveErrorText,
   planFee,
@@ -140,7 +139,7 @@ export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network
               </p>
               <dl className="detail-list topup-quote" data-testid="move-mixed-plan">
                 {mixedRows(consolidation.fullyMixed, consolidation.notFullyMixed)}
-                <Row label={MOVE_COPY.confirm.fee} value={amount(consolidationFee(consolidation))} testId="move-mixed-fee" />
+                <Row label={MOVE_COPY.confirm.fee} value={amount(planFee(consolidation))} testId="move-mixed-fee" />
                 <Row label={MOVE_COPY.combine.after} value={String(consolidation.coinsAfter)} testId="move-mixed-coins-after" total />
               </dl>
               <p className="sheet-text" data-testid="move-mixed-transactions">
