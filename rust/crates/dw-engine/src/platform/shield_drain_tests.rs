@@ -621,6 +621,56 @@ fn the_repair_listing_holds_a_possibly_sent_shield_with_repairs_refusal() {
     assert_eq!(refused.code(), "stuck_funding", "{refused:?}");
 }
 
+/// A move into Shielded whose lock was sent and got no proof within the
+/// wait is pending, not stuck: `pending_shields` lists it ("Check again"
+/// applies it) and Repair's listing does not, before and after a restart.
+#[test]
+fn a_lock_waiting_for_its_proof_is_pending_not_stuck() {
+    use super::super::flows::DispatchState;
+    use crate::platform::lease::session_tests::{Fixture, fixture};
+    use dw_vault::{Credential, GrantPurpose};
+    let mut f = fixture(false);
+    let wallet = f.wallet;
+    let lib = Arc::new(FakeShielded {
+        real_rows: true,
+        ..FakeShielded::default()
+    });
+    *lib.funder.lock().unwrap() = Some((Arc::downgrade(&f.session), wallet));
+    *lib.fund_end.lock().unwrap() = Some(FundEnd::ProofTimeout);
+    let grant = f.grant(
+        GrantPurpose::PlatformOp {
+            max_duffs: 2_000_000,
+            max_credits: 0,
+        },
+        Credential::None,
+    );
+    let (s, rlib) = (Arc::clone(&f.session), Arc::clone(&lib));
+    let outcome = (f.engine)
+        .block_on(async move { pool::shield(&s, wallet, &*rlib, 1_000_000, &grant).await })
+        .unwrap();
+    assert_eq!(outcome.state, ShieldState::ProofWaiting);
+    let step = pool::shield_step(0);
+    let pending_not_stuck = |f: &Fixture| {
+        let stuck = (f.engine).block_on(f.session.dashpay(wallet).stuck_shield_fundings());
+        assert!(stuck.as_ref().is_ok_and(|s| s.is_empty()), "{stuck:?}");
+        assert_eq!(
+            f.session.leases.funding_status(wallet, &step),
+            Some(DispatchState::WillBeSent)
+        );
+        let l = Arc::clone(&lib);
+        let pending =
+            (f.engine).block_on(async move { pool::status(&*l).await.unwrap().pending_shields });
+        let pending: Vec<_> = (pending.iter())
+            .map(|p| (p.txid.as_str(), p.proved))
+            .collect();
+        assert_eq!(pending, [(outcome.txid.as_str(), false)]);
+    };
+    pending_not_stuck(&f);
+    f.reopen();
+    *lib.funder.lock().unwrap() = Some((Arc::downgrade(&f.session), wallet));
+    pending_not_stuck(&f);
+}
+
 /// A drain whose apply failed leaves its lock pending, as a shield's: it
 /// blocks a new drain (no second lock of the coins), and "Check again"
 /// applies the same outpoint, never a new funding.

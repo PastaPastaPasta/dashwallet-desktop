@@ -1651,19 +1651,23 @@ impl LeaseTable {
         &self,
         wallet: WalletId,
     ) -> Result<Vec<(String, DispatchState)>, FundingStepsUnavailable> {
-        self.stuck_steps(wallet, "topup/", top_up_step_order)
+        self.stuck_steps(wallet, "topup/", top_up_step_order, |_, _, _| true)
     }
 
     /// `wallet`'s shield funding steps (`shield/<k>/funding`, a shield's or
     /// a drain's) that the funding gate holds as possibly sent, as
     /// [`Self::stuck_top_up_steps`]: each refuses every later shield and
     /// drain (`shielded_pool.rs` `next_step`) until it settles or Repair
-    /// resolves it. In step order.
+    /// resolves it. In step order. A step whose lock was broadcast and
+    /// waits for its proof or its apply is not stuck: `pending_shields`
+    /// lists that lock and `resume_shield` applies it.
     pub(crate) fn stuck_shield_steps(
         &self,
         wallet: WalletId,
     ) -> Result<Vec<(String, DispatchState)>, FundingStepsUnavailable> {
-        self.stuck_steps(wallet, "shield/", shield_step_order)
+        self.stuck_steps(wallet, "shield/", shield_step_order, |i, wallet, step| {
+            !(step_rows(i, wallet, step).iter()).any(|r| r.status == TrackedStatus::Broadcast)
+        })
     }
 
     fn stuck_steps(
@@ -1671,6 +1675,7 @@ impl LeaseTable {
         wallet: WalletId,
         prefix: &str,
         order: fn(&str) -> (u32, u32),
+        stuck: fn(&Inner, WalletId, &str) -> bool,
     ) -> Result<Vec<(String, DispatchState)>, FundingStepsUnavailable> {
         self.with_j(|i, _| {
             if i.fence.journal != JournalState::Ready
@@ -1685,7 +1690,7 @@ impl LeaseTable {
                 .filter_map(|s| match funding_gate(i, wallet, &s) {
                     Some(FundingBlock::Step(Some(
                         state @ (DispatchState::MaybeSent | DispatchState::WillBeSent),
-                    ))) => Some((s, state)),
+                    ))) if stuck(i, wallet, &s) => Some((s, state)),
                     _ => None,
                 })
                 .collect();

@@ -291,6 +291,9 @@ pub(super) enum FundEnd {
     /// No verdict from the broadcaster (`TransactionBroadcastUnconfirmed`);
     /// the row is lost here, so only the step's record knows the lock.
     Unknown,
+    /// Sent, and no proof within the wait (`FinalityTimeout`): its row
+    /// stays `Broadcast` with no proof, stored (`real_rows`, shields only).
+    ProofTimeout,
 }
 
 impl FundEnd {
@@ -306,6 +309,7 @@ impl FundEnd {
             Self::Rejected => E::TransactionBroadcast("rejected".into()),
             Self::BelowFloor => E::AssetLockTransaction("below the required minimum".into()),
             Self::Unknown => E::TransactionBroadcastUnconfirmed("no verdict".into()),
+            Self::ProofTimeout => E::FinalityTimeout(OutPoint::null()),
         })
     }
 }
@@ -790,11 +794,17 @@ impl ShieldedLib for FakeShielded {
                 None,
             ),
         };
-        if let Some(end) = self.fund_end.lock().unwrap().take() {
+        let end = self.fund_end.lock().unwrap().take();
+        if let Some(end) = end.filter(|e| *e != FundEnd::ProofTimeout) {
             let txid = Txid::from_byte_array([n; 32]);
             permit.note_signed(txid.to_byte_array());
             return Err(self.signed_and_failed(end, txid, inputs, vec![txid.to_byte_array()]));
         }
+        let timeout = end == Some(FundEnd::ProofTimeout);
+        assert!(
+            !timeout || self.real_rows,
+            "a proof timeout needs real rows"
+        );
         let outpoint = if self.real_rows {
             use dashcore::transaction::special_transaction::TransactionPayload;
             let mut transaction = lock_transaction(n);
@@ -810,17 +820,25 @@ impl ShieldedLib for FakeShielded {
                 payload.credit_outputs[0].script_pubkey = script.clone();
             }
             let outpoint = OutPoint::new(transaction.txid(), 0);
+            let (proof, status) = if timeout {
+                (None, AssetLockStatus::Broadcast)
+            } else {
+                (
+                    Some(instant_proof(&transaction)),
+                    AssetLockStatus::InstantSendLocked,
+                )
+            };
             let row = TrackedAssetLock {
                 out_point: outpoint,
-                proof: Some(instant_proof(&transaction)),
+                proof,
                 transaction,
                 account_index: 0,
                 funding_type: AssetLockFundingType::AssetLockShieldedAddressTopUp,
                 identity_index: 0,
                 amount: duffs,
-                status: AssetLockStatus::InstantSendLocked,
+                status,
             };
-            self.track(row, false).await;
+            self.track(row, timeout).await;
             outpoint
         } else {
             OutPoint::new(Txid::from_byte_array([n; 32]), 0)
@@ -842,7 +860,10 @@ impl ShieldedLib for FakeShielded {
             amount: duffs,
             ..lock(n, LockStatus::InstantSendLocked)
         });
-        Ok(outpoint)
+        match end {
+            Some(end) => Err(end.error()),
+            None => Ok(outpoint),
+        }
     }
 
     async fn wait_proof(&self, _: OutPoint, _: Duration) -> Result<(), FundError> {
