@@ -9,6 +9,7 @@ import { hasCode, isAppError, type Backend } from "../api/backend";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RescanStart } from "../api/generated/RescanStart";
 import type { RescanStatus } from "../api/generated/RescanStatus";
+import type { ShieldRepairBlocked } from "../api/generated/ShieldRepairBlocked";
 import type { StuckFundingRefusalName } from "../api/generated/StuckFundingRefusalName";
 import type { StuckShieldFunding } from "../api/generated/StuckShieldFunding";
 import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
@@ -46,15 +47,43 @@ export const RepairText = {
   resolvedTopUp: (txid: string) => `All coins were sent to yourself (transaction ${txid}). You can top up again once it is confirmed.`,
   /** A stuck move into Shielded's line: what happened, and what Repair does about it. */
   shield: (mixed: boolean) => (mixed ? "A move of mixed coins into Shielded may have been sent" : "A move into Shielded may have been sent"),
-  shieldRepair: (coins: number, total: string, fee: string) =>
-    `Repair sends ${coins === 1 ? "its coin" : `its ${coins} coins`} (${total}) back to your own wallet, at a network fee of ${fee}. You can move Dash into Shielded again once that payment is confirmed.`,
-  /** Why Repair cannot settle it now, with the engine's refusal. */
-  shieldBlocked: (why: string) => `Repair cannot send these coins back yet: ${why}`,
-  resolveStuckShieldQuestion: (coins: number, total: string, fee: string) =>
-    `Send ${coins === 1 ? "the coin" : `the ${coins} coins`} of this move (${total}) back to your own wallet? You pay a network fee of ${fee}. Whether the move's payment reached the network is settled either way.`,
+  /** What Repair's payment for it spends: a move of mixed coins sends back only those coins, to the
+   * main balance; a shield sends every spendable coin of the main balance. */
+  shieldRepair: (mixed: boolean, coins: number, total: string, fee: string) =>
+    `Repair sends ${shieldCoins(mixed, coins)} (${total}) back to ${shieldCoinsTo(mixed)}, at a network fee of ${fee}. You can move Dash into Shielded again once that payment is confirmed.`,
+  resolveStuckShieldQuestion: (mixed: boolean, coins: number, total: string, fee: string) =>
+    `Send ${shieldCoins(mixed, coins)} (${total}) back to ${shieldCoinsTo(mixed)}? You pay a network fee of ${fee}. Whether the move's payment reached the network is settled either way.`,
   resolvedShield: (txid: string) => `The coins were sent back to your wallet (transaction ${txid}). You can move Dash into Shielded again once it is confirmed.`,
   stuckShieldsUnreadable: "This wallet's moves into Shielded could not be read, so their stuck funding cannot be checked here.",
 };
+
+function shieldCoins(mixed: boolean, coins: number): string {
+  if (mixed) return coins === 1 ? "the move's mixed coin" : `the move's ${coins} mixed coins`;
+  return coins === 1 ? "the one spendable coin of your main balance" : `all ${coins} spendable coins of your main balance`;
+}
+
+const shieldCoinsTo = (mixed: boolean) => (mixed ? "your wallet's main balance" : "your wallet");
+
+const SHIELD_BLOCKED: Record<ShieldRepairBlocked["reason"], string> = {
+  notReady: "The wallet is still reading this move's records.",
+  spendUnsettled: "An earlier payment from this wallet is not confirmed yet.",
+  lockInputsSpent: "The coins this move spent are already spent.",
+  unattributedLock: "A payment of this wallet may be this move's, and it is not matched to it.",
+  noKnownLock: "No payment of this move is known, so nothing shows which coins to send back.",
+  coinsHeld: "A coin it would send back is locked or in use by another action.",
+  mixing: "The wallet is mixing.",
+  noCoins: "No coin of this move is left in the wallet.",
+  other: "The payment back could not be prepared.",
+};
+
+/** Why Repair cannot settle a move into Shielded now. A reason that can clear by itself says so; one
+ * that cannot says that new moves into Shielded stay paused. */
+export function shieldBlockedText(b: ShieldRepairBlocked): string {
+  const why = SHIELD_BLOCKED[b.reason];
+  return b.retryLater
+    ? `Repair can't send these coins back yet: ${why} Check again later.`
+    : `Repair can't send these coins back: ${why} New moves into Shielded stay paused while this move is open.`;
+}
 
 /** Copy for the engine's Repair refusals (the Swift `L10n.M2Errors`). */
 export function repairErrorText(e: unknown): string {

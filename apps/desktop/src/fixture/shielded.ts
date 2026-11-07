@@ -56,7 +56,13 @@ export interface ShieldedWorld {
   shield: "applied" | "proofWaiting";
   /** The pool has too few notes to withdraw from (`shielded.pool_too_small`). */
   poolTooSmall: boolean;
+  /** A shield from the main balance whose lock signed and got no verdict (`SHIELD_STEP`): Tools ▸
+   * Repair lists it, priced on every spendable coin of the main balance. */
+  shieldUnknown?: boolean;
 }
+
+/** The step of the shield `shieldUnknown` leaves possibly sent. */
+export const SHIELD_STEP = "shield/1/funding";
 
 export const newShieldedWorld = (): ShieldedWorld => ({
   active: true,

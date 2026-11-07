@@ -114,7 +114,7 @@ test("MIX-SHIELD Tools ▸ Repair lists the possibly sent move, sends its coins 
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "tools", tab: "repair" }));
   const row = page.getByTestId("repair-stuck-shield/0/funding");
   await expect(row).toContainText("A move of mixed coins into Shielded may have been sent.");
-  await expect(row).toContainText(/Repair sends its 3 coins \(0\.300003 t?DASH\) back to your own wallet, at a network fee of 0\.00000488 t?DASH\./);
+  await expect(row).toContainText(/Repair sends the move's 3 mixed coins \(0\.300003 t?DASH\) back to your wallet's main balance, at a network fee of 0\.00000488 t?DASH\./);
   await page.getByTestId("repair-resolve-shield/0/funding").click();
   const sheet = page.getByTestId("repair-confirm");
   await expect(sheet).toContainText(/You pay a network fee of 0\.00000488 t?DASH\./);

@@ -13,7 +13,7 @@ import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "./testApi";
 import { GrantModel } from "./grant";
-import { RepairModel, repairErrorText, RepairText, stuckFundingText } from "./repair";
+import { RepairModel, RepairText, shieldBlockedText, stuckFundingText } from "./repair";
 
 const reg = (draft: string, waiting: RegistrationStatus["waiting"]): RegistrationStatus => ({
   draft,
@@ -284,7 +284,7 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
 
   it("a stuck move Repair refuses now is listed with why, and is never asked", async () => {
     const { model, api, calls } = setup({ encrypted: false });
-    const blocked = appError("stuck_funding", { kind: "stuckFunding", refusal: { kind: "spendUnsettled", txid: "cd" }, retryLater: true });
+    const blocked = { reason: "spendUnsettled", retryLater: true } as const;
     api.stuckShieldFundings.mockResolvedValue([{ step: "shield/1/funding", state: "maybeSent", repair: null, blocked }]);
     await model.refresh();
     expect(model.stuckShields).toHaveLength(1);
@@ -292,7 +292,17 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     expect(model.state).toEqual({ kind: "idle" });
     await model.resolveStuck(model.stuckShields[0]);
     expect(calls).toEqual([]);
-    expect(RepairText.shieldBlocked(repairErrorText(blocked))).toBe("Repair cannot send these coins back yet: An earlier repair (transaction cd) is not confirmed yet. Try again later.");
+    expect(shieldBlockedText(blocked)).toBe(
+      "Repair can't send these coins back yet: An earlier payment from this wallet is not confirmed yet. Check again later.",
+    );
+  });
+
+  it("a stuck move Repair can never settle says so, and that moves into Shielded stay paused", () => {
+    const text = shieldBlockedText({ reason: "noKnownLock", retryLater: false });
+    expect(text).toBe(
+      "Repair can't send these coins back: No payment of this move is known, so nothing shows which coins to send back. New moves into Shielded stay paused while this move is open.",
+    );
+    expect(text).not.toMatch(/\byet\b|registration/);
   });
 
   it("a failed read of the stuck moves into Shielded is said, not hidden", async () => {
@@ -307,12 +317,22 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
   it("names a stuck move and what Repair does about it", () => {
     expect(RepairText.shield(true)).toBe("A move of mixed coins into Shielded may have been sent");
     expect(RepairText.shield(false)).toBe("A move into Shielded may have been sent");
-    expect(RepairText.shieldRepair(2, "1.1 DASH", "0.0000034 DASH")).toBe(
-      "Repair sends its 2 coins (1.1 DASH) back to your own wallet, at a network fee of 0.0000034 DASH. You can move Dash into Shielded again once that payment is confirmed.",
+    expect(RepairText.shieldRepair(true, 2, "1.1 DASH", "0.0000034 DASH")).toBe(
+      "Repair sends the move's 2 mixed coins (1.1 DASH) back to your wallet's main balance, at a network fee of 0.0000034 DASH. You can move Dash into Shielded again once that payment is confirmed.",
     );
-    expect(RepairText.resolveStuckShieldQuestion(1, "1 DASH", "0.000002 DASH")).toBe(
-      "Send the coin of this move (1 DASH) back to your own wallet? You pay a network fee of 0.000002 DASH. Whether the move's payment reached the network is settled either way.",
+    expect(RepairText.resolveStuckShieldQuestion(true, 1, "1 DASH", "0.000002 DASH")).toBe(
+      "Send the move's mixed coin (1 DASH) back to your wallet's main balance? You pay a network fee of 0.000002 DASH. Whether the move's payment reached the network is settled either way.",
     );
+  });
+
+  it("a stuck shield from the main balance says Repair sends every spendable coin of it", () => {
+    expect(RepairText.shieldRepair(false, 4, "2 DASH", "0.000006 DASH")).toBe(
+      "Repair sends all 4 spendable coins of your main balance (2 DASH) back to your wallet, at a network fee of 0.000006 DASH. You can move Dash into Shielded again once that payment is confirmed.",
+    );
+    expect(RepairText.resolveStuckShieldQuestion(false, 4, "2 DASH", "0.000006 DASH")).toBe(
+      "Send all 4 spendable coins of your main balance (2 DASH) back to your wallet? You pay a network fee of 0.000006 DASH. Whether the move's payment reached the network is settled either way.",
+    );
+    expect(RepairText.shieldRepair(false, 1, "1 DASH", "0.000002 DASH")).toMatch(/^Repair sends the one spendable coin of your main balance \(1 DASH\)/);
   });
 
   it("a cancelled passphrase sends nothing", async () => {

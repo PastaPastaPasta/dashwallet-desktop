@@ -15,7 +15,7 @@ import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
 import { useModel } from "../../onboarding/model";
 import type { GrantModel } from "../../tools/grant";
-import { isShield, isTopUp, repairErrorText, RepairModel, RepairText, type Confirmation } from "../../tools/repair";
+import { isShield, isTopUp, RepairModel, RepairText, shieldBlockedText, type Confirmation } from "../../tools/repair";
 import { NotYet, Outcome, ToolCard, useReloadOnSync } from "./common";
 
 /** The rescan's progress is read this often while one runs (D10). */
@@ -54,7 +54,7 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
       : target && isShield(target) && target.repair
         ? {
             title: RepairText.resolveStuck,
-            text: RepairText.resolveStuckShieldQuestion(target.repair.inputs, amount(target.repair.totalDuffs), amount(target.repair.feeDuffs)),
+            text: RepairText.resolveStuckShieldQuestion(target.repair.mixed, target.repair.inputs, amount(target.repair.totalDuffs), amount(target.repair.feeDuffs)),
             action: `Send back and pay ${amount(target.repair.feeDuffs)}`,
           }
         : target && isTopUp(target)
@@ -173,8 +173,8 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
       {model.stuckShields.length > 0 && (
         <ToolCard title="Stuck moves into Shielded" testId="repair-stuck-shields">
           <p className="placeholder-note">
-            Whether these moves' payment reached the network is unknown, so no new move into Shielded can start. Repair settles each by sending its coins back
-            to your own wallet; you confirm its fee first.
+            Whether these moves' payment reached the network is unknown, so no new move into Shielded can start. Repair settles each with a payment back to
+            your own wallet; you confirm its coins and its fee first.
           </p>
           <ul className="tool-list">
             {model.stuckShields.map((f) => (
@@ -182,8 +182,8 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
                 <span>
                   {RepairText.shield(f.repair?.mixed ?? false)}.{" "}
                   {f.repair
-                    ? RepairText.shieldRepair(f.repair.inputs, amount(f.repair.totalDuffs), amount(f.repair.feeDuffs))
-                    : RepairText.shieldBlocked(repairErrorText(f.blocked))}
+                    ? RepairText.shieldRepair(f.repair.mixed, f.repair.inputs, amount(f.repair.totalDuffs), amount(f.repair.feeDuffs))
+                    : f.blocked && shieldBlockedText(f.blocked)}
                 </span>
                 <DashButton
                   variant="tintedBlue"
