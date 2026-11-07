@@ -65,6 +65,10 @@ export interface CoinJoinWorld {
   /** The next move to Shielded meets coins outside its plan as it builds the lock: it spends its
    * grant and is refused `shielded.coins_changed`, with nothing tracked or sent. */
   drainChanged?: boolean;
+  /** A move to Shielded whose lock signed and got no verdict: `next` spends the next move's grant and
+   * refuses it `platform.broadcast_unknown`, then `stuck` refuses every later one the same before its
+   * grant (the step reads possibly sent; settling it in Tools ▸ Repair is not modelled). */
+  drainUnknown?: "next" | "stuck";
   /** The recorded chunks of unknown outcome, by wallet id: their display txids. */
   sweepUnknown?: Record<string, string[]>;
 }

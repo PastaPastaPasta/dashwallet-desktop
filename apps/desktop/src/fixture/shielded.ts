@@ -236,6 +236,8 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
   // The lock spends every coin of the CoinJoin account under a `spend` grant of their sum.
   shield_mixed_coins: ({ walletId, grant }: { walletId: string; grant: string }, ctx: Ctx): ShieldOutcome => {
     const { quote, coins } = drainQuote(ctx, walletId, "shield_mixed_coins");
+    const unknown = () => raise("platform.broadcast_unknown", "funding outcome unknown", { kind: "artifact", artifact: "shield/0/funding" });
+    if (ctx.world.coinjoin.drainUnknown === "stuck") unknown();
     const g = checkGrant(ctx.world, grant, walletId, ["spend"]);
     if (g?.grant.purpose.kind !== "spend") return raise("platform.grant_invalid", "grant invalid");
     if (g.grant.purpose.maxDuffs < quote.totalDuffs) raise("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "funding", needed: String(quote.totalDuffs), remaining: String(g.grant.purpose.maxDuffs) });
@@ -243,6 +245,10 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     if (ctx.world.coinjoin.drainChanged) {
       ctx.world.coinjoin.drainChanged = false;
       raise(SHIELDED_CODES.coinsChanged, "the mixed coins changed since the move was planned: review it again");
+    }
+    if (ctx.world.coinjoin.drainUnknown === "next") {
+      ctx.world.coinjoin.drainUnknown = "stuck";
+      unknown();
     }
     const w = wallet(ctx.world, walletId);
     const spent = new Set(coins);

@@ -270,6 +270,19 @@ describe("Move mixed coins to Shielded", () => {
     expect(flow.shielded!.state.kind).toBe("applied");
   });
 
+  it("a lock that signed with no verdict reads possibly sent and points to Tools ▸ Repair, and so does the next Move", async () => {
+    const fixture = await open("coinjoin-move", "shielded");
+    fixture.world.coinjoin.drainUnknown = "next";
+    await move();
+    expect([flow.step, moveErrorText(flow.error), canRetry(flow.error)]).toEqual(["refused", SHIELDED_COPY.fundingUnknown, false]);
+    expect(flow.error).toMatchObject({ code: "platform.broadcast_unknown", data: { kind: "artifact", artifact: "shield/0/funding" } });
+    flow.close();
+    flow.begin("shielded");
+    await until(() => flow.step !== "plan");
+    await move();
+    expect([flow.step, moveErrorText(flow.error)]).toEqual(["refused", SHIELDED_COPY.fundingUnknown]);
+  });
+
   it("any other refusal of the move is shown, not quoted again", async () => {
     const fixture = installFixture({ scenario: "coinjoin-move" });
     const api = new IpcBackend("fixture");
@@ -290,6 +303,12 @@ describe("Move mixed coins to Shielded", () => {
     expect(moveErrorText(appError("shielded.not_active"))).toBe(SHIELDED_COPY.card.inactive);
     expect(canRetry(appError("shielded.move_running"))).toBe(true);
     expect([moveErrorText(appError("shielded.coins_changed")), canRetry(appError("shielded.coins_changed"))]).toEqual([MOVE_COPY.planChanged, true]);
+  });
+
+  it("sends a drain that may be out to Tools ▸ Repair, in the Shielded screen's words", () => {
+    const unknown = appError("platform.broadcast_unknown", { kind: "artifact", artifact: "shield/0/funding" });
+    expect([moveErrorText(unknown), canRetry(unknown)]).toEqual([SHIELDED_COPY.fundingUnknown, false]);
+    expect(SHIELDED_COPY.fundingUnknown).toBe("The payment may have been sent. Open Tools ▸ Repair to settle it; you can move Dash into Shielded again once it has.");
   });
 });
 

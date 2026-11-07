@@ -92,6 +92,18 @@ test("MIX-SHIELD coins that changed as the lock was built show a fresh quote, an
   expect(errors).toEqual([]);
 });
 
+test("MIX-SHIELD a lock that signed with no verdict reads possibly sent and points to Tools ▸ Repair", async ({ page }) => {
+  const errors = await openSheet(page, "coinjoin-move", "light", "coinjoin-move-shield");
+  await expect(body(page)).toHaveAttribute("data-step", "confirm");
+  await page.evaluate(() => void (window.__dwFixture!.world.coinjoin.drainUnknown = "next"));
+  await page.getByTestId("move-mixed-confirm").click();
+  await authorize(page);
+  await expect(body(page)).toHaveAttribute("data-step", "refused");
+  await expect(page.getByTestId("move-mixed-refusal")).toHaveText("The payment may have been sent. Open Tools ▸ Repair to settle it; you can move Dash into Shielded again once it has.");
+  await expect(page.getByTestId("move-mixed-again")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test("MIX-SHIELD above 50 coins, combine first, then wait for them to confirm", async ({ page }) => {
   const errors = await openSheet(page, "coinjoin-move-many", "light", "coinjoin-move-shield");
   await expect(body(page)).toHaveAttribute("data-step", "combine");
