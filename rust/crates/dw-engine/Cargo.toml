@@ -16,6 +16,11 @@ test-support = []
 # `NetworkSession::fund_platform_addresses_for_test`, for dwcli's
 # `platform-addr-fund` feature only (debug builds; release 0.1's smoke).
 test-fund = []
+# `mix_shield_test`, for dwcli's `mix-shield-test` feature only (the
+# regtest suite of "move mixed coins"). The module also needs
+# `debug_assertions`; `tests/mix_shield_release_check.rs` proves it absent
+# from a release build.
+test-mix-shield = []
 
 [dependencies]
 platform-wallet = { workspace = true }

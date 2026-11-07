@@ -19,6 +19,8 @@
 //! change holds, so none is released once `lock()` has returned (vault
 //! module doc, "Release").
 
+use std::sync::Weak;
+
 use async_trait::async_trait;
 use dashcore::secp256k1::{Message, PublicKey, SecretKey, ecdsa};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
@@ -70,6 +72,33 @@ pub enum SignerScope {
     /// cannot see the debit, so the engine checks it before the transaction
     /// leaves the process (E0-04 design §3.4, §4.2).
     PlatformFunding { max_duffs: u64 },
+    /// "Move mixed coins" to Shielded (0.2 MIX-SHIELD): the drain of the
+    /// CoinJoin account into one Core → Shielded asset lock and that
+    /// lock's apply. Signatures and public keys (no chain codes) of the
+    /// address keys of CoinJoin account 0 `m/9'/coin'/4'/0'/{0,1}/index`
+    /// (the lock's inputs) and of the shielded top-up credit keys
+    /// `m/9'/coin'/5'/5'/index` (the lock's one-time key), nothing else: no
+    /// BIP44, BIP32 or DashPay input, no other credit key, no identity,
+    /// Orchard or masternode key, and no `signmessage` call.
+    ///
+    /// Issued only from a `Spend` grant, whose [`SignerScope::Full`] signer
+    /// already reaches every one of these keys, so it gives no grant more
+    /// reach; and only against a [`crate::SignerLife`]
+    /// ([`crate::Vault::shield_drain_signer`]), so it stops with its owner
+    /// whatever key it signs with, not at the vault's next epoch. The engine
+    /// issues it only for a `ShieldDrain` lease, whose life it is. The token
+    /// bounds `max_duffs` (not 0, at most the grant's), but the vault signs
+    /// sighashes and cannot see the debit: the engine's drain bounds the
+    /// sum of the lock's inputs by `max_duffs`.
+    ///
+    /// Threat note: a leaked signer of this scope (one that reached other
+    /// code while its life held) signs any digest at these keys. It can
+    /// spend every coin paying a CoinJoin account 0 address to any script,
+    /// whatever `max_duffs` says, and sign the proof of any unconsumed
+    /// Core → Shielded lock, sending its credits to whatever Platform use
+    /// consumes that lock. It reaches no other coin or key, and no private
+    /// key, chain code or Orchard key leaves it.
+    ShieldDrainFunding { max_duffs: u64 },
     /// Platform-address spends (release 0.1, "Move to Dash wallet"):
     /// signatures and public keys (no chain codes) of the DIP-17 payment
     /// address keys `m/9'/coin'/17'/account'/key_class'/index` only. Like
@@ -142,10 +171,12 @@ pub(crate) enum KeyUse {
 }
 
 impl SignerScope {
-    /// The funding cap of [`SignerScope::PlatformFunding`].
+    /// The funding cap of [`SignerScope::PlatformFunding`] and
+    /// [`SignerScope::ShieldDrainFunding`].
     pub fn max_duffs(&self) -> Option<u64> {
         match self {
-            SignerScope::PlatformFunding { max_duffs } => Some(*max_duffs),
+            SignerScope::PlatformFunding { max_duffs }
+            | SignerScope::ShieldDrainFunding { max_duffs } => Some(*max_duffs),
             _ => None,
         }
     }
@@ -202,6 +233,11 @@ impl SignerScope {
                 KeyUse::ExtendedPublicKey => paths::is_identity_top_up_account(path, network),
                 _ => false,
             },
+            SignerScope::ShieldDrainFunding { .. } => {
+                sign_or_public_key
+                    && (paths::is_coinjoin_address(path, network)
+                        || paths::is_shielded_top_up_credit_key(path, network))
+            }
             SignerScope::PlatformAddress => {
                 sign_or_public_key && paths::is_platform_payment_address(path, network)
             }
@@ -281,6 +317,9 @@ pub struct VaultSigner {
     epoch: u64,
     /// The data key it signs with ([`KeySource`]).
     key: KeySource,
+    /// Its owner's [`crate::SignerLife`], when it has one: it stops when
+    /// that drops.
+    life: Option<Weak<()>>,
 }
 
 impl std::fmt::Debug for VaultSigner {
@@ -306,6 +345,21 @@ impl VaultSigner {
             scope,
             epoch,
             key,
+            life: None,
+        }
+    }
+
+    /// Binds the signer to `life` ([`crate::SignerLife::watch`]).
+    pub(crate) fn with_life(mut self, life: Weak<()>) -> Self {
+        self.life = Some(life);
+        self
+    }
+
+    /// `Locked` once the signer's [`crate::SignerLife`] dropped.
+    fn alive(&self) -> Result<(), SignerError> {
+        match &self.life {
+            Some(life) if life.strong_count() == 0 => Err(SignerError::Locked),
+            _ => Ok(()),
         }
     }
 
@@ -343,6 +397,7 @@ impl VaultSigner {
             self.check(*key_use, path)?;
         }
         self.vault.gated(SignerError::Locked, |gate| {
+            self.alive()?;
             let seed = self
                 .vault
                 .signing_seed(gate, &self.wallet_id, self.epoch, &self.key)?;
@@ -372,6 +427,7 @@ impl VaultSigner {
             return Err(SignerError::PathNotAllowed("the seed".into()));
         }
         self.vault.gated(SignerError::Locked, |gate| {
+            self.alive()?;
             let seed = self
                 .vault
                 .signing_seed(gate, &self.wallet_id, self.epoch, &self.key)?;
@@ -398,6 +454,7 @@ impl VaultSigner {
             )));
         }
         self.vault.gated(SignerError::Locked, |gate| {
+            self.alive()?;
             /// Erases the secret when dropped, so a panicking `f` erases it
             /// too.
             struct Erased(SecretKey);
@@ -754,6 +811,64 @@ mod tests {
         ] {
             assert!(uses(s, other).is_empty(), "{other}");
         }
+    }
+
+    /// 0.2 MIX-SHIELD: the drain scope signs CoinJoin account 0's address
+    /// keys and the shielded top-up credit keys, nothing else; BIP44,
+    /// identity, other-account and other credit keys are refused, and no
+    /// signature or chain code beyond `Sign`/`PublicKey`.
+    #[test]
+    fn shield_drain_funding_signs_coinjoin_inputs_and_shielded_credit_keys_only() {
+        let s = SignerScope::ShieldDrainFunding { max_duffs: 7 };
+        assert_eq!(s.max_duffs(), Some(7));
+        for ok in [
+            "m/9'/1'/4'/0'/0/0",
+            "m/9'/1'/4'/0'/1/99",
+            "m/9'/1'/5'/5'/0",
+            "m/9'/1'/5'/5'/12",
+        ] {
+            assert_eq!(uses(s, ok), vec![KeyUse::Sign, KeyUse::PublicKey], "{ok}");
+        }
+        for other in [
+            // BIP44, BIP32 and DashPay inputs.
+            "m/44'/1'/0'/0/0",
+            "m/44'/1'/1'/1/3",
+            "m/0'/1/3",
+            "m/9'/1'/15'/0'/0",
+            // Other CoinJoin accounts, the account nodes, hardened children.
+            "m/9'/1'/4'/1'/0/0",
+            "m/9'/1'/4'/0'",
+            "m/9'/1'/4'/0'/0",
+            "m/9'/1'/4'/0'/0/0'",
+            "m/9'/1'/4'/0'/2/0",
+            // Other credit keys, the shielded top-up account node.
+            "m/9'/1'/5'/1'/0",
+            "m/9'/1'/5'/2'/0",
+            "m/9'/1'/5'/2'/0'/1",
+            "m/9'/1'/5'/2'/0'",
+            "m/9'/1'/5'/3'/2",
+            "m/9'/1'/5'/5'",
+            "m/9'/1'/5'/5'/0'",
+            // Identity, Platform-address, provider keys.
+            "m/9'/1'/5'/0'/0'/0'/0'",
+            "m/9'/1'/17'/0'/0'/0",
+            "m/9'/1'/3'/1'/0",
+            "m/9'/1'/3'/2'/0",
+            // Another network's coin type.
+            "m/9'/5'/4'/0'/0/0",
+            "m/9'/5'/5'/5'/0",
+            "m",
+        ] {
+            assert!(uses(s, other).is_empty(), "{other}");
+        }
+        // PlatformFunding still refuses CoinJoin inputs.
+        assert!(
+            uses(
+                SignerScope::PlatformFunding { max_duffs: 7 },
+                "m/9'/1'/4'/0'/0/0"
+            )
+            .is_empty()
+        );
     }
 
     /// Release 0.1: a Platform-address signer reaches the DIP-17 payment

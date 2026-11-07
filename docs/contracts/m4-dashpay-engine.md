@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 56
+Contract-Version: 57
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -862,7 +862,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: f8379c7ca48fc726a6256031a71a38f6029bd091aa881fd99893c0834d1e1748 version: 56 -->
+<!-- surface-sha256: 9f2fec2e4e973b43d6588b85dabaadc2416c6a3be5f0a3b216397f63f17fb4bd version: 57 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1333,6 +1333,7 @@ pub enum FlowKind {
     Shield,
     PlatformAddressFund,
     ShieldedSpend,
+    ShieldDrain,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -3997,7 +3998,6 @@ renames or reshapes them takes the next version bump:
     instead of a Platform code: the dispatch journal not read (was `platform.unavailable` for shields, sends and
     unshields; only a closing session's) and a shield's funding held for a running SPV or a running DashPay bring-up
     (was `platform.context_unavailable` / `platform.unavailable`). §2.13 "Still syncing".
-
 75. **Platform receive and sends to Platform addresses (0.2 X1b slice 1, version 55).** §2.12 adds
     `platform_receive_address`, `platform_send_quote` and `platform_send`; `PlatformActivityKind::Send`;
     `credits.recipient_invalid{reason}` and `credits.send_out_of_range{min}`. The receive address ships only with the
@@ -4094,6 +4094,13 @@ renames or reshapes them takes the next version bump:
     - **Independent kinds.** `unfinished_transfers` reads each kind on its own side and names an unreadable one in
       `unread` (as Finish transfers' `FinishReport.unread`), so a shielded side that can't open (the feature off,
       a broken store) never hides stranded type-4 locks, nor the reverse.
+80. **The CoinJoin drain lease (0.2 MIX-SHIELD, version 57).** `FlowKind` gains `ShieldDrain` ("Move mixed coins" to
+    Shielded): a lease of it takes one `Spend` grant (no `PlatformOp` grant reaches a CoinJoin coin) and issues only its
+    duffs' funding signer, the vault scope `ShieldDrainFunding{max_duffs}` (m1 §scopes: CoinJoin account 0's address keys
+    and the shielded top-up credit keys, nothing else); no spend signer, contact crypto, identity key or credits. The
+    signer is bound to the lease's life, so it stops when the lease ends, on the vault's key too. Registration refuses
+    a drain lease `platform.grant_invalid` before a row exists; the flows that read a lease's funding signer check its
+    flow. `dw-app`'s `FlowKindName` mirrors it as `shieldDrain`.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

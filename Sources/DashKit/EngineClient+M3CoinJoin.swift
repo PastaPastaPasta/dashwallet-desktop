@@ -250,11 +250,18 @@ public struct MixedCoinsPlanChunk: Sendable, Hashable {
 public struct MixedCoinsPlan: Sendable, Hashable {
     public let total: Amount
     public let chunks: [MixedCoinsPlanChunk]
+    /// Coins the plan leaves for now: they wait for a confirmation.
+    public let unconfirmed: Int
+    /// What `moveMixedCoins` takes to run exactly this plan.
+    public let quoteID: String
 }
 
 public struct MixedCoinsOutcome: Sendable, Hashable {
     public let txids: [String]
     public let moved: Amount
+    /// Of `moved`, what arrives; the rest is `fee`.
+    public let received: Amount
+    public let fee: Amount
     public let remaining: Amount
     public let failureCode: String?
     /// With `coinjoin.broadcast_unknown`: the chunk that may be on the network.
@@ -363,19 +370,21 @@ extension EngineClient {
                 MixedCoinsPlanChunk(
                     inputs: $0.inputs, amount: Amount(duffs: Int64(clamping: $0.amount)),
                     fee: Amount(duffs: Int64(clamping: $0.fee)))
-            })
+            }, unconfirmed: Int(p.unconfirmed), quoteID: p.quoteId)
     }
 
-    public func moveMixedCoins(on network: DashNetwork, wallet: WalletID, target: MixedCoinsTarget, grantID: String)
-        async throws(DashKitError) -> MixedCoinsOutcome
-    {
+    public func moveMixedCoins(
+        on network: DashNetwork, wallet: WalletID, target: MixedCoinsTarget, quoteID: String, grantID: String
+    ) async throws(DashKitError) -> MixedCoinsOutcome {
         let session = try session(network)
         let destination = target.ffi
         let r = try await mapped {
-            try await session.moveMixedCoins(walletId: wallet.hex, destination: destination, grantId: grantID)
+            try await session.moveMixedCoins(
+                walletId: wallet.hex, destination: destination, quoteId: quoteID, grantId: grantID)
         }
         return MixedCoinsOutcome(
             txids: r.txids, moved: Amount(duffs: Int64(clamping: r.moved)),
+            received: Amount(duffs: Int64(clamping: r.received)), fee: Amount(duffs: Int64(clamping: r.fee)),
             remaining: Amount(duffs: Int64(clamping: r.remaining)), failureCode: r.failureCode,
             unknownTxid: r.unknownTxid)
     }

@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::Subcommand;
-use dw_engine::coinjoin::{CoinJoinSettings, CoinJoinStatus, MixingState, SweepDestination};
+use dw_engine::coinjoin::{
+    CoinJoinSettings, CoinJoinStatus, MixingState, SweepDestination, SweepResult,
+};
 use dw_engine::{CoinFilter, CoinSource, Engine, FeeMode, NetworkSession, WalletId};
 use dw_vault::{GrantPurpose, LockState, UnlockScope};
 use zeroize::Zeroizing;
@@ -83,6 +85,32 @@ pub enum CoinJoinCommand {
         plan_only: bool,
         #[arg(long)]
         sync_height: Option<u32>,
+        /// Combine the coins: they lose some of their mixing privacy.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// The consolidation round before a move to Shielded: the CoinJoin
+    /// account's final coins swept onto fresh addresses of the same account;
+    /// with `--plan-only` print the plan only.
+    #[command(name = "consolidate-mixed")]
+    ConsolidateMixed {
+        wallet: String,
+        #[arg(long)]
+        plan_only: bool,
+        #[arg(long)]
+        sync_height: Option<u32>,
+        /// Combine the coins: they lose some of their mixing privacy.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Test only (`mix-shield-test`, debug builds): `count` fresh addresses
+    /// of the CoinJoin account, one `cjaddress <address>` line each.
+    #[cfg(feature = "mix-shield-test")]
+    #[command(name = "coinjoin-test-addresses")]
+    TestAddresses {
+        wallet: String,
+        #[arg(long, default_value_t = 1)]
+        count: usize,
     },
 }
 
@@ -364,6 +392,7 @@ pub fn run(
             wallet,
             plan_only,
             sync_height,
+            yes,
         } => {
             let id = wallet_id(&wallet)?;
             if let Some(h) = sync_height {
@@ -372,7 +401,14 @@ pub fn run(
             let plan = engine
                 .block_on(session.mixed_coins_sweep_plan(id, SweepDestination::Wallet))
                 .map_err(e)?;
-            println!("plan total={} chunks={}", plan.total, plan.chunks.len());
+            println!(
+                "plan total={} chunks={} fully_mixed={} not_fully_mixed={} unconfirmed={}",
+                plan.total,
+                plan.chunks.len(),
+                plan.fully_mixed,
+                plan.not_fully_mixed,
+                plan.unconfirmed
+            );
             for c in &plan.chunks {
                 println!(
                     "chunk inputs={} amount={} fee={}",
@@ -380,6 +416,7 @@ pub fn run(
                 );
             }
             if !plan_only {
+                confirm_combine(yes, &mut std::io::stdout())?;
                 let grant = session
                     .vault()
                     .authorize(
@@ -391,17 +428,94 @@ pub fn run(
                     )
                     .map_err(|e| e.to_string())?;
                 let r = engine
-                    .block_on(session.move_mixed_coins(id, SweepDestination::Wallet, grant.id))
+                    .block_on(session.move_mixed_coins(
+                        id,
+                        SweepDestination::Wallet,
+                        plan.quote_id.clone(),
+                        grant.id,
+                    ))
                     .map_err(e)?;
-                println!(
-                    "moved {} remaining={} txids={} failure={}",
-                    r.moved,
-                    r.remaining,
-                    r.txids.join(","),
-                    r.failure_code.as_deref().unwrap_or("-")
-                );
+                print_sweep(&r);
             }
         }
+        CoinJoinCommand::ConsolidateMixed {
+            wallet,
+            plan_only,
+            sync_height,
+            yes,
+        } => {
+            let id = wallet_id(&wallet)?;
+            if let Some(h) = sync_height {
+                wait_for_height(engine, session, id, h, Duration::from_secs(300))?;
+            }
+            let plan = engine
+                .block_on(session.mixed_coins_consolidation_plan(id))
+                .map_err(e)?;
+            println!(
+                "plan total={} chunks={} fully_mixed={} not_fully_mixed={} coins_after={} unconfirmed={}",
+                plan.total,
+                plan.chunks.len(),
+                plan.fully_mixed,
+                plan.not_fully_mixed,
+                plan.coins_after,
+                plan.unconfirmed
+            );
+            for c in &plan.chunks {
+                println!(
+                    "chunk inputs={} amount={} fee={}",
+                    c.inputs, c.amount, c.fee
+                );
+            }
+            if !plan_only {
+                confirm_combine(yes, &mut std::io::stdout())?;
+                let grant = session
+                    .vault()
+                    .authorize(
+                        GrantPurpose::Spend {
+                            max_duffs: plan.total,
+                        },
+                        Some(&id.0),
+                        credential(session, passphrase),
+                    )
+                    .map_err(|e| e.to_string())?;
+                let r = engine
+                    .block_on(session.consolidate_mixed_coins(id, plan.quote_id.clone(), grant.id))
+                    .map_err(e)?;
+                print_sweep(&r);
+            }
+        }
+        #[cfg(feature = "mix-shield-test")]
+        CoinJoinCommand::TestAddresses { wallet, count } => {
+            let addresses = engine
+                .block_on(session.coinjoin_addresses_for_test(wallet_id(&wallet)?, count))
+                .map_err(e)?;
+            for a in addresses {
+                println!("cjaddress {a}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_sweep(r: &SweepResult) {
+    println!(
+        "moved {} remaining={} txids={} failure={}",
+        r.moved,
+        r.remaining,
+        r.txids.join(","),
+        r.failure_code.as_deref().unwrap_or("-")
+    );
+}
+
+/// The sentence "Move mixed coins" shows before coins are combined on-chain.
+const COMBINED_PRIVACY: &str = "These coins are combined on-chain, so the fully mixed amount loses some of its mixing privacy.";
+
+/// States what combining the coins costs in privacy, and refuses unless
+/// the caller passed `--yes`: before any grant is asked for.
+fn confirm_combine(yes: bool, out: &mut impl std::io::Write) -> Result<(), String> {
+    writeln!(out, "{COMBINED_PRIVACY}").map_err(|e| e.to_string())?;
+    if !yes {
+        return Err("pass --yes to combine them".into());
     }
     Ok(())
 }
@@ -419,5 +533,71 @@ mod tests {
         assert!(apply_setting(&mut s, "multi=yes").is_err());
         assert!(apply_setting(&mut s, "moon=1").is_err());
         assert!(apply_setting(&mut s, "rounds").is_err());
+    }
+
+    /// Without `mix-shield-test` (every release and packaged build: the
+    /// feature refuses a release build) dwcli has no test-only CoinJoin
+    /// command; with it, the command parses, so the check isn't vacuous.
+    #[test]
+    fn the_test_addresses_command_exists_only_with_its_feature() {
+        use clap::Parser;
+        let parsed = crate::Cli::try_parse_from([
+            "dwcli",
+            "--datadir",
+            "d",
+            "coinjoin-test-addresses",
+            "w",
+            "--count",
+            "2",
+        ]);
+        if cfg!(feature = "mix-shield-test") {
+            assert!(parsed.is_ok());
+        } else {
+            let kind = parsed.err().map(|e| e.kind());
+            assert_eq!(kind, Some(clap::error::ErrorKind::InvalidSubcommand));
+        }
+        let consolidate =
+            crate::Cli::try_parse_from(["dwcli", "--datadir", "d", "consolidate-mixed", "w"]);
+        assert!(consolidate.is_ok(), "consolidate-mixed is a normal command");
+    }
+
+    /// Both sweeps combine the coins on-chain: each takes `--yes`.
+    #[test]
+    fn the_sweeps_take_yes() {
+        use clap::Parser;
+        for command in ["move-mixed", "consolidate-mixed"] {
+            let parse = |extra: &[&str]| {
+                let args = ["dwcli", "--datadir", "d", command, "w"];
+                let cli = crate::Cli::try_parse_from(args.iter().chain(extra)).unwrap();
+                let crate::Command::CoinJoin(c) = cli.command else {
+                    panic!("{command} is a CoinJoin command");
+                };
+                c
+            };
+            let yes = |c: CoinJoinCommand| match c {
+                CoinJoinCommand::MoveMixed { yes, .. }
+                | CoinJoinCommand::ConsolidateMixed { yes, .. } => yes,
+                _ => panic!("{command}"),
+            };
+            assert!(!yes(parse(&[])), "{command}");
+            assert!(yes(parse(&["--yes"])), "{command}");
+        }
+    }
+
+    /// The sweeps' confirmation states the privacy cost either way and
+    /// goes on only with `--yes`.
+    #[test]
+    fn a_sweep_without_yes_states_the_privacy_cost_and_stops() {
+        for (yes, ok) in [(false, false), (true, true)] {
+            let mut out = Vec::new();
+            let r = super::confirm_combine(yes, &mut out);
+            assert_eq!(r.is_ok(), ok, "yes={yes}");
+            let printed = String::from_utf8(out).unwrap();
+            assert_eq!(printed.trim_end(), super::COMBINED_PRIVACY, "yes={yes}");
+        }
+        assert_eq!(
+            super::confirm_combine(false, &mut Vec::new()).unwrap_err(),
+            "pass --yes to combine them"
+        );
     }
 }

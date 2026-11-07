@@ -275,18 +275,32 @@ public struct MixedCoinsSweepPlan: Sendable, Hashable {
     public let destination: MixedCoinsDestination
     public let total: Amount
     public let chunks: [MixedCoinsChunk]
+    /// Coins the plan leaves for now: they wait for a confirmation.
+    public let unconfirmed: Int
+    /// The engine's id of this plan: the move runs only on its coins.
+    public let quoteId: String
 
-    public init(destination: MixedCoinsDestination, total: Amount, chunks: [MixedCoinsChunk]) {
+    public init(
+        destination: MixedCoinsDestination, total: Amount, chunks: [MixedCoinsChunk], unconfirmed: Int = 0,
+        quoteId: String = ""
+    ) {
         self.destination = destination
         self.total = total
         self.chunks = chunks
+        self.unconfirmed = unconfirmed
+        self.quoteId = quoteId
     }
 }
 
 /// A sweep may stop part-way (iOS "may partially succeed").
 public struct MixedCoinsSweepResult: Sendable, Hashable {
     public let txids: [String]
+    /// What left the CoinJoin balance: `received + fee`.
     public let moved: Amount
+    /// Of `moved`, what arrives at the destination.
+    public let received: Amount
+    /// Of `moved`, the network fees.
+    public let fee: Amount
     public let remaining: Amount
     /// Engine code of the error that stopped the sweep; `nil` = complete.
     public let failureCode: ServiceErrorCode?
@@ -295,10 +309,13 @@ public struct MixedCoinsSweepResult: Sendable, Hashable {
     public let unknownTxid: String?
 
     public init(
-        txids: [String], moved: Amount, remaining: Amount, failureCode: ServiceErrorCode?, unknownTxid: String? = nil
+        txids: [String], moved: Amount, remaining: Amount, failureCode: ServiceErrorCode?, unknownTxid: String? = nil,
+        fee: Amount = .zero
     ) {
         self.txids = txids
         self.moved = moved
+        self.fee = fee
+        self.received = Amount(duffs: moved.duffs - fee.duffs)
         self.remaining = remaining
         self.failureCode = failureCode
         self.unknownTxid = unknownTxid
@@ -310,7 +327,8 @@ public protocol MixedCoinsMoving: AnyObject, Sendable {
     /// Runs as a rescan (`RepairProviding.rescanProgress`).
     func recoveryScan(wallet: WalletID) async throws(ServiceError) -> CoinJoinRecoveryReport
     func plan(wallet: WalletID, destination: MixedCoinsDestination) async throws(ServiceError) -> MixedCoinsSweepPlan
+    /// Runs `plan` as confirmed (`.coinjoinPlanChanged` when its coins changed: plan again).
     /// `grant`: `.spend(max: ≥ plan.total)`.
-    func move(wallet: WalletID, destination: MixedCoinsDestination, grant: AuthGrant) async throws(ServiceError)
+    func move(wallet: WalletID, plan: MixedCoinsSweepPlan, grant: AuthGrant) async throws(ServiceError)
         -> MixedCoinsSweepResult
 }
