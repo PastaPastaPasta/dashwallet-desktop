@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
 import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
-// "Move mixed coins" (IOS-057, 0.2 MIX-SHIELD) on the fixture backend: the card on the CoinJoin
+// "Move mixed coins" (IOS-057) on the fixture backend: the card on the CoinJoin
 // page; to the wallet, the plan with its fully and not fully mixed amounts, Stop Mixing when mixing
 // runs, the grant prompt, and the complete, partial and unknown outcomes; into Shielded, the lock's
 // quote and outcome, and the consolidation round above 50 coins; 0 serious axe issues in light and

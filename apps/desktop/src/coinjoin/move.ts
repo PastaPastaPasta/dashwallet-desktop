@@ -1,10 +1,10 @@
-// "Move mixed coins" (IOS-057, 0.2 MIX-SHIELD): the CoinJoin account's whole balance, fully mixed or
+// "Move mixed coins" (IOS-057): the CoinJoin account's whole balance, fully mixed or
 // not, to the wallet or into Shielded. To the wallet it is swept in chunks to a fresh receive
 // address of the same wallet; the outcome shows what moved, what remains, and a chunk whose
 // broadcast outcome is unknown, whose Try again sends the same signed transaction again. Into
 // Shielded it is one asset lock of every coin, applied as any add to Shielded (a lock not applied
 // yet is finished from the Shielded card); above 50 coins the coins are combined first inside the
-// CoinJoin account (iOS #1221), then moved once that round confirms. The plan step reads the plan,
+// CoinJoin account, then moved once that round confirms. The plan step reads the plan,
 // the confirm step asks for a spend grant of its total (U-05's GrantModel). Mixing has to stop
 // first: the engine refuses while it runs and the sheet offers Stop Mixing. One flow per wallet,
 // kept while the app runs, so the sheet can close while the call runs and reopen to its result.

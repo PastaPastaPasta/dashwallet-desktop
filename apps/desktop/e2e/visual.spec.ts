@@ -628,7 +628,7 @@ for (const theme of THEMES) {
       await shoot(page, `coinjoin-page-${state}`, theme);
     });
   }
-  // "Move mixed coins" (IOS-057, MIX-SHIELD): the plan, the refusal while mixing, a partial outcome;
+  // "Move mixed coins" (IOS-057): the plan, the refusal while mixing, a partial outcome;
   // into Shielded, the quote and the consolidation round.
   for (const [name, scenario, button, ready] of [
     ["move-mixed-confirm", "coinjoin-move", "coinjoin-move-open", "[data-testid=move-mixed-body][data-step=confirm]"],
