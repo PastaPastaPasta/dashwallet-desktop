@@ -119,6 +119,8 @@ codes! {
         RecipientInvalid = "credits.recipient_invalid",
         SendOutOfRange = "credits.send_out_of_range",
         QuoteChanged = "credits.quote_changed",
+        FundPending = "credits.fund_pending",
+        TooManyInputs = "credits.too_many_inputs",
     }
 }
 
@@ -475,6 +477,11 @@ impl From<CreditsError> for AppError {
                 Some(ErrorData::CreditMinimum { min }),
             ),
             C::QuoteChanged => (CreditsCode::QuoteChanged, None),
+            C::FundPending { txid } => (CreditsCode::FundPending, Some(ErrorData::Txid { txid })),
+            C::TooManyInputs { inputs, .. } => (
+                CreditsCode::TooManyInputs,
+                Some(ErrorData::Number { value: inputs }),
+            ),
             C::Platform(e) => return e.into(),
         };
         AppError {
@@ -647,6 +654,11 @@ mod tests {
             },
             CreditsError::SendOutOfRange { min: 1 },
             CreditsError::QuoteChanged,
+            CreditsError::FundPending { txid: s() },
+            CreditsError::TooManyInputs {
+                inputs: 51,
+                max: 50,
+            },
             CreditsError::Platform(PlatformError::Unavailable),
         ];
         for e in credits {

@@ -96,6 +96,14 @@ describe("Move to Dash wallet", () => {
     expect(hasPendingMove(null)).toBe(false);
   });
 
+  it("ignores an add from the Dash wallet: it holds neither a move nor a send", () => {
+    const base = { id: "fund-1", credits: "1", address: "tdash1a", to: null, expectedDuffs: null, feeCredits: null, at: 1, mayLand: false, estimated: true } as const;
+    expect(hasPendingMove([{ ...base, kind: "fromCore", state: "pending" }])).toBe(false);
+    expect(hasPendingMove([{ ...base, kind: "fromCore", state: "pending", mayLand: true }])).toBe(false);
+    expect(hasUnansweredOp([{ ...base, kind: "fromCore", state: "pending" }])).toBe(false);
+    expect(sendHolds([{ ...base, kind: "fromCore", state: "pending" }])).toBe(false);
+  });
+
   it("counts a failed move or send that may still land as holding, and one that never will as not", () => {
     const base = { id: "ps-1", credits: "1", address: null, to: null, expectedDuffs: null, feeCredits: null, at: 1, estimated: false } as const;
     expect(hasPendingMove([{ ...base, kind: "send", state: "failed", mayLand: true }])).toBe(true);
