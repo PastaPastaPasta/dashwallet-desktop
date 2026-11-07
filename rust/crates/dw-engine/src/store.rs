@@ -124,8 +124,14 @@ impl PlatformWalletPersistence for WalletStore {
         wallet_id: RawWalletId,
         changeset: PlatformWalletChangeSet,
     ) -> Result<(), PersistenceError> {
+        let replay = || self.replay.get().and_then(std::sync::Weak::upgrade);
         #[cfg(test)]
         if (self.fail_store.lock().unwrap().as_ref()).is_some_and(|fails| fails(&changeset)) {
+            if changeset.core.is_some()
+                && let Some(replay) = replay()
+            {
+                replay.note_store_failed(WalletId(wallet_id));
+            }
             return Err(PersistenceError::LockPoisoned);
         }
         // The wallet as the call began: a removal (and a reimport) that
@@ -155,9 +161,14 @@ impl PlatformWalletPersistence for WalletStore {
                     .collect()
             })
             .unwrap_or_default();
-        self.inner.store(wallet_id, changeset)?;
+        if let Err(e) = self.inner.store(wallet_id, changeset) {
+            if core && let Some(replay) = replay() {
+                replay.note_store_failed(WalletId(wallet_id));
+            }
+            return Err(e);
+        }
         if let Some(height) = committed
-            && let Some(replay) = self.replay.get().and_then(std::sync::Weak::upgrade)
+            && let Some(replay) = replay()
         {
             replay.note(crate::replay_record::ReplayNote::Committed {
                 wallet: WalletId(wallet_id),

@@ -2627,6 +2627,13 @@ impl Fixture {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// The next close clears no record, as a crash.
+    fn crash_on_close(&self) {
+        (self.session.live().unwrap().replay)
+            .crash_on_close
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// `rescan`'s outcome when it quit after the record.
     fn assert_quit_before_the_rewind(&self, rescan: Result<(), EngineError>) {
         assert!(rescan.is_err());
@@ -2759,6 +2766,7 @@ fn a_quit_between_the_record_and_the_rewind_costs_only_a_replay() {
     f.quit_after_the_record();
     let rescan = f.rescan(400);
     f.assert_quit_before_the_rewind(rescan);
+    f.crash_on_close();
     let f = f.reopen();
     let (synced, guard) = (f.synced(), f.guard());
     eprintln!(
@@ -2909,4 +2917,37 @@ fn a_replay_record_ends_with_its_stored_replay() {
         appdb.setting(&f.wallet.to_string(), "replay").unwrap(),
         None
     );
+}
+
+/// A clean close with the replay back and a store at its target committed
+/// ends the record: the persistence adapter has committed every event by
+/// then. A crash there keeps it, which costs one replay.
+#[test]
+fn a_clean_close_after_the_replay_ends_its_record() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    assert!(
+        f.record().is_some(),
+        "a store at the target can predate the rewind"
+    );
+    f.crash_on_close();
+    let f = f.reopen();
+    let crashed = f.synced();
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    let f = f.reopen();
+    let (synced, guard, record) = (f.synced(), f.guard(), f.record());
+    eprintln!(
+        "ROW58 clean close after the replay: after a crash {crashed}, after a clean close \
+         {synced}, replay guard {guard:?}, record {record:?}"
+    );
+    assert!(crashed < 400, "a crash keeps the record: {crashed}");
+    assert_eq!(synced, 1_000, "a clean close ends the record");
+    assert_eq!(guard.unwrap(), 1_000);
+    assert_eq!(record, None);
 }

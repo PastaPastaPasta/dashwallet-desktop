@@ -890,6 +890,9 @@ impl NetworkSession {
         self.abort_resends();
         let report = manager.shutdown().await;
         self.hub.set_spv_running(false);
+        if report.all_clean() {
+            live.replay.close(&manager).await;
+        }
         if report.all_clean() && keys_idle {
             let marker = self.data_dir.join(crate::tools::SESSION_MARKER);
             if let Err(e) = std::fs::remove_file(&marker)

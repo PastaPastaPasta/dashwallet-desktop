@@ -5,9 +5,10 @@
 //! stored checkpoint does not go down (monotonic-max). A quit mid-replay
 //! would leave the coin spendable for good. So each rewind first stores a
 //! record (app.sqlite, the wallet's `replay` setting), which goes once a
-//! store above its target is committed; a session that opens with a record
-//! rewinds the wallet to it again and refuses its spends until the replay
-//! is back (`NetworkSession::resume_replay`).
+//! store above its target is committed, or at a clean close with the
+//! replay back and stored; a session that opens with a record rewinds the
+//! wallet to it again and refuses its spends until the replay is back
+//! (`NetworkSession::resume_replay`).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
@@ -121,6 +122,13 @@ pub(crate) struct ReplayRecords {
     records: Mutex<HashMap<WalletId, Option<ReplayRecord>>>,
     notes: mpsc::UnboundedSender<ReplayNote>,
     receiver: std::sync::Mutex<Option<mpsc::UnboundedReceiver<ReplayNote>>>,
+    /// This session's commits: each wallet's highest committed checkpoint,
+    /// and whether a store of its Core changes failed (the persistence
+    /// adapter then holds its stored checkpoint back for the session).
+    commits: std::sync::Mutex<HashMap<WalletId, (u32, bool)>>,
+    /// Tests: a close clears nothing, as a crash.
+    #[cfg(test)]
+    pub(crate) crash_on_close: std::sync::atomic::AtomicBool,
     /// Tests: the next recorded rewind fails after its record is stored,
     /// as a quit there would leave it.
     #[cfg(test)]
@@ -135,6 +143,9 @@ impl ReplayRecords {
             records: Mutex::new(HashMap::new()),
             notes,
             receiver: std::sync::Mutex::new(Some(receiver)),
+            commits: Default::default(),
+            #[cfg(test)]
+            crash_on_close: Default::default(),
             #[cfg(test)]
             crash_after_write: Default::default(),
         })
@@ -142,7 +153,62 @@ impl ReplayRecords {
 
     /// Queues `note` for the task [`Self::start`] runs.
     pub(crate) fn note(&self, note: ReplayNote) {
+        if let ReplayNote::Committed { wallet, height } = note {
+            let mut commits = self.commits.lock().unwrap_or_else(|p| p.into_inner());
+            let entry = commits.entry(wallet).or_default();
+            entry.0 = entry.0.max(height);
+        }
         let _ = self.notes.send(note);
+    }
+
+    /// A store of `wallet`'s Core changes failed.
+    pub(crate) fn note_store_failed(&self, wallet: WalletId) {
+        let mut commits = self.commits.lock().unwrap_or_else(|p| p.into_inner());
+        commits.entry(wallet).or_default().1 = true;
+    }
+
+    /// After a clean shutdown of the manager, whose persistence adapter
+    /// committed every event before it returned: a replay back at its
+    /// target, with a store at the target or above committed and none of
+    /// the wallet's failed this session, is stored whole, and its record
+    /// goes. The strict rule of [`Self::committed`] is for a running
+    /// session, whose adapter may still hold a batch made before the rewind.
+    pub(crate) async fn close(&self, manager: &Manager) {
+        #[cfg(test)]
+        if self
+            .crash_on_close
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let commits = self
+            .commits
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let mut records = self.records.lock().await;
+        for (wallet, (committed, failed)) in commits {
+            if failed {
+                continue;
+            }
+            let Some(live) = (wm.get_wallet_info(&wallet.0)).map(|i| i.core_wallet.synced_height())
+            else {
+                continue;
+            };
+            match self.load(&mut records, wallet).await {
+                Ok(Some(r)) if !r.cancelled && live >= r.target && committed >= r.target => {
+                    if let Err(e) = self.write(&mut records, wallet, None).await {
+                        tracing::warn!(error = %e, wallet = %wallet, "could not delete the finished replay record");
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, wallet = %wallet, "could not read the replay record")
+                }
+            }
+        }
     }
 
     /// Applies the notes until the records are dropped (once).

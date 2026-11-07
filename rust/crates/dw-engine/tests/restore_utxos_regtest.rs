@@ -821,8 +821,8 @@ fn receive_key_wif(index: u32) -> String {
 /// derives 40. A rescan from F credits the coin at 40 when F replays, until
 /// S replays. The app quits while the rescan runs: the reopened session
 /// resumes it before SPV starts, refuses a payment until it is back, and
-/// the coin is not held once S replays. A relaunch after that resumes
-/// nothing.
+/// the coin is not held once S replays. A relaunch after that (a clean
+/// close) resumes nothing.
 #[test]
 fn a_quit_mid_rescan_resumes_the_replay_on_the_late_coin_shape_against_dashd() {
     let dir = dw_testutil::private_tempdir();
@@ -877,10 +877,13 @@ fn a_quit_mid_rescan_resumes_the_replay_on_the_late_coin_shape_against_dashd() {
     assert!(!late(&f), "the coin at 40 was not derived on first sight");
     f.assert_counted(2 * COIN, 0, "first sync");
 
+    // dashd leaves the network first, so the quit comes mid-replay.
+    node.cli(&["setnetworkactive", "false"]);
     f.engine
         .block_on(f.session.rescan(RescanFrom::Height(funding_height)))
         .unwrap();
     f.reload(&node);
+    node.cli(&["setnetworkactive", "true"]);
     let resumed = f.session.wallet_scan_height(&f.wallet);
     let progress = f.session.rescan_progress().unwrap();
     let payment = f.session.new_tx_draft(f.wallet).unwrap();
@@ -914,28 +917,12 @@ fn a_quit_mid_rescan_resumes_the_replay_on_the_late_coin_shape_against_dashd() {
     f.wait_rescanned(tip);
     assert!(!late(&f), "the coin at 40 is held after S replayed");
     f.assert_counted(2 * COIN, 0, "after the resumed replay");
-    node.mine(1);
-    f.wait_scanned(tip + 1);
-    // The record goes once a store above the rescan's target is committed.
-    // The store's event channel can lag the scan: a relaunch before the
-    // commit resumes once more, which the next block ends.
-    let deadline = Instant::now() + LOAD_WAIT;
-    loop {
-        let scanned = node.height();
-        f.reload(&node);
-        let reopened = f.session.wallet_scan_height(&f.wallet);
-        if reopened == Some(scanned) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "every relaunch resumes the finished replay ({reopened:?})"
-        );
-        f.start_spv();
-        f.wait_rescanned(scanned);
-        node.mine(1);
-        f.wait_scanned(scanned + 1);
-    }
+    f.reload(&node);
+    assert_eq!(
+        f.session.wallet_scan_height(&f.wallet),
+        Some(tip),
+        "a relaunch after the replay resumes it again"
+    );
     assert!(f.session.rescan_progress().unwrap().is_none());
     assert!(!late(&f), "reloaded after the replay");
     f.assert_counted(2 * COIN, 0, "reloaded after the replay");
