@@ -40,7 +40,7 @@ use super::shielded_pool::{
     self as pool, MAX_LOCK_INPUTS, ShieldedLib, journal_unread, next_step, open_shields,
     priced_gate, shield_pool_fee, wallet_lock,
 };
-use super::signers::CountingFundingSigner;
+use super::signers::{CountingFundingSigner, DrainPlan, DrainRefusal};
 use crate::coinjoin::CoinJoinFailure;
 use crate::coins::CoinFence;
 use crate::{NetworkSession, WalletId};
@@ -184,16 +184,39 @@ async fn drain_cap(
 }
 
 /// The funding signer of a drain's call: `permit`'s, signing at most
-/// [`MAX_LOCK_INPUTS`] inputs, and only `coins`, worth `total_duffs`.
+/// [`MAX_LOCK_INPUTS`] inputs, and only the build of `coins`, worth
+/// `total_duffs`, within the quote's fee bound, that credits at least
+/// `minimum_lock_duffs` to `credit_script`.
 pub(super) fn drain_signer(
     permit: &CallPermit,
     coins: &[DrainCoin],
     total_duffs: u64,
+    minimum_lock_duffs: u64,
+    credit_script: dashcore::ScriptBuf,
 ) -> Result<CountingFundingSigner, FundError> {
+    let plan = DrainPlan {
+        coins: (coins.iter())
+            .map(|c| (c.outpoint, c.path.clone(), c.value))
+            .collect(),
+        max_duffs: total_duffs,
+        fee_bound: crate::fees::asset_lock_fee_bound(coins.len()),
+        minimum_lock_duffs,
+        credit_script,
+    };
     Ok((permit.funding_signer())
         .map_err(|e| FundError::Refused(e.into()))?
         .with_input_cap(MAX_LOCK_INPUTS)
-        .with_drain_cap(coins.iter().map(|c| (c.path.clone(), c.value)), total_duffs))
+        .with_drain_cap(plan))
+}
+
+/// The funding error of a drain the signer refused before signing: the
+/// call ends unsent.
+pub(super) fn drain_refused(permit: &CallPermit, refusal: DrainRefusal) -> FundError {
+    permit.abort_unsent();
+    match refusal {
+        DrainRefusal::CoinsChanged => FundError::CoinsChanged,
+        DrainRefusal::BelowMinimum { min } => FundError::BelowMinimum { min },
+    }
 }
 
 /// A drain's refusal of the wallet's claim on its CoinJoin account.

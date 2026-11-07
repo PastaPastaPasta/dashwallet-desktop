@@ -255,6 +255,10 @@ pub(crate) enum FundError {
     /// (`CountingFundingSigner::with_drain_cap`): nothing tracked or sent,
     /// the call `Cancelled`.
     CoinsChanged,
+    /// A drain's signer refused a build whose credit is below the
+    /// library's drain minimum: nothing signed, tracked or sent, the call
+    /// `Cancelled`.
+    BelowMinimum { min: u64 },
     /// Any other failure after the call started.
     Failed(PlatformError),
 }
@@ -2758,11 +2762,13 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             }
             Err(FundError::CoinsLocked) => Step::Fail(RegistrationError::CoinsLocked.code(), true),
             // A shield's funding only; no proof wait returns it.
-            Err(e @ (FundError::TooManyInputs { .. } | FundError::CoinsChanged)) => {
-                self.failed(&PlatformError::Internal {
-                    detail: format!("{e:?}"),
-                })
-            }
+            Err(
+                e @ (FundError::TooManyInputs { .. }
+                | FundError::CoinsChanged
+                | FundError::BelowMinimum { .. }),
+            ) => self.failed(&PlatformError::Internal {
+                detail: format!("{e:?}"),
+            }),
         }
     }
 

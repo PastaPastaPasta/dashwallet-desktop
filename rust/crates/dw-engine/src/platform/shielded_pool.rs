@@ -91,6 +91,7 @@ use dpp::shielded::compute_minimum_shielded_fee;
 use dpp::version::PlatformVersion;
 use dw_appdb::dispatch::TopUpSettled;
 use dw_vault::{SHIELDED_ACCOUNT, VaultError, VaultSigner};
+use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use platform_wallet::changeset::{
     PlatformWalletChangeSet, PlatformWalletPersistence, ShieldedChangeSet,
 };
@@ -1362,6 +1363,7 @@ pub(super) async fn finish_lock(
             Err(FundError::Refused(e) | FundError::NotSent(e)) => e.into(),
             Err(FundError::CoinsLocked) => ShieldedError::CoinsLocked,
             Err(FundError::CoinsChanged) => ShieldedError::CoinsChanged,
+            Err(FundError::BelowMinimum { min }) => ShieldedError::BelowMinimum { min },
             // "Combine coins first": at least one coin past the cap.
             Err(FundError::TooManyInputs { max }) => ShieldedError::TooManyInputs {
                 inputs: max + 1,
@@ -1597,6 +1599,37 @@ impl PwShielded {
 
     fn subwallet(&self) -> SubwalletId {
         SubwalletId::new(self.pw.wallet_id.0, SHIELDED_ACCOUNT)
+    }
+
+    /// The script the library's next shield lock credits: the next unused
+    /// address of the wallet's shielded top-up funding account, as
+    /// platform-wallet's `peek_next_funding_address` picks it. Read before
+    /// the build, which holds the wallet's lock while it signs; the
+    /// shielding lock the drain holds keeps any other shield lock out.
+    pub(super) async fn shield_credit_script(&self) -> Result<dashcore::ScriptBuf, FundError> {
+        let state = self.pw.wallet.state().await;
+        let xpub = (state
+            .wallet()
+            .accounts
+            .asset_lock_shielded_address_topup
+            .as_ref())
+        .map(|a| a.account_xpub);
+        let account = state
+            .core_wallet
+            .accounts
+            .asset_lock_shielded_address_topup
+            .clone();
+        drop(state);
+        let unavailable = |detail: &str| {
+            FundError::Refused(PlatformError::Internal {
+                detail: format!("the shield funding key: {detail}"),
+            })
+        };
+        let mut account = account.ok_or_else(|| unavailable("no funding account"))?;
+        let address = account
+            .next_address(xpub.as_ref(), false)
+            .map_err(unavailable)?;
+        Ok(address.script_pubkey())
     }
 }
 
@@ -2123,16 +2156,25 @@ impl ShieldedLib for PwShielded {
         minimum_lock_duffs: u64,
         permit: &CallPermit,
     ) -> Result<OutPoint, FundError> {
-        let signer = super::shield_drain::drain_signer(permit, coins, total_duffs)?;
+        let credit_script = self.shield_credit_script().await?;
+        let signer = super::shield_drain::drain_signer(
+            permit,
+            coins,
+            total_duffs,
+            minimum_lock_duffs,
+            credit_script,
+        )?;
         let funded = self.pw.fund_drain_with(minimum_lock_duffs, &signer).await;
+        // A build that is not the plan's, a coin outside it or past the
+        // grant: the signer refused before the transaction was complete, so
+        // nothing can be out.
+        if funded.is_err()
+            && let Some(refusal) = signer.drain_refusal()
+        {
+            return Err(super::shield_drain::drain_refused(permit, refusal));
+        }
         match funded {
             Ok(outpoint) => Ok(outpoint),
-            // A coin outside the plan, or past the grant: the signer refused
-            // before the transaction was complete, so nothing can be out.
-            Err(_) if signer.drain_refused() => {
-                permit.abort_unsent();
-                Err(FundError::CoinsChanged)
-            }
             Err(_) if signer.capped() => Err(FundError::TooManyInputs {
                 max: MAX_LOCK_INPUTS as u64,
             }),
