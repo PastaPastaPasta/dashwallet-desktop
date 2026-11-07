@@ -62,6 +62,9 @@ export interface CoinJoinWorld {
   sweepFailure?: { kind: "rejected" | "unknown"; at: number };
   /** Each wallet's last plan's quote: its id and its chunks' coins (`coinjoin.plan_changed` for another). */
   sweepQuote?: Record<string, { id: string; coins: string }>;
+  /** The next move to Shielded meets coins outside its plan as it builds the lock: it spends its
+   * grant and is refused `shielded.coins_changed`, with nothing tracked or sent. */
+  drainChanged?: boolean;
   /** The recorded chunks of unknown outcome, by wallet id: their display txids. */
   sweepUnknown?: Record<string, string[]>;
 }

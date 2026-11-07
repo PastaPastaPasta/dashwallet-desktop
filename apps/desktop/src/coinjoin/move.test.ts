@@ -260,6 +260,29 @@ describe("Move mixed coins to Shielded", () => {
     expect(flow.shieldQuote!.totalDuffs).toBe(before.totalDuffs + coin.amount);
   });
 
+  it("coins that changed as the lock was built show a fresh quote at the confirm, and the next Move goes", async () => {
+    const fixture = await open("coinjoin-move", "shielded");
+    const quotes = () => fixture.calls.filter((c) => c === "shield_mixed_quote").length;
+    fixture.world.coinjoin.drainChanged = true;
+    await move();
+    expect([flow.step, flow.replanned, quotes()]).toEqual(["confirm", true, 2]);
+    await move();
+    expect(flow.step).toBe("done");
+    expect(flow.shielded!.state.kind).toBe("applied");
+  });
+
+  it("any other refusal of the move is shown, not quoted again", async () => {
+    const fixture = installFixture({ scenario: "coinjoin-move" });
+    const api = new IpcBackend("fixture");
+    flow = new MoveMixedFlow(api, W);
+    flow.begin("shielded");
+    await until(() => flow.step !== "plan");
+    vi.spyOn(api, "shieldMixedCoins").mockRejectedValueOnce(appError("invalid_argument"));
+    await move();
+    expect([flow.step, flow.replanned, fixture.calls.filter((c) => c === "shield_mixed_quote").length]).toEqual(["refused", false, 1]);
+    expect(canRetry(flow.error)).toBe(false);
+  });
+
   it("names the drain's refusals", () => {
     expect(moveErrorText(appError("shielded.coins_unconfirmed", { kind: "number", value: 2 }))).toBe(MOVE_COPY.unconfirmed(2));
     expect(moveErrorText(appError("shielded.coins_locked"))).toBe(MOVE_COPY.held);
@@ -267,6 +290,7 @@ describe("Move mixed coins to Shielded", () => {
     expect(moveErrorText(appError("shielded.nothing_to_move"))).toBe(MOVE_COPY.nothing);
     expect(moveErrorText(appError("shielded.not_active"))).toBe(SHIELDED_COPY.card.inactive);
     expect(canRetry(appError("shielded.move_running"))).toBe(true);
+    expect([moveErrorText(appError("shielded.coins_changed")), canRetry(appError("shielded.coins_changed"))]).toEqual([MOVE_COPY.planChanged, true]);
   });
 });
 

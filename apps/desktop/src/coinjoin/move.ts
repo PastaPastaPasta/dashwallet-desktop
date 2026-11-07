@@ -145,6 +145,7 @@ export function moveErrorText(e: unknown, amount: (duffs: number) => string = St
   if (hasCode(e, "coinjoin.grant_invalid")) return MOVE_COPY.changed;
   if (hasCode(e, SHIELDED_CODES.coinsUnconfirmed)) return MOVE_COPY.unconfirmed(countOf(e));
   if (hasCode(e, SHIELDED_CODES.coinsLocked)) return MOVE_COPY.held;
+  if (hasCode(e, SHIELDED_CODES.coinsChanged)) return MOVE_COPY.planChanged;
   const code = (e as { code?: unknown } | null)?.code;
   if (typeof code === "string" && (code.startsWith("shielded.") || code.startsWith("platform."))) {
     return shieldedErrorText(e, (c) => amount(creditsToDuffs(c)), amount, "add");
@@ -153,7 +154,7 @@ export function moveErrorText(e: unknown, amount: (duffs: number) => string = St
 }
 
 /** A thrown refusal the user answers with a fresh plan (a broadcast failure is the result's partial outcome). */
-const RETRIED: ErrorCode[] = ["coinjoin.grant_invalid", "coinjoin.move_running", "coinjoin.vault_locked", "rescan_in_progress", SHIELDED_CODES.moveRunning, SHIELDED_CODES.coinsUnconfirmed, SHIELDED_CODES.coinsLocked];
+const RETRIED: ErrorCode[] = ["coinjoin.grant_invalid", "coinjoin.move_running", "coinjoin.vault_locked", "rescan_in_progress", SHIELDED_CODES.moveRunning, SHIELDED_CODES.coinsUnconfirmed, SHIELDED_CODES.coinsLocked, SHIELDED_CODES.coinsChanged];
 export const canRetry = (e: unknown) => RETRIED.some((c) => hasCode(e, c));
 
 /** The outcome of a move to Shielded, as an add to Shielded's (`credits` shows a credit figure). */
@@ -343,7 +344,7 @@ export class MoveMixedFlow extends Model {
         this.shielded = outcome;
         shieldedSettled();
       },
-      (e) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "invalid_argument"),
+      (e) => hasCode(e, "platform.grant_exceeded") || hasCode(e, SHIELDED_CODES.coinsChanged),
     );
   }
 

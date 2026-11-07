@@ -76,6 +76,20 @@ for (const theme of THEMES) {
   });
 }
 
+test("MIX-SHIELD coins that changed as the lock was built show a fresh quote, and the next Move goes", async ({ page }) => {
+  const errors = await openSheet(page, "coinjoin-move", "light", "coinjoin-move-shield");
+  await expect(body(page)).toHaveAttribute("data-step", "confirm");
+  await page.evaluate(() => void (window.__dwFixture!.world.coinjoin.drainChanged = true));
+  await page.getByTestId("move-mixed-confirm").click();
+  await authorize(page);
+  await expect(page.getByTestId("move-mixed-replanned")).toHaveText("Your CoinJoin balance changed since you reviewed this move. Review it again.");
+  await expect(body(page)).toHaveAttribute("data-step", "confirm");
+  await page.getByTestId("move-mixed-confirm").click();
+  await authorize(page);
+  await expect(body(page)).toHaveAttribute("data-outcome", "shielded");
+  expect(errors).toEqual([]);
+});
+
 test("MIX-SHIELD above 50 coins, combine first, then wait for them to confirm", async ({ page }) => {
   const errors = await openSheet(page, "coinjoin-move-many", "light", "coinjoin-move-shield");
   await expect(body(page)).toHaveAttribute("data-step", "combine");

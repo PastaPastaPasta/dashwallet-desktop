@@ -240,6 +240,10 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     if (g?.grant.purpose.kind !== "spend") return raise("platform.grant_invalid", "grant invalid");
     if (g.grant.purpose.maxDuffs < quote.totalDuffs) raise("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "funding", needed: String(quote.totalDuffs), remaining: String(g.grant.purpose.maxDuffs) });
     useGrant(ctx.world, grant);
+    if (ctx.world.coinjoin.drainChanged) {
+      ctx.world.coinjoin.drainChanged = false;
+      raise(SHIELDED_CODES.coinsChanged, "the mixed coins changed since the move was planned: review it again");
+    }
     const w = wallet(ctx.world, walletId);
     const spent = new Set(coins);
     w.coins = w.coins.filter((u) => !spent.has(u));
