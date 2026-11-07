@@ -261,9 +261,10 @@ struct FakeShielded {
     spv_stopped: AtomicBool,
     /// CoinJoin account 0's coins (`drain_coins`).
     drain: Mutex<Vec<DrainCoin>>,
-    /// Paths a drain's build signs besides its planned coins': coins that
-    /// came after the plan.
-    drain_extra: Mutex<Vec<key_wallet::bip32::DerivationPath>>,
+    /// The coins a drain's build spends, as the library selects them when
+    /// it builds (every coin of the account, so also one that came after
+    /// the plan); the plan's when unset.
+    pub(super) drain_built: Mutex<Option<Vec<DrainCoin>>>,
     /// Each drain's inputs.
     drained: Mutex<Vec<Vec<OutPoint>>>,
     /// Per drain funding: whether the wallet's CoinJoin account was
@@ -384,7 +385,7 @@ impl Default for FakeShielded {
             startup_running: AtomicBool::new(false),
             spv_stopped: AtomicBool::new(false),
             drain: Mutex::default(),
-            drain_extra: Mutex::default(),
+            drain_built: Mutex::default(),
             drained: Mutex::default(),
             drain_claimed: Mutex::default(),
             drain_floors: Mutex::default(),
@@ -892,9 +893,12 @@ impl ShieldedLib for FakeShielded {
         Ok(self.drain.lock().unwrap().clone())
     }
 
-    /// A new lock of the planned coins, each signed through the permit's
-    /// drain signer (then any `drain_extra` path), recorded as the step's
-    /// own, proved.
+    /// A new lock of the planned coins (or `drain_built`'s), shown to the
+    /// permit's drain signer as the library's builder shows it, then each
+    /// input signed through it over a sighash of the whole transaction, as
+    /// `SIGHASH_ALL` commits to every input and output and the payload,
+    /// recorded under its own txid as the step's lock, proved. A signer's
+    /// refusal fails the build, as the library's does: nothing is stored.
     async fn fund_drain(
         &self,
         coins: &[DrainCoin],
@@ -908,42 +912,45 @@ impl ShieldedLib for FakeShielded {
             session.coinjoin.claim_sweep(wallet),
             Err(crate::coinjoin::CoinJoinFailure::MoveRunning)
         ));
-        let signer = drain::drain_signer(permit, coins, total_duffs)?;
-        let extra = self.drain_extra.lock().unwrap().clone();
-        let paths: Vec<_> = (coins.iter().map(|c| c.path.clone()))
-            .chain(extra)
-            .collect();
-        // A sighash commits to the transaction's whole input set.
-        let set: Vec<u8> = paths
-            .iter()
-            .flat_map(|p| p.to_string().into_bytes())
-            .collect();
+        let signer = drain::drain_signer(
+            permit,
+            coins,
+            total_duffs,
+            minimum_lock_duffs,
+            fake_credit_script(),
+        )?;
+        let built = (self.drain_built.lock().unwrap().clone()).unwrap_or_else(|| coins.to_vec());
+        let (tx, utxos) = fake_drain_build(&built);
+        if key_wallet::Signer::approve_inputs(&signer, &tx, &utxos)
+            .await
+            .is_err()
+            && let Some(refusal) = signer.drain_refusal()
+        {
+            return Err(drain::drain_refused(permit, refusal));
+        }
+        let unsigned = dashcore::consensus::serialize(&tx);
         let mut sighashes = Vec::new();
-        for (i, path) in paths.into_iter().enumerate() {
+        for (i, coin) in built.iter().enumerate() {
             let sighash: [u8; 32] = Sha256::new()
-                .chain_update(&set)
-                .chain_update([i as u8])
+                .chain_update(&unsigned)
+                .chain_update((i as u32).to_le_bytes())
                 .finalize()
                 .into();
-            if key_wallet::Signer::sign_ecdsa(&signer, &path, sighash)
-                .await
-                .is_err()
-            {
-                break;
+            if let Err(e) = key_wallet::Signer::sign_ecdsa(&signer, &coin.path, sighash).await {
+                return Err(match signer.drain_refusal() {
+                    Some(refusal) => drain::drain_refused(permit, refusal),
+                    None if signer.capped() => FundError::TooManyInputs {
+                        max: MAX_LOCK_INPUTS as u64,
+                    },
+                    None => FundError::NotSent(PlatformError::Internal {
+                        detail: format!("the drain's signer refused: {e}"),
+                    }),
+                });
             }
             sighashes.push(sighash);
         }
-        if signer.drain_refused() {
-            permit.abort_unsent();
-            return Err(FundError::CoinsChanged);
-        }
-        if signer.capped() {
-            return Err(FundError::TooManyInputs {
-                max: MAX_LOCK_INPUTS as u64,
-            });
-        }
         let n = self.funded.lock().unwrap().len() as u8 + 0x90;
-        let outpoint = OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let outpoint = OutPoint::new(tx.txid(), 0);
         let inputs: Vec<OutPoint> = coins.iter().map(|c| c.outpoint).collect();
         if let Some(end) = self.fund_end.lock().unwrap().take() {
             return Err(self.signed_and_failed(end, outpoint.txid, inputs, sighashes));
@@ -965,6 +972,61 @@ impl ShieldedLib for FakeShielded {
         });
         Ok(outpoint)
     }
+}
+
+/// The credit script of the fake's drain locks.
+fn fake_credit_script() -> dashcore::ScriptBuf {
+    dashcore::ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array([0x5c; 20]))
+}
+
+/// The library's drain lock of `coins` as its builder hands it to the
+/// signer: every coin in, one burn of Σ − the fee bound, one credit of it
+/// to [`fake_credit_script`]; and the coins as the wallet's UTXOs.
+fn fake_drain_build(coins: &[DrainCoin]) -> (dashcore::Transaction, Vec<key_wallet::Utxo>) {
+    use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+    use dashcore::blockdata::transaction::special_transaction::asset_lock::AssetLockPayload;
+    let utxos: Vec<key_wallet::Utxo> = (coins.iter())
+        .map(|c| {
+            let address = Address::p2pkh(
+                &dashcore::PublicKey::from_slice(&[2; 33]).unwrap(),
+                Network::Testnet,
+            );
+            let txout = dashcore::TxOut {
+                value: c.value,
+                script_pubkey: address.script_pubkey(),
+            };
+            let mut u = key_wallet::Utxo::new(c.outpoint, txout, address, 100, false);
+            u.is_confirmed = c.confirmed;
+            u.is_instantlocked = !c.confirmed;
+            u
+        })
+        .collect();
+    let total: u64 = coins.iter().map(|c| c.value).sum();
+    let credit = total.saturating_sub(crate::fees::asset_lock_fee_bound(coins.len()));
+    let tx = dashcore::Transaction {
+        version: 3,
+        lock_time: 0,
+        input: (coins.iter())
+            .map(|c| dashcore::TxIn {
+                previous_output: c.outpoint,
+                ..Default::default()
+            })
+            .collect(),
+        output: vec![dashcore::TxOut {
+            value: credit,
+            script_pubkey: dashcore::ScriptBuf::new_op_return(&[]),
+        }],
+        special_transaction_payload: Some(TransactionPayload::AssetLockPayloadType(
+            AssetLockPayload {
+                version: 1,
+                credit_outputs: vec![dashcore::TxOut {
+                    value: credit,
+                    script_pubkey: fake_credit_script(),
+                }],
+            },
+        )),
+    };
+    (tx, utxos)
 }
 
 fn run<T: Send + 'static, Fut>(
@@ -2643,11 +2705,13 @@ fn the_facade_shows_the_mobile_wallets_address_for_the_abandon_wallet() {
 /// whatever key-wallet's selection picks. Through the real build
 /// (platform-wallet's `create_funded_asset_lock_proof`, key-wallet's
 /// BranchAndBound over 51 coins of 0.01 DASH, every one needed), the
-/// funding signer refuses the 51st input before the vault is asked: the
-/// call is `shielded.too_many_inputs`-bound (`FundError::TooManyInputs`),
-/// no lock is tracked (platform-wallet tracks before it sends, so none was
-/// sent), no coin stays reserved, and the step ends `Cancelled` with its
-/// `NotSent` row, so the next shield is not held behind it.
+/// funding signer refuses the build when the builder shows it, before any
+/// signature: the call is `shielded.too_many_inputs`-bound
+/// (`FundError::TooManyInputs`), releases nothing and keeps no charge, the
+/// fence recognises no lock of it, no lock is tracked (platform-wallet
+/// tracks before it sends, so none was sent), no coin stays reserved, and
+/// the step ends `Cancelled`, so the next shield is not held behind it and
+/// Repair lists nothing.
 #[test]
 fn a_shield_lock_of_51_coins_is_refused_by_its_signer_and_leaves_nothing() {
     use super::lease::FlowOutcome;
@@ -2702,9 +2766,11 @@ fn a_shield_lock_of_51_coins_is_refused_by_its_signer_and_leaves_nothing() {
         .unwrap()
         .id;
     let s = Arc::clone(session);
-    let (funded, outcome, tracked, next) = engine.block_on(async move {
+    let (funded, outcome, released, budget, tracked, next) = engine.block_on(async move {
+        use crate::platform::flows::BudgetPurpose;
         let lib = pool::PwShielded::open(&s, wallet).await.unwrap();
         let lease = (s.begin_lease(wallet, FlowKind::Shield, &[grant]).await).unwrap();
+        let before = lease.available(BudgetPurpose::Funding).unwrap();
         let step = pool::next_step(&s, wallet).unwrap();
         let key = FundingKey {
             funding_type: AssetLockFundingType::AssetLockShieldedAddressTopUp,
@@ -2715,13 +2781,35 @@ fn a_shield_lock_of_51_coins_is_refused_by_its_signer_and_leaves_nothing() {
         let duffs = 50 * COIN_DUFFS + COIN_DUFFS / 2;
         let permit = (lib.funding_permit(&lease, step.clone(), key, duffs).await).unwrap();
         let funded = lib.fund(duffs, &permit).await;
+        let released = permit.signatures().released();
         let outcome = permit.finish(funded.is_ok());
+        let after = lease.available(BudgetPurpose::Funding).unwrap();
         let shield_locks = lib.shield_locks().await.len();
-        (funded, outcome, shield_locks, pool::next_step(&s, wallet))
+        let next = pool::next_step(&s, wallet);
+        (
+            funded,
+            outcome,
+            released,
+            (before, after),
+            shield_locks,
+            next,
+        )
     });
     let tracked = tracked + engine.block_on(pw.asset_locks().list_tracked_locks()).len();
     assert_eq!(funded, Err(FundError::TooManyInputs { max: 50 }));
+    assert_eq!(released, 0, "refused before any signature");
     assert_eq!(outcome, FlowOutcome::Cancelled);
+    assert_eq!(budget.0, budget.1, "its Funding charge refunded");
+    assert_eq!(
+        session.leases.ended_funding_steps(wallet),
+        Vec::<String>::new(),
+        "the fence recognises no lock of it"
+    );
+    assert_eq!(
+        session.leases.stuck_shield_steps(wallet).unwrap(),
+        vec![],
+        "nothing for Repair"
+    );
     assert_eq!(tracked, 0, "no lock tracked, so none sent");
     assert_eq!(reserved(), 0, "no coin stays reserved");
     assert!(next.is_ok(), "the next shield is not held: {next:?}");
@@ -3015,8 +3103,8 @@ fn a_shield_failing_after_its_signature_stays_possibly_sent() {
     use super::flows::DispatchState;
     let step = pool::shield_step(0);
     for (end, error) in [
-        (FundEnd::BelowFloor, "internal"),
-        (FundEnd::Rejected, "internal"),
+        (FundEnd::BelowFloor, "platform.broadcast_unknown"),
+        (FundEnd::Rejected, "platform.broadcast_unknown"),
         (FundEnd::Unknown, "platform.broadcast_unknown"),
     ] {
         let fx = Fixture::new(0);
@@ -3041,3 +3129,6 @@ fn a_shield_failing_after_its_signature_stays_possibly_sent() {
 
 #[path = "shield_drain_tests.rs"]
 mod drain_tests;
+
+#[path = "shield_drain_lib_tests.rs"]
+mod drain_lib_tests;

@@ -245,14 +245,15 @@ fn a_drain_is_refused_while_mixing_or_past_its_grant_and_keeps_the_grant() {
     }
 }
 
-/// A coin that came after the plan (its build would spend it) stops the
-/// drain at the signer, before the lock is complete: nothing is funded,
-/// the step reads not sent, and the next drain funds on the same step.
+/// A coin that came after the plan (the library's build spends it) stops
+/// the drain at the signer, before any signature: nothing is funded, the
+/// step reads not sent, and the next drain funds on the same step.
 #[test]
 fn a_coin_outside_the_plan_stops_the_drain_before_its_lock_exists() {
     let fx = Fixture::new(0);
     let lib = drainer(&fx, coins());
-    *lib.drain_extra.lock().unwrap() = vec![coin(99, 100_001_000, true).path];
+    let with = |extra: DrainCoin| Some([coins(), vec![extra]].concat());
+    *lib.drain_built.lock().unwrap() = with(coin(99, 100_001_000, true));
     let sum = total(&coins());
     assert_eq!(
         code(drain_with(&fx, &lib, spend_grant(&fx, sum))),
@@ -266,16 +267,68 @@ fn a_coin_outside_the_plan_stops_the_drain_before_its_lock_exists() {
     );
 
     // A second coin at a planned coin's address is one the plan lacks too.
-    *lib.drain_extra.lock().unwrap() = vec![coins()[0].path.clone()];
+    *lib.drain_built.lock().unwrap() = with(DrainCoin {
+        outpoint: OutPoint::new(Txid::from_byte_array([0x56; 32]), 0),
+        ..coins()[0].clone()
+    });
     assert_eq!(
         code(drain_with(&fx, &lib, spend_grant(&fx, sum))),
         "shielded.coins_changed"
     );
 
-    lib.drain_extra.lock().unwrap().clear();
+    *lib.drain_built.lock().unwrap() = None;
     *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
     drain_with(&fx, &lib, spend_grant(&fx, sum)).unwrap();
     assert_eq!(lib.funded.lock().unwrap().len(), 1);
+}
+
+/// A drain refused before its first signature (`Cancelled`: nothing
+/// signed, tracked or sent) leaves its coins to the user's next drain,
+/// which builds the very same transaction: the same coins, the same
+/// credit address (the library's peek, which a refused build does not
+/// consume) and the same fee. That drain goes through, its lock recorded
+/// under its own call on the same step: the refused call released no
+/// signature, so the fence keeps nothing of it to match the lock against.
+#[test]
+fn a_drain_refused_before_signing_leaves_the_same_coins_to_the_next_drain() {
+    use super::super::flows::DispatchState;
+    let fx = Fixture::new(0);
+    let all = [coins(), vec![coin(3, 100_001_000, true)]].concat();
+    let lib = drainer(&fx, coins());
+    // The library's build spends every coin, one that came after the plan too.
+    *lib.drain_built.lock().unwrap() = Some(all.clone());
+    let step = pool::shield_step(0);
+    assert_eq!(
+        code(drain_with(&fx, &lib, spend_grant(&fx, total(&coins())))),
+        "shielded.coins_changed"
+    );
+    assert_ne!(
+        fx.s.leases.funding_status(fx.wallet, &step),
+        Some(DispatchState::MaybeSent)
+    );
+    assert!(fx.s.leases.signed_lock_txids(fx.wallet, &step).is_empty());
+    assert!(lib.funded.lock().unwrap().is_empty());
+
+    // Quoted again, the plan holds the coins the refused build spent.
+    *lib.drain.lock().unwrap() = all.clone();
+    *lib.drain_built.lock().unwrap() = None;
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    let outcome = drain_with(&fx, &lib, spend_grant(&fx, total(&all))).unwrap();
+    assert!(
+        matches!(outcome.state, ShieldState::Applied { .. }),
+        "{outcome:?}"
+    );
+    let lock = lib.funded.lock().unwrap()[0].outpoint;
+    assert_eq!(
+        lock.txid,
+        fake_drain_build(&all).0.txid(),
+        "the refused build's own transaction"
+    );
+    assert!(
+        (fx.s.leases)
+            .signed_lock_txids(fx.wallet, &step)
+            .contains(&lock.txid)
+    );
 }
 
 /// A drain whose lock signed and then failed (the library's floor, a
@@ -286,8 +339,8 @@ fn a_coin_outside_the_plan_stops_the_drain_before_its_lock_exists() {
 fn a_drain_failing_after_its_signatures_stays_possibly_sent() {
     use super::super::flows::DispatchState;
     for (end, error) in [
-        (FundEnd::BelowFloor, "internal"),
-        (FundEnd::Rejected, "internal"),
+        (FundEnd::BelowFloor, "platform.broadcast_unknown"),
+        (FundEnd::Rejected, "platform.broadcast_unknown"),
         (FundEnd::Unknown, "platform.broadcast_unknown"),
     ] {
         let fx = Fixture::new(0);
@@ -363,7 +416,7 @@ fn a_drain_rejected_after_signing_is_repaired_and_the_next_drain_funds() {
     assert_eq!(read_coins(), [a, b].into());
     let sum = 100_001_000 + 10_000_100;
     *lib.fund_end.lock().unwrap() = Some(FundEnd::Rejected);
-    assert_eq!(code(drain(spend(sum))), "internal");
+    assert_eq!(code(drain(spend(sum))), "platform.broadcast_unknown");
     assert_eq!(status(STEP), Some(DispatchState::MaybeSent));
     assert_eq!(s.leases.unresolved_lock_inputs(wallet), [a, b].into());
     let refused = spend(sum);
@@ -372,12 +425,32 @@ fn a_drain_rejected_after_signing_is_repaired_and_the_next_drain_funds() {
         .grant_purpose(&refused, dw_vault::GrantKind::Spend, Some(&wallet.0))
         .unwrap();
 
-    let tx = f.repair(STEP);
+    // Tools ▸ Repair finds the step through the listing, priced.
+    let stuck = || {
+        (f.engine)
+            .block_on(s.dashpay(wallet).stuck_shield_fundings())
+            .unwrap()
+    };
+    let [listed] = <[_; 1]>::try_from(stuck()).unwrap();
+    assert_eq!(
+        (listed.step.as_str(), listed.state),
+        (STEP, DispatchState::MaybeSent)
+    );
+    let cost = listed.repair.unwrap();
+    assert_eq!((cost.mixed, cost.inputs, cost.total_duffs), (true, 2, sum));
+    let tx = f.repair(Box::leak(listed.step.into_boxed_str()));
     let spent: std::collections::HashSet<OutPoint> =
         tx.input.iter().map(|i| i.previous_output).collect();
     assert_eq!(spent, [a, b].into());
+    let paid: u64 = tx.output.iter().map(|o| o.value).sum();
+    assert_eq!(
+        cost.fee_duffs,
+        sum - paid,
+        "the listed fee is the one Repair paid"
+    );
     assert_eq!(status(STEP), Some(DispatchState::NotSent));
     assert!(s.leases.unresolved_lock_inputs(wallet).is_empty());
+    assert!(stuck().is_empty(), "a resolved step leaves the listing");
 
     // key-wallet drops the coins the self-spend took; new mixed coins come.
     let inner = Arc::clone(&s);
@@ -407,6 +480,145 @@ fn a_drain_rejected_after_signing_is_repaired_and_the_next_drain_funds() {
             .contains(&lock.txid)
     );
     assert_eq!(status(STEP), Some(DispatchState::NotSent));
+}
+
+/// Tools ▸ Repair's listing of the moves into Shielded that may be out:
+/// a drain reading `MaybeSent`, priced by Repair's own draft, and nothing
+/// that is applied, waiting on its pending lock, or unsent.
+#[test]
+fn the_repair_listing_holds_only_the_possibly_sent_moves() {
+    use super::super::flows::DispatchState;
+    use crate::platform::lease::session_tests::fixture;
+    use dw_vault::{Credential, GrantPurpose};
+    let f = fixture(false);
+    let (s, wallet) = (Arc::clone(&f.session), f.wallet);
+    // Each drain that signed spends coins of its own, as on the chain,
+    // where an applied or pending lock has spent its coins.
+    let a = f.credit_coinjoin(1, 100_001_000);
+    let b = f.credit_coinjoin(2, 100_001_000);
+    let c = f.credit_coinjoin(3, 100_001_000);
+    let d = f.credit_coinjoin(4, 10_000_100);
+    let lib = Arc::new(FakeShielded::default());
+    *lib.funder.lock().unwrap() = Some((Arc::downgrade(&s), wallet));
+    let plan = |of: &[OutPoint]| {
+        let inner = Arc::clone(&s);
+        let coins = (f.engine).block_on(s.on_runtime(async move {
+            let fence = inner.coin_fence(wallet).await?;
+            Ok(drain::read_drain_coins(&inner, &fence).await.unwrap())
+        }));
+        let coins: Vec<DrainCoin> = (coins.unwrap().into_iter())
+            .filter(|c| of.contains(&c.outpoint))
+            .collect();
+        assert_eq!(coins.len(), of.len());
+        let sum = total(&coins);
+        *lib.drain.lock().unwrap() = coins;
+        sum
+    };
+    let spend = |max_duffs| f.grant(GrantPurpose::Spend { max_duffs }, Credential::None);
+    let op = |max_duffs| {
+        f.grant(
+            GrantPurpose::PlatformOp {
+                max_duffs,
+                max_credits: 0,
+            },
+            Credential::None,
+        )
+    };
+    let drain = |grant: String| {
+        let (s, lib) = (Arc::clone(&s), Arc::clone(&lib));
+        (f.engine).block_on(async move { drain::drain(&s, wallet, &*lib, &grant).await })
+    };
+    let stuck = || {
+        (f.engine)
+            .block_on(s.dashpay(wallet).stuck_shield_fundings())
+            .unwrap()
+    };
+    let steps = || -> Vec<(String, DispatchState)> {
+        stuck().into_iter().map(|l| (l.step, l.state)).collect()
+    };
+
+    // Applied.
+    let sum = plan(&[a]);
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    drain(spend(sum)).unwrap();
+    assert_eq!(steps(), []);
+    // Refused before its signatures: unsent.
+    let sum = plan(&[b]);
+    *lib.drain_built.lock().unwrap() = Some(
+        [
+            lib.drain.lock().unwrap().clone(),
+            vec![coin(99, 100_001_000, true)],
+        ]
+        .concat(),
+    );
+    assert_eq!(code(drain(spend(sum))), "shielded.coins_changed");
+    *lib.drain_built.lock().unwrap() = None;
+    assert_eq!(steps(), []);
+    // Its apply failed: the lock pending, waiting for "Check again".
+    *lib.applies.lock().unwrap() = Some(Err(PlatformError::Unavailable));
+    drain(spend(sum)).unwrap();
+    assert_eq!(steps(), []);
+    let lock = lib.funded.lock().unwrap()[1].outpoint;
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    let (txid, grant) = (lock.txid.to_string(), op(1));
+    let (rs, rlib) = (Arc::clone(&s), Arc::clone(&lib));
+    (f.engine)
+        .block_on(async move { pool::resume(&rs, wallet, &*rlib, &txid, &grant).await })
+        .unwrap();
+
+    // A drain rejected after its signatures: listed, priced on its coins.
+    let step = pool::shield_step(2);
+    let sum = plan(&[c, d]);
+    *lib.fund_end.lock().unwrap() = Some(FundEnd::Rejected);
+    assert_eq!(code(drain(spend(sum))), "platform.broadcast_unknown");
+    let [listed] = <[_; 1]>::try_from(stuck()).unwrap();
+    assert_eq!(
+        (&listed.step, listed.state),
+        (&step, DispatchState::MaybeSent)
+    );
+    let cost = listed.repair.unwrap();
+    assert_eq!((cost.mixed, cost.inputs, cost.total_duffs), (true, 2, sum));
+    assert!(cost.fee_duffs > 0 && cost.fee_duffs < 10_000, "{cost:?}");
+    let tx = f.repair(Box::leak(listed.step.into_boxed_str()));
+    let spent: std::collections::HashSet<OutPoint> =
+        tx.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(spent, [c, d].into());
+    assert_eq!(steps(), []);
+}
+
+/// A shield (not a drain) rejected after its signature is listed too. Its
+/// lock spent coins the wallet does not hold, so Repair refuses it, and
+/// the listing carries that refusal in place of a price.
+#[test]
+fn the_repair_listing_holds_a_possibly_sent_shield_with_repairs_refusal() {
+    use super::super::flows::DispatchState;
+    use crate::platform::lease::session_tests::fixture;
+    use dw_vault::{Credential, GrantPurpose};
+    let f = fixture(false);
+    let (s, wallet) = (Arc::clone(&f.session), f.wallet);
+    f.credit(9, 50_000_000);
+    let lib = Arc::new(FakeShielded::default());
+    *lib.funder.lock().unwrap() = Some((Arc::downgrade(&s), wallet));
+    *lib.fund_end.lock().unwrap() = Some(FundEnd::Rejected);
+    let grant = f.grant(
+        GrantPurpose::PlatformOp {
+            max_duffs: 2_000_000,
+            max_credits: 0,
+        },
+        Credential::None,
+    );
+    let (rs, rlib) = (Arc::clone(&s), Arc::clone(&lib));
+    let shielded = (f.engine)
+        .block_on(async move { pool::shield(&rs, wallet, &*rlib, 1_000_000, &grant).await });
+    assert_eq!(code(shielded), "platform.broadcast_unknown");
+    let stuck = (f.engine).block_on(s.dashpay(wallet).stuck_shield_fundings());
+    let [listed] = <[_; 1]>::try_from(stuck.unwrap()).unwrap();
+    assert_eq!(
+        (listed.step.as_str(), listed.state),
+        (pool::shield_step(0).as_str(), DispatchState::MaybeSent)
+    );
+    let refused = listed.repair.unwrap_err();
+    assert_eq!(refused.code(), "stuck_funding", "{refused:?}");
 }
 
 /// A drain whose apply failed leaves its lock pending, as a shield's: it
