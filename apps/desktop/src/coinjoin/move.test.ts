@@ -15,7 +15,7 @@ import type { CoinJoinStatus } from "../api/generated/CoinJoinStatus";
 import type { MixedCoinsDestination } from "../api/generated/MixedCoinsDestination";
 import type { MixedCoinsConsolidationPlan } from "../api/generated/MixedCoinsConsolidationPlan";
 import type { MixedShieldQuote } from "../api/generated/MixedShieldQuote";
-import { SHIELDED_COPY } from "../shielded/flow";
+import { onShieldedSettled, SHIELDED_COPY } from "../shielded/flow";
 import {
   canRetry,
   combineResultText,
@@ -281,6 +281,21 @@ describe("Move mixed coins to Shielded", () => {
     await until(() => flow.step !== "plan");
     await move();
     expect([flow.step, moveErrorText(flow.error)]).toEqual(["refused", SHIELDED_COPY.fundingUnknown]);
+  });
+
+  it("tells the Shielded card's listeners at once when a move that ran fails, as when it succeeds", async () => {
+    const fixture = await open("coinjoin-move", "shielded");
+    const heard = vi.fn();
+    const off = onShieldedSettled(heard);
+    try {
+      fixture.world.coinjoin.drainUnknown = "next";
+      await move();
+      expect(flow.step).toBe("refused");
+      await until(() => heard.mock.calls.length > 0);
+      expect(heard).toHaveBeenCalledTimes(1);
+    } finally {
+      off();
+    }
   });
 
   it("any other refusal of the move is shown, not quoted again", async () => {

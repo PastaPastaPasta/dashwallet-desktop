@@ -335,15 +335,21 @@ export class MoveMixedFlow extends Model {
   async #shield(): Promise<void> {
     const quote = this.shieldQuote;
     if (this.running || quote === null || this.step !== "confirm") return;
-    await this.#run(
-      { kind: "spend", maxDuffs: quote.totalDuffs },
-      (g) => this.api.shieldMixedCoins(this.walletId, g.id),
-      (outcome) => {
-        this.shielded = outcome;
-        shieldedSettled();
-      },
-      (e) => hasCode(e, "platform.grant_exceeded") || hasCode(e, SHIELDED_CODES.coinsChanged),
-    );
+    let ran = false;
+    try {
+      await this.#run(
+        { kind: "spend", maxDuffs: quote.totalDuffs },
+        (g) => {
+          ran = true;
+          return this.api.shieldMixedCoins(this.walletId, g.id);
+        },
+        (outcome) => (this.shielded = outcome),
+        (e) => hasCode(e, "platform.grant_exceeded") || hasCode(e, SHIELDED_CODES.coinsChanged),
+      );
+    } finally {
+      // A refused call can leave a step possibly sent too; a cancelled passphrase ran nothing.
+      if (ran) shieldedSettled();
+    }
   }
 
   /** The consolidation round a move to Shielded of more than 50 coins needs first. */
