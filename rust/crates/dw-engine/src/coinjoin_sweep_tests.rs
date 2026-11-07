@@ -1674,6 +1674,55 @@ fn a_winner_whose_block_a_fork_replaced_before_its_event_is_no_evidence() {
     }
 }
 
+/// A beaten row in the older `height winner` form names no block. While
+/// the header store has no header at its height it is no evidence, and
+/// kept; once it has one, the row does not match it and is dropped. The
+/// chunk is pending throughout.
+#[test]
+fn a_legacy_beaten_row_is_no_evidence_and_goes_once_a_header_is_known() {
+    let f = fixture(false);
+    f.credit_coinjoin(1, COIN);
+    f.credit_coinjoin(2, COIN);
+    let wire = hook(&f, 500, &[Outcome::Unknown]);
+    move_to_wallet(&f).unwrap();
+    let sent = wire.txs();
+    let txid = sent[0].txid();
+    forget_claims(&f, &sent);
+    let input = sent[0].input[0].previous_output;
+    drop_coins(&f, &HashSet::from([input]));
+    let scope = dw_appdb::local_scope(&f.wallet.to_string());
+    let (key, value) = (
+        format!("coinjoin.sweep_beaten.{txid}"),
+        format!("900 {}", conflict(input).txid()),
+    );
+    f.chain.set_known(900, false);
+    (f.engine)
+        .block_on(f.session.appdb_op(move |db| {
+            db.set_settings_durable(&scope, &[(key.as_str(), Some(value.as_str()))])
+        }))
+        .unwrap();
+    chainlock(&f, 905);
+    for known in [false, true] {
+        f.chain.set_known(900, known);
+        let wire = hook(&f, 500, &[]);
+        assert_eq!(
+            resend(&f, None).unwrap(),
+            resent(txid, SweepResendState::Sent),
+            "known={known}"
+        );
+        assert_eq!(wire.txs(), sent, "the recorded bytes");
+        assert!(
+            mix_reserved(&f, sent[0].input[1].previous_output),
+            "known={known}: the other input is held"
+        );
+        assert_eq!(beaten_keys(&f).contains(&txid), !known, "known={known}");
+        assert!(
+            sweep_out_keys(&f).contains(&txid),
+            "known={known}: no prune"
+        );
+    }
+}
+
 /// Removes the wallet (a wipe grant) and imports it again from its seed:
 /// the same wallet id.
 fn remove_and_import_again(f: &Fixture) {

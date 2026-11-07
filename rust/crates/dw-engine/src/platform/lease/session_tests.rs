@@ -50,6 +50,8 @@ pub(crate) struct Fixture {
 #[derive(Default)]
 pub(crate) struct TestChain {
     forks: std::sync::Mutex<Vec<u32>>,
+    /// Heights whose header the store does not have.
+    missing: std::sync::Mutex<std::collections::HashSet<u32>>,
 }
 
 impl TestChain {
@@ -68,11 +70,22 @@ impl TestChain {
         self.forks.lock().unwrap().push(height);
     }
 
+    /// Whether the header store has the header at `height`.
+    pub(crate) fn set_known(&self, height: u32, known: bool) {
+        let mut missing = self.missing.lock().unwrap();
+        if known {
+            missing.remove(&height);
+        } else {
+            missing.insert(height);
+        }
+    }
+
     fn install(self: &Arc<Self>, session: &NetworkSession) {
         let chain = Arc::clone(self);
         session.hub.attach_headers(Arc::new(move |height| {
-            let hash = chain.hash(height);
-            Box::pin(async move { Some(hash) })
+            let hash =
+                (!chain.missing.lock().unwrap().contains(&height)).then(|| chain.hash(height));
+            Box::pin(async move { hash })
         }));
     }
 }
