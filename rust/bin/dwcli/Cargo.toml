@@ -55,3 +55,5 @@ libc = "0.2"
 dw-testutil = { workspace = true }
 # The log test drives a session SDK's own failing request (MG-03 D37).
 dw-engine = { workspace = true, features = ["test-support"] }
+# The instance-fence test holds a data root as the desktop app does.
+dw-fs = { workspace = true }

@@ -51,6 +51,7 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         | FlowKind::PlatformAddressMove
         | FlowKind::PlatformAddressSend
         | FlowKind::Shield
+        | FlowKind::PlatformAddressFund
         | FlowKind::ShieldedSpend => &[GrantKind::PlatformOp],
     }
 }
@@ -149,6 +150,15 @@ pub(crate) fn issue(
                 if max_credits > 0 {
                     out.signers.platform_address =
                         Some(scoped(SignerScope::PlatformAddress).map_err(issuing)?);
+                }
+            }
+            GrantPurpose::PlatformOp { max_duffs, .. } if flow == FlowKind::PlatformAddressFund => {
+                // "Add from Dash wallet" (0.2): the asset-lock credit keys
+                // alone, no identity key and no contact crypto.
+                out.funding = max_duffs;
+                if max_duffs > 0 {
+                    out.signers.funding =
+                        Some(scoped(SignerScope::PlatformFunding { max_duffs }).map_err(issuing)?);
                 }
             }
             GrantPurpose::PlatformOp {

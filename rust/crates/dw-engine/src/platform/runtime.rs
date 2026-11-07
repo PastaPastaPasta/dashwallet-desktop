@@ -153,6 +153,9 @@ pub(crate) struct PlatformRuntime {
     pub(crate) shielded_calls: std::sync::Mutex<
         std::collections::HashMap<WalletId, std::sync::Weak<tokio::sync::Mutex<()>>>,
     >,
+    /// The addresses each wallet's running fund applies hold
+    /// (`platform_moves::FundHold`).
+    pub(crate) fund_holds: super::platform_moves::FundHolds,
     /// The shield locks of unknown consumption marked this session, kept
     /// also in `app.sqlite` (`shielded_pool::ShieldedLib::unknown_locks`).
     pub(crate) shield_unknown: std::sync::Mutex<std::collections::HashSet<dashcore::Txid>>,
@@ -430,6 +433,7 @@ impl PlatformRuntime {
             #[cfg(test)]
             close_check_pause: Mutex::new(None),
             shielded_calls: std::sync::Mutex::default(),
+            fund_holds: Arc::default(),
             shield_unknown: std::sync::Mutex::default(),
             key_work: Arc::default(),
             restoring: Mutex::new(HashMap::new()),

@@ -174,7 +174,6 @@ fn a_lock_without_a_proof_is_confirming() {
         let l = lock(1, status);
         let ev = Ev {
             unknown: txids([l.outpoint.txid]),
-            used: HashSet::from([l.outpoint]),
             readiness: Readiness::NotActive("shielded.not_active".into()),
             ..Ev::default()
         };
@@ -199,19 +198,17 @@ fn an_apply_that_may_have_executed_is_checking() {
     );
 }
 
-/// Only a restored lock reads "reported used", and only for its own
-/// outpoint; a lock of this device's keeps SR1's Checking.
+/// A lock its kind took as reported used (Platform's "already consumed"
+/// for its exact outpoint) is finished, restored or this device's; a
+/// sibling outpoint's report says nothing of it.
 #[test]
-fn reported_used_is_for_the_restored_lock_of_that_outpoint() {
+fn a_lock_reported_used_is_finished_and_only_at_its_outpoint() {
     let l = lock(1, LockStatus::RecoveredFromChain);
     let ev = Ev {
         used: HashSet::from([l.outpoint]),
         ..Ev::default()
     };
-    assert_eq!(
-        ev.state(&l),
-        Some((LockOrigin::Restored, UnfinishedState::ReportedUsed))
-    );
+    assert_eq!(ev.state(&l), None);
     let other_vout = Ev {
         used: HashSet::from([OutPoint::new(l.outpoint.txid, 1)]),
         ..Ev::default()
@@ -225,10 +222,7 @@ fn reported_used_is_for_the_restored_lock_of_that_outpoint() {
         used: HashSet::from([l.outpoint]),
         ..Ev::default()
     };
-    assert_eq!(
-        own.state(&l),
-        Some((LockOrigin::ThisDevice, UnfinishedState::Checking))
-    );
+    assert_eq!(own.state(&l), None);
 }
 
 #[test]
@@ -432,7 +426,7 @@ fn detection_waits_for_the_journal() {
         own: None,
         ..FakeKind::default()
     };
-    let listed = block_on(detect(&kind, &HashSet::new()));
+    let listed = block_on(detect(&kind));
     assert_eq!(listed.unwrap_err().code(), "platform.unavailable");
 }
 
@@ -448,7 +442,7 @@ fn detection_lists_the_unfinished_locks_only_sorted() {
         own: Some(HashSet::from([own.outpoint.txid])),
         ..FakeKind::default()
     };
-    let listed = block_on(detect(&kind, &HashSet::new())).unwrap();
+    let listed = block_on(detect(&kind)).unwrap();
     let got: Vec<_> = (listed.iter())
         .map(|u| (u.txid.clone(), u.duffs, u.origin, u.state))
         .collect();
@@ -617,7 +611,7 @@ fn a_txid_of_two_locks_is_told_apart_by_outpoint() {
         settled: Mutex::new(txids([txid])),
         ..FakeKind::default()
     };
-    let listed = block_on(detect(&kind, &HashSet::new())).unwrap();
+    let listed = block_on(detect(&kind)).unwrap();
     let vouts: Vec<_> = listed.iter().map(|u| (u.vout, u.state)).collect();
     assert_eq!(
         vouts,
@@ -648,7 +642,7 @@ fn a_sibling_of_another_kind_settled_by_txid_hides_nothing() {
         script: Some(dashcore::ScriptBuf::new()),
         ..FakeKind::default()
     };
-    let listed = block_on(detect(&kind, &HashSet::new())).unwrap();
+    let listed = block_on(detect(&kind)).unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].state, UnfinishedState::Ready);
 
@@ -1012,6 +1006,7 @@ impl Rig for FakeRig {
         let marks = match mark {
             Mark::Settled => &self.kind.settled,
             Mark::Unknown => &self.kind.unknown,
+            Mark::Reported => unreachable!("no record by txid of a report"),
         };
         marks.lock().unwrap().txids.insert(txid);
     }
@@ -1025,7 +1020,7 @@ impl Rig for FakeRig {
     }
 
     fn list(&self) -> Result<Vec<UnfinishedLock>, PlatformError> {
-        self.fx.engine.block_on(detect(&self.kind, &HashSet::new()))
+        self.fx.engine.block_on(detect(&self.kind))
     }
 
     fn finish(&self, outpoint: OutPoint) -> (Result<LockFinish, PlatformError>, bool) {

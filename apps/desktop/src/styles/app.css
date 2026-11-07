@@ -4524,6 +4524,11 @@ button.bell-row-open:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* A destination's address under its name, on a line of its own. */
+.destination-line {
+  display: block;
+}
+
 .topup-form {
   display: flex;
   flex-direction: column;

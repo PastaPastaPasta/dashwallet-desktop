@@ -538,8 +538,13 @@ fn run(cli: Cli) -> Result<(), RunError> {
             ),
         }),
     )
-    .map_err(|e| e.to_string())
-    .map_err(setup_error("--datadir could not be opened"))?;
+    .map_err(|e| {
+        let fixed = match e {
+            EngineError::StorageInUse(_) => "--datadir is in use by another process",
+            _ => "--datadir could not be opened",
+        };
+        setup_error(fixed)(e.to_string())
+    })?;
     let session = match engine.block_on(engine.open_network(cli.network, opts.clone())) {
         Ok(session) => session,
         Err(e) => {

@@ -28,7 +28,15 @@ fn balance_changes_become_rows_once() {
     let mut unseen = BTreeMap::new();
     let held = BTreeSet::new();
     let first = snap(&[("a", 500), ("b", 70)]);
-    let (rows, next) = changes(None, &first, &held, &mut unseen, (10, 1));
+    let (rows, next) = changes(
+        None,
+        &first,
+        &held,
+        &mut unseen,
+        &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
+        (10, 1),
+    );
     assert_eq!(
         kinds(&rows),
         vec![
@@ -37,11 +45,27 @@ fn balance_changes_become_rows_once() {
         ]
     );
     assert_eq!(next, first);
-    let (rows, again) = changes(Some(&next), &first, &held, &mut unseen, (11, 2));
+    let (rows, again) = changes(
+        Some(&next),
+        &first,
+        &held,
+        &mut unseen,
+        &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
+        (11, 2),
+    );
     assert!(rows.is_empty());
     assert_eq!(again, first);
     let later = snap(&[("a", 650)]);
-    let (rows, next) = changes(Some(&first), &later, &held, &mut unseen, (12, 3));
+    let (rows, next) = changes(
+        Some(&first),
+        &later,
+        &held,
+        &mut unseen,
+        &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
+        (12, 3),
+    );
     assert_eq!(
         kinds(&rows),
         vec![
@@ -67,7 +91,15 @@ fn a_moves_own_spend_is_no_outgoing_row() {
     let now = snap(&[("a", 100), ("b", 400)]);
     let held: BTreeSet<String> = ["a".to_owned()].into();
     let mut unseen = BTreeMap::new();
-    let (rows, next) = changes(Some(&before), &now, &held, &mut unseen, (5, 5));
+    let (rows, next) = changes(
+        Some(&before),
+        &now,
+        &held,
+        &mut unseen,
+        &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
+        (5, 5),
+    );
     assert!(rows.is_empty());
     assert_eq!(
         next, before,
@@ -75,20 +107,44 @@ fn a_moves_own_spend_is_no_outgoing_row() {
     );
 
     let mut unseen: BTreeMap<String, u64> = [("a".to_owned(), 905)].into();
-    let (rows, next) = changes(Some(&before), &now, &BTreeSet::new(), &mut unseen, (6, 6));
+    let (rows, next) = changes(
+        Some(&before),
+        &now,
+        &BTreeSet::new(),
+        &mut unseen,
+        &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
+        (6, 6),
+    );
     assert!(rows.is_empty(), "{rows:?}");
     assert_eq!(next, now);
     assert_eq!(unseen["a"], 0, "spent once read");
 
     let mut unseen: BTreeMap<String, u64> = [("a".to_owned(), 800)].into();
-    let (rows, _) = changes(Some(&before), &now, &BTreeSet::new(), &mut unseen, (7, 7));
+    let (rows, _) = changes(
+        Some(&before),
+        &now,
+        &BTreeSet::new(),
+        &mut unseen,
+        &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
+        (7, 7),
+    );
     assert_eq!(
         kinds(&rows),
         vec![(PlatformActivityKind::Outgoing, "a".into(), 100)]
     );
     // Not read yet (the balance did not move): kept for the next read.
     let mut unseen: BTreeMap<String, u64> = [("b".to_owned(), 50)].into();
-    let (_, _) = changes(Some(&before), &now, &BTreeSet::new(), &mut unseen, (8, 8));
+    let (_, _) = changes(
+        Some(&before),
+        &now,
+        &BTreeSet::new(),
+        &mut unseen,
+        &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
+        (8, 8),
+    );
     assert_eq!(unseen["b"], 50);
 }
 
@@ -377,7 +433,7 @@ enum Act {
     Unsigned,
 }
 
-struct FakeMoves {
+pub(crate) struct FakeMoves {
     /// address → (nonce, credits) on "Platform".
     state: Mutex<BTreeMap<PlatformAddress, (u32, u64)>>,
     height: AtomicU64,
@@ -401,6 +457,10 @@ struct FakeMoves {
     /// The next read uses the fallback, setting the latch: the session's
     /// provenance.
     sets_latch: Mutex<Option<Arc<super::super::provenance::Provenance>>>,
+    /// The next read waits, once it is in, for `read_release`.
+    block_read: AtomicBool,
+    pub(crate) read_entered: tokio::sync::Notify,
+    pub(crate) read_release: tokio::sync::Notify,
 }
 
 impl FakeMoves {
@@ -420,10 +480,19 @@ impl FakeMoves {
             outputs: Mutex::default(),
             stop_in_read: AtomicBool::new(false),
             sets_latch: Mutex::default(),
+            block_read: AtomicBool::new(false),
+            read_entered: tokio::sync::Notify::new(),
+            read_release: tokio::sync::Notify::new(),
         })
     }
 
-    fn fund(&self, address: PlatformAddress, credits: u64) {
+    /// The next read waits for `read_release` once it is in (and says so
+    /// with `read_entered`), before it reads anything.
+    pub(crate) fn block_next_read(&self) {
+        self.block_read.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn fund(&self, address: PlatformAddress, credits: u64) {
         let mut state = self.state.lock().unwrap();
         state.entry(address).or_insert((0, 0)).1 += credits;
         self.tick();
@@ -581,6 +650,10 @@ impl MoveNet for FakeMoves {
         if self.stop_in_read.swap(false, Ordering::SeqCst) {
             panic!("the process stops");
         }
+        if self.block_read.swap(false, Ordering::SeqCst) {
+            self.read_entered.notify_one();
+            self.read_release.notified().await;
+        }
         let latch = self.sets_latch.lock().unwrap().take();
         if let Some(provenance) = latch {
             // A trusted-service key served this read's proofs.
@@ -617,15 +690,15 @@ impl MoveNet for FakeMoves {
 }
 
 /// A session with a wallet, its Platform payment addresses and `net`.
-struct World {
-    f: Fixture,
-    net: Arc<FakeMoves>,
+pub(crate) struct World {
+    pub(crate) f: Fixture,
+    pub(crate) net: Arc<FakeMoves>,
     pool: Vec<PlatformAddress>,
     to: String,
 }
 
 impl World {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let f = Fixture::new(0);
         let net = FakeMoves::new();
         let mut w = Self {
@@ -647,7 +720,7 @@ impl World {
         w
     }
 
-    fn call<T: Send + 'static, Fut>(
+    pub(crate) fn call<T: Send + 'static, Fut>(
         &self,
         body: impl FnOnce(Arc<FakeMoves>, Arc<NetworkSession>, Arc<PlatformWallet>, WalletId) -> Fut
         + Send
@@ -662,7 +735,7 @@ impl World {
         (self.f.engine).block_on(dp.on_wallet(move |s, _, w| body(net, s, w, id)))
     }
 
-    fn address(&self, n: usize) -> PlatformAddress {
+    pub(crate) fn address(&self, n: usize) -> PlatformAddress {
         self.pool[n]
     }
 
@@ -682,7 +755,7 @@ impl World {
         self.move_to(WithdrawAmount::All, &self.to.clone(), grant)
     }
 
-    fn activity(&self) -> Vec<PlatformActivity> {
+    pub(crate) fn activity(&self) -> Vec<PlatformActivity> {
         self.call(|net, s, w, id| async move { activity(&*net, &s, &w, id).await })
             .unwrap()
     }
@@ -914,7 +987,34 @@ pub(crate) fn outcome_write_fails(appdb: &Arc<dw_appdb::AppDb>) -> bool {
 }
 
 impl World {
-    fn fail_next_outcome_write(&self) {
+    /// Closes the session and opens it again over the same `app.sqlite`,
+    /// `wallet.sqlite` and journal (a restart).
+    pub(crate) fn reopen(&mut self) {
+        (self.f.engine)
+            .block_on(self.f.engine.close_network(crate::DashNetwork::Regtest))
+            .unwrap();
+        let options = crate::SessionOptions {
+            dapi_addresses: vec!["http://127.0.0.1:1".into()],
+            quorum_url: Some("http://127.0.0.1:1".into()),
+            spv_peers: vec!["127.0.0.1:1".into()],
+            no_platform: true,
+            ..Default::default()
+        };
+        self.f.s = (self.f.engine)
+            .block_on(
+                self.f
+                    .engine
+                    .open_network(crate::DashNetwork::Regtest, options),
+            )
+            .unwrap();
+        let live = self.f.s.live().unwrap();
+        *self.net.store.lock().unwrap() = Some((
+            live.appdb,
+            dw_appdb::local_scope(&self.f.wallet.to_string()),
+        ));
+    }
+
+    pub(crate) fn fail_next_outcome_write(&self) {
         let appdb = self.f.s.live().unwrap().appdb;
         let key = Arc::as_ptr(&appdb) as usize;
         FAILING_OUTCOME_WRITES.lock().unwrap().insert(key);
@@ -2587,4 +2687,91 @@ fn a_0_1_record_reloads_and_settles() {
         (old.state, old.may_land),
         (PlatformActivityState::Failed, false)
     );
+}
+
+/// 0.2 R2: an "Add from Dash wallet" is its own `from_core` row, never an
+/// `incoming` one. While its apply runs a read does not compare its
+/// address; once the apply is proved, the address's first rise up to what
+/// the fund added is the fund's, and only a rise beyond it, or a later one,
+/// is incoming.
+#[test]
+fn the_rise_after_an_applied_fund_is_no_incoming_row() {
+    let w = World::new();
+    let (id, s) = (w.f.wallet, Arc::clone(&w.f.s));
+    let to = bech32m(&w.address(0), Network::Testnet);
+    w.net.fund(w.address(0), DASH);
+    assert_eq!(
+        kinds(&w.activity()),
+        [(PlatformActivityKind::Incoming, to.clone(), DASH)]
+    );
+    let txid = "ab".repeat(32);
+    let (at, a) = (
+        dashcore::OutPoint::new(txid.parse().unwrap(), 0),
+        to.clone(),
+    );
+    let s2 = Arc::clone(&s);
+    (w.f.engine)
+        .block_on(async move { record_fund(&s2, id, (at, 1_000_000), a, 999).await })
+        .unwrap();
+    // The apply executes on Platform while a read runs: not compared.
+    let hold = FundHold::new(&s.platform.fund_holds, id, to.clone());
+    w.net.fund(w.address(0), 2 * DASH);
+    let during = w.activity();
+    assert_eq!(during.len(), 2, "{during:?}");
+    let fund = find(&during, PlatformActivityKind::FromCore);
+    assert_eq!(
+        (fund.state, fund.credits, fund.address.as_deref()),
+        (PlatformActivityState::Pending, 999, Some(to.as_str()))
+    );
+    let a = to.clone();
+    (w.f.engine)
+        .block_on(async move { fund_applied(&s, id, (at, 1_000_000), a, (2 * DASH, false)).await })
+        .unwrap();
+    drop(hold);
+    let after = w.activity();
+    let incoming: Vec<_> = (after.iter())
+        .filter(|r| r.kind == PlatformActivityKind::Incoming)
+        .collect();
+    assert_eq!(incoming.len(), 1, "only the first funding: {after:?}");
+    let fund = find(&after, PlatformActivityKind::FromCore);
+    assert_eq!(
+        (fund.id.as_str(), fund.state, fund.credits),
+        (
+            format!("fund-{txid}").as_str(),
+            PlatformActivityState::Done,
+            2 * DASH
+        )
+    );
+    // Read once: the next rise of the address is someone's payment.
+    w.net.fund(w.address(0), 3 * DASH);
+    let later = w.activity();
+    let rows: Vec<_> = (later.iter())
+        .filter(|r| r.kind == PlatformActivityKind::Incoming)
+        .map(|r| r.credits)
+        .collect();
+    assert_eq!(rows.len(), 2, "{later:?}");
+    assert!(rows.contains(&(3 * DASH)));
+}
+
+/// What exceeds an applied fund's credits in the address's first rise is
+/// incoming.
+#[test]
+fn only_a_rise_beyond_an_applied_fund_is_incoming() {
+    let before = snap(&[("a", 100)]);
+    let now = snap(&[("a", 1_150)]);
+    let mut arriving = BTreeMap::from([("a".to_owned(), 1_000)]);
+    let (rows, _) = changes(
+        Some(&before),
+        &now,
+        &BTreeSet::new(),
+        &mut BTreeMap::new(),
+        &mut arriving,
+        &mut BTreeMap::new(),
+        (5, 5),
+    );
+    assert_eq!(
+        kinds(&rows),
+        [(PlatformActivityKind::Incoming, "a".into(), 50)]
+    );
+    assert_eq!(arriving["a"], 0, "spent");
 }

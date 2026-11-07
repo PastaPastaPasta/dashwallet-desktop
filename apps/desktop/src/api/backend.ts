@@ -13,6 +13,9 @@ import type { HistorySortName } from "./generated/HistorySortName";
 import type { MoveToCoreOutcome } from "./generated/MoveToCoreOutcome";
 import type { MoveToCoreQuote } from "./generated/MoveToCoreQuote";
 import type { PlatformReceiveAddress } from "./generated/PlatformReceiveAddress";
+import type { PendingPlatformFund } from "./generated/PendingPlatformFund";
+import type { PlatformFundOutcome } from "./generated/PlatformFundOutcome";
+import type { PlatformFundQuote } from "./generated/PlatformFundQuote";
 import type { PlatformSendOutcome } from "./generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "./generated/PlatformSendQuote";
 import type { ChosenNetwork } from "./generated/ChosenNetwork";
@@ -259,6 +262,14 @@ export interface Backend {
   platformSendQuote(walletId: string, to: string, amount: WithdrawAmount, retryOf: string | null): Promise<PlatformSendQuote>;
   /** Sends the quoted `operation` (single use) from the Platform addresses under a fresh `platformOp` `grant` (`platform_send`). */
   platformSend(walletId: string, operation: string, grant: string): Promise<PlatformSendOutcome>;
+  /** What "Add from Dash wallet" of `duffs` costs and adds (`platform_fund_quote`). */
+  platformFundQuote(walletId: string, duffs: number): Promise<PlatformFundQuote>;
+  /** Locks `duffs` of the Dash wallet and funds the wallet's Platform receive address under `grant` (`platform_fund`). */
+  platformFund(walletId: string, duffs: number, grant: string): Promise<PlatformFundOutcome>;
+  /** The locks not yet applied (`pending_platform_funds`); `null` while dw-app has no such command. */
+  pendingPlatformFunds(walletId: string): Promise<PendingPlatformFund[] | null>;
+  /** Applies a pending lock (`resume_platform_fund`). */
+  resumePlatformFund(walletId: string, txid: string, grant: string): Promise<PlatformFundOutcome>;
   syncStatus(): Promise<SyncStatus>;
   historyPage(walletId: string, request: HistoryRequest): Promise<HistoryRows>;
   /** dash-qt's CSV of the history `filter` and `sort` select (every field quoted, `\n` ends);

@@ -1,5 +1,5 @@
 // Unfinished transfers on Home (recovery/model.ts): the card that offers to finish what a wallet
-// restore found locked for Shielded, and the sheet with one row per lock.
+// restore found locked for Shielded or for "Add from Dash wallet", and the sheet with one row per lock.
 
 import { useEffect, useState } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
@@ -8,8 +8,9 @@ import { DashButton } from "../components/basics";
 import { CopyValue } from "../components/detail";
 import { Sheet } from "../components/sheet";
 import { shortId } from "../dashpay/identities";
+import { unreadText } from "../dashpay/registration";
 import { useModel } from "../onboarding/model";
-import { cardView, lockKey, RECOVERY_COPY as C, recoveryFor, resultText, sheetRows, withoutPendingShields, type CardAction, type RecoveryModel } from "../recovery/model";
+import { cardView, lockKey, lockKinds, RECOVERY_COPY as C, recoveryFor, resultText, sheetRows, withoutPendingShields, type CardAction, type RecoveryModel } from "../recovery/model";
 import { shieldedErrorText } from "../shielded/flow";
 import { useFormats } from "./ShieldedSheet";
 import { GrantSheet } from "./tools/common";
@@ -79,7 +80,12 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
   const failed = model.state.kind === "failed" ? model.state.error : null;
   return (
     <Sheet title={C.sheet.title} width="medium" testId="unfinished-sheet" onClose={onClose}>
-      <p className="sheet-text">{C.sheet.intro}</p>
+      <p className="sheet-text">{C.sheet.intro(lockKinds(rows.map((r) => r.lock)))}</p>
+      {query.data && query.data.unread.length > 0 && (
+        <p className="field-hint" role="status" data-testid="unfinished-unread">
+          {unreadText(query.data.unread)}
+        </p>
+      )}
       <dl className="detail-list card-l1" data-testid="unfinished-rows">
         {rows.map(({ lock, result }) => {
           const key = lockKey(lock);
@@ -96,7 +102,7 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
                 <CopyValue value={lock.txid} display={shortId(lock.txid)} label="transaction id" mono />
                 {result && (
                   <p className={result.kind === "notApplied" ? "form-problem" : "field-hint"} role="status" data-testid="unfinished-row-result">
-                    {resultText(result, errorText)}
+                    {resultText(result, errorText, lock.kind)}
                   </p>
                 )}
                 {action && (

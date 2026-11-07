@@ -368,8 +368,9 @@ pub struct FinishReport {
     pub resumed: u32,
     pub completed: u32,
     pub still_pending: u32,
-    /// Restored transfers Platform reported already used (unproved).
-    /// Reserved: 0 for now.
+    /// Transfers Platform reported already used for their exact output
+    /// (unproved; type-4 Core → Platform address locks): taken as finished
+    /// elsewhere, no longer listed, not settled.
     pub already_used: u32,
     pub by_kind: Vec<TransfersReport>,
     /// Kinds whose transfers could not be read: none of theirs is counted.

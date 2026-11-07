@@ -51,7 +51,7 @@ Status: **works** = implemented and tested through the FFI; **M0** = earlier wor
 
 | Call | Kind | Semantics | Errors | Serves | Status |
 |---|---|---|---|---|---|
-| `Engine(config, observer)` | sync ctor | Builds the tokio runtime and logging. | `EngineError` | QT-002 | M0 |
+| `Engine(config, observer)` | sync ctor | Builds the tokio runtime and logging, and takes the data root's instance lock (`<root>/instance.lock`, dw-fs `instance`; 0.2), held while the engine lives: an engine of another process holding it (the desktop app, the Swift app, `dwcli`) is `storage_in_use`; engines of one process share it. | `EngineError` | QT-002 | M0 |
 | `Engine.open_network(network, options)` | async | Opens (or returns the open) session: data dir, SDK, `PlatformWalletManager<SqlitePersister>`, loads wallets. | `EngineError` | QT-002, IOS-106 | M0 |
 | `Engine.close_network(network)` / `shutdown()` | async | Stops SPV, drains persistence, releases the DB. `close_network` (an in-app close or network switch) is refused with `shielded_spend_unresolved`, the session left open, while a wallet holds a shielded spend whose result is not known (m4 §2.13, DEC-1046); `shutdown` (app quit) is never refused and keeps such a wallet loaded, its stores committed (not closed; m4 §2.13), so its spends are pending at the next launch. | `EngineError` | QT-008 | M0 |
 | `Engine.network_dir(network)` | sync | Data directory ("Open data folder"). | — | QT-143 | M0 |
