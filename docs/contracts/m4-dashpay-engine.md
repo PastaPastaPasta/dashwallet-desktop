@@ -2425,9 +2425,10 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   backfill), the balance, the coin list and Activity can include a coin spent above the rewound checkpoint until its
   spend replays. Spends of the wallet's coins are refused until the replay is back (`rescan_in_progress`, or
   `platform.context_unavailable` for asset-lock funding). The engine stores each replay before its rewind (0.1.x row
-  58): a replay a quit interrupted resumes when the session, or the wallet, opens again, before SPV scans it, and refuses
-  spends the same way; one the user cancelled is not resumed and stays `rescan_interrupted` across the restart, until a
-  rescan from where it began. 0.1.x shows nothing for the transient in the UI.
+  58): a replay a quit interrupted resumes when the session, or the wallet, opens again, before SPV scans below the
+  stored checkpoint, and refuses spends the same way (from before an opened wallet is published); one the user cancelled is not resumed and stays `rescan_interrupted` across the restart, until a
+  rescan from where it began. A stored replay this build cannot read holds spends the same way, until a rescan from the
+  birth height. 0.1.x shows nothing for the transient in the UI.
 - `recovery.unsupported_output` (Contract-Version 54) is no enum's code: it is only a lock finish's
   `notApplied{error}` (§2.14) for a lock at an output other than 0, which this version cannot finish. Nothing is signed.
 - `IdentityError` is reached through `PlatformError::Identity`, so every domain can return `identity.*`.
