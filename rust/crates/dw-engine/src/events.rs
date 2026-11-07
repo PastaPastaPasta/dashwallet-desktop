@@ -386,6 +386,21 @@ pub(crate) struct WalletName {
 /// (MP-01; Android's rule).
 const STAMP_MAX_AGE: u64 = 3 * 3600;
 
+/// Records the news of a wallet's event stream in its sweep rows: whether
+/// any changed, `None` when the rows could not be written
+/// (`coinjoin::write_beaten`, `coinjoin::delete_beaten_above`).
+pub(crate) type SweepNewsHook =
+    Box<dyn Fn(WalletId, crate::coinjoin::SweepNews<'_>) -> Option<bool> + Send + Sync>;
+
+/// The hash of the block the SPV header chain holds at a height; `None`
+/// unless the header store has one there (`SpvRuntime::header_hash_at`
+/// answered `Found`).
+pub(crate) type HeaderSource = Arc<
+    dyn Fn(u32) -> futures_util::future::BoxFuture<'static, Option<dashcore::BlockHash>>
+        + Send
+        + Sync,
+>;
+
 /// In-memory state of one session, updated from SPV and wallet callbacks.
 pub(crate) struct SessionHub {
     pub network: DashNetwork,
@@ -416,6 +431,23 @@ pub(crate) struct SessionHub {
     reconcile: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// The wallets with a reconcile started and not yet running.
     reconcile_pending: Mutex<HashSet<WalletId>>,
+    /// Runs on each SPV peers 0 -> >0 transition: the recorded sweep
+    /// chunks are sent again (`coinjoin`); unset in hub-only tests.
+    peers_up: OnceLock<Box<dyn Fn() + Send + Sync>>,
+    /// Records a beaten sweep chunk or a truncation in the sweep rows;
+    /// unset in hub-only tests.
+    sweep_news: OnceLock<SweepNewsHook>,
+    /// The wallets whose sweep rows a truncation could not update: their
+    /// rows are checked against the header chain on their next event.
+    sweep_retry_due: Mutex<HashSet<WalletId>>,
+    /// Checks a wallet's sweep rows again (`coinjoin` prune); unset in
+    /// hub-only tests.
+    sweep_retry: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
+    /// The SPV header chain ([`HeaderSource`]); unset, no header answers.
+    headers: RwLock<Option<HeaderSource>>,
+    /// Tests: the sweep row checks started, to wait for.
+    #[cfg(test)]
+    pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Tests: holds the next first-seen write before it runs.
     #[cfg(test)]
     pub(crate) pause_seen: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -499,6 +531,13 @@ impl SessionHub {
             leases: std::sync::OnceLock::new(),
             reconcile: OnceLock::new(),
             reconcile_pending: Mutex::new(HashSet::new()),
+            peers_up: OnceLock::new(),
+            sweep_news: OnceLock::new(),
+            sweep_retry_due: Mutex::new(HashSet::new()),
+            sweep_retry: OnceLock::new(),
+            headers: RwLock::new(None),
+            #[cfg(test)]
+            sweep_checks: Mutex::new(Vec::new()),
             #[cfg(test)]
             pause_seen: Mutex::new(None),
         }
@@ -512,6 +551,93 @@ impl SessionHub {
 
     fn lease_table(&self) -> Option<Arc<crate::platform::lease::LeaseTable>> {
         self.leases.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    /// Sets what runs on each SPV peers 0 -> >0 transition (once).
+    pub(crate) fn attach_peers_up(&self, run: Box<dyn Fn() + Send + Sync>) {
+        let _ = self.peers_up.set(run);
+    }
+
+    /// Sets what records the sweep records' news (once).
+    pub(crate) fn attach_sweep_news(&self, note: SweepNewsHook) {
+        let _ = self.sweep_news.set(note);
+    }
+
+    /// Sets what checks a wallet's sweep rows again (once).
+    pub(crate) fn attach_sweep_retry(&self, retry: Box<dyn Fn(WalletId) + Send + Sync>) {
+        let _ = self.sweep_retry.set(retry);
+    }
+
+    /// Sets the SPV header chain the sweep records' evidence is checked
+    /// against.
+    pub(crate) fn attach_headers(&self, headers: HeaderSource) {
+        *self.headers.write().unwrap_or_else(|p| p.into_inner()) = Some(headers);
+    }
+
+    /// The hash of the block the SPV header chain holds at `height`, if the
+    /// header store has one.
+    pub(crate) async fn header_hash(&self, height: u32) -> Option<dashcore::BlockHash> {
+        let source = self
+            .headers
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()?;
+        source(height).await
+    }
+
+    /// [`Self::header_hash`] of each of `heights` that has one.
+    pub(crate) async fn header_hashes(
+        &self,
+        heights: BTreeSet<u32>,
+    ) -> HashMap<u32, dashcore::BlockHash> {
+        let mut found = HashMap::new();
+        for h in heights {
+            if let Some(hash) = self.header_hash(h).await {
+                found.insert(h, hash);
+            }
+        }
+        found
+    }
+
+    /// Tests: the sweep row checks started so far.
+    #[cfg(test)]
+    pub(crate) fn take_sweep_checks(&self) -> Vec<tokio::task::JoinHandle<()>> {
+        std::mem::take(&mut *self.sweep_checks.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    /// Checks wallet `id`'s sweep rows again on its next event.
+    pub(crate) fn retry_sweep_rows(&self, id: WalletId) {
+        (self
+            .sweep_retry_due
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()))
+        .insert(id);
+    }
+
+    /// Hands `news` of wallet `id` to the sweep records; a change can free
+    /// or hold coins, so the balances are read again. A failed write is
+    /// checked again on the wallet's next event.
+    fn note_sweep_news(&self, id: WalletId, news: crate::coinjoin::SweepNews<'_>) {
+        let Some(note) = self.sweep_news.get() else {
+            return;
+        };
+        match note(id, news) {
+            Some(true) => self.pump.mark_balances(id),
+            Some(false) => {}
+            None => self.retry_sweep_rows(id),
+        }
+    }
+
+    /// Wallet `id`'s due check of its sweep rows ([`Self::retry_sweep_rows`]).
+    fn run_sweep_retry(&self, id: WalletId) {
+        let due = (self
+            .sweep_retry_due
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()))
+        .remove(&id);
+        if due && let Some(retry) = self.sweep_retry.get() {
+            retry(id);
+        }
     }
 
     /// Sets what starts a wallet's duplicate-coin reconcile (once).
@@ -769,6 +895,7 @@ impl SessionHub {
     pub(crate) fn apply_wallet_event(&self, event: &WalletEvent) {
         let id = WalletId(event.wallet_id());
         let now = Some(unix_now());
+        self.run_sweep_retry(id);
         match event {
             WalletEvent::TransactionDetected {
                 record,
@@ -807,10 +934,29 @@ impl SessionHub {
             }
             WalletEvent::TransactionsSwept {
                 txids,
+                superseded_by,
+                winner_block,
                 balance,
                 account_balances,
                 ..
             } => {
+                // The winner may pay no address of the wallet, and then no
+                // other event names it: a sweep chunk it beat learns of it
+                // here only.
+                self.note_sweep_news(
+                    id,
+                    crate::coinjoin::SweepNews::Beaten {
+                        txids,
+                        winner: *superseded_by,
+                        at: match winner_block {
+                            Some(b) => crate::coinjoin::BeatenAt::Mined {
+                                height: b.height(),
+                                hash: b.block_hash(),
+                            },
+                            None => crate::coinjoin::BeatenAt::Is,
+                        },
+                    },
+                );
                 // Upstream deleted these records (provably beaten spends);
                 // the history drops them too.
                 self.history.with_wallet(id, |h| {
@@ -834,7 +980,12 @@ impl SessionHub {
                 // A fork replaced the blocks above `height`: the wallet
                 // dropped what they recorded, kept their InstantSend-locked
                 // transactions unconfirmed and lowered its heights. The
-                // history follows it.
+                // history follows it, and so do the sweep chunks a winner in
+                // those blocks beat.
+                self.note_sweep_news(
+                    id,
+                    crate::coinjoin::SweepNews::Truncated { height: *height },
+                );
                 let changed = self
                     .history
                     .with_wallet(id, |h| h.truncate(txids, unconfirmed_txids));
@@ -948,6 +1099,9 @@ impl EventHandler for SessionHub {
         }
         if up && let Some(leases) = self.lease_table() {
             leases.request_resume(None);
+        }
+        if up && let Some(run) = self.peers_up.get() {
+            run();
         }
     }
 

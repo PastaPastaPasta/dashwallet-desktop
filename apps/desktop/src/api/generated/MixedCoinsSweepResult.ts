@@ -4,14 +4,28 @@
  * The result of "Move mixed coins". A later chunk can fail after earlier
  * ones were broadcast.
  */
-export type MixedCoinsSweepResult = { txids: Array<string>, moved: number, remaining: number,
+export type MixedCoinsSweepResult = { txids: Array<string>,
+/**
+ * What left the CoinJoin account in the transactions sent:
+ * `received + fee`.
+ */
+moved: number,
+/**
+ * Of `moved`, what arrives at the destination.
+ */
+received: number,
+/**
+ * Of `moved`, the network fees.
+ */
+fee: number, remaining: number,
 /**
  * The code of the error that stopped the sweep; `null` when complete.
  */
 failureCode: string | null,
 /**
  * With `coinjoin.broadcast_unknown`: the chunk that may be on the
- * network (display txid), its coins reserved until the wallet sees
- * them spent.
+ * network (display txid), its coins reserved until a block or an
+ * InstantSend lock shows it, or a block spends one of them otherwise;
+ * `resend_mixed_coins` sends its recorded bytes again.
  */
 unknownTxid: string | null, };

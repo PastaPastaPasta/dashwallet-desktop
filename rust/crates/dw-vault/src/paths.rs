@@ -120,6 +120,33 @@ pub fn is_coinjoin_path(path: &DerivationPath, network: Network) -> bool {
     p.len() >= 4 && has_dip9_feature(p, network, FEATURE_PURPOSE_COINJOIN)
 }
 
+/// An address key of CoinJoin account 0, `m/9'/coin'/4'/0'/{0,1}/index`
+/// (key-wallet `ManagedAccountType::CoinJoin`'s external and internal
+/// pools): the coins "Move mixed coins" drains into a Shielded lock. Other
+/// CoinJoin accounts, the account node and hardened children are refused.
+pub fn is_coinjoin_address(path: &DerivationPath, network: Network) -> bool {
+    let p: &[ChildNumber] = path.as_ref();
+    p.len() == 6
+        && has_dip9_feature(p, network, FEATURE_PURPOSE_COINJOIN)
+        && is_hardened(&p[3], 0)
+        && is_chain_and_index(&p[4..])
+}
+
+/// A shielded top-up credit key `m/9'/coin'/5'/5'/index`, `index`
+/// non-hardened (key-wallet `AccountType::AssetLockShieldedAddressTopUp`):
+/// the one-time key of a Core → Shielded lock. Registration, top-up and
+/// invitation credit keys are refused.
+pub fn is_shielded_top_up_credit_key(path: &DerivationPath, network: Network) -> bool {
+    let p: &[ChildNumber] = path.as_ref();
+    p.len() == 5
+        && has_dip9_feature(p, network, FEATURE_PURPOSE_IDENTITIES)
+        && is_hardened(
+            &p[3],
+            FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_SHIELDED_ADDRESS_TOPUP,
+        )
+        && is_normal(&p[4])
+}
+
 /// Whether `path` lies inside a BIP44 account of `network`
 /// (`m/44'/coin'/account'/…`, the account a 31-bit hardened step).
 pub fn is_bip44_path(path: &DerivationPath, network: Network) -> bool {
@@ -331,6 +358,47 @@ mod tests {
         ];
         p.extend(extra);
         p.into()
+    }
+
+    #[test]
+    fn coinjoin_address_and_shielded_credit_key_shapes() {
+        for ok in ["m/9'/1'/4'/0'/0/0", "m/9'/1'/4'/0'/1/41"] {
+            assert!(is_coinjoin_address(&path(ok), Network::Testnet), "{ok}");
+            assert!(!is_coinjoin_address(&path(ok), Network::Mainnet), "{ok}");
+        }
+        for bad in [
+            "m/9'/1'/4'/1'/0/0",
+            "m/9'/1'/4'/0'/2/0",
+            "m/9'/1'/4'/0'/0/0'",
+            "m/9'/1'/4'/0'/0",
+            "m/9'/1'/4'/0'",
+            "m/9'/1'/4'/0'/0/0/0",
+            "m/44'/1'/0'/0/0",
+        ] {
+            assert!(!is_coinjoin_address(&path(bad), Network::Testnet), "{bad}");
+        }
+        assert!(is_shielded_top_up_credit_key(
+            &path("m/9'/1'/5'/5'/3"),
+            Network::Testnet
+        ));
+        assert!(is_shielded_top_up_credit_key(
+            &path("m/9'/5'/5'/5'/0"),
+            Network::Mainnet
+        ));
+        for bad in [
+            "m/9'/1'/5'/5'/3'",
+            "m/9'/1'/5'/5'",
+            "m/9'/1'/5'/1'/0",
+            "m/9'/1'/5'/2'/0",
+            "m/9'/1'/5'/3'/0",
+            "m/9'/1'/5'/5'/0/0",
+            "m/9'/5'/5'/5'/0",
+        ] {
+            assert!(
+                !is_shielded_top_up_credit_key(&path(bad), Network::Testnet),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

@@ -131,21 +131,21 @@ public final class CoinJoinService: CoinJoinControlling, MixedCoinsMoving {
             destination: destination, total: Amount(p.total),
             chunks: p.chunks.map {
                 MixedCoinsChunk(inputs: Int($0.inputs), amount: Amount($0.amount), fee: Amount($0.fee))
-            })
+            }, unconfirmed: p.unconfirmed, quoteId: p.quoteID)
     }
 
-    public func move(wallet: WalletID, destination: MixedCoinsDestination, grant: AuthGrant)
+    public func move(wallet: WalletID, plan: MixedCoinsSweepPlan, grant: AuthGrant)
         async throws(ServiceError) -> MixedCoinsSweepResult
     {
         let id = try wallet.kit
-        let target = destination.kit
-        let grantID = grant.id
+        let target = plan.destination.kit
+        let (quoteID, grantID) = (plan.quoteId, grant.id)
         let r = try await call { engine, network throws(DashKitError) in
-            try await engine.moveMixedCoins(on: network, wallet: id, target: target, grantID: grantID)
+            try await engine.moveMixedCoins(on: network, wallet: id, target: target, quoteID: quoteID, grantID: grantID)
         }
         return MixedCoinsSweepResult(
             txids: r.txids, moved: Amount(r.moved), remaining: Amount(r.remaining),
-            failureCode: r.failureCode.map(ServiceErrorCode.init(rawValue:)), unknownTxid: r.unknownTxid)
+            failureCode: r.failureCode.map(ServiceErrorCode.init(rawValue:)), unknownTxid: r.unknownTxid, fee: Amount(r.fee))
     }
 }
 

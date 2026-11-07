@@ -40,10 +40,10 @@ final class DemoCoinJoin: CoinJoinControlling, MixedCoinsMoving, NetworkStatisti
         try await m3.sweepPlan(wallet, destination: destination)
     }
 
-    func move(wallet: WalletID, destination: MixedCoinsDestination, grant: AuthGrant) async throws(ServiceError)
+    func move(wallet: WalletID, plan: MixedCoinsSweepPlan, grant: AuthGrant) async throws(ServiceError)
         -> MixedCoinsSweepResult
     {
-        _ = try await m3.sweepPlan(wallet, destination: destination)
+        _ = try await m3.sweepPlan(wallet, destination: plan.destination)
         throw notInDemo("move_mixed_coins")
     }
 

@@ -10,7 +10,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
-use dw_vault::{KeyHold, ShieldedSpendKey, VaultSigner, VoteSigner};
+use dw_vault::{KeyHold, ShieldedSpendKey, SignerLife, VaultSigner, VoteSigner};
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 use tokio::task::AbortHandle;
@@ -75,6 +75,9 @@ pub(crate) struct Signers {
     /// A `ShieldedSpend` lease's Orchard spend key (0.1 E1), in place of
     /// the identity signer its `PlatformOp` grant would issue.
     pub(crate) shielded: Option<ShieldedSpendKey>,
+    /// A `ShieldDrain` lease's signer life: its funding signer stops when
+    /// the lease drops it, on the vault's key too (0.2 MIX-SHIELD).
+    pub(crate) life: Option<SignerLife>,
 }
 
 /// What a redemption produced (§4.1 step 2): the caps per purpose, the one

@@ -92,7 +92,9 @@ import type { LockKind } from "./LockKind";
 import type { LockOutcome } from "./LockOutcome";
 import type { LockResolutionName } from "./LockResolutionName";
 import type { LockStatus } from "./LockStatus";
+import type { MixedCoinsConsolidationPlan } from "./MixedCoinsConsolidationPlan";
 import type { MixedCoinsDestination } from "./MixedCoinsDestination";
+import type { MixedCoinsResend } from "./MixedCoinsResend";
 import type { MixedCoinsSweepPlan } from "./MixedCoinsSweepPlan";
 import type { MixedCoinsSweepResult } from "./MixedCoinsSweepResult";
 import type { MnemonicCheck } from "./MnemonicCheck";
@@ -1445,11 +1447,40 @@ export function mixedCoinsSweepPlan(walletId: string, destination: MixedCoinsDes
 
 /**
  * "Move mixed coins" (IOS-057): sweeps the CoinJoin account in chunks of
- * at most 500 inputs. `grantId`: a `Spend` grant of at least the plan's
- * total. Stops at the first failing chunk and reports what moved.
+ * at most 500 inputs. `quoteId`: the confirmed plan's (refused
+ * `coinjoin.plan_changed` when the coins are no longer its own);
+ * `grantId`: a `Spend` grant of at least the plan's total. Stops at the
+ * first failing chunk and reports what moved.
  */
-export function moveMixedCoins(walletId: string, destination: MixedCoinsDestination, grantId: string): Promise<MixedCoinsSweepResult> {
-  return invoke<MixedCoinsSweepResult>("move_mixed_coins", { walletId, destination, grantId });
+export function moveMixedCoins(walletId: string, destination: MixedCoinsDestination, quoteId: string, grantId: string): Promise<MixedCoinsSweepResult> {
+  return invoke<MixedCoinsSweepResult>("move_mixed_coins", { walletId, destination, quoteId, grantId });
+}
+
+/**
+ * The consolidation round before a move to Shielded. Reads coins only.
+ */
+export function mixedCoinsConsolidationPlan(walletId: string): Promise<MixedCoinsConsolidationPlan> {
+  return invoke<MixedCoinsConsolidationPlan>("mixed_coins_consolidation_plan", { walletId });
+}
+
+/**
+ * Runs the consolidation round: every transaction pays one fresh
+ * address of the wallet's own CoinJoin account. `quoteId`: the
+ * confirmed plan's; `grantId`: a `Spend` grant of at least the plan's
+ * total. Stops at the first failing chunk and reports what went out.
+ */
+export function consolidateMixedCoins(walletId: string, quoteId: string, grantId: string): Promise<MixedCoinsSweepResult> {
+  return invoke<MixedCoinsSweepResult>("consolidate_mixed_coins", { walletId, quoteId, grantId });
+}
+
+/**
+ * "Try again" on a chunk of unknown outcome: sends the transaction
+ * recorded for it, never signing again. `txid`: that chunk (display
+ * txid); `null`: every recorded chunk. Refused while a move of the
+ * wallet runs.
+ */
+export function resendMixedCoins(walletId: string, txid: string | null): Promise<Array<MixedCoinsResend>> {
+  return invoke<Array<MixedCoinsResend>>("resend_mixed_coins", { walletId, txid });
 }
 
 /**
@@ -2822,7 +2853,10 @@ export type CommandArgs = {
   generate_coinjoin_salt: { walletId: string };
   coinjoin_recovery_scan: { walletId: string };
   mixed_coins_sweep_plan: { walletId: string; destination: MixedCoinsDestination };
-  move_mixed_coins: { walletId: string; destination: MixedCoinsDestination; grantId: string };
+  move_mixed_coins: { walletId: string; destination: MixedCoinsDestination; quoteId: string; grantId: string };
+  mixed_coins_consolidation_plan: { walletId: string };
+  consolidate_mixed_coins: { walletId: string; quoteId: string; grantId: string };
+  resend_mixed_coins: { walletId: string; txid: string | null };
   discover_identities: { walletId: string; grant: string };
   identities: { walletId: string };
   identity_detail: { walletId: string; identity: string };
@@ -3130,6 +3164,9 @@ export type CommandResults = {
   coinjoin_recovery_scan: CoinJoinRecoveryReport;
   mixed_coins_sweep_plan: MixedCoinsSweepPlan;
   move_mixed_coins: MixedCoinsSweepResult;
+  mixed_coins_consolidation_plan: MixedCoinsConsolidationPlan;
+  consolidate_mixed_coins: MixedCoinsSweepResult;
+  resend_mixed_coins: Array<MixedCoinsResend>;
   discover_identities: number;
   identities: Array<IdentitySummary>;
   identity_detail: IdentityDetail;
@@ -3439,6 +3476,9 @@ export const COMMANDS: Record<CommandName, string> = {
   coinjoin_recovery_scan: "coinjoin",
   mixed_coins_sweep_plan: "coinjoin",
   move_mixed_coins: "coinjoin",
+  mixed_coins_consolidation_plan: "coinjoin",
+  consolidate_mixed_coins: "coinjoin",
+  resend_mixed_coins: "coinjoin",
   discover_identities: "identity",
   identities: "identity",
   identity_detail: "identity",
@@ -3741,6 +3781,9 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "coinjoin.spv_not_running",
   "coinjoin.no_peers",
   "coinjoin.broadcast_rejected",
+  "coinjoin.mixing_active",
+  "coinjoin.move_running",
+  "coinjoin.plan_changed",
   "masternode.watch_only",
   "masternode.vault_locked",
   "masternode.grant_invalid",

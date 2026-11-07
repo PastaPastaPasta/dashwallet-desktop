@@ -23,7 +23,7 @@ use dw_vault::{
 use zeroize::Zeroizing;
 
 use super::errors::{NameError, PlatformError, RegistrationError};
-use super::flows::FlowKind;
+use super::flows::{BudgetPurpose, FlowKind};
 use super::lease::mode_b::{TrackedRow, TrackedStatus, index_trusted};
 use super::lease::{CallPermit, FundingKey, Lease, StoredLock};
 use super::names::NameOutcome;
@@ -4439,4 +4439,42 @@ fn a_lock_refused_at_its_fifty_first_signature_is_not_sent() {
         inputs
     });
     assert_eq!(inputs, vec![coin]);
+}
+
+/// 0.2 MIX-SHIELD: a "Move mixed coins" drain's lease funds no
+/// registration: refused `grant_invalid` before a row exists, its budget
+/// untouched.
+#[test]
+fn a_drain_lease_starts_no_registration() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let g = f
+        .session
+        .vault()
+        .authorize(
+            GrantPurpose::Spend {
+                max_duffs: 10 * COIN,
+            },
+            Some(&f.wallet.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    let lease = f
+        .engine
+        .block_on(f.session.begin_lease(f.wallet, FlowKind::ShieldDrain, &[g]))
+        .unwrap();
+    let err = f
+        .engine
+        .block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            request(PLAIN),
+            lease.id_string(),
+        ))
+        .unwrap_err();
+    assert_eq!(err.code(), "platform.grant_invalid");
+    assert!(f.rows().is_empty());
+    assert_eq!(lease.available(BudgetPurpose::Funding).unwrap(), 10 * COIN);
 }

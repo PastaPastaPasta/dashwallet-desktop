@@ -41,6 +41,53 @@ pub(crate) struct Fixture {
     rec: Arc<Recorder>,
     pub(crate) session: Arc<NetworkSession>,
     pub(crate) wallet: WalletId,
+    /// The SPV header chain the session reads, across reopens.
+    pub(crate) chain: Arc<TestChain>,
+}
+
+/// A stand-in SPV header chain with a header at every height: each fork
+/// replaces every block above its height with a new one.
+#[derive(Default)]
+pub(crate) struct TestChain {
+    forks: std::sync::Mutex<Vec<u32>>,
+    /// Heights whose header the store does not have.
+    missing: std::sync::Mutex<std::collections::HashSet<u32>>,
+}
+
+impl TestChain {
+    /// The hash of the block the chain holds at `height` now.
+    pub(crate) fn hash(&self, height: u32) -> dashcore::BlockHash {
+        let forks = self.forks.lock().unwrap();
+        let branch = forks.iter().filter(|f| **f < height).count();
+        let mut bytes = [0xc4; 32];
+        bytes[..4].copy_from_slice(&height.to_le_bytes());
+        bytes[4..12].copy_from_slice(&(branch as u64).to_le_bytes());
+        dashcore::BlockHash::from_byte_array(bytes)
+    }
+
+    /// A fork replaces the blocks above `height`.
+    pub(crate) fn fork_above(&self, height: u32) {
+        self.forks.lock().unwrap().push(height);
+    }
+
+    /// Whether the header store has the header at `height`.
+    pub(crate) fn set_known(&self, height: u32, known: bool) {
+        let mut missing = self.missing.lock().unwrap();
+        if known {
+            missing.remove(&height);
+        } else {
+            missing.insert(height);
+        }
+    }
+
+    fn install(self: &Arc<Self>, session: &NetworkSession) {
+        let chain = Arc::clone(self);
+        session.hub.attach_headers(Arc::new(move |height| {
+            let hash =
+                (!chain.missing.lock().unwrap().contains(&height)).then(|| chain.hash(height));
+            Box::pin(async move { hash })
+        }));
+    }
 }
 
 /// The fixture's session options: every address unreachable.
@@ -87,16 +134,33 @@ pub(crate) fn fixture(encrypted: bool) -> Fixture {
             },
         ))
         .unwrap();
+    let chain = Arc::new(TestChain::default());
+    chain.install(&session);
     Fixture {
         _dir: dir,
         engine,
         rec,
         session,
         wallet,
+        chain,
     }
 }
 
 impl Fixture {
+    /// A restart: the session closes and opens again on the same data
+    /// root, and every in-memory state (reservations, coins credited by
+    /// hand, history, hooks) is gone.
+    pub(crate) fn reopen(&mut self) {
+        self.engine
+            .block_on(self.engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+        self.session = self
+            .engine
+            .block_on(self.engine.open_network(DashNetwork::Regtest, options()))
+            .unwrap();
+        self.chain.install(&self.session);
+    }
+
     pub(crate) fn grant(&self, purpose: GrantPurpose, credential: Credential<'_>) -> String {
         self.session
             .vault()
@@ -2701,7 +2765,14 @@ impl Fixture {
 
     /// Credits a confirmed coin of `value` to a fresh CoinJoin-account
     /// address.
-    fn credit_coinjoin(&self, seed: u8, value: u64) -> OutPoint {
+    pub(crate) fn credit_coinjoin(&self, seed: u8, value: u64) -> OutPoint {
+        self.credit_coinjoin_with(seed, value, true)
+    }
+
+    /// Credits a coin of `value` to a fresh CoinJoin-account address,
+    /// confirmed or not (an unconfirmed one is neither mined nor
+    /// InstantSend-locked: not final).
+    pub(crate) fn credit_coinjoin_with(&self, seed: u8, value: u64, confirmed: bool) -> OutPoint {
         let session = Arc::clone(&self.session);
         let id = self.wallet;
         self.engine
@@ -2716,7 +2787,7 @@ impl Fixture {
                         script_pubkey: address.script_pubkey(),
                     };
                     let mut utxo = Utxo::new(outpoint, txout, address, 1, false);
-                    utxo.is_confirmed = true;
+                    utxo.is_confirmed = confirmed;
                     let wallet = session.wallet(&id).await?;
                     (wallet
                         .state_mut()
@@ -3784,14 +3855,126 @@ fn a_mixed_sweep_is_refused_while_a_replay_runs() {
     });
     checkpoint(500);
     let sweep = crate::coinjoin::SweepDestination::Wallet;
-    let plan = f.engine.block_on(s.mixed_coins_sweep_plan(f.wallet, sweep));
-    assert_eq!(plan.unwrap().total, COIN);
+    let plan = f
+        .engine
+        .block_on(s.mixed_coins_sweep_plan(f.wallet, sweep))
+        .unwrap();
+    assert_eq!(plan.total, COIN);
     let moved = || {
-        f.engine
-            .block_on(s.move_mixed_coins(f.wallet, sweep, "no grant".into()))
+        f.engine.block_on(s.move_mixed_coins(
+            f.wallet,
+            sweep,
+            plan.quote_id.clone(),
+            "no grant".into(),
+        ))
     };
     assert!(matches!(moved(), Err(EngineError::RescanInProgress)));
     checkpoint(1_000);
     let e = moved().unwrap_err();
     assert!(!matches!(e, EngineError::RescanInProgress), "{e:?}");
+}
+
+/// 0.2 MIX-SHIELD: a `ShieldDrain` lease issues the drain scope alone (no
+/// spend signer, contact crypto, identity key or credits) from a `Spend`
+/// grant's duffs, and from no `PlatformOp` grant; it signs CoinJoin account
+/// 0's inputs and the shielded credit key and nothing else; and the signer
+/// it gave out stops the moment it ends, on the vault's key as on a grant's
+/// own.
+#[test]
+fn a_shield_drain_lease_signs_coinjoin_inputs_and_its_credit_key_only_while_it_holds() {
+    use key_wallet::Signer as _;
+    use std::str::FromStr;
+    let p = |s: &str| key_wallet::DerivationPath::from_str(s).unwrap();
+
+    let f = fixture(true);
+    let g = f.grant(
+        GrantPurpose::Spend {
+            max_duffs: 5 * COIN,
+        },
+        Credential::Passphrase(PASS),
+    );
+    let l = f.lease(FlowKind::ShieldDrain, &[g]).unwrap();
+    assert!(!l.view().unwrap().own_key);
+    let signer = l.uncounted_funding_signer().unwrap();
+    assert_eq!(
+        signer.scope(),
+        dw_vault::SignerScope::ShieldDrainFunding {
+            max_duffs: 5 * COIN
+        }
+    );
+    assert!(l.identity_signer(&[0]).is_err());
+    assert!(l.contact_crypto().is_err());
+    assert_eq!(l.tx_purpose(), None);
+    let sign = |path: &str| f.engine.block_on(signer.sign_ecdsa(&p(path), [1; 32]));
+    sign("m/9'/1'/4'/0'/0/0").unwrap();
+    sign("m/9'/1'/4'/0'/1/3").unwrap();
+    sign("m/9'/1'/5'/5'/0").unwrap();
+    for refused in [
+        "m/44'/1'/0'/0/0",
+        "m/9'/1'/4'/1'/0/0",
+        "m/9'/1'/5'/1'/0",
+        "m/9'/1'/5'/2'/0'/0",
+        "m/9'/1'/5'/0'/0'/0'/0'",
+        "m/9'/1'/17'/0'/0'/0",
+    ] {
+        assert!(
+            matches!(sign(refused), Err(dw_vault::SignerError::PathNotAllowed(_))),
+            "{refused}"
+        );
+    }
+
+    // Only a `Spend` grant funds it.
+    for wrong in [
+        f.platform_op(COIN, 0),
+        f.platform_op(COIN, 1_000),
+        f.grant(GrantPurpose::Governance, Credential::None),
+    ] {
+        assert_eq!(
+            f.lease(FlowKind::ShieldDrain, &[wrong]).unwrap_err(),
+            LeaseError::Invalid
+        );
+    }
+
+    // The lease ends: it issues no signer again, and the vault-key signer
+    // it gave out stops at once, the vault still unlocked.
+    f.session.end_flow(l.id_string()).unwrap();
+    assert!(l.uncounted_funding_signer().is_err());
+    assert!(matches!(
+        sign("m/9'/1'/4'/0'/0/0"),
+        Err(dw_vault::SignerError::Locked)
+    ));
+    // A lock ends a live lease's signer too.
+    let l = f
+        .lease(
+            FlowKind::ShieldDrain,
+            &[f.grant(GrantPurpose::Spend { max_duffs: COIN }, Credential::None)],
+        )
+        .unwrap();
+    let revoked = l.uncounted_funding_signer().unwrap();
+    f.engine
+        .block_on(revoked.sign_ecdsa(&p("m/9'/1'/4'/0'/0/0"), [1; 32]))
+        .unwrap();
+    f.session.lock_vault_sync().unwrap();
+    assert!(matches!(
+        f.engine
+            .block_on(revoked.sign_ecdsa(&p("m/9'/1'/4'/0'/0/0"), [1; 32])),
+        Err(dw_vault::SignerError::Locked)
+    ));
+
+    // On a locked vault the lease holds the grant's own key: its signer
+    // stops the moment the lease ends.
+    let g = f.grant(
+        GrantPurpose::Spend { max_duffs: COIN },
+        Credential::Passphrase(PASS),
+    );
+    let l = f.lease(FlowKind::ShieldDrain, &[g]).unwrap();
+    assert!(l.view().unwrap().own_key);
+    let held = l.uncounted_funding_signer().unwrap();
+    let sign = |path: &str| f.engine.block_on(held.sign_ecdsa(&p(path), [1; 32]));
+    sign("m/9'/1'/4'/0'/0/0").unwrap();
+    f.session.end_flow(l.id_string()).unwrap();
+    assert!(matches!(
+        sign("m/9'/1'/4'/0'/0/0"),
+        Err(dw_vault::SignerError::Locked)
+    ));
 }

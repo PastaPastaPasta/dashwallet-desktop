@@ -72,6 +72,12 @@ pub enum FlowKind {
     /// `PlatformOp` grant's `max_credits`: the vault's Orchard spend key
     /// for the wallet's shielded account, and nothing else.
     ShieldedSpend,
+    /// "Move mixed coins" to Shielded (0.2 MIX-SHIELD): the drain of the
+    /// CoinJoin account into one Core → Shielded lock under a `PlatformOp`
+    /// grant's `max_duffs`, then its ShieldFromAssetLock. Its funding
+    /// signer is `ShieldDrainFunding` (CoinJoin account 0's address keys
+    /// and the shielded credit keys), and nothing else.
+    ShieldDrain,
 }
 
 /// A lease's budgets (E0-04 §4.2).

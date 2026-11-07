@@ -314,6 +314,11 @@ pub struct MixedCoinsSweepPlan {
     /// 1000-duff threshold, mixed or not).
     pub total: u64,
     pub chunks: Vec<MixedCoinsChunk>,
+    /// Coins of the account the plan leaves for now: they wait for a
+    /// confirmation (a chunk spends confirmed coins only).
+    pub unconfirmed: u32,
+    /// What `move_mixed_coins` takes to run exactly this plan.
+    pub quote_id: String,
 }
 
 /// Result of "Move mixed coins". A later chunk can fail after earlier ones
@@ -321,7 +326,12 @@ pub struct MixedCoinsSweepPlan {
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct MixedCoinsSweepResult {
     pub txids: Vec<String>,
+    /// What left the CoinJoin account in the chunks sent: `received + fee`.
     pub moved: u64,
+    /// Of `moved`, what arrives at the destination.
+    pub received: u64,
+    /// Of `moved`, the network fees.
+    pub fee: u64,
     pub remaining: u64,
     /// Code of the error that stopped the sweep, `None` when complete.
     pub failure_code: Option<String>,
@@ -360,6 +370,16 @@ pub enum CoinJoinError {
     /// Code `coinjoin.broadcast_rejected`.
     #[error("broadcast rejected: {reason}")]
     BroadcastRejected { reason: String },
+    /// Code `coinjoin.mixing_active`: stop mixing first.
+    #[error("stop mixing first")]
+    MixingActive,
+    /// Code `coinjoin.move_running`: a move of the mixed coins is running.
+    #[error("a move of the mixed coins is running")]
+    MoveRunning,
+    /// Code `coinjoin.plan_changed`: the coins are no longer the confirmed
+    /// plan's; plan again.
+    #[error("the coins to move changed since the plan")]
+    PlanChanged,
     /// Code `invalid_argument`.
     #[error("invalid argument: {detail}")]
     InvalidArgument { detail: String },
@@ -396,6 +416,9 @@ impl CoinJoinError {
             Self::SpvNotRunning => "coinjoin.spv_not_running",
             Self::NoPeers => "coinjoin.no_peers",
             Self::BroadcastRejected { .. } => "coinjoin.broadcast_rejected",
+            Self::MixingActive => "coinjoin.mixing_active",
+            Self::MoveRunning => "coinjoin.move_running",
+            Self::PlanChanged => "coinjoin.plan_changed",
             Self::InvalidArgument { .. } => "invalid_argument",
             Self::NetworkNotOpen { .. } => "network_not_open",
             Self::WalletNotFound { .. } => "wallet_not_found",
@@ -423,6 +446,9 @@ impl From<dw_engine::EngineError> for CoinJoinError {
                 F::SpvNotRunning => Self::SpvNotRunning,
                 F::NoPeers => Self::NoPeers,
                 F::BroadcastRejected(reason) => Self::BroadcastRejected { reason },
+                F::MixingActive => Self::MixingActive,
+                F::MoveRunning => Self::MoveRunning,
+                F::PlanChanged => Self::PlanChanged,
             },
             E::Vault(V::NoVault | V::Locked | V::MixingOnly) => Self::VaultLocked,
             E::Vault(V::GrantInvalid | V::GrantPurposeMismatch) => Self::GrantInvalid,
@@ -721,28 +747,34 @@ impl NetworkSession {
                     fee: c.fee,
                 })
                 .collect(),
+            unconfirmed: p.unconfirmed,
+            quote_id: p.quote_id,
         })
     }
 
     /// "Move mixed coins" (IOS-057): sweeps the CoinJoin account in chunks
-    /// of ≤ 500 inputs to `destination`. `grant_id`: a `Spend` grant of at
-    /// least the plan's total. Stops at the first failing chunk and reports
-    /// what moved.
+    /// of ≤ 500 inputs to `destination`. `quote_id`: the confirmed plan's
+    /// (`coinjoin.plan_changed` when the coins are no longer its own);
+    /// `grant_id`: a `Spend` grant of at least the plan's total. Stops at the
+    /// first failing chunk and reports what moved.
     pub async fn move_mixed_coins(
         &self,
         wallet_id: String,
         destination: MixedCoinsDestination,
+        quote_id: String,
         grant_id: String,
     ) -> Result<MixedCoinsSweepResult, CoinJoinError> {
         let id = parse_wallet_id(&wallet_id)?;
         ensure_open(&self.inner)?;
         let r = self
             .inner
-            .move_mixed_coins(id, sweep_destination(destination), grant_id)
+            .move_mixed_coins(id, sweep_destination(destination), quote_id, grant_id)
             .await?;
         Ok(MixedCoinsSweepResult {
             txids: r.txids,
             moved: r.moved,
+            received: r.received,
+            fee: r.fee,
             remaining: r.remaining,
             failure_code: r.failure_code,
             unknown_txid: r.unknown_txid,

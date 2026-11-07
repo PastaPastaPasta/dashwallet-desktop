@@ -28,7 +28,7 @@ function status(patch: Partial<CoinJoinStatus> = {}): CoinJoinStatus {
     state: "idle",
     stopReason: null,
     unavailable: null,
-    balances: { anonymizable: 150_000_000, denominated: 50_000_000, normalizedAnonymized: 25_000_000, fullyMixed: 25_000_000 },
+    balances: { anonymizable: 150_000_000, denominated: 50_000_000, normalizedAnonymized: 25_000_000, fullyMixed: 25_000_000, coinjoinAccount: 0 },
     progress: { overallPercent: 42.7, denominatedPercent: 100, partiallyMixedPercent: 60, mixedPercent: 30, averageRounds: 1.5 },
     amountAndRounds: { amount: 100_000_000, rounds: 4, insufficientInputs: false },
     submittedDenominations: [],
