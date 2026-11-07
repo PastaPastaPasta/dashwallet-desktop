@@ -88,6 +88,9 @@ dw-appdb = { workspace = true, features = ["test-mutations", "durability-sim"] }
 dw-vault = { workspace = true, features = ["insecure-test-kdf", "fault-inject"] }
 dw-message = { workspace = true }
 serde_json = "1"
+# Encodes the ChainLock a regtest test writes into the wallet's store, as the
+# store's own codec does (the crate the graph already uses).
+bincode = { package = "grovedb-bincode", version = "=2.1.0" }
 tempfile = { workspace = true }
 # private_tempdir(): engine data roots that pass the storage permission check under any umask.
 dw-testutil = { workspace = true }
