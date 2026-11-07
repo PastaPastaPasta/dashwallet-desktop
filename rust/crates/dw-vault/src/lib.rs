@@ -76,7 +76,8 @@ pub use types::{
     AuthGrant, CREDITS_PER_DUFF, Clock, Credential, DEFAULT_GRANT_TTL_SECS,
     DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose, GrantToken, KeyHold, LockState,
     PASSPHRASE_MAX_AGE_SECS, QUICK_UNLOCK_SPEND_LIMITS, QuickUnlockPolicy, RevealedMnemonic,
-    SeedDerivation, SystemClock, UnlockScope, VaultConfig, VaultStatus, WalletId, WalletSecret,
+    SeedDerivation, SignerLife, SystemClock, UnlockScope, VaultConfig, VaultStatus, WalletId,
+    WalletSecret,
 };
 pub use vault::{
     ALL_LINK_KINDS, CheckedPassphraseChange, CoreMnemonicCheck, MASTERNODE_KEY_ROLES,

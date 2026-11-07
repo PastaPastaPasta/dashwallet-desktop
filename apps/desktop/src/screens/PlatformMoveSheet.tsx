@@ -4,7 +4,7 @@
 import { useEffect } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { creditsToDuffs } from "../api/pending";
-import { useBackend, usePlatformActivity, usePlatformMoveQuote } from "../api/queries";
+import { useBackend, usePendingPlatformFunds, usePlatformActivity, usePlatformMoveQuote } from "../api/queries";
 import { navigate, useUi } from "../app/ui";
 import { DashButton } from "../components/basics";
 import { Sheet } from "../components/sheet";
@@ -12,6 +12,8 @@ import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
+import { fundFor, fundRowView, FUND_COPY as F } from "../platform/fund";
+import { PlatformFundSheet } from "./PlatformFundSheet";
 import { GrantSheet } from "./tools/common";
 
 function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string; block: MoveBlock | null }) {
@@ -165,15 +167,19 @@ export function PlatformMoveSheet({ flow, walletId, network, block }: { flow: Pl
   );
 }
 
-/** Home's Platform card: shown while the Platform addresses hold something, or a move's result
- * waits. `platform` is their balance in duffs (`null`/`undefined`: not known, no card). */
+/** Home's Platform card: shown while the Platform addresses are known (`platform` is their balance in
+ * duffs; `null`/`undefined`: not known, no card), so "Add from Dash wallet" is reachable at a zero
+ * balance. It also carries a move's result and the locks an add left unapplied. */
 export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0" }: { walletId: string; network: NetworkInfo; platform: number | null | undefined; dustCredits?: string }) {
   const backend = useBackend();
   const flow = moveFor(backend, walletId);
+  const fund = fundFor(backend, walletId);
   useModel(flow);
+  useModel(fund);
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
   const activity = usePlatformActivity(walletId);
+  const unfinished = usePendingPlatformFunds(walletId).data ?? [];
   // Activity settles a retained `pending` result: when it changes, when a move turns pending (the
   // rows read may already have shown it settled) and when the sheet closes.
   useEffect(() => flow.settle(activity.data), [flow, activity.data, flow.pending, flow.open]);
@@ -187,9 +193,15 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
   const waiting = flow.pending || hasUnansweredOp(activity.data);
   const sendHeld = !flow.pending && sendHolds(activity.data);
   const block = moveBlock(waiting, activity);
-  const sheet = <PlatformMoveSheet flow={flow} walletId={walletId} network={network} block={block} />;
+  const sheet = (
+    <>
+      <PlatformMoveSheet flow={flow} walletId={walletId} network={network} block={block} />
+      <PlatformFundSheet flow={fund} walletId={walletId} network={network} />
+    </>
+  );
   const holdReason = flow.running ? C.running.text : block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : null;
-  if (!flow.open && !flow.running && !flow.unseen && !funded && !waiting && !dust) return sheet;
+  if (platform == null && !flow.open && !flow.running && !flow.unseen && !waiting && !dust && !fund.open && !fund.running && !fund.unseen && unfinished.length === 0) return sheet;
+  const amountText = (duffs: number) => (discreet ? shown.masked() : `${shown.compact(duffs)} ${shown.name}`);
   return (
     <>
       <section className="platform-card card-l1" data-testid="platform-card" aria-label={C.card.title}>
@@ -197,7 +209,7 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
           <h2 className="platform-card-title">{C.card.title}</h2>
           <p className="platform-card-text">
             {funded && <span data-testid="platform-card-amount">{discreet ? shown.masked() : shown.withUnit(platform)}. </span>}
-            {waiting ? (sendHeld ? C.waiting.sendHeld : C.waiting.text) : flow.unseen ? C.unseen : funded ? C.card.text : dustText}
+            {waiting ? (sendHeld ? C.waiting.sendHeld : C.waiting.text) : flow.unseen ? C.unseen : funded ? C.card.text : dust ? dustText : F.card.empty}
           </p>
           {sendHeld && !waiting && (
             <p className="platform-card-text" data-testid="platform-card-send-held">
@@ -207,6 +219,35 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
           {funded && dust && !waiting && (
             <p className="platform-card-text" data-testid="platform-card-dust">
               {dustText}
+            </p>
+          )}
+          {unfinished.map((p) => {
+            const row = fundRowView(p, amountText);
+            return (
+              <p key={p.txid} className="platform-card-text" data-testid={`platform-fund-${row.kind}`} data-state={p.state}>
+                {row.kind === "checking" && (
+                  <>
+                    <strong>{F.done.checking.title}.</strong>{" "}
+                  </>
+                )}
+                {row.text}
+                {row.action && (
+                  <>
+                    {" "}
+                    <DashButton variant="plainBlue" size="small" data-testid="platform-fund-finish" disabled={fund.running} why={fund.running ? F.card.busy : null} onClick={() => void fund.resume(p.txid)}>
+                      {row.action === "checkAgain" ? F.card.checkAgain : F.card.finish}
+                    </DashButton>
+                  </>
+                )}
+              </p>
+            );
+          })}
+          {fund.unseen && (
+            <p className="platform-card-text" data-testid="platform-fund-unseen">
+              {F.unseen}{" "}
+              <DashButton variant="plainBlue" size="small" data-testid="platform-fund-show" onClick={() => fund.begin()}>
+                {F.show}
+              </DashButton>
             </p>
           )}
           {holdReason && !waiting && (
@@ -223,15 +264,22 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
             </p>
           )}
         </div>
-        {waiting && !flow.running ? (
-          <DashButton variant="tintedBlue" data-testid="platform-move-view" onClick={() => navigate("activity")}>
-            {C.waiting.action}
-          </DashButton>
-        ) : funded || flow.running || flow.unseen || flow.open ? (
-          <DashButton variant="tintedBlue" data-testid="platform-move" disabled={flow.running || (!flow.unseen && (block === "checking" || block === "failed"))} why={flow.unseen ? null : holdReason} whyId="platform-move-why" onClick={() => flow.begin()}>
-            {flow.running ? C.running.title : flow.unseen ? C.show : C.action}
-          </DashButton>
-        ) : null}
+        <div className="shielded-card-actions">
+          {waiting && !flow.running ? (
+            <DashButton variant="tintedBlue" data-testid="platform-move-view" onClick={() => navigate("activity")}>
+              {C.waiting.action}
+            </DashButton>
+          ) : funded || flow.running || flow.unseen || flow.open ? (
+            <DashButton variant="tintedBlue" data-testid="platform-move" disabled={flow.running || (!flow.unseen && (block === "checking" || block === "failed"))} why={flow.unseen ? null : holdReason} whyId="platform-move-why" onClick={() => flow.begin()}>
+              {flow.running ? C.running.title : flow.unseen ? C.show : C.action}
+            </DashButton>
+          ) : null}
+          {platform != null && (
+            <DashButton variant="tintedBlue" data-testid="platform-fund" disabled={fund.running} why={fund.running ? F.card.busy : null} onClick={() => fund.begin()}>
+              {fund.running ? F.running.title : F.action}
+            </DashButton>
+          )}
+        </div>
       </section>
       {sheet}
     </>

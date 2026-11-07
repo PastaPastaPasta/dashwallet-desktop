@@ -322,16 +322,34 @@ struct CoinJoinViewModelTests {
             chunks: [MixedCoinsChunk(inputs: 40, amount: Amount(duffs: 2_00000000), fee: Amount(duffs: 6_000))])
         m3.coinJoin.sweepPlan.withLock { $0 = plan }
         m3.coinJoin.moveResult.withLock {
-            $0 = MixedCoinsSweepResult(txids: [txid(9)], moved: Amount(duffs: 1_99994000), remaining: .zero, failureCode: nil)
+            $0 = MixedCoinsSweepResult(
+                txids: [txid(9)], moved: Amount(duffs: 2_00000000), remaining: .zero, failureCode: nil,
+                fee: Amount(duffs: 6_000))
         }
         let model = makeMixed()
         #expect(model.showsMoveBanner)
         await model.preparePlan()
         #expect(model.planText == "2.00000000 tDASH in 1 transaction, fee 0.00006000 tDASH")
+        #expect(model.waitingText == nil)
         await model.move()
         #expect(m3.coinJoin.moveGrants.current.first?.purpose == .spend(max: Amount(duffs: 2_00000000)))
-        #expect(model.resultText == "Moved 1.99994000 tDASH to your wallet.")
+        #expect(model.resultText == "Moved 1.99994000 tDASH to your wallet. Network fee: 0.00006000 tDASH.")
         #expect(m2.desktopPreferences.desktop.m3.coinJoinWithdrawals[walletA.hex] == [txid(9)])
+    }
+
+    @Test func IOS057_thePlanSaysWhichCoinsWaitForAConfirmation() async {
+        m3.coinJoin.sweepPlan.withLock {
+            $0 = MixedCoinsSweepPlan(destination: .wallet, total: Amount(duffs: 300), chunks: [], unconfirmed: 3)
+        }
+        let model = makeMixed()
+        await model.preparePlan()
+        #expect(model.waitingText == "3 coins wait for a confirmation and stay in your CoinJoin balance.")
+        m3.coinJoin.sweepPlan.withLock {
+            $0 = MixedCoinsSweepPlan(destination: .wallet, total: Amount(duffs: 300), chunks: [], unconfirmed: 1)
+        }
+        let one = makeMixed()
+        await one.preparePlan()
+        #expect(one.waitingText == "1 coin waits for a confirmation and stays in your CoinJoin balance.")
     }
 
     @Test func IOS057_partialSweepSaysWhatIsLeft() async {

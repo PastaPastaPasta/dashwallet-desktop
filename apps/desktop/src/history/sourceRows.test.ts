@@ -52,6 +52,14 @@ const core = (txid: string, timestamp: number, amount = 5): TxRow => ({
 const ids = (rows: TxRow[]) => rows.map((r) => r.txid);
 
 describe("platform activity rows", () => {
+  it("shows an add from the Dash wallet as a receipt on Platform", () => {
+    const done = platformRow(act("f", { kind: "fromCore", credits: "49944000000" }));
+    expect([rowSource(done), sourceRowTitle(done), done.category, done.txType, done.amount, done.address, done.status]).toEqual(["platform", "Moved from Dash wallet", "received", "recvWithAddress", 49_944_000, "tdash1abc", done.status]);
+    const pending = platformRow(act("g", { kind: "fromCore", state: "pending", estimated: true }));
+    expect(pending.status).not.toBe(done.status);
+    expect(isMayLandRow(pending)).toBe(false);
+  });
+
   it("maps incoming, outgoing and a move to history rows", () => {
     const incoming = platformRow(act("a"));
     expect(incoming).toMatchObject({ txid: "platform:incoming:a", txType: "recvWithAddress", category: "received", amount: 30_000_000, address: "tdash1abc" });

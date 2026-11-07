@@ -18,7 +18,10 @@
 //!
 //! A rejection, a timeout (queue 30 s / signing 15 s plus Core's 10 s lag,
 //! `CheckTimeout`, client.cpp:304-333) or a dropped connection fails the
-//! session: our inputs are unlocked and the reserved outputs released.
+//! session: our inputs are unlocked and the reserved outputs released;
+//! once our signatures are out (`dss`), a stop, timeout or dropped
+//! connection is no verdict: the inputs stay held and the outputs kept, as
+//! on success ([`SessionOutcome::SignedUnknown`]).
 //!
 //! The wallet side (coins, addresses, signing) is the [`MixingWallet`]
 //! trait; the engine implements it.
@@ -86,7 +89,8 @@ pub trait MixingWallet: Send + Sync {
     /// Returns reserved scripts to the pool (session failed).
     fn release_scripts(&self, scripts: &[ScriptBuf]) -> impl Future<Output = ()> + Send;
 
-    /// Keeps reserved scripts (session succeeded; they receive coins).
+    /// Keeps reserved scripts (session succeeded, or ended after our
+    /// signatures went out; they may receive coins).
     fn keep_scripts(&self, scripts: &[ScriptBuf]) -> impl Future<Output = ()> + Send;
 
     /// Locks coins against every other use.
@@ -96,7 +100,8 @@ pub trait MixingWallet: Send + Sync {
     fn unlock_coins(&self, outpoints: &[OutPoint]);
 
     /// Keeps coins locked until the wallet sees them spent (the final
-    /// transaction may arrive well after `dsc`).
+    /// transaction may arrive well after `dsc`, or, with no verdict, after
+    /// a stop with our signatures out).
     fn hold_until_spent(&self, outpoints: &[OutPoint]);
 
     /// Signs the inputs at the given indices of `tx` (with each one's
@@ -127,6 +132,15 @@ pub enum SessionOutcome {
     /// `dsc` with `MSG_SUCCESS`: our inputs are in the mixing transaction.
     Success {
         inputs: Vec<OutPoint>,
+    },
+    /// Our signatures went out (`dss`, or its send failed part way) and
+    /// the session ended without the masternode's verdict (stopped, timed
+    /// out or disconnected): the masternode may still broadcast the mixing
+    /// transaction with our inputs, so they stay held, and our output
+    /// scripts kept, as a success's.
+    SignedUnknown {
+        inputs: Vec<OutPoint>,
+        failure: SessionFailure,
     },
     Failed(SessionFailure),
 }
@@ -452,6 +466,8 @@ pub async fn run_session<W: MixingWallet>(
     let mut deadline = tokio::time::Instant::now() + params.queue_timeout;
     let mut rng = rand::rngs::OsRng;
 
+    // From the `dss` send on, the masternode may hold our signatures.
+    let mut signatures_out = false;
     let outcome = loop {
         let msg = tokio::select! {
             m = rx.recv() => m,
@@ -586,6 +602,7 @@ pub async fn run_session<W: MixingWallet>(
                     Ok(s) => s,
                     Err(e) => break SessionOutcome::Failed(SessionFailure::Wallet(e.0)),
                 };
+                signatures_out = true;
                 if session
                     .send(
                         dw_p2p::commands::DSSIGNFINALTX,
@@ -621,11 +638,27 @@ pub async fn run_session<W: MixingWallet>(
         }
     };
 
+    let outcome = match outcome {
+        SessionOutcome::Failed(
+            failure @ (SessionFailure::Cancelled
+            | SessionFailure::Timeout(_)
+            | SessionFailure::Disconnected),
+        ) if signatures_out => SessionOutcome::SignedUnknown {
+            inputs: run.outpoints(),
+            failure,
+        },
+        outcome => outcome,
+    };
     match &outcome {
         SessionOutcome::Success { inputs } => {
             wallet.hold_until_spent(inputs);
             wallet.keep_scripts(&run.scripts).await;
             progress.state = PoolState::Idle;
+        }
+        SessionOutcome::SignedUnknown { inputs, .. } => {
+            wallet.hold_until_spent(inputs);
+            wallet.keep_scripts(&run.scripts).await;
+            progress.state = PoolState::Error;
         }
         SessionOutcome::Failed(_) => {
             run.fail().await;

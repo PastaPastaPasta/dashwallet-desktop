@@ -9,7 +9,7 @@ use std::sync::Arc;
 use dw_appdb::dispatch::{
     CallRows, DISPATCH_DB_FILE, DispatchJournal, DispatchRow, JournalOpen, StepRow,
 };
-use dw_vault::{GrantKind, GrantPurpose, SignerScope, Vault, VaultError, VaultStatus};
+use dw_vault::{GrantKind, GrantPurpose, SignerLife, SignerScope, Vault, VaultError, VaultStatus};
 use key_wallet::bip32::DerivationPath;
 use zeroize::Zeroizing;
 
@@ -25,12 +25,15 @@ use crate::platform::shielded_pool::drain_passes;
 
 /// Which vault grant kinds a flow's lease may carry: a `PlatformOp`, plus a
 /// `Spend` for "Accept and pay"'s payment (§16.1); a contact payment's own
-/// lease only the `Spend` (DP3-01), as a proposal's fee (MG-06 D10); the
-/// masternode flows their own grant alone (MG-05 §4).
+/// lease only the `Spend` (DP3-01), as a proposal's fee (MG-06 D10) and a
+/// CoinJoin drain its coins (0.2 MIX-SHIELD: no `PlatformOp` grant reaches a
+/// CoinJoin coin); the masternode flows their own grant alone (MG-05 §4).
 fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
     match flow {
         FlowKind::AcceptAndPay => &[GrantKind::PlatformOp, GrantKind::Spend],
-        FlowKind::ContactPayment | FlowKind::Proposal => &[GrantKind::Spend],
+        FlowKind::ContactPayment | FlowKind::Proposal | FlowKind::ShieldDrain => {
+            &[GrantKind::Spend]
+        }
         FlowKind::Voting => &[GrantKind::Governance],
         FlowKind::MasternodeRegistration
         | FlowKind::KeyChange
@@ -48,6 +51,7 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         | FlowKind::PlatformAddressMove
         | FlowKind::PlatformAddressSend
         | FlowKind::Shield
+        | FlowKind::PlatformAddressFund
         | FlowKind::ShieldedSpend => &[GrantKind::PlatformOp],
     }
 }
@@ -148,6 +152,15 @@ pub(crate) fn issue(
                         Some(scoped(SignerScope::PlatformAddress).map_err(issuing)?);
                 }
             }
+            GrantPurpose::PlatformOp { max_duffs, .. } if flow == FlowKind::PlatformAddressFund => {
+                // "Add from Dash wallet" (0.2): the asset-lock credit keys
+                // alone, no identity key and no contact crypto.
+                out.funding = max_duffs;
+                if max_duffs > 0 {
+                    out.signers.funding =
+                        Some(scoped(SignerScope::PlatformFunding { max_duffs }).map_err(issuing)?);
+                }
+            }
             GrantPurpose::PlatformOp {
                 max_duffs,
                 max_credits,
@@ -171,6 +184,25 @@ pub(crate) fn issue(
                         Some(scoped(SignerScope::PlatformIdentity).map_err(issuing)?);
                 }
                 out.signers.crypto = Some(scoped(SignerScope::DashPayCrypto).map_err(issuing)?);
+            }
+            GrantPurpose::Spend { max_duffs } if flow == FlowKind::ShieldDrain => {
+                // "Move mixed coins" to Shielded: the drain's inputs and the
+                // lock's credit key alone, as an asset lock's funding; no
+                // spend signer, no other input, no identity key, no contact
+                // crypto. The signer stops when the lease drops its life,
+                // whatever key it signs with.
+                out.funding = max_duffs;
+                if max_duffs > 0 {
+                    let life = SignerLife::new();
+                    let signer = match &key {
+                        Some(hold) => {
+                            vault.shield_drain_signer_held(&wallet.0, hold, token, max_duffs, &life)
+                        }
+                        None => vault.shield_drain_signer(&wallet.0, token, max_duffs, &life),
+                    };
+                    out.signers.funding = Some(signer.map_err(issuing)?);
+                    out.signers.life = Some(life);
+                }
             }
             GrantPurpose::Spend { max_duffs } => {
                 out.spend = max_duffs;

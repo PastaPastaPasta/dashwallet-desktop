@@ -227,9 +227,9 @@ pub struct FinishReport {
     pub resumed: u32,
     pub completed: u32,
     pub still_pending: u32,
-    /// Restored transfers Platform reported already used (advisory,
-    /// unproved): not tried again, listed for "Check again". Reserved: 0
-    /// in this version.
+    /// Transfers Platform reported already used for their exact output
+    /// (unproved; type-4 Core → Platform address locks): taken as finished
+    /// elsewhere, no longer listed, not settled.
     pub already_used: u32,
     /// The unfinished transfers' part, per kind that had any.
     pub by_kind: Vec<TransfersReport>,
@@ -667,7 +667,7 @@ pub(super) async fn grant_cap(
     grant: &str,
     purpose: BudgetPurpose,
 ) -> Result<u64, PlatformError> {
-    if let Some(lease) = session.lease_for(&wallet, grant) {
+    if let Some(lease) = named_lease(session, wallet, grant) {
         return Ok(lease?.available(purpose)?);
     }
     let budget = purpose;
@@ -696,7 +696,7 @@ async fn grant_funds(
     wallet: WalletId,
     grant: &str,
 ) -> Result<bool, PlatformError> {
-    if let Some(lease) = session.lease_for(&wallet, grant) {
+    if let Some(lease) = named_lease(session, wallet, grant) {
         return match lease?.call_funding_signer() {
             Ok(_) => Ok(true),
             Err(LeaseError::NeedsGrant(BudgetPurpose::Funding)) => Ok(false),
@@ -706,6 +706,21 @@ async fn grant_funds(
     Ok(funding_cap(session, wallet, grant).await? > 0)
 }
 
+/// The lease `grant` names, if it names one of this wallet. A "Move mixed
+/// coins" drain's is `grant_invalid`: its funding signer signs CoinJoin
+/// coins, for the drain alone (0.2 MIX-SHIELD).
+fn named_lease(
+    session: &NetworkSession,
+    wallet: WalletId,
+    grant: &str,
+) -> Option<Result<Lease, PlatformError>> {
+    let lease = session.lease_for(&wallet, grant)?;
+    Some(match lease {
+        Ok(lease) if lease.flow() == FlowKind::ShieldDrain => Err(PlatformError::GrantInvalid),
+        lease => lease.map_err(PlatformError::from),
+    })
+}
+
 /// A facade call's `grant`: a lease of this wallet, or a vault grant
 /// redeemed into a new registration lease.
 async fn authority(
@@ -713,15 +728,14 @@ async fn authority(
     wallet: WalletId,
     grant: &str,
 ) -> Result<Lease, RegistrationError> {
-    let lease = match session.lease_for(&wallet, grant) {
-        Some(lease) => lease,
-        None => {
-            session
-                .begin_lease(wallet, FlowKind::Registration, &[grant.to_owned()])
-                .await
-        }
+    let lease = match named_lease(session, wallet, grant) {
+        Some(lease) => lease?,
+        None => session
+            .begin_lease(wallet, FlowKind::Registration, &[grant.to_owned()])
+            .await
+            .map_err(PlatformError::from)?,
     };
-    Ok(lease.map_err(PlatformError::from)?)
+    Ok(lease)
 }
 
 pub(crate) async fn start<L: RegistrationLib + 'static>(

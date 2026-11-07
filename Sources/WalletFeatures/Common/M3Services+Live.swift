@@ -70,7 +70,7 @@ extension UnavailableM3Service: CoinJoinControlling, MixedCoinsMoving, NetworkSt
     {
         throw missing("mixed_coins_sweep_plan")
     }
-    public func move(wallet: WalletID, destination: MixedCoinsDestination, grant: AuthGrant)
+    public func move(wallet: WalletID, plan: MixedCoinsSweepPlan, grant: AuthGrant)
         async throws(ServiceError) -> MixedCoinsSweepResult
     {
         throw missing("move_mixed_coins")

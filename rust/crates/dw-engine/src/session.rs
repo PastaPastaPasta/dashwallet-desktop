@@ -595,6 +595,20 @@ impl NetworkSession {
         session.leases.install_resumer(tracked);
         session.hub.attach_leases(&session.leases);
         session.attach_reconcile();
+        session.attach_sweep_resend();
+        session.attach_sweep_news();
+        // Only a header the SPV store holds is evidence for a sweep record:
+        // absent, unreadable or no SPV, its chunk stays pending.
+        let spv = Arc::downgrade(&manager.spv_arc());
+        session.hub.attach_headers(Arc::new(move |height| {
+            let spv = spv.clone();
+            Box::pin(async move {
+                match spv.upgrade()?.header_hash_at(height).await {
+                    platform_wallet::spv::HeaderLookup::Found(hash) => Some(hash),
+                    _ => None,
+                }
+            })
+        }));
         if let Ok(live) = session.live() {
             live.tap.watch_locks(&session.leases);
         }

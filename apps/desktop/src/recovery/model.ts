@@ -1,5 +1,6 @@
 // Unfinished transfers on Home (engine `unfinished_transfers` / `finish_transfer`): Core → Shielded
-// locks a wallet restore read back from the chain, which Platform is not known to have applied.
+// and "Add from Dash wallet" locks a wallet restore read back from the chain, which Platform is not
+// known to have applied.
 // The Home card's view (which copy and actions, if any), the sheet's rows, and the model that
 // finishes them: one lock under a one-duff grant, or all of them with Repair's "Finish transfers".
 // Only a proved apply finishes a lock; "checking" means it may already be in the balance.
@@ -15,6 +16,7 @@ import { REG_COPY } from "../dashpay/registration";
 import { platformOp } from "../dashpay/topup";
 import { finishGrant } from "../dashpay/wizard";
 import { Model } from "../onboarding/model";
+import { onMoveSettledNotify } from "../platform/move";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 
 export type RecoveryApi = Pick<
@@ -22,11 +24,24 @@ export type RecoveryApi = Pick<
   "finishTransfer" | "finishAssetLocks" | "registrationQuote" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"
 >;
 
+/** The destinations of a set of locks: one kind, or both. */
+export type LockKinds = LockKind | "mixed";
+
+export const lockKinds = (locks: readonly { kind: LockKind }[]): LockKinds => {
+  const kinds = new Set(locks.map((l) => l.kind));
+  return kinds.size > 1 ? "mixed" : kinds.has("platformAddress") ? "platformAddress" : "shielded";
+};
+
 export const RECOVERY_COPY = {
   title: "Unfinished transfers",
-  one: (amount: string) => `${amount} was funded on Core for Shielded, and this wallet hasn't seen it added on Platform. Finishing adds it at most once.`,
-  several: (n: number, total: string) =>
-    `${n} transfers to Shielded (${total}) were funded on Core, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.`,
+  one: (amount: string, kind: LockKind = "shielded") =>
+    kind === "platformAddress"
+      ? `${amount} was funded on Core to add to your Platform address, and this wallet hasn't seen it added on Platform. Finishing adds it at most once.`
+      : `${amount} was funded on Core for Shielded, and this wallet hasn't seen it added on Platform. Finishing adds it at most once.`,
+  several: (n: number, total: string, kinds: LockKinds = "shielded") =>
+    kinds === "mixed"
+      ? `${n} transfers (${total}) were funded on Core, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.`
+      : `${n} transfers to ${kinds === "platformAddress" ? "your Platform address" : "Shielded"} (${total}) were funded on Core, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.`,
   running: "Finishing…",
   checking: (n: number) => `${n} ${n === 1 ? "transfer may" : "transfers may"} already be finished. We can't confirm it yet.`,
   finish: "Finish",
@@ -37,10 +52,13 @@ export const RECOVERY_COPY = {
   dismiss: "Dismiss",
   sheet: {
     title: "Unfinished transfers",
-    intro: "These transfers were funded on Core before the restore, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.",
+    intro: (kinds: LockKinds = "shielded") =>
+      kinds === "shielded"
+        ? "These transfers were funded on Core before the restore, and this wallet hasn't seen them added on Platform. Finishing adds each at most once."
+        : "These transfers were funded on Core, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.",
     footer: "Nothing more is paid: finishing only adds money that's already locked.",
     close: "Close",
-    kind: { shielded: "Shielded", platformAddress: "Platform address" } satisfies Record<LockKind, string>,
+    kind: { shielded: "Shielded", platformAddress: "Add from Dash wallet" } satisfies Record<LockKind, string>,
     state: {
       ready: "Ready",
       checking: "Checking",
@@ -51,9 +69,10 @@ export const RECOVERY_COPY = {
       tooSmall: "Too small to finish: worth less than the Platform fee",
     } satisfies Record<UnfinishedState, string>,
     done: {
-      applied: "Added to Shielded",
+      applied: (kind: LockKind = "shielded") => (kind === "platformAddress" ? "Added to your Platform address" : "Added to Shielded"),
       checking: "Checking: this amount may already be in your balance; we can't confirm it yet.",
       proofWaiting: "Waiting for the network to confirm",
+      reportedUsed: "The network says this was already added. There's nothing left to finish.",
     },
   },
 } as const;
@@ -114,10 +133,10 @@ export function cardView(
   const ready = restored.filter((l) => l.state === "ready");
   const checking = restored.filter((l) => l.state === "checking");
   const details: CardAction[] = restored.length > 1 ? ["details"] : [];
-  if (ready.length === 1) return { kind: "ready", text: RECOVERY_COPY.one(duffs(ready[0].duffs)), note, actions: ["finish", ...details], lock: ready[0] };
+  if (ready.length === 1) return { kind: "ready", text: RECOVERY_COPY.one(duffs(ready[0].duffs), ready[0].kind), note, actions: ["finish", ...details], lock: ready[0] };
   if (ready.length > 1) {
     const total = ready.reduce((n, l) => n + l.duffs, 0);
-    return { kind: "ready", text: RECOVERY_COPY.several(ready.length, duffs(total)), note, actions: ["finishAll", "details"], lock: null };
+    return { kind: "ready", text: RECOVERY_COPY.several(ready.length, duffs(total), lockKinds(ready)), note, actions: ["finishAll", "details"], lock: null };
   }
   if (checking.length > 0) return { kind: "checking", text: RECOVERY_COPY.checking(checking.length), note, actions: ["checkAgain", "details"], lock: null };
   return note === null ? null : { kind: "done", text: note, note: null, actions: ["dismiss"], lock: null };
@@ -130,14 +149,15 @@ export function sheetRows(data: UnfinishedTransfers | null | undefined, results:
   return [...rows, ...gone.map((r) => ({ lock: r.lock, result: r.result as RowResult | null }))];
 }
 
-/** A row's done line. */
-export function resultText(r: RowResult, errorText: (e: unknown) => string): string {
+/** A row's done line; `kind` is the lock's. */
+export function resultText(r: RowResult, errorText: (e: unknown) => string, kind: LockKind = "shielded"): string {
   switch (r.kind) {
     case "applied":
-      return RECOVERY_COPY.sheet.done.applied;
+      return RECOVERY_COPY.sheet.done.applied(kind);
     case "checking":
-    case "reportedUsed":
       return RECOVERY_COPY.sheet.done.checking;
+    case "reportedUsed":
+      return RECOVERY_COPY.sheet.done.reportedUsed;
     case "proofWaiting":
       return RECOVERY_COPY.sheet.done.proofWaiting;
     case "notApplied":
@@ -212,17 +232,19 @@ export class RecoveryModel extends Model {
     const since = this.grants.epoch;
     this.#set({ kind: "running" });
     let ran = false;
+    let platform = false;
     try {
-      const next = await this.#do(action, since, () => (ran = true));
+      const next = await this.#do(action, since, () => (ran = true), () => (platform = true));
       this.#set(next);
     } catch (e) {
       this.#set({ kind: "failed", error: e, retry: action });
     } finally {
       if (ran) for (const f of settledListeners) queueMicrotask(f);
+      if (ran && platform) onMoveSettledNotify();
     }
   }
 
-  async #do(action: Action, since: number, started: () => void): Promise<RecoveryState> {
+  async #do(action: Action, since: number, started: () => void, touchedPlatform: () => void): Promise<RecoveryState> {
     if (action.kind === "all") {
       const caps = await finishGrant(this.api, this.walletId);
       const report = await this.grants.withGrant(
@@ -231,9 +253,11 @@ export class RecoveryModel extends Model {
         (grant) => (started(), this.api.finishAssetLocks(this.walletId, grant.id)),
         since,
       );
+      if (report?.value.byKind.some((k) => k.kind === "platformAddress")) touchedPlatform();
       return report ? { kind: "done", text: REG_COPY.finished(report.value) } : { kind: "idle" };
     }
     for (const lock of action.kind === "finish" ? [action.lock] : action.locks) {
+      if (lock.kind === "platformAddress") touchedPlatform();
       const got = await this.grants.withGrant(
         platformOp({ maxDuffs: 1, maxCredits: "0" }),
         this.walletId,

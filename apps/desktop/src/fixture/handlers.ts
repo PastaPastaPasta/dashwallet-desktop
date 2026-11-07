@@ -642,7 +642,7 @@ export const HANDLERS: Handlers = {
   ...settingsHandlers({ wallet, grant: checkGrant, useGrant }),
   ...scanHandlers(),
   // CoinJoin (U-06): coinjoin.ts.
-  ...coinjoinHandlers({ wallet }),
+  ...coinjoinHandlers({ wallet, grant: checkGrant, useGrant }),
   // Governance (MG-09): governance.ts.
   ...governanceHandlers({ wallet, grant: checkGrant, useGrant }),
   // Username registration (DP1-09): registration.ts.

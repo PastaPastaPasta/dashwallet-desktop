@@ -50,6 +50,17 @@ public final class MixedCoinsViewModel {
         return L10n.CoinJoin.movePlan(total: amountText(plan.total), transactions: plan.chunks.count, fee: amountText(fee))
     }
 
+    /// The plan's coins that wait for a confirmation and stay behind; `nil`
+    /// when there are none.
+    public var waitingText: String? {
+        switch flow {
+        case .planned(let p), .needsPassphrase(let p):
+            p.unconfirmed > 0 ? L10n.CoinJoin.moveWaiting(p.unconfirmed) : nil
+        default:
+            nil
+        }
+    }
+
     /// What the scan or the move did.
     public var resultText: String? {
         switch flow {
@@ -58,7 +69,9 @@ public final class MixedCoinsViewModel {
                 addresses: report.coinJoinAddressesScanned + report.bip44AddressesScanned,
                 balance: amountText(report.coinJoinBalance), transactions: report.newTransactions)
         case .moved(let result):
-            guard let code = result.failureCode else { return L10n.CoinJoin.moved(amountText(result.moved)) }
+            // What arrives, the fee apart (R5).
+            let fee = result.fee > .zero ? amountText(result.fee) : nil
+            guard let code = result.failureCode else { return L10n.CoinJoin.moved(amountText(result.received), fee: fee) }
             let reason =
                 if code == .coinjoinBroadcastUnknown, let txid = result.unknownTxid {
                     L10n.CoinJoin.chunkUnknown(txid)
@@ -66,7 +79,7 @@ public final class MixedCoinsViewModel {
                     ErrorText.m3(ServiceError(code: code), amount: amountText.callAsFunction)
                 }
             return L10n.CoinJoin.movedPartially(
-                moved: amountText(result.moved), remaining: amountText(result.remaining), reason: reason)
+                moved: amountText(result.received), fee: fee, remaining: amountText(result.remaining), reason: reason)
         default:
             return nil
         }
@@ -152,14 +165,26 @@ public final class MixedCoinsViewModel {
         }
         flow = .moving
         do {
-            let result = try await mixedCoins.move(wallet: wallet, destination: plan.destination, grant: grant)
+            let result = try await mixedCoins.move(wallet: wallet, plan: plan, grant: grant)
             if !result.txids.isEmpty {
                 desktopPreferences.updateM3 { $0.coinJoinWithdrawals[wallet.hex, default: []] += result.txids }
             }
             flow = .moved(result)
         } catch {
             grants.revoke(grant)
-            fail(error)
+            // The coins changed since the user confirmed: back to the confirm step with the new plan.
+            if error.code == .coinjoinPlanChanged {
+                do {
+                    let fresh = try await mixedCoins.plan(wallet: wallet, destination: plan.destination)
+                    errorMessage = ErrorText.m3(error, amount: amountText.callAsFunction)
+                    flow = .planned(fresh)
+                } catch {
+                    // The re-plan's own reason (nothing left to move, mixing started).
+                    fail(error)
+                }
+            } else {
+                fail(error)
+            }
         }
     }
 

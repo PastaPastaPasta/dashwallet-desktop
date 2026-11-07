@@ -445,7 +445,21 @@ mod tests {
         // The refused open wrote nothing into the root.
         assert_eq!(entries(), before);
         drop(first);
-        open().expect("the root opens again once its holder is gone");
+        // The engine releases its storage, and with it the root, on its
+        // drop thread, shortly after the state is dropped.
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match open() {
+                Ok(_) => break,
+                Err(e)
+                    if e.code_str() == AppCode::AlreadyRunning.as_str()
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => panic!("the root opens again once its holder is gone: {e:?}"),
+            }
+        }
     }
 
     #[test]

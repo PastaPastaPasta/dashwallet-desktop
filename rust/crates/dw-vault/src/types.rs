@@ -342,6 +342,35 @@ impl Drop for KeyHold {
     }
 }
 
+/// The life of a signer that stops with its owner whatever key it signs
+/// with ([`crate::Vault::shield_drain_signer`]): a vault-key signer
+/// otherwise lives until the vault's next epoch. Dropping it ends every
+/// signer issued against it: an operation already under way finishes, and
+/// every later call fails `Locked`. Not cloneable.
+pub struct SignerLife(Arc<()>);
+
+impl SignerLife {
+    pub fn new() -> Self {
+        Self(Arc::new(()))
+    }
+
+    pub(crate) fn watch(&self) -> std::sync::Weak<()> {
+        Arc::downgrade(&self.0)
+    }
+}
+
+impl Default for SignerLife {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for SignerLife {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SignerLife")
+    }
+}
+
 impl std::fmt::Debug for KeyHold {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("KeyHold(<redacted>)")

@@ -64,10 +64,20 @@ pub enum FlowKind {
     /// Core → Shielded (m4 §2.13): the asset lock under a `PlatformOp`
     /// grant's `max_duffs`, then its ShieldFromAssetLock.
     Shield,
+    /// "Add from Dash wallet" (m4 §2.12, 0.2): the asset lock under a
+    /// `PlatformOp` grant's `max_duffs`, then its
+    /// AddressFundingFromAssetLock to the wallet's Platform address.
+    PlatformAddressFund,
     /// A shielded send or an unshield to Core (m4 §2.13) under a
     /// `PlatformOp` grant's `max_credits`: the vault's Orchard spend key
     /// for the wallet's shielded account, and nothing else.
     ShieldedSpend,
+    /// "Move mixed coins" to Shielded (0.2 MIX-SHIELD): the drain of the
+    /// CoinJoin account into one Core → Shielded lock under a `PlatformOp`
+    /// grant's `max_duffs`, then its ShieldFromAssetLock. Its funding
+    /// signer is `ShieldDrainFunding` (CoinJoin account 0's address keys
+    /// and the shielded credit keys), and nothing else.
+    ShieldDrain,
 }
 
 /// A lease's budgets (E0-04 §4.2).
@@ -366,9 +376,12 @@ impl DashPay {
 }
 
 /// A Mode B funding step id (§2a.3): `registration/<draft>/funding`,
-/// `topup/<id>/funding` or (0.1 E1) a shield's `shield/<k>/funding`.
+/// `topup/<id>/funding`, (0.1 E1) a shield's `shield/<k>/funding` or (0.2)
+/// a Platform address fund's `paddr/<k>/funding`.
 pub(crate) fn is_funding_step(step: &str) -> bool {
-    (step.starts_with("registration/") || step.starts_with("topup/") || step.starts_with("shield/"))
+    ["registration/", "topup/", "shield/", "paddr/"]
+        .iter()
+        .any(|p| step.starts_with(p))
         && step.ends_with("/funding")
         && step.matches('/').count() == 2
 }

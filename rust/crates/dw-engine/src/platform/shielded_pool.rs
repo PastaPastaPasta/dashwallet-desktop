@@ -1533,6 +1533,10 @@ impl PwShielded {
         session: &Arc<NetworkSession>,
         wallet_id: WalletId,
     ) -> Result<Self, PlatformError> {
+        #[cfg(test)]
+        if super::unfinished::open_fails::get(session, super::unfinished::LockKindId::Shielded) {
+            return Err(store_error("injected"));
+        }
         let (manager, pw) = PwLib::open(session, wallet_id).await?;
         let coordinator = coordinator(session, &manager).await?;
         Ok(Self {

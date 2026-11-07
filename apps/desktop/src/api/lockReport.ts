@@ -55,9 +55,13 @@ export const FLOW_NAME: Record<FlowKindName, string> = {
   platformAddressMove: "Move to Dash wallet",
   // 0.2 X1b: a payment to another Platform address.
   platformAddressSend: "Payment from Platform",
+  // 0.2 X1b: Core → the wallet's own Platform address.
+  platformAddressFund: "Add from Dash wallet",
   // 0.1 E1: Core → Shielded, and a shielded send or unshield.
   shield: "Shielding",
   shieldedSpend: "Shielded payment",
+  // 0.2 MIX-SHIELD: the CoinJoin account's drain to Shielded.
+  shieldDrain: "Moving mixed coins to Shielded",
 };
 
 const PENDING: ReadonlySet<FlowOutcomeName> = new Set(["maybeSent", "willBeSent"]);

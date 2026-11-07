@@ -78,6 +78,10 @@ export class IpcBackend implements Backend {
   platformReceiveAddress = (...a: Parameters<typeof cmd.platformReceiveAddress>) => orUnavailable(cmd.platformReceiveAddress(...a));
   platformSendQuote = (...a: Parameters<typeof cmd.platformSendQuote>) => orUnavailable(cmd.platformSendQuote(...a));
   platformSend = (...a: Parameters<typeof cmd.platformSend>) => orUnavailable(cmd.platformSend(...a));
+  platformFundQuote = (...a: Parameters<typeof cmd.platformFundQuote>) => orUnavailable(cmd.platformFundQuote(...a));
+  platformFund = (...a: Parameters<typeof cmd.platformFund>) => orUnavailable(cmd.platformFund(...a));
+  pendingPlatformFunds = (walletId: string) => orAbsent(cmd.pendingPlatformFunds(walletId));
+  resumePlatformFund = (...a: Parameters<typeof cmd.resumePlatformFund>) => orUnavailable(cmd.resumePlatformFund(...a));
   txDetail = cmd.txDetail;
   txDetailExtras = cmd.txDetailExtras;
   setTxLabel = cmd.setTxLabel;
@@ -152,6 +156,9 @@ export class IpcBackend implements Backend {
   coinjoinStatus = cmd.coinjoinStatus;
   startMixing = cmd.startMixing;
   stopMixing = cmd.stopMixing;
+  mixedCoinsSweepPlan = cmd.mixedCoinsSweepPlan;
+  moveMixedCoins = cmd.moveMixedCoins;
+  resendMixedCoins = cmd.resendMixedCoins;
   dashpayStatus = cmd.dashpayStatus;
   identities = cmd.identities;
   dashpayUnreadCount = cmd.dashpayUnreadCount;

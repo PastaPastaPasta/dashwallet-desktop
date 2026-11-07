@@ -6,16 +6,18 @@
 import { useId, useState } from "react";
 import type { CoinJoinStatus } from "../../api/generated/CoinJoinStatus";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useLockStatus } from "../../api/queries";
+import { useBackend, useLockStatus } from "../../api/queries";
+import { MOVE_COPY, moveMixedFor, showsMoveCard } from "../../coinjoin/move";
 import { navigate, useUi } from "../../app/ui";
 import { DashButton, ExperimentalBadge, Icon } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
 import { CoinJoinText, LEVELS, levelOf, lockLine, poolMessageText, POOL_STATE_TEXT, settingsFailureText } from "../../coinjoin/model";
 import { useCoinJoinAmount, useCoinJoinSettings, useCoinJoinView, useMaskedAmount, useSaveCoinJoinSettings } from "../../coinjoin/queries";
-import { failureText } from "../../onboarding/model";
+import { failureText, useModel } from "../../onboarding/model";
 import { AUTO_LOCK_CHOICES, SecurityText } from "../../settings/security";
 import { Page } from "../Routes";
 import { useViewAction, ViewFacts } from "./CoinJoinCard";
+import { MoveMixedSheet } from "./MoveMixedSheet";
 
 const autoLockText = (secs: number) => AUTO_LOCK_CHOICES.find((c) => c.secs === secs)?.label ?? SecurityText.autoLockSeconds(secs);
 
@@ -65,11 +67,34 @@ export function CoinJoinPage({ walletId, network }: { walletId: string; network:
         {autoLockSecs !== null && <p data-testid="coinjoin-auto-lock">{CoinJoinText.autoLock(autoLockText(autoLockSecs))}</p>}
       </section>
       <LevelCard mixing={status?.state === "mixing"} />
+      {status && <MoveMixedCard walletId={walletId} network={network} status={status} />}
       {status && <SessionDetails status={status} network={network} />}
       <DashButton variant="plainBlue" data-testid="coinjoin-open-settings" onClick={() => navigate("settings", { settingsTab: "coinjoin" })}>
         CoinJoin settings
       </DashButton>
     </Page>
+  );
+}
+
+/** "Move mixed coins" to the wallet (IOS-057): the sheet reads the plan and asks for the grant. */
+function MoveMixedCard({ walletId, network, status }: { walletId: string; network: NetworkInfo; status: CoinJoinStatus }) {
+  const b = useBackend();
+  const flow = moveMixedFor(b, walletId);
+  useModel(flow);
+  const id = useId();
+  // The plan itself says what there is to move.
+  if (!showsMoveCard(status, flow)) return null;
+  return (
+    <section className="coinjoin-move card-l1" data-testid="coinjoin-move" aria-labelledby={`${id}-title`}>
+      <h2 className="card-title" id={`${id}-title`}>
+        {MOVE_COPY.card.title}
+      </h2>
+      <p className="field-hint">{MOVE_COPY.card.text}</p>
+      <DashButton variant="tintedBlue" data-testid="coinjoin-move-open" onClick={() => flow.begin()}>
+        {MOVE_COPY.card.open}
+      </DashButton>
+      <MoveMixedSheet flow={flow} network={network} />
+    </section>
   );
 }
 

@@ -124,10 +124,6 @@ pub(crate) enum ApplyReply {
 /// `AssetLockAlreadyConsumed` naming `outpoint` is `AlreadyConsumed`;
 /// one naming another outpoint, a timeout or any other failure is
 /// `Unknown` after a signature and the refusal before one.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "type 4's kind (slice 5) uses it")
-)]
 pub(crate) fn reply_from(
     result: Result<(), PlatformWalletError>,
     outpoint: OutPoint,
@@ -231,12 +227,17 @@ pub(crate) enum Mark {
     Settled,
     /// An apply that may have executed, unproved.
     Unknown,
+    /// Platform's "already consumed" for the exact outpoint, unproved, by a
+    /// kind that takes it as finished elsewhere
+    /// ([`LockKind::reported_locks`]); neither proved nor settled.
+    Reported,
 }
 
 fn mark_prefix(kind: LockKindId, mark: Mark) -> String {
     let sort = match mark {
         Mark::Settled => "settled",
         Mark::Unknown => "unknown",
+        Mark::Reported => "reported",
     };
     format!("recovery.{}.{sort}.", kind.label())
 }
@@ -338,6 +339,13 @@ pub(crate) trait LockKind: Send + Sync {
     /// The locks whose apply may have executed, unproved, kept across
     /// restarts.
     fn unknown_locks(&self) -> impl Future<Output = Marks> + Send;
+    /// The locks Platform answered "already consumed" for (exact outpoint)
+    /// that the kind takes as finished elsewhere: they leave the lists, and
+    /// their finish reads [`LockFinish::ReportedUsed`]. None by default: such
+    /// an answer then reads Checking ([`Self::mark_unknown`]).
+    fn reported_locks(&self) -> impl Future<Output = HashSet<OutPoint>> + Send {
+        std::future::ready(HashSet::new())
+    }
     /// Records `lock` among [`Self::unknown_locks`] by its outpoint, and
     /// (when the kind keeps 0.1's records) by txid only when
     /// [`KindLock::alone`].
@@ -415,7 +423,7 @@ impl<'a> LockKeySigner<'a> {
     }
 
     /// Whether `key` is the one the lock's credit output pays.
-    fn is_the_lock_key(&self, key: &PublicKey) -> bool {
+    pub(crate) fn is_the_lock_key(&self, key: &PublicKey) -> bool {
         let hash = dashcore::PublicKey::new(*key).pubkey_hash();
         ScriptBuf::new_p2pkh(&hash) == self.credit_script
     }
@@ -489,7 +497,7 @@ pub(crate) struct Evidence<'a> {
     pub(crate) own: &'a HashSet<Txid>,
     pub(crate) settled: &'a Marks,
     pub(crate) unknown: &'a Marks,
-    /// The restored locks Platform reported already consumed.
+    /// [`LockKind::reported_locks`], read.
     pub(crate) reported_used: &'a HashSet<OutPoint>,
     pub(crate) readiness: &'a Readiness,
     /// [`LockKind::minimum`], read.
@@ -501,7 +509,10 @@ pub(crate) struct Evidence<'a> {
 pub(crate) fn classify(kind: LockKindId, lock: &KindLock, ev: &Evidence) -> Option<UnfinishedLock> {
     let info = &lock.info;
     let txid = info.outpoint.txid;
-    if info.status == LockStatus::Consumed || ev.settled.holds(lock) {
+    if info.status == LockStatus::Consumed
+        || ev.settled.holds(lock)
+        || ev.reported_used.contains(&info.outpoint)
+    {
         return None;
     }
     let origin = if lock.alone() && ev.own.contains(&txid) {
@@ -513,8 +524,6 @@ pub(crate) fn classify(kind: LockKindId, lock: &KindLock, ev: &Evidence) -> Opti
         UnfinishedState::Unsupported
     } else if !lock.proof || !info.status.has_proof() {
         UnfinishedState::Confirming
-    } else if origin == LockOrigin::Restored && ev.reported_used.contains(&info.outpoint) {
-        UnfinishedState::ReportedUsed
     } else if matches!(ev.readiness, Readiness::NotActive(_)) {
         UnfinishedState::NotActive
     } else if ev.unknown.holds(lock)
@@ -540,16 +549,13 @@ pub(crate) fn classify(kind: LockKindId, lock: &KindLock, ev: &Evidence) -> Opti
     })
 }
 
-/// The wallet's unfinished locks of `kind`, `reported_used` the restored
-/// ones Platform reported already consumed; `platform.unavailable` until
+/// The wallet's unfinished locks of `kind`; `platform.unavailable` until
 /// the dispatch journal is read.
-pub(crate) async fn detect(
-    kind: &impl LockKind,
-    reported_used: &HashSet<OutPoint>,
-) -> Result<Vec<UnfinishedLock>, PlatformError> {
+pub(crate) async fn detect(kind: &impl LockKind) -> Result<Vec<UnfinishedLock>, PlatformError> {
     let own = kind.own_locks().ok_or(PlatformError::Unavailable)?;
     let locks = kind.locks().await;
     let (settled, unknown) = (kind.settled_locks().await, kind.unknown_locks().await);
+    let reported_used = &kind.reported_locks().await;
     let readiness = kind
         .not_active()
         .map_or(Readiness::Ready, Readiness::NotActive);
@@ -589,8 +595,10 @@ pub(crate) const UNSUPPORTED: &str = "recovery.unsupported_output";
 ///
 /// Only Platform's proved execution settles the lock. "Already consumed"
 /// for the lock and any failure after its signature leave it unfinished,
-/// [`LockFinish::Checking`], recorded by outpoint; a refusal before the
-/// signature is [`LockFinish::NotApplied`].
+/// [`LockFinish::Checking`], recorded by outpoint, unless the kind took the
+/// answer as finished elsewhere ([`LockKind::reported_locks`]:
+/// [`LockFinish::ReportedUsed`], and the lock leaves the lists); a refusal
+/// before the signature is [`LockFinish::NotApplied`].
 pub(crate) async fn finish<K, F, Fut>(
     kind: &K,
     outpoint: OutPoint,
@@ -630,16 +638,19 @@ where
     let lock = lock.clone();
     let readiness = kind.readiness().await;
     let (settled, unknown) = (kind.settled_locks().await, kind.unknown_locks().await);
+    let reported = kind.reported_locks().await;
     let ev = Evidence {
         own: &own,
         settled: &settled,
         unknown: &unknown,
-        reported_used: &HashSet::new(),
+        reported_used: &reported,
         readiness: &readiness,
         minimum: kind.minimum(),
     };
     let Some(unfinished) = classify(kind.id(), &lock, &ev) else {
-        return Ok(None);
+        // Platform said it is used, nothing proves it: finished elsewhere.
+        let proved = lock.info.status == LockStatus::Consumed || settled.holds(&lock);
+        return Ok((!proved && reported.contains(&outpoint)).then_some(LockFinish::ReportedUsed));
     };
     match unfinished.state {
         UnfinishedState::Unsupported => {
@@ -693,8 +704,13 @@ where
             kind.settle(&lock).await;
             LockFinish::Applied
         }
-        // Neither settles (SR1): the lock stays unfinished until a proved
-        // apply.
+        // Neither settles (SR1). A kind that took the answer as finished
+        // elsewhere recorded it (`reported_locks`); otherwise the lock stays
+        // unfinished until a proved apply.
+        Ok(ApplyReply::AlreadyConsumed) if kind.reported_locks().await.contains(&outpoint) => {
+            tracing::warn!(%outpoint, "a lock's apply was answered already consumed, unproved");
+            LockFinish::ReportedUsed
+        }
         Ok(how @ (ApplyReply::AlreadyConsumed | ApplyReply::Unknown)) => {
             tracing::warn!(%outpoint, ?how, "a lock's apply may have executed, unproved");
             kind.mark_unknown(&lock).await;
@@ -723,7 +739,7 @@ pub(crate) async fn finish_kind(
     lease: &Lease,
     report: &mut super::FinishReport,
 ) {
-    let listed = match detect(kind, &HashSet::new()).await {
+    let listed = match detect(kind).await {
         Ok(listed) => listed,
         Err(e) => {
             tracing::warn!(kind = ?kind.id(), error = %e, "Finish transfers could not list a kind's locks");
@@ -743,11 +759,8 @@ pub(crate) async fn finish_kind(
             | UnfinishedState::Confirming
             | UnfinishedState::NotActive
             | UnfinishedState::Unsupported
-            | UnfinishedState::TooSmall => None,
-            UnfinishedState::ReportedUsed => {
-                report.already_used += 1;
-                continue;
-            }
+            | UnfinishedState::TooSmall
+            | UnfinishedState::ReportedUsed => None,
             UnfinishedState::Ready => {
                 let Ok(txid) = lock.txid.parse::<Txid>() else {
                     continue;
@@ -771,7 +784,6 @@ pub(crate) async fn finish_kind(
             }
             Some(Ok(LockFinish::ReportedUsed)) => {
                 counts.resumed += 1;
-                counts.still_pending += 1;
                 report.already_used += 1;
             }
             Some(Ok(LockFinish::Checking)) => {

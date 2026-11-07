@@ -11,8 +11,8 @@ use std::str::FromStr;
 use common::*;
 use dw_vault::{
     CREDITS_PER_DUFF, Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantPurpose, GrantToken,
-    LockState, PASSPHRASE_MAX_AGE_SECS, SignerError, SignerScope, UnlockScope, Vault, VaultError,
-    WalletSigner,
+    LockState, PASSPHRASE_MAX_AGE_SECS, SignerError, SignerLife, SignerScope, UnlockScope, Vault,
+    VaultError, WalletSigner,
 };
 use key_wallet::Signer;
 use key_wallet::bip32::DerivationPath;
@@ -55,6 +55,54 @@ fn redeem_all(v: &Vault, grants: &[dw_vault::AuthGrant]) -> Vec<GrantToken> {
                 .unwrap()
         })
         .collect()
+}
+
+/// 0.2 MIX-SHIELD: the drain scope comes from a `Spend` grant alone, up to
+/// its cap, and never from a `PlatformOp` grant (whose signers reach no
+/// CoinJoin coin).
+#[test]
+fn the_shield_drain_signer_needs_a_spend_grant_and_is_capped_by_it() {
+    let fx = Fixture::new();
+    let v = encrypted(&fx);
+    let w = wallet(1);
+    let life = SignerLife::new();
+    let drain = |max_duffs| SignerScope::ShieldDrainFunding { max_duffs };
+    let mismatch = Err(VaultError::GrantPurposeMismatch);
+
+    let t = token(
+        &v,
+        GrantPurpose::Spend { max_duffs: 1_000 },
+        Credential::None,
+    );
+    for wanted in [1, 999, 1_000] {
+        assert_eq!(
+            v.shield_drain_signer(&w, &t, wanted, &life)
+                .unwrap()
+                .scope(),
+            drain(wanted)
+        );
+    }
+    for wanted in [0, 1_001, u64::MAX] {
+        assert_eq!(
+            v.shield_drain_signer(&w, &t, wanted, &life).map(drop),
+            mismatch,
+            "{wanted}"
+        );
+    }
+    assert_eq!(
+        v.shield_drain_signer(&wallet(2), &t, 1, &life).map(drop),
+        mismatch
+    );
+
+    let t = token(&v, platform_op(1_000, 5), Credential::None);
+    assert_eq!(v.shield_drain_signer(&w, &t, 1, &life).map(drop), mismatch);
+    // Nor is it one of a `PlatformOp` grant's scopes.
+    assert!(matches!(
+        v.platform_signer(&w, &t, drain(1)),
+        Err(VaultError::InvalidArgument(_))
+    ));
+    let t = token(&v, GrantPurpose::SignMessage, Credential::None);
+    assert_eq!(v.shield_drain_signer(&w, &t, 1, &life).map(drop), mismatch);
 }
 
 // MARK: PlatformOp caps (§3.1, §3.4)

@@ -14,9 +14,14 @@ import type { CoinJoinState } from "../api/generated/CoinJoinState";
 import type { CoinJoinStatus } from "../api/generated/CoinJoinStatus";
 import type { CoinJoinStatusCode } from "../api/generated/CoinJoinStatusCode";
 import type { CoinJoinStopReason } from "../api/generated/CoinJoinStopReason";
+import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
+import type { MixedCoinsChunk } from "../api/generated/MixedCoinsChunk";
+import type { MixedCoinsResend } from "../api/generated/MixedCoinsResend";
+import type { MixedCoinsSweepResult } from "../api/generated/MixedCoinsSweepResult";
 import type { ThemeName } from "../api/generated/ThemeName";
+import type { Utxo } from "../api/generated/Utxo";
 import type { Ctx, Handlers } from "./handlers";
-import type { FixtureWallet, World } from "./scenarios";
+import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 
 const DUFFS_PER_DASH = 100_000_000;
 
@@ -51,6 +56,13 @@ export interface CoinJoinWorld {
   settings: CoinJoinSettings;
   /** By wallet id; a wallet not here has never mixed. */
   mixers: Record<string, FixtureMixer>;
+  /** A scenario's failing "Move mixed coins" broadcast: chunk `at` (from 0) is rejected or of
+   * unknown outcome, and the move stops there; unset, every chunk is sent. */
+  sweepFailure?: { kind: "rejected" | "unknown"; at: number };
+  /** Each wallet's last plan's quote: its id and its chunks' coins (`coinjoin.plan_changed` for another). */
+  sweepQuote?: Record<string, { id: string; coins: string }>;
+  /** The recorded chunks of unknown outcome, by wallet id: their display txids. */
+  sweepUnknown?: Record<string, string[]>;
 }
 
 const NO_PROGRESS: CoinJoinProgress = { overallPercent: 0, denominatedPercent: 0, partiallyMixedPercent: 0, mixedPercent: 0, averageRounds: 0 };
@@ -84,7 +96,13 @@ export function coinjoinStatusOf(world: World, w: FixtureWallet): CoinJoinStatus
     state: m.state,
     stopReason: m.state === "idle" ? m.stopReason : null,
     unavailable: unavailableOf(settings, w),
-    balances: { anonymizable: total - fullyMixed, denominated: Math.floor((total * m.progress.denominatedPercent) / 100), normalizedAnonymized: fullyMixed, fullyMixed },
+    balances: {
+      anonymizable: total - fullyMixed,
+      denominated: Math.floor((total * m.progress.denominatedPercent) / 100),
+      normalizedAnonymized: fullyMixed,
+      fullyMixed,
+      coinjoinAccount: w.coins.filter((u) => isCoinJoinCoin(u) && u.confirmations > 0).reduce((n, u) => n + u.amount, 0),
+    },
     progress: m.progress,
     amountAndRounds: { amount: amount === 0 ? target : amount, rounds: settings.rounds, insufficientInputs: total > 0 && total < target },
     submittedDenominations: m.sessions.flatMap((s) => (s.denomination === null ? [] : [s.denomination])),
@@ -116,8 +134,121 @@ const RANGES: [keyof CoinJoinSettings, string, number, (s: CoinJoinSettings) => 
   ["denomsGoal", "denoms_goal", COINJOIN_LIMITS.minDenoms, (s) => s.denomsHardCap],
 ];
 
-export function coinjoinHandlers({ wallet }: { wallet: (w: World, walletId: string) => FixtureWallet }): Handlers {
+// "Move mixed coins" (dw-engine coinjoin.rs `sweep_coins`, dw-coinjoin recovery.rs): the fixture's
+// CoinJoin-account coins are its coins with mixing rounds; a chunk takes at most 500 of them above
+// 1000 duffs, largest first, and pays 1 duff a byte (MIN_FEE_PER_KB).
+const SWEEP_MIN_COIN = 1_000;
+const SWEEP_MAX_INPUTS = 500;
+const sweepSize = (inputs: number) => 8 + (inputs < 253 ? 1 : 3) + inputs * 148 + 1 + 34;
+
+/** A plan's chunks' coins, in order, as one key. */
+const chunkCoins = (chunks: { coins: Utxo[] }[]) => chunks.map((c) => c.coins.map((u) => `${u.outpoint.txid}:${u.outpoint.vout}`).join(",")).join("|");
+
+/** A fresh display txid (64 hex digits) from the world's issue counter. */
+function sweepTxid(w: World): string {
+  w.issued += 1;
+  return ("5eed" + w.issued.toString(16).padStart(4, "0")).repeat(8);
+}
+
+const isCoinJoinCoin = (u: Utxo) => u.coinjoinRounds !== null && u.amount > SWEEP_MIN_COIN && !u.reserved;
+
+function sweepChunks(coins: Utxo[]): { coins: Utxo[]; chunk: MixedCoinsChunk }[] {
+  const order = [...coins].sort((a, b) => b.amount - a.amount);
+  const out: { coins: Utxo[]; chunk: MixedCoinsChunk }[] = [];
+  for (let i = 0; i < order.length; i += SWEEP_MAX_INPUTS) {
+    const part = order.slice(i, i + SWEEP_MAX_INPUTS);
+    const total = part.reduce((n, u) => n + u.amount, 0);
+    const fee = sweepSize(part.length);
+    if (total > fee) out.push({ coins: part, chunk: { inputs: part.length, amount: total - fee, fee } });
+  }
+  return out;
+}
+
+interface CoinJoinDeps {
+  wallet: (w: World, walletId: string) => FixtureWallet;
+  grant: (w: World, id: string, walletId: string, kinds: GrantPurposeSpec["kind"][]) => FixtureGrant | null;
+  useGrant: (w: World, id: string) => void;
+}
+
+/** `sweep_plan`'s refusals, then the wallet's CoinJoin-account coins in chunks. */
+function sweepPlanOf(world: World, w: FixtureWallet, destination: string) {
+  if (destination !== "wallet") throw fail("platform.not_implemented", "not implemented: move_mixed_coins.shielded", { kind: "call", call: "move_mixed_coins.shielded" });
+  if (w.summary.watchOnly) throw fail("coinjoin.watch_only", "fixture: this wallet is watch-only");
+  if ((world.coinjoin.mixers[w.summary.walletId]?.state ?? "idle") !== "idle") throw fail("coinjoin.mixing_active", "stop mixing first");
+  // Confirmed coins only (`sweep_coins`); the rest wait for a confirmation.
+  const account = w.coins.filter(isCoinJoinCoin);
+  const coins = account.filter((u) => u.confirmations > 0);
+  const unconfirmed = account.length - coins.length;
+  const chunks = sweepChunks(coins);
+  if (chunks.length === 0) throw fail("coinjoin.nothing_to_move", "fixture: the CoinJoin account has nothing to sweep");
+  const swept = chunks.flatMap((c) => c.coins);
+  const fullyMixed = swept.filter((u) => (u.coinjoinRounds ?? 0) >= world.coinjoin.settings.rounds).reduce((n, u) => n + u.amount, 0);
+  const total = swept.reduce((n, u) => n + u.amount, 0);
+  return { chunks, total, fullyMixed, unconfirmed };
+}
+
+export function coinjoinHandlers({ wallet, grant, useGrant }: CoinJoinDeps): Handlers {
   return {
+    mixed_coins_sweep_plan: ({ walletId, destination }, { world }) => {
+      const { chunks, total, fullyMixed, unconfirmed } = sweepPlanOf(world, wallet(world, walletId), destination);
+      const quoteId = `quote-${(world.issued += 1)}`;
+      (world.coinjoin.sweepQuote ??= {})[walletId] = { id: quoteId, coins: chunkCoins(chunks) };
+      return { destination, total, chunks: chunks.map((c) => c.chunk), fullyMixed, notFullyMixed: total - fullyMixed, unconfirmed, quoteId };
+    },
+    // Each chunk sent becomes one coin of the wallet's main balance, outside the CoinJoin account;
+    // `sweepFailure` stops at its chunk as a rejected or unknown broadcast.
+    move_mixed_coins: ({ walletId, destination, quoteId, grantId }, ctx): MixedCoinsSweepResult => {
+      const { world } = ctx;
+      const w = wallet(world, walletId);
+      const { chunks, total } = sweepPlanOf(world, w, destination);
+      // The engine compares under the fence: the confirmed plan's coins, used once.
+      const quoted = world.coinjoin.sweepQuote?.[walletId];
+      if (quoted?.id !== quoteId) throw fail("coinjoin.plan_changed", "the coins to move changed since the plan");
+      delete world.coinjoin.sweepQuote?.[walletId];
+      if (quoted.coins !== chunkCoins(chunks)) throw fail("coinjoin.plan_changed", "the coins to move changed since the plan");
+      const g = grant(world, grantId, walletId, ["spend"]);
+      if (g?.grant.purpose.kind !== "spend" || g.grant.purpose.maxDuffs < total) throw fail("coinjoin.grant_invalid", "grant invalid");
+      useGrant(world, grantId);
+      const txidList: string[] = [];
+      let moved = 0;
+      let fee = 0;
+      let failureCode: string | null = null;
+      let unknownTxid: string | null = null;
+      for (const [i, c] of chunks.entries()) {
+        const txid = sweepTxid(world);
+        const failure = world.coinjoin.sweepFailure;
+        if (failure && i >= failure.at) {
+          failureCode = failure.kind === "rejected" ? "coinjoin.broadcast_rejected" : "coinjoin.broadcast_unknown";
+          if (failure.kind === "unknown") {
+            unknownTxid = txid;
+            (world.coinjoin.sweepUnknown ??= {})[walletId] = [...(world.coinjoin.sweepUnknown[walletId] ?? []), txid];
+            for (const u of c.coins) u.reserved = true;
+          }
+          break;
+        }
+        const spent = new Set(c.coins);
+        w.coins = w.coins.filter((u) => !spent.has(u));
+        w.coins.push({ ...c.coins[0], outpoint: { txid, vout: 0 }, amount: c.chunk.amount, confirmations: 0, coinjoinDenominated: false, coinjoinRounds: null, label: null, reserved: false });
+        const b = w.summary.balances;
+        if (b) {
+          const value = c.chunk.amount + c.chunk.fee;
+          w.summary = { ...w.summary, balances: { ...b, confirmed: b.confirmed - value, unconfirmed: b.unconfirmed + c.chunk.amount, total: b.total - c.chunk.fee, coinjoin: Math.max(0, b.coinjoin - value) } };
+        }
+        txidList.push(txid);
+        moved += c.chunk.amount + c.chunk.fee;
+        fee += c.chunk.fee;
+      }
+      changed(ctx, walletId);
+      ctx.emit({ kind: "balances", network: world.launch.network.dirName, walletId, balances: w.summary.balances });
+      return { txids: txidList, moved, received: moved - fee, fee, remaining: total - moved, failureCode, unknownTxid };
+    },
+    // The engine sends a recorded chunk's bytes again; the fixture's network never answers.
+    resend_mixed_coins: ({ walletId, txid }, { world }): MixedCoinsResend[] => {
+      wallet(world, walletId);
+      const recorded = world.coinjoin.sweepUnknown?.[walletId] ?? [];
+      if (txid !== null && !recorded.includes(txid)) return [{ txid, state: "resolved" }];
+      return recorded.filter((t) => txid === null || t === txid).map((t) => ({ txid: t, state: "unknown" }));
+    },
     coinjoin_limits: () => COINJOIN_LIMITS,
     coinjoin_settings: (_, { world }) => world.coinjoin.settings,
     // The engine's `invalid_argument` carries `SettingOutOfRange`'s text, naming the field.
@@ -180,18 +311,42 @@ function mixing(w: World, m: Partial<FixtureMixer>): World {
 
 type Base = (theme: ThemeName | null) => World;
 
+/** `n` coins on the first wallet's CoinJoin account, counted in its balances: denominations of
+ * 0.1 DASH, every third one short of the network's rounds (not fully mixed). With `split`, the
+ * coins are mixed out of the wallet's first coin, so its totals stay as they are. */
+function withMixedCoins(w: World, n: number, split = false): World {
+  const main = w.wallets[0];
+  const rounds = w.coinjoin.settings.rounds;
+  const coins = Array.from({ length: n }, (_, i): Utxo => ({
+    ...main.coins[0],
+    outpoint: { txid: (0xc0 + (i % 0x30)).toString(16).repeat(32), vout: 100 + i },
+    amount: 10_000_100,
+    label: null,
+    reserved: false,
+    coinjoinDenominated: true,
+    coinjoinRounds: i % 3 === 2 ? rounds - 1 : rounds,
+  }));
+  const sum = coins.reduce((s, u) => s + u.amount, 0);
+  const added = split ? 0 : sum;
+  main.coins = [...(split ? [{ ...main.coins[0], amount: main.coins[0].amount - sum }, ...main.coins.slice(1)] : main.coins), ...coins];
+  const b = main.summary.balances!;
+  main.summary = { ...main.summary, balances: { ...b, confirmed: b.confirmed + added, total: b.total + added, coinjoin: b.coinjoin + sum } };
+  return w;
+}
+
 export function coinjoinScenarios(base: Base) {
   return {
-    /** S7: 42 %, one session waiting in a masternode's queue. */
-    "coinjoin-mixing": (t: ThemeName | null) => mixing(base(t), { status: { kind: "waitingInQueue" }, progress: PROGRESS_42, sessions: [SESSION], queueSize: 3 }),
+    /** S7: 42 %, one session waiting in a masternode's queue. Mixed coins are on the CoinJoin
+     * account, so the page offers "Move mixed coins", as a real wallet's does. */
+    "coinjoin-mixing": (t: ThemeName | null) => withMixedCoins(mixing(base(t), { status: { kind: "waitingInQueue" }, progress: PROGRESS_42, sessions: [SESSION], queueSize: 3 }), 3, true),
     /** S5: running, but no masternode list yet. */
-    "coinjoin-paused": (t: ThemeName | null) => mixing(base(t), { status: { kind: "noMasternodes" }, progress: PROGRESS_42 }),
+    "coinjoin-paused": (t: ThemeName | null) => withMixedCoins(mixing(base(t), { status: { kind: "noMasternodes" }, progress: PROGRESS_42 }), 3, true),
     /** S6: running and fully mixed: it waits for new coins. */
     "coinjoin-finished": (t: ThemeName | null) => mixing(base(t), { status: { kind: "notEnoughFunds" }, progress: PROGRESS_100 }),
     /** S3: Stop was pressed; the sessions are being reset. */
     "coinjoin-stopping": (t: ThemeName | null) => mixing(base(t), { state: "stopping", status: { kind: "mixingInProgress" }, progress: PROGRESS_42 }),
     /** S10: the vault locked while mixing (auto lock); unlocked again since. */
-    "coinjoin-locked": (t: ThemeName | null) => mixing(base(t), { state: "idle", stopReason: "vaultLocked", progress: PROGRESS_42 }),
+    "coinjoin-locked": (t: ThemeName | null) => withMixedCoins(mixing(base(t), { state: "idle", stopReason: "vaultLocked", progress: PROGRESS_42 }), 3, true),
     /** S11: the network session closed under the mixer. */
     "coinjoin-error": (t: ThemeName | null) => mixing(base(t), { state: "idle", stopReason: "sessionClosed", progress: PROGRESS_42 }),
     /** S8: CoinJoin features turned off in Settings. */
@@ -210,6 +365,22 @@ export function coinjoinScenarios(base: Base) {
     "coinjoin-mixing-only": (t: ThemeName | null) => {
       const w = mixing(base(t), { status: { kind: "signing" }, progress: PROGRESS_42, sessions: [{ ...SESSION, state: "signing", entries: 3 }], queueSize: 2 });
       w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+      return w;
+    },
+    /** "Move mixed coins": mixing stopped, with fully and partly mixed coins to move. */
+    "coinjoin-move": (t: ThemeName | null) => withMixedCoins(mixing(base(t), { state: "idle", stopReason: "userRequested", progress: PROGRESS_42 }), 3),
+    /** "Move mixed coins" while mixing runs: the sheet offers Stop Mixing. */
+    "coinjoin-move-mixing": (t: ThemeName | null) => withMixedCoins(mixing(base(t), { status: { kind: "waitingInQueue" }, progress: PROGRESS_42 }), 3),
+    /** 600 coins in two chunks; the second is rejected: a partial move. */
+    "coinjoin-move-partial": (t: ThemeName | null) => {
+      const w = withMixedCoins(mixing(base(t), { state: "idle", stopReason: "userRequested", progress: PROGRESS_42 }), 600);
+      w.coinjoin.sweepFailure = { kind: "rejected", at: 1 };
+      return w;
+    },
+    /** The only chunk's broadcast outcome is unknown. */
+    "coinjoin-move-unknown": (t: ThemeName | null) => {
+      const w = withMixedCoins(mixing(base(t), { state: "idle", stopReason: "userRequested", progress: PROGRESS_42 }), 3);
+      w.coinjoin.sweepFailure = { kind: "unknown", at: 0 };
       return w;
     },
     /** S13 with a custom level: 6 rounds set in Settings, mixing done and stopped. */

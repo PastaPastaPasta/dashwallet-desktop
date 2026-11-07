@@ -14,17 +14,18 @@ import type { ChosenNetwork } from "../api/generated/ChosenNetwork";
 import type { NetworkChoiceView } from "../api/generated/NetworkChoiceView";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { PlatformAddressBalance } from "../api/generated/PlatformAddressBalance";
+import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
+import type { PlatformFundOutcome } from "../api/generated/PlatformFundOutcome";
+import type { PlatformFundQuote } from "../api/generated/PlatformFundQuote";
 import type { PlatformSendOutcome } from "../api/generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
 import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
 import { authorizeSet, checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
-import { newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
+import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
 import { newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
 import { FIXTURE_NOW } from "./wallet";
 
-/** Platform's credits per duff (dpp's `CREDITS_PER_DUFF`), as the fixture's cost table has it. */
-const CREDITS_PER_DUFF = 1000n;
 /** What a move costs the fixture's wallet, in credits. */
 const MOVE_FEE_CREDITS = 2_000_000n;
 /** A send's fee estimate (dpp's: 500,000 per input, 6,000,000 for the output, one input); the least
@@ -36,6 +37,13 @@ const SEND_MIN_CREDITS = 500_000n;
  * nothing (the move stays `pending`), a refusal, a move whose debit is proved but not what
  * arrives (`unproved`: `expectedDuffs` is null), or the refusal of too many separate coins. */
 export type MoveResult = "done" | "pending" | "refused" | "unproved" | "tooManyCoins";
+
+/** What the next `platform_fund` comes to: applied, locked with its proof still missing, locked and
+ * possibly already applied (`checking`), or locked and refused by Platform (`notApplied`). */
+export type FundResult = "done" | "proofWaiting" | "checking" | "notApplied";
+
+/** The Core fee bound of the lock, in duffs. */
+const FUND_LOCK_FEE_DUFFS = 1_000;
 
 /** What the next `platform_send` comes to: proved, unanswered (`pending`), failed by height (it may
  * still land), or refused by Platform. */
@@ -87,6 +95,10 @@ export interface PlatformWorld {
   activity: PlatformActivity[];
   nextMove: MoveResult;
   nextSend: SendResult;
+  /** What the next "Add from Dash wallet" comes to. */
+  nextFund: FundResult;
+  /** The locks of "Add from Dash wallet" not applied yet. */
+  funds: PendingPlatformFund[];
   /** What the send after the next one comes to (`null`: the same as the next). */
   thenSend: SendResult | null;
   /** A proved send's debit counts the fee estimate (the balances hid the fee taken). */
@@ -130,6 +142,8 @@ export const newPlatformWorld = (): PlatformWorld => ({
   ],
   nextMove: "done",
   nextSend: "done",
+  nextFund: "done",
+  funds: [],
   thenSend: null,
   estimateSends: false,
   terms: {},
@@ -333,6 +347,21 @@ function spend(p: PlatformWorld, credits: bigint) {
     .filter((a) => a.credits !== "0");
 }
 
+const NOT_BLOCKING: readonly PendingPlatformFund["state"][] = ["checking", "tooSmall", "unsupported"];
+
+function fundQuote(ctx: Ctx, walletId: string, duffs: number, call: string): PlatformFundQuote {
+  const w = wallet(ctx.world, walletId);
+  const p = platformOf(ctx.world, call);
+  if (duffs < FUND_MIN_DUFFS) throw fail("credits.below_minimum", "below the minimum", { kind: "limit", duffs: FUND_MIN_DUFFS });
+  // As the engine: a lock that is checking, too small or unsupported blocks no new add.
+  const blocking = p.funds.find((f) => !NOT_BLOCKING.includes(f.state));
+  if (blocking) throw fail("credits.fund_pending", "an earlier add is pending", { kind: "txid", txid: blocking.txid });
+  const totalDuffs = duffs + FUND_LOCK_FEE_DUFFS;
+  const available = w.summary.balances?.confirmed ?? 0;
+  if (totalDuffs > available) throw fail("credits.funding_insufficient", "insufficient funds", { kind: "duffs", needed: totalDuffs, available });
+  return { duffs, feeDuffs: FUND_LOCK_FEE_DUFFS, totalDuffs, feeCredits: String(FUND_FEE_CREDITS), credits: String(fundCredits(duffs)), to: p.receive.address, grant: { maxDuffs: totalDuffs, maxCredits: "0" } };
+}
+
 export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
   get_network_choice: (_: unknown, { world }: Ctx) => {
     if (world.pending.networkChoice === null) throw absent("get_network_choice");
@@ -443,6 +472,53 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
       spend(p, BigInt(credits));
     }
     return sendOutcome(p, row);
+  },
+  platform_fund_quote: ({ walletId, duffs }: { walletId: string; duffs: number }, ctx: Ctx) => fundQuote(ctx, walletId, duffs, "platform_fund_quote"),
+  platform_fund: ({ walletId, duffs, grant }: { walletId: string; duffs: number; grant: string }, ctx: Ctx): PlatformFundOutcome => {
+    const { world } = ctx;
+    const q = fundQuote(ctx, walletId, duffs, "platform_fund");
+    const p = platformOf(world, "platform_fund");
+    const g = checkGrant(world, grant, walletId, ["platformOp"]);
+    if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
+    if (g.grant.purpose.maxDuffs < q.totalDuffs)
+      throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "funding", needed: String(q.totalDuffs), remaining: String(g.grant.purpose.maxDuffs) });
+    useGrant(world, grant);
+    const txid = `f0${(p.activity.length + 1).toString(16).padStart(2, "0")}`.padEnd(64, "d");
+    const pending = p.nextFund !== "done";
+    const credits = BigInt(q.credits);
+    p.activity = [{ id: `fund-${txid}`, kind: "fromCore", state: pending ? "pending" : "done", credits: q.credits, address: q.to, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000), mayLand: false, estimated: false }, ...p.activity];
+    switch (p.nextFund) {
+      case "done":
+        applyFund(p, txid, credits);
+        return { txid, state: { kind: "applied", credits: q.credits } };
+      case "proofWaiting":
+        p.funds = [...p.funds, { txid, duffs, proved: false, consumptionUnknown: false, state: "confirming" }];
+        return { txid, state: { kind: "proofWaiting" } };
+      case "checking":
+        p.funds = [...p.funds, { txid, duffs, proved: true, consumptionUnknown: true, state: "checking" }];
+        return { txid, state: { kind: "consumptionUnknown" } };
+      case "notApplied":
+        p.funds = [...p.funds, { txid, duffs, proved: true, consumptionUnknown: false, state: "ready" }];
+        return { txid, state: { kind: "notApplied", error: "platform.unavailable" } };
+    }
+  },
+  pending_platform_funds: ({ walletId }: { walletId: string }, { world }: Ctx): PendingPlatformFund[] => {
+    wallet(world, walletId);
+    return platformOf(world, "pending_platform_funds").funds;
+  },
+  resume_platform_fund: ({ walletId, txid, grant }: { walletId: string; txid: string; grant: string }, { world }: Ctx): PlatformFundOutcome => {
+    wallet(world, walletId);
+    const p = platformOf(world, "resume_platform_fund");
+    const fund = p.funds.find((f) => f.txid === txid);
+    if (!fund) throw fail("invalid_argument", "not a pending add", { kind: "reason", reason: "not a pending add" });
+    if (fund.state === "tooSmall" || fund.state === "unsupported") throw fail("invalid_argument", "can't be finished in this version", { kind: "reason", reason: "can't be finished in this version" });
+    const g = checkGrant(world, grant, walletId, ["platformOp"]);
+    if (g?.grant.purpose.kind !== "platformOp" || g.grant.purpose.maxDuffs < 1) throw fail("platform.grant_invalid", "grant invalid");
+    useGrant(world, grant);
+    const credits = fundCredits(fund.duffs);
+    p.nextFund = "done";
+    applyFund(p, txid, credits);
+    return { txid, state: { kind: "applied", credits: String(credits) } };
   },
   platform_move_to_core_quote: ({ walletId, amount }: { walletId: string; amount: WithdrawAmount }, ctx: Ctx) => quote(ctx, walletId, amount),
   platform_move_to_core: ({ walletId, amount, to, grant }: { walletId: string; amount: WithdrawAmount; to: string; grant: string }, ctx: Ctx): MoveToCoreOutcome => {

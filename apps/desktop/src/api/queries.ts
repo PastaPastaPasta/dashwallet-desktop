@@ -56,6 +56,9 @@ export const keys = {
   // Not under "dashpay": a quote is a proven network read, which a signal must not repeat while Confirm is open.
   platformMoveQuote: (walletId: string) => ["platformMoveQuote", walletId] as const,
   platformReceiveAddress: (walletId: string) => ["dashpay", "platformReceiveAddress", walletId] as const,
+  platformFundQuote: (walletId: string, duffs: number) => ["platformFundQuote", walletId, duffs] as const,
+  // Under "dashpay" so the settle invalidation (events.ts) re-reads the unfinished locks.
+  pendingPlatformFunds: (walletId: string) => ["dashpay", "pendingPlatformFunds", walletId] as const,
   platformSendQuote: (walletId: string, to: string, amount: string) => ["platformSendQuote", walletId, to, amount] as const,
   networkChoice: ["networkChoice"] as const,
   sync: ["sync"] as const,
@@ -148,7 +151,10 @@ export function usePlatformAddresses(walletId: string) {
 export const PENDING_MOVE_REFETCH_MS = 30_000;
 
 /** How soon Platform activity is read again: while a move or send is pending or may still land (it settles in the engine within minutes). */
-export const platformActivityRefetchMs = (data: readonly PlatformActivity[] | null | undefined): number | false => (hasPendingMove(data) ? PENDING_MOVE_REFETCH_MS : false);
+// A move or send that may still execute, or an add from the Dash wallet not applied yet, settles
+// within minutes: look again.
+export const platformActivityRefetchMs = (data: readonly PlatformActivity[] | null | undefined): number | false =>
+  hasPendingMove(data) || data?.some((a) => a.kind === "fromCore" && a.state === "pending") ? PENDING_MOVE_REFETCH_MS : false;
 
 /** The Platform-address activity rows, newest first; `null` while dw-app has no such command. */
 export function usePlatformActivity(walletId: string) {
@@ -190,6 +196,24 @@ export function usePlatformSendQuote(walletId: string, to: string, amount: Withd
     retry: false,
     gcTime: 0,
   });
+}
+
+/** What "Add from Dash wallet" of `duffs` costs and adds; `null` duffs: no quote yet. */
+export function usePlatformFundQuote(walletId: string, duffs: number | null) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.platformFundQuote(walletId, duffs ?? 0),
+    queryFn: () => b.platformFundQuote(walletId, duffs!),
+    enabled: duffs !== null,
+    retry: false,
+    gcTime: 0,
+  });
+}
+
+/** The locks "Add from Dash wallet" made that are not applied yet; `null` while dw-app has no such command. */
+export function usePendingPlatformFunds(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.pendingPlatformFunds(walletId), queryFn: () => b.pendingPlatformFunds(walletId), retry: false });
 }
 
 /** The shielded account's status; `null` while dw-app has no such command (api/pending.ts). */
