@@ -1359,6 +1359,14 @@ pub(super) async fn finish_lock(
     let signed = session.leases.signed_lock_txids(wallet, &step);
     let own = (lib.shield_locks().await.into_iter()).find(|l| signed.contains(&l.outpoint.txid));
     let Some(lock) = own else {
+        // A lock of the step was signed (recorded, or a released signature
+        // left the step possibly sent) and the library holds none: it may
+        // be out whatever the call answered (Tools ▸ Repair settles it).
+        let maybe_sent = session.leases.funding_status(wallet, &step)
+            == Some(super::flows::DispatchState::MaybeSent);
+        if !signed.is_empty() || maybe_sent {
+            return Err(PlatformError::BroadcastUnknown { artifact: step }.into());
+        }
         return Err(match funded {
             Err(FundError::Refused(e) | FundError::NotSent(e)) => e.into(),
             Err(FundError::CoinsLocked) => ShieldedError::CoinsLocked,
