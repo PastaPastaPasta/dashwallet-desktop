@@ -312,8 +312,9 @@ function mixing(w: World, m: Partial<FixtureMixer>): World {
 type Base = (theme: ThemeName | null) => World;
 
 /** `n` coins on the first wallet's CoinJoin account, counted in its balances: denominations of
- * 0.1 DASH, every third one short of the network's rounds (not fully mixed). */
-function withMixedCoins(w: World, n: number): World {
+ * 0.1 DASH, every third one short of the network's rounds (not fully mixed). With `split`, the
+ * coins are mixed out of the wallet's first coin, so its totals stay as they are. */
+function withMixedCoins(w: World, n: number, split = false): World {
   const main = w.wallets[0];
   const rounds = w.coinjoin.settings.rounds;
   const coins = Array.from({ length: n }, (_, i): Utxo => ({
@@ -325,25 +326,27 @@ function withMixedCoins(w: World, n: number): World {
     coinjoinDenominated: true,
     coinjoinRounds: i % 3 === 2 ? rounds - 1 : rounds,
   }));
-  main.coins = [...main.coins, ...coins];
   const sum = coins.reduce((s, u) => s + u.amount, 0);
+  const added = split ? 0 : sum;
+  main.coins = [...(split ? [{ ...main.coins[0], amount: main.coins[0].amount - sum }, ...main.coins.slice(1)] : main.coins), ...coins];
   const b = main.summary.balances!;
-  main.summary = { ...main.summary, balances: { ...b, confirmed: b.confirmed + sum, total: b.total + sum, coinjoin: b.coinjoin + sum } };
+  main.summary = { ...main.summary, balances: { ...b, confirmed: b.confirmed + added, total: b.total + added, coinjoin: b.coinjoin + sum } };
   return w;
 }
 
 export function coinjoinScenarios(base: Base) {
   return {
-    /** S7: 42 %, one session waiting in a masternode's queue. */
-    "coinjoin-mixing": (t: ThemeName | null) => mixing(base(t), { status: { kind: "waitingInQueue" }, progress: PROGRESS_42, sessions: [SESSION], queueSize: 3 }),
+    /** S7: 42 %, one session waiting in a masternode's queue. Mixed coins are on the CoinJoin
+     * account, so the page offers "Move mixed coins", as a real wallet's does. */
+    "coinjoin-mixing": (t: ThemeName | null) => withMixedCoins(mixing(base(t), { status: { kind: "waitingInQueue" }, progress: PROGRESS_42, sessions: [SESSION], queueSize: 3 }), 3, true),
     /** S5: running, but no masternode list yet. */
-    "coinjoin-paused": (t: ThemeName | null) => mixing(base(t), { status: { kind: "noMasternodes" }, progress: PROGRESS_42 }),
+    "coinjoin-paused": (t: ThemeName | null) => withMixedCoins(mixing(base(t), { status: { kind: "noMasternodes" }, progress: PROGRESS_42 }), 3, true),
     /** S6: running and fully mixed: it waits for new coins. */
     "coinjoin-finished": (t: ThemeName | null) => mixing(base(t), { status: { kind: "notEnoughFunds" }, progress: PROGRESS_100 }),
     /** S3: Stop was pressed; the sessions are being reset. */
     "coinjoin-stopping": (t: ThemeName | null) => mixing(base(t), { state: "stopping", status: { kind: "mixingInProgress" }, progress: PROGRESS_42 }),
     /** S10: the vault locked while mixing (auto lock); unlocked again since. */
-    "coinjoin-locked": (t: ThemeName | null) => mixing(base(t), { state: "idle", stopReason: "vaultLocked", progress: PROGRESS_42 }),
+    "coinjoin-locked": (t: ThemeName | null) => withMixedCoins(mixing(base(t), { state: "idle", stopReason: "vaultLocked", progress: PROGRESS_42 }), 3, true),
     /** S11: the network session closed under the mixer. */
     "coinjoin-error": (t: ThemeName | null) => mixing(base(t), { state: "idle", stopReason: "sessionClosed", progress: PROGRESS_42 }),
     /** S8: CoinJoin features turned off in Settings. */
