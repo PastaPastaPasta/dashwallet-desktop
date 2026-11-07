@@ -207,6 +207,26 @@ for (const theme of THEMES) {
     await fontsReady(page);
     await expect(sheet).toHaveScreenshot(`${theme}-tools-repair-stuck-shield-confirm.png`, { animations: "disabled", caret: "hide" });
   });
+
+  // A shield from the main balance: Repair sends every spendable coin of it.
+  test(`visual tools-repair-stuck-shield-plain ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("coinjoin-move", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => {
+      window.__dwFixture!.world.pending.shielded!.shieldUnknown = true;
+      window.__dwFixture!.shellCommand({ kind: "tools", tab: "repair" });
+    });
+    const card = page.getByTestId("repair-stuck-shields");
+    await card.waitFor();
+    await card.scrollIntoViewIfNeeded();
+    await fontsReady(page);
+    await expect(card).toHaveScreenshot(`${theme}-tools-repair-stuck-shield-plain.png`, { animations: "disabled", caret: "hide" });
+    await page.getByTestId("repair-resolve-shield/1/funding").click();
+    const sheet = page.getByTestId("repair-confirm");
+    await sheet.waitFor();
+    await fontsReady(page);
+    await expect(sheet).toHaveScreenshot(`${theme}-tools-repair-stuck-shield-plain-confirm.png`, { animations: "disabled", caret: "hide" });
+  });
 }
 
 // DP6-03: Information's DashPay card alone (the tab's own shot ends above it), running on SPV
@@ -647,6 +667,8 @@ for (const theme of THEMES) {
       await page.locator(`[data-testid=coinjoin-status][data-state=${state}]`).waitFor();
       await page.getByTestId("coinjoin-levels").locator("fieldset").waitFor();
       await moveCardSettled(page);
+      // Below the status bar otherwise: the move card's buttons in view.
+      if (state === "mixing" || state === "paused") await page.getByTestId("coinjoin-move").scrollIntoViewIfNeeded();
       await shoot(page, `coinjoin-page-${state}`, theme);
     });
   }
