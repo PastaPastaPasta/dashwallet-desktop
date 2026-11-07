@@ -899,16 +899,21 @@ fn truncate(f: &Fixture, height: u32, removed: &[Txid]) {
     });
 }
 
-/// key-wallet's conflict sweep: `winner`, mined at `height` or
-/// InstantSend-locked (`None`), beat the recorded `loser` to an input.
-/// The winner pays no address of the wallet, so this is the only event
-/// that names it.
+/// key-wallet's conflict sweep: `winner`, mined in the block the chain
+/// holds at `height` or InstantSend-locked (`None`), beat the recorded
+/// `loser` to an input. The winner pays no address of the wallet, so this
+/// is the only event that names it.
 fn swept(f: &Fixture, loser: Txid, winner: Txid, height: Option<u32>) {
+    swept_in(f, loser, winner, height.map(|h| (h, f.chain.hash(h))));
+}
+
+/// [`swept`] with the winner's block as key-wallet processed it.
+fn swept_in(f: &Fixture, loser: Txid, winner: Txid, block: Option<(u32, BlockHash)>) {
     (f.session.hub).apply_wallet_event(&WalletEvent::TransactionsSwept {
         wallet_id: f.wallet.0,
         txids: vec![loser],
         superseded_by: winner,
-        winner_mined_height: height,
+        winner_block: block.map(|(h, hash)| BlockInfo::new(h, hash, 0)),
         released_outpoints: Vec::new(),
         balance: WalletCoreBalance::default(),
         account_balances: std::collections::BTreeMap::new(),
@@ -916,12 +921,12 @@ fn swept(f: &Fixture, loser: Txid, winner: Txid, height: Option<u32>) {
     settle(f);
 }
 
-/// Waits for the beaten rows the session is recording.
+/// Waits for the sweep row checks the session started.
 fn settle(f: &Fixture) {
-    let stamps = f.session.hub.take_stamps();
+    let checks = f.session.hub.take_sweep_checks();
     f.engine.block_on(async {
-        for s in stamps {
-            s.await.unwrap();
+        for c in checks {
+            c.await.unwrap();
         }
     });
 }
@@ -1620,6 +1625,53 @@ fn a_winner_mined_again_after_a_fork_leaves_its_chunk_pending() {
         !mix_reserved(&f, sent[0].input[1].previous_output),
         "its other input is free"
     );
+}
+
+/// A winner that pays no address of the wallet beats the chunk in block A
+/// at 900, and the header chain moves to a branch with another block there
+/// before the wallet's event reaches the session, with no truncation
+/// delivered (dash-spv stops its wallet-event monitor while it truncates).
+/// The event names A, so its row is no evidence on the new branch: the
+/// chunk stays pending, held and sent again, past that branch's ChainLock
+/// and a restart.
+#[test]
+fn a_winner_whose_block_a_fork_replaced_before_its_event_is_no_evidence() {
+    let mut f = fixture(false);
+    f.credit_coinjoin(1, COIN);
+    f.credit_coinjoin(2, COIN);
+    let wire = hook(&f, 500, &[Outcome::Unknown]);
+    move_to_wallet(&f).unwrap();
+    let sent = wire.txs();
+    let txid = sent[0].txid();
+    forget_claims(&f, &sent);
+    let input = sent[0].input[0].previous_output;
+    drop_coins(&f, &HashSet::from([input]));
+    let mined_in = f.chain.hash(900);
+    f.chain.fork_above(899);
+    swept_in(&f, txid, conflict(input).txid(), Some((900, mined_in)));
+    chainlock(&f, 905);
+    for restarted in [false, true] {
+        if restarted {
+            f.reopen();
+            f.credit_coinjoin(1, COIN);
+            f.credit_coinjoin(2, COIN);
+            chainlock(&f, 905);
+            assert_held(&f, &sent[0]);
+        } else {
+            assert!(
+                mix_reserved(&f, sent[0].input[1].previous_output),
+                "the other input is held"
+            );
+        }
+        let wire = hook(&f, 500, &[]);
+        assert_eq!(
+            resend(&f, None).unwrap(),
+            resent(txid, SweepResendState::Sent),
+            "restarted={restarted}"
+        );
+        assert_eq!(wire.txs(), sent, "the recorded bytes");
+        assert!(sweep_out_keys(&f).contains(&txid), "no prune");
+    }
 }
 
 /// Removes the wallet (a wipe grant) and imports it again from its seed:

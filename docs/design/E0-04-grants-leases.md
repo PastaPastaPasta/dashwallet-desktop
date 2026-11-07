@@ -884,9 +884,13 @@ call permit when its task lands.
   `Found` with the same hash; absent, unreadable or no SPV reads pending): the pinned persister mirrors no
   truncation (platform `core_bridge.rs` `ChainTruncated`, TODO #5380), so a restart reloads a record of a
   replaced block, which key-wallet then promotes by height under the new branch's ChainLock. A winner that pays
-  no wallet address is recorded with the hash its height had when `TransactionsSwept` came (looked up off the
-  event task; a truncation in between, or no header, records nothing). A beaten row a failed truncation left
-  names a replaced block and is no evidence; it is deleted on the wallet's next event or by the next read. A
+  no wallet address is recorded with the block `TransactionsSwept` names for it (key-wallet-manager
+  `winner_block`, its height and hash as the block was processed), written on the event task. A beaten row that
+  outlives a fork names a replaced block and is no evidence, whether the truncation's delete failed or the
+  truncation never reached the app (dash-spv stops its wallet-event monitor while it truncates). The truncation's
+  delete is cleanup only: a failed one is retried on the wallet's next event, and the next read deletes such a
+  row. A row in the older `height winner` form names no block: no evidence, and deleted once a header is known at
+  its height. A
   winner that pays no wallet address, in a block a fork replaces before a ChainLock and then mined again in the
   new branch, leaves its chunk pending for good: no event names it again (no recorded transaction spends the
   input any more), and key-wallet's `observed_spent_outpoints` binds the spend to no block hash and no spender, so

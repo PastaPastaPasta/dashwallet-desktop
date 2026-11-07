@@ -2557,48 +2557,28 @@ impl NetworkSession {
     }
 
     /// Records the news of `wallet_id`'s event stream in its sweep rows,
-    /// from the event handler. A truncation deletes the beaten rows above
-    /// it at once ([`delete_beaten_above`]); a winner in a block is recorded
-    /// with the hash the SPV header chain holds at its height, looked up
-    /// off the event task and written only if no truncation came in
-    /// between ([`crate::events::SessionHub::with_sweep_epoch`]). Until
-    /// then, and if no header
-    /// answers, the chunk stays pending.
+    /// from the event handler. A winner is recorded with the block the
+    /// event names (`TransactionsSwept::winner_block`), so a row that
+    /// outlives a fork names the replaced block and is no evidence
+    /// ([`sweep_out_state`]); a truncation deletes the rows above it
+    /// ([`delete_beaten_above`]), which is cleanup only.
     pub(crate) fn attach_sweep_news(self: &Arc<Self>) {
         let Ok(live) = self.live() else {
             return;
         };
         let appdb = Arc::clone(&live.appdb);
-        let (hub, rt) = (Arc::downgrade(&self.hub), self.rt.clone());
-        self.hub.attach_sweep_news(Box::new(move |wallet_id, news, epoch| {
+        self.hub.attach_sweep_news(Box::new(move |wallet_id, news| {
             let scope = dw_appdb::local_scope(&wallet_id.to_string());
             let written = match news {
                 SweepNews::Truncated { height } => delete_beaten_above(&appdb, &scope, height),
-                SweepNews::Beaten {
-                    txids,
-                    winner,
-                    winner_height: None,
-                } => write_beaten(&appdb, &scope, txids, winner, BeatenAt::Is),
-                SweepNews::Beaten {
-                    txids,
-                    winner,
-                    winner_height: Some(height),
-                } => {
-                    let (task, appdb, txids) = (hub.clone(), Arc::clone(&appdb), txids.to_vec());
-                    let stamp = rt.spawn(async move {
-                        stamp_beaten(task, appdb, wallet_id, txids, winner, height, epoch).await;
-                    });
-                    #[cfg(test)]
-                    if let Some(hub) = hub.upgrade() {
-                        hub.stamps.lock().unwrap_or_else(|p| p.into_inner()).push(stamp);
-                    }
-                    #[cfg(not(test))]
-                    drop(stamp);
-                    return Some(false);
+                SweepNews::Beaten { txids, winner, at } => {
+                    write_beaten(&appdb, &scope, txids, winner, at)
                 }
             };
             written
-                .inspect_err(|e| tracing::warn!(%wallet_id, error = %e, ?news, "sweep records not updated"))
+                .inspect_err(
+                    |e| tracing::warn!(%wallet_id, error = %e, ?news, "sweep records not updated"),
+                )
                 .ok()
         }));
         let weak = Arc::downgrade(self);
@@ -2619,7 +2599,7 @@ impl NetworkSession {
             });
             #[cfg(test)]
             if let Some(session) = weak.upgrade() {
-                session.hub.stamps.lock().unwrap_or_else(|p| p.into_inner()).push(check);
+                session.hub.sweep_checks.lock().unwrap_or_else(|p| p.into_inner()).push(check);
             }
             #[cfg(not(test))]
             drop(check);
@@ -3321,12 +3301,12 @@ impl BeatenAt {
 /// What the wallet's event stream tells the sweep records.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SweepNews<'a> {
-    /// A transaction in a block (`winner_height`) or InstantSend-locked
-    /// (`None`) beat `txids` to an input (`TransactionsSwept`).
+    /// `winner`, in the block `at` names or InstantSend-locked, beat
+    /// `txids` to an input (`TransactionsSwept`).
     Beaten {
         txids: &'a [Txid],
         winner: Txid,
-        winner_height: Option<u32>,
+        at: BeatenAt,
     },
     /// A fork replaced the blocks above `height` (`ChainTruncated`).
     Truncated { height: u32 },
@@ -3384,57 +3364,6 @@ pub(crate) fn delete_beaten_above(
     let writes: Vec<(&str, Option<&str>)> = gone.iter().map(|k| (k.as_str(), None)).collect();
     db.set_settings_durable(scope, &writes)?;
     Ok(true)
-}
-
-/// Records that `winner`, mined at `height`, beat `txids`, with the hash
-/// the SPV header chain holds there, unless a truncation came after the
-/// event (`epoch`, [`crate::events::SessionHub::with_sweep_epoch`]). No
-/// header, no row: the chunks stay pending.
-async fn stamp_beaten(
-    hub: Weak<crate::events::SessionHub>,
-    appdb: Arc<AppDb>,
-    wallet_id: WalletId,
-    txids: Vec<Txid>,
-    winner: Txid,
-    height: u32,
-    epoch: u64,
-) {
-    const TRIES: u32 = 3;
-    for attempt in 1..=TRIES {
-        let Some(hub) = hub.upgrade() else {
-            return;
-        };
-        if let Some(hash) = hub.header_hash(height).await {
-            let scope = dw_appdb::local_scope(&wallet_id.to_string());
-            let at = BeatenAt::Mined { height, hash };
-            let marks = Arc::clone(&hub);
-            let wrote = tokio::task::spawn_blocking(move || {
-                hub.with_sweep_epoch(|now| {
-                    if now != epoch {
-                        return Ok(false);
-                    }
-                    write_beaten(&appdb, &scope, &txids, winner, at)
-                })
-            })
-            .await;
-            match wrote {
-                Ok(Ok(true)) => marks.pump.mark_balances(wallet_id),
-                Ok(Ok(false)) => {}
-                Ok(Err(e)) => {
-                    tracing::warn!(%wallet_id, %winner, error = %e, "beaten sweep chunks not recorded");
-                }
-                Err(e) => {
-                    tracing::warn!(%wallet_id, error = %e, "beaten sweep chunks not recorded")
-                }
-            }
-            return;
-        }
-        drop(hub);
-        if attempt < TRIES {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    }
-    tracing::warn!(%wallet_id, %winner, height, "no header at the winner's height: its chunks stay pending");
 }
 
 /// A wallet's sweep rows in `app.sqlite`: its records ([`SweepOut`]) and

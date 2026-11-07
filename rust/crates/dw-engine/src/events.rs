@@ -386,12 +386,11 @@ pub(crate) struct WalletName {
 /// (MP-01; Android's rule).
 const STAMP_MAX_AGE: u64 = 3 * 3600;
 
-/// Records the news of a wallet's event stream in its sweep rows, given
-/// the sweep epoch it came in ([`SessionHub::with_sweep_epoch`]): whether
+/// Records the news of a wallet's event stream in its sweep rows: whether
 /// any changed, `None` when the rows could not be written
 /// (`coinjoin::write_beaten`, `coinjoin::delete_beaten_above`).
 pub(crate) type SweepNewsHook =
-    Box<dyn Fn(WalletId, crate::coinjoin::SweepNews<'_>, u64) -> Option<bool> + Send + Sync>;
+    Box<dyn Fn(WalletId, crate::coinjoin::SweepNews<'_>) -> Option<bool> + Send + Sync>;
 
 /// The hash of the block the SPV header chain holds at a height; `None`
 /// unless the header store has one there (`SpvRuntime::header_hash_at`
@@ -438,10 +437,6 @@ pub(crate) struct SessionHub {
     /// Records a beaten sweep chunk or a truncation in the sweep rows;
     /// unset in hub-only tests.
     sweep_news: OnceLock<SweepNewsHook>,
-    /// Counts the truncations: a winner's block hash, looked up after its
-    /// event, is recorded only in the epoch the event came in, so a fork in
-    /// between never stamps a replaced block with its successor's hash.
-    sweep_epoch: Mutex<u64>,
     /// The wallets whose sweep rows a truncation could not update: their
     /// rows are checked against the header chain on their next event.
     sweep_retry_due: Mutex<HashSet<WalletId>>,
@@ -450,9 +445,9 @@ pub(crate) struct SessionHub {
     sweep_retry: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// The SPV header chain ([`HeaderSource`]); unset, no header answers.
     headers: RwLock<Option<HeaderSource>>,
-    /// Tests: the beaten-row stamps started, to wait for.
+    /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
-    pub(crate) stamps: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Tests: holds the next first-seen write before it runs.
     #[cfg(test)]
     pub(crate) pause_seen: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -538,12 +533,11 @@ impl SessionHub {
             reconcile_pending: Mutex::new(HashSet::new()),
             peers_up: OnceLock::new(),
             sweep_news: OnceLock::new(),
-            sweep_epoch: Mutex::new(0),
             sweep_retry_due: Mutex::new(HashSet::new()),
             sweep_retry: OnceLock::new(),
             headers: RwLock::new(None),
             #[cfg(test)]
-            stamps: Mutex::new(Vec::new()),
+            sweep_checks: Mutex::new(Vec::new()),
             #[cfg(test)]
             pause_seen: Mutex::new(None),
         }
@@ -605,16 +599,10 @@ impl SessionHub {
         found
     }
 
-    /// Runs `f` on the current sweep epoch, with no truncation in between.
-    pub(crate) fn with_sweep_epoch<T>(&self, f: impl FnOnce(u64) -> T) -> T {
-        let epoch = self.sweep_epoch.lock().unwrap_or_else(|p| p.into_inner());
-        f(*epoch)
-    }
-
-    /// Tests: the beaten-row stamps and row checks started so far.
+    /// Tests: the sweep row checks started so far.
     #[cfg(test)]
-    pub(crate) fn take_stamps(&self) -> Vec<tokio::task::JoinHandle<()>> {
-        std::mem::take(&mut *self.stamps.lock().unwrap_or_else(|p| p.into_inner()))
+    pub(crate) fn take_sweep_checks(&self) -> Vec<tokio::task::JoinHandle<()>> {
+        std::mem::take(&mut *self.sweep_checks.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
     /// Checks wallet `id`'s sweep rows again on its next event.
@@ -627,21 +615,13 @@ impl SessionHub {
     }
 
     /// Hands `news` of wallet `id` to the sweep records; a change can free
-    /// or hold coins, so the balances are read again. A truncation starts a
-    /// new epoch first, under the epoch's lock. A failed write is checked
-    /// again on the wallet's next event.
+    /// or hold coins, so the balances are read again. A failed write is
+    /// checked again on the wallet's next event.
     fn note_sweep_news(&self, id: WalletId, news: crate::coinjoin::SweepNews<'_>) {
         let Some(note) = self.sweep_news.get() else {
             return;
         };
-        let changed = if let crate::coinjoin::SweepNews::Truncated { .. } = news {
-            let mut epoch = self.sweep_epoch.lock().unwrap_or_else(|p| p.into_inner());
-            *epoch += 1;
-            note(id, news, *epoch)
-        } else {
-            note(id, news, self.with_sweep_epoch(|e| e))
-        };
-        match changed {
+        match note(id, news) {
             Some(true) => self.pump.mark_balances(id),
             Some(false) => {}
             None => self.retry_sweep_rows(id),
@@ -955,7 +935,7 @@ impl SessionHub {
             WalletEvent::TransactionsSwept {
                 txids,
                 superseded_by,
-                winner_mined_height,
+                winner_block,
                 balance,
                 account_balances,
                 ..
@@ -968,7 +948,13 @@ impl SessionHub {
                     crate::coinjoin::SweepNews::Beaten {
                         txids,
                         winner: *superseded_by,
-                        winner_height: *winner_mined_height,
+                        at: match winner_block {
+                            Some(b) => crate::coinjoin::BeatenAt::Mined {
+                                height: b.height(),
+                                hash: b.block_hash(),
+                            },
+                            None => crate::coinjoin::BeatenAt::Is,
+                        },
                     },
                 );
                 // Upstream deleted these records (provably beaten spends);
