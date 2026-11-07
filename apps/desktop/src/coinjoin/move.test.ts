@@ -13,6 +13,8 @@ import { appError } from "../onboarding/testWorld";
 import type { MixedCoinsSweepPlan } from "../api/generated/MixedCoinsSweepPlan";
 import type { CoinJoinStatus } from "../api/generated/CoinJoinStatus";
 import type { MixedCoinsDestination } from "../api/generated/MixedCoinsDestination";
+import type { MixedCoinsConsolidationPlan } from "../api/generated/MixedCoinsConsolidationPlan";
+import type { MixedShieldQuote } from "../api/generated/MixedShieldQuote";
 import { SHIELDED_COPY } from "../shielded/flow";
 import {
   canRetry,
@@ -309,6 +311,137 @@ describe("Move mixed coins, the flow's edges", () => {
     expect(f.step).toBe("refused");
     f.begin();
     await vi.waitFor(() => expect(f.step).toBe("confirm"));
+  });
+
+  describe("a plan read after a close and reopen", () => {
+    const QUOTE: MixedShieldQuote = { inputs: 3, totalDuffs: 30, feeDuffs: 2, duffs: 28, poolFeeCredits: "1000", credits: "27000", fullyMixedDuffs: 20, notFullyMixedDuffs: 10 };
+    const COMBINE: MixedCoinsConsolidationPlan = { total: 30, chunks: [{ inputs: 60, amount: 29, fee: 1 }], fullyMixed: 20, notFullyMixed: 10, coinsAfter: 1, unconfirmed: 0, quoteId: "c" };
+    const MOVED = { moved: 30, received: 27, fee: 3, remaining: 0, txids: [], failureCode: null, unknownTxid: null };
+    const deferred = <T,>() => {
+      let resolve!: (v: T) => void;
+      let reject!: (e: unknown) => void;
+      const promise = new Promise<T>((ok, no) => ((resolve = ok), (reject = no)));
+      return { promise, resolve, reject };
+    };
+    const settle = () => new Promise((r) => setTimeout(r, 0));
+    const granted = (f: MoveMixedFlow) => {
+      f.grants.withGrant = (async (_p: unknown, _w: unknown, run: (g: { id: string }) => Promise<unknown>) => ({ value: await run({ id: "g" }) })) as typeof f.grants.withGrant;
+    };
+    /** Only the current destination's plan is shown. */
+    const shows = (f: MoveMixedFlow, step: string, kind: "wallet" | "shielded" | "combine") =>
+      expect({ step: f.step, destination: f.destination, plan: f.plan !== null, quote: f.shieldQuote !== null, combine: f.consolidation !== null }).toEqual({
+        step,
+        destination: kind === "wallet" ? "wallet" : "shielded",
+        plan: kind === "wallet",
+        quote: kind === "shielded",
+        combine: kind === "combine",
+      });
+
+    it("a late Shielded quote does not show beside the wallet plan, and Move moves to the wallet", async () => {
+      const quote = deferred<MixedShieldQuote>();
+      const shieldMixedCoins = vi.fn();
+      const moveMixedCoins = vi.fn().mockResolvedValue(MOVED);
+      const f = stub({ mixedCoinsSweepPlan: vi.fn().mockResolvedValue(PLAN), shieldMixedQuote: vi.fn(() => quote.promise), shieldMixedCoins, moveMixedCoins });
+      granted(f);
+      f.begin("shielded");
+      f.close();
+      f.begin("wallet");
+      await vi.waitFor(() => expect(f.step).toBe("confirm"));
+      quote.resolve(QUOTE);
+      await settle();
+      shows(f, "confirm", "wallet");
+      await f.move();
+      expect(moveMixedCoins).toHaveBeenCalledWith(W, "wallet", "q", "g");
+      expect(shieldMixedCoins).not.toHaveBeenCalled();
+      expect(f.step).toBe("done");
+    });
+
+    it("a late wallet plan does not show while the Shielded quote is read, nor after", async () => {
+      const plan = deferred<MixedCoinsSweepPlan>();
+      const quote = deferred<MixedShieldQuote>();
+      const f = stub({ mixedCoinsSweepPlan: vi.fn(() => plan.promise), shieldMixedQuote: vi.fn(() => quote.promise) });
+      f.begin("wallet");
+      f.close();
+      f.begin("shielded");
+      plan.resolve(PLAN);
+      await settle();
+      expect([f.step, f.plan]).toEqual(["plan", null]);
+      quote.resolve(QUOTE);
+      await vi.waitFor(() => expect(f.step).toBe("confirm"));
+      shows(f, "confirm", "shielded");
+    });
+
+    it("a late consolidation round does not replace the wallet plan", async () => {
+      const combine = deferred<MixedCoinsConsolidationPlan>();
+      const f = stub({
+        mixedCoinsSweepPlan: vi.fn().mockResolvedValue(PLAN),
+        shieldMixedQuote: vi.fn().mockRejectedValue(appError("shielded.too_many_inputs", { kind: "number", value: 60 })),
+        mixedCoinsConsolidationPlan: vi.fn(() => combine.promise),
+      });
+      f.begin("shielded");
+      await settle();
+      f.close();
+      f.begin("wallet");
+      await vi.waitFor(() => expect(f.step).toBe("confirm"));
+      combine.resolve(COMBINE);
+      await settle();
+      shows(f, "confirm", "wallet");
+    });
+
+    it("a late plan read that fails does not refuse the current plan", async () => {
+      const quote = deferred<MixedShieldQuote>();
+      const f = stub({ mixedCoinsSweepPlan: vi.fn().mockResolvedValue(PLAN), shieldMixedQuote: vi.fn(() => quote.promise) });
+      f.begin("shielded");
+      f.close();
+      f.begin("wallet");
+      await vi.waitFor(() => expect(f.step).toBe("confirm"));
+      quote.reject(appError("shielded.coins_locked"));
+      await settle();
+      expect(f.error).toBeNull();
+      shows(f, "confirm", "wallet");
+    });
+
+    it("a late Shielded quote while the wallet move runs leaves the move and its result alone", async () => {
+      const quote = deferred<MixedShieldQuote>();
+      const moved = deferred<typeof MOVED>();
+      const shieldMixedCoins = vi.fn();
+      const f = stub({ mixedCoinsSweepPlan: vi.fn().mockResolvedValue(PLAN), shieldMixedQuote: vi.fn(() => quote.promise), shieldMixedCoins, moveMixedCoins: vi.fn(() => moved.promise) });
+      granted(f);
+      f.begin("shielded");
+      f.close();
+      f.begin("wallet");
+      await vi.waitFor(() => expect(f.step).toBe("confirm"));
+      const going = f.move();
+      await vi.waitFor(() => expect(f.step).toBe("running"));
+      quote.resolve(QUOTE);
+      await settle();
+      expect([f.step, f.running, f.shieldQuote]).toEqual(["running", true, null]);
+      moved.resolve(MOVED);
+      await going;
+      expect([f.step, f.shieldQuote, f.result?.received]).toEqual(["done", null, 27]);
+      expect(shieldMixedCoins).not.toHaveBeenCalled();
+    });
+
+    it("a late wallet plan while Stop Mixing runs does not offer a move", async () => {
+      const plan = deferred<MixedCoinsSweepPlan>();
+      const stopped = deferred<void>();
+      const f = stub({
+        mixedCoinsSweepPlan: vi.fn(() => plan.promise),
+        shieldMixedQuote: vi.fn().mockRejectedValueOnce(appError("shielded.mixing_active")).mockResolvedValue(QUOTE),
+        stopMixing: vi.fn(() => stopped.promise),
+      });
+      f.begin("wallet");
+      f.close();
+      f.begin("shielded");
+      await vi.waitFor(() => expect(f.step).toBe("mixing"));
+      const stopping = f.stopMixing();
+      plan.resolve(PLAN);
+      await settle();
+      expect([f.step, f.running, f.plan]).toEqual(["mixing", true, null]);
+      stopped.resolve();
+      await stopping;
+      shows(f, "confirm", "shielded");
+    });
   });
 
   it("a refusal that came while the sheet was closed waits for it", async () => {

@@ -117,6 +117,9 @@ export const MOVE_COPY = {
 
 export type MoveStep = "plan" | "confirm" | "combine" | "mixing" | "running" | "done" | "refused";
 
+/** What a plan read found, for one destination. */
+type MovePlan = { kind: "wallet"; plan: MixedCoinsSweepPlan } | { kind: "shielded"; quote: MixedShieldQuote } | { kind: "combine"; consolidation: MixedCoinsConsolidationPlan };
+
 /** The plan's fee: what its chunks pay together. */
 export const planFee = (p: MixedCoinsSweepPlan) => p.chunks.reduce((sum, c) => sum + c.fee, 0);
 
@@ -242,27 +245,30 @@ export class MoveMixedFlow extends Model {
     this.step = mixingRefusal(e) ? "mixing" : "refused";
   }
 
-  /** The plan to the flow's destination: a sweep plan, a shield quote, or the consolidation round a
-   * shield of too many coins needs first. */
-  async #read(): Promise<void> {
-    if (this.destination === "wallet") {
-      this.plan = await this.api.mixedCoinsSweepPlan(this.walletId, "wallet");
-      this.step = "confirm";
-      return;
-    }
+  /** The plan to `destination`: a sweep plan, a shield quote, or the consolidation round a shield
+   * of too many coins needs first. It only reads: the caller commits it if its epoch is current. */
+  async #read(destination: MixedCoinsDestination): Promise<MovePlan> {
+    if (destination === "wallet") return { kind: "wallet", plan: await this.api.mixedCoinsSweepPlan(this.walletId, "wallet") };
     try {
-      this.shieldQuote = await this.api.shieldMixedQuote(this.walletId);
-      this.step = "confirm";
+      return { kind: "shielded", quote: await this.api.shieldMixedQuote(this.walletId) };
     } catch (e) {
       if (!hasCode(e, SHIELDED_CODES.tooManyInputs)) throw e;
-      this.consolidation = await this.api.mixedCoinsConsolidationPlan(this.walletId);
-      this.step = "combine";
+      return { kind: "combine", consolidation: await this.api.mixedCoinsConsolidationPlan(this.walletId) };
     }
+  }
+
+  /** Shows `read`, and only it: the other destinations' plans are cleared. */
+  #commit(read: MovePlan) {
+    this.plan = read.kind === "wallet" ? read.plan : null;
+    this.shieldQuote = read.kind === "shielded" ? read.quote : null;
+    this.consolidation = read.kind === "combine" ? read.consolidation : null;
+    this.step = read.kind === "combine" ? "combine" : "confirm";
   }
 
   /** A fresh plan; `retries` more tries while mixing still winds down. */
   async #plan(retries = 0) {
     const epoch = ++this.#epoch;
+    const { destination } = this;
     this.step = "plan";
     this.plan = null;
     this.shieldQuote = null;
@@ -276,8 +282,9 @@ export class MoveMixedFlow extends Model {
     this.changed();
     for (;;) {
       try {
-        await this.#read();
+        const read = await this.#read(destination);
         if (epoch !== this.#epoch) return;
+        this.#commit(read);
       } catch (e) {
         if (epoch !== this.#epoch) return;
         if (retries-- > 0 && mixingRefusal(e)) {
