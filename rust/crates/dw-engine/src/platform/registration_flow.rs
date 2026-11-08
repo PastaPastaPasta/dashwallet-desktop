@@ -251,6 +251,14 @@ pub(crate) enum FundError {
     /// needing more than `max` coins): nothing tracked or sent, the inputs
     /// free, the call `Cancelled` (`CountingFundingSigner::with_input_cap`).
     TooManyInputs { max: u64 },
+    /// A drain's signer refused a coin outside its plan or past its grant
+    /// (`CountingFundingSigner::with_drain_cap`): nothing tracked or sent,
+    /// the call `Cancelled`.
+    CoinsChanged,
+    /// A drain's signer refused a build whose credit is below the
+    /// library's drain minimum: nothing signed, tracked or sent, the call
+    /// `Cancelled`.
+    BelowMinimum { min: u64 },
     /// Any other failure after the call started.
     Failed(PlatformError),
 }
@@ -2754,7 +2762,11 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             }
             Err(FundError::CoinsLocked) => Step::Fail(RegistrationError::CoinsLocked.code(), true),
             // A shield's funding only; no proof wait returns it.
-            Err(e @ FundError::TooManyInputs { .. }) => self.failed(&PlatformError::Internal {
+            Err(
+                e @ (FundError::TooManyInputs { .. }
+                | FundError::CoinsChanged
+                | FundError::BelowMinimum { .. }),
+            ) => self.failed(&PlatformError::Internal {
                 detail: format!("{e:?}"),
             }),
         }
@@ -3183,7 +3195,7 @@ pub(crate) fn lock_status(
     }
 }
 
-fn fund_error(e: platform_wallet::PlatformWalletError) -> FundError {
+pub(super) fn fund_error(e: platform_wallet::PlatformWalletError) -> FundError {
     use platform_wallet::PlatformWalletError as E;
     match e {
         E::FinalityTimeout(_) => FundError::IsTimeout,
@@ -3313,6 +3325,35 @@ impl PwLib {
             }
             Err(e) => Err(fund_error(e)),
         }
+    }
+
+    /// A shield lock that drains CoinJoin account 0 (every final coin of
+    /// it, the fee out of the lock), signed by `signer`, a drain signer of
+    /// the call's permit; one below `minimum_lock_duffs` is dropped before
+    /// it is tracked or sent.
+    pub(crate) async fn fund_drain_with(
+        &self,
+        minimum_lock_duffs: u64,
+        signer: &super::signers::CountingFundingSigner,
+    ) -> Result<OutPoint, FundError> {
+        use super::shielded_pool::SHIELD_KEY;
+        use key_wallet::wallet::managed_wallet_info::asset_lock_builder::AssetLockFundingAccount;
+        use platform_wallet::wallet::asset_lock::AssetLockBuildAmount;
+        self.replay_permit().await?;
+        self.wallet
+            .asset_locks()
+            .create_funded_asset_lock_proof_with_funding(
+                AssetLockBuildAmount::DrainAll {
+                    minimum_lock_duffs: Some(minimum_lock_duffs),
+                },
+                AssetLockFundingAccount::CoinJoin { account_index: 0 },
+                SHIELD_KEY.funding_type,
+                SHIELD_KEY.identity_index,
+                signer,
+            )
+            .await
+            .map(|(_, _, outpoint)| outpoint)
+            .map_err(fund_error)
     }
 
     /// The build of [`Self::fund_lock`] with `signer`, a funding signer of

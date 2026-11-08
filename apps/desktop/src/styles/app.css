@@ -4287,8 +4287,10 @@ button.bell-row-open:focus-visible {
   line-height: var(--dw-type-footnote-line);
 }
 
-.coinjoin-move > .dash-button {
-  align-self: flex-start;
+.coinjoin-move-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs);
   margin-top: var(--dw-space-xs);
 }
 

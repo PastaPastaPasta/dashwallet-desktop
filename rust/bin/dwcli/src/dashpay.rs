@@ -963,9 +963,13 @@ fn shielded_params(e: &ShieldedError) -> Value {
             json!({"protocol_version": protocol_version, "activation_version": activation_version})
         }
         ShieldedError::NotSynced { reason } => json!({"reason": reason}),
-        ShieldedError::CoinsLocked | ShieldedError::UnrecordedSpend => {
-            json!({})
-        }
+        ShieldedError::CoinsLocked
+        | ShieldedError::UnrecordedSpend
+        | ShieldedError::MixingActive
+        | ShieldedError::NothingToMove
+        | ShieldedError::MoveRunning
+        | ShieldedError::CoinsChanged => json!({}),
+        ShieldedError::CoinsUnconfirmed { coins } => json!({"coins": coins}),
         ShieldedError::InvalidAddress { detail } => json!({"detail": detail}),
         ShieldedError::InsufficientFunds { needed, available }
         | ShieldedError::FundingInsufficient { needed, available } => {

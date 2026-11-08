@@ -845,7 +845,7 @@ impl NetworkSession {
     ) -> Result<Vec<(Utxo, DerivationPath)>, MasternodesError> {
         let network = self.network.core_network();
         let (coins, _) = self
-            .source_coins(fence, &CoinSource::Any, &HashSet::new())
+            .source_coins(fence, &CoinSource::Any, &HashSet::new(), false)
             .await?;
         // A coin a masternode row holds is never another's, its lock row
         // or not (BL-346).

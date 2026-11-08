@@ -4475,6 +4475,17 @@ fn a_drain_lease_starts_no_registration() {
         ))
         .unwrap_err();
     assert_eq!(err.code(), "platform.grant_invalid");
+    // Nor does "Finish transfers" take it (`authority`, past `grant_cap`).
+    let err = f
+        .engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            lease.id_string(),
+        ))
+        .unwrap_err();
+    assert_eq!(err.code(), "platform.grant_invalid");
     assert!(f.rows().is_empty());
     assert_eq!(lease.available(BudgetPurpose::Funding).unwrap(), 10 * COIN);
 }

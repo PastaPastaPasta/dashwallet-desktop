@@ -82,6 +82,7 @@ mod reverify;
 pub(crate) mod runtime;
 #[cfg(test)]
 mod runtime_tests;
+pub(crate) mod shield_drain;
 mod shielded;
 #[cfg(test)]
 mod shielded_close_tests;
@@ -163,10 +164,11 @@ pub use registration::{
     RegistrationStatus, RegistrationWait,
 };
 pub use shielded::{
-    PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote, ShieldState,
-    ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus, ShieldedAddress,
-    ShieldedDirection, ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedSpendState,
-    ShieldedStatus, ShieldedSyncWait, UnrecordedSpend, UnresolvedSpend,
+    MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote,
+    ShieldRepairCost, ShieldState, ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus,
+    ShieldedAddress, ShieldedDirection, ShieldedSpendOutcome, ShieldedSpendQuote,
+    ShieldedSpendState, ShieldedStatus, ShieldedSyncWait, StuckShieldFunding, UnrecordedSpend,
+    UnresolvedSpend,
 };
 pub use signers::{
     CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultPlatformAddressSigner,
