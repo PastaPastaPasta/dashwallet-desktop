@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Generates testdata/core_v23_long_passphrase.json from a released regtest dashd.
 
-Dash Core 19.2.0 to 23.x let a descriptor wallet take a BIP39 passphrase of any length through
-`upgradetohd` and cut the PBKDF2 salt at 256 bytes (v23.1.10 src/wallet/bip39.cpp:140-145,
+Dash Core 23.0.0 to 23.1.x let a descriptor wallet take a BIP39 passphrase of any length through
+`upgradetohd` and cut the PBKDF2 salt at 256 bytes; legacy wallets refuse over 256 bytes from 19.2.0
+on, and descriptor wallets took a mnemonic only from 23.0.0 (v23.1.10 src/wallet/bip39.cpp:140-145,
 src/wallet/wallet.cpp:3916-3928). v24.0.0 refuses one over 256 bytes, with or without
 -allow-deprecated-long-mnemonics (v24.0.0 src/wallet/rpc/wallet.cpp:384-392), so the regtest
 harness can no longer create such a wallet. This records one wallet made by the last v23 release

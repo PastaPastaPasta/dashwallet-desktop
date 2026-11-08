@@ -1,6 +1,7 @@
-//! A wallet Dash Core 19.2.0 to 23.x could create and v24.0.0 refuses: a
+//! A wallet Dash Core 23.0.0 to 23.1.x could create and v24.0.0 refuses: a
 //! descriptor wallet whose BIP39 passphrase is over 256 bytes, its salt cut
-//! at 256. testdata/core_v23_long_passphrase.json was made once from the
+//! at 256 (legacy wallets refuse over 256 bytes from 19.2.0 on, and
+//! descriptor wallets took a mnemonic only from 23.0.0). testdata/core_v23_long_passphrase.json was made once from the
 //! v23.1.10 release by testdata/oracle/dashd/gen_long_passphrase.py; the
 //! dash-qt restore (QT-104) must derive dashd's master key and addresses.
 

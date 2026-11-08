@@ -57,7 +57,8 @@ NON_ASCII = "pässwörd ñ € 🔑"
 # The longest passphrase dashd v24.0.0 creates a wallet with, and only with
 # -allow-deprecated-long-mnemonics: 249 to 256 bytes, to recover a wallet Dash Core 19.2.0 or later
 # made, whose salt "mnemonic" + passphrase is cut at 256 bytes (v24.0.0 src/wallet/init.cpp:106-112).
-# A passphrase over 256 bytes, which only 23.x and older took, is dw-vault's
+# A passphrase over 256 bytes, which only 23.0.0 to 23.1.x took (legacy wallets refuse over 256
+# bytes from 19.2.0 on; descriptor wallets took a mnemonic only from 23.0.0), is dw-vault's
 # tests/core_v23_long_passphrase.rs.
 LONG_PASS = ("long passphrase é " * 16)[:233] + "0123456789"
 assert len(LONG_PASS.encode()) == 256
@@ -69,7 +70,7 @@ VARIANTS = {
     # name: (phrase, BIP39 passphrase, wallet.dat passphrase, legacy dump too)
     "plain": (ABANDON, "TREZOR", None, True),
     "encrypted": (LETTER, NON_ASCII, "wallet pass é 🔐", True),
-    "weak_longpass": (WEAK, LONG_PASS, None, False),
+    "weak_longpass": (WEAK, LONG_PASS, None, True),
 }
 
 

@@ -140,7 +140,7 @@ DWD_COMPOSE_PROJECT=dwd-mm DWD_REGTEST_BUILD=0 DWCLI=$DW_TARGET/debug/dwcli \
 compatibility both ways with a host-built `dwcli`:
 
 * dashd v24 descriptor wallets (a plain one, an encrypted one with a non-ASCII BIP39 and wallet
-  passphrase, a weak-checksum phrase with a 300-byte passphrase), funded including an address 25
+  passphrase, a weak-checksum phrase with a 256-byte passphrase), funded including an address 25
   past the last used one and change, are restored through the phrase, the `wallet.dat`, the
   `dumpwallet` of a legacy wallet with the same phrase and `listdescriptors true`; every path gives
   the same wallet id, dashd's first 1000 receive and change addresses, its balance and labels;
@@ -149,8 +149,10 @@ compatibility both ways with a host-built `dwcli`:
 * PSBT: dwcli "Create Unsigned" → dashd `walletprocesspsbt` → dwcli broadcast; dashd
   `walletcreatefundedpsbt` → dwcli sign (same signatures as dashd) → dashd `finalizepsbt`.
 
-Legacy BIP39 passphrases are limited to 256 characters by dashd (`SetMnemonic`), so the 300-byte
-case has no `dumpwallet` path. Not covered yet: BDB `wallet.dat` (M6), Core-mixed CoinJoin funds.
+dashd v24.0.0 takes a 249- to 256-byte passphrase only with `-allow-deprecated-long-mnemonics`, which
+the suite passes to its dashd. A passphrase over 256 bytes, which only 23.0.0 to 23.1.x took, is
+covered by `rust/crates/dw-vault/tests/core_v23_long_passphrase.rs` against a vector from v23.1.10.
+Not covered yet: BDB `wallet.dat` (M6), Core-mixed CoinJoin funds.
 
 ```sh
 DWD_COMPOSE_PROJECT=dwd-r2 DWD_REGTEST_BUILD=0 DWCLI=$DW_TARGET/debug/dwcli \
