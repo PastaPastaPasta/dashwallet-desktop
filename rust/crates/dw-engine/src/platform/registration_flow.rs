@@ -3296,7 +3296,7 @@ impl PwLib {
         permit: &CallPermit,
     ) -> Result<OutPoint, FundError> {
         // The input bound (`lock_inputs`): refused with nothing selected,
-        // or past it at the signer, before the transaction is complete.
+        // or past it at the signer, before the first signature.
         super::lock_inputs::check(&self.wallet, duffs)
             .await
             .map_err(FundError::Refused)?;
@@ -3321,7 +3321,7 @@ impl PwLib {
             // step ends `NotSent`, not possibly sent (review r3 R3-m1).
             Err(_) if signer.refused() => {
                 permit.abort_unsent();
-                Err(FundError::NotSent(super::lock_inputs::too_many(None)))
+                Err(FundError::NotSent(signer.refusal()))
             }
             Err(e) => Err(fund_error(e)),
         }

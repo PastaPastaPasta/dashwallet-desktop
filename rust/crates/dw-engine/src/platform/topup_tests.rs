@@ -2108,3 +2108,99 @@ fn a_replay_holds_asset_lock_funding_until_it_reaches_its_target() {
     assert!(!held() && !refused());
     f.engine.block_on(lib.fence()).unwrap();
 }
+
+/// 0.1.x row 62: a top-up's lock that needs 51 coins (60,000 duffs each
+/// for 3,000,000 duffs: 50 reach the amount, the fee needs the 51st),
+/// funded through the real `PwLib` and library. The capped signer refuses
+/// the selection when the builder shows it, before any signature: nothing
+/// is released, so the call ends `Cancelled` with its Funding charge
+/// refunded, the fence keeps no ended call of it, no lock is tracked, no
+/// coin stays reserved, Repair lists nothing, and the identity's next
+/// top-up is not held.
+#[test]
+fn a_top_up_lock_of_51_needed_coins_is_refused_before_its_first_signature() {
+    use super::flows::BudgetPurpose;
+    use super::lease::FlowOutcome;
+    const COIN_DUFFS: u64 = 60_000;
+    const DUFFS: u64 = 50 * COIN_DUFFS;
+    let f = fixture(false);
+    let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
+    let pw = engine.block_on(session.wallet(&wallet)).unwrap();
+    let coins: Vec<OutPoint> = (0..51)
+        .map(|vout| OutPoint::new(Txid::from_byte_array([0xeb; 32]), vout))
+        .collect();
+    engine.block_on(async {
+        let address = (pw.core().next_receive_address_for_account(0).await).unwrap();
+        let mut state = pw.state_mut().await;
+        let account = (state.core_wallet.accounts.standard_bip44_accounts)
+            .get_mut(&0)
+            .unwrap();
+        for &outpoint in &coins {
+            let mut utxo = key_wallet::Utxo::new(
+                outpoint,
+                dashcore::TxOut {
+                    value: COIN_DUFFS,
+                    script_pubkey: address.script_pubkey(),
+                },
+                address.clone(),
+                1,
+                false,
+            );
+            utxo.is_confirmed = true;
+            account.utxos.insert(outpoint, utxo);
+        }
+    });
+    let reserved = || {
+        engine.block_on(async {
+            let fence = session.coin_fence(wallet).await.unwrap();
+            let view = session.fenced_coins(&fence).await.unwrap();
+            (view.coins.iter())
+                .filter(|c| c.reserved && coins.contains(&c.utxo.outpoint))
+                .count()
+        })
+    };
+    let grant = f.grant(10 * DUFFS);
+    let s = Arc::clone(session);
+    let (funded, released, outcome, budget, stuck, next) = engine.block_on(async move {
+        let (_, lib) = PwLib::open(&s, wallet).await.unwrap();
+        let lease = (s.begin_lease(wallet, FlowKind::TopUp, &[grant]).await).unwrap();
+        let before = lease.available(BudgetPurpose::Funding).unwrap();
+        assert!(s.leases.refresh_funding(wallet).await);
+        let step = topup::next_step(&s, wallet, 1).unwrap();
+        let key = FundingKey {
+            funding_type: AssetLockFundingType::IdentityTopUp,
+            identity_index: 1,
+            account: 0,
+        };
+        let permit = (TopUpLib::funding_permit(&lib, &lease, step, key, DUFFS).await).unwrap();
+        let funded = TopUpLib::fund(&lib, DUFFS, 1, &permit).await;
+        let released = permit.signatures().released();
+        let outcome = permit.finish(funded.is_ok());
+        let after = lease.available(BudgetPurpose::Funding).unwrap();
+        let stuck = topup::stuck(&s, wallet, &lib).await;
+        let next = topup::next_step(&s, wallet, 1);
+        (funded, released, outcome, (before, after), stuck, next)
+    });
+    let Err(FundError::NotSent(PlatformError::InvalidArgument { detail })) = funded else {
+        panic!("{funded:?}")
+    };
+    assert_eq!(released, 0, "refused before any signature");
+    assert_eq!(outcome, FlowOutcome::Cancelled);
+    assert_eq!(budget.0, budget.1, "its Funding charge refunded");
+    assert_eq!(
+        session.leases.ended_funding_steps(wallet),
+        Vec::<String>::new(),
+        "the fence keeps no ended call of it"
+    );
+    assert!(!session.leases.funding_signatures_out(wallet));
+    assert_eq!(stuck.unwrap(), vec![], "nothing for Repair");
+    assert!(
+        engine
+            .block_on(pw.asset_locks().list_tracked_locks())
+            .is_empty(),
+        "no lock tracked, so none sent"
+    );
+    assert_eq!(reserved(), 0, "no coin stays reserved");
+    assert!(next.is_ok(), "the next top-up is not held: {next:?}");
+    assert!(detail.contains("would use 51 coins"), "{detail}");
+}
