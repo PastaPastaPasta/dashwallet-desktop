@@ -4409,7 +4409,6 @@ fn a_lock_of_51_needed_coins_is_refused_before_its_first_signature() {
     let Err(FundError::NotSent(PlatformError::InvalidArgument { detail })) = funded else {
         panic!("{funded:?}")
     };
-    assert!(detail.contains("would use 51 coins"), "{detail}");
     assert_eq!(released, 0, "refused before any signature");
     assert_eq!(outcome, FlowOutcome::Cancelled);
     assert_eq!(
@@ -4448,6 +4447,7 @@ fn a_lock_of_51_needed_coins_is_refused_before_its_first_signature() {
         coins.iter().all(|c| !reads_reserved(&f, *c)),
         "selection released"
     );
+    assert!(detail.contains("would use 51 coins"), "{detail}");
     // Consolidated: one coin instead of the 51. The draft funds at once.
     f.engine.block_on(async {
         let mut state = wallet.state_mut().await;

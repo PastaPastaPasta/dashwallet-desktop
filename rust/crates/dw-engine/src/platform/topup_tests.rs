@@ -2184,7 +2184,6 @@ fn a_top_up_lock_of_51_needed_coins_is_refused_before_its_first_signature() {
     let Err(FundError::NotSent(PlatformError::InvalidArgument { detail })) = funded else {
         panic!("{funded:?}")
     };
-    assert!(detail.contains("would use 51 coins"), "{detail}");
     assert_eq!(released, 0, "refused before any signature");
     assert_eq!(outcome, FlowOutcome::Cancelled);
     assert_eq!(budget.0, budget.1, "its Funding charge refunded");
@@ -2203,4 +2202,5 @@ fn a_top_up_lock_of_51_needed_coins_is_refused_before_its_first_signature() {
     );
     assert_eq!(reserved(), 0, "no coin stays reserved");
     assert!(next.is_ok(), "the next top-up is not held: {next:?}");
+    assert!(detail.contains("would use 51 coins"), "{detail}");
 }
