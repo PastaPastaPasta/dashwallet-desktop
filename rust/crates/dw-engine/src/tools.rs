@@ -566,11 +566,11 @@ impl NetworkSession {
             }
             Ok(None) => {
                 tracing::warn!(wallet = %wallet, "replay not resumed: the wallet is not loaded");
-                hold(record.reached, record.target);
+                hold(record.reached.max(floor), record.target);
             }
             Err(e) => {
                 tracing::warn!(error = %e, wallet = %wallet, "replay not resumed: spends wait for a rescan");
-                hold(record.reached, record.target);
+                hold(record.reached.max(floor), record.target);
             }
         }
     }

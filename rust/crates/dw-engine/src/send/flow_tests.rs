@@ -3472,9 +3472,28 @@ impl Fixture {
     /// The history holds `txid`'s transaction as mined at `height`.
     fn funded_at(&self, txid: Txid, height: u32) {
         use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+        self.funded_in(
+            txid,
+            TransactionContext::InBlock(BlockInfo::new(
+                height,
+                dashcore::BlockHash::all_zeros(),
+                9,
+            )),
+        );
+    }
+
+    /// The history holds `txid`'s transaction, not in a block.
+    fn funded_at_unmined(&self, txid: Txid) {
+        self.funded_in(
+            txid,
+            key_wallet::transaction_checking::TransactionContext::Mempool,
+        );
+    }
+
+    fn funded_in(&self, txid: Txid, context: key_wallet::transaction_checking::TransactionContext) {
         let funding = dashcore::Transaction {
             version: 2,
-            lock_time: height,
+            lock_time: 0,
             input: Vec::new(),
             output: Vec::new(),
             special_transaction_payload: None,
@@ -3484,11 +3503,7 @@ impl Fixture {
                 txid,
                 crate::history::TxEntry {
                     tx: funding,
-                    context: TransactionContext::InBlock(BlockInfo::new(
-                        height,
-                        dashcore::BlockHash::all_zeros(),
-                        9,
-                    )),
+                    context,
                     instant_locked: false,
                     first_seen: None,
                     own_inputs: Default::default(),
@@ -3753,20 +3768,32 @@ fn an_unreadable_record_whose_raised_hold_is_not_stored_ends_with_a_rescan_from_
     assert!(f.record().is_some_and(|r| !r.cancelled));
 }
 
-/// The abandon is planned under the lock that applies it: a descendant
-/// that arrives first, spending also a coin funded below the root's, is
-/// abandoned with it once the replay from that lower block is stored, and
-/// not at all when that cannot be.
-#[test]
-fn an_abandon_stores_the_replay_of_a_descendant_that_arrives_before_it_applies() {
+/// How the hub holds the funding of the descendant's older coin.
+enum OlderFunding {
+    Mined,
+    Withheld,
+    Unmined,
+}
+
+/// A wallet born at 50 with root R (spending a coin funded at 150) seen,
+/// and its descendant D (spending R's change and a coin funded at 100)
+/// not yet: D's older funding as `older` says.
+fn abandon_fixture(older: OlderFunding) -> (Fixture, Txid, dashcore::Transaction) {
     let f = fixture(false);
+    f.engine
+        .block_on(f.session.set_birth_height(f.wallet, 50))
+        .unwrap();
     f.advance(1_000);
     f.commit(1_000).unwrap();
     let (a, b) = (f.late_coin(1, COIN, 150), f.late_coin(2, COIN, 100));
     f.put_coin(a.clone());
     f.put_coin(b.clone());
     f.funded_at(a.outpoint.txid, 150);
-    f.funded_at(b.outpoint.txid, 100);
+    match older {
+        OlderFunding::Mined => f.funded_at(b.outpoint.txid, 100),
+        OlderFunding::Withheld => {}
+        OlderFunding::Unmined => f.funded_at_unmined(b.outpoint.txid),
+    }
     let root = dashcore::Transaction {
         version: 2,
         lock_time: 0,
@@ -3806,17 +3833,35 @@ fn an_abandon_stores_the_replay_of_a_descendant_that_arrives_before_it_applies()
         }],
         special_transaction_payload: None,
     };
-    let (root_id, descendant_id) = (root.txid(), descendant.txid());
-    let manager = Arc::clone(&f.session.live().unwrap().manager);
-    let abandon = || {
-        let (s, id, m) = (Arc::clone(&f.session), f.wallet, Arc::clone(&manager));
-        f.session
-            .rt
-            .spawn(async move { s.abandon_inner(&m, id, root_id).await })
-    };
+    let root_id = root.txid();
+    (f, root_id, descendant)
+}
+
+fn abandon(
+    f: &Fixture,
+    root: Txid,
+) -> tokio::task::JoinHandle<Result<std::collections::BTreeSet<Txid>, EngineError>> {
+    let (s, id, m) = (
+        Arc::clone(&f.session),
+        f.wallet,
+        Arc::clone(&f.session.live().unwrap().manager),
+    );
+    f.session
+        .rt
+        .spawn(async move { s.abandon_inner(&m, id, root).await })
+}
+
+/// The abandon is planned under the lock that applies it: a descendant
+/// that arrives first, spending also a coin funded below the root's, is
+/// abandoned with it once the replay from that lower block is stored, and
+/// not at all when that cannot be.
+#[test]
+fn an_abandon_stores_the_replay_of_a_descendant_that_arrives_before_it_applies() {
+    let (f, root_id, descendant) = abandon_fixture(OlderFunding::Mined);
+    let descendant_id = descendant.txid();
     let pause = Arc::new(crate::coins::TestPause::default());
     *f.session.hub.pause_abandon.lock().unwrap() = Some(Arc::clone(&pause));
-    let first = abandon();
+    let first = abandon(&f, root_id);
     eventually("the abandon's pause", || {
         pause.reached.load(std::sync::atomic::Ordering::SeqCst)
     });
@@ -3848,8 +3893,89 @@ fn an_abandon_stores_the_replay_of_a_descendant_that_arrives_before_it_applies()
         "the descendant went without its replay"
     );
 
-    let second = f.engine.block_on(abandon()).unwrap().unwrap();
+    let second = f.engine.block_on(abandon(&f, root_id)).unwrap().unwrap();
     assert_eq!(second, [root_id, descendant_id].into_iter().collect());
     assert_eq!(f.record().map(|r| r.reached), Some(99));
     assert_eq!(f.abandon_state(descendant_id), (true, false));
+}
+
+/// A released coin whose funding the hub does not hold, or holds without
+/// a block, is replayed from the birth height.
+#[test]
+fn an_abandon_releasing_a_coin_of_unknown_funding_height_replays_from_the_birth_height() {
+    for older in [OlderFunding::Withheld, OlderFunding::Unmined] {
+        let (f, root_id, descendant) = abandon_fixture(older);
+        f.see_tx(&descendant);
+        let abandoned = f.engine.block_on(abandon(&f, root_id)).unwrap().unwrap();
+        let record = f.record();
+        eprintln!(
+            "ROW58 abandon of a coin of unknown funding height: {abandoned:?}, record {record:?}"
+        );
+        assert_eq!(abandoned.len(), 2);
+        assert_eq!(
+            record.map(|r| r.reached),
+            Some(49),
+            "replayed from above the birth height"
+        );
+    }
+}
+
+/// A replay whose target a fork lowered, from a checkpoint of 6000 to
+/// 5000, then the new chain grows to 5050 and a coin funded at 150 is
+/// spent at 5025, committed; after a crash (and, with `second_fork`, a
+/// fork back to 5040 first) the resumed replay refuses the coin until its
+/// spend replays.
+fn a_fork_then_canonical_progress_survives_a_crash(second_fork: Option<u32>) {
+    use platform_wallet::changeset::CoreChangeSet;
+    let f = fixture(false);
+    let coin = f.late_coin(7, COIN, 150);
+    f.put_coin(coin.clone());
+    f.store_core(CoreChangeSet {
+        new_utxos: vec![coin.clone()],
+        synced_height: Some(6_000),
+        ..Default::default()
+    });
+    f.advance(6_000);
+    f.rescan(100).unwrap();
+    f.truncate(5_000);
+    f.advance(5_000);
+    f.see_spent(coin.outpoint);
+    f.store_core(CoreChangeSet {
+        spent_utxos: vec![coin.clone()],
+        synced_height: Some(5_025),
+        ..Default::default()
+    });
+    f.advance(5_050);
+    f.commit(5_050).unwrap();
+    if let Some(height) = second_fork {
+        f.truncate(height);
+    }
+    let before = f.record();
+    f.crash_on_close();
+    let f = f.reopen();
+    assert!(f.synced() < 100);
+    f.put_coin(coin.clone());
+    f.advance(5_000);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let (guard, payment) = (f.guard(), f.pay_from_the_draft(&draft));
+    eprintln!(
+        "ROW58 fork, growth, spend at 5025, second fork {second_fork:?}, crash: record {before:?}, \
+         replay guard at 5000 {guard:?}, payment {:?}",
+        payment.as_ref().map(|p| p.summary().inputs[0].outpoint)
+    );
+    assert!(replaying(guard), "done below the new chain's spend");
+    assert!(replaying(payment), "the coin spent at 5025 pays");
+    f.see_spent(coin.outpoint);
+    f.advance(5_050);
+    assert!(!replaying(f.pay_from_the_draft(&draft)));
+}
+
+#[test]
+fn a_fork_lowered_replay_keeps_the_new_chains_progress_across_a_crash() {
+    a_fork_then_canonical_progress_survives_a_crash(None);
+}
+
+#[test]
+fn a_second_fork_keeps_the_new_chains_progress_below_it_across_a_crash() {
+    a_fork_then_canonical_progress_survives_a_crash(Some(5_040));
 }

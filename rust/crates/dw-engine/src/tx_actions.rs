@@ -301,7 +301,7 @@ impl NetworkSession {
             let planned = trial
                 .abandon_transaction_with_spends(root, &BTreeMap::new())
                 .abandoned;
-            let checkpoint = self.abandon_rewind(wallet, &planned, info.core_wallet.birth_height());
+            let checkpoint = self.abandon_rewind(wallet, &planned, &info.core_wallet);
             if let Some(checkpoint) = checkpoint {
                 self.record_rewind_locked(wallet, info, checkpoint).await?;
             }
@@ -401,28 +401,39 @@ impl NetworkSession {
     }
 
     /// The checkpoint abandoning `abandoned` rewinds to: below the lowest
-    /// funding height of the coins it releases, or below `birth` when the
-    /// hub has not heard of one of them yet.
+    /// funding height of the wallet's coins it releases (key-wallet's
+    /// records name them), or below the birth height when the hub has not
+    /// heard of one of the transactions, or of a coin's funding block.
     fn abandon_rewind(
         &self,
         wallet: WalletId,
         abandoned: &BTreeSet<Txid>,
-        birth: u32,
+        info: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
     ) -> Option<u32> {
+        let birth = info.birth_height().saturating_sub(1);
         if (abandoned.iter()).any(|t| self.hub.history.get(&wallet, t).is_none()) {
-            return Some(birth.saturating_sub(1));
+            return Some(birth);
         }
-        self.rescan_from(wallet, &self.released(wallet, abandoned))
-            .map(|h| h.saturating_sub(1))
-    }
-
-    /// The lowest funding height of `released`, which the filter scan
-    /// passes again to bring them back.
-    fn rescan_from(&self, wallet: WalletId, released: &[OutPoint]) -> Option<u32> {
-        (released.iter())
-            .filter_map(|o| self.hub.history.get(&wallet, &o.txid))
-            .filter_map(|e| e.context.block_info().map(|b| b.height()))
-            .min()
+        let released: BTreeSet<OutPoint> = (info.accounts.all_accounts().into_iter())
+            .flat_map(|a| a.transactions().iter())
+            .filter(|(t, _)| abandoned.contains(*t))
+            .flat_map(|(_, r)| {
+                (r.input_details.iter())
+                    .filter_map(|i| r.transaction.input.get(i.index as usize))
+                    .map(|i| i.previous_output)
+            })
+            .filter(|o| !abandoned.contains(&o.txid))
+            .collect();
+        let mut lowest = None::<u32>;
+        for o in &released {
+            let funded = (self.hub.history.get(&wallet, &o.txid))
+                .and_then(|e| e.context.block_info().map(|b| b.height()));
+            match funded {
+                Some(h) => lowest = Some(lowest.map_or(h, |l| l.min(h))),
+                None => return Some(birth),
+            }
+        }
+        lowest.map(|h| h.saturating_sub(1))
     }
 
     /// dash-qt "Resend transaction" (QT-091): hands the stored transaction

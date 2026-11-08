@@ -536,6 +536,7 @@ impl ReplayRecords {
                 .get(&wallet)
                 .copied(),
         );
+        self.raise_forked(wallet, height).await;
         if committed.is_some_and(|(_, failed)| failed) || height <= stale.unwrap_or(0) {
             return;
         }
@@ -566,6 +567,29 @@ impl ReplayRecords {
             Ok(r) if due(r).is_some_and(|r| live >= r.target) => {
                 if let Err(e) = self.write(&mut records, wallet, None).await {
                     tracing::warn!(error = %e, wallet = %wallet, "could not delete the finished replay record");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, wallet = %wallet, "could not read the replay record")
+            }
+        }
+    }
+
+    /// A commit at `height` of a replay whose target a fork lowered, above
+    /// that target and at most the old chain's height: the stored
+    /// checkpoint cannot tell the new chain's progress from the old one's,
+    /// so the target follows the commit.
+    async fn raise_forked(&self, wallet: WalletId, height: u32) {
+        let mut records = self.records.lock().await;
+        match self.load(&mut records, wallet).await {
+            Ok(Some(r)) if r.forked_from > 0 && r.target < height && height <= r.forked_from => {
+                let raised = ReplayRecord {
+                    target: height,
+                    ..r
+                };
+                if let Err(e) = self.write(&mut records, wallet, Some(raised)).await {
+                    tracing::warn!(error = %e, wallet = %wallet, "could not store the replay's progress after a fork");
                 }
             }
             Ok(_) => {}
