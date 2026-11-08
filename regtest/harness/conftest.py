@@ -18,8 +18,13 @@ from dwd_regtest import COINBASE_MATURITY_BLOCKS, RegtestNode, node_from_env
 
 @pytest.fixture(scope="session")
 def regtest_node(request: pytest.FixtureRequest) -> Iterator[RegtestNode]:
-    """One fresh regtest dashd for the whole session, stopped (and its chain discarded) afterwards."""
-    node = node_from_env()
+    """One fresh regtest dashd for the whole session, stopped (and its chain discarded) afterwards.
+
+    A test module's `DASHD_ARGS` (a tuple of dashd options) is added to its command line.
+    """
+    modules = {getattr(item, "module", None) for item in request.session.items}
+    extra = sorted({arg for module in modules for arg in getattr(module, "DASHD_ARGS", ())})
+    node = node_from_env(extra_args=tuple(extra))
     started = False
     try:
         # start() is inside the try so a failed start still tears down containers/processes.

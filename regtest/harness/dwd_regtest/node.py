@@ -66,6 +66,8 @@ class RegtestNode:
     rpc_port: int = field(default_factory=free_port)
     p2p_port: int = field(default_factory=free_port)
     host: str = "127.0.0.1"
+    # Appended to dashd's command line.
+    extra_args: tuple[str, ...] = ()
 
     @property
     def rpc_url(self) -> str:
@@ -182,6 +184,7 @@ class DockerComposeNode(RegtestNode):
             DWD_P2P_HOST_PORT=str(self.p2p_port),
             DWD_RPC_USER=RPC_USER,
             DWD_RPC_PASSWORD=RPC_PASSWORD,
+            DWD_DASHD_ARGS=" ".join(self.extra_args),
         )
         return subprocess.run(
             ["docker", "compose", "-f", str(COMPOSE_FILE), "-p", self.project, *args],
@@ -264,6 +267,7 @@ class LocalBinaryNode(RegtestNode):
                 "-debug=net",
                 "-debug=mempool",
                 "-debug=rpc",
+                *self.extra_args,
             ],
             stdout=self._log,
             stderr=subprocess.STDOUT,
@@ -314,15 +318,15 @@ class LocalBinaryNode(RegtestNode):
         return path.read_text(errors="replace") if path.exists() else ""
 
 
-def node_from_env() -> RegtestNode:
+def node_from_env(extra_args: tuple[str, ...] = ()) -> RegtestNode:
     """Pick the backend from DWD_REGTEST_BACKEND (`docker`, the default, or `local`)."""
     backend = os.environ.get("DWD_REGTEST_BACKEND", "docker")
     if backend == "docker":
         build = os.environ.get("DWD_REGTEST_BUILD", "1") != "0"
         # DWD_COMPOSE_PROJECT pins the compose project name (e.g. one per agent or CI job).
         if project := os.environ.get("DWD_COMPOSE_PROJECT"):
-            return DockerComposeNode(build=build, project=project)
-        return DockerComposeNode(build=build)
+            return DockerComposeNode(build=build, project=project, extra_args=extra_args)
+        return DockerComposeNode(build=build, extra_args=extra_args)
     if backend == "local":
-        return LocalBinaryNode()
+        return LocalBinaryNode(extra_args=extra_args)
     raise ValueError(f"unknown DWD_REGTEST_BACKEND={backend!r} (expected 'docker' or 'local')")

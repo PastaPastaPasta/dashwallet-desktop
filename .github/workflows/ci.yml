@@ -134,10 +134,17 @@ jobs:
         run: cargo test -p dw-app --features selftest --locked --no-fail-fast
       # Without the feature (the workspace run above), dwcli has no `coinjoin-test-addresses`; with
       # it, the command parses and dw-engine's probe sees the test calls, so the nightly's release
-      # leg of mix_shield_release_check isn't vacuous.
-      - name: dwcli and dw-engine with the mix-shield-test feature
+      # leg of mix_shield_release_check isn't vacuous. With `invitation-create-test`, the table
+      # tests cover its `invite create` row. The Nightly runs dwcli's whole suite with each debug
+      # feature.
+      - name: dwcli and dw-engine with the debug features
         if: ${{ !cancelled() }}
         run: |
+          cargo test -p dwcli --bin dwcli --features invitation-create-test --locked --no-fail-fast -- --exact \
+            dashpay::tests::the_table_covers_every_dashpay_command \
+            dashpay::tests::every_command_passes_the_session_grammar \
+            dashpay::tests::every_command_reports_its_stub_as_a_json_error | tee "$RUNNER_TEMP/dwcli-table.txt"
+          grep -q '^test result: ok\. 3 passed' "$RUNNER_TEMP/dwcli-table.txt"
           cargo test -p dwcli --features mix-shield-test --locked --no-fail-fast -- coinjoin::tests
           cargo test -p dw-engine --features test-mix-shield --test mix_shield_release_check --locked
       # E0-13: the TypeScript bindings and the facade coverage table are generated from dw-app;
