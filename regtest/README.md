@@ -249,7 +249,9 @@ passed every run after their initial fixes.
   `llmq_test` alone. So **4 masternodes** is the minimum for both ChainLocks and InstantSend
   (verified). From the quorum sizes, 3 should suffice for ChainLocks alone, and
   `set_dash_llmq_test_params(1, 1)` + `mine_quorum_single_member()` gives ChainLocks with 1 MN, as
-  upstream `rpc_verifychainlock.py` does. Neither was run here.
+  upstream `rpc_verifychainlock.py` does. Neither was run here. At v24.0.0,
+  `mine_quorum_single_member()` first mines until the masternodes are confirmed for the next DKG,
+  and syncs blocks while it mines.
 * **Mining gate**: with ChainLocks enabled, block templates only include a transaction that has an
   InstantSend lock or has been in the mempool for 10 minutes (`WAIT_FOR_ISLOCK_TIMEOUT` in
   `src/test/miner_tests.cpp`). Without an InstantSend quorum, wallet payments stay in the mempool and
@@ -259,7 +261,9 @@ passed every run after their initial fixes.
   P2P to these nodes) sees old block timestamps; set `self.disable_mocktime = True` in such tests if
   that matters.
 * P2P ports inside the container are `11000 + n + (20 * portseed) % 9979` (`util.p2p_port`); pass
-  `--portseed=<k>` to make them deterministic. RPC listens on 127.0.0.1 only. The intended way to
+  `--portseed=<k>` to make them deterministic. At v24.0.0 the framework never hands out p2p port
+  19896 (dashd's regtest onion-service target) and uses 20999 instead (`util._port`). RPC listens
+  on 127.0.0.1 only. The intended way to
   test `dwcli` against a masternode network is to run `dwcli` (Linux build) inside the same
   container from a `DashTestFramework` subclass and connect it to `p2p_port(i)`; this is not built
   yet.
