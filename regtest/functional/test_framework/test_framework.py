@@ -122,6 +122,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         self.chain: str = 'regtest'
         self.setup_clean_chain: bool = False
         self.disable_mocktime: bool = False
+        self.noban_tx_relay: bool = False
         self.nodes: List[TestNode] = []
         self.extra_args = None
         self.network_thread = None
@@ -547,6 +548,10 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             extra_confs = [[]] * num_nodes
         if extra_args is None:
             extra_args = [[]] * num_nodes
+        # Whitelist peers to speed up tx relay / mempool sync. Don't use it if testing tx relay or timing.
+        if self.noban_tx_relay:
+            for i in range(len(extra_args)):
+                extra_args[i] = extra_args[i] + ["-whitelist=noban,in,out@127.0.0.1"]
         if versions is None:
             versions = [None] * num_nodes
         if binary is None:
@@ -1659,6 +1664,9 @@ class DashTestFramework(BitcoinTestFramework):
 
     def bury_tx(self, node: TestNode, txid: Optional[str], sync_fun=None):
         assert txid is not None
+        if sync_fun is None:
+            # ChainLock signers only count the age from when they first saw the tx
+            self.sync_mempools()
         self.bump_mocktime(10 * 60 + 1) # to make tx safe to include in block
         chain_tip = self.generate(node, 1, sync_fun=sync_fun)[0]
         assert_equal(node.getrawtransaction(txid, 1, chain_tip)['confirmations'], 1)
@@ -2381,12 +2389,13 @@ class DashTestFramework(BitcoinTestFramework):
         node = self.nodes[0]
         quorums = node.quorum('list')['llmq_test']
 
+        self.mine_until_mns_confirmed_for_next_dkg()
         skip_count = 24 - (node.getblockcount() % 24)
         if skip_count != 0:
             self.bump_mocktime(1)
-            self.generate(node, skip_count)
+            self.generate(node, skip_count, sync_fun=lambda: self.sync_blocks())
         time.sleep(1)
-        self.generate(node, 30)
+        self.generate(node, 30, sync_fun=lambda: self.sync_blocks())
         new_quorums_list = node.quorum('list')['llmq_test']
 
         self.log.info(f"Test Quorums at height={node.getblockcount()} : {new_quorums_list}")
