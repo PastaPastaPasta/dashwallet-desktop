@@ -381,7 +381,7 @@ pub(super) fn top_up_step(index: u32, k: u32) -> String {
 /// marker stands over nothing sent (a crash before its signature) or that
 /// Repair resolved is passed; one that may be out (`MaybeSent`,
 /// `WillBeSent`) refuses the top-up.
-fn next_step(
+pub(super) fn next_step(
     session: &NetworkSession,
     wallet: WalletId,
     index: u32,
