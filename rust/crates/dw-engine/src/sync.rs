@@ -529,9 +529,9 @@ impl crate::NetworkSession {
     /// Schedules a compact-filter rescan for every wallet of the network
     /// (QT-117, QT-148, IOS-113): rewinds each wallet's filter checkpoint so
     /// the running filter sync re-matches from there. Progress arrives as
-    /// `Sync` events; found transactions as `HistoryChanged`. The rewound
-    /// checkpoint is in memory only: a restart before the rescan finishes
-    /// needs another `rescan`. `RescanInProgress` while an earlier rescan
+    /// `Sync` events; found transactions as `HistoryChanged`. The rescan is
+    /// stored before each rewind: a restart before it finishes resumes it
+    /// (`crate::replay_record`). `RescanInProgress` while an earlier rescan
     /// runs.
     pub async fn rescan(
         self: &std::sync::Arc<Self>,
