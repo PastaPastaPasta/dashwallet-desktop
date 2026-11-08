@@ -187,6 +187,48 @@ for (const theme of THEMES) {
   }
 }
 
+// MIX-SHIELD: Repair's card for a move into Shielded that may have been sent, alone, and its question.
+for (const theme of THEMES) {
+  test(`visual tools-repair-stuck-shield ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("coinjoin-move", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => {
+      window.__dwFixture!.world.coinjoin.drainUnknown = "stuck";
+      window.__dwFixture!.shellCommand({ kind: "tools", tab: "repair" });
+    });
+    const card = page.getByTestId("repair-stuck-shields");
+    await card.waitFor();
+    await card.scrollIntoViewIfNeeded();
+    await fontsReady(page);
+    await expect(card).toHaveScreenshot(`${theme}-tools-repair-stuck-shield.png`, { animations: "disabled", caret: "hide" });
+    await page.getByTestId("repair-resolve-shield/0/funding").click();
+    const sheet = page.getByTestId("repair-confirm");
+    await sheet.waitFor();
+    await fontsReady(page);
+    await expect(sheet).toHaveScreenshot(`${theme}-tools-repair-stuck-shield-confirm.png`, { animations: "disabled", caret: "hide" });
+  });
+
+  // A shield from the main balance: Repair sends every spendable coin of it.
+  test(`visual tools-repair-stuck-shield-plain ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("coinjoin-move", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => {
+      window.__dwFixture!.world.pending.shielded!.shieldUnknown = true;
+      window.__dwFixture!.shellCommand({ kind: "tools", tab: "repair" });
+    });
+    const card = page.getByTestId("repair-stuck-shields");
+    await card.waitFor();
+    await card.scrollIntoViewIfNeeded();
+    await fontsReady(page);
+    await expect(card).toHaveScreenshot(`${theme}-tools-repair-stuck-shield-plain.png`, { animations: "disabled", caret: "hide" });
+    await page.getByTestId("repair-resolve-shield/1/funding").click();
+    const sheet = page.getByTestId("repair-confirm");
+    await sheet.waitFor();
+    await fontsReady(page);
+    await expect(sheet).toHaveScreenshot(`${theme}-tools-repair-stuck-shield-plain-confirm.png`, { animations: "disabled", caret: "hide" });
+  });
+}
+
 // DP6-03: Information's DashPay card alone (the tab's own shot ends above it), running on SPV
 // quorum keys and in the degraded mode.
 for (const theme of THEMES) {
@@ -599,6 +641,9 @@ for (const theme of THEMES) {
 // Settings ▸ CoinJoin.
 const COINJOIN_PAGES = ["off", "mixing", "paused", "locked"] as const;
 
+/** The CoinJoin page's move card, where it shows, knows whether Shielded is offered. */
+const moveCardSettled = (page: Page) => page.waitForFunction(() => document.querySelector("[data-testid=coinjoin-move][data-shielded=loading]") === null);
+
 for (const theme of THEMES) {
   for (const [state, { scenario, start, home }] of Object.entries(COINJOIN)) {
     if (!home) continue;
@@ -621,20 +666,27 @@ for (const theme of THEMES) {
       await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
       await page.locator(`[data-testid=coinjoin-status][data-state=${state}]`).waitFor();
       await page.getByTestId("coinjoin-levels").locator("fieldset").waitFor();
+      await moveCardSettled(page);
+      // Below the status bar otherwise: the move card's buttons in view.
+      if (state === "mixing" || state === "paused") await page.getByTestId("coinjoin-move").scrollIntoViewIfNeeded();
       await shoot(page, `coinjoin-page-${state}`, theme);
     });
   }
-  // "Move mixed coins" (IOS-057): the plan, the refusal while mixing, a partial outcome.
-  for (const [name, scenario, ready] of [
-    ["move-mixed-confirm", "coinjoin-move", "[data-testid=move-mixed-body][data-step=confirm]"],
-    ["move-mixed-mixing", "coinjoin-move-mixing", "[data-testid=move-mixed-body][data-step=mixing]"],
+  // "Move mixed coins" (IOS-057): the plan, the refusal while mixing, a partial outcome;
+  // into Shielded, the quote and the consolidation round.
+  for (const [name, scenario, button, ready] of [
+    ["move-mixed-confirm", "coinjoin-move", "coinjoin-move-open", "[data-testid=move-mixed-body][data-step=confirm]"],
+    ["move-mixed-mixing", "coinjoin-move-mixing", "coinjoin-move-open", "[data-testid=move-mixed-body][data-step=mixing]"],
+    ["move-mixed-shield", "coinjoin-move", "coinjoin-move-shield", "[data-testid=move-mixed-body][data-step=confirm]"],
+    ["move-mixed-combine", "coinjoin-move-many", "coinjoin-move-shield", "[data-testid=move-mixed-body][data-step=combine]"],
   ] as const) {
     test(`visual ${name} ${theme}`, async ({ page }) => {
       await page.goto(fixtureUrl(scenario, theme));
       await page.getByTestId("toolbar").waitFor();
       await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
-      await page.getByTestId("coinjoin-move-open").click();
+      await page.getByTestId(button).click();
       await page.locator(ready).waitFor();
+      await moveCardSettled(page);
       await shoot(page, name, theme);
     });
   }
@@ -646,6 +698,7 @@ for (const theme of THEMES) {
     await page.getByTestId("move-mixed-confirm").click();
     await authorize(page);
     await page.locator("[data-testid=move-mixed-body][data-outcome=partial]").waitFor();
+    await moveCardSettled(page);
     await shoot(page, "move-mixed-partial", theme);
   });
   test(`visual settings-coinjoin ${theme}`, async ({ page }) => {

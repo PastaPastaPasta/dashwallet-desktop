@@ -13,6 +13,7 @@ import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
 import { SHIELDED_CODES } from "../api/pending";
 import { RESCAN_INTERRUPTED } from "../app/rescan";
+import { COPY as DASHPAY_COPY } from "../dashpay/status";
 import { platformOp } from "../dashpay/topup";
 import { failureText, Model } from "../onboarding/model";
 import { moveErrorText } from "../platform/move";
@@ -117,6 +118,9 @@ export const SHIELDED_COPY = {
     /** The engine's refusal when no confirmation came with the call. */
     refused: "A shielded payment from before the restart may still go through. Confirm to send anyway.",
   },
+  /** A shield's or a move of mixed coins' lock that signed and may be out (`platform.broadcast_unknown`):
+   * its step refuses the next one until Tools ▸ Repair settles it. */
+  fundingUnknown: `${DASHPAY_COPY.repair.unknown}. Open Tools ▸ Repair to settle it; you can move Dash into Shielded again once it has.`,
   close: "Close",
   show: "Show",
   unseen: "Your Shielded move has an update.",
@@ -175,6 +179,8 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
       return "Your Shielded account could not be verified against the network. Nothing was moved.";
     case "platform.feature_off":
       return "Shielded is turned off.";
+    case "platform.broadcast_unknown":
+      return kind === "add" ? SHIELDED_COPY.fundingUnknown : moveErrorText(e, credits);
     default:
       return moveErrorText(e, credits);
   }
@@ -191,6 +197,11 @@ const settledListeners = new Set<() => void>();
 export function onShieldedSettled(f: () => void): () => void {
   settledListeners.add(f);
   return () => settledListeners.delete(f);
+}
+
+/** Tells the listeners a shielded call ran (a move of mixed coins to Shielded too). */
+export function shieldedSettled() {
+  for (const f of settledListeners) queueMicrotask(f);
 }
 
 export class ShieldedFlow extends Model {
@@ -323,7 +334,7 @@ export class ShieldedFlow extends Model {
     } finally {
       this.running = false;
       // A cancelled passphrase ran nothing: nothing to read again.
-      if (ran) for (const f of settledListeners) queueMicrotask(f);
+      if (ran) shieldedSettled();
       this.changed();
     }
   }

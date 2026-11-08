@@ -38,6 +38,16 @@
 //! it, and a self-spend without it might not conflict with that lock. The
 //! user unlocks it (or waits for the payment) and repairs again.
 //!
+//! **A drain's step.** A shield step whose lock drained the CoinJoin
+//! account (`shield_drain.rs`) spent no coin of the funding accounts: the
+//! self-spend takes exactly the CoinJoin coins its locks' records name
+//! that are still unspent, never pooled with other coins (that would link
+//! them), and signs them as a CoinJoin payment is. It is refused while the
+//! wallet mixes, and holds the wallet's claim on its CoinJoin account
+//! (`CoinJoinRuntime::claim_sweep`) from the draft's prepare through its
+//! broadcast, so no move of the account runs meanwhile; a coin a move's
+//! record holds is refused as any reserved coin.
+//!
 //! **When.** A coin a wallet transaction spends is no coin of the
 //! self-spend, so the self-spend beats a lost lock only if every such
 //! transaction is settled. The repair is refused while a transaction of
@@ -62,6 +72,7 @@ use dashcore::OutPoint;
 
 use super::ArtifactId;
 use super::mode_b::StuckFundingRefusal;
+use crate::coinjoin::CoinJoinFailure;
 use crate::platform::flows::is_funding_step;
 use crate::send::{BroadcastOutcome, CoinSource, Recipient, TxDraft};
 use crate::{EngineError, NetworkSession, WalletId};
@@ -74,10 +85,10 @@ impl From<StuckFundingRefusal> for EngineError {
 
 impl NetworkSession {
     /// Repair's "Resolve stuck funding: send all coins to yourself" for
-    /// the Mode B funding `step` of `wallet_id` (`registration/<draft>/funding`
-    /// or `topup/<id>/funding`; module doc). `grant_id` is a `Spend` grant
-    /// or a lease with a Spend budget, as for [`TxDraft::prepare`]: the
-    /// self-spend's outflow is its fee.
+    /// the Mode B funding `step` of `wallet_id` (`registration/<draft>/funding`,
+    /// `topup/<id>/funding` or `shield/<k>/funding`; module doc).
+    /// `grant_id` is a `Spend` grant or a lease with a Spend budget, as for
+    /// [`TxDraft::prepare`]: the self-spend's outflow is its fee.
     ///
     /// Refused (`stuck_funding`, the [`StuckFundingRefusal`] itself) unless
     /// the step reads `MaybeSent` or `WillBeSent` now with its marker
@@ -86,8 +97,10 @@ impl NetworkSession {
     /// lock, when the self-spend would miss every input of one of the
     /// step's locks (module doc, "When"), and when the journal cannot
     /// record the self-spend ([`StuckFundingRefusal::retry_later`] tells
-    /// the passing refusals from the lasting ones). The draft's own errors
-    /// are `TxDraft`'s. On success the self-spend is
+    /// the passing refusals from the lasting ones). A drain's step is also
+    /// refused `coinjoin.mixing_active` while the wallet mixes and
+    /// `coinjoin.move_running` while a move of its CoinJoin coins runs.
+    /// The draft's own errors are `TxDraft`'s. On success the self-spend is
     /// recorded and broadcast; the step keeps reading `MaybeSent` (or
     /// `WillBeSent`) until the wallet sees the self-spend ChainLocked.
     pub async fn resolve_stuck_funding(
@@ -131,10 +144,30 @@ impl NetworkSession {
             }
             let snapshot = this.coin_snapshot(&fence, &wallet).await?;
             drop(fence);
+            // A drain's lock spent CoinJoin coins and none of the funding
+            // accounts' (module doc); any other lock conflicts through a
+            // funding account's coin.
+            let recorded: HashSet<OutPoint> = (rows.iter())
+                .flat_map(|(_, inputs)| inputs.iter().copied())
+                .collect();
+            let spends = |of: fn(&crate::coins::WalletCoin) -> bool| {
+                (snapshot.coins.iter()).any(|c| of(c) && recorded.contains(&c.utxo.outpoint))
+            };
+            let coinjoin = spends(|c| c.coinjoin_account) && !spends(|c| c.send_account);
+            if coinjoin && this.mixing(wallet_id) {
+                return Err(CoinJoinFailure::MixingActive.into());
+            }
             let coins: Vec<_> = snapshot
                 .coins
                 .iter()
-                .filter(|c| c.send_account && c.utxo.is_spendable(snapshot.height))
+                .filter(|c| c.utxo.is_spendable(snapshot.height))
+                .filter(|c| {
+                    if coinjoin {
+                        c.coinjoin_account && recorded.contains(&c.utxo.outpoint)
+                    } else {
+                        c.send_account
+                    }
+                })
                 .collect();
             if coins.is_empty() {
                 return Err(EngineError::InvalidArgument(
@@ -156,7 +189,7 @@ impl NetworkSession {
             let total: u64 = coins.iter().map(|c| c.utxo.value()).sum();
             let outpoints = outpoints.into_iter().collect();
             let address = wallet.core().next_receive_address_for_account(0).await?;
-            let draft = this.new_draft(wallet_id, exempt)?;
+            let draft = this.new_draft(wallet_id, exempt, coinjoin)?;
             draft.set_source(CoinSource::Outpoints(outpoints))?;
             draft.set_recipients(vec![Recipient {
                 address: address.to_string(),
@@ -178,6 +211,11 @@ impl NetworkSession {
         step: &str,
         grant_id: String,
     ) -> Result<BroadcastOutcome, EngineError> {
+        // A drain's self-spend: no mixing starts and no move of the CoinJoin
+        // account runs until it is out (module doc).
+        let _claim = (draft.spends_coinjoin())
+            .then(|| self.coinjoin.claim_sweep(draft.wallet_id()))
+            .transpose()?;
         let prepared = draft.prepare(grant_id).await?;
         // The inputs of the transaction that will be broadcast: its record
         // names the one it spends of each signed lock (review P2b r3).
