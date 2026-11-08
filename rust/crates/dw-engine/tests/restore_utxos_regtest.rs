@@ -856,3 +856,129 @@ fn a_rescan_pass_credits_a_chainlocked_transactions_output_a_later_payment_deriv
     f.wait_scanned(node.height());
     assert_eq!(f.holdings(), whole, "after the catch-up sync");
 }
+
+/// The WIF of [`PHRASE`]'s BIP44 account 0 receive key at `index`.
+fn receive_key_wif(index: u32) -> String {
+    let mnemonic = Mnemonic::from_phrase(PHRASE).unwrap();
+    let wallet = Wallet::from_mnemonic(
+        mnemonic,
+        Network::Regtest,
+        WalletAccountCreationOptions::Default,
+    )
+    .unwrap();
+    let path = key_wallet::DerivationPath::from_str(&format!("m/44'/1'/0'/0/{index}")).unwrap();
+    wallet.derive_private_key_as_wif(&path).unwrap()
+}
+
+/// Row 58 on the late-coin shape: funding F pays the wallet's receive
+/// addresses 0 and 40 (past the gap of 30); S, thousands of blocks later,
+/// spends only F's output at 40 (dashd signs it); then a payment to 20
+/// derives 40. A rescan from F credits the coin at 40 when F replays, until
+/// S replays. The app quits while the rescan runs: the reopened session
+/// resumes it before SPV starts, refuses a payment until it is back, and
+/// the coin is not held once S replays. A relaunch after that (a clean
+/// close) resumes nothing.
+#[test]
+fn a_quit_mid_rescan_resumes_the_replay_on_the_late_coin_shape_against_dashd() {
+    let dir = dw_testutil::private_tempdir();
+    let Some(node) = funded_node(dir.path()) else {
+        eprintln!("skipped: DASHD_PATH is not set");
+        return;
+    };
+    let mut f = Fixture::new(dir.path(), &node);
+    let bip44 = AccountType::Standard {
+        index: 0,
+        standard_account_type: key_wallet::account::StandardAccountType::BIP44Account,
+    };
+    let to = receive_addresses(bip44, &[0, 20, 40]);
+    node.pay_each(&[to[0].clone(), to[2].clone()], "1.0");
+    let funding_height = node.height();
+    let funding: serde_json::Value = serde_json::from_str(&node.cli(&[
+        "getblock",
+        &node.cli(&["getblockhash", &funding_height.to_string()]),
+        "2",
+    ]))
+    .unwrap();
+    let (funding_txid, late_vout) = (funding["tx"].as_array().unwrap().iter())
+        .find_map(|tx| {
+            let vout = tx["vout"].as_array()?.iter().find(|o| {
+                o["scriptPubKey"]["address"].as_str() == Some(to[2].as_str())
+                    || (o["scriptPubKey"]["addresses"].as_array())
+                        .is_some_and(|a| a.iter().any(|x| x.as_str() == Some(to[2].as_str())))
+            })?;
+            Some((tx["txid"].as_str()?.to_owned(), vout["n"].as_u64()?))
+        })
+        .expect("F pays address 40");
+    // A replay longer than one filter batch (5000 blocks).
+    for _ in 0..6 {
+        node.mine(1_000);
+    }
+    let payee = node.cli(&["-rpcwallet=miner", "getnewaddress"]);
+    let inputs = format!(r#"[{{"txid":"{funding_txid}","vout":{late_vout}}}]"#);
+    let outputs = format!(r#"{{"{payee}":0.9999}}"#);
+    let raw = node.cli(&["createrawtransaction", &inputs, &outputs]);
+    let keys = format!(r#"["{}"]"#, receive_key_wif(40));
+    let signed: serde_json::Value =
+        serde_json::from_str(&node.cli(&["signrawtransactionwithkey", &raw, &keys])).unwrap();
+    assert_eq!(signed["complete"], true, "{signed}");
+    node.cli(&["sendrawtransaction", signed["hex"].as_str().unwrap()]);
+    node.mine(1);
+    node.pay(&to[1]);
+    let tip = node.height();
+
+    f.start_spv();
+    f.wait_scanned(tip);
+    let late = |f: &Fixture| f.coins().iter().any(|c| c.address == to[2]);
+    assert!(!late(&f), "the coin at 40 was not derived on first sight");
+    f.assert_counted(2 * COIN, 0, "first sync");
+
+    // dashd leaves the network first, so the quit comes mid-replay.
+    node.cli(&["setnetworkactive", "false"]);
+    f.engine
+        .block_on(f.session.rescan(RescanFrom::Height(funding_height)))
+        .unwrap();
+    f.reload(&node);
+    node.cli(&["setnetworkactive", "true"]);
+    let resumed = f.session.wallet_scan_height(&f.wallet);
+    let progress = f.session.rescan_progress().unwrap();
+    let payment = f.session.new_tx_draft(f.wallet).unwrap();
+    payment
+        .set_recipients(vec![Recipient {
+            address: payee.clone(),
+            amount: COIN / 2,
+            subtract_fee_from_amount: false,
+            label: None,
+            message: None,
+        }])
+        .unwrap();
+    let refused = f.engine.block_on(payment.prepare(f.spend_grant()));
+    eprintln!(
+        "ROW58 regtest quit mid-rescan: tip {tip}, F at {funding_height}, reopened checkpoint \
+         {resumed:?}, rescan {progress:?}, late coin held {}, payment {:?}",
+        late(&f),
+        refused.as_ref().map(|p| p.summary().txid.clone())
+    );
+    assert!(
+        resumed.is_some_and(|h| h < funding_height),
+        "the reopened wallet resumes at {resumed:?}, not below F at {funding_height}"
+    );
+    assert!(
+        matches!(refused, Err(EngineError::RescanInProgress)),
+        "a payment before the replay is back: {:?}",
+        refused.map(|p| p.summary().txid.clone())
+    );
+
+    f.start_spv();
+    f.wait_rescanned(tip);
+    assert!(!late(&f), "the coin at 40 is held after S replayed");
+    f.assert_counted(2 * COIN, 0, "after the resumed replay");
+    f.reload(&node);
+    assert_eq!(
+        f.session.wallet_scan_height(&f.wallet),
+        Some(tip),
+        "a relaunch after the replay resumes it again"
+    );
+    assert!(f.session.rescan_progress().unwrap().is_none());
+    assert!(!late(&f), "reloaded after the replay");
+    f.assert_counted(2 * COIN, 0, "reloaded after the replay");
+}
