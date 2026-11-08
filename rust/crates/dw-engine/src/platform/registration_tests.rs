@@ -4371,15 +4371,17 @@ fn small_coins(f: &Fixture, wallet: &platform_wallet::PlatformWallet, value: u64
     })
 }
 
-/// Review r3 R3-m1: 51 coins of 60,000 duffs. The fewest that reach the
+/// 0.1.x row 62: 51 coins of 60,000 duffs. The fewest that reach the
 /// 3,000,000-duff lock are 50, so the early check passes; the fee needs
-/// the 51st, and the capped signer refuses it after 50 signatures, before
-/// the transaction is complete. That abort is definitive: the call ends
-/// `Cancelled`, the step reads `NotSent` (at 016082be it stayed
-/// `MaybeSent`, so the retry was refused until Repair), and once the coins
-/// are consolidated the same draft funds again at once.
+/// the 51st. Through the real build, the capped signer refuses the
+/// selection when the builder shows it, before any signature: nothing is
+/// released, so the call ends `Cancelled` with its Funding charge
+/// refunded, the fence keeps no ended call of it, no lock is tracked, no
+/// coin stays reserved, the step reads `NotSent` with no release (nothing
+/// for Repair), and once the coins are consolidated the same draft funds
+/// again at once.
 #[test]
-fn a_lock_refused_at_its_fifty_first_signature_is_not_sent() {
+fn a_lock_of_51_needed_coins_is_refused_before_its_first_signature() {
     use super::flows::DispatchState;
     use super::lease::FlowOutcome;
     let f = fixture(false);
@@ -4390,6 +4392,7 @@ fn a_lock_refused_at_its_fifty_first_signature_is_not_sent() {
     let lease = f.lease();
     let draft = prepared(&f, 1);
     let step = flow::funding_step(draft);
+    let before = lease.available(BudgetPurpose::Funding).unwrap();
     let (funded, released, outcome) = f.engine.block_on(async {
         let call = permit(&lib, &lease, draft, 1).await.unwrap();
         let funded = lib
@@ -4406,9 +4409,19 @@ fn a_lock_refused_at_its_fifty_first_signature_is_not_sent() {
     let Err(FundError::NotSent(PlatformError::InvalidArgument { detail })) = funded else {
         panic!("{funded:?}")
     };
-    assert!(detail.contains("would use more than 50 coins"), "{detail}");
-    assert_eq!(released, 50, "refused at the 51st");
+    assert_eq!(released, 0, "refused before any signature");
     assert_eq!(outcome, FlowOutcome::Cancelled);
+    assert_eq!(
+        lease.available(BudgetPurpose::Funding).unwrap(),
+        before,
+        "its Funding charge refunded"
+    );
+    assert_eq!(
+        f.session.leases.ended_funding_steps(f.wallet),
+        Vec::<String>::new(),
+        "the fence keeps no ended call of it"
+    );
+    assert!(!f.session.leases.funding_signatures_out(f.wallet));
     assert!(
         f.engine
             .block_on(f.session.leases.refresh_funding(f.wallet))
@@ -4417,10 +4430,24 @@ fn a_lock_refused_at_its_fifty_first_signature_is_not_sent() {
         f.session.leases.funding_status(f.wallet, &step),
         Some(DispatchState::NotSent)
     );
+    let views = f.session.leases.registration_funding_steps(f.wallet);
+    assert!(
+        (views.unwrap().iter())
+            .filter(|v| v.draft == draft)
+            .all(|v| v.released_at.is_none() && v.signed.is_empty()),
+        "no release and no lock: nothing for Repair"
+    );
+    assert!(
+        f.engine
+            .block_on(wallet.asset_locks().list_tracked_locks())
+            .is_empty(),
+        "no lock tracked, so none sent"
+    );
     assert!(
         coins.iter().all(|c| !reads_reserved(&f, *c)),
         "selection released"
     );
+    assert!(detail.contains("would use 51 coins"), "{detail}");
     // Consolidated: one coin instead of the 51. The draft funds at once.
     f.engine.block_on(async {
         let mut state = wallet.state_mut().await;

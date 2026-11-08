@@ -7,6 +7,8 @@ use super::*;
 #[derive(Debug, Default)]
 struct Inner {
     asked: AtomicU32,
+    /// The input counts of the builds it was shown.
+    shown: Mutex<Vec<usize>>,
 }
 
 #[async_trait]
@@ -29,6 +31,46 @@ impl Signer for Inner {
     async fn public_key(&self, _: &DerivationPath) -> Result<PublicKey, SignerError> {
         Err(SignerError::PathNotAllowed("inner".into()))
     }
+
+    async fn approve_inputs(&self, _: &Transaction, inputs: &[Utxo]) -> Result<(), SignerError> {
+        self.shown.lock().unwrap().push(inputs.len());
+        Ok(())
+    }
+}
+
+/// A build of `n` inputs, as key-wallet's builder shows it to the signer.
+fn build(n: u32) -> (Transaction, Vec<Utxo>) {
+    use dashcore::hashes::Hash;
+    use dashcore::{Address, Network, OutPoint, TxIn, TxOut, Txid};
+    let address = Address::p2pkh(
+        &dashcore::PublicKey::from_slice(&[2; 33]).unwrap(),
+        Network::Testnet,
+    );
+    let outpoints: Vec<OutPoint> = (0..n)
+        .map(|vout| OutPoint::new(Txid::from_byte_array([0xe1; 32]), vout))
+        .collect();
+    let utxos = (outpoints.iter())
+        .map(|&outpoint| {
+            let txout = TxOut {
+                value: 60_000,
+                script_pubkey: address.script_pubkey(),
+            };
+            Utxo::new(outpoint, txout, address.clone(), 1, false)
+        })
+        .collect();
+    let tx = Transaction {
+        version: 3,
+        lock_time: 0,
+        input: (outpoints.into_iter())
+            .map(|previous_output| TxIn {
+                previous_output,
+                ..Default::default()
+            })
+            .collect(),
+        output: Vec::new(),
+        special_transaction_payload: None,
+    };
+    (tx, utxos)
 }
 
 fn reason(r: Result<(ecdsa::Signature, PublicKey), SignerError>) -> String {
@@ -81,4 +123,43 @@ fn the_least_coins_reaching_an_amount() {
         "invalid argument: this payment would use 51 coins and at most 50 can be used: \
          send Dash to your own wallet first to combine them, then try again"
     );
+}
+
+/// 0.1.x row 62: a build of exactly 50 inputs is approved and shown to the
+/// inner signer; one of 51 is refused before any signature, the inner
+/// signer is neither shown it nor asked to sign, and the wrapper then
+/// signs nothing, its refusal naming the 51 coins.
+#[test]
+fn a_build_of_fifty_inputs_passes_and_one_of_fifty_one_is_refused_before_signing() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let path = DerivationPath::default();
+    let fifty = Capped::new(Inner::default());
+    let (tx, inputs) = build(50);
+    assert!(rt.block_on(fifty.approve_inputs(&tx, &inputs)).is_ok());
+    assert!(!fifty.refused());
+    assert_eq!(*fifty.inner.shown.lock().unwrap(), vec![50]);
+
+    let capped = Capped::new(Inner::default());
+    let (tx, inputs) = build(51);
+    let Err(SignerError::PathNotAllowed(refused)) =
+        rt.block_on(capped.approve_inputs(&tx, &inputs))
+    else {
+        panic!("a build of 51 inputs was approved")
+    };
+    assert!(refused.contains("at most 50 coins"), "{refused}");
+    assert!(capped.refused());
+    assert!(
+        capped.inner.shown.lock().unwrap().is_empty(),
+        "not shown on"
+    );
+    let after = reason(rt.block_on(capped.sign_ecdsa(&path, [1; 32])));
+    assert!(after.contains("refused for its inputs"), "{after}");
+    assert_eq!(
+        capped.inner.asked.load(Ordering::SeqCst),
+        0,
+        "nothing signed"
+    );
+    assert_eq!(capped.refusal().to_string(), too_many(Some(51)).to_string());
 }

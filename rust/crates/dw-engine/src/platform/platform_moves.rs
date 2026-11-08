@@ -2887,7 +2887,7 @@ impl NetworkSession {
                 match funded {
                     Ok(_) => {}
                     Err(_) if lock_signer.refused() => {
-                        return Err(super::lock_inputs::too_many(None).into());
+                        return Err(lock_signer.refusal().into());
                     }
                     Err(e) => return Err(PlatformError::from(e).into()),
                 }
