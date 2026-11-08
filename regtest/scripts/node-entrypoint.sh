@@ -5,7 +5,8 @@
 # Environment:
 #   DWD_RPC_USER / DWD_RPC_PASSWORD  RPC credentials (regtest-only defaults: dwd / dwd)
 #   DWD_DATADIR                      data directory (default: /home/dash/.dashcore)
-set -eu
+#   DWD_DASHD_ARGS                   more dashd options, space-separated (the harness's DASHD_ARGS)
+set -euf
 
 datadir=${DWD_DATADIR:-/home/dash/.dashcore}
 mkdir -p "$datadir"
@@ -29,4 +30,5 @@ exec dashd \
     -rpcpassword="${DWD_RPC_PASSWORD:-dwd}" \
     -fallbackfee=0.00001 \
     -debug=net -debug=mempool -debug=rpc \
+    ${DWD_DASHD_ARGS:-} \
     "$@"
