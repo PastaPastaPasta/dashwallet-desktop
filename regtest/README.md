@@ -17,7 +17,7 @@ Measured results are in [RESULTS.md](RESULTS.md).
 |---|---|---|
 | Dash Core binaries | **24.0.0** (the final release, 2026-11-05) | `https://github.com/dashpay/dash/releases/tag/v24.0.0` |
 | SHA-256 | `x86_64-linux-gnu` 1ffce395…2c5e, `aarch64-linux-gnu` 77783b23…b1cb, `arm64-apple-darwin` 93c69899…1e16, `x86_64-apple-darwin` e24380ba…a950, `win64` dc459ae5…9219 | release `SHA256SUMS.asc`; full values in `scripts/fetch-dashcore.sh` |
-| test_framework | tag `v24.0.0-rc.2` = commit `1e239d4b05d582762aceea6ed728076ab3c38979` (not yet re-vendored from v24.0.0) | `test/functional/test_framework/` (MIT, `functional/test_framework/COPYING`; `authproxy.py` is LGPL-2.1+, see below) |
+| test_framework | tag `v24.0.0` = commit `938fba502824b9d850b7c710601456dc3d71603e`, plus one local patch (below) | `test/functional/test_framework/` (MIT, `functional/test_framework/COPYING`; `authproxy.py` is LGPL-2.1+, see below) |
 | dash_hash (X11 for the framework) | 1.4.0, tag archive SHA-256 `2490feb0…7e5a` | `https://github.com/dashpay/dash_hash` (MIT) |
 | Base image | `python:3.12-slim` (Debian 13, glibc 2.41) | `ARG BASE_IMAGE` in the Dockerfile |
 | pytest | 8.3.4 | `harness/requirements.txt` |
@@ -169,9 +169,16 @@ that decodes amounts as `Decimal` and sends them as strings.
 
 ### What is vendored
 
-`functional/test_framework/` is a verbatim copy of `test/functional/test_framework/` at tag
-`v24.0.0-rc.2` (26 top-level files, 11 in `crypto/`, including the CSV test vectors), with the
-repo's `COPYING` added. `diff -r` against the tag's tree shows only the added `COPYING`.
+`functional/test_framework/` is a copy of `test/functional/test_framework/` at tag `v24.0.0` (27
+top-level files, including the CSV test vectors, and 11 in `crypto/`), with the repo's `COPYING`
+added and one local patch. `diff -r` against the tag's tree shows only the added `COPYING` and the
+patch:
+
+* `test_framework.py`, `mine_cycle_quorum`: before mining the final-commitment block, wait for both
+  quorums' final commitments on the members and on the mining node. This ports Dash Core
+  `73a69fa5b9b` (dashpay/dash#7892), which is not in v24.0.0; without it a commitment that hasn't
+  reached the miner leaves the new quorum out of the list. Drop the patch when the vendored tag
+  contains that commit.
 
 Licensing: every Python file carries the MIT header except the empty `__init__.py` and
 **`authproxy.py`, which is LGPL-2.1-or-later** (Jeff Garzik's python-jsonrpc lineage, unchanged
@@ -374,7 +381,7 @@ regtest/
 │                            tests/test_smoke.py (node), tests/test_harness.py (failure handling)
 └── functional/
     ├── run.sh               writes config.ini for release binaries, runs one test
-    ├── test_framework/      vendored from dash v24.0.0-rc.2 (MIT)
+    ├── test_framework/      vendored from dash v24.0.0 (MIT), one local patch
     ├── feature_llmq_chainlocks.py   upstream, unmodified
     ├── dwd_mn_chainlock.py  4 MNs → quorums → ChainLock + InstantSend
     ├── dwd_coinjoin_probe.py        4 MNs + 3 mixing wallets → real CoinJoin rounds
