@@ -38,6 +38,10 @@ pub(crate) struct ReplayRecord {
     /// The user cancelled the replay: it is not resumed, and spends are
     /// refused until a rewind to `reached` or below.
     pub cancelled: bool,
+    /// When a fork lowered the target: the highest checkpoint the wallet
+    /// can have stored before it (0: no fork did). A stored checkpoint at
+    /// it or below is the old chain's, which the replay does not reach.
+    pub forked_from: u32,
 }
 
 impl ReplayRecord {
@@ -48,23 +52,26 @@ impl ReplayRecord {
         target: 0,
         reached: 0,
         cancelled: true,
+        forked_from: 0,
     };
 
     fn encode(&self) -> String {
         format!(
-            "1:{}:{}:{}",
+            "2:{}:{}:{}:{}",
             self.target,
             self.reached,
-            u8::from(self.cancelled)
+            u8::from(self.cancelled),
+            self.forked_from
         )
     }
 
     /// A value this build cannot read, or one that starts its replay above
-    /// its target, is [`Self::UNREADABLE`].
+    /// its target, is [`Self::UNREADABLE`]. A version 1 value has no fork.
     fn decode(value: &str) -> Self {
         let parsed = (|| {
             let mut parts = value.split(':');
-            if parts.next()? != "1" {
+            let version = parts.next()?;
+            if version != "1" && version != "2" {
                 return None;
             }
             let target = parts.next()?.parse().ok()?;
@@ -74,10 +81,15 @@ impl ReplayRecord {
                 "1" => true,
                 _ => return None,
             };
+            let forked_from = match version {
+                "1" => 0,
+                _ => parts.next()?.parse().ok()?,
+            };
             (parts.next().is_none() && reached <= target).then_some(Self {
                 target,
                 reached,
                 cancelled,
+                forked_from,
             })
         })();
         parsed.unwrap_or_else(|| {
@@ -97,6 +109,7 @@ impl ReplayRecord {
                 target,
                 reached: checkpoint,
                 cancelled: false,
+                forked_from: 0,
             },
             Some(r) => Self {
                 target: r.target.max(target),
@@ -104,7 +117,22 @@ impl ReplayRecord {
                 // As `WalletState::note_rewind`: a rewind to the hold or
                 // below replays what the cancel skipped.
                 cancelled: r.cancelled && checkpoint > r.reached,
+                ..r
             },
+        }
+    }
+
+    /// A hold below `floor`, the checkpoint a rescan from the wallet's
+    /// birth height rewinds to, is that rescan's (as the resume holds it).
+    fn lifted(self, floor: u32) -> Self {
+        if self.cancelled && self.reached < floor {
+            Self {
+                reached: floor,
+                target: self.target.max(floor),
+                ..self
+            }
+        } else {
+            self
         }
     }
 }
@@ -113,8 +141,13 @@ impl ReplayRecord {
 pub(crate) enum ReplayNote {
     /// The persister committed a store whose checkpoint is `height`.
     Committed { wallet: WalletId, height: u32 },
-    /// A fork truncated the wallet to `height`.
-    Truncated { wallet: WalletId, height: u32 },
+    /// A fork truncated the wallet to `height`; the highest checkpoint the
+    /// hub had seen was `from`.
+    Truncated {
+        wallet: WalletId,
+        height: u32,
+        from: u32,
+    },
     /// Tests: answered once every note before it is applied.
     #[cfg(test)]
     Settled(tokio::sync::oneshot::Sender<()>),
@@ -271,9 +304,11 @@ impl ReplayRecords {
                     ReplayNote::Committed { wallet, height } => {
                         records.committed(wallet, height, &manager, &hub).await
                     }
-                    ReplayNote::Truncated { wallet, height } => {
-                        records.truncated(wallet, height).await
-                    }
+                    ReplayNote::Truncated {
+                        wallet,
+                        height,
+                        from,
+                    } => records.truncated(wallet, height, from).await,
                     #[cfg(test)]
                     ReplayNote::Settled(done) => {
                         let _ = done.send(());
@@ -352,16 +387,19 @@ impl ReplayRecords {
     }
 
     /// Stores, durably, a rewind of `wallet` to `checkpoint` whose replay
-    /// is done at `target`, merged with its record. Returns the record.
+    /// is done at `target`, merged with its record, whose hold is no lower
+    /// than `floor` (the wallet's birth height less one). Returns the
+    /// record.
     pub(crate) async fn note_rewind(
         &self,
         wallet: WalletId,
         checkpoint: u32,
         target: u32,
+        floor: u32,
     ) -> Result<ReplayRecord, EngineError> {
         let mut records = self.records.lock().await;
         let old = self.load(&mut records, wallet).await?;
-        let record = ReplayRecord::merged(old, checkpoint, target);
+        let record = ReplayRecord::merged(old.map(|r| r.lifted(floor)), checkpoint, target);
         if old != Some(record) {
             self.write(&mut records, wallet, Some(record)).await?;
         }
@@ -372,16 +410,19 @@ impl ReplayRecords {
     /// rewind the record does not explain (none, or one below its start)
     /// is stored from `floor()`, the lowest checkpoint it can have had. A
     /// cancel's hold stays unless `live` is at it or below: a read above it
-    /// is no sign that the rewind went back that far.
+    /// is no sign that the rewind went back that far. A hold is no lower
+    /// than `birth`, the wallet's birth height less one.
     pub(crate) async fn note_seen(
         &self,
         wallet: WalletId,
         live: u32,
         target: u32,
+        birth: u32,
         floor: impl FnOnce() -> u32,
     ) -> Result<(), EngineError> {
         let mut records = self.records.lock().await;
-        let old = self.load(&mut records, wallet).await?;
+        let stored = self.load(&mut records, wallet).await?;
+        let old = stored.map(|r| r.lifted(birth));
         let checkpoint = match old {
             Some(r) if live >= r.reached => r.reached,
             _ => floor().min(live),
@@ -390,7 +431,7 @@ impl ReplayRecords {
             cancelled: old.is_some_and(|r| r.cancelled && live > r.reached),
             ..ReplayRecord::merged(old, checkpoint, target)
         };
-        if old != Some(record) {
+        if stored != Some(record) {
             self.write(&mut records, wallet, Some(record)).await?;
         }
         Ok(())
@@ -415,6 +456,7 @@ impl ReplayRecords {
                 target,
                 reached,
                 cancelled: true,
+                forked_from: 0,
             },
         };
         if old != Some(record) {
@@ -533,10 +575,13 @@ impl ReplayRecords {
         }
     }
 
-    /// A fork truncated the wallet to `height`: the replay is done at the
-    /// new chain's height, not above it. The old target stays the bound of
-    /// the in-session clear.
-    async fn truncated(&self, wallet: WalletId, height: u32) {
+    /// A fork truncated the wallet to `height`, whose highest checkpoint
+    /// the hub had seen was `from`: the replay is done at the new chain's
+    /// height, not above it. The old target stays the bound of the
+    /// in-session clear, and the record keeps the highest checkpoint the
+    /// wallet can have stored before the fork, which a resume does not
+    /// replay to.
+    async fn truncated(&self, wallet: WalletId, height: u32, from: u32) {
         let mut records = self.records.lock().await;
         let old = match self.load(&mut records, wallet).await {
             Ok(Some(r)) => r,
@@ -547,9 +592,18 @@ impl ReplayRecords {
             }
         };
         self.note_stale(wallet, old.target);
+        let committed = (self.commits.lock().unwrap_or_else(|p| p.into_inner()))
+            .get(&wallet)
+            .map_or(0, |c| c.0);
+        let stored = old.target.max(committed).max(from);
         let record = ReplayRecord {
             target: old.target.min(height),
             reached: old.reached.min(height),
+            forked_from: if stored > height {
+                old.forked_from.max(stored)
+            } else {
+                old.forked_from
+            },
             ..old
         };
         if record != old
@@ -565,16 +619,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_version_2_record_reads_and_a_version_1_record_still_does() {
+        let forked = ReplayRecord::decode("2:900:399:0:1000");
+        assert_eq!(
+            (forked.target, forked.reached, forked.cancelled),
+            (900, 399, false)
+        );
+        let old = ReplayRecord::decode("1:900:399:1");
+        assert_eq!((old.target, old.reached, old.cancelled), (900, 399, true));
+    }
+
+    #[test]
     fn records_round_trip_and_overlapping_rewinds_merge() {
         let r = ReplayRecord {
             target: 1_000,
             reached: 399,
             cancelled: true,
+            forked_from: 0,
         };
         assert_eq!(ReplayRecord::decode(&r.encode()), r);
         assert_eq!(
-            ReplayRecord::decode("2:1000:399:0"),
+            ReplayRecord::decode("3:1000:399:0:0"),
             ReplayRecord::UNREADABLE
+        );
+        assert_eq!(
+            ReplayRecord::decode("2:1000:399:0"),
+            ReplayRecord::UNREADABLE,
+            "a version 2 value without its fork"
         );
         assert_eq!(
             ReplayRecord::decode("1:1000:1001:0"),
@@ -582,9 +653,42 @@ mod tests {
             "a replay that starts above its target"
         );
         assert_eq!(ReplayRecord::decode("1:1000:1000:0").reached, 1_000);
+        let forked = ReplayRecord {
+            target: 900,
+            forked_from: 1_000,
+            cancelled: false,
+            ..r
+        };
+        assert_eq!(forked.encode(), "2:900:399:0:1000");
+        assert_eq!(ReplayRecord::decode(&forked.encode()), forked);
+        assert_eq!(
+            ReplayRecord::decode("1:900:399:1"),
+            ReplayRecord {
+                target: 900,
+                reached: 399,
+                cancelled: true,
+                forked_from: 0,
+            },
+            "a version 1 value has no fork"
+        );
+        assert_eq!(
+            ReplayRecord::decode("2:1000:1001:0:0"),
+            ReplayRecord::UNREADABLE
+        );
         let merged = ReplayRecord::merged(Some(r), 799, 1_200);
         assert_eq!((merged.target, merged.reached), (1_200, 399));
         assert!(merged.cancelled, "a rewind above the hold keeps it");
         assert!(!ReplayRecord::merged(Some(r), 399, 1_000).cancelled);
+        assert_eq!(
+            ReplayRecord::merged(Some(forked), 299, 950).forked_from,
+            1_000,
+            "a rewind keeps the fork"
+        );
+        let unreadable = ReplayRecord::UNREADABLE.lifted(499);
+        assert_eq!((unreadable.reached, unreadable.target), (499, 499));
+        assert!(
+            !ReplayRecord::merged(Some(unreadable), 499, 1_000).cancelled,
+            "a rescan from the birth height ends an unreadable record's hold"
+        );
     }
 }

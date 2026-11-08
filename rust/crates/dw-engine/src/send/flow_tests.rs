@@ -3443,3 +3443,413 @@ fn an_abandon_whose_replay_is_not_stored_does_not_happen() {
     assert!(!abandoned, "abandoned without its replay record");
     assert!(held, "key-wallet dropped it");
 }
+
+/// Seams for forks, transactions the wallet sees, and the record store.
+impl Fixture {
+    /// A fork truncated the chain to `height`: the wallet lowers its
+    /// checkpoint to it, and the hub hears of it.
+    fn truncate(&self, height: u32) {
+        if self.synced() > height {
+            self.checkpoint(height);
+        }
+        (self.session.hub).apply_wallet_event(
+            &platform_wallet::events::WalletEvent::ChainTruncated {
+                wallet_id: self.wallet.0,
+                height,
+                txids: Vec::new(),
+                unconfirmed_txids: Vec::new(),
+                restored_outpoints: Vec::new(),
+                balance: key_wallet::wallet::balance::WalletCoreBalance::new(COIN, 0, 0, 0),
+                account_balances: Default::default(),
+            },
+        );
+    }
+
+    fn cancel(&self) {
+        assert!(self.engine.block_on(self.session.cancel_rescan()).unwrap());
+    }
+
+    /// The history holds `txid`'s transaction as mined at `height`.
+    fn funded_at(&self, txid: Txid, height: u32) {
+        use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+        let funding = dashcore::Transaction {
+            version: 2,
+            lock_time: height,
+            input: Vec::new(),
+            output: Vec::new(),
+            special_transaction_payload: None,
+        };
+        self.session.hub.history.with_wallet(self.wallet, |h| {
+            h.txs.insert(
+                txid,
+                crate::history::TxEntry {
+                    tx: funding,
+                    context: TransactionContext::InBlock(BlockInfo::new(
+                        height,
+                        dashcore::BlockHash::all_zeros(),
+                        9,
+                    )),
+                    instant_locked: false,
+                    first_seen: None,
+                    own_inputs: Default::default(),
+                    abandoned: false,
+                },
+            )
+        });
+    }
+
+    /// The wallet sees `tx` unconfirmed: key-wallet records it and the
+    /// history holds it.
+    fn see_tx(&self, tx: &dashcore::Transaction) {
+        use key_wallet::transaction_checking::{TransactionContext, WalletTransactionChecker};
+        self.session.hub.history.with_wallet(self.wallet, |h| {
+            h.txs.insert(
+                tx.txid(),
+                crate::history::TxEntry {
+                    tx: tx.clone(),
+                    context: TransactionContext::Mempool,
+                    instant_locked: false,
+                    first_seen: None,
+                    own_inputs: Default::default(),
+                    abandoned: false,
+                },
+            )
+        });
+        let (manager, id, tx) = (
+            Arc::clone(&self.session.live().unwrap().manager),
+            self.wallet,
+            tx.clone(),
+        );
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
+            let mut wallet = wallet.clone();
+            info.core_wallet
+                .check_core_transaction(&tx, TransactionContext::Mempool, &mut wallet, true, true)
+                .await;
+        });
+    }
+
+    /// Whether the history holds `txid` as abandoned, and whether key-wallet
+    /// still holds it.
+    fn abandon_state(&self, txid: Txid) -> (bool, bool) {
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        let abandoned = (self.session.hub.history)
+            .get(&self.wallet, &txid)
+            .is_some_and(|e| e.abandoned);
+        let manager = Arc::clone(&self.session.live().unwrap().manager);
+        let held = self.engine.block_on(async {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            let info = &wm.get_wallet_info(&self.wallet.0).unwrap().core_wallet;
+            (info.transaction_history().iter()).any(|r| r.txid == txid)
+        });
+        (abandoned, held)
+    }
+
+    /// The store holds `value` as the wallet's replay record, as a session
+    /// opening now reads it.
+    fn store_record(&self, value: &str) {
+        (self.session.live().unwrap().appdb)
+            .set_setting(&self.wallet.to_string(), "replay", Some(value))
+            .unwrap();
+        let (replay, id) = (self.records(), self.wallet);
+        self.engine
+            .block_on(self.session.on_runtime(async move {
+                replay.forget(id).await;
+                Ok(())
+            }))
+            .unwrap();
+    }
+}
+
+/// A fork lowers the running rescan's target with the record's: the
+/// rescan is back at the shorter chain's tip, and a clean close then ends
+/// the record.
+#[test]
+fn a_rescan_a_fork_shortened_is_back_at_the_new_tip() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    f.truncate(900);
+    f.advance(900);
+    let (progress, guard) = (f.session.rescan_progress().unwrap(), f.guard());
+    eprintln!(
+        "ROW58 fork during a rescan: rescan progress at the new tip 900 {progress:?}, replay guard {guard:?}"
+    );
+    assert!(
+        progress.is_none(),
+        "the rescan waits for the old chain's height"
+    );
+    assert_eq!(guard.unwrap(), 900);
+    f.advance(901);
+    f.commit(901).unwrap();
+    let f = f.reopen();
+    assert_eq!(f.record(), None, "the clean close kept the record");
+    assert!(f.guard().is_ok());
+}
+
+/// After a fork, a cancel leaves the checkpoint at the shorter chain's
+/// tip, and a rescan from the birth height then replays to that tip; a
+/// clean close ends its record.
+#[test]
+fn a_fork_then_a_cancel_and_a_rescan_from_the_birth_height_complete_at_the_shorter_tip() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.engine
+        .block_on(f.session.set_birth_height(f.wallet, 300))
+        .unwrap();
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    f.truncate(900);
+    f.advance(600);
+    f.cancel();
+    let (synced, guard) = (f.synced(), f.guard());
+    eprintln!("ROW58 fork then cancel: filter checkpoint {synced}, replay guard {guard:?}");
+    assert_eq!(
+        synced, 900,
+        "the cancel left the checkpoint above the chain"
+    );
+    assert!(interrupted(&guard), "{guard:?}");
+    f.rescan(300).unwrap();
+    assert!(replaying(f.guard()));
+    f.advance(900);
+    let (guard, record) = (f.guard(), f.record());
+    eprintln!(
+        "ROW58 fork, cancel, rescan from the birth height: replay guard at the new tip 900 {guard:?}, record {record:?}"
+    );
+    assert_eq!(guard.unwrap(), 900, "the target went back above the chain");
+    f.advance(901);
+    f.commit(901).unwrap();
+    let f = f.reopen();
+    assert_eq!(f.record(), None);
+    assert!(f.guard().is_ok());
+}
+
+/// The same after a restart: the stored checkpoint stays the old chain's,
+/// above the shorter tip, and the resumed replay is still done at the tip.
+#[test]
+fn a_fork_then_a_cancel_and_a_rescan_from_the_birth_height_complete_at_the_shorter_tip_after_a_restart()
+ {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.engine
+        .block_on(f.session.set_birth_height(f.wallet, 300))
+        .unwrap();
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    f.truncate(900);
+    f.advance(600);
+    f.cancel();
+    f.rescan(300).unwrap();
+    f.crash_on_close();
+    let f = f.reopen();
+    assert!(f.synced() < 300, "resumed at {}", f.synced() + 1);
+    assert!(replaying(f.guard()));
+    f.advance(900);
+    let (guard, record) = (f.guard(), f.record());
+    eprintln!(
+        "ROW58 fork, cancel, rescan from the birth height, restart: replay guard at the new tip 900 \
+         {guard:?}, record {record:?}"
+    );
+    assert_eq!(guard.unwrap(), 900, "the target went back above the chain");
+    f.advance(901);
+    f.commit(901).unwrap();
+    let f = f.reopen();
+    assert_eq!(f.record(), None);
+    assert!(f.guard().is_ok());
+}
+
+/// A stored checkpoint above the target of a record no fork lowered is
+/// the replay's own (a quit after its last commit, before the record
+/// went): the resumed replay runs to it, and a coin it credits again pays
+/// nothing before its spend there replays.
+#[test]
+fn a_resumed_replay_runs_to_a_stored_checkpoint_above_its_target() {
+    use platform_wallet::changeset::CoreChangeSet;
+    let f = fixture(false);
+    let coin = f.late_coin(7, COIN, 500);
+    f.put_coin(coin.clone());
+    f.store_core(CoreChangeSet {
+        new_utxos: vec![coin.clone()],
+        synced_height: Some(1_000),
+        ..Default::default()
+    });
+    f.advance(1_000);
+    f.rescan(400).unwrap();
+    f.advance(1_010);
+    f.see_spent(coin.outpoint);
+    f.store_core(CoreChangeSet {
+        spent_utxos: vec![coin.clone()],
+        synced_height: Some(1_010),
+        ..Default::default()
+    });
+    f.settle();
+    f.store_record("1:1000:399:0");
+    f.crash_on_close();
+    let f = f.reopen();
+    assert!(f.synced() < 400);
+    f.put_coin(coin.clone());
+    f.advance(1_000);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let (guard, payment) = (f.guard(), f.pay_from_the_draft(&draft));
+    eprintln!(
+        "ROW58 stored checkpoint 1010 above the target 1000: replay guard at 1000 {guard:?}, payment {:?}",
+        payment.as_ref().map(|p| p.summary().inputs[0].outpoint)
+    );
+    assert!(replaying(guard), "done below the stored checkpoint");
+    assert!(replaying(payment), "the coin spent at 1005 pays");
+    f.see_spent(coin.outpoint);
+    f.advance(1_010);
+    assert_eq!(f.guard().unwrap(), 1_010);
+    assert!(!replaying(f.pay_from_the_draft(&draft)));
+}
+
+/// An unreadable record whose hold cannot be raised to the birth height
+/// at open holds there all the same: once writes work again, a rescan
+/// from the birth height ends the hold, in memory and stored.
+#[test]
+fn an_unreadable_record_whose_raised_hold_is_not_stored_ends_with_a_rescan_from_the_birth_height() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.engine
+        .block_on(f.session.set_birth_height(f.wallet, 500))
+        .unwrap();
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    f.store_record("1:1000:1001:0");
+    let records = f.records();
+    records
+        .fail_writes
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    f.engine.block_on(f.session.load_wallet(f.wallet)).unwrap();
+    records
+        .fail_writes
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    drop(records);
+    assert!(interrupted(&f.guard()));
+    f.rescan(500).unwrap();
+    let (guard, record) = (f.guard(), f.record());
+    eprintln!(
+        "ROW58 hold not raised at open, then a rescan from the birth height: replay guard {guard:?}, \
+         record {record:?}"
+    );
+    assert!(replaying(guard), "the hold stays");
+    assert!(
+        record.is_some_and(|r| !r.cancelled),
+        "the stored hold stays"
+    );
+    f.crash_on_close();
+    let f = f.reopen();
+    assert!(replaying(f.guard()));
+    assert!(f.record().is_some_and(|r| !r.cancelled));
+}
+
+/// The abandon is planned under the lock that applies it: a descendant
+/// that arrives first, spending also a coin funded below the root's, is
+/// abandoned with it once the replay from that lower block is stored, and
+/// not at all when that cannot be.
+#[test]
+fn an_abandon_stores_the_replay_of_a_descendant_that_arrives_before_it_applies() {
+    let f = fixture(false);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    let (a, b) = (f.late_coin(1, COIN, 150), f.late_coin(2, COIN, 100));
+    f.put_coin(a.clone());
+    f.put_coin(b.clone());
+    f.funded_at(a.outpoint.txid, 150);
+    f.funded_at(b.outpoint.txid, 100);
+    let root = dashcore::Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: a.outpoint,
+            ..Default::default()
+        }],
+        output: vec![
+            TxOut {
+                value: COIN / 4,
+                script_pubkey: script_of(FOREIGN),
+            },
+            TxOut {
+                value: COIN / 2,
+                script_pubkey: a.txout.script_pubkey.clone(),
+            },
+        ],
+        special_transaction_payload: None,
+    };
+    f.see_tx(&root);
+    let descendant = dashcore::Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![
+            dashcore::TxIn {
+                previous_output: OutPoint::new(root.txid(), 1),
+                ..Default::default()
+            },
+            dashcore::TxIn {
+                previous_output: b.outpoint,
+                ..Default::default()
+            },
+        ],
+        output: vec![TxOut {
+            value: COIN,
+            script_pubkey: script_of(FOREIGN),
+        }],
+        special_transaction_payload: None,
+    };
+    let (root_id, descendant_id) = (root.txid(), descendant.txid());
+    let manager = Arc::clone(&f.session.live().unwrap().manager);
+    let abandon = || {
+        let (s, id, m) = (Arc::clone(&f.session), f.wallet, Arc::clone(&manager));
+        f.session
+            .rt
+            .spawn(async move { s.abandon_inner(&m, id, root_id).await })
+    };
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_abandon.lock().unwrap() = Some(Arc::clone(&pause));
+    let first = abandon();
+    eventually("the abandon's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    f.see_tx(&descendant);
+    let records = f.records();
+    records
+        .fail_writes
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    pause.release.notify_one();
+    let first = f.engine.block_on(first).unwrap();
+    records
+        .fail_writes
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    drop(records);
+    let (root_state, descendant_state) = (f.abandon_state(root_id), f.abandon_state(descendant_id));
+    eprintln!(
+        "ROW58 descendant before the abandon applies, its replay not stored: {first:?}, root \
+         (abandoned, key-wallet holds it) {root_state:?}, descendant {descendant_state:?}"
+    );
+    assert!(first.is_err());
+    assert_eq!(
+        root_state,
+        (false, true),
+        "the root went without its replay"
+    );
+    assert_eq!(
+        descendant_state,
+        (false, true),
+        "the descendant went without its replay"
+    );
+
+    let second = f.engine.block_on(abandon()).unwrap().unwrap();
+    assert_eq!(second, [root_id, descendant_id].into_iter().collect());
+    assert_eq!(f.record().map(|r| r.reached), Some(99));
+    assert_eq!(f.abandon_state(descendant_id), (true, false));
+}

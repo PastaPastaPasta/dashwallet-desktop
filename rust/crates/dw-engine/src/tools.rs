@@ -101,8 +101,9 @@ enum Rewind {
     Now,
     /// Only stores the record, ahead of the change that rewinds.
     Ahead,
-    /// Resumes a stored replay, whose target stays `target`.
-    Resume { target: u32 },
+    /// Resumes a stored replay to `target`, or to the stored checkpoint
+    /// when that is above it and not one a fork left (`forked_from`).
+    Resume { target: u32, forked_from: u32 },
 }
 
 /// A rescan the engine started and has not seen finish.
@@ -133,6 +134,19 @@ impl RescanState {
             .map(|w| w.reached)
             .min()
             .flatten()
+    }
+
+    /// A fork truncated the chain to `height`: `wallet`'s rescan is back
+    /// at the new chain's height, not above it.
+    pub(crate) fn truncate(&mut self, wallet: &WalletId, height: u32) -> bool {
+        match self.wallets.get_mut(wallet) {
+            Some(w) => {
+                w.resume_height = w.resume_height.min(height);
+                w.reached = w.reached.map(|r| r.min(height));
+                true
+            }
+            None => false,
+        }
     }
 
     /// Records a wallet's new checkpoint. Returns whether it belongs to the
@@ -332,6 +346,7 @@ impl NetworkSession {
             return;
         };
         session.replay.note_stale(wallet, target);
+        let birth = info.core_wallet.birth_height().saturating_sub(1);
         let tip = self.hub.tracker().tip_height();
         let target = tip.map_or(target, |tip| target.min(tip)).max(live);
         let floor = || {
@@ -344,10 +359,13 @@ impl NetworkSession {
                 .min();
             match contacts {
                 Some(funding) if funding <= live => funding,
-                _ => info.core_wallet.birth_height().saturating_sub(1),
+                _ => birth,
             }
         };
-        if let Err(e) = session.replay.note_seen(wallet, live, target, floor).await {
+        if let Err(e) = (session.replay)
+            .note_seen(wallet, live, target, birth, floor)
+            .await
+        {
             tracing::warn!(error = %e, wallet = %wallet, "could not store the replay record");
         }
     }
@@ -398,25 +416,9 @@ impl NetworkSession {
         };
         let current = info.core_wallet.synced_height();
         let lower = checkpoint < current;
-        let target = match how {
-            // The record's target: the loaded checkpoint can be above it
-            // (a fork lowered it; platform-wallet stores the highest).
-            Rewind::Resume { target } => {
-                (replay.note_rewind(wallet, checkpoint.min(current), target))
-                    .await?
-                    .target
-            }
-            Rewind::Now | Rewind::Ahead => {
-                let seen = self.hub.wallet_state(&wallet).map_or(0, |s| s.scan_target);
-                if lower || replay.get(wallet).await?.is_some() {
-                    (replay.note_rewind(wallet, checkpoint.min(current), current.max(seen)))
-                        .await?
-                        .target
-                } else {
-                    current
-                }
-            }
-        };
+        let target = self
+            .record_locked(&replay, wallet, info, checkpoint, how)
+            .await?;
         if matches!(how, Rewind::Ahead) {
             return Ok(Some(target));
         }
@@ -439,6 +441,55 @@ impl NetworkSession {
             }
         });
         Ok(Some(target))
+    }
+
+    /// [`Self::record_rewind`], for a caller that holds the manager's
+    /// write lock and `wallet`'s info `info` under it.
+    pub(crate) async fn record_rewind_locked(
+        &self,
+        wallet: WalletId,
+        info: &platform_wallet::PlatformWalletInfo,
+        checkpoint: u32,
+    ) -> Result<(), EngineError> {
+        let replay = self.live()?.replay;
+        self.record_locked(&replay, wallet, info, checkpoint, Rewind::Ahead)
+            .await
+            .map(drop)
+    }
+
+    /// Stores the record of a rewind of `wallet`, whose info `info` the
+    /// caller holds under the manager's write lock, to `checkpoint`.
+    /// Returns the replay's target.
+    async fn record_locked(
+        &self,
+        replay: &crate::replay_record::ReplayRecords,
+        wallet: WalletId,
+        info: &platform_wallet::PlatformWalletInfo,
+        checkpoint: u32,
+        how: Rewind,
+    ) -> Result<u32, EngineError> {
+        let current = info.core_wallet.synced_height();
+        let birth = info.core_wallet.birth_height().saturating_sub(1);
+        let target = match how {
+            // platform-wallet stores the highest checkpoint: one above the
+            // record's target is the replay's (a quit before its record
+            // went), unless a fork left it there.
+            Rewind::Resume {
+                target,
+                forked_from,
+            } if current <= forked_from => target,
+            Rewind::Resume { target, .. } => target.max(current),
+            Rewind::Now | Rewind::Ahead => {
+                if checkpoint >= current && replay.get(wallet).await?.is_none() {
+                    return Ok(current);
+                }
+                current.max(self.hub.wallet_state(&wallet).map_or(0, |s| s.scan_target))
+            }
+        };
+        Ok(replay
+            .note_rewind(wallet, checkpoint.min(current), target, birth)
+            .await?
+            .target)
     }
 
     /// Resumes `wallet`'s stored replay as it is loaded, before
@@ -477,7 +528,7 @@ impl NetworkSession {
                 Ok(reached) => reached,
                 Err(e) => {
                     tracing::warn!(error = %e, wallet = %wallet, "could not store the replay hold at the birth height");
-                    record.reached
+                    record.reached.max(floor)
                 }
             };
             hold(reached, record.target);
@@ -489,6 +540,7 @@ impl NetworkSession {
             record.reached,
             Rewind::Resume {
                 target: record.target,
+                forked_from: record.forked_from,
             },
         ))
         .await;
@@ -566,8 +618,12 @@ impl NetworkSession {
             for (id, w) in &state.wallets {
                 if let Some(info) = wm.get_wallet_info(&id.0) {
                     let current = info.core_wallet.synced_height();
-                    if current < w.resume_height {
-                        cancels.push((*id, current, w.resume_height));
+                    // Never above the wallet's replay target, which a fork
+                    // lowers.
+                    let resume_height = (this.hub.wallet_state(id))
+                        .map_or(w.resume_height, |s| w.resume_height.min(s.scan_target));
+                    if current < resume_height {
+                        cancels.push((*id, current, resume_height));
                     }
                 }
             }

@@ -280,36 +280,38 @@ impl NetworkSession {
         wallet: WalletId,
         root: Txid,
     ) -> Result<BTreeSet<Txid>, EngineError> {
-        // The replay record is stored before the abandon, which is planned
-        // on a copy of the wallet for the heights it rewinds to.
-        let planned = {
-            let wm = manager.wallet_manager_arc();
-            let wm = wm.read().await;
-            let info = wm
-                .get_wallet_info(&wallet.0)
-                .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
-            let mut trial = info.core_wallet.clone();
-            trial
-                .abandon_transaction_with_spends(root, &BTreeMap::new())
-                .abandoned
-        };
-        if let Some(height) = self.rescan_from(wallet, &self.released(wallet, &planned)) {
-            self.record_rewind(manager, wallet, height.saturating_sub(1))
-                .await?;
+        #[cfg(test)]
+        let pause = self.hub.pause_abandon.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            pause
+                .reached
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            pause.release.notified().await;
         }
-        let outcome = {
+        // Planned on a copy under the lock that applies it, so the replay
+        // record stored before it covers what is abandoned.
+        let (outcome, checkpoint) = {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
             let info = wm
                 .get_wallet_info_mut(&wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
+            let mut trial = info.core_wallet.clone();
+            let planned = trial
+                .abandon_transaction_with_spends(root, &BTreeMap::new())
+                .abandoned;
+            let checkpoint = self.abandon_rewind(wallet, &planned, info.core_wallet.birth_height());
+            if let Some(checkpoint) = checkpoint {
+                self.record_rewind_locked(wallet, info, checkpoint).await?;
+            }
             let outcome = info
                 .core_wallet
                 .abandon_transaction_with_spends(root, &BTreeMap::new());
             if !outcome.abandoned.is_empty() {
                 info.core_wallet.update_balance();
             }
-            outcome
+            (outcome, checkpoint)
         };
         // key-wallet refuses (returns nothing) when it holds the root as
         // settled.
@@ -376,9 +378,8 @@ impl NetworkSession {
 
         // The released coins come back when the filter scan passes their
         // funding blocks again.
-        if let Some(height) = self.rescan_from(wallet, &released) {
-            self.rewind_recorded(manager, wallet, height.saturating_sub(1))
-                .await?;
+        if let Some(checkpoint) = checkpoint {
+            self.rewind_recorded(manager, wallet, checkpoint).await?;
         }
         self.refresh_wallet_state(manager, wallet).await;
         let changed: Vec<Txid> = abandoned.iter().copied().collect();
@@ -397,6 +398,22 @@ impl NetworkSession {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()
+    }
+
+    /// The checkpoint abandoning `abandoned` rewinds to: below the lowest
+    /// funding height of the coins it releases, or below `birth` when the
+    /// hub has not heard of one of them yet.
+    fn abandon_rewind(
+        &self,
+        wallet: WalletId,
+        abandoned: &BTreeSet<Txid>,
+        birth: u32,
+    ) -> Option<u32> {
+        if (abandoned.iter()).any(|t| self.hub.history.get(&wallet, t).is_none()) {
+            return Some(birth.saturating_sub(1));
+        }
+        self.rescan_from(wallet, &self.released(wallet, abandoned))
+            .map(|h| h.saturating_sub(1))
     }
 
     /// The lowest funding height of `released`, which the filter scan

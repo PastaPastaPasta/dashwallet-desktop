@@ -460,6 +460,8 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next wallet open before its replay is resumed.
     #[cfg(test)]
     pub(crate) pause_load: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    #[cfg(test)]
+    pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
 
 impl SessionHub {
@@ -552,6 +554,8 @@ impl SessionHub {
             pause_seen: Mutex::new(None),
             #[cfg(test)]
             pause_load: Mutex::new(None),
+            #[cfg(test)]
+            pause_abandon: Mutex::new(None),
         }
     }
 
@@ -1006,11 +1010,18 @@ impl SessionHub {
                 let changed = self
                     .history
                     .with_wallet(id, |h| h.truncate(txids, unconfirmed_txids));
+                let from = self.wallet_state(&id).map_or(0, |s| s.scan_target);
                 let flipped = self.lower_heights(id, *height);
+                if let Some(rescan) = self.rescan().as_mut()
+                    && rescan.truncate(&id, *height)
+                {
+                    self.pump.mark_sync();
+                }
                 if let Some(replay) = self.replay.get().and_then(std::sync::Weak::upgrade) {
                     replay.note(crate::replay_record::ReplayNote::Truncated {
                         wallet: id,
                         height: *height,
+                        from,
                     });
                 }
                 if !changed.is_empty() {
