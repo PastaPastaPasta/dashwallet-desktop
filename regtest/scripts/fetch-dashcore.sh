@@ -11,16 +11,16 @@
 #   DASHCORE_CACHE  directory where downloaded tarballs are kept (default: $HOME/.cache/dwd-dashcore)
 #
 # The version and SHA-256 values below are copied from the release's SHA256SUMS.asc
-# (https://github.com/dashpay/dash/releases/download/v24.0.0-rc.2/SHA256SUMS.asc).
+# (https://github.com/dashpay/dash/releases/download/v24.0.0/SHA256SUMS.asc).
 # Bumping the version means replacing every value in this block together.
 set -eu
 
-DASHCORE_VERSION=24.0.0-rc.2
-SHA256_x86_64_linux_gnu=626840b4d724b2b4238fc53fed6025ff72a6600be2d8b078441340950113f908
-SHA256_aarch64_linux_gnu=05a97c68ea31985975f9669e34369dd6dd5bce5f278edfbab17d9ce572801a1b
-SHA256_arm64_apple_darwin=c0e1aa38c851247a01c9f7bb6b177371993ef7ab45e45fa6dca159b7a21c5dcb
-SHA256_x86_64_apple_darwin=285fbb4fba103d065b56be7658dcf38d94201a87f4bdf01972417c4e83e1095c
-SHA256_win64=669217f751a8ad91760ad8e93a1e8094f5ea213bd9e21439cb087ad6256bb9ba
+DASHCORE_VERSION=24.0.0
+SHA256_x86_64_linux_gnu=1ffce395e035fb2ee617c92e6eeaab139ca3d10db6f83d4e816136b726512c5e
+SHA256_aarch64_linux_gnu=77783b233936be2c3c13046e87dd7d9162c2dbd93f8b81e9f7ca7420a3b0b1cb
+SHA256_arm64_apple_darwin=93c6989985d6cc2e3405c55f7a62f5e9160593b11a8de048c6e1338540781e16
+SHA256_x86_64_apple_darwin=e24380ba50473bc3f5144727f01ce0794cea1b057b58ee07df19aee7e90ba950
+SHA256_win64=dc459ae59c30390e20d6c7f4952a110aaa53dec2d2ee611ab0e9777f9e0b9219
 
 if [ "$#" -lt 1 ]; then
     echo "usage: $0 <dest-dir> [triple]" >&2

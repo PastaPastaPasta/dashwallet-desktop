@@ -2,7 +2,7 @@
 need a node (R2, M2). Drives a host-built `dwcli` (DWCLI=/path/to/dwcli; skipped when absent).
 
 Import (§4.4 item 1, §4.3 `restore`): dashd v24 wallets with a known phrase and BIP39 passphrase
-(ASCII, non-ASCII with an encrypted wallet, a weak-checksum phrase with a 300-byte passphrase) are
+(ASCII, non-ASCII with an encrypted wallet, a weak-checksum phrase with a 256-byte passphrase) are
 funded, including an address 25 past the last used one (a gap over 20) and change from a spend.
 Each is restored through every path that applies:
 
@@ -54,14 +54,21 @@ LETTER = "letter advice cage absurd amount doctor acoustic avoid letter advice c
 WEAK = "alter undo step harbor skate color young picture sand chef goat ordinary"
 LEGAL = "legal winner thank year wave sausage worth useful legal winner thank yellow"
 NON_ASCII = "pässwörd ñ € 🔑"
-LONG_PASS = ("long passphrase é " * 16)[:290] + "0123456789"
+# The longest passphrase dashd v24.0.0 creates a wallet with, and only with
+# -allow-deprecated-long-mnemonics: 249 to 256 bytes, to recover a wallet Dash Core 19.2.0 or later
+# made, whose salt "mnemonic" + passphrase is cut at 256 bytes (v24.0.0 src/wallet/init.cpp:106-112).
+# A passphrase over 256 bytes, which only 23.x and older took, is dw-vault's
+# tests/core_v23_long_passphrase.rs.
+LONG_PASS = ("long passphrase é " * 16)[:233] + "0123456789"
+assert len(LONG_PASS.encode()) == 256
+
+# The chain fixture's dashd needs it for `weak_longpass` (conftest.py reads DASHD_ARGS).
+DASHD_ARGS = ("-allow-deprecated-long-mnemonics",)
 
 VARIANTS = {
     # name: (phrase, BIP39 passphrase, wallet.dat passphrase, legacy dump too)
     "plain": (ABANDON, "TREZOR", None, True),
     "encrypted": (LETTER, NON_ASCII, "wallet pass é 🔐", True),
-    # Legacy wallets refuse BIP39 passphrases over 256 characters (`SetMnemonic`), so this one
-    # has no dumpwallet path; descriptor wallets take it and cut the salt at 256 bytes.
     "weak_longpass": (WEAK, LONG_PASS, None, False),
 }
 

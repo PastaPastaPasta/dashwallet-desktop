@@ -15,9 +15,9 @@ Measured results are in [RESULTS.md](RESULTS.md).
 
 | What | Pin | Source |
 |---|---|---|
-| Dash Core binaries | **24.0.0-rc.2** (newest v24 build on 2026-10-05; there is no final v24.0.0 yet) | `https://github.com/dashpay/dash/releases/tag/v24.0.0-rc.2` |
-| SHA-256 | `x86_64-linux-gnu` 626840b4…f908, `aarch64-linux-gnu` 05a97c68…1a1b, `arm64-apple-darwin` c0e1aa38…5dcb, `x86_64-apple-darwin` 285fbb4f…f42e | release `SHA256SUMS.asc`; full values in `scripts/fetch-dashcore.sh` |
-| test_framework | tag `v24.0.0-rc.2` = commit `1e239d4b05d582762aceea6ed728076ab3c38979` | `test/functional/test_framework/` (MIT, `functional/test_framework/COPYING`; `authproxy.py` is LGPL-2.1+, see below) |
+| Dash Core binaries | **24.0.0** (the final release, 2026-11-05) | `https://github.com/dashpay/dash/releases/tag/v24.0.0` |
+| SHA-256 | `x86_64-linux-gnu` 1ffce395…2c5e, `aarch64-linux-gnu` 77783b23…b1cb, `arm64-apple-darwin` 93c69899…1e16, `x86_64-apple-darwin` e24380ba…a950, `win64` dc459ae5…9219 | release `SHA256SUMS.asc`; full values in `scripts/fetch-dashcore.sh` |
+| test_framework | tag `v24.0.0-rc.2` = commit `1e239d4b05d582762aceea6ed728076ab3c38979` (not yet re-vendored from v24.0.0) | `test/functional/test_framework/` (MIT, `functional/test_framework/COPYING`; `authproxy.py` is LGPL-2.1+, see below) |
 | dash_hash (X11 for the framework) | 1.4.0, tag archive SHA-256 `2490feb0…7e5a` | `https://github.com/dashpay/dash_hash` (MIT) |
 | Base image | `python:3.12-slim` (Debian 13, glibc 2.41) | `ARG BASE_IMAGE` in the Dockerfile |
 | pytest | 8.3.4 | `harness/requirements.txt` |
@@ -204,10 +204,10 @@ docker compose -f regtest/docker-compose.yml --profile functional run --rm funct
 
 # on the host with the matching release: Linux (x86_64/aarch64) or macOS (ad-hoc signed by
 # fetch-dashcore.sh); building dash_hash needs a C compiler
-sh regtest/scripts/fetch-dashcore.sh ~/.cache/dwd-dashcore/24.0.0-rc.2
+sh regtest/scripts/fetch-dashcore.sh ~/.cache/dwd-dashcore/24.0.0
 uv venv ~/.cache/dwd-dashcore/func-venv --python 3.12 && uv pip install --python ~/.cache/dwd-dashcore/func-venv/bin/python \
     https://github.com/dashpay/dash_hash/archive/refs/tags/1.4.0.tar.gz
-DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0-rc.2 \
+DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0 \
     regtest/functional/run.sh dwd_mn_chainlock.py
 ```
 
@@ -308,7 +308,7 @@ set up as in "Running" above (the Docker image would need a Linux `dwcli` inside
 ```sh
 (cd rust && cargo build -p dwcli)    # from the repo root
 DWCLI=${CARGO_TARGET_DIR:-$PWD/rust/target}/debug/dwcli DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python \
-    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0-rc.2 regtest/functional/run.sh dwd_coinjoin_client.py --portseed=<n>
+    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0 regtest/functional/run.sh dwd_coinjoin_client.py --portseed=<n>
 ```
 
 dashd counterparties alone are not enough on this network: after their first sessions they keep the
@@ -330,7 +330,7 @@ it on the host like `coinjoin`:
 
 ```sh
 DWCLI=${CARGO_TARGET_DIR:-$PWD/rust/target}/debug/dwcli DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python \
-    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0-rc.2 regtest/functional/run.sh dwd_masternodes.py --portseed=<n>
+    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0 regtest/functional/run.sh dwd_masternodes.py --portseed=<n>
 ```
 
 `DWD_MG03_EVIDENCE=<dir>` also writes the list, A's payouts and its removed detail as JSON. One
@@ -349,7 +349,7 @@ private X display, WebKitWebDriver and tauri-driver:
 
 ```sh
 DISPLAY=:<n> TAURI_DRIVER=<tauri-driver> DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python \
-    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0-rc.2 apps/desktop/scripts/e2e-regtest-governance.sh
+    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0 apps/desktop/scripts/e2e-regtest-governance.sh
 ```
 
 Screenshots, the app's log and `result.json` go to `DW_E2E_OUT`. One pass takes about 4 minutes on

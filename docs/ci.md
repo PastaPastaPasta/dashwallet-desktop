@@ -32,7 +32,7 @@ row):
 | protoc 29.3 (release zip, every OS) | `ci/github/install-protoc.sh`; the `ci/linux` Dockerfiles | SHA-256 per asset, kept in the script and the Dockerfiles (protobuf publishes none) |
 | swiftly 1.1.1 (Linux) | `ci/github/linux-swiftly.sh` | SHA-256 per architecture; swiftly then GPG-verifies the Swift toolchain |
 | Windows App Runtime 1.5 installer | `ci.yml`, windows-swift | the resolved `download.microsoft.com` URL, SHA-256 (`Get-FileHash`) and a valid Microsoft Authenticode signature |
-| Dash Core v24.0.0-rc.2 | `regtest/scripts/fetch-dashcore.sh` | SHA-256 per platform, also on every cache restore |
+| Dash Core v24.0.0 | `regtest/scripts/fetch-dashcore.sh` | SHA-256 per platform, also on every cache restore |
 | dash_hash 1.4.0 | `nightly.yml`; `regtest/Dockerfile` | SHA-256 of the commit archive; of the tag archive in the image |
 | uv 0.12.23 | `nightly.yml` | version pinned through `astral-sh/setup-uv` |
 | Swift 6.3.3 for Windows | `compnerd/gha-setup-swift` | exact release from swift.org over HTTPS; **the action checks neither a hash nor a signature** (accepted: pinned version, non-blocking and gate jobs only) |
