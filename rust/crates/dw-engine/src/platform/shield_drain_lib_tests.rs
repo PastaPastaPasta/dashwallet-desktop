@@ -84,6 +84,11 @@ where
     w.engine.block_on(async move {
         let lease = (s.begin_lease(wallet, FlowKind::ShieldDrain, &[grant]).await).unwrap();
         let before = lease.available(BudgetPurpose::Funding).unwrap();
+        // As `drain` does: the funding gate reads the tracked rows first.
+        assert!(
+            s.leases.refresh_funding(wallet).await,
+            "the wallet's rows read"
+        );
         let step = pool::next_step(&s, wallet).unwrap();
         let fence = s.coin_fence(wallet).await.unwrap();
         let permit = s
