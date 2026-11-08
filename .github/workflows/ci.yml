@@ -135,9 +135,8 @@ jobs:
       # Without the feature (the workspace run above), dwcli has no `coinjoin-test-addresses`; with
       # it, the command parses and dw-engine's probe sees the test calls, so the nightly's release
       # leg of mix_shield_release_check isn't vacuous. With `invitation-create-test`, the table
-      # tests cover its `invite create` row; that feature only adds dw-engine's `test-support`,
-      # already built above, so only dwcli rebuilds. The Nightly runs dwcli's whole suite with each
-      # debug feature.
+      # tests cover its `invite create` row. The Nightly runs dwcli's whole suite with each debug
+      # feature.
       - name: dwcli and dw-engine with the debug features
         if: ${{ !cancelled() }}
         run: |
