@@ -305,16 +305,19 @@ pub(crate) struct WalletState {
     pub scan_target: u32,
     /// The checkpoint a replay `cancel_rescan` stopped had reached: what it
     /// re-credited above it stays in memory (and stored) until a rewind to
-    /// it or below replays those blocks (`note_rewind`). Held for this
-    /// session only.
+    /// it or below replays those blocks (`note_rewind`). Its replay record
+    /// keeps the hold across a restart (`crate::replay_record`).
     pub replay_cancelled: Option<u32>,
+    /// The wallet is being opened and its stored replay not yet resumed:
+    /// spends wait (`NetworkSession::load_wallet`).
+    pub loading: bool,
 }
 
 impl WalletState {
     /// Whether spends wait for a replay at filter checkpoint `checkpoint`
     /// (`NetworkSession::replay_guard`).
     pub fn replaying_at(&self, checkpoint: u32) -> bool {
-        checkpoint < self.scan_target || self.replay_cancelled.is_some()
+        checkpoint < self.scan_target || self.replay_cancelled.is_some() || self.loading
     }
 
     /// The engine rewound the checkpoint to `checkpoint`; the live check
@@ -336,6 +339,7 @@ impl WalletState {
         *self = WalletState {
             scan_target: self.scan_target.max(read.synced_height),
             replay_cancelled: self.replay_cancelled,
+            loading: self.loading,
             fully_mixed: self.fully_mixed,
             ..read
         };
@@ -448,9 +452,16 @@ pub(crate) struct SessionHub {
     /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
     pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// The session's replay records, told of each fork truncation.
+    replay: OnceLock<std::sync::Weak<crate::replay_record::ReplayRecords>>,
     /// Tests: holds the next first-seen write before it runs.
     #[cfg(test)]
     pub(crate) pause_seen: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next wallet open before its replay is resumed.
+    #[cfg(test)]
+    pub(crate) pause_load: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    #[cfg(test)]
+    pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
 
 impl SessionHub {
@@ -538,8 +549,13 @@ impl SessionHub {
             headers: RwLock::new(None),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
+            replay: OnceLock::new(),
             #[cfg(test)]
             pause_seen: Mutex::new(None),
+            #[cfg(test)]
+            pause_load: Mutex::new(None),
+            #[cfg(test)]
+            pause_abandon: Mutex::new(None),
         }
     }
 
@@ -638,6 +654,11 @@ impl SessionHub {
         if due && let Some(retry) = self.sweep_retry.get() {
             retry(id);
         }
+    }
+
+    /// Installs the session's replay records (once).
+    pub(crate) fn attach_replay(&self, replay: &Arc<crate::replay_record::ReplayRecords>) {
+        let _ = self.replay.set(Arc::downgrade(replay));
     }
 
     /// Sets what starts a wallet's duplicate-coin reconcile (once).
@@ -989,7 +1010,20 @@ impl SessionHub {
                 let changed = self
                     .history
                     .with_wallet(id, |h| h.truncate(txids, unconfirmed_txids));
+                let from = self.wallet_state(&id).map_or(0, |s| s.scan_target);
                 let flipped = self.lower_heights(id, *height);
+                if let Some(rescan) = self.rescan().as_mut()
+                    && rescan.truncate(&id, *height)
+                {
+                    self.pump.mark_sync();
+                }
+                if let Some(replay) = self.replay.get().and_then(std::sync::Weak::upgrade) {
+                    replay.note(crate::replay_record::ReplayNote::Truncated {
+                        wallet: id,
+                        height: *height,
+                        from,
+                    });
+                }
                 if !changed.is_empty() {
                     self.pump.mark_history(id, Some(&changed));
                 }

@@ -289,6 +289,7 @@ impl NetworkSession {
             // DP2-05 r3 finding 1). An import of it deletes what a failed
             // delete left, or is refused (`AppDb::readmit_wallet`).
             live.tap.forget(&id);
+            live.replay.forget(id).await;
             deleted??;
             this.sink.emit(EngineEvent::WalletRemoved {
                 network: this.network.clone(),
