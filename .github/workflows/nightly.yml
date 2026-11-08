@@ -1,5 +1,6 @@
 # Nightly (roadmap T-03; DASHPAY §6 tiers T1 and GUI):
-# - regtest: the dashd v24 regtest suites of regtest/README.md against a host-built dwcli;
+# - regtest: the dashd v24 regtest suites of regtest/README.md against a host-built dwcli, and
+#   dwcli's tests with its `platform-addr-fund` feature;
 # - crossui-linux: scripts/crossui-linux-demo.sh (the SwiftCrossUI app driven through AT-SPI under
 #   Xvfb in Docker, M1 and M2 flows);
 # - shielded: the Orchard prover warm-up in a cold process (E0-12); the pool itself is built and
@@ -144,6 +145,11 @@ jobs:
           regtest/functional/run.sh dwd_masternodes.py --portseed=4731 --loglevel=INFO \
             > "$LOGS/masternodes.log" 2>&1 || { tail -n 200 "$LOGS/masternodes.log"; exit 1; }
           tail -n 20 "$LOGS/masternodes.log"
+      # PR CI runs dwcli's suite with `invitation-create-test`; this feature rebuilds dw-engine.
+      - name: dwcli tests with the platform-addr-fund feature
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        working-directory: rust
+        run: cargo test -p dwcli --features platform-addr-fund --locked --no-fail-fast
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

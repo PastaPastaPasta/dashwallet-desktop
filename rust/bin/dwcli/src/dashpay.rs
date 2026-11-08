@@ -2682,6 +2682,13 @@ mod tests {
         ("invite forget L", NOT_STASHED),
         // DP5-02.
         ("invite status L", NOT_STASHED),
+        // DP5-02 T2, debug builds with its feature only: the phrase file is
+        // read before anything is funded.
+        #[cfg(feature = "invitation-create-test")]
+        (
+            "invite create --duffs 100000 --phrase-file /nonexistent/p --out /nonexistent/l",
+            NO_FILE,
+        ),
         // 0.1 E1: regtest's floor (13) is past the activation; the new
         // wallet's account binds from the vault, and is not ready: no pass
         // has scanned it this session (Platform is not started here). The
@@ -2934,6 +2941,11 @@ mod tests {
         ("invite status L", "NetworkSession.invitation_status"),
         ("invite pending", "NetworkSession.pending_invitations"),
         ("invite forget L", "NetworkSession.forget_invitation"),
+        #[cfg(feature = "invitation-create-test")]
+        (
+            "invite create --duffs 100000 --phrase-file /nonexistent/p --out /nonexistent/l",
+            "DashPay.grant_request",
+        ),
         ("shielded status", "DashPay.shielded_status"),
         ("shielded sync", "DashPay.shielded_sync"),
         ("shielded address", "DashPay.shielded_receive_address"),
