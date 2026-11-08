@@ -8,6 +8,7 @@ use ts_rs::TS;
 
 use super::flows::GrantRequest;
 use crate::dto::mirror_enum;
+use crate::dto::platform::DispatchStateName;
 use crate::error::{AppError, EngineCode};
 
 /// A credit amount the renderer sends as a decimal string.
@@ -148,6 +149,52 @@ impl From<engine::ShieldQuote> for ShieldQuote {
     }
 }
 
+/// What "Move mixed coins" to Shielded takes and buys: one asset lock
+/// spending every coin of the CoinJoin account. Its grant is a `Spend`
+/// grant of `totalDuffs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MixedShieldQuote {
+    pub inputs: u32,
+    pub total_duffs: u64,
+    pub fee_duffs: u64,
+    pub duffs: u64,
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub pool_fee_credits: u64,
+    /// What the shielded balance gains, at least.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    pub fully_mixed_duffs: u64,
+    pub not_fully_mixed_duffs: u64,
+}
+
+impl From<engine::MixedShieldQuote> for MixedShieldQuote {
+    fn from(q: engine::MixedShieldQuote) -> Self {
+        let engine::MixedShieldQuote {
+            inputs,
+            total_duffs,
+            fee_duffs,
+            duffs,
+            pool_fee_credits,
+            credits,
+            fully_mixed_duffs,
+            not_fully_mixed_duffs,
+        } = q;
+        MixedShieldQuote {
+            inputs,
+            total_duffs,
+            fee_duffs,
+            duffs,
+            pool_fee_credits,
+            credits,
+            fully_mixed_duffs,
+            not_fully_mixed_duffs,
+        }
+    }
+}
+
 /// Where a Core → Shielded move stands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(
@@ -200,6 +247,134 @@ impl From<engine::ShieldOutcome> for ShieldOutcome {
         ShieldOutcome {
             txid,
             state: state.into(),
+        }
+    }
+}
+
+/// A move into Shielded (a shield or a move of mixed coins) whose payment
+/// may have been sent: it refuses every later one until it settles or
+/// Tools ▸ Repair resolves it (`resolveStuckFunding` with `step`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StuckShieldFunding {
+    /// `shield/<k>/funding`.
+    pub step: String,
+    /// `maybeSent` or `willBeSent`.
+    pub state: DispatchStateName,
+    /// What Repair would spend for it now, or `null` with `blocked`.
+    pub repair: Option<ShieldRepairCost>,
+    /// Why Repair refuses it now, naming no transaction, coin or address
+    /// (`resolveStuckFunding` answers the details); `null` with `repair`.
+    pub blocked: Option<ShieldRepairBlocked>,
+}
+
+/// Why Repair refuses a listed move into Shielded now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ShieldRepairBlocked {
+    pub reason: ShieldRepairBlockedReason,
+    /// The same Repair may succeed later with nothing done by the user.
+    pub retry_later: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ShieldRepairBlockedReason {
+    /// The wallet's records of the move are not read yet, or a call of it
+    /// still runs.
+    NotReady,
+    /// A spend of the wallet's coins is not ChainLocked yet.
+    SpendUnsettled,
+    /// The coins the move's payment spends are already spent.
+    LockInputsSpent,
+    /// A payment of the wallet may be the move's and is not matched yet.
+    UnattributedLock,
+    /// No payment the move signed is known, so nothing shows which coins
+    /// to send back.
+    NoKnownLock,
+    /// A coin Repair would send back is locked or held by another action.
+    CoinsHeld,
+    /// The wallet is mixing.
+    Mixing,
+    /// No coin is left to send back.
+    NoCoins,
+    Other,
+}
+
+impl From<&dw_engine::EngineError> for ShieldRepairBlocked {
+    fn from(e: &dw_engine::EngineError) -> Self {
+        use ShieldRepairBlockedReason as B;
+        use dw_engine::platform::lease::StuckFundingRefusal as R;
+        use dw_engine::{CoinJoinFailure, EngineError as E, SendFailure};
+        let reason = match e {
+            E::StuckFunding(r) => match r {
+                R::RowsUnknown | R::CallRunning | R::JournalUnavailable => B::NotReady,
+                R::SpendUnsettled(_) => B::SpendUnsettled,
+                R::LockInputsSpent(_) | R::MissesSignedLock(_) => B::LockInputsSpent,
+                R::UnattributedLock(_) => B::UnattributedLock,
+                R::NoKnownLock | R::NoMarker => B::NoKnownLock,
+                R::NotStuck(_) => B::Other,
+            },
+            E::Send(SendFailure::OutpointUnavailable(_)) => B::CoinsHeld,
+            E::CoinJoin(CoinJoinFailure::MixingActive) => B::Mixing,
+            E::CoinJoin(CoinJoinFailure::MoveRunning) => B::CoinsHeld,
+            E::InvalidArgument(_) => B::NoCoins,
+            _ => B::Other,
+        };
+        let retry_later = match e {
+            E::StuckFunding(r) => r.retry_later(),
+            E::CoinJoin(CoinJoinFailure::MoveRunning) => true,
+            _ => false,
+        };
+        ShieldRepairBlocked {
+            reason,
+            retry_later,
+        }
+    }
+}
+
+/// Repair's payment of every coin of a stuck move back to the wallet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ShieldRepairCost {
+    /// A move of mixed coins: Repair spends only those coins, never the
+    /// Core balance.
+    pub mixed: bool,
+    pub inputs: u32,
+    /// The coins' sum; the wallet gets it back less `feeDuffs`.
+    pub total_duffs: u64,
+    pub fee_duffs: u64,
+}
+
+impl From<engine::StuckShieldFunding> for StuckShieldFunding {
+    fn from(s: engine::StuckShieldFunding) -> Self {
+        let engine::StuckShieldFunding {
+            step,
+            state,
+            repair,
+        } = s;
+        let (repair, blocked) = match repair {
+            Ok(engine::ShieldRepairCost {
+                mixed,
+                inputs,
+                total_duffs,
+                fee_duffs,
+            }) => (
+                Some(ShieldRepairCost {
+                    mixed,
+                    inputs,
+                    total_duffs,
+                    fee_duffs,
+                }),
+                None,
+            ),
+            Err(e) => (None, Some(ShieldRepairBlocked::from(&e))),
+        };
+        StuckShieldFunding {
+            step,
+            state: state.into(),
+            repair,
+            blocked,
         }
     }
 }
@@ -454,6 +629,68 @@ impl From<engine::ShieldedActivity> for ShieldedActivity {
             block_height,
             status: status.into(),
             created_at,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use dashcore::{OutPoint, Txid};
+    use dw_engine::platform::lease::StuckFundingRefusal as R;
+    use dw_engine::{EngineError, SendFailure};
+    use serde_json::json;
+
+    use super::*;
+
+    /// Repair's listing says why it refuses a move without naming a
+    /// transaction, a coin or an address; `resolveStuckFunding` answers
+    /// those.
+    #[test]
+    fn a_listed_refusal_names_no_transaction_coin_or_address() {
+        let txid = Txid::from_str(&"5a".repeat(32)).unwrap();
+        let outpoint = OutPoint::new(txid, 7);
+        for (error, reason, retry_later) in [
+            (
+                EngineError::StuckFunding(R::SpendUnsettled(txid)),
+                "spendUnsettled",
+                true,
+            ),
+            (
+                EngineError::StuckFunding(R::LockInputsSpent(txid)),
+                "lockInputsSpent",
+                false,
+            ),
+            (
+                EngineError::StuckFunding(R::MissesSignedLock(txid)),
+                "lockInputsSpent",
+                false,
+            ),
+            (
+                EngineError::Send(SendFailure::OutpointUnavailable(outpoint)),
+                "coinsHeld",
+                false,
+            ),
+        ] {
+            let listed = StuckShieldFunding::from(engine::StuckShieldFunding {
+                step: "shield/0/funding".into(),
+                state: engine::DispatchState::MaybeSent,
+                repair: Err(error),
+            });
+            let value = serde_json::to_value(&listed).unwrap();
+            assert_eq!(
+                value,
+                json!({
+                    "step": "shield/0/funding",
+                    "state": "maybeSent",
+                    "repair": null,
+                    "blocked": { "reason": reason, "retryLater": retry_later },
+                })
+            );
+            let text = value.to_string();
+            assert!(!text.contains("5a5a"), "{text}");
+            assert!(!text.contains(&outpoint.to_string()), "{text}");
         }
     }
 }

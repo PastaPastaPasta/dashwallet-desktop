@@ -57,7 +57,7 @@ pub enum FlowKindName {
     /// credits.
     ShieldedSpend,
     /// "Move mixed coins" to Shielded: the CoinJoin account drained into one
-    /// lock under a `platformOp` grant's duffs.
+    /// lock under a `spend` grant's duffs.
     ShieldDrain,
 }
 

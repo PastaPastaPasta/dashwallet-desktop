@@ -898,6 +898,13 @@ fn top_up_step_order(step: &str) -> (u32, u32) {
         .unwrap_or((u32::MAX, u32::MAX))
 }
 
+fn shield_step_order(step: &str) -> (u32, u32) {
+    let k = (step.strip_prefix("shield/"))
+        .and_then(|s| s.strip_suffix("/funding"))
+        .and_then(|k| k.parse().ok());
+    (k.unwrap_or(u32::MAX), 0)
+}
+
 /// Why Repair's "Resolve stuck funding" (§6.5, §16.10 C9) refuses a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StuckFundingRefusal {
@@ -1304,6 +1311,18 @@ impl LeaseTable {
         self.with_j(|i, _| funding_gate(i, wallet, step))
     }
 
+    /// The steps of `wallet`'s ended calls whose signers' locks the fence
+    /// still recognises.
+    #[cfg(test)]
+    pub(crate) fn ended_funding_steps(&self, wallet: WalletId) -> Vec<String> {
+        self.with_j(|i, _| {
+            (i.fence.ended_funding.iter())
+                .filter(|f| f.wallet == wallet)
+                .map(|f| f.step.clone())
+                .collect()
+        })
+    }
+
     /// Whether `wallet`'s tracked rows were read this session.
     pub(crate) fn has_tracked_snapshot(&self, wallet: WalletId) -> bool {
         self.with_j(|i, _| i.mode_b.snapshots.contains_key(&wallet))
@@ -1632,24 +1651,50 @@ impl LeaseTable {
         &self,
         wallet: WalletId,
     ) -> Result<Vec<(String, DispatchState)>, FundingStepsUnavailable> {
+        self.stuck_steps(wallet, "topup/", top_up_step_order, |_, _, _| true)
+    }
+
+    /// `wallet`'s shield funding steps (`shield/<k>/funding`, a shield's or
+    /// a drain's) that the funding gate holds as possibly sent, as
+    /// [`Self::stuck_top_up_steps`]: each refuses every later shield and
+    /// drain (`shielded_pool.rs` `next_step`) until it settles or Repair
+    /// resolves it. In step order. A step whose lock was broadcast and
+    /// waits for its proof or its apply is not stuck: `pending_shields`
+    /// lists that lock and `resume_shield` applies it.
+    pub(crate) fn stuck_shield_steps(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<(String, DispatchState)>, FundingStepsUnavailable> {
+        self.stuck_steps(wallet, "shield/", shield_step_order, |i, wallet, step| {
+            !(step_rows(i, wallet, step).iter()).any(|r| r.status == TrackedStatus::Broadcast)
+        })
+    }
+
+    fn stuck_steps(
+        &self,
+        wallet: WalletId,
+        prefix: &str,
+        order: fn(&str) -> (u32, u32),
+        stuck: fn(&Inner, WalletId, &str) -> bool,
+    ) -> Result<Vec<(String, DispatchState)>, FundingStepsUnavailable> {
         self.with_j(|i, _| {
             if i.fence.journal != JournalState::Ready
                 || (i.fence.unreadable_funding.iter())
-                    .any(|(w, s)| *w == wallet && s.starts_with("topup/"))
+                    .any(|(w, s)| *w == wallet && s.starts_with(prefix))
             {
                 return Err(FundingStepsUnavailable);
             }
             let mut out: Vec<(String, DispatchState)> = (i.fence.funding_steps_of(&wallet))
                 .into_iter()
-                .filter(|s| s.starts_with("topup/"))
+                .filter(|s| s.starts_with(prefix))
                 .filter_map(|s| match funding_gate(i, wallet, &s) {
                     Some(FundingBlock::Step(Some(
                         state @ (DispatchState::MaybeSent | DispatchState::WillBeSent),
-                    ))) => Some((s, state)),
+                    ))) if stuck(i, wallet, &s) => Some((s, state)),
                     _ => None,
                 })
                 .collect();
-            out.sort_by(|(a, _), (b, _)| (top_up_step_order(a), a).cmp(&(top_up_step_order(b), b)));
+            out.sort_by(|(a, _), (b, _)| (order(a), a).cmp(&(order(b), b)));
             Ok(out)
         })
     }
@@ -1937,6 +1982,38 @@ impl NetworkSession {
         key: FundingKey,
         fence: CoinFence,
     ) -> Result<CallPermit, PlatformError> {
+        self.quoted_funding_call_permit(lease, label, amount, None, step, key, fence)
+            .await
+    }
+
+    /// [`Self::funding_call_permit`] for a drain of the CoinJoin account:
+    /// the lock's fee comes out of its inputs, so the
+    /// quote is `inputs_duffs`, their sum, with no fee bound added.
+    pub(crate) async fn drain_call_permit(
+        &self,
+        lease: &Lease,
+        label: impl Into<String>,
+        inputs_duffs: u64,
+        step: String,
+        key: FundingKey,
+        fence: CoinFence,
+    ) -> Result<CallPermit, PlatformError> {
+        self.quoted_funding_call_permit(lease, label, inputs_duffs, Some(0), step, key, fence)
+            .await
+    }
+
+    /// The permit of both: `fee_bound_worst` the wallet's when `None`.
+    #[allow(clippy::too_many_arguments)]
+    async fn quoted_funding_call_permit(
+        &self,
+        lease: &Lease,
+        label: impl Into<String>,
+        amount: u64,
+        fee_bound_worst: Option<u64>,
+        step: String,
+        key: FundingKey,
+        fence: CoinFence,
+    ) -> Result<CallPermit, PlatformError> {
         let refuse = |detail: String| Err(PlatformError::InvalidArgument { detail });
         if fence.wallet_id() != lease.wallet() {
             return refuse("the coin fence is another wallet's".into());
@@ -1966,7 +2043,10 @@ impl NetworkSession {
         }
         let top_up = own_key.is_some();
         let wallet = lease.wallet();
-        let fee_bound_worst = self.fee_bound_worst(wallet).await?;
+        let fee_bound_worst = match fee_bound_worst {
+            Some(bound) => bound,
+            None => self.fee_bound_worst(wallet).await?,
+        };
         if !self.leases.refresh_funding(wallet).await {
             return Err(LeaseError::FundingBlocked(FundingBlock::RowsUnknown).into());
         }

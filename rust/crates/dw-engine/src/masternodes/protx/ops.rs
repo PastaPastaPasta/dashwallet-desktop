@@ -444,7 +444,7 @@ impl NetworkSession {
         wallet: WalletId,
         d: Delivery,
     ) -> Result<(), MasternodesError> {
-        let draft = self.new_draft(wallet, HashSet::new())?;
+        let draft = self.new_draft(wallet, HashSet::new(), false)?;
         #[cfg(test)]
         if let Some(seam) = self.masternodes.protx_seam() {
             *draft.broadcaster.lock().unwrap() = Some(Arc::clone(&seam.broadcaster));

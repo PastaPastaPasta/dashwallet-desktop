@@ -62,7 +62,7 @@ export function ToolsPage({ wallet, wallets, network }: { wallet: WalletSummary 
   // Without a wallet a PSBT still reads: "(But no wallet is loaded.)".
   else if (tab === "psbt") content = <PsbtTab key={key} grants={grants} walletId={wallet?.walletId ?? null} network={network} />;
   else if (!wallet) content = <NeedsWallet testId={`tools-${tab}-no-wallet`} />;
-  else if (tab === "repair") content = <RepairTab key={key} grants={grants} wallet={wallet} />;
+  else if (tab === "repair") content = <RepairTab key={key} grants={grants} wallet={wallet} network={network} />;
   else if (tab === "addressBook") content = <AddressBookTab key={key} walletId={wallet.walletId} network={network} />;
   else if (tab === "signVerify") content = <SignVerifyTab key={key} grants={grants} walletId={wallet.walletId} network={network} />;
   else if (coins) content = <CoinSelectionTab key={key} model={coins} walletId={wallet.walletId} network={network} />;

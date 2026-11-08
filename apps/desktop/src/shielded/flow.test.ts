@@ -7,7 +7,7 @@ import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { onShieldedSettled, resetShielded, shieldedCanChange, shieldedErrorText, shieldedFor, ShieldedFlow } from "./flow";
+import { onShieldedSettled, resetShielded, SHIELDED_COPY, shieldedCanChange, shieldedErrorText, shieldedFor, ShieldedFlow } from "./flow";
 
 const TO = "tdash1zq0k8y";
 const SPEND: ShieldedSpendOutcome = { credits: "10000000000", balance: "114980000000", to: TO, state: "done", unresolved: null };
@@ -166,6 +166,13 @@ describe("shielded refusal copy", () => {
     expect(text("shielded.invalid_address", { kind: "reason", reason: "x" })).toBe("Enter a Shielded address of this network.");
     expect(text("shielded.shield_pending", { kind: "txid", txid: "t" })).toContain("Finish it");
     expect(text("platform.unavailable")).toBe("Dash Platform did not answer. Try again.");
+  });
+
+  it("sends an add to Shielded that may be out to Tools ▸ Repair, and a spend to Activity", () => {
+    const unknown = appError("platform.broadcast_unknown", { kind: "artifact", artifact: "shield/0/funding" });
+    expect(shieldedErrorText(unknown, credits, duffs, "add")).toBe(SHIELDED_COPY.fundingUnknown);
+    expect(SHIELDED_COPY.fundingUnknown).toContain("Open Tools ▸ Repair");
+    for (const kind of ["send", "out"] as const) expect(shieldedErrorText(unknown, credits, duffs, kind)).toBe("It may have been sent. Check Activity before trying again.");
   });
 
   it("DEC1058_syncingNeverReadsAsPlatformDown", () => {

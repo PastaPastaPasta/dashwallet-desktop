@@ -91,6 +91,7 @@ use dpp::shielded::compute_minimum_shielded_fee;
 use dpp::version::PlatformVersion;
 use dw_appdb::dispatch::TopUpSettled;
 use dw_vault::{SHIELDED_ACCOUNT, VaultError, VaultSigner};
+use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use platform_wallet::changeset::{
     PlatformWalletChangeSet, PlatformWalletPersistence, ShieldedChangeSet,
 };
@@ -113,6 +114,7 @@ use super::registration_flow::{
     FundError, LockInfo, LockStatus, PwLib, RegistrationLib as Reg, Spendable,
 };
 use super::requests::{leased, write_permit};
+use super::shield_drain::DrainCoin;
 use super::shielded::{
     PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote, ShieldState,
     ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus, ShieldedAddress,
@@ -309,6 +311,24 @@ pub(crate) trait ShieldedLib: Send + Sync {
     ) -> impl Future<Output = Option<dashcore::ScriptBuf>> + Send {
         async { None }
     }
+    /// "Move mixed coins": the coins of CoinJoin account
+    /// 0, read under `fence` (`shield_drain.rs`).
+    fn drain_coins(
+        &self,
+        fence: &crate::coins::CoinFence,
+    ) -> impl Future<Output = Result<Vec<DrainCoin>, ShieldedError>> + Send;
+    /// Drains CoinJoin account 0 into one shield lock, signed by
+    /// `permit`'s funding signer limited to `coins` worth `total_duffs`
+    /// ([`super::shield_drain::drain_signer`]): built, tracked, broadcast,
+    /// and waited for its proof. A built lock below `minimum_lock_duffs`
+    /// is dropped before it is tracked or sent.
+    fn fund_drain(
+        &self,
+        coins: &[DrainCoin],
+        total_duffs: u64,
+        minimum_lock_duffs: u64,
+        permit: &CallPermit,
+    ) -> impl Future<Output = Result<OutPoint, FundError>> + Send;
 }
 
 /// How an apply ended without an error.
@@ -377,7 +397,9 @@ pub(crate) async fn gate(lib: &impl ShieldedLib) -> Result<u32, ShieldedError> {
 /// The SDK holds the network's floor until a proof raises it, and the
 /// library builds at the version it holds by then, so a quote at the floor
 /// would price another version's fee (13's above 14's on testnet).
-async fn priced_gate(lib: &impl ShieldedLib) -> Result<&'static PlatformVersion, ShieldedError> {
+pub(super) async fn priced_gate(
+    lib: &impl ShieldedLib,
+) -> Result<&'static PlatformVersion, ShieldedError> {
     rules_at(active(lib.refresh_protocol_version().await)?)
 }
 
@@ -411,7 +433,7 @@ async fn ready_ledger(lib: &impl ShieldedLib) -> Result<Ledger, ShieldedError> {
 /// is not read (only a closing session's: one reads it before it opens);
 /// `platform.unavailable` once it was found unopenable or of a newer
 /// schema, which does not clear.
-fn journal_unread(session: &NetworkSession) -> ShieldedError {
+pub(super) fn journal_unread(session: &NetworkSession) -> ShieldedError {
     if session.leases.journal_loading() {
         ShieldedError::not_synced(Wait::Journal)
     } else {
@@ -750,7 +772,7 @@ pub(crate) async fn unshield_quote(
 
 /// The lease `grant` names (a `flow` lease of this wallet), or a new one
 /// redeemed from it.
-async fn authority(
+pub(super) async fn authority(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
     grant: &str,
@@ -1069,11 +1091,11 @@ pub(crate) fn shield_pool_fee(version: &PlatformVersion) -> Result<u64, Shielded
 }
 
 /// A shield lock Platform has not been seen to take.
-struct OpenShield {
-    lock: LockInfo,
+pub(super) struct OpenShield {
+    pub(super) lock: LockInfo,
     /// It may be taken: Platform said so unproved, or a restore read it
     /// back from the chain (`RecoveredFromChain`).
-    consumption_unknown: bool,
+    pub(super) consumption_unknown: bool,
 }
 
 /// The wallet's shield locks Platform has not been seen to take (module
@@ -1082,7 +1104,7 @@ struct OpenShield {
 /// in a later session (the row comes back `Broadcast`, then proved), so a
 /// proved apply is also recorded in the dispatch journal (`top_up_settled`,
 /// as `topup.rs` records its own).
-async fn open_shields(lib: &impl ShieldedLib) -> Result<Vec<OpenShield>, ShieldedError> {
+pub(super) async fn open_shields(lib: &impl ShieldedLib) -> Result<Vec<OpenShield>, ShieldedError> {
     let ours = lib.own_locks().ok_or(PlatformError::Unavailable)?;
     let settled = lib.settled_locks().await;
     let unknown = lib.unknown_locks().await;
@@ -1212,7 +1234,7 @@ pub(crate) async fn shield_quote(
 /// bring-up that ended without Platform's answers (none, partial, or
 /// discovery failed locally) stays `platform.unavailable`: only a run again
 /// changes it, which the call asks for. Read before that run starts.
-fn held(lib: &impl ShieldedLib, wait: RegistrationWait) -> ShieldedError {
+pub(super) fn held(lib: &impl ShieldedLib, wait: RegistrationWait) -> ShieldedError {
     match wait {
         RegistrationWait::Unlock => PlatformError::SignerUnavailable.into(),
         RegistrationWait::Sync if lib.spv_running() => ShieldedError::not_synced(Wait::Core),
@@ -1261,17 +1283,7 @@ pub(crate) async fn shield(
     duffs: u64,
     grant: &str,
 ) -> Result<ShieldOutcome, ShieldedError> {
-    gate(lib).await?;
-    if let Some(wait) = lib.funding_hold() {
-        let refusal = held(lib, wait);
-        if wait == RegistrationWait::Startup {
-            session.platform.retry_startup(wallet);
-        }
-        return Err(refusal);
-    }
-    if !lib.bind().await? {
-        return Err(ShieldedError::not_synced(Wait::Account));
-    }
+    open_for_funding(session, wallet, lib).await?;
     let lock = wallet_lock(session, wallet);
     let _shielding = lock.lock().await;
     let plan = shield_plan(session, lib, duffs).await?;
@@ -1293,26 +1305,73 @@ pub(crate) async fn shield(
     let signer = lease
         .uncounted_funding_signer()
         .map_err(PlatformError::from)?;
-    let key = FundingKey {
-        funding_type: AssetLockFundingType::AssetLockShieldedAddressTopUp,
-        identity_index: 0,
-        account: 0,
-    };
     let funded = lease
         .scope_step(Some(step.clone()), async {
-            let permit = lib.funding_permit(&lease, step.clone(), key, duffs).await?;
+            let permit = (lib.funding_permit(&lease, step.clone(), SHIELD_KEY, duffs)).await?;
             let funded = lib.fund(duffs, &permit).await;
             permit.finish(funded.is_ok());
             funded
         })
         .await;
-    // The step's own lock decides, never the call's result alone.
+    finish_lock(session, wallet, lib, &lease, &signer, step, funded).await
+}
+
+/// The shield's funding key: a drain's lock is a shield's too.
+pub(super) const SHIELD_KEY: FundingKey = FundingKey {
+    funding_type: AssetLockFundingType::AssetLockShieldedAddressTopUp,
+    identity_index: 0,
+    account: 0,
+};
+
+/// The checks before a shield's or a drain's funding takes the wallet's
+/// lock: the pool's gate, what holds a funding back, the bound keys.
+pub(super) async fn open_for_funding(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+) -> Result<(), ShieldedError> {
+    gate(lib).await?;
+    if let Some(wait) = lib.funding_hold() {
+        let refusal = held(lib, wait);
+        if wait == RegistrationWait::Startup {
+            session.platform.retry_startup(wallet);
+        }
+        return Err(refusal);
+    }
+    if !lib.bind().await? {
+        return Err(ShieldedError::not_synced(Wait::Account));
+    }
+    Ok(())
+}
+
+/// After a shield's or a drain's funding call of `step`: the step's own
+/// lock decides, never the call's result alone. Its lock applied, or
+/// waiting for its proof; without one, why.
+pub(super) async fn finish_lock(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+    lease: &Lease,
+    signer: &VaultSigner,
+    step: String,
+    funded: Result<OutPoint, FundError>,
+) -> Result<ShieldOutcome, ShieldedError> {
     let signed = session.leases.signed_lock_txids(wallet, &step);
     let own = (lib.shield_locks().await.into_iter()).find(|l| signed.contains(&l.outpoint.txid));
     let Some(lock) = own else {
+        // A lock of the step was signed (recorded, or a released signature
+        // left the step possibly sent) and the library holds none: it may
+        // be out whatever the call answered (Tools ▸ Repair settles it).
+        let maybe_sent = session.leases.funding_status(wallet, &step)
+            == Some(super::flows::DispatchState::MaybeSent);
+        if !signed.is_empty() || maybe_sent {
+            return Err(PlatformError::BroadcastUnknown { artifact: step }.into());
+        }
         return Err(match funded {
             Err(FundError::Refused(e) | FundError::NotSent(e)) => e.into(),
             Err(FundError::CoinsLocked) => ShieldedError::CoinsLocked,
+            Err(FundError::CoinsChanged) => ShieldedError::CoinsChanged,
+            Err(FundError::BelowMinimum { min }) => ShieldedError::BelowMinimum { min },
             // "Combine coins first": at least one coin past the cap.
             Err(FundError::TooManyInputs { max }) => ShieldedError::TooManyInputs {
                 inputs: max + 1,
@@ -1329,12 +1388,12 @@ pub(crate) async fn shield(
             state: ShieldState::ProofWaiting,
         });
     }
-    let state = apply(session, wallet, lib, &lease, &signer, lock.outpoint).await;
+    let state = apply(session, wallet, lib, lease, signer, lock.outpoint).await;
     Ok(ShieldOutcome { txid, state })
 }
 
 /// Applies the proved lock at `outpoint` under a call permit of `lease`.
-async fn apply(
+pub(super) async fn apply(
     session: &NetworkSession,
     wallet: WalletId,
     lib: &impl ShieldedLib,
@@ -1548,6 +1607,37 @@ impl PwShielded {
 
     fn subwallet(&self) -> SubwalletId {
         SubwalletId::new(self.pw.wallet_id.0, SHIELDED_ACCOUNT)
+    }
+
+    /// The script the library's next shield lock credits: the next unused
+    /// address of the wallet's shielded top-up funding account, as
+    /// platform-wallet's `peek_next_funding_address` picks it. Read before
+    /// the build, which holds the wallet's lock while it signs; the
+    /// shielding lock the drain holds keeps any other shield lock out.
+    pub(super) async fn shield_credit_script(&self) -> Result<dashcore::ScriptBuf, FundError> {
+        let state = self.pw.wallet.state().await;
+        let xpub = (state
+            .wallet()
+            .accounts
+            .asset_lock_shielded_address_topup
+            .as_ref())
+        .map(|a| a.account_xpub);
+        let account = state
+            .core_wallet
+            .accounts
+            .asset_lock_shielded_address_topup
+            .clone();
+        drop(state);
+        let unavailable = |detail: &str| {
+            FundError::Refused(PlatformError::Internal {
+                detail: format!("the shield funding key: {detail}"),
+            })
+        };
+        let mut account = account.ok_or_else(|| unavailable("no funding account"))?;
+        let address = account
+            .next_address(xpub.as_ref(), false)
+            .map_err(unavailable)?;
+        Ok(address.script_pubkey())
     }
 }
 
@@ -2058,6 +2148,46 @@ impl ShieldedLib for PwShielded {
             )
             .await;
         applied_from(applied, outpoint, signer.signed())
+    }
+
+    async fn drain_coins(
+        &self,
+        fence: &crate::coins::CoinFence,
+    ) -> Result<Vec<DrainCoin>, ShieldedError> {
+        super::shield_drain::read_drain_coins(&self.pw.session, fence).await
+    }
+
+    async fn fund_drain(
+        &self,
+        coins: &[DrainCoin],
+        total_duffs: u64,
+        minimum_lock_duffs: u64,
+        permit: &CallPermit,
+    ) -> Result<OutPoint, FundError> {
+        let credit_script = self.shield_credit_script().await?;
+        let signer = super::shield_drain::drain_signer(
+            permit,
+            coins,
+            total_duffs,
+            minimum_lock_duffs,
+            credit_script,
+        )?;
+        let funded = self.pw.fund_drain_with(minimum_lock_duffs, &signer).await;
+        // A build that is not the plan's, a coin outside it or past the
+        // grant: the signer refused before the transaction was complete, so
+        // nothing can be out.
+        if funded.is_err()
+            && let Some(refusal) = signer.drain_refusal()
+        {
+            return Err(super::shield_drain::drain_refused(permit, refusal));
+        }
+        match funded {
+            Ok(outpoint) => Ok(outpoint),
+            Err(_) if signer.capped() => Err(FundError::TooManyInputs {
+                max: MAX_LOCK_INPUTS as u64,
+            }),
+            Err(e) => Err(e),
+        }
     }
 }
 

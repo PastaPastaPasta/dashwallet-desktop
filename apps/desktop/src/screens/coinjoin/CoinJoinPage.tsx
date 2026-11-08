@@ -6,7 +6,7 @@
 import { useId, useState } from "react";
 import type { CoinJoinStatus } from "../../api/generated/CoinJoinStatus";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useBackend, useLockStatus } from "../../api/queries";
+import { useBackend, useLockStatus, useShieldedStatus } from "../../api/queries";
 import { MOVE_COPY, moveMixedFor, showsMoveCard } from "../../coinjoin/move";
 import { navigate, useUi } from "../../app/ui";
 import { DashButton, ExperimentalBadge, Icon } from "../../components/basics";
@@ -76,23 +76,38 @@ export function CoinJoinPage({ walletId, network }: { walletId: string; network:
   );
 }
 
-/** "Move mixed coins" to the wallet (IOS-057): the sheet reads the plan and asks for the grant. */
+/** "Move mixed coins" (IOS-057) to the wallet, or into Shielded where the network has it: the sheet
+ * reads the plan and asks for the grant. */
 function MoveMixedCard({ walletId, network, status }: { walletId: string; network: NetworkInfo; status: CoinJoinStatus }) {
   const b = useBackend();
   const flow = moveMixedFor(b, walletId);
   useModel(flow);
   const id = useId();
+  const shieldedStatus = useShieldedStatus(walletId);
+  const shielded = shieldedStatus.data?.active === true;
   // The plan itself says what there is to move.
   if (!showsMoveCard(status, flow)) return null;
   return (
-    <section className="coinjoin-move card-l1" data-testid="coinjoin-move" aria-labelledby={`${id}-title`}>
+    <section
+      className="coinjoin-move card-l1"
+      data-testid="coinjoin-move"
+      data-shielded={shieldedStatus.isPending ? "loading" : String(shielded)}
+      aria-labelledby={`${id}-title`}
+    >
       <h2 className="card-title" id={`${id}-title`}>
         {MOVE_COPY.card.title}
       </h2>
-      <p className="field-hint">{MOVE_COPY.card.text}</p>
-      <DashButton variant="tintedBlue" data-testid="coinjoin-move-open" onClick={() => flow.begin()}>
-        {MOVE_COPY.card.open}
-      </DashButton>
+      <p className="field-hint">{shielded ? MOVE_COPY.card.textShielded : MOVE_COPY.card.text}</p>
+      <div className="coinjoin-move-actions">
+        <DashButton variant="tintedBlue" data-testid="coinjoin-move-open" onClick={() => flow.begin("wallet")}>
+          {MOVE_COPY.card.open}
+        </DashButton>
+        {shielded && (
+          <DashButton variant="tintedBlue" data-testid="coinjoin-move-shield" onClick={() => flow.begin("shielded")}>
+            {MOVE_COPY.card.shield}
+          </DashButton>
+        )}
+      </div>
       <MoveMixedSheet flow={flow} network={network} />
     </section>
   );

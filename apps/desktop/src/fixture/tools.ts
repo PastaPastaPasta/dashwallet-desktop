@@ -16,13 +16,20 @@ import type { PeerSummary } from "../api/generated/PeerSummary";
 import type { PsbtAnalysis } from "../api/generated/PsbtAnalysis";
 import type { PsbtOutput } from "../api/generated/PsbtOutput";
 import type { RescanStatus } from "../api/generated/RescanStatus";
+import type { StuckShieldFunding } from "../api/generated/StuckShieldFunding";
+import type { Utxo } from "../api/generated/Utxo";
 import type { VerifyMessageResult } from "../api/generated/VerifyMessageResult";
 import type { AppError, AppEvent } from "../api/generated/commands";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
+import { coinJoinAccount, DRAIN_STEP, selfSpendFee } from "./coinjoin";
 import { classifyAddress, owns } from "./send";
+import { SHIELD_STEP } from "./shielded";
 import { FIXTURE_DATA_DIR } from "./settings";
 import { FIXTURE_NOW, makeIds, prng, secs, TIP } from "./wallet";
+
+/** Every spendable coin of the wallet's main balance: what Repair's self-spend for a shield takes. */
+const mainBalanceCoins = (w: FixtureWallet) => w.coins.filter((u) => u.spendable && !u.coinjoinDenominated && u.coinjoinRounds === null);
 
 /** What the OS dialogs answer, and what was saved. */
 export interface FilesWorld {
@@ -472,16 +479,42 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
       if (dropped && world.sync.running && !world.tools.rescan) startRescan(world, Math.min(...ws.map((w) => w.summary.birthHeight ?? 0)));
       return dropped;
     },
+    // A move into Shielded left possibly sent (`drainUnknown: "stuck"`, fixture/coinjoin.ts): Repair
+    // sends its CoinJoin coins back. A shield (`shieldUnknown`, fixture/shielded.ts): every spendable
+    // coin of the main balance. A network without Shielded has none.
+    stuck_shield_fundings: ({ walletId }, { world }): StuckShieldFunding[] => {
+      const w = wallet(world, walletId);
+      const priced = (step: string, mixed: boolean, coins: Utxo[]): StuckShieldFunding => ({
+        step,
+        state: "maybeSent",
+        repair: { mixed, inputs: coins.length, totalDuffs: coins.reduce((n, u) => n + u.amount, 0), feeDuffs: selfSpendFee(coins.length) },
+        blocked: null,
+      });
+      return [
+        ...(world.coinjoin.drainUnknown === "stuck" ? [priced(DRAIN_STEP, true, coinJoinAccount(w))] : []),
+        ...(world.pending.shielded?.shieldUnknown ? [priced(SHIELD_STEP, false, mainBalanceCoins(w))] : []),
+      ];
+    },
     resolve_stuck_funding: ({ walletId, step, grant: grantId }, { world }) => {
       wallet(world, walletId);
       // A top-up's step (DP1-10 D16) leaves the stuck list; a registration's row stops waiting.
       const topUp = world.dashpay.credits?.stuck.find((x) => x.step === step);
       const draft = /^registration\/(.+)\/funding$/.exec(step)?.[1];
       const r = world.dashpay.registrations.find((x) => x.draft === draft);
-      if (!topUp && (!r || r.waiting !== "fundingUnknown")) throw fail("stuck_funding", "funding state is known", { kind: "stuckFunding", refusal: { kind: "notStuck", status: null }, retryLater: false });
-      if (!grant(world, grantId, walletId, ["spend"])) throw fail("vault.grant_invalid", "grant invalid");
+      // A move into Shielded's (fixture/shielded.ts): its CoinJoin coins go back, its fee within the grant.
+      const drain = step === DRAIN_STEP && world.coinjoin.drainUnknown === "stuck";
+      const plain = step === SHIELD_STEP && world.pending.shielded?.shieldUnknown === true;
+      const shield = drain || plain;
+      if (!shield && !topUp && (!r || r.waiting !== "fundingUnknown")) throw fail("stuck_funding", "funding state is known", { kind: "stuckFunding", refusal: { kind: "notStuck", status: null }, retryLater: false });
+      const g = grant(world, grantId, walletId, ["spend"]);
+      if (!g) throw fail("vault.grant_invalid", "grant invalid");
+      const w = wallet(world, walletId);
+      const fee = selfSpendFee((drain ? coinJoinAccount(w) : mainBalanceCoins(w)).length);
+      if (shield && g.grant.purpose.kind === "spend" && g.grant.purpose.maxDuffs < fee) throw fail("send.grant_exceeded", "grant exceeded", { kind: "spendCap", maxDuffs: g.grant.purpose.maxDuffs, outflow: fee });
       useGrant(world, grantId);
-      if (topUp) world.dashpay.credits!.stuck = world.dashpay.credits!.stuck.filter((x) => x !== topUp);
+      if (drain) world.coinjoin.drainUnknown = undefined;
+      else if (plain) world.pending.shielded!.shieldUnknown = undefined;
+      else if (topUp) world.dashpay.credits!.stuck = world.dashpay.credits!.stuck.filter((x) => x !== topUp);
       else r!.waiting = null;
       return { txid: txidOf(step) };
     },
