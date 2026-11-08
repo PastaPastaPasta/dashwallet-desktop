@@ -403,10 +403,11 @@ impl NetworkSession {
     /// The checkpoint abandoning `abandoned` rewinds to: below the lowest
     /// funding height of the wallet's coins it releases, or below the birth
     /// height when a coin's funding block is unknown. Each transaction's
-    /// coins are its wallet-owned inputs, from key-wallet's record of it, or
-    /// from the history's when key-wallet holds none (a send recorded by an
-    /// earlier session); one that neither holds replays from the birth
-    /// height. No coins released, no rewind.
+    /// coins are the union of the wallet-owned inputs its key-wallet records
+    /// name and those the history's record names (key-wallet holds none for
+    /// a send an earlier session recorded, and may name fewer); one that
+    /// neither holds replays from the birth height. No coins released, no
+    /// rewind.
     fn abandon_rewind(
         &self,
         wallet: WalletId,
@@ -425,16 +426,18 @@ impl NetworkSession {
             let records: Vec<_> = (info.accounts.all_accounts().into_iter())
                 .filter_map(|a| a.transactions().get(t))
                 .collect();
-            let spent: Vec<OutPoint> = if !records.is_empty() {
-                (records.iter())
-                    .flat_map(|r| own(&r.transaction, &mut r.input_details.iter().map(|i| i.index)))
-                    .collect()
-            } else if let Some(entry) = self.hub.history.get(&wallet, t) {
-                own(&entry.tx, &mut entry.own_inputs.keys().copied())
-            } else {
+            let entry = self.hub.history.get(&wallet, t);
+            if records.is_empty() && entry.is_none() {
                 return Some(birth);
-            };
-            released.extend(spent.into_iter().filter(|o| !abandoned.contains(&o.txid)));
+            }
+            let recorded = (records.iter())
+                .flat_map(|r| own(&r.transaction, &mut r.input_details.iter().map(|i| i.index)));
+            let held = (entry.iter()).flat_map(|e| own(&e.tx, &mut e.own_inputs.keys().copied()));
+            released.extend(
+                recorded
+                    .chain(held)
+                    .filter(|o| !abandoned.contains(&o.txid)),
+            );
         }
         let mut lowest = None::<u32>;
         for o in &released {

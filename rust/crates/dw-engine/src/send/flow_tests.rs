@@ -3976,6 +3976,14 @@ impl Fixture {
     /// wallet's inputs, key-wallet holds no record of it, and each of those
     /// coins is spent with a claim naming it.
     fn recorded_by_an_earlier_session(&self, tx: &dashcore::Transaction, own: &[(u32, &Utxo)]) {
+        self.held_with_claims(tx, own);
+        assert_eq!(self.abandon_state(tx.txid()), (false, false));
+    }
+
+    /// The history holds `tx` with `own` (input index, coin) as the wallet's
+    /// inputs, as its stored record names them, and each of those coins is
+    /// spent with a claim naming it.
+    fn held_with_claims(&self, tx: &dashcore::Transaction, own: &[(u32, &Utxo)]) {
         let txid = tx.txid();
         self.session.hub.history.with_wallet(self.wallet, |h| {
             h.txs.insert(
@@ -4004,7 +4012,24 @@ impl Fixture {
                 Ok(())
             }))
             .unwrap();
-        assert_eq!(self.abandon_state(txid), (false, false));
+    }
+
+    /// The input indexes key-wallet's records of `txid` name as the wallet's.
+    fn recorded_own_inputs(&self, txid: Txid) -> Option<Vec<u32>> {
+        let manager = Arc::clone(&self.session.live().unwrap().manager);
+        self.engine.block_on(async {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            let info = &wm.get_wallet_info(&self.wallet.0).unwrap().core_wallet;
+            let records: Vec<_> = (info.accounts.all_accounts().into_iter())
+                .filter_map(|a| a.transactions().get(&txid))
+                .collect();
+            (!records.is_empty()).then(|| {
+                (records.iter())
+                    .flat_map(|r| r.input_details.iter().map(|i| i.index))
+                    .collect()
+            })
+        })
     }
 
     /// The filter scan delivers `tx` in the block at `height`.
@@ -4073,6 +4098,43 @@ fn an_abandon_of_a_send_key_wallet_holds_no_record_of_replays_its_coins_funding_
     assert!(!before.0);
     assert!(after.0, "the coin is back in the coin list");
     assert_eq!(after.1, before.1 + COIN, "and in the balance");
+}
+
+/// A send key-wallet holds a record of that names none of the wallet's
+/// inputs (it saw the send before the coin), while the history's record
+/// names the coin funded at 150: the abandon replays from below that coin's
+/// funding block.
+#[test]
+fn an_abandon_replays_a_coin_only_the_historys_record_names() {
+    let f = scanned_to_1000();
+    let (coin, _) = funded_coin(&f, 4, COIN, 150);
+    let mut send = unconfirmed_spend(10, &[coin.outpoint]);
+    send.output.push(TxOut {
+        value: COIN / 2,
+        script_pubkey: coin.txout.script_pubkey.clone(),
+    });
+    f.see_tx(&send);
+    f.held_with_claims(&send, &[(0, &coin)]);
+    let recorded = f.recorded_own_inputs(send.txid());
+
+    let abandoned = f
+        .engine
+        .block_on(abandon(&f, send.txid()))
+        .unwrap()
+        .unwrap();
+    let (synced, record) = (f.synced(), f.record());
+    eprintln!(
+        "ROW68 abandon of a send whose key-wallet record names inputs {recorded:?}: \
+         {abandoned:?}, checkpoint {synced}, record {record:?}"
+    );
+    assert_eq!(
+        recorded,
+        Some(Vec::new()),
+        "key-wallet's record names no coin"
+    );
+    assert_eq!(abandoned, [send.txid()].into_iter().collect());
+    assert_eq!(synced, 149, "replayed from below the coin's funding block");
+    assert_eq!(record.map(|r| r.reached), Some(149));
 }
 
 /// An incoming payment an earlier session recorded unconfirmed, abandoned
