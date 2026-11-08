@@ -17,7 +17,7 @@ Measured results are in [RESULTS.md](RESULTS.md).
 |---|---|---|
 | Dash Core binaries | **24.0.0** (the final release, 2026-11-05) | `https://github.com/dashpay/dash/releases/tag/v24.0.0` |
 | SHA-256 | `x86_64-linux-gnu` 1ffce395…2c5e, `aarch64-linux-gnu` 77783b23…b1cb, `arm64-apple-darwin` 93c69899…1e16, `x86_64-apple-darwin` e24380ba…a950, `win64` dc459ae5…9219 | release `SHA256SUMS.asc`; full values in `scripts/fetch-dashcore.sh` |
-| test_framework | tag `v24.0.0-rc.2` = commit `1e239d4b05d582762aceea6ed728076ab3c38979` (not yet re-vendored from v24.0.0) | `test/functional/test_framework/` (MIT, `functional/test_framework/COPYING`; `authproxy.py` is LGPL-2.1+, see below) |
+| test_framework | tag `v24.0.0` = commit `938fba502824b9d850b7c710601456dc3d71603e`, plus one local patch (below) | `test/functional/test_framework/` (MIT, `functional/test_framework/COPYING`; `authproxy.py` is LGPL-2.1+, see below) |
 | dash_hash (X11 for the framework) | 1.4.0, tag archive SHA-256 `2490feb0…7e5a` | `https://github.com/dashpay/dash_hash` (MIT) |
 | Base image | `python:3.12-slim` (Debian 13, glibc 2.41) | `ARG BASE_IMAGE` in the Dockerfile |
 | pytest | 8.3.4 | `harness/requirements.txt` |
@@ -169,9 +169,16 @@ that decodes amounts as `Decimal` and sends them as strings.
 
 ### What is vendored
 
-`functional/test_framework/` is a verbatim copy of `test/functional/test_framework/` at tag
-`v24.0.0-rc.2` (26 top-level files, 11 in `crypto/`, including the CSV test vectors), with the
-repo's `COPYING` added. `diff -r` against the tag's tree shows only the added `COPYING`.
+`functional/test_framework/` is a copy of `test/functional/test_framework/` at tag `v24.0.0` (27
+top-level files, including the CSV test vectors, and 11 in `crypto/`), with the repo's `COPYING`
+added and one local patch. `diff -r` against the tag's tree shows only the added `COPYING` and the
+patch:
+
+* `test_framework.py`, `mine_cycle_quorum`: before mining the final-commitment block, wait for both
+  quorums' final commitments on the members and on the mining node. This ports Dash Core
+  `73a69fa5b9b` (dashpay/dash#7892), which is not in v24.0.0; without it a commitment that hasn't
+  reached the miner leaves the new quorum out of the list. Drop the patch when the vendored tag
+  contains that commit.
 
 Licensing: every Python file carries the MIT header except the empty `__init__.py` and
 **`authproxy.py`, which is LGPL-2.1-or-later** (Jeff Garzik's python-jsonrpc lineage, unchanged
@@ -242,7 +249,9 @@ passed every run after their initial fixes.
   `llmq_test` alone. So **4 masternodes** is the minimum for both ChainLocks and InstantSend
   (verified). From the quorum sizes, 3 should suffice for ChainLocks alone, and
   `set_dash_llmq_test_params(1, 1)` + `mine_quorum_single_member()` gives ChainLocks with 1 MN, as
-  upstream `rpc_verifychainlock.py` does. Neither was run here.
+  upstream `rpc_verifychainlock.py` does. Neither was run here. At v24.0.0,
+  `mine_quorum_single_member()` first mines until the masternodes are confirmed for the next DKG,
+  and syncs blocks while it mines.
 * **Mining gate**: with ChainLocks enabled, block templates only include a transaction that has an
   InstantSend lock or has been in the mempool for 10 minutes (`WAIT_FOR_ISLOCK_TIMEOUT` in
   `src/test/miner_tests.cpp`). Without an InstantSend quorum, wallet payments stay in the mempool and
@@ -252,7 +261,9 @@ passed every run after their initial fixes.
   P2P to these nodes) sees old block timestamps; set `self.disable_mocktime = True` in such tests if
   that matters.
 * P2P ports inside the container are `11000 + n + (20 * portseed) % 9979` (`util.p2p_port`); pass
-  `--portseed=<k>` to make them deterministic. RPC listens on 127.0.0.1 only. The intended way to
+  `--portseed=<k>` to make them deterministic. At v24.0.0 the framework never hands out p2p port
+  19896 (dashd's regtest onion-service target) and uses 20999 instead (`util._port`). RPC listens
+  on 127.0.0.1 only. The intended way to
   test `dwcli` against a masternode network is to run `dwcli` (Linux build) inside the same
   container from a `DashTestFramework` subclass and connect it to `p2p_port(i)`; this is not built
   yet.
@@ -374,7 +385,7 @@ regtest/
 │                            tests/test_smoke.py (node), tests/test_harness.py (failure handling)
 └── functional/
     ├── run.sh               writes config.ini for release binaries, runs one test
-    ├── test_framework/      vendored from dash v24.0.0-rc.2 (MIT)
+    ├── test_framework/      vendored from dash v24.0.0 (MIT), one local patch
     ├── feature_llmq_chainlocks.py   upstream, unmodified
     ├── dwd_mn_chainlock.py  4 MNs → quorums → ChainLock + InstantSend
     ├── dwd_coinjoin_probe.py        4 MNs + 3 mixing wallets → real CoinJoin rounds
