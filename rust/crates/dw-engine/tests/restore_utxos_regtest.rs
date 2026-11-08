@@ -9,14 +9,12 @@
 //! used one, so the coins sit at indexes 60, 150 and 240, in that order.
 //!
 //! One transaction paying a pool's addresses past its gap (a mixing
-//! wallet's denomination transaction, restored from its seed) is credited
-//! over several passes of its block; every coin of it reloads. A store that
-//! kept only the first gap of them recovers with one rescan on this chain,
-//! which has no ChainLocks. On a chainlocked chain one rescan is not enough:
-//! a block at or below the wallet's last ChainLock finalizes the transaction
-//! on its first pass, and key-wallet credits nothing on a later pass of a
-//! finalized transaction (rust-dashcore `key-wallet/src/managed_account/
-//! managed_core_funds_account.rs:938-942` @55663e43).
+//! wallet's denomination transaction, restored from its seed) has every coin
+//! credited, and every coin of it reloads. A store that kept only the first
+//! gap of them recovers with one rescan on a chain without ChainLocks, as
+//! this one is. A transaction whose far output only a later payment's
+//! addresses reach is credited by the re-scan pass of its block, also when a
+//! ChainLock in the store has already finalized it.
 //!
 //! Runs only with `DASHD_PATH` set to a dashd binary with `dash-cli` next
 //! to it (e.g. `~/.rust-dashcore-test/dashcore-24.0.0-rc.3/bin/dashd`);
@@ -29,6 +27,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use dashcore::ephemerealdata::chain_lock::ChainLock;
 use dashcore::{Network, OutPoint};
 use dw_engine::{
     CoinFilter, CoinInfo, CoinSource, DashNetwork, Engine, EngineConfig, EngineError, EngineEvent,
@@ -749,10 +748,7 @@ fn one_transaction_past_the_gap_reloads_whole(account: AccountType, count: u32, 
 /// A wallet whose store kept only the first 100 coins of such a transaction
 /// (what a build without the fix wrote: every other row is the same) gets
 /// all 490 back with one rescan, and a reload keeps them, on a chain without
-/// ChainLocks. With the funding block at or below the wallet's last
-/// ChainLock, the rescan's first pass finalizes the transaction and the
-/// passes after it credit nothing (rust-dashcore `key-wallet/src/
-/// managed_account/managed_core_funds_account.rs:938-942` @55663e43).
+/// ChainLocks.
 #[test]
 fn a_store_missing_coins_past_the_gap_recovers_with_one_rescan_without_chainlocks_against_dashd() {
     let dir = dw_testutil::private_tempdir();
@@ -800,6 +796,65 @@ fn a_store_missing_coins_past_the_gap_recovers_with_one_rescan_without_chainlock
     assert_eq!(f.holdings(), whole, "after one rescan");
     f.reload(&node);
     assert_eq!(f.holdings(), whole, "reloaded after the rescan");
+}
+
+/// A transaction the wallet recorded under a ChainLock, with an output only
+/// a later payment's addresses reach: one transaction pays BIP44 receive
+/// indexes 0 and 40 (gap 30), and the next block pays index 20, which
+/// derives index 40. The store carries a ChainLock above both blocks (as
+/// after a restart on a chainlocked chain), so the first transaction is
+/// finalized on its first pass; only the re-scan pass for the derived
+/// addresses finds its far output. Both blocks are in the first filter
+/// batch, so that re-scan revisits the first one. Every coin is held after
+/// the scan, after a reload, and after the catch-up sync.
+#[test]
+fn a_rescan_pass_credits_a_chainlocked_transactions_output_a_later_payment_derives_against_dashd() {
+    let dir = dw_testutil::private_tempdir();
+    let Some(node) = funded_node(dir.path()) else {
+        eprintln!("skipped: DASHD_PATH is not set");
+        return;
+    };
+    let mut f = Fixture::new(dir.path(), &node);
+    let bip44 = AccountType::Standard {
+        index: 0,
+        standard_account_type: key_wallet::account::StandardAccountType::BIP44Account,
+    };
+    let addresses = receive_addresses(bip44, &[0, 20, 40]);
+    node.pay_each(&[addresses[0].clone(), addresses[2].clone()], "0.1");
+    node.pay_each(&addresses[1..2], "0.1");
+    let tip = node.height();
+    let tip_hash =
+        dashcore::BlockHash::from_str(&node.cli(&["getblockhash", &tip.to_string()])).unwrap();
+
+    let wallet = f.wallet;
+    f.reload_editing_store(&node, |db| {
+        let mut raw = tip.to_le_bytes().to_vec();
+        raw.extend(dashcore::consensus::serialize(&tip_hash));
+        raw.extend([0u8; 96]);
+        let chain_lock: ChainLock = dashcore::consensus::deserialize(&raw).unwrap();
+        let blob = bincode::encode_to_vec(&chain_lock, bincode::config::standard()).unwrap();
+        let rows = db
+            .execute(
+                "INSERT INTO core_sync_state (wallet_id, last_applied_chain_lock, chainlock_height) \
+                 VALUES (?1, ?2, ?3) \
+                 ON CONFLICT(wallet_id) DO UPDATE SET \
+                    last_applied_chain_lock = excluded.last_applied_chain_lock, \
+                    chainlock_height = excluded.chainlock_height",
+                rusqlite::params![wallet.0.as_slice(), blob, tip],
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "the store carries the ChainLock");
+    });
+
+    let whole = (3, 3 * COIN / 10, 0);
+    f.start_spv();
+    f.wait_scanned(node.height());
+    assert_eq!(f.holdings(), whole, "after the scan");
+    f.reload(&node);
+    assert_eq!(f.holdings(), whole, "reloaded from the store");
+    f.start_spv();
+    f.wait_scanned(node.height());
+    assert_eq!(f.holdings(), whole, "after the catch-up sync");
 }
 
 /// The WIF of [`PHRASE`]'s BIP44 account 0 receive key at `index`.
