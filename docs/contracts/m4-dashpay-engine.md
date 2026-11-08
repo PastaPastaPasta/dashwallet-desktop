@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 61
+Contract-Version: 62
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -865,7 +865,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 7d40eac0129b9873eff48e48c586c6ba00803513f001a4b457dc950fb571f995 version: 61 -->
+<!-- surface-sha256: 7d40eac0129b9873eff48e48c586c6ba00803513f001a4b457dc950fb571f995 version: 62 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -3994,9 +3994,11 @@ renames or reshapes them takes the next version bump:
     builder's own bound is 500 (key-wallet `transaction_builder.rs:29`), and no Platform rule is assumed. Before
     anything is selected or signed, the fewest of the wallet's coins, largest first, that reach the lock is
     counted (no selection takes fewer); past 50 the funding is refused with nothing redeemed or signed. The
-    lock's signer then signs at most 50 distinct sighashes: a selection past the bound fails at its next
-    signature, before the transaction is complete, and the builder releases its reservation (key-wallet
-    `transaction_builder.rs:822-826`); nothing reaches the wire. Either refusal is `invalid_argument` (no code
+    lock's signer then refuses a selection past the bound when the builder shows it, before any input is signed
+    (`Signer::approve_inputs`, key-wallet `transaction_builder.rs:827`; version 62), and the builder releases its
+    reservation; nothing is signed and nothing reaches the wire. Behind that it signs at most 50 distinct
+    sighashes, so a selection past the bound it was not shown fails at its next signature, before the
+    transaction is complete. Either refusal is `invalid_argument` (no code
     names an input bound on these routes), its detail asking to consolidate the coins first; the top-up screen
     shows that detail. A refusal at the signer (version 44) ends the funding step not sent: the transaction was
     never complete, so the journal records it `NotSent` (unless an earlier marker of the step leaves it unknown)
@@ -4160,6 +4162,13 @@ renames or reshapes them takes the next version bump:
     spendable coin of the main balance back to the wallet, a drain's the move's mixed coins back to the main balance
     (F3); a refusal that cannot clear by itself says so, and that moves into Shielded stay paused while the step is
     open (F4).
+85. **A registration's or top-up's lock past 50 coins is refused before its first signature (version 62; 0.1.x
+    row 62).** The lock's signer refuses a selection of more than 50 inputs when key-wallet's builder shows it
+    (item 71), where it refused at the 51st signature after the first 50 were released. Nothing is released, so
+    the call ends `Cancelled` with its Funding charge refunded and keeps no claim on the fence; the step reads
+    `NotSent` with no release, Repair lists nothing, and the next funding is not held. The refusal is the same
+    `invalid_argument`; its detail now names the selection's count ("this payment would use 51 coins ...")
+    where it said "more than 50".
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 
