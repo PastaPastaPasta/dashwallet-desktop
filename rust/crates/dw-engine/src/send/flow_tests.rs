@@ -3920,6 +3920,214 @@ fn an_abandon_releasing_a_coin_of_unknown_funding_height_replays_from_the_birth_
     }
 }
 
+/// A wallet born at 50, scanned and stored to 1000.
+fn scanned_to_1000() -> Fixture {
+    let f = fixture(false);
+    f.engine
+        .block_on(f.session.set_birth_height(f.wallet, 50))
+        .unwrap();
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f
+}
+
+/// A coin of `value` to a fresh receive address, funded by a transaction
+/// of its own mined at `height`, which the history holds; the coin is not
+/// in key-wallet's unspent set.
+fn funded_coin(f: &Fixture, seed: u8, value: u64, height: u32) -> (Utxo, dashcore::Transaction) {
+    let mut coin = f.late_coin(seed, value, height);
+    let funding = dashcore::Transaction {
+        version: 2,
+        lock_time: u32::from(seed),
+        input: vec![dashcore::TxIn {
+            previous_output: OutPoint::new(Txid::from_byte_array([seed; 32]), 0),
+            ..Default::default()
+        }],
+        output: vec![coin.txout.clone()],
+        special_transaction_payload: None,
+    };
+    coin.outpoint = OutPoint::new(funding.txid(), 0);
+    f.funded_at(funding.txid(), height);
+    (coin, funding)
+}
+
+/// An unconfirmed transaction spending `inputs` to a foreign address.
+fn unconfirmed_spend(seed: u8, inputs: &[OutPoint]) -> dashcore::Transaction {
+    dashcore::Transaction {
+        version: 2,
+        lock_time: u32::from(seed),
+        input: (inputs.iter())
+            .map(|o| dashcore::TxIn {
+                previous_output: *o,
+                ..Default::default()
+            })
+            .collect(),
+        output: vec![TxOut {
+            value: COIN / 10,
+            script_pubkey: script_of(FOREIGN),
+        }],
+        special_transaction_payload: None,
+    }
+}
+
+impl Fixture {
+    /// The state a reload leaves for `tx`, recorded unconfirmed by an earlier
+    /// session: the history holds it with `own` (input index, coin) as the
+    /// wallet's inputs, key-wallet holds no record of it, and each of those
+    /// coins is spent with a claim naming it.
+    fn recorded_by_an_earlier_session(&self, tx: &dashcore::Transaction, own: &[(u32, &Utxo)]) {
+        let txid = tx.txid();
+        self.session.hub.history.with_wallet(self.wallet, |h| {
+            h.txs.insert(
+                txid,
+                crate::history::TxEntry {
+                    tx: tx.clone(),
+                    context: key_wallet::transaction_checking::TransactionContext::Mempool,
+                    instant_locked: false,
+                    first_seen: None,
+                    own_inputs: (own.iter())
+                        .map(|(i, c)| (*i, (c.txout.value, c.address.clone())))
+                        .collect(),
+                    abandoned: false,
+                },
+            )
+        });
+        let claims: Vec<(OutPoint, Option<Txid>)> =
+            own.iter().map(|(_, c)| (c.outpoint, Some(txid))).collect();
+        let (session, id) = (Arc::clone(&self.session), self.wallet);
+        let inner = Arc::clone(&session);
+        self.engine
+            .block_on(session.on_runtime(async move {
+                let wallet = inner.wallet(&id).await?;
+                let mut state = wallet.state_mut().await;
+                state.core_wallet.restore_spent_outpoints(&claims);
+                Ok(())
+            }))
+            .unwrap();
+        assert_eq!(self.abandon_state(txid), (false, false));
+    }
+
+    /// The filter scan delivers `tx` in the block at `height`.
+    fn deliver_in_block(&self, tx: &dashcore::Transaction, height: u32) {
+        use key_wallet::transaction_checking::{
+            BlockInfo, TransactionContext, WalletTransactionChecker,
+        };
+        let (manager, id, tx) = (
+            Arc::clone(&self.session.live().unwrap().manager),
+            self.wallet,
+            tx.clone(),
+        );
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
+            let mut wallet = wallet.clone();
+            let block = BlockInfo::new(height, dashcore::BlockHash::all_zeros(), 9);
+            info.core_wallet
+                .check_core_transaction(
+                    &tx,
+                    TransactionContext::InBlock(block),
+                    &mut wallet,
+                    true,
+                    true,
+                )
+                .await;
+        });
+    }
+
+    fn confirmed_balance(&self) -> u64 {
+        (self.session.balances(&self.wallet).unwrap()).map_or(0, |b| b.confirmed)
+    }
+}
+
+/// A send an earlier session recorded, abandoned after a reload: key-wallet
+/// holds no record of it, so the coin it released comes from the history's
+/// record of it. The scan replays from below the coin's funding block, and
+/// once the replay passes it the coin is back in the coin list and the
+/// balance.
+#[test]
+fn an_abandon_of_a_send_key_wallet_holds_no_record_of_replays_its_coins_funding_block() {
+    let f = scanned_to_1000();
+    let (coin, funding) = funded_coin(&f, 1, COIN, 150);
+    let send = unconfirmed_spend(7, &[coin.outpoint]);
+    f.recorded_by_an_earlier_session(&send, &[(0, &coin)]);
+    let before = (f.offers(coin.outpoint), f.confirmed_balance());
+
+    let abandoned = f
+        .engine
+        .block_on(abandon(&f, send.txid()))
+        .unwrap()
+        .unwrap();
+    let (synced, record) = (f.synced(), f.record());
+    f.deliver_in_block(&funding, 150);
+    f.advance(1_000);
+    let after = (f.offers(coin.outpoint), f.confirmed_balance());
+    eprintln!(
+        "ROW68 abandon of a send with no key-wallet record: {abandoned:?}, checkpoint {synced}, \
+         record {record:?}, coin listed and confirmed balance before {before:?}, after the replay \
+         {after:?}"
+    );
+    assert_eq!(abandoned, [send.txid()].into_iter().collect());
+    assert_eq!(synced, 149, "replayed from below the coin's funding block");
+    assert_eq!(record.map(|r| r.reached), Some(149));
+    assert!(!before.0);
+    assert!(after.0, "the coin is back in the coin list");
+    assert_eq!(after.1, before.1 + COIN, "and in the balance");
+}
+
+/// An incoming payment an earlier session recorded unconfirmed, abandoned
+/// after a reload: it spends none of the wallet's coins, so nothing is
+/// replayed, though the history knows none of its inputs' funding.
+#[test]
+fn an_abandon_of_an_incoming_payment_key_wallet_holds_no_record_of_replays_nothing() {
+    let f = scanned_to_1000();
+    let foreign = OutPoint::new(Txid::from_byte_array([9; 32]), 0);
+    let (to_us, _) = funded_coin(&f, 2, COIN, 150);
+    let mut payment = unconfirmed_spend(8, &[foreign]);
+    payment.output[0].script_pubkey = to_us.txout.script_pubkey.clone();
+    f.recorded_by_an_earlier_session(&payment, &[]);
+
+    let abandoned = f
+        .engine
+        .block_on(abandon(&f, payment.txid()))
+        .unwrap()
+        .unwrap();
+    let (synced, record) = (f.synced(), f.record());
+    eprintln!(
+        "ROW68 abandon of an incoming payment with no key-wallet record: {abandoned:?}, \
+         checkpoint {synced}, record {record:?}"
+    );
+    assert_eq!(abandoned, [payment.txid()].into_iter().collect());
+    assert_eq!(synced, 1_000, "no replay");
+    assert_eq!(record, None);
+}
+
+/// A mixing transaction an earlier session recorded unconfirmed, abandoned
+/// after a reload: of its inputs only the wallet's coin (funded at 150) is
+/// replayed, not the other participants' (their funding unknown, which would
+/// replay from the birth height).
+#[test]
+fn an_abandon_of_a_mixing_transaction_key_wallet_holds_no_record_of_replays_only_its_own_coin() {
+    let f = scanned_to_1000();
+    let (coin, _) = funded_coin(&f, 3, COIN, 150);
+    let theirs = [
+        OutPoint::new(Txid::from_byte_array([10; 32]), 0),
+        OutPoint::new(Txid::from_byte_array([11; 32]), 1),
+    ];
+    let mix = unconfirmed_spend(9, &[theirs[0], coin.outpoint, theirs[1]]);
+    f.recorded_by_an_earlier_session(&mix, &[(1, &coin)]);
+
+    let abandoned = f.engine.block_on(abandon(&f, mix.txid())).unwrap().unwrap();
+    let (synced, record) = (f.synced(), f.record());
+    eprintln!(
+        "ROW68 abandon of a mixing transaction with no key-wallet record: {abandoned:?}, \
+         checkpoint {synced}, record {record:?}"
+    );
+    assert_eq!(abandoned, [mix.txid()].into_iter().collect());
+    assert_eq!(synced, 149, "replayed from below the wallet's coin only");
+    assert_eq!(record.map(|r| r.reached), Some(149));
+}
+
 /// A replay whose target a fork lowered, from a checkpoint of 6000 to
 /// 5000, then the new chain grows to 5050 and a coin funded at 150 is
 /// spent at 5025, committed; after a crash (and, with `second_fork`, a
