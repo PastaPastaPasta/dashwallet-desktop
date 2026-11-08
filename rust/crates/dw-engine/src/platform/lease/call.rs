@@ -34,10 +34,12 @@
 //! [`CallPermit::funding_signer`], which counts like the identity signer.
 //!
 //! Mode B residual (D5, design Q8): the cap is not re-checked against the
-//! call's own coin selection. key-wallet signs input by input inside
-//! `build_asset_lock_with_signer`, with no transaction-level hook before
-//! the first signature where the engine could read the selected inputs and
-//! the fee, so the exact debit is checked only in Mode A (at `register`).
+//! call's own coin selection. key-wallet shows the signer the selected
+//! inputs before the first signature (`Signer::approve_inputs`, since the
+//! rust-dashcore pin 8e7ad2c1), but the funding signer checks only the
+//! input bound and a shield's plan there (`lock_inputs::Capped`,
+//! `CountingFundingSigner`), not the debit, so the exact debit is checked
+//! only in Mode A (at `register`).
 //! `fee_bound_worst` is an upper bound instead: the fee of spending every
 //! coin of the funding accounts, at most key-wallet's 500 inputs (it
 //! refuses a larger selection). It counts the coins when the permit is
