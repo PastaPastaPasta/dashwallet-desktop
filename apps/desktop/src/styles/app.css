@@ -85,6 +85,11 @@ button {
   height: 100%;
 }
 
+/* What a network switch's card covers (App): no box of its own, only its inertness. */
+.app-under-switch {
+  display: contents;
+}
+
 .app-chrome {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;

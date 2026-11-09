@@ -52,10 +52,10 @@ describe("a switch's reboot", () => {
 });
 
 describe("switchOutcome", () => {
-  const busy = (flows: string[], mixing: boolean, broadcast: boolean) => ({
+  const busy = (flows: string[], mixing: boolean, broadcast: boolean, more: { stalled?: boolean; draining?: boolean } = {}) => ({
     code: "app.network_busy",
     message: "busy",
-    data: { kind: "networkBusy", flows, mixing, broadcast },
+    data: { kind: "networkBusy", flows, mixing, broadcast, stalled: false, draining: false, ...more },
   });
 
   it("says what a busy network waits for", () => {
@@ -69,15 +69,41 @@ describe("switchOutcome", () => {
     });
   });
 
-  it("gives close's own refusals their own words, and any other failure the generic one", () => {
-    expect(switchOutcome({ code: "wallet", message: "opening", data: null }, "mainnet", "testnet")).toEqual({
+  it("says a lock stops flows that wait for a proof or a grant, when the wallet can be locked", () => {
+    const stalled = busy(["contactRequest"], false, false, { stalled: true });
+    expect(switchOutcome(stalled, "mainnet", "testnet", true)).toEqual({
+      problem: "Wait for contact request to finish before switching networks. Locking the wallet stops contact request.",
+    });
+    // An unencrypted vault has no lock.
+    expect(switchOutcome(stalled, "mainnet", "testnet", false)).toEqual({
+      problem: "Wait for contact request to finish before switching networks.",
+    });
+    // A flow that runs: only the wait.
+    expect(switchOutcome(busy(["contactRequest"], false, false), "mainnet", "testnet", true)).toEqual({
+      problem: "Wait for contact request to finish before switching networks.",
+    });
+  });
+
+  it("says work that did not finish in time, when nothing is named", () => {
+    expect(switchOutcome(busy([], false, false, { draining: true }), "mainnet", "testnet")).toEqual({
+      problem: "Dash Wallet is still finishing work on this network. Try switching again in a moment.",
+    });
+  });
+
+  it("gives close's own refusals their own words by their data, and any other failure the generic one with its code", () => {
+    const refused = (code: string, reason: string) => ({ code, message: "x", data: { kind: "networkCloseRefused", reason } });
+    expect(switchOutcome(refused("wallet", "walletOpening"), "mainnet", "testnet")).toEqual({
       problem: "A wallet is still opening. Switch networks once it is open.",
     });
-    expect(switchOutcome({ code: "shielded_spend_unresolved", message: "x", data: null }, "testnet", "mainnet")).toEqual({
+    expect(switchOutcome(refused("shielded_spend_unresolved", "shieldedSpendUnresolved"), "testnet", "mainnet")).toEqual({
       problem: "A shielded payment is still being confirmed. Switch networks once it is.",
     });
+    // A `wallet` error that is not the close's refusal is not said to be one.
+    expect(switchOutcome({ code: "wallet", message: "the wallet file is damaged", data: null }, "mainnet", "testnet")).toEqual({
+      problem: "Dash Wallet could not switch networks. the wallet file is damaged (wallet)",
+    });
     expect(switchOutcome({ code: "storage_in_use", message: "the data directory is in use", data: null }, "testnet", "mainnet")).toEqual({
-      problem: "Dash Wallet could not switch networks. the data directory is in use",
+      problem: "Dash Wallet could not switch networks. the data directory is in use (storage_in_use)",
     });
   });
 

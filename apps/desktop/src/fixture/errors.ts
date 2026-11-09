@@ -26,7 +26,11 @@ const SAMPLES: Samples = {
   credits: { code: "platform.insufficient_credits", data: { kind: "credits", needed: "120000000", available: "4000000" } },
   creditRange: { code: "credits.withdrawal_out_of_range", data: { kind: "creditRange", min: "1190000", max: "50000000000000" } },
   creditMinimum: { code: "credits.send_out_of_range", data: { kind: "creditMinimum", min: "500000" } },
-  networkBusy: { code: "app.network_busy", data: { kind: "networkBusy", flows: ["registration"], mixing: false, broadcast: false } },
+  networkBusy: {
+    code: "app.network_busy",
+    data: { kind: "networkBusy", flows: ["registration"], stalled: false, mixing: false, broadcast: false, draining: false },
+  },
+  networkCloseRefused: { code: "wallet", data: { kind: "networkCloseRefused", reason: "walletOpening" } },
   networkSwitch: {
     code: "app.network_switch_failed",
     data: { kind: "networkSwitch", network: { kind: "mainnet", dirName: "mainnet", unitName: "DASH" }, rolledBack: true },

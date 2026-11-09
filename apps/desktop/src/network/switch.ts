@@ -34,18 +34,22 @@ function leaveSwitchNote(note: string) {
 }
 
 /** What a switch to `target` that failed with `e` means: a refusal said in place (nothing changed),
- * or a failure after the close, which boots the page again with its note. */
-export function switchOutcome(e: unknown, target: ChosenNetwork, from: ChosenNetwork): { problem: string } | { reboot: string } {
+ * or a failure after the close, which boots the page again with its note. `canLock`: the vault is
+ * encrypted, so the user can lock it (which ends a flow's lease). */
+export function switchOutcome(e: unknown, target: ChosenNetwork, from: ChosenNetwork, canLock = false): { problem: string } | { reboot: string } {
   if (isAppError(e)) {
     const data = e.data;
     if (e.code === "app.network_busy" && data?.kind === "networkBusy") {
-      const waits = [...(data.broadcast ? ["the payment"] : []), ...data.flows.map((f) => FLOW_NAME[f])];
-      return { problem: NetworkText.busy(waits, data.mixing) };
+      const flows = data.flows.map((f) => FLOW_NAME[f]);
+      const waits = [...(data.broadcast ? ["the payment"] : []), ...flows];
+      if (waits.length === 0 && !data.mixing) return { problem: NetworkText.busyDraining };
+      return { problem: NetworkText.busy(waits, data.mixing, data.stalled && canLock ? flows : []) };
     }
-    if (e.code === "wallet") return { problem: NetworkText.walletOpening };
-    if (e.code === "shielded_spend_unresolved") return { problem: NetworkText.shieldedUnresolved };
+    if (data?.kind === "networkCloseRefused")
+      return { problem: data.reason === "walletOpening" ? NetworkText.walletOpening : NetworkText.shieldedUnresolved };
     if (e.code === "app.network_switch_failed" && data?.kind === "networkSwitch")
       return { reboot: data.rolledBack ? NetworkText.backOn(target, from) : NetworkText.noneOpen(target, from) };
+    return { problem: `${NetworkText.notSwitched} ${errorMessage(e)} (${e.code})` };
   }
   return { problem: `${NetworkText.notSwitched} ${errorMessage(e)}` };
 }
@@ -61,14 +65,14 @@ export async function bootAgain(note: string | null = null, reload: () => void =
 
 /** Whether a wallet of this network has a transfer or a lock that is not finished: Core →
  * Shielded locks, "Add from Dash wallet" locks not applied, top-ups pending or stuck. A read that
- * fails counts as none (the line is a note, not a gate). */
+ * fails counts as one: the question then says there may be some. */
 export async function hasPendingLocks(backend: Backend, walletIds: string[]): Promise<boolean> {
-  const some = <T>(read: Promise<T[] | null>) => read.then((rows) => (rows?.length ?? 0) > 0).catch(() => false);
+  const some = <T>(read: Promise<T[] | null>) => read.then((rows) => (rows?.length ?? 0) > 0).catch(() => true);
   const checks = walletIds.flatMap((id) => [
     backend
       .unfinishedTransfers(id)
       .then((t) => (t?.locks.length ?? 0) > 0)
-      .catch(() => false),
+      .catch(() => true),
     some(backend.pendingPlatformFunds(id)),
     some(backend.creditsPendingTopUps(id)),
     some(backend.creditsStuckTopUpFundings(id)),

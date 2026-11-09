@@ -3,6 +3,7 @@
 // self-test and the shell bridge can drive it.
 
 import { useEffect, useSyncExternalStore } from "react";
+import type { ChosenNetwork } from "../api/generated/ChosenNetwork";
 import type { ContactSortName } from "../api/generated/ContactSortName";
 import type { Route } from "../api/generated/Route";
 import type { ThemeName } from "../api/generated/ThemeName";
@@ -90,6 +91,10 @@ export interface UiState {
   /** Settings ▸ Wipe is open: onboarding stays closed while the wipe runs and while its sheet
    * reports a stop, so a vault that could not be deleted is said, not covered (U-04 D33). */
   wiping: boolean;
+  /** A network switch runs (row 74): the window is moving to this network until the page boots
+   * again or the switch is refused. Its card covers the window; menu commands, shortcuts and
+   * links wait meanwhile. */
+  switching: ChosenNetwork | null;
   /** How many mounted views show a recovery phrase (`useSecretScreen`, U-02 D15). */
   secrets: number;
   /** Whether the content protection those views need is in effect (D27; set by the shell). */
@@ -142,6 +147,7 @@ let state: UiState = {
   onboarding: false,
   forgotPassphrase: false,
   wiping: false,
+  switching: null,
   secrets: 0,
   protection: "off",
   contact: null,

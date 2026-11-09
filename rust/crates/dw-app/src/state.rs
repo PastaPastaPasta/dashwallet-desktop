@@ -39,7 +39,16 @@ pub struct AppState {
     window_network: StdMutex<DashNetwork>,
     /// Broadcasts handed to the engine that have not returned
     /// ([`AppState::broadcasting`]): a network switch refuses meanwhile.
-    broadcasts: AtomicUsize,
+    /// Taken, once the session is found, by `draft_broadcast`,
+    /// `broadcast_psbt`, `move_mixed_coins`, `consolidate_mixed_coins`,
+    /// `resend_mixed_coins`, `resend_transaction`,
+    /// `governance_submit_proposal` and `platform_send`. `shielded_send`
+    /// takes none: a shielded spend in flight already refuses the close
+    /// (`shielded_spend_unresolved`).
+    broadcasts: Arc<AtomicUsize>,
+    /// Tests: every broadcast guard taken.
+    #[cfg(test)]
+    pub(crate) broadcasts_taken: AtomicUsize,
     /// The network the window shows (D-row "one active session"). Session
     /// commands act on it; `open_network` and `close_network` change it.
     session: Mutex<Option<Arc<NetworkSession>>>,
@@ -88,6 +97,9 @@ pub struct AppState {
     /// reopens the network it left.
     #[cfg(test)]
     pub(crate) before_rollback: StdMutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Test seam: the networks the window started SPV on, in order.
+    #[cfg(test)]
+    pub(crate) spv_started: StdMutex<Vec<dw_engine::DashNetwork>>,
 }
 
 /// The single source of "require authentication for every payment" for
@@ -257,7 +269,9 @@ impl AppState {
                 }
             }),
             window_network,
-            broadcasts: AtomicUsize::new(0),
+            broadcasts: Arc::default(),
+            #[cfg(test)]
+            broadcasts_taken: AtomicUsize::new(0),
             session: Mutex::new(None),
             exit: Box::new(move |code| handle.exit(code)),
             sends: SendHandles::default(),
@@ -279,6 +293,8 @@ impl AppState {
             test_endpoints: StdMutex::default(),
             #[cfg(test)]
             before_rollback: StdMutex::default(),
+            #[cfg(test)]
+            spv_started: StdMutex::default(),
         })
     }
 
@@ -374,13 +390,16 @@ impl AppState {
 
     /// Counts a broadcast in flight until the guard drops.
     pub(crate) fn broadcasting(&self) -> BroadcastGuard<'_> {
+        #[cfg(test)]
+        self.broadcasts_taken.fetch_add(1, Ordering::SeqCst);
         self.broadcasts.fetch_add(1, Ordering::SeqCst);
         BroadcastGuard(&self.broadcasts)
     }
 
-    /// A broadcast was handed to the engine and has not returned.
-    pub(crate) fn broadcast_in_flight(&self) -> bool {
-        self.broadcasts.load(Ordering::SeqCst) > 0
+    /// How many broadcasts were handed to the engine and have not
+    /// returned; read by a network switch's close.
+    pub(crate) fn broadcasts(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.broadcasts)
     }
 
     /// Drops every handle: they belong to the session that is closing.

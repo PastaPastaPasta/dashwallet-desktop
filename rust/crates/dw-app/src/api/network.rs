@@ -7,15 +7,17 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use dw_engine::network_choice::{self, NetworkChoice};
 use dw_engine::platform::LeaseStateView;
-use dw_engine::{DashNetwork, NetworkDataInfo, NetworkSession, SessionOptions};
+use dw_engine::{CloseRefused, DashNetwork, NetworkDataInfo, NetworkSession, SessionOptions};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::{LockStatus, NetworkInfo, parse_network};
-use crate::error::{AppCode, AppError, ErrorData};
+use crate::error::{AppCode, AppError, CloseRefusalReason, ErrorData};
 use crate::ipc::commands;
 use crate::launch::LaunchOptions;
 use crate::state::AppState;
@@ -267,16 +269,28 @@ commands! {
     /// Moves the window to `network` (onboarding, Settings), saving the
     /// choice for the next start once it is open. A pinned window
     /// ([`NetworkChoiceView::forced_by_flag`]) only saves it. Otherwise,
-    /// unless it is already the window's: refused with `app.network_busy`
-    /// while a Platform flow holds a lease, a wallet mixes or a broadcast
-    /// has not returned; then the network is closed as the engine closes it
-    /// (its own refusals, `wallet` while a wallet is still opening and
-    /// `shielded_spend_unresolved`, change nothing) with its vault locked
-    /// and its draft handles dropped, and the chosen one opened with SPV
-    /// started as at launch. A failed open reopens the network it left and
-    /// is `app.network_switch_failed`, the choice unsaved. The renderer
-    /// boots again on success: every read of the old network is gone.
-    #[facade("NetworkSession::leases", "NetworkSession::mixing_busy")]
+    /// unless it is already the window's, the network is closed as
+    /// [`Engine::close_network_unless_busy`] closes it: its operations
+    /// paused, it is refused with `app.network_busy` while a Platform flow
+    /// holds a lease, a wallet mixes or a broadcast has not returned,
+    /// checked before and after the operations already running finish
+    /// (`draining` when they do not within 2 s); then the engine's own
+    /// refusals (`wallet` while a wallet is still opening,
+    /// `shielded_spend_unresolved`, both with
+    /// [`ErrorData::NetworkCloseRefused`]). A refusal changes nothing:
+    /// the session, its drafts, the window and the choice stay, and the
+    /// paused operations run. Once closed, its vault is locked and its
+    /// draft handles dropped, and the chosen one opens with SPV started as
+    /// at launch. A failed open reopens the network it left and is
+    /// `app.network_switch_failed`, the choice unsaved. The renderer boots
+    /// again on success: every read of the old network is gone.
+    ///
+    /// [`Engine::close_network_unless_busy`]: dw_engine::Engine::close_network_unless_busy
+    #[facade(
+        "Engine::close_network_unless_busy",
+        "NetworkSession::leases",
+        "NetworkSession::mixing_busy"
+    )]
     fn switch_network(state, network: ChosenNetwork) -> NetworkSwitch {
         let target = NetworkChoice::from(network).network();
         if state.launch.pinned() {
@@ -293,15 +307,21 @@ commands! {
             Some(s) if *s.network() == target => s,
             active => {
                 if let Some(s) = active {
-                    preflight(&state, &s)?;
                     let old = s.network().clone();
                     drop(s);
+                    let busy = busy_check(state.broadcasts());
+                    let closed = match state.engine.close_network_unless_busy(old, SWITCH_DRAIN, busy).await {
+                        Ok(closed) => Ok(closed),
+                        Err(CloseRefused::Busy(e)) => return Err(e),
+                        Err(CloseRefused::Draining) => return Err(busy_error(Busy::default().draining())),
+                        Err(CloseRefused::Engine(e)) => Err(e),
+                    };
                     // A refusal keeps the session active: nothing changed. A
                     // close that failed once the session was gone goes on
                     // like one that went through.
-                    if let Err(e) = close_active(&state, &mut slot, state.engine.close_network(old).await) {
+                    if let Err(e) = close_active(&state, &mut slot, closed) {
                         if slot.is_some() {
-                            return Err(e);
+                            return Err(close_refusal(e));
                         }
                         eprintln!("dw-app: the close of {} failed: {e}", left.dir_name());
                     }
@@ -400,42 +420,100 @@ async fn open_window_network(
         .engine
         .open_network(network.clone(), settings.over(&state.launch))
         .await?;
-    if state.launch.starts_spv_on(network)
-        && let Err(e) = s.start_spv().await
-    {
-        eprintln!("dw-app: SPV did not start: {e}");
+    if state.launch.starts_spv_on(network) {
+        #[cfg(test)]
+        state.spv_started.lock().unwrap().push(network.clone());
+        if let Err(e) = s.start_spv().await {
+            eprintln!("dw-app: SPV did not start: {e}");
+        }
     }
     Ok(s)
 }
 
-/// `app.network_busy` when closing `session` would cut what runs on it: a
-/// Platform flow's lease, mixing, a broadcast not yet returned.
-fn preflight(state: &AppState, session: &NetworkSession) -> Result<(), AppError> {
-    let mut flows: Vec<crate::dto::platform::FlowKindName> = Vec::new();
-    for lease in session.leases()? {
-        let flow = lease.flow.into();
-        let done = matches!(
-            lease.state,
-            LeaseStateView::Revoked { .. } | LeaseStateView::Ended
-        );
-        if !done && !flows.contains(&flow) {
-            flows.push(flow);
+/// How long a switch waits for the operations admitted before it to
+/// finish before it checks the network again.
+const SWITCH_DRAIN: Duration = Duration::from_secs(2);
+
+/// What runs on the network a switch would leave.
+#[derive(Default)]
+struct Busy {
+    flows: Vec<crate::dto::platform::FlowKindName>,
+    stalled: bool,
+    mixing: bool,
+    broadcast: bool,
+    draining: bool,
+}
+
+impl Busy {
+    fn draining(self) -> Self {
+        Self {
+            draining: true,
+            ..self
         }
     }
-    let mixing = session.mixing_busy();
-    let broadcast = state.broadcast_in_flight();
-    if flows.is_empty() && !mixing && !broadcast {
-        return Ok(());
+}
+
+/// The switch's check of the network it leaves: the error that refuses
+/// it, `app.network_busy`, when closing would cut a Platform flow's
+/// lease, mixing, or a broadcast not yet returned (`broadcasts`). A lease
+/// that cannot be read refuses too.
+fn busy_check(
+    broadcasts: Arc<AtomicUsize>,
+) -> impl Fn(&NetworkSession) -> Option<AppError> + Send + Sync + 'static {
+    move |session| {
+        let leases = match session.leases() {
+            Ok(leases) => leases,
+            Err(e) => return Some(e.into()),
+        };
+        let mut busy = Busy::default();
+        let mut stalled = true;
+        for lease in leases {
+            let flow = lease.flow.into();
+            match lease.state {
+                LeaseStateView::Revoked { .. } | LeaseStateView::Ended => continue,
+                LeaseStateView::Parked { .. } | LeaseStateView::NeedsGrant => {}
+                _ => stalled = false,
+            }
+            if !busy.flows.contains(&flow) {
+                busy.flows.push(flow);
+            }
+        }
+        busy.stalled = stalled && !busy.flows.is_empty();
+        busy.mixing = session.mixing_busy();
+        busy.broadcast = broadcasts.load(Ordering::SeqCst) > 0;
+        (!busy.flows.is_empty() || busy.mixing || busy.broadcast).then(|| busy_error(busy))
     }
-    Err(AppError::app(
+}
+
+fn busy_error(busy: Busy) -> AppError {
+    let Busy {
+        flows,
+        stalled,
+        mixing,
+        broadcast,
+        draining,
+    } = busy;
+    AppError::app(
         AppCode::NetworkBusy,
-        format!("running: {flows:?}, mixing {mixing}, broadcast {broadcast}"),
+        format!("running: {flows:?}, mixing {mixing}, broadcast {broadcast}, draining {draining}"),
     )
     .with(ErrorData::NetworkBusy {
         flows,
+        stalled,
         mixing,
         broadcast,
-    }))
+        draining,
+    })
+}
+
+/// The engine's own refusal of a switch's close, named for the renderer.
+fn close_refusal(e: AppError) -> AppError {
+    let reason = match e.code_str() {
+        "wallet" => CloseRefusalReason::WalletOpening,
+        "shielded_spend_unresolved" => CloseRefusalReason::ShieldedSpendUnresolved,
+        _ => return e,
+    };
+    e.with(ErrorData::NetworkCloseRefused { reason })
 }
 
 /// The active session's close, as `close_network` returned it: the slot and

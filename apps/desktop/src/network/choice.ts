@@ -33,12 +33,18 @@ export const NetworkText = {
   confirmPending: (from: ChosenNetwork) =>
     `Unfinished transfers and locks stay on ${networkName(from)}. You can finish them after switching back.`,
   confirm: "Switch",
-  /** Refused: closing the network would cut what runs on it. */
-  busy: (waits: string[], mixing: boolean) => {
-    const wait = waits.length > 0 ? `Wait for ${listed(waits.map((w) => w[0].toLowerCase() + w.slice(1)))} to finish` : "";
-    if (wait && mixing) return `${wait}, or stop mixing, before switching networks.`;
-    return `${wait || "Stop mixing"} before switching networks.`;
+  /** Before Switch is enabled: the pending-transfer reads have not answered yet. */
+  checking: "Checking for unfinished transfers…",
+  /** Refused: closing the network would cut what runs on it. `lockStops`: flows waiting for a
+   * proof or a grant, whose leases a lock ends. */
+  busy: (waits: string[], mixing: boolean, lockStops: string[] = []) => {
+    const lower = (items: string[]) => listed(items.map((w) => w[0].toLowerCase() + w.slice(1)));
+    const wait = waits.length > 0 ? `Wait for ${lower(waits)} to finish` : "";
+    const text = wait && mixing ? `${wait}, or stop mixing, before switching networks.` : `${wait || "Stop mixing"} before switching networks.`;
+    return lockStops.length > 0 ? `${text} Locking the wallet stops ${lower(lockStops)}.` : text;
   },
+  /** Refused: the network's work in progress did not finish in time. */
+  busyDraining: "Dash Wallet is still finishing work on this network. Try switching again in a moment.",
   walletOpening: "A wallet is still opening. Switch networks once it is open.",
   shieldedUnresolved: "A shielded payment is still being confirmed. Switch networks once it is.",
   /** After a switch that failed: the window went back to the network it left. */

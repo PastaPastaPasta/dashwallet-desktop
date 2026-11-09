@@ -224,8 +224,10 @@ export function launchInfo(): Promise<LaunchInfo> {
 }
 
 /**
- * The last 64 engine notices, oldest first, kept apart from the event
- * queue: after `eventsOverflowed`, the notices it may have dropped.
+ * Of the last 64 engine notices, oldest first, those of the window's
+ * network and those of none, kept apart from the event queue: after
+ * `eventsOverflowed`, the notices it may have dropped. A network the
+ * window left (`switchNetwork`) keeps its notices out, as its events.
  */
 export function recentNotices(): Promise<Array<RecentNotice>> {
   return invoke<Array<RecentNotice>>("recent_notices");
@@ -283,15 +285,23 @@ export function openNetwork(network: string | null, settings: SessionSettings | 
  * Moves the window to `network` (onboarding, Settings), saving the
  * choice for the next start once it is open. A pinned window
  * ([`NetworkChoiceView::forced_by_flag`]) only saves it. Otherwise,
- * unless it is already the window's: refused with `app.network_busy`
- * while a Platform flow holds a lease, a wallet mixes or a broadcast
- * has not returned; then the network is closed as the engine closes it
- * (its own refusals, `wallet` while a wallet is still opening and
- * `shielded_spend_unresolved`, change nothing) with its vault locked
- * and its draft handles dropped, and the chosen one opened with SPV
- * started as at launch. A failed open reopens the network it left and
- * is `app.network_switch_failed`, the choice unsaved. The renderer
- * boots again on success: every read of the old network is gone.
+ * unless it is already the window's, the network is closed as
+ * [`Engine::close_network_unless_busy`] closes it: its operations
+ * paused, it is refused with `app.network_busy` while a Platform flow
+ * holds a lease, a wallet mixes or a broadcast has not returned,
+ * checked before and after the operations already running finish
+ * (`draining` when they do not within 2 s); then the engine's own
+ * refusals (`wallet` while a wallet is still opening,
+ * `shielded_spend_unresolved`, both with
+ * [`ErrorData::NetworkCloseRefused`]). A refusal changes nothing:
+ * the session, its drafts, the window and the choice stay, and the
+ * paused operations run. Once closed, its vault is locked and its
+ * draft handles dropped, and the chosen one opens with SPV started as
+ * at launch. A failed open reopens the network it left and is
+ * `app.network_switch_failed`, the choice unsaved. The renderer boots
+ * again on success: every read of the old network is gone.
+ *
+ * [`Engine::close_network_unless_busy`]: dw_engine::Engine::close_network_unless_busy
  */
 export function switchNetwork(network: ChosenNetwork): Promise<NetworkSwitch> {
   return invoke<NetworkSwitch>("switch_network", { network });

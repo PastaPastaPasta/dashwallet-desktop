@@ -65,7 +65,7 @@ export interface World {
    * (`busy`, or close's own refusal `closeRefused`), or fail after the close (`fail`; when it did
    * not roll back, the next `open_network` fails once too, `reopenFails`). */
   networkSwitch?: {
-    busy?: { flows: FlowKindName[]; mixing: boolean; broadcast: boolean };
+    busy?: { flows: FlowKindName[]; mixing: boolean; broadcast: boolean; stalled?: boolean; draining?: boolean };
     closeRefused?: "wallet" | "shielded_spend_unresolved";
     fail?: { rolledBack: boolean };
     reopenFails?: boolean;

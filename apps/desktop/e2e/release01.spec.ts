@@ -424,6 +424,75 @@ test.describe("network choice", () => {
     expect(await activeNetwork(page)).toBe("testnet");
   });
 
+  test("a switch's card covers the window, and menu commands, shortcuts and links wait for it", async ({ page }) => {
+    await open(page, "funded");
+    await toSettings(page);
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await expect(page.getByTestId("network-switch-confirm")).toBeEnabled();
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("switch_network"));
+    await page.getByTestId("network-switch-confirm").click();
+    const card = page.getByTestId("network-switching");
+    await expect(card).toContainText("Opening Mainnet…");
+    const takes = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "take_links").length);
+    const taken = await takes();
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      f.shellCommand({ kind: "navigate", route: "home" });
+      f.shellCommand({ kind: "addWallet" });
+      f.shellCommand({ kind: "about" });
+      f.deliverLinks([{ kind: "rejected", reason: { kind: "notALink" } }]);
+    });
+    await page.keyboard.press("Control+2");
+    await page.waitForTimeout(300);
+    await expect(card).toBeVisible();
+    await expect(page.getByTestId("settings-network-choice")).toBeVisible();
+    await expect(page.getByTestId("page-home")).toHaveCount(0);
+    await expect(page.getByTestId("onboarding-create")).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveCount(1);
+    expect(await takes()).toBe(taken);
+    await release.evaluate((r) => r());
+    await expect.poll(() => activeNetwork(page)).toBe("mainnet");
+    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
+  });
+
+  test("the question waits for the wallet list and the transfer reads before Switch works", async ({ page }) => {
+    trackPageErrors(page);
+    await page.goto(fixtureUrl("recovery-one", "light", "&hold=list_wallets"));
+    await toSettings(page);
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    const confirm = page.getByTestId("network-switch-confirm");
+    const checking = page.getByTestId("network-switch-checking");
+    const switched = () => page.evaluate(() => window.__dwFixture!.calls.includes("switch_network"));
+    await expect(checking).toHaveText("Checking for unfinished transfers…");
+    await expect(confirm).toBeDisabled();
+    await confirm.click({ force: true });
+    // The list arrives; one transfer read is still out.
+    const releaseRead = await page.evaluateHandle(() => window.__dwFixture!.hold("unfinished_transfers"));
+    await page.evaluate(() => window.__dwFixture!.release("list_wallets"));
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("unfinished_transfers"))).toBe(true);
+    await expect(checking).toBeVisible();
+    await expect(confirm).toBeDisabled();
+    await confirm.click({ force: true });
+    await page.waitForTimeout(200);
+    expect(await switched()).toBe(false);
+    await expect(page.getByTestId("network-switch-sheet")).toBeVisible();
+    await releaseRead.evaluate((r) => r());
+    await expect(page.getByTestId("network-switch-pending")).toBeVisible();
+    await expect(checking).toHaveCount(0);
+    await expect(confirm).toBeEnabled();
+  });
+
+  test("a transfer read that fails gives the warning", async ({ page }) => {
+    trackPageErrors(page);
+    await page.goto(fixtureUrl("funded", "light", "&fail=credits_pending_top_ups:none"));
+    await toSettings(page);
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await expect(page.getByTestId("network-switch-pending")).toHaveText(
+      "Unfinished transfers and locks stay on Testnet. You can finish them after switching back.",
+    );
+    await expect(page.getByTestId("network-switch-confirm")).toBeEnabled();
+  });
+
   test("a switch that fails and rolls back boots again on the old network, with a note", async ({ page }) => {
     await open(page, "funded");
     await toSettings(page);

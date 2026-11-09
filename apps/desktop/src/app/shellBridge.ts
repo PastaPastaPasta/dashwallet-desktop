@@ -150,6 +150,8 @@ export function applyLink(route: LinkRoute) {
 /** Carries out a menu or tray command. A route command closes an open dialog first, as a link
  * does, so the page it opens takes the focus. */
 export function runCommand(command: ShellCommand, lock: () => void) {
+  // A network switch runs: the page it would act on is about to go (row 74).
+  if (ui.get().switching) return;
   // The wipe sheet is open: only lock and discreet mode leave it in place (D38).
   if (ui.get().wiping && command.kind !== "lock" && command.kind !== "toggleDiscreet") return;
   switch (command.kind) {
@@ -221,6 +223,9 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
       if (trace) tauriTools.selftestLinkRouted(line).catch(() => {});
     };
     const drain = async () => {
+      // Left queued while a network switch runs: the page that boots next takes them, or this
+      // one once the switch is refused (below).
+      if (ui.get().switching) return;
       try {
         // Applied even after an unmount: the queue is drained, so these routes exist only here.
         const routes = await backend.takeLinks(network);
@@ -248,9 +253,16 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
       runCommand(command, lockNow);
     };
     if (!inTauri()) window.addEventListener("keydown", onKey);
+    let switching = ui.get().switching;
+    const stopWatching = ui.subscribe(() => {
+      const was = switching;
+      switching = ui.get().switching;
+      if (was && !switching) void take();
+    });
     return () => {
       void unlisten.then((f) => f());
       window.removeEventListener("keydown", onKey);
+      stopWatching();
     };
   }, [backend, network, trace]);
 }
