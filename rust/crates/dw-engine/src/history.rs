@@ -434,7 +434,7 @@ impl WalletHistory {
 #[derive(Debug, Default)]
 pub(crate) struct HistoryStore {
     wallets: RwLock<HashMap<WalletId, WalletHistory>>,
-    /// Woken when a wallet's collaterals are pending.
+    /// Woken when a wallet's collaterals become pending.
     collateral_wake: Arc<tokio::sync::Notify>,
 }
 
@@ -442,8 +442,9 @@ impl HistoryStore {
     pub fn with_wallet<R>(&self, wallet: WalletId, f: impl FnOnce(&mut WalletHistory) -> R) -> R {
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
         let h = map.entry(wallet).or_default();
+        let pending = h.collateral_pending;
         let r = f(h);
-        if h.collateral_pending {
+        if !pending && h.collateral_pending {
             self.collateral_wake.notify_one();
         }
         r

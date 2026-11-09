@@ -15,6 +15,7 @@ use dashcore::{OutPoint, Transaction, TxOut, Txid};
 use dw_protx::params::{EVONODE_COLLATERAL, MASTERNODE_COLLATERAL};
 use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use key_wallet::Utxo;
+use key_wallet::transaction_checking::TransactionContext;
 use platform_wallet::PlatformWalletError;
 use zeroize::Zeroizing;
 
@@ -303,8 +304,11 @@ impl Fx {
 
     /// The wallet holds `outpoint` paying `txout` (its own script).
     fn hold(&self, outpoint: OutPoint, txout: TxOut) {
+        self.hold_in(self.wallet, outpoint, txout);
+    }
+
+    fn hold_in(&self, id: WalletId, outpoint: OutPoint, txout: TxOut) {
         let session = Arc::clone(&self.session);
-        let id = self.wallet;
         let inner = Arc::clone(&session);
         self.engine
             .block_on(session.on_runtime(async move {
@@ -337,42 +341,21 @@ impl Fx {
 
     /// `tx` in a block of the wallet's history, as key-wallet records it.
     fn confirm(&self, tx: Transaction, height: u32) {
-        use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
-        self.record(
-            tx,
-            TransactionContext::InChainLockedBlock(BlockInfo::new(
-                height,
-                dashcore::BlockHash::all_zeros(),
-                0,
-            )),
-        );
+        self.confirm_in(self.wallet, tx, height);
+    }
+
+    fn confirm_in(&self, wallet: WalletId, tx: Transaction, height: u32) {
+        self.record_in(wallet, tx, chain_locked(height));
     }
 
     /// `tx` in the wallet's history in `context`.
-    fn record(
-        &self,
-        tx: Transaction,
-        context: key_wallet::transaction_checking::TransactionContext,
-    ) {
-        use key_wallet::account::{AccountType, StandardAccountType};
-        use key_wallet::managed_account::transaction_record::{
-            TransactionDirection, TransactionRecord,
-        };
-        use key_wallet::transaction_checking::TransactionType;
-        let record = TransactionRecord::new(
-            tx,
-            AccountType::Standard {
-                index: 0,
-                standard_account_type: StandardAccountType::BIP44Account,
-            },
-            context,
-            TransactionType::Standard,
-            TransactionDirection::Internal,
-            Vec::new(),
-            Vec::new(),
-            0,
-        );
-        (self.session.hub.history).with_wallet(self.wallet, |h| h.upsert(&record, None));
+    fn record(&self, tx: Transaction, context: TransactionContext) {
+        self.record_in(self.wallet, tx, context);
+    }
+
+    fn record_in(&self, wallet: WalletId, tx: Transaction, context: TransactionContext) {
+        let record = tx_record(tx, context);
+        (self.session.hub.history).with_wallet(wallet, |h| h.upsert(&record, None));
     }
 
     fn follow(&self) {
@@ -382,8 +365,12 @@ impl Fx {
     }
 
     fn locked(&self) -> HashSet<OutPoint> {
+        self.locked_in(self.wallet)
+    }
+
+    fn locked_in(&self, wallet: WalletId) -> HashSet<OutPoint> {
         self.db()
-            .locks(&self.wallet.to_string())
+            .locks(&wallet.to_string())
             .unwrap()
             .into_iter()
             .filter(|r| r.is_locked())
@@ -859,7 +846,10 @@ fn mg04_a_crash_between_save_and_record_loses_nothing_and_sends_once() {
                 assert_eq!(refused.code(), "masternodes.operation_state");
                 assert_eq!(f.rows().len(), 1, "never deleted");
             }
-            CrashPoint::SharedOut | CrashPoint::Settle => unreachable!("not a registration point"),
+            CrashPoint::SharedOut
+            | CrashPoint::Settle
+            | CrashPoint::SharedFollow
+            | CrashPoint::LockStep => unreachable!("not a registration point"),
         }
         // The saved inputs stay locked across the restart: a new
         // registration can't spend them in a second transaction.
@@ -2754,6 +2744,40 @@ fn mg04_a_replay_holds_protx_fee_inputs() {
     prepare().unwrap();
 }
 
+/// A key-wallet record of `tx` in the BIP44 account.
+fn tx_record(
+    tx: Transaction,
+    context: TransactionContext,
+) -> key_wallet::managed_account::transaction_record::TransactionRecord {
+    use key_wallet::account::{AccountType, StandardAccountType};
+    use key_wallet::managed_account::transaction_record::{
+        TransactionDirection, TransactionRecord,
+    };
+    use key_wallet::transaction_checking::TransactionType;
+    TransactionRecord::new(
+        tx,
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        },
+        context,
+        TransactionType::Standard,
+        TransactionDirection::Internal,
+        Vec::new(),
+        Vec::new(),
+        0,
+    )
+}
+
+fn chain_locked(height: u32) -> TransactionContext {
+    use key_wallet::transaction_checking::BlockInfo;
+    TransactionContext::InChainLockedBlock(BlockInfo::new(
+        height,
+        dashcore::BlockHash::all_zeros(),
+        0,
+    ))
+}
+
 impl Fx {
     /// The follower's per-poll lock step for wallets whose history gained a
     /// ProRegTx.
@@ -2761,49 +2785,46 @@ impl Fx {
         self.engine.block_on(self.session.protx_collateral_pass());
     }
 
+    fn clear_pending(&self) {
+        self.session.hub.history.take_collateral_pending();
+    }
+
+    /// The wallet's coin fence, as a build holds it.
+    fn fence(&self) -> crate::coins::CoinFence {
+        self.engine
+            .block_on(self.session.coin_fence(self.wallet))
+            .unwrap()
+    }
+
     /// A ProRegTx this wallet holds the collateral of but didn't build:
-    /// internal (its own output) or external (a coin of the wallet's).
+    /// internal (its own output) or external (coin `seed` of the wallet's).
     fn foreign_registration(&self, internal: bool, seed: u8) -> (Transaction, OutPoint) {
-        use crate::masternodes::aggregate::fixtures::{coins, null, registration};
+        use crate::masternodes::aggregate::fixtures::{coins, registration};
         if internal {
-            let tx = registration(null(0), false, 0, coins(&[MASTERNODE_COLLATERAL]));
-            let collateral = OutPoint::new(tx.txid(), 0);
-            self.hold(collateral, tx.output[0].clone());
-            (tx, collateral)
-        } else {
-            let collateral = self.credit(seed, MASTERNODE_COLLATERAL);
-            // A different payout keeps it apart from an internal one.
-            let tx = registration(collateral, false, 100, coins(&[COIN]));
-            (tx, collateral)
+            return self.internal_registration_in(self.wallet, seed);
         }
+        let collateral = self.credit(seed, MASTERNODE_COLLATERAL);
+        (
+            registration(collateral, false, 0, coins(&[COIN])),
+            collateral,
+        )
+    }
+
+    /// A ProRegTx whose own output, held by `wallet`, is the collateral;
+    /// `seed` sets its operator reward, so its txid.
+    fn internal_registration_in(&self, wallet: WalletId, seed: u8) -> (Transaction, OutPoint) {
+        use crate::masternodes::aggregate::fixtures::{coins, null, registration};
+        let tx = registration(null(0), false, seed.into(), coins(&[MASTERNODE_COLLATERAL]));
+        let collateral = OutPoint::new(tx.txid(), 0);
+        self.hold_in(wallet, collateral, tx.output[0].clone());
+        (tx, collateral)
     }
 
     /// `tx` in key-wallet's own history only, then the engine's history
     /// loaded from it, as at session open.
     fn load_with(&self, tx: Transaction) {
-        use key_wallet::account::{AccountType, StandardAccountType};
         use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
-        use key_wallet::managed_account::transaction_record::{
-            TransactionDirection, TransactionRecord,
-        };
-        use key_wallet::transaction_checking::{BlockInfo, TransactionContext, TransactionType};
-        let record = TransactionRecord::new(
-            tx,
-            AccountType::Standard {
-                index: 0,
-                standard_account_type: StandardAccountType::BIP44Account,
-            },
-            TransactionContext::InChainLockedBlock(BlockInfo::new(
-                7,
-                dashcore::BlockHash::all_zeros(),
-                0,
-            )),
-            TransactionType::Standard,
-            TransactionDirection::Internal,
-            Vec::new(),
-            Vec::new(),
-            0,
-        );
+        let record = tx_record(tx, chain_locked(7));
         let session = Arc::clone(&self.session);
         let (id, inner) = (self.wallet, Arc::clone(&session));
         self.engine
@@ -2823,15 +2844,6 @@ impl Fx {
             }))
             .unwrap();
     }
-
-    fn release(&self, tx: &Transaction) {
-        self.engine
-            .block_on(
-                self.mn()
-                    .release_collateral(self.wallet, tx.txid().to_string()),
-            )
-            .unwrap();
-    }
 }
 
 /// Row 71 item 1: a ProRegTx entering the history locks the collateral it
@@ -2842,10 +2854,7 @@ fn r71_a_registration_in_the_history_locks_its_collateral_without_the_list() {
         let f = fx(Library::Accept);
         let (tx, collateral) = f.foreign_registration(internal, 2);
         assert!(f.locked().is_empty());
-        f.record(
-            tx,
-            key_wallet::transaction_checking::TransactionContext::Mempool,
-        );
+        f.record(tx, TransactionContext::Mempool);
         f.collateral_pass();
         assert_eq!(
             f.locked(),
@@ -2875,7 +2884,7 @@ fn r71_a_fence_skip_is_retried_on_the_next_poll() {
     let f = fx(Library::Accept);
     let (tx, collateral) = f.foreign_registration(true, 2);
     f.confirm(tx, 7);
-    let fence = f.engine.block_on(f.session.coin_fence(f.wallet)).unwrap();
+    let fence = f.fence();
     f.collateral_pass();
     assert!(f.locked().is_empty(), "the build holds the fence");
     drop(fence);
@@ -2885,8 +2894,8 @@ fn r71_a_fence_skip_is_retried_on_the_next_poll() {
     let f = fx(Library::Accept);
     let (tx, collateral) = f.foreign_registration(false, 3);
     f.confirm(tx, 7);
-    f.session.hub.history.take_collateral_pending();
-    let fence = f.engine.block_on(f.session.coin_fence(f.wallet)).unwrap();
+    f.clear_pending();
+    let fence = f.fence();
     f.follow();
     assert!(f.locked().is_empty(), "the build holds the fence");
     drop(fence);
@@ -2894,17 +2903,41 @@ fn r71_a_fence_skip_is_retried_on_the_next_poll() {
     assert_eq!(f.locked(), HashSet::from([collateral]), "list-tick path");
 }
 
-/// Row 71 item 3: a failed earlier step of the follower pass doesn't skip
-/// the collateral lock.
+/// A lock step that fails is retried on the next poll.
 #[test]
-fn r71_a_failed_earlier_step_skips_no_collateral_lock() {
+fn r71_a_failed_lock_step_is_retried_on_the_next_poll() {
     let f = fx(Library::Accept);
     let (tx, collateral) = f.foreign_registration(true, 2);
     f.confirm(tx, 7);
-    f.session.hub.history.take_collateral_pending();
-    f.crash_at(Some(CrashPoint::Settle));
-    f.follow();
+    f.crash_at(Some(CrashPoint::LockStep));
+    f.collateral_pass();
+    assert!(f.locked().is_empty());
+    f.crash_at(None);
+    f.collateral_pass();
     assert_eq!(f.locked(), HashSet::from([collateral]));
+}
+
+/// Row 71 item 3: a failed earlier step of the follower pass skips no
+/// collateral lock, for this wallet or a later one.
+#[test]
+fn r71_a_failed_earlier_step_skips_no_collateral_lock() {
+    for point in [CrashPoint::Settle, CrashPoint::SharedFollow] {
+        let f = fx(Library::Accept);
+        let other = f.import_other_wallet();
+        let (tx, a) = f.internal_registration_in(f.wallet, 2);
+        let (other_tx, b) = f.internal_registration_in(other, 3);
+        f.confirm(tx, 7);
+        f.confirm_in(other, other_tx, 7);
+        f.clear_pending();
+        f.crash_at(Some(point));
+        f.follow();
+        assert_eq!(f.locked(), HashSet::from([a]), "{point:?}");
+        assert_eq!(
+            f.locked_in(other),
+            HashSet::from([b]),
+            "{point:?}, the other wallet"
+        );
+    }
 }
 
 /// Row 71 item 4: the user's release holds against every new lock path.
@@ -2915,24 +2948,70 @@ fn r71_a_release_holds_on_every_new_path() {
     f.confirm(tx.clone(), 7);
     f.collateral_pass();
     assert_eq!(f.locked(), HashSet::from([collateral]));
-    f.release(&tx);
+    f.engine
+        .block_on(f.mn().release_collateral(f.wallet, tx.txid().to_string()))
+        .unwrap();
     assert!(f.locked().is_empty());
 
     f.confirm(tx.clone(), 7);
     f.collateral_pass();
     assert!(f.locked().is_empty(), "history insert");
 
-    f.load_with(tx.clone());
+    f.load_with(tx);
     f.collateral_pass();
     assert!(f.locked().is_empty(), "load");
 
-    let fence = f.engine.block_on(f.session.coin_fence(f.wallet)).unwrap();
+    let fence = f.fence();
     f.follow();
     drop(fence);
     f.collateral_pass();
     assert!(f.locked().is_empty(), "fence re-arm");
 
+    f.crash_at(Some(CrashPoint::LockStep));
+    f.collateral_pass();
     f.crash_at(Some(CrashPoint::Settle));
     f.follow();
-    assert!(f.locked().is_empty(), "past a failed earlier step");
+    f.crash_at(None);
+    f.collateral_pass();
+    assert!(f.locked().is_empty(), "past failed steps");
+}
+
+/// Row 71 item 1's wake: a merged ProRegTx marks its wallet and wakes the
+/// follower once; a plain transaction, a repeat or a re-arm doesn't.
+#[test]
+fn r71_a_registration_marks_its_wallet_and_wakes_the_follower_once() {
+    use crate::masternodes::aggregate::fixtures::{coins, null, registration};
+    use futures_util::FutureExt;
+    let store = crate::history::HistoryStore::default();
+    let wallet = WalletId([7; 32]);
+    let wake = store.collateral_wake();
+    let woken = || wake.notified().now_or_never().is_some();
+    let plain = tx_record(
+        Transaction {
+            version: 2,
+            lock_time: 0,
+            input: Vec::new(),
+            output: coins(&[COIN]),
+            special_transaction_payload: None,
+        },
+        TransactionContext::Mempool,
+    );
+    store.with_wallet(wallet, |h| h.upsert(&plain, None));
+    assert!(!woken(), "a plain transaction");
+    assert!(store.take_collateral_pending().is_empty());
+
+    let reg = tx_record(
+        registration(null(0), false, 0, coins(&[MASTERNODE_COLLATERAL])),
+        TransactionContext::Mempool,
+    );
+    store.with_wallet(wallet, |h| h.upsert(&reg, None));
+    assert!(woken());
+    store.with_wallet(wallet, |h| h.upsert(&reg, None));
+    assert!(!woken(), "already pending");
+    assert_eq!(store.take_collateral_pending(), vec![wallet]);
+    assert!(store.take_collateral_pending().is_empty());
+
+    store.rearm_collateral(wallet);
+    assert!(!woken(), "a re-arm waits for the next poll");
+    assert_eq!(store.take_collateral_pending(), vec![wallet]);
 }

@@ -268,6 +268,10 @@ pub(crate) enum CrashPoint {
     SharedOut,
     /// The follower's settling of operation locks fails.
     Settle,
+    /// The follower's pass over shared sessions fails.
+    SharedFollow,
+    /// The collateral lock step fails, past the coin fence.
+    LockStep,
 }
 
 /// The test seam of the ProTx hand-off: the library's broadcast faked, and
@@ -669,21 +673,31 @@ impl NetworkSession {
     }
 
     /// Locks the collaterals of the wallets whose history gained a ProRegTx
-    /// since the last call (on insert, a rescan or a load), whether or not
-    /// the masternode list is synced.
+    /// since the last call, whether or not the masternode list is synced.
     pub(crate) async fn protx_collateral_pass(&self) {
         for wallet in self.hub.history.take_collateral_pending() {
             self.collateral_step(wallet).await;
         }
     }
 
-    /// One wallet's [`Self::lock_own_collaterals`]; a wallet whose coin
-    /// fence a build holds is marked pending again, for the next poll.
+    /// One wallet's [`Self::lock_own_collaterals`]. A wallet whose coin
+    /// fence a build holds, or whose step failed, is marked pending again
+    /// for the next poll, unless it or the session is gone.
     async fn collateral_step(&self, wallet: WalletId) {
         match self.lock_own_collaterals(wallet).await {
             Ok(true) => {}
             Ok(false) => self.hub.history.rearm_collateral(wallet),
-            Err(e) => tracing::warn!(%wallet, error = %e, "locking masternode collaterals"),
+            Err(e) => {
+                tracing::warn!(%wallet, error = %e, "locking masternode collaterals");
+                if !matches!(
+                    e,
+                    MasternodesError::Engine(
+                        EngineError::WalletNotFound(_) | EngineError::NetworkNotOpen(_)
+                    )
+                ) {
+                    self.hub.history.rearm_collateral(wallet);
+                }
+            }
         }
     }
 
@@ -697,6 +711,8 @@ impl NetworkSession {
         let Some(_fence) = self.try_coin_fence(wallet).await? else {
             return Ok(false);
         };
+        #[cfg(test)]
+        crash_at(self, CrashPoint::LockStep)?;
         self.release_conflicted_collaterals(wallet).await?;
         let (m, hub) = (self.manager()?, Arc::clone(&self.hub));
         let collaterals: Vec<OutPoint> = tokio::task::spawn_blocking(move || {
