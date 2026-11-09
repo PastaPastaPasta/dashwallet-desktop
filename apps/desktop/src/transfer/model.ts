@@ -48,6 +48,8 @@ export const TRANSFER_COPY = {
   amount: "Amount",
   max: "Max",
   wholeBalance: "Platform moves its whole balance.",
+  /** Platform → Dash wallet's form; its confirmation names the address (MOVE_COPY.message). */
+  platformToCoreIntro: "Everything on your Platform addresses moves to your Dash wallet. Dash Platform pays it to an address in your Dash wallet.",
   fee: (fee: string, receive: string) => `Fee about ${fee} · You receive about ${receive}`,
   quoting: "Working out the fee…",
   feeOnNextStep: "Fee shown on the next step",
@@ -204,7 +206,7 @@ const WINDOW_TIMERS: Timers = { set: (f, ms) => setTimeout(f, ms), clear: (t) =>
 export const QUOTE_DEBOUNCE_MS = 400;
 
 /** Routes whose quote is read only on Continue (and Max), never while typing: `platform_fund_quote`
- * may derive a receive address under the wallet-manager write lock (platform_fund.rs:743-751). */
+ * may derive a receive address under the wallet-manager write lock (platform_fund.rs:319). */
 export const QUOTE_ON_CONTINUE: ReadonlySet<RouteId> = new Set<RouteId>(["coreToPlatform"]);
 
 /** The fee line of one route: the route's own quote of the amount typed, read once the amount has
@@ -218,6 +220,8 @@ export class QuoteLine<Q> extends Model {
   private due = false;
   private inflight: Promise<unknown> | null = null;
   private timer: unknown = null;
+  /** What the quote also depends on (the source balance): a change re-reads the same amount. */
+  private basis: unknown = undefined;
   /** Max's answer is dropped once the amount changes under it. */
   private maxGen = 0;
 
@@ -229,10 +233,13 @@ export class QuoteLine<Q> extends Model {
     super();
   }
 
-  /** The amount to quote, in duffs; `null`: nothing to quote (no amount, or the route can't run). */
-  set(amount: number | null) {
+  /** The amount to quote, in duffs; `null`: nothing to quote (no amount, or the route can't run).
+   * `basis` is what else the quote depends on: when it changes, the same amount is read again, so a
+   * refusal never outlives the balance it was given for. */
+  set(amount: number | null, basis?: unknown) {
     // Nothing to quote still clears what Max left (its refusal names no amount typed).
-    if (amount === this.target && !this.maxing && (amount !== null || this.state.kind === "idle")) return;
+    if (amount === this.target && basis === this.basis && !this.maxing && (amount !== null || this.state.kind === "idle")) return;
+    this.basis = basis;
     this.maxGen++;
     this.maxing = false;
     this.target = amount;
@@ -293,6 +300,7 @@ export class QuoteLine<Q> extends Model {
         this.state = first.ok ? { kind: "quoted", amount: probe, quote: first.quote } : { kind: "refused", amount: probe, error: first.error };
         return null;
       }
+      // A probe that took the whole balance is already a quote of that amount (Confirm quotes again).
       const second = amount === probe && first.ok ? first : await this.exclusive(amount);
       if (!live()) return null;
       if (!second.ok) {
@@ -584,10 +592,11 @@ export class TransferModel extends Model {
     return shielded.open && shielded.kind !== "send" && shieldedRoute(shielded.kind) === route;
   }
 
-  /** The amount typed on `route` (`null`: none, or the route can't run): the fee line quotes it,
-   * except on a route quoted only on Continue, where typing only clears what Max left. */
-  typed(route: Exclude<RouteId, "platformToCore">, amount: number | null) {
-    (this.lines[route] as QuoteLine<unknown>).set(QUOTE_ON_CONTINUE.has(route) ? null : amount);
+  /** The amount typed on `route` (`null`: none, or the route can't run), with the source pool's
+   * balance (`basis`): the fee line quotes it, except on a route quoted only on Continue, where
+   * typing only clears what Max left. */
+  typed(route: Exclude<RouteId, "platformToCore">, amount: number | null, basis?: number | null) {
+    (this.lines[route] as QuoteLine<unknown>).set(QUOTE_ON_CONTINUE.has(route) ? null : amount, basis);
   }
 
   /** Max on `route`: `probe` is the pool's whole balance in duffs. The field is filled (`fill`, the

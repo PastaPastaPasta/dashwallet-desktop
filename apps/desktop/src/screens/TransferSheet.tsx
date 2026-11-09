@@ -174,7 +174,7 @@ const INTRO: Record<RouteId, { text: string; testId?: string }> = {
   coreToShielded: { text: SHIELDED_COPY.form.add },
   shieldedToCore: { text: SHIELDED_COPY.form.out },
   coreToPlatform: { text: FUND_COPY.form.intro, testId: "platform-fund-intro" },
-  platformToCore: { text: MOVE_COPY.message },
+  platformToCore: { text: T.platformToCoreIntro },
 };
 
 /** The form of a route funded by an amount (every route but Platform → Dash wallet). */
@@ -194,10 +194,12 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   const hidden = discreet && text !== "" && t.maxText[route] === text;
   const amount = useParsed(text, network);
   const blocked = why !== null || flow.running;
-  // The fee line follows the amount once it is read; nothing is quoted while the route can't run.
+  const probe = balanceOf(ROUTES[route].from, pools);
+  // The fee line follows the amount once it is read, and the source balance; nothing is quoted while
+  // the route can't run.
   useEffect(() => {
-    if (amount !== undefined) t.typed(route, blocked ? null : amount);
-  }, [t, route, amount, blocked]);
+    if (amount !== undefined) t.typed(route, blocked ? null : amount, probe);
+  }, [t, route, amount, blocked, probe]);
   useEffect(() => () => line.set(null), [line]);
   const amountProblem = text.trim() !== "" && amount === null ? T.invalidAmount : null;
   const refusal =
@@ -209,9 +211,8 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   const fee = QUOTE_ON_CONTINUE.has(route) && !line.maxing ? { text: T.feeOnNextStep, refused: false } : feeText(route, line.state, fmt);
   // A refusal of this very amount: Continue would only meet it again.
   const refusedHere = line.state.kind === "refused" && line.state.amount === amount && !line.maxing;
-  const probe = balanceOf(ROUTES[route].from, pools);
   const ready = !blocked && amount != null && amountProblem === null && !refusedHere && !line.maxing;
-  const continueWhy = why ?? amountProblem ?? (line.maxing ? T.why.max : refusedHere ? refusal : amount == null ? T.why.amount : null);
+  const continueWhy = why ?? amountProblem ?? (line.maxing ? T.why.max : refusal ?? (amount == null ? T.why.amount : null));
   return (
     <form
       className="topup-form"
@@ -259,14 +260,14 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
           {T.max}
         </DashButton>
       </div>
-      <p className={refusal || amountProblem ? "form-problem" : "field-hint"} id={`${id}-fee`} role={refusal || amountProblem ? "alert" : "status"} data-testid="transfer-fee">
+      <p className={refusal || amountProblem ? "form-problem" : "field-hint"} id={`${id}-fee`} role="status" data-testid="transfer-fee">
         {amountProblem ?? refusal ?? fee?.text ?? ""}
       </p>
       <div className="sheet-actions">
         <DashButton variant="tintedGray" size="large" type="button" data-testid="transfer-cancel" onClick={() => t.close()}>
           {T.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" type="submit" data-testid="transfer-continue" disabled={!ready} why={continueWhy} whyId={why ? `${id}-why` : refusedHere || amountProblem ? `${id}-fee` : undefined}>
+        <DashButton variant="filledBlue" size="large" type="submit" data-testid="transfer-continue" disabled={!ready} why={continueWhy} whyId={why ? `${id}-why` : refusal || amountProblem ? `${id}-fee` : undefined}>
           {T.continue}
         </DashButton>
       </div>
@@ -316,7 +317,7 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
       <p className="field-hint" id={`${id}-whole`} data-testid="transfer-whole">
         {T.wholeBalance}
       </p>
-      <p className={refusal ? "form-problem" : "field-hint"} id={`${id}-fee`} role={refusal ? "alert" : "status"} data-testid="transfer-fee">
+      <p className={refusal ? "form-problem" : "field-hint"} id={`${id}-fee`} role="status" data-testid="transfer-fee">
         {blocked ? "" : (refusal ?? (q ? T.fee(credits(q.feeCredits), fmt(q.expectedDuffs)) : T.quoting))}
       </p>
       <div className="sheet-actions">
@@ -373,7 +374,7 @@ function TransferForm({ t, pools, network, walletId, status }: { t: TransferMode
       </div>
       {t.picking && <Picker t={t} end={t.picking} pools={pools} fmt={fmt} id={pickerId} />}
       {route === "unsupported" ? (
-        <p className="form-problem" role="status" data-testid="transfer-unavailable">
+        <p className="field-hint" role="status" data-testid="transfer-unavailable">
           {T.unsupported}
         </p>
       ) : route === "platformToCore" ? (

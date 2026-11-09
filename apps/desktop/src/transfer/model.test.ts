@@ -324,6 +324,48 @@ describe("the fee line", () => {
   });
 });
 
+describe("a refusal never outlives its inputs", () => {
+  it("the same amount is read again when the source balance changes", async () => {
+    const { timers, tick } = manualTimers();
+    let balance = 100_000;
+    const shieldQuote = vi.fn(async (_wallet: string, d: number) => {
+      if (d > balance) throw appError(SHIELDED_CODES.fundingInsufficient, { kind: "duffs", needed: d + 1_000, available: balance });
+      return { duffs: d } as never;
+    });
+    const t = new TransferModel(flows(), { shieldQuote, unshieldQuote: vi.fn(), platformFundQuote: vi.fn() }, WALLET_A, timers);
+    t.typed("coreToShielded", 500_000, balance);
+    tick(400);
+    await flush();
+    expect(t.lines.coreToShielded.state).toMatchObject({ kind: "refused", amount: 500_000 });
+    // Same balance: nothing read again.
+    t.typed("coreToShielded", 500_000, balance);
+    tick(400);
+    await flush();
+    expect(shieldQuote).toHaveBeenCalledTimes(1);
+    balance = 3_000_000;
+    t.typed("coreToShielded", 500_000, balance);
+    expect(t.lines.coreToShielded.state).toEqual({ kind: "quoting" });
+    tick(400);
+    await flush();
+    expect(shieldQuote).toHaveBeenCalledTimes(2);
+    expect(t.lines.coreToShielded.state).toMatchObject({ kind: "quoted", amount: 500_000 });
+  });
+
+  it("on Dash wallet → Platform a balance change clears the refusal Max left, with no quote", async () => {
+    const { timers } = manualTimers();
+    const platformFundQuote = vi.fn(async (): Promise<never> => {
+      throw appError("credits.fund_pending", { kind: "txid", txid: "t" });
+    });
+    const t = new TransferModel(flows(), { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
+    t.typed("coreToPlatform", null, 3_000_000_000);
+    await t.max("coreToPlatform", 3_000_000_000, vi.fn());
+    expect(t.lines.coreToPlatform.state).toMatchObject({ kind: "refused" });
+    t.typed("coreToPlatform", null, 2_000_000_000);
+    expect(t.lines.coreToPlatform.state).toEqual({ kind: "idle" });
+    expect(platformFundQuote).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("Dash wallet → Platform quotes only on Continue", () => {
   /** A model whose Platform quote refuses the whole balance with its shortfall and takes less. */
   function fundModel() {

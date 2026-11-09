@@ -93,8 +93,12 @@ async function maxFills(page: Page, quote: string, value: RegExp, fee: RegExp | 
 async function maxRefused(page: Page, text: RegExp | string) {
   await page.getByTestId("transfer-max").click();
   await expect(page.getByTestId("transfer-fee")).toHaveText(text);
-  await expect(page.getByTestId("transfer-fee")).toHaveAttribute("role", "alert");
+  // One live region for the fee line, the refusal in it; Continue's reason is that refusal, not the
+  // generic hint.
+  await expect(page.getByTestId("transfer-fee")).toHaveAttribute("role", "status");
   await expect(page.getByTestId("transfer-amount")).toHaveValue("");
+  await expect(page.getByTestId("transfer-sheet").getByText("Enter an amount first.")).toHaveCount(0);
+  await expect(page.getByTestId("transfer-continue")).toHaveAttribute("aria-describedby", (await page.getByTestId("transfer-fee").getAttribute("id"))!);
 }
 
 async function inProgress(page: Page, route: TransferRoute, command: string, progress: (p: Page) => Promise<void>) {
@@ -363,6 +367,9 @@ export const TRANSFER_STATES: TransferState[] = [
     scenario: "funded",
     go: async (page) => {
       await openTransfer(page, "platformToCore");
+      // No address shows here: Confirm names it.
+      await expect(page.getByTestId("transfer-body")).toContainText("Dash Platform pays it to an address in your Dash wallet.");
+      await expect(page.getByTestId("transfer-body")).not.toContainText("address below");
       await expect(page.getByTestId("transfer-whole")).toHaveText("Platform moves its whole balance.");
       await expect(page.getByTestId("transfer-amount")).toHaveAttribute("readonly", "");
       await expect(page.getByTestId("transfer-max")).toHaveAttribute("aria-pressed", "true");
@@ -419,6 +426,8 @@ export const TRANSFER_STATES: TransferState[] = [
       await expect(page.getByTestId("platform-move-quote-duffs")).toContainText("0.39998");
       // One quote: the form's, kept for the confirmation.
       expect(await callsOf(page, "platform_move_to_core_quote")).toBe(1);
+      // The confirmation shows the address, and says so.
+      await expect(page.getByTestId("platform-move-body")).toContainText("Dash Platform pays it to the address below.");
     },
   },
   {
@@ -460,6 +469,8 @@ export const TRANSFER_STATES: TransferState[] = [
       await page.getByTestId("transfer-to").click();
       await page.getByTestId("transfer-picker-platform").click();
       await expect(page.getByTestId("transfer-unavailable")).toHaveText("Moving straight between Shielded and Platform isn't available on desktop yet. Move through your Dash wallet.");
+      // Information, not a failure: the hint style the other unavailable lines use.
+      await expect(page.getByTestId("transfer-unavailable")).toHaveClass("field-hint");
       await expect(page.getByTestId("transfer-continue")).toHaveCount(0);
       // Not a dead end: the picker still picks.
       await page.getByTestId("transfer-from").click();
