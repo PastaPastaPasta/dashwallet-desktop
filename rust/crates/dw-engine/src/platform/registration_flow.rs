@@ -3319,6 +3319,10 @@ impl PwLib {
             // The signer refused before the transaction was complete: the
             // builder released its selection and nothing can be out, so the
             // step ends `NotSent`, not possibly sent (review r3 R3-m1).
+            Err(_) if signer.inner().coins_changed() => {
+                permit.abort_unsent();
+                Err(FundError::CoinsLocked)
+            }
             Err(_) if signer.refused() => {
                 permit.abort_unsent();
                 Err(FundError::NotSent(signer.refusal()))
@@ -3380,7 +3384,10 @@ impl PwLib {
             .create_funded_asset_lock_proof(duffs, 0, funding_type, identity_index, signer)
             .await
             .map(|(_, _, outpoint)| outpoint)
-            .map_err(fund_error)
+            .map_err(|e| match signer.coins_changed() {
+                true => FundError::CoinsLocked,
+                false => fund_error(e),
+            })
     }
 }
 

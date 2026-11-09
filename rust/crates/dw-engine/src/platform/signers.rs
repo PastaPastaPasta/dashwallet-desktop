@@ -388,6 +388,17 @@ pub struct CountingFundingSigner {
     cap: Option<Arc<InputCap>>,
     /// Only a drain's planned build ([`Self::with_drain_cap`]).
     drain: Option<Arc<DrainCap>>,
+    /// Only coins its funding's policy check read free
+    /// ([`Self::with_checked_inputs`]).
+    checked: Option<Arc<CheckedInputs>>,
+}
+
+/// The coins one funding's fenced read found free, and whether the build
+/// was refused for an input outside them.
+#[derive(Debug)]
+struct CheckedInputs {
+    free: Arc<std::collections::HashSet<OutPoint>>,
+    refused: std::sync::atomic::AtomicBool,
 }
 
 /// What one drain's build must spend and pay: the plan's coins (outpoint,
@@ -570,7 +581,33 @@ impl CountingFundingSigner {
             release,
             cap: None,
             drain: None,
+            checked: None,
         }
+    }
+
+    /// Signs only a build whose every input is in `free`, the coins its
+    /// funding's fenced read found free (`PwLib::fence`): the library's
+    /// builder selects from the wallet as it is when it builds, where a coin
+    /// credited since that read (one awaiting its history event, say) could
+    /// be taken. Such a build is refused when the builder shows it, before
+    /// any signature, and the call abandoned, as [`Self::with_input_cap`]'s;
+    /// the funding reads `CoinsLocked` and the next attempt reads the coins
+    /// again. A drain checks its own plan instead ([`Self::with_drain_cap`]).
+    pub(crate) fn with_checked_inputs(
+        mut self,
+        free: Arc<std::collections::HashSet<OutPoint>>,
+    ) -> Self {
+        self.checked = Some(Arc::new(CheckedInputs {
+            free,
+            refused: std::sync::atomic::AtomicBool::new(false),
+        }));
+        self
+    }
+
+    /// Whether the build was refused for an input its funding's coin check
+    /// did not read free ([`Self::with_checked_inputs`]).
+    pub(crate) fn coins_changed(&self) -> bool {
+        (self.checked.as_ref()).is_some_and(|c| c.refused.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// Signs only `plan`'s build: one whose inputs or outputs are not the
@@ -705,6 +742,19 @@ impl key_wallet::Signer for CountingFundingSigner {
                 "{} inputs, more than {}",
                 inputs.len(),
                 cap.max
+            )));
+        }
+        if let Some(checked) = &self.checked
+            && self.drain.is_none()
+            && let Some(outside) = inputs.iter().find(|u| !checked.free.contains(&u.outpoint))
+        {
+            checked
+                .refused
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.count.abandon();
+            return Err(SignerError::PathNotAllowed(format!(
+                "input {} is not a coin the funding's check read free",
+                outside.outpoint
             )));
         }
         Ok(())

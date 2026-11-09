@@ -275,6 +275,15 @@ pub(crate) struct HeldCoin {
 }
 
 impl CoinSnapshot {
+    /// The coins no lock, reservation or hold keeps back: all a library
+    /// funding under this read's fence may spend.
+    pub(crate) fn free_outpoints(&self) -> HashSet<OutPoint> {
+        (self.coins.iter())
+            .filter(|c| !(c.reserved || c.user_locked || c.dust_locked || c.unresolved_lock))
+            .map(|c| c.utxo.outpoint)
+            .collect()
+    }
+
     /// The coins of the funding accounts (BIP44, BIP32, DashPay receiving)
     /// the user or dust protection locked, or a pending payment of the
     /// engine reserves: what the library's asset-lock builder does not see.
@@ -318,11 +327,27 @@ impl CoinSnapshot {
 pub struct CoinFence {
     wallet: WalletId,
     _guard: tokio::sync::OwnedMutexGuard<()>,
+    /// The coins the last read under this fence found free
+    /// ([`CoinSnapshot::free_outpoints`]): a library funding that keeps the
+    /// fence signs no other ([`crate::platform::signers::CountingFundingSigner`]).
+    checked: std::sync::Mutex<Option<Arc<HashSet<OutPoint>>>>,
 }
 
 impl CoinFence {
     pub fn wallet_id(&self) -> WalletId {
         self.wallet
+    }
+
+    /// The coins the last read under this fence found free, if it read any.
+    pub(crate) fn checked_coins(&self) -> Option<Arc<HashSet<OutPoint>>> {
+        self.checked
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    fn record_checked(&self, free: HashSet<OutPoint>) {
+        *self.checked.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(free));
     }
 }
 
@@ -429,6 +454,7 @@ impl CoinFences {
         CoinFence {
             wallet,
             _guard: fence.lock_owned().await,
+            checked: std::sync::Mutex::new(None),
         }
     }
 
@@ -438,6 +464,7 @@ impl CoinFences {
         Some(CoinFence {
             wallet,
             _guard: fence.try_lock_owned().ok()?,
+            checked: std::sync::Mutex::new(None),
         })
     }
 
@@ -883,6 +910,7 @@ impl NetworkSession {
             coin.reserved = spend_reserved || lock_held;
             coin.awaiting_history = unseen.contains(&o);
         }
+        fence.record_checked(snapshot.free_outpoints());
         Ok(snapshot)
     }
 
