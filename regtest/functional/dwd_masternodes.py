@@ -36,7 +36,8 @@ Checks, in order:
  4. payouts: the wallet's payouts of A and C equal Core's coinbase payments to their payout
     addresses, newest first, and mature after 100 blocks;
  5. status transitions of A: `protx revoke` (Core bans a revoked masternode) makes it
-    `pose_banned`; the wallet spending the collateral makes it `removed`.
+    `pose_banned`; the collateral stays locked after the revoke, as in Core, so the user
+    releases it (`mn release-collateral`), and the wallet spending it makes it `removed`.
 
 Run (DWCLI = a built dwcli):
   DWCLI=<target>/debug/dwcli DWD_PYTHON=<venv>/bin/python DASHCORE_DIR=<dashcore> \\
@@ -437,6 +438,7 @@ class DwdMasternodes(DashTestFramework):
         detail = dw.mn(h, "status", mn_a)
         assert_equal(detail["row"]["status"], "pose_banned")
         assert_equal(detail["list"]["valid"], False)
+        assert_equal(dw.mn(h, "release-collateral", mn_a), {"locked": False})
         self.start_miner()
         try:
             out = dw.run("send", wallet, "--sync-height", str(h), "--coin", f"{funding}:{vout}",
