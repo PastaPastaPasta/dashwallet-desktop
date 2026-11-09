@@ -83,6 +83,38 @@ pub(crate) fn owned_scripts(info: &PlatformWalletInfo) -> HashMap<ScriptBuf, Own
     map
 }
 
+/// Tests: how the next history load's first stored record read goes wrong
+/// (`EventHub::record_read_fault`).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RecordFault {
+    /// The read fails.
+    Error,
+    /// The listed record reads as absent.
+    Missing,
+    /// The record read names another txid.
+    Mismatched,
+}
+
+#[cfg(test)]
+impl RecordFault {
+    fn apply(
+        self,
+        read: Result<Option<TransactionRecord>, PersistenceError>,
+    ) -> Result<Option<TransactionRecord>, PersistenceError> {
+        match self {
+            Self::Error => Err(PersistenceError::LockPoisoned),
+            Self::Missing => Ok(None),
+            Self::Mismatched => read.map(|r| {
+                r.map(|mut r| {
+                    r.txid = Txid::all_zeros();
+                    r
+                })
+            }),
+        }
+    }
+}
+
 /// One wallet's stored transactions: those whose record is stored, and the
 /// recordless ones (height-only rows, kept for their coins).
 #[derive(Default, Clone)]
@@ -183,16 +215,14 @@ impl NetworkSession {
         #[cfg(not(test))]
         let fail = false;
         #[cfg(test)]
-        let fail_record =
-            (self.hub.fail_record_read).swap(false, std::sync::atomic::Ordering::SeqCst);
-        #[cfg(not(test))]
-        let fail_record = false;
+        let fault = self.hub.record_read_fault.lock().unwrap().take();
         let live = self.live()?;
         let db_path = self.data_dir().join(WALLET_DB_FILE);
         let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
         let wallet_ids = ids.clone();
         let loaded = tokio::task::spawn_blocking(move || {
-            let mut fail_record = fail_record;
+            #[cfg(test)]
+            let mut fault = fault;
             let listing = if fail {
                 Err(rusqlite::Error::InvalidQuery)
             } else {
@@ -212,15 +242,26 @@ impl NetworkSession {
                     let persisted = txids.get(&wallet.0).cloned().unwrap_or_default();
                     let records = (persisted.records.iter())
                         .filter_map(|t| {
-                            let read = match std::mem::take(&mut fail_record) {
-                                true => Err(PersistenceError::LockPoisoned),
-                                false => persister.get_core_tx_record(wallet.0, t),
+                            let read = persister.get_core_tx_record(wallet.0, t);
+                            #[cfg(test)]
+                            let read = match fault.take() {
+                                Some(f) => f.apply(read),
+                                None => read,
                             };
-                            read.unwrap_or_else(|e| {
-                                tracing::warn!(%wallet, txid = %t, error = %e, "unreadable transaction record");
-                                clean = false;
-                                None
-                            })
+                            match read {
+                                // The listed key's record, of the transaction it names.
+                                Ok(Some(r)) if r.txid == *t && r.transaction.txid() == *t => Some(r),
+                                Ok(found) => {
+                                    tracing::warn!(%wallet, txid = %t, found = ?found.map(|r| r.txid), "a listed transaction record is missing or another's");
+                                    clean = false;
+                                    None
+                                }
+                                Err(e) => {
+                                    tracing::warn!(%wallet, txid = %t, error = %e, "unreadable transaction record");
+                                    clean = false;
+                                    None
+                                }
+                            }
                         })
                         .collect();
                     let seen = appdb.tx_seen_times(&wallet.to_string()).unwrap_or_else(|e| {
@@ -279,7 +320,8 @@ impl NetworkSession {
             // record, or a height-only row), read under the same guard as
             // the records: a coin credited after them, or not stored yet,
             // waits for its own event ([`NetworkSession::coin_snapshot`]).
-            // A load that failed to read a record keeps every coin waiting.
+            // A load that failed to read a record, or read one missing or
+            // another's, keeps every coin waiting.
             let loaded_coins: HashSet<Txid> = match info {
                 Some(info) => (crate::coins::read_coins(&info.core_wallet).coins.iter())
                     .map(|c| c.utxo.outpoint.txid)

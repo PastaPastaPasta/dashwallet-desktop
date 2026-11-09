@@ -831,11 +831,7 @@ impl NetworkSession {
         // Coins before the history: a ProRegTx that lands between the two
         // reads is still seen, where the other order could read its coin
         // without it.
-        let collaterals = (self.hub.history).read(&wallet_id, |txs| {
-            crate::masternodes::registration_collaterals(
-                txs.values().filter(|e| !e.is_abandoned()).map(|e| &e.tx),
-            )
-        });
+        let collaterals = self.hub.history.registration_collaterals(&wallet_id);
         self.lock_collaterals(fence, collaterals, &snapshot.coins)
             .await?;
         let id = wallet_id.to_string();

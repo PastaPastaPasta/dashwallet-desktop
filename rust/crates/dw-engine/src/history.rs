@@ -365,6 +365,11 @@ pub(crate) struct WalletHistory {
     /// load, so no later one is awaited for them. Empty after a load that
     /// failed to read a record.
     loaded_coins: HashSet<Txid>,
+    /// The ProRegTxs whose record is a DashPay contact account's, which
+    /// [`Self::upsert`] skips: the history shows none of them, yet each
+    /// still names a collateral, locked as an own ProRegTx's is
+    /// ([`HistoryStore::registration_collaterals`]).
+    hidden_registrations: HashMap<Txid, Transaction>,
 }
 
 impl WalletHistory {
@@ -372,6 +377,18 @@ impl WalletHistory {
     /// to read a record).
     pub fn set_loaded_coins(&mut self, txids: HashSet<Txid>) {
         self.loaded_coins = txids;
+    }
+
+    /// Keeps a skipped (contact's) record that is a ProRegTx out of sight,
+    /// its collateral named and marked as an own ProRegTx's is.
+    fn hide_registration(&mut self, record: &TransactionRecord) {
+        if let Some(TransactionPayload::ProviderRegistrationPayloadType(p)) =
+            &record.transaction.special_transaction_payload
+        {
+            (self.named_collaterals).insert(resolve_collateral(record.txid, p.collateral_outpoint));
+            self.collateral_pending = true;
+            (self.hidden_registrations).insert(record.txid, record.transaction.clone());
+        }
     }
 }
 
@@ -387,9 +404,11 @@ pub(crate) fn is_wallets(record: &TransactionRecord) -> bool {
 impl WalletHistory {
     /// Merges a platform-wallet record. `seen_at` is set as the first-seen
     /// time when the transaction is new to the store. Returns whether it was
-    /// new; a contact's record ([`is_wallets`]) is skipped (false).
+    /// new; a contact's record ([`is_wallets`]) is skipped (false), a
+    /// ProRegTx among them kept out of sight for its collateral only.
     pub fn upsert(&mut self, record: &TransactionRecord, seen_at: Option<u64>) -> bool {
         if !is_wallets(record) {
+            self.hide_registration(record);
             return false;
         }
         let new = !self.txs.contains_key(&record.txid);
@@ -522,6 +541,31 @@ impl HistoryStore {
             Some(h) => f(&h.txs),
             None => f(&HashMap::new()),
         }
+    }
+
+    /// The collaterals the wallet's ProRegTxs name, with the amount each
+    /// type needs: every ProRegTx the history counts (not abandoned), and
+    /// every one it keeps out of sight (a contact's record).
+    pub fn registration_collaterals(&self, wallet: &WalletId) -> Vec<(OutPoint, u64)> {
+        let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
+        let Some(h) = map.get(wallet) else {
+            return Vec::new();
+        };
+        crate::masternodes::registration_collaterals(
+            (h.txs.values())
+                .filter(|e| !e.is_abandoned())
+                .map(|e| &e.tx)
+                .chain(h.hidden_registrations.values()),
+        )
+    }
+
+    /// The collaterals only the ProRegTxs kept out of sight name (a
+    /// contact's record), which no masternode the wallet lists holds.
+    pub fn hidden_registration_collaterals(&self, wallet: &WalletId) -> Vec<(OutPoint, u64)> {
+        let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
+        (map.get(wallet)).map_or_else(Vec::new, |h| {
+            crate::masternodes::registration_collaterals(h.hidden_registrations.values())
+        })
     }
 
     /// Runs `f` over one wallet's entries and the txids of the coins it held

@@ -721,15 +721,18 @@ impl NetworkSession {
         self.release_conflicted_collaterals(wallet).await?;
         let (m, hub) = (self.manager()?, Arc::clone(&self.hub));
         let collaterals: Vec<(OutPoint, u64)> = tokio::task::spawn_blocking(move || {
-            super::super::follow::wallet_masternodes(&m, &hub.history, &wallet)
-                .map(|(owned, _)| {
-                    (owned.iter())
-                        .filter_map(|o| {
-                            Some((o.collateral?, collateral_amount(o.record.is_evonode)))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
+            let mut collaterals: Vec<(OutPoint, u64)> =
+                super::super::follow::wallet_masternodes(&m, &hub.history, &wallet)
+                    .map(|(owned, _)| {
+                        (owned.iter())
+                            .filter_map(|o| {
+                                Some((o.collateral?, collateral_amount(o.record.is_evonode)))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            collaterals.extend(hub.history.hidden_registration_collaterals(&wallet));
+            collaterals
         })
         .await?;
         if !collaterals.is_empty() {

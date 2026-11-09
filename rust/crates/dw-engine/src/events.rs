@@ -467,9 +467,9 @@ pub(crate) struct SessionHub {
     /// Tests: the next history load fails to list the stored records.
     #[cfg(test)]
     pub(crate) fail_history_read: std::sync::atomic::AtomicBool,
-    /// Tests: the next history load fails to read its first stored record.
+    /// Tests: the next history load's first stored record read goes wrong.
     #[cfg(test)]
-    pub(crate) fail_record_read: std::sync::atomic::AtomicBool,
+    pub(crate) record_read_fault: Mutex<Option<crate::history_ops::RecordFault>>,
     #[cfg(test)]
     pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
@@ -569,7 +569,7 @@ impl SessionHub {
             #[cfg(test)]
             fail_history_read: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
-            fail_record_read: std::sync::atomic::AtomicBool::new(false),
+            record_read_fault: Mutex::new(None),
             #[cfg(test)]
             pause_abandon: Mutex::new(None),
         }
