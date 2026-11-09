@@ -3,7 +3,7 @@ import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { STATES as COINJOIN, pressStart } from "./coinjoin";
 import { CARDS, CHIP_TEXT, CHIPS } from "./dashpay";
 import { fileDialogAnswers, WIDE_PNG } from "./editProfile";
-import { authorize, fixtureUrl, fontsReady, SCREENS, show, THEMES, type Theme } from "./helpers";
+import { authorize, fixtureUrl, fontsReady, openTransfer, SCREENS, show, THEMES, type Theme } from "./helpers";
 import { openIdentities } from "./identities";
 import { IDENTITY } from "../src/fixture/dashpay";
 import { showSettingsView, type SettingsView } from "./settings";
@@ -90,9 +90,9 @@ const LATER: Record<string, { scenario: string; go: (page: Page) => Promise<void
   "platform-fund": {
     scenario: "funded",
     go: async (page) => {
-      await page.getByTestId("platform-fund").click();
-      await page.getByTestId("platform-fund-amount").fill("0.5");
-      await page.getByTestId("platform-fund-next").click();
+      await openTransfer(page, "coreToPlatform");
+      await page.getByTestId("transfer-amount").fill("0.5");
+      await page.getByTestId("transfer-continue").click();
       await page.getByTestId("platform-fund-confirm").waitFor();
       await expect(page.getByTestId("platform-fund-confirm")).toContainText("You receive about");
     },

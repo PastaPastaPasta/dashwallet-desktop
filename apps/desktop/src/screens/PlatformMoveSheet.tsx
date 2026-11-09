@@ -1,20 +1,18 @@
-// "Move to Dash wallet" (platform/move.ts): the Home card that offers it while the Platform
-// addresses hold something, and the sheet with the quote, Confirm & move, progress and outcome.
+// "Move to Dash wallet" (platform/move.ts): the steps Transfer shows for it (the quote, Confirm & move,
+// progress and outcome), and Home's Platform card, whose line opens Transfer from Platform.
 
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { creditsToDuffs } from "../api/pending";
 import { useBackend, usePendingPlatformFunds, usePlatformActivity, usePlatformMoveQuote } from "../api/queries";
 import { navigate, useUi } from "../app/ui";
 import { DashButton } from "../components/basics";
-import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
 import { fundFor, fundRowView, FUND_COPY as F } from "../platform/fund";
-import { PlatformFundSheet } from "./PlatformFundSheet";
-import { GrantSheet } from "./tools/common";
+import { transferFor, TRANSFER_COPY } from "../transfer/model";
 
 function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string; block: MoveBlock | null }) {
   const quote = usePlatformMoveQuote(walletId, true);
@@ -97,88 +95,99 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
   );
 }
 
-export function PlatformMoveSheet({ flow, walletId, network, block }: { flow: PlatformMoveFlow; walletId: string; network: NetworkInfo; block: MoveBlock | null }) {
+/** The steps of a move: the quote's confirmation, progress and outcome (Transfer shows them,
+ * TransferSheet.tsx). */
+export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMoveFlow; walletId: string; network: NetworkInfo; block: MoveBlock | null }) {
   useModel(flow);
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
   const activity = usePlatformActivity(walletId);
-  if (!flow.open) return <GrantSheet grants={flow.grants} />;
   const amount = (duffs: number) => (discreet ? shown.masked() : `${shown.compact(duffs)} ${shown.name}`);
   const credits = (c: string) => amount(creditsToDuffs(c));
   const { step, outcome } = flow;
   return (
-    <>
-      <Sheet title={C.title} width="small" testId="platform-move-sheet" onClose={() => flow.close()}>
-        <div data-testid="platform-move-body" data-step={step}>
-          {step === "confirm" && <ConfirmStep flow={flow} walletId={walletId} credits={credits} amount={amount} block={block} />}
-          {step === "running" && (
-            <div role="status" className="topup-running">
-              <p className="topup-title">
-                {C.running.title}
-                <span className="spinner" aria-hidden="true" />
-              </p>
-              <p className="sheet-text">{C.running.text}</p>
-            </div>
-          )}
-          {step === "done" && outcome && (
-            <div role="status">
-              <p className="topup-title" data-testid="platform-move-outcome-title">
-                {outcome.state === "done" ? C.done.title : outcome.state === "replaced" ? C.replaced.title : C.pending.title}
-              </p>
-              <p className="sheet-text" data-testid="platform-move-outcome-text">
-                {outcome.state === "replaced"
-                  ? C.replaced.text
-                  : outcome.state === "done"
-                  ? outcome.expectedDuffs === null
-                    ? C.done.debitOnly(credits(outcome.credits))
-                    : C.done.text(amount(outcome.expectedDuffs), outcome.feeCredits === null ? null : credits(outcome.feeCredits))
-                  : outcome.expectedDuffs === null
-                    ? C.pending.debitOnly(credits(outcome.credits))
-                    : C.pending.text(amount(outcome.expectedDuffs))}
-              </p>
-              <div className="sheet-actions">
-                <DashButton variant="filledBlue" size="large" data-testid="platform-move-done" onClick={() => flow.close()}>
-                  {C.close}
-                </DashButton>
-              </div>
-            </div>
-          )}
-          {step === "refused" && (
-            <>
-              <p className="form-problem" role="alert" data-testid="platform-move-refusal">
-                {moveErrorText(flow.error, credits, activity.data)}
-              </p>
-              <div className="sheet-actions">
-                {moveCanRetry(flow.error) && (
-                  <DashButton variant="tintedGray" size="large" data-testid="platform-move-refused-back" onClick={() => flow.back()}>
-                    {C.back}
-                  </DashButton>
-                )}
-                <DashButton variant="filledBlue" size="large" data-testid="platform-move-close" onClick={() => flow.close()}>
-                  {C.close}
-                </DashButton>
-              </div>
-            </>
-          )}
+    <div data-testid="platform-move-body" data-step={step}>
+      {step === "confirm" && <ConfirmStep flow={flow} walletId={walletId} credits={credits} amount={amount} block={block} />}
+      {step === "running" && (
+        <div role="status" className="topup-running">
+          <p className="topup-title">
+            {C.running.title}
+            <span className="spinner" aria-hidden="true" />
+          </p>
+          <p className="sheet-text">{C.running.text}</p>
         </div>
-      </Sheet>
-      <GrantSheet grants={flow.grants} />
-    </>
+      )}
+      {step === "done" && outcome && (
+        <div role="status">
+          <p className="topup-title" data-testid="platform-move-outcome-title">
+            {outcome.state === "done" ? C.done.title : outcome.state === "replaced" ? C.replaced.title : C.pending.title}
+          </p>
+          <p className="sheet-text" data-testid="platform-move-outcome-text">
+            {outcome.state === "replaced"
+              ? C.replaced.text
+              : outcome.state === "done"
+              ? outcome.expectedDuffs === null
+                ? C.done.debitOnly(credits(outcome.credits))
+                : C.done.text(amount(outcome.expectedDuffs), outcome.feeCredits === null ? null : credits(outcome.feeCredits))
+              : outcome.expectedDuffs === null
+                ? C.pending.debitOnly(credits(outcome.credits))
+                : C.pending.text(amount(outcome.expectedDuffs))}
+          </p>
+          <div className="sheet-actions">
+            <DashButton variant="filledBlue" size="large" data-testid="platform-move-done" onClick={() => flow.close()}>
+              {C.close}
+            </DashButton>
+          </div>
+        </div>
+      )}
+      {step === "refused" && (
+        <>
+          <p className="form-problem" role="alert" data-testid="platform-move-refusal">
+            {moveErrorText(flow.error, credits, activity.data)}
+          </p>
+          <div className="sheet-actions">
+            {moveCanRetry(flow.error) && (
+              <DashButton variant="tintedGray" size="large" data-testid="platform-move-refused-back" onClick={() => flow.back()}>
+                {C.back}
+              </DashButton>
+            )}
+            <DashButton variant="filledBlue" size="large" data-testid="platform-move-close" onClick={() => flow.close()}>
+              {C.close}
+            </DashButton>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
+/** What holds a move back on `flow`'s wallet, from Activity: a move Platform has not confirmed (this
+ * session's result, or after a restart Activity's record), a payment that may still go through, and
+ * whether Activity has answered at all. */
+export function usePlatformHold(walletId: string, flow: PlatformMoveFlow) {
+  useModel(flow);
+  const activity = usePlatformActivity(walletId);
+  // Only an unanswered move or send waits here: one that failed by height and may still land leaves Move
+  // offered (a move at the same inputs follows a held move and frees it); the engine refuses the rest.
+  const waiting = flow.pending || hasUnansweredOp(activity.data);
+  const sendHeld = !flow.pending && sendHolds(activity.data);
+  return { activity, waiting, sendHeld, block: moveBlock(waiting, activity), waitingText: sendHeld ? C.waiting.sendHeld : C.waiting.text };
+}
+
 /** Home's Platform card: shown while the Platform addresses are known (`platform` is their balance in
- * duffs; `null`/`undefined`: not known, no card), so "Add from Dash wallet" is reachable at a zero
- * balance. It also carries a move's result and the locks an add left unapplied. */
+ * duffs; `null`/`undefined`: not known, no card). Its line opens Transfer from Platform. It also
+ * carries a move's hold, the locks an add left unapplied, and the results not seen yet. */
 export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0" }: { walletId: string; network: NetworkInfo; platform: number | null | undefined; dustCredits?: string }) {
   const backend = useBackend();
   const flow = moveFor(backend, walletId);
   const fund = fundFor(backend, walletId);
+  const transfer = transferFor(backend, walletId);
   useModel(flow);
   useModel(fund);
+  const textId = useId();
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
-  const activity = usePlatformActivity(walletId);
+  const { activity, waiting, sendHeld, block } = usePlatformHold(walletId, flow);
   const unfinished = usePendingPlatformFunds(walletId).data ?? [];
   // Activity settles a retained `pending` result: when it changes, when a move turns pending (the
   // rows read may already have shown it settled) and when the sheet closes.
@@ -186,102 +195,99 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
   const funded = platform != null && platform > 0;
   const dust = BigInt(dustCredits) > 0n;
   const dustText = C.card.dust(discreet ? shown.masked() : `${shown.compact(creditsToDuffs(dustCredits))} ${shown.name}`);
-  // A move Platform has not confirmed: this session's result, or (after a restart) Activity's record.
-  // Until Activity has answered, a fresh Move is not offered either (and an open confirmation waits).
-  // Only an unanswered move or send waits here: one that failed by height and may still land leaves Move
-  // offered (a move at the same inputs follows a held move and frees it); the engine refuses the rest.
-  const waiting = flow.pending || hasUnansweredOp(activity.data);
-  const sendHeld = !flow.pending && sendHolds(activity.data);
-  const block = moveBlock(waiting, activity);
-  const sheet = (
+  const holdReason = flow.running ? C.running.text : block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : null;
+  if (platform == null && !flow.open && !flow.running && !flow.unseen && !waiting && !dust && !fund.open && !fund.running && !fund.unseen && unfinished.length === 0) return null;
+  const amountText = (duffs: number) => (discreet ? shown.masked() : `${shown.compact(duffs)} ${shown.name}`);
+  const line = (
     <>
-      <PlatformMoveSheet flow={flow} walletId={walletId} network={network} block={block} />
-      <PlatformFundSheet flow={fund} walletId={walletId} network={network} />
+      {funded && <span data-testid="platform-card-amount">{discreet ? shown.masked() : shown.withUnit(platform)}. </span>}
+      {waiting ? (sendHeld ? C.waiting.sendHeld : C.waiting.text) : funded ? C.card.text : dust ? dustText : F.card.empty}
     </>
   );
-  const holdReason = flow.running ? C.running.text : block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : null;
-  if (platform == null && !flow.open && !flow.running && !flow.unseen && !waiting && !dust && !fund.open && !fund.running && !fund.unseen && unfinished.length === 0) return sheet;
-  const amountText = (duffs: number) => (discreet ? shown.masked() : `${shown.compact(duffs)} ${shown.name}`);
   return (
-    <>
-      <section className="platform-card card-l1" data-testid="platform-card" aria-label={C.card.title}>
-        <div className="platform-card-body">
-          <h2 className="platform-card-title">{C.card.title}</h2>
-          <p className="platform-card-text">
-            {funded && <span data-testid="platform-card-amount">{discreet ? shown.masked() : shown.withUnit(platform)}. </span>}
-            {waiting ? (sendHeld ? C.waiting.sendHeld : C.waiting.text) : flow.unseen ? C.unseen : funded ? C.card.text : dust ? dustText : F.card.empty}
+    <section className="platform-card card-l1" data-testid="platform-card" aria-label={C.card.title}>
+      <div className="platform-card-body">
+        {platform != null ? (
+          <button type="button" className="card-transfer" data-testid="platform-card-transfer" aria-label={TRANSFER_COPY.cardButton.platform} aria-describedby={textId} onClick={() => transfer.startFrom("platform")}>
+            <span className="platform-card-title">{C.card.title}</span>
+            <span className="platform-card-text" id={textId}>
+              {line}
+            </span>
+          </button>
+        ) : (
+          <>
+            <h2 className="platform-card-title">{C.card.title}</h2>
+            <p className="platform-card-text">{line}</p>
+          </>
+        )}
+        {sendHeld && !waiting && (
+          <p className="platform-card-text" data-testid="platform-card-send-held">
+            {C.waiting.sendHeld}
           </p>
-          {sendHeld && !waiting && (
-            <p className="platform-card-text" data-testid="platform-card-send-held">
-              {C.waiting.sendHeld}
-            </p>
-          )}
-          {funded && dust && !waiting && (
-            <p className="platform-card-text" data-testid="platform-card-dust">
-              {dustText}
-            </p>
-          )}
-          {unfinished.map((p) => {
-            const row = fundRowView(p, amountText);
-            return (
-              <p key={p.txid} className="platform-card-text" data-testid={`platform-fund-${row.kind}`} data-state={p.state}>
-                {row.kind === "checking" && (
-                  <>
-                    <strong>{F.done.checking.title}.</strong>{" "}
-                  </>
-                )}
-                {row.text}
-                {row.action && (
-                  <>
-                    {" "}
-                    <DashButton variant="plainBlue" size="small" data-testid="platform-fund-finish" disabled={fund.running} why={fund.running ? F.card.busy : null} onClick={() => void fund.resume(p.txid)}>
-                      {row.action === "checkAgain" ? F.card.checkAgain : F.card.finish}
-                    </DashButton>
-                  </>
-                )}
-              </p>
-            );
-          })}
-          {fund.unseen && (
-            <p className="platform-card-text" data-testid="platform-fund-unseen">
-              {F.unseen}{" "}
-              <DashButton variant="plainBlue" size="small" data-testid="platform-fund-show" onClick={() => fund.begin()}>
-                {F.show}
-              </DashButton>
-            </p>
-          )}
-          {holdReason && !waiting && (
-            <p className="field-hint" id="platform-move-why" data-testid="platform-move-why">
-              {holdReason}
-              {block === "failed" && !flow.running && (
+        )}
+        {funded && dust && !waiting && (
+          <p className="platform-card-text" data-testid="platform-card-dust">
+            {dustText}
+          </p>
+        )}
+        {unfinished.map((p) => {
+          const row = fundRowView(p, amountText);
+          return (
+            <p key={p.txid} className="platform-card-text" data-testid={`platform-fund-${row.kind}`} data-state={p.state}>
+              {row.kind === "checking" && (
+                <>
+                  <strong>{F.done.checking.title}.</strong>{" "}
+                </>
+              )}
+              {row.text}
+              {row.action && (
                 <>
                   {" "}
-                  <DashButton variant="plainBlue" size="small" data-testid="platform-move-check-again" onClick={() => void activity.refetch()}>
-                    {C.check.again}
+                  <DashButton variant="plainBlue" size="small" data-testid="platform-fund-finish" disabled={fund.running} why={fund.running ? F.card.busy : null} onClick={() => void fund.resume(p.txid)}>
+                    {row.action === "checkAgain" ? F.card.checkAgain : F.card.finish}
                   </DashButton>
                 </>
               )}
             </p>
-          )}
-        </div>
+          );
+        })}
+        {fund.unseen && (
+          <p className="platform-card-text" data-testid="platform-fund-unseen">
+            {F.unseen}{" "}
+            <DashButton variant="plainBlue" size="small" data-testid="platform-fund-show" onClick={() => transfer.start("coreToPlatform")}>
+              {F.show}
+            </DashButton>
+          </p>
+        )}
+        {flow.unseen && (
+          <p className="platform-card-text" data-testid="platform-move-unseen">
+            {C.unseen}{" "}
+            <DashButton variant="plainBlue" size="small" data-testid="platform-move-show" onClick={() => transfer.start("platformToCore")}>
+              {C.show}
+            </DashButton>
+          </p>
+        )}
+        {holdReason && !waiting && (
+          <p className="field-hint" id="platform-move-why" data-testid="platform-move-why">
+            {holdReason}
+            {block === "failed" && !flow.running && (
+              <>
+                {" "}
+                <DashButton variant="plainBlue" size="small" data-testid="platform-move-check-again" onClick={() => void activity.refetch()}>
+                  {C.check.again}
+                </DashButton>
+              </>
+            )}
+          </p>
+        )}
+      </div>
+      {waiting && !flow.running && (
         <div className="shielded-card-actions">
-          {waiting && !flow.running ? (
-            <DashButton variant="tintedBlue" data-testid="platform-move-view" onClick={() => navigate("activity")}>
-              {C.waiting.action}
-            </DashButton>
-          ) : funded || flow.running || flow.unseen || flow.open ? (
-            <DashButton variant="tintedBlue" data-testid="platform-move" disabled={flow.running || (!flow.unseen && (block === "checking" || block === "failed"))} why={flow.unseen ? null : holdReason} whyId="platform-move-why" onClick={() => flow.begin()}>
-              {flow.running ? C.running.title : flow.unseen ? C.show : C.action}
-            </DashButton>
-          ) : null}
-          {platform != null && (
-            <DashButton variant="tintedBlue" data-testid="platform-fund" disabled={fund.running} why={fund.running ? F.card.busy : null} onClick={() => fund.begin()}>
-              {fund.running ? F.running.title : F.action}
-            </DashButton>
-          )}
+          <DashButton variant="tintedBlue" data-testid="platform-move-view" onClick={() => navigate("activity")}>
+            {C.waiting.action}
+          </DashButton>
         </div>
-      </section>
-      {sheet}
-    </>
+      )}
+    </section>
   );
 }

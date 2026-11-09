@@ -1,6 +1,7 @@
-// Shielded funds on Home (shielded/flow.ts): the card with the balance and its actions, the sheet
-// for Add to Shielded, Send and Move to Dash wallet (amount → quote → confirm → progress → outcome),
-// and Receive's address with its QR. The card says "not active on this network yet" while the
+// Shielded funds (shielded/flow.ts): Home's card, whose line opens Transfer from Shielded; the steps of
+// a Shielded move (amount → quote → confirm → progress → outcome), which Transfer shows for Add to
+// Shielded and Move to Dash wallet and Pay's Send from Shielded sheet shows for a send; and the
+// address with its QR that Receive shows. The card says "not active on this network yet" while the
 // network does not take shielded transitions, and is not there while dw-app has no such commands.
 
 import { useId, useState } from "react";
@@ -20,6 +21,7 @@ import { useModel } from "../onboarding/model";
 import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
 import { SHIELDED_SYNCING_TEXT, shieldedSyncing } from "../shielded/syncing";
 import { Qr } from "./Receive";
+import { shieldedRoute, transferFor, TRANSFER_COPY, type RouteId } from "../transfer/model";
 import { GrantSheet } from "./tools/common";
 
 const MEMO_BYTES = 36;
@@ -250,59 +252,70 @@ function Outcome({ flow, fmt }: { flow: ShieldedFlow; fmt: ReturnType<typeof use
   );
 }
 
-export function ShieldedSheet({ flow, walletId, network, status }: { flow: ShieldedFlow; walletId: string; network: NetworkInfo; status: ShieldedStatus | null }) {
+/** The steps of a Shielded move: its form, confirmation, progress and outcome. */
+export function ShieldedBody({ flow, walletId, network, status }: { flow: ShieldedFlow; walletId: string; network: NetworkInfo; status: ShieldedStatus | null }) {
   useModel(flow);
   const fmt = useFormats(network);
-  if (!flow.open) return <GrantSheet grants={flow.grants} />;
   const { step } = flow;
   return (
-    <>
-      <Sheet title={C.titles[flow.kind]} width="small" testId="shielded-sheet" onClose={() => flow.close()}>
-        <div data-testid="shielded-body" data-step={step} data-kind={flow.kind}>
-          {step === "form" && <FormStep flow={flow} network={network} status={status} />}
-          {step === "confirm" && <ConfirmStep flow={flow} walletId={walletId} status={status} fmt={fmt} />}
-          {step === "running" && (
-            <div role="status" className="topup-running">
-              <p className="topup-title">
-                {C.running.title}
-                <span className="spinner" aria-hidden="true" />
-              </p>
-              <p className="sheet-text" data-testid="shielded-progress">
-                {flow.kind === "send" || flow.kind === "out" ? C.running.prove : C.running.lock}
-              </p>
-            </div>
-          )}
-          {step === "done" && <Outcome flow={flow} fmt={fmt} />}
-          {step === "refused" && (
-            <>
-              <p className="form-problem" role="alert" data-testid="shielded-refusal">
-                {shieldedErrorText(flow.error, fmt.credits, fmt.duffs, flow.kind, shieldedSyncing(status))}
-              </p>
-              <div className="sheet-actions">
-                {shieldedCanChange(flow.error) && flow.request?.kind !== "resume" && (
-                  <DashButton variant="tintedGray" size="large" data-testid="shielded-refused-back" onClick={() => flow.back()}>
-                    {C.confirm.back}
-                  </DashButton>
-                )}
-                <DashButton variant="filledBlue" size="large" data-testid="shielded-close" onClick={() => flow.close()}>
-                  {C.close}
-                </DashButton>
-              </div>
-            </>
-          )}
+    <div data-testid="shielded-body" data-step={step} data-kind={flow.kind}>
+      {step === "form" && <FormStep flow={flow} network={network} status={status} />}
+      {step === "confirm" && <ConfirmStep flow={flow} walletId={walletId} status={status} fmt={fmt} />}
+      {step === "running" && (
+        <div role="status" className="topup-running">
+          <p className="topup-title">
+            {C.running.title}
+            <span className="spinner" aria-hidden="true" />
+          </p>
+          <p className="sheet-text" data-testid="shielded-progress">
+            {flow.kind === "send" || flow.kind === "out" ? C.running.prove : C.running.lock}
+          </p>
         </div>
+      )}
+      {step === "done" && <Outcome flow={flow} fmt={fmt} />}
+      {step === "refused" && (
+        <>
+          <p className="form-problem" role="alert" data-testid="shielded-refusal">
+            {shieldedErrorText(flow.error, fmt.credits, fmt.duffs, flow.kind, shieldedSyncing(status))}
+          </p>
+          <div className="sheet-actions">
+            {shieldedCanChange(flow.error) && flow.request?.kind !== "resume" && (
+              <DashButton variant="tintedGray" size="large" data-testid="shielded-refused-back" onClick={() => flow.back()}>
+                {C.confirm.back}
+              </DashButton>
+            )}
+            <DashButton variant="filledBlue" size="large" data-testid="shielded-close" onClick={() => flow.close()}>
+              {C.close}
+            </DashButton>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Send from Shielded (Pay's link): the moves between the wallet's own balances are Transfer's
+ * (TransferSheet.tsx). The flow's passphrase sheet is always here, whichever sheet asks. */
+export function ShieldedSheet({ flow, walletId, network, status }: { flow: ShieldedFlow; walletId: string; network: NetworkInfo; status: ShieldedStatus | null }) {
+  useModel(flow);
+  if (!flow.open || flow.kind !== "send") return <GrantSheet grants={flow.grants} />;
+  return (
+    <>
+      <Sheet title={C.titles.send} width="small" testId="shielded-sheet" onClose={() => flow.close()}>
+        <ShieldedBody flow={flow} walletId={walletId} network={network} status={status} />
       </Sheet>
       <GrantSheet grants={flow.grants} />
     </>
   );
 }
 
-function ReceiveSheet({ walletId, network, syncing, onClose }: { walletId: string; network: NetworkInfo; syncing: boolean; onClose: () => void }) {
+/** The Shielded address with its QR (Receive's Shielded section). */
+export function ShieldedReceiveBody({ walletId, network, syncing }: { walletId: string; network: NetworkInfo; syncing: boolean }) {
   const b = useBackend();
   const fmt = useFormats(network);
   const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false });
   return (
-    <Sheet title={C.titles.receive} width="small" testId="shielded-receive-sheet" onClose={onClose}>
+    <>
       <p className="sheet-text">{C.receive.text}</p>
       {address.isError ? (
         <p className="form-problem" role="alert" data-testid="shielded-receive-error">
@@ -320,48 +333,48 @@ function ReceiveSheet({ walletId, network, syncing, onClose }: { walletId: strin
           {C.receive.loading}
         </p>
       )}
-      <div className="sheet-actions">
-        <DashButton variant="filledBlue" size="large" data-testid="shielded-receive-close" onClick={onClose}>
-          {C.close}
-        </DashButton>
-      </div>
-    </Sheet>
+    </>
   );
 }
 
-/** Home's Shielded card: the balance and the actions; not there while dw-app has no such commands. */
+/** Home's Shielded card: its line opens Transfer from Shielded; the locks to finish and the payments
+ * still settling are listed under it. Not there while dw-app has no such commands. */
 export function ShieldedCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const backend = useBackend();
   const status = useShieldedStatus(walletId);
   const flow = shieldedFor(backend, walletId);
+  const transfer = transferFor(backend, walletId);
   useModel(flow);
-  const [receiving, setReceiving] = useState(false);
   const fmt = useFormats(network);
+  const textId = useId();
   const s = status.data ?? null;
   const sheet = <ShieldedSheet flow={flow} walletId={walletId} network={network} status={s} />;
   if (s === null) return sheet;
   const balance = shieldedDuffs(s);
   const busy = flow.running;
   const syncing = shieldedSyncing(s);
-  const why = (empty: boolean) => (syncing ? SHIELDED_SYNCING_TEXT : busy ? C.card.why.busy : empty ? C.card.why.empty : null);
-  // One visible line per distinct reason on the card: each disabled action is described by its own.
-  const reasons = {
-    receive: syncing ? SHIELDED_SYNCING_TEXT : null,
-    send: why(!balance),
-    add: why(false),
-    out: why(!balance),
-    finish: syncing ? SHIELDED_SYNCING_TEXT : busy ? C.card.why.busy : null,
-  };
-  const lines = s.active ? [...new Set(Object.values(reasons).filter((r): r is string => !!r))] : [];
-  const lineId = (r: string | null) => (r ? `shielded-card-why-${lines.indexOf(r)}` : undefined);
+  const finishWhy = syncing ? SHIELDED_SYNCING_TEXT : busy ? C.card.why.busy : null;
+  const whyLine = finishWhy && s.pendingShields.length > 0 ? finishWhy : null;
+  const text = !s.active ? C.card.inactive : balance === null ? C.card.syncing : C.card.text;
   return (
     <>
       <section className="shielded-card card-l1" data-testid="shielded-card" data-active={s.active} aria-label={C.card.title}>
         <div className="shielded-card-body">
-          <h2 className="platform-card-title">{C.card.title}</h2>
-          <p className="platform-card-text" data-testid="shielded-card-text">
-            {!s.active ? C.card.inactive : balance === null ? C.card.syncing : C.card.text}
-          </p>
+          {s.active ? (
+            <button type="button" className="card-transfer" data-testid="shielded-card-transfer" aria-label={TRANSFER_COPY.cardButton.shielded} aria-describedby={textId} onClick={() => transfer.startFrom("shielded")}>
+              <span className="platform-card-title">{C.card.title}</span>
+              <span className="platform-card-text" id={textId} data-testid="shielded-card-text">
+                {text}
+              </span>
+            </button>
+          ) : (
+            <>
+              <h2 className="platform-card-title">{C.card.title}</h2>
+              <p className="platform-card-text" data-testid="shielded-card-text">
+                {text}
+              </p>
+            </>
+          )}
           {s.active && BigInt(s.pending) > 0n && (
             <p className="platform-card-text" data-testid="shielded-card-pending">
               {C.card.pending(fmt.credits(s.pending))}
@@ -386,44 +399,88 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
               ) : (
                 C.card.unfinished(fmt.duffs(p.duffs))
               )}{" "}
-              <DashButton variant="plainBlue" size="small" data-testid="shielded-finish" disabled={syncing || busy} why={reasons.finish} whyId={lineId(reasons.finish)} onClick={() => void flow.resume(p.txid)}>
+              <DashButton variant="plainBlue" size="small" data-testid="shielded-finish" disabled={syncing || busy} why={finishWhy} whyId={whyLine ? "shielded-card-why-0" : undefined} onClick={() => void flow.resume(p.txid)}>
                 {p.consumptionUnknown ? C.card.checkAgain : C.card.finish}
               </DashButton>
             </p>
           ))}
-          {lines.map((r, i) => (
-            <p key={r} id={`shielded-card-why-${i}`} className="field-hint" data-testid="shielded-card-why">
-              {r}
+          {whyLine && (
+            <p id="shielded-card-why-0" className="field-hint" data-testid="shielded-card-why">
+              {whyLine}
             </p>
-          ))}
+          )}
           {flow.unseen && (
             <p className="platform-card-text" data-testid="shielded-unseen">
               {C.unseen}{" "}
-              <DashButton variant="plainBlue" size="small" data-testid="shielded-show" onClick={() => flow.begin(flow.kind)}>
+              <DashButton variant="plainBlue" size="small" data-testid="shielded-show" onClick={() => (flow.kind === "send" ? flow.begin("send") : transfer.start(shieldedRoute(flow.kind) as RouteId))}>
                 {C.show}
               </DashButton>
             </p>
           )}
         </div>
-        {s.active && (
-          <div className="shielded-card-actions">
-            <DashButton variant="tintedBlue" size="small" data-testid="shielded-receive-open" disabled={syncing} why={reasons.receive} whyId={lineId(reasons.receive)} onClick={() => setReceiving(true)}>
-              {C.card.receive}
-            </DashButton>
-            <DashButton variant="tintedBlue" size="small" data-testid="shielded-send" disabled={syncing || busy || !balance} why={reasons.send} whyId={lineId(reasons.send)} onClick={() => flow.begin("send")}>
-              {C.card.send}
-            </DashButton>
-            <DashButton variant="tintedBlue" size="small" data-testid="shielded-add" disabled={syncing || busy} why={reasons.add} whyId={lineId(reasons.add)} onClick={() => flow.begin("add")}>
-              {C.card.add}
-            </DashButton>
-            <DashButton variant="tintedBlue" size="small" data-testid="shielded-out" disabled={syncing || busy || !balance} why={reasons.out} whyId={lineId(reasons.out)} onClick={() => flow.begin("out")}>
-              {C.card.out}
-            </DashButton>
-          </div>
-        )}
       </section>
       {sheet}
-      {receiving && <ReceiveSheet walletId={walletId} network={network} syncing={syncing} onClose={() => setReceiving(false)} />}
+    </>
+  );
+}
+
+/** Receive in Shielded (Receive's page): collapsed like Receive on Platform; open, the Shielded address
+ * and its QR. There while Shielded is active on this network; it waits while Shielded syncs. */
+export function ShieldedReceiveCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  const status = useShieldedStatus(walletId).data ?? null;
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  if (!status?.active) return null;
+  const syncing = shieldedSyncing(status);
+  return (
+    <section className="disclosure card-l1 platform-receive" data-testid="shielded-receive-section" aria-labelledby={`${id}-toggle`}>
+      <button
+        type="button"
+        id={`${id}-toggle`}
+        className="disclosure-toggle"
+        data-testid="shielded-receive-open"
+        aria-expanded={open && !syncing}
+        aria-controls={`${id}-body`}
+        disabled={syncing}
+        title={syncing ? SHIELDED_SYNCING_TEXT : undefined}
+        aria-describedby={syncing ? `${id}-why` : undefined}
+        onClick={() => setOpen(!open)}
+      >
+        {C.titles.receive}
+      </button>
+      {syncing && (
+        <p className="field-hint disclosure-why" id={`${id}-why`} data-testid="shielded-receive-why">
+          {SHIELDED_SYNCING_TEXT}
+        </p>
+      )}
+      {open && !syncing && (
+        <div className="platform-receive-body" id={`${id}-body`} data-testid="shielded-receive-body">
+          <ShieldedReceiveBody walletId={walletId} network={network} syncing={syncing} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Send from Shielded (Pay's link): the Shielded send sheet, with its own command and grant. There
+ * while Shielded is active on this network; it waits, and says why, as the card's Send did. */
+export function ShieldedSendLink({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  const backend = useBackend();
+  const status = useShieldedStatus(walletId).data ?? null;
+  const flow = shieldedFor(backend, walletId);
+  useModel(flow);
+  const sheet = <ShieldedSheet flow={flow} walletId={walletId} network={network} status={status} />;
+  if (!status?.active) return sheet;
+  const syncing = shieldedSyncing(status);
+  const why = syncing ? SHIELDED_SYNCING_TEXT : flow.running ? C.card.why.busy : !shieldedDuffs(status) ? C.card.why.empty : null;
+  return (
+    <>
+      <p className="pay-shielded" data-testid="pay-shielded">
+        <DashButton variant="plainBlue" size="medium" data-testid="shielded-send" disabled={why !== null} why={why} onClick={() => flow.begin("send")}>
+          {C.titles.send}
+        </DashButton>
+      </p>
+      {sheet}
     </>
   );
 }

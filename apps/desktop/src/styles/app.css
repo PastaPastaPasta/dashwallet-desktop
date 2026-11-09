@@ -1131,7 +1131,7 @@ button {
   bottom: 0;
   left: 50%;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   width: calc(100% - 2 * var(--dw-layout-page-padding-h));
   max-width: var(--dw-layout-shortcut-card-max-width);
   padding: var(--dw-space-xxs);
@@ -4081,6 +4081,190 @@ button.bell-row-open:focus-visible {
   color: var(--dw-role-text-secondary);
   font-size: var(--dw-type-footnote-size);
   line-height: var(--dw-type-footnote-line);
+}
+
+/* A card's line that opens Transfer from its pool: the whole line is the button. */
+.card-transfer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xxs);
+  width: 100%;
+  margin: calc(-1 * var(--dw-space-xs));
+  padding: var(--dw-space-xs);
+  border: 0;
+  border-radius: var(--dw-radius-text-field);
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dw-motion-hover);
+}
+
+.card-transfer:hover {
+  background: var(--dw-role-accent-tint);
+}
+
+.card-transfer .platform-card-title::after {
+  content: " ›";
+  color: var(--dw-role-text-secondary);
+}
+
+/* ------------------------------------------------------------------ Transfer (POLISH 25) */
+
+.transfer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+}
+
+.transfer-running {
+  margin: 0;
+}
+
+.transfer-ends {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.transfer-end,
+.transfer-picker-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.transfer-end[aria-expanded="true"],
+.transfer-picker-item[aria-pressed="true"] {
+  border-color: var(--dw-role-accent);
+}
+
+.transfer-end-label {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption2-size);
+  line-height: var(--dw-type-caption2-line);
+}
+
+.transfer-end-pool {
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.transfer-end-balance {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transfer-swap {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.transfer-swap:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.transfer-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.transfer-picker-item {
+  width: 100%;
+}
+
+.transfer-amount-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--dw-space-s);
+}
+
+.transfer-amount-row .form-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.transfer-amount-row .dash-button {
+  flex: none;
+  margin-bottom: 2px;
+}
+
+.transfer-route {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+/* A disclosure opened by a button (it can wait, disabled, as a <summary> cannot): drawn as one. */
+.disclosure-toggle {
+  display: block;
+  width: 100%;
+  padding: var(--dw-space-m) var(--dw-layout-card-padding);
+  border: 0;
+  background: transparent;
+  color: var(--dw-role-text-primary);
+  font-family: inherit;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  text-align: left;
+  cursor: pointer;
+}
+
+.disclosure-toggle::before {
+  display: inline-block;
+  width: 1em;
+  content: "▸";
+}
+
+.disclosure-toggle[aria-expanded="true"]::before {
+  content: "▾";
+}
+
+.disclosure-toggle:disabled {
+  color: var(--dw-role-text-secondary);
+  cursor: default;
+}
+
+.disclosure-why {
+  margin: 0;
+  padding: 0 var(--dw-layout-card-padding) var(--dw-space-m);
+}
+
+.pay-shielded {
+  margin: var(--dw-space-m) 0 0;
 }
 
 /* ------------------------------------------------------------------ Prices (MP-01) */

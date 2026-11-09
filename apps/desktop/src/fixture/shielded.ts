@@ -21,6 +21,7 @@ import type { Utxo } from "../api/generated/Utxo";
 import { SHIELDED_CODES } from "../api/pending";
 import { coinJoinAccount, DRAIN_STEP, mixerBusy, SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
+import type { FixtureWallet } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
 
 const CREDITS_PER_DUFF = 1000n;
@@ -120,6 +121,18 @@ function addRow(s: ShieldedWorld, row: Omit<ShieldedActivity, "id" | "createdAt"
 
 const grantFor = (credits: bigint) => ({ maxDuffs: 0, maxCredits: String(credits) });
 
+/** How many of the main balance's coins a lock of `duffs` takes, largest first (the engine's
+ * `fewest_inputs`): a lock takes at most `SHIELD_LOCK_INPUTS`. */
+export function lockInputs(w: FixtureWallet, duffs: number): number {
+  const values = w.coins.filter((u) => u.coinjoinRounds === null && u.spendable && !u.reserved).map((u) => u.amount).sort((a, b) => b - a);
+  let sum = 0;
+  for (let n = 0; n < values.length; n++) {
+    if (sum >= duffs) return n;
+    sum += values[n];
+  }
+  return values.length;
+}
+
 function shieldQuote(ctx: Ctx, walletId: string, duffs: number): ShieldQuote {
   const s = shieldedOf(ctx, walletId, "shield_quote");
   // As the engine answers while the account is not established: the generic Platform refusal (pasta's preview, 03-…png).
@@ -129,6 +142,12 @@ function shieldQuote(ctx: Ctx, walletId: string, duffs: number): ShieldQuote {
   const blocking = s.pendingShields.find((p) => !p.consumptionUnknown);
   if (blocking) raise(SHIELDED_CODES.shieldPending, "an earlier shield is pending", { kind: "txid", txid: blocking.txid });
   const total = duffs + LOCK_FEE_DUFFS;
+  // As the engine: the main balance must cover the lock and its fee bound, in at most 50 coins.
+  const w = wallet(ctx.world, walletId);
+  const available = w.summary.balances?.confirmed ?? 0;
+  if (total > available) raise(SHIELDED_CODES.fundingInsufficient, "insufficient funds", { kind: "duffs", needed: total, available });
+  const inputs = lockInputs(w, total);
+  if (inputs > SHIELD_LOCK_INPUTS) raise(SHIELDED_CODES.tooManyInputs, "too many inputs", { kind: "number", value: inputs });
   return { duffs, feeDuffs: LOCK_FEE_DUFFS, totalDuffs: total, poolFeeCredits: String(POOL_FEE_CREDITS), credits: String(BigInt(duffs) * CREDITS_PER_DUFF - POOL_FEE_CREDITS), grant: { maxDuffs: total, maxCredits: "0" } };
 }
 
@@ -226,6 +245,7 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     if (g?.grant.purpose.kind !== "platformOp") return raise("platform.grant_invalid", "grant invalid");
     if (g.grant.purpose.maxDuffs < q.totalDuffs) raise("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "duffs", needed: String(q.totalDuffs), remaining: String(g.grant.purpose.maxDuffs) });
     useGrant(ctx.world, grant);
+    if (s.next === "refused") raise("platform.unavailable", "the fixture refuses the shield");
     return shieldEnd(s, `lock${(s.activity.length + 1).toString(16).padStart(8, "0")}`, duffs);
   },
   resume_shield: ({ walletId, txid, grant }: { walletId: string; txid: string; grant: string }, ctx: Ctx): ShieldOutcome => {

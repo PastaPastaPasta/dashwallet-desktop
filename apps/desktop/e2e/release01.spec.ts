@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
-import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { authorize, fixtureUrl, fontsReady, moveFromPlatform, openTransfer, platformMoveWhy, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // The 0.1 release's renderer pieces on the fixture backend: the first-run notice, the network
 // choice, Export CSV, Show Masternodes, the Experimental label and Home's three-pool balance.
@@ -79,6 +79,7 @@ test.describe("copy feedback", () => {
   test("an icon copy button swaps to Copied and back", async ({ page }) => {
     await clipboard(page);
     await open(page, "funded");
+    await page.getByTestId("sidebar-receive").click();
     await page.getByTestId("shielded-receive-open").click();
     const button = page.getByRole("button", { name: "Copy Shielded address" });
     await button.click();
@@ -438,12 +439,20 @@ test.describe("CoinJoin is experimental", () => {
   });
 });
 
+/** Transfer to Platform opens with nothing holding it back; then closed. */
+async function expectFundOpens(page: Page) {
+  await openTransfer(page, "coreToPlatform");
+  await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
+  await expect(page.getByTestId("transfer-amount")).toBeEnabled();
+  await page.getByTestId("transfer-cancel").click();
+}
+
 test.describe("Move to Dash wallet", () => {
   test("quotes, asks for approval, moves everything and shows it in Activity", async ({ page }) => {
     const errors = await open(page, "funded");
     await expect(page.getByTestId("platform-card-amount")).toContainText("0.4");
     await shot(page, "light-home-platform-card");
-    await page.getByTestId("platform-move").click();
+    await moveFromPlatform(page);
     await expect(page.getByTestId("platform-move-quote")).toBeVisible();
     await expect(page.getByTestId("platform-move-quote-duffs")).toContainText("0.39998");
     await expect(page.getByTestId("platform-move-quote-to")).toHaveText(/^y/);
@@ -456,8 +465,8 @@ test.describe("Move to Dash wallet", () => {
     await shot(page, "light-platform-move-done");
     await page.getByTestId("platform-move-done").click();
     await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
-    await expect(page.getByTestId("platform-move")).toHaveCount(0);
-    await expect(page.getByTestId("platform-fund")).toBeEnabled();
+    expect(await platformMoveWhy(page)).toBe("Nothing on your Platform addresses to move yet.");
+    await expectFundOpens(page);
     await expect(page.getByTestId("breakdown-platform")).toContainText("0.00");
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
@@ -469,7 +478,7 @@ test.describe("Move to Dash wallet", () => {
     await open(page, "funded");
     await page.getByTestId("hero").waitFor();
     await world(page, (w) => { w.pending.platform!.addresses = [{ address: w.pending.platform!.addresses[0].address, credits: "3000000" }]; });
-    await page.getByTestId("platform-move").click();
+    await moveFromPlatform(page);
     await expect(page.getByTestId("platform-move-fee-warning")).toHaveText("Most of this goes to fees.");
   });
 
@@ -477,16 +486,16 @@ test.describe("Move to Dash wallet", () => {
     await open(page, "funded");
     await page.getByTestId("hero").waitFor();
     await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "pending"));
-    await page.getByTestId("platform-move").click();
+    await moveFromPlatform(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
     await expect(page.getByTestId("platform-move-outcome-text")).toContainText("Do not move again");
     // Dismissed, it stays: the warning, and "View in Activity" in place of "Move".
     await page.getByTestId("platform-move-done").click();
-    await expect(page.getByTestId("platform-move-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
     await expect(page.getByTestId("platform-card")).toContainText("Do not move again");
-    await expect(page.getByTestId("platform-move")).toHaveCount(0);
+    expect(await platformMoveWhy(page)).toContain("Do not move again");
     await shot(page, "light-platform-move-pending-card");
     // After a restart the card follows Activity's record.
     await page.evaluate(() => window.__dwFixture!.relaunch());
@@ -494,7 +503,7 @@ test.describe("Move to Dash wallet", () => {
     await page.keyboard.press("Enter");
     await page.getByTestId("hero").waitFor();
     await expect(page.getByTestId("platform-card")).toContainText("Do not move again");
-    await expect(page.getByTestId("platform-move")).toHaveCount(0);
+    expect(await platformMoveWhy(page)).toContain("Do not move again");
     await page.getByTestId("platform-move-view").click();
     await page.getByTestId("tx-list").waitFor();
     // The move settles; Home no longer holds anything back.
@@ -507,15 +516,15 @@ test.describe("Move to Dash wallet", () => {
     });
     await page.getByTestId("sidebar-home").click();
     await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
-    await expect(page.getByTestId("platform-move")).toHaveCount(0);
-    await expect(page.getByTestId("platform-fund")).toBeEnabled();
+    expect(await platformMoveWhy(page)).toBe("Nothing on your Platform addresses to move yet.");
+    await expectFundOpens(page);
   });
 
   test("a pending move that settles while Home is shown frees the card again", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("hero").waitFor();
     await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "pending"));
-    await page.getByTestId("platform-move").click();
+    await moveFromPlatform(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
@@ -530,22 +539,23 @@ test.describe("Move to Dash wallet", () => {
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
     await page.getByTestId("platform-move-done").click();
     await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
-    await expect(page.getByTestId("platform-move")).toHaveCount(0);
-    await expect(page.getByTestId("platform-fund")).toBeEnabled();
-    await expect(page.getByTestId("platform-move-sheet")).toHaveCount(0);
+    expect(await platformMoveWhy(page)).toBe("Nothing on your Platform addresses to move yet.");
+    await expectFundOpens(page);
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
   });
 
   test("shows a refusal and can be closed", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("hero").waitFor();
     await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "refused"));
-    await page.getByTestId("platform-move").click();
+    await moveFromPlatform(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-refusal")).toContainText("Dash Platform did not answer");
     await page.getByTestId("platform-move-close").click();
-    await expect(page.getByTestId("platform-move-sheet")).toHaveCount(0);
-    await expect(page.getByTestId("platform-move")).toBeEnabled();
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
+    await moveFromPlatform(page);
+    await expect(page.getByTestId("platform-move-go")).toBeEnabled();
   });
 
   test("offers nothing without Platform funds, or without the command", async ({ page }) => {
@@ -583,16 +593,22 @@ test.describe("Platform activity in Activity", () => {
 
 const shielded = (page: Page, fn: string) => page.evaluate(`(${fn})(window.__dwFixture.world.pending.shielded)`);
 
-async function amountStep(page: Page, action: string, amount: string) {
-  await page.getByTestId(`shielded-${action}`).click();
-  await page.getByTestId("shielded-amount").fill(amount);
+async function amountStep(page: Page, action: "add" | "out" | "send", amount: string) {
+  if (action === "send") {
+    await page.getByTestId("sidebar-pay").click();
+    await page.getByTestId("shielded-send").click();
+    await page.getByTestId("shielded-amount").fill(amount);
+    return;
+  }
+  await openTransfer(page, action === "add" ? "coreToShielded" : "shieldedToCore");
+  await page.getByTestId("transfer-amount").fill(amount);
 }
 
 test.describe("Shielded", () => {
   test("shows the card with its balance and actions", async ({ page }) => {
     const errors = await open(page, "funded");
     await expect(page.getByTestId("shielded-card")).toBeVisible();
-    for (const a of ["receive-open", "send", "add", "out"]) await expect(page.getByTestId(`shielded-${a}`)).toBeEnabled();
+    for (const id of ["shielded-card-transfer", "shortcut-transfer"]) await expect(page.getByTestId(id)).toBeEnabled();
     await shot(page, "light-home-shielded-card");
     expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);
@@ -600,20 +616,21 @@ test.describe("Shielded", () => {
 
   test("Receive shows the address, its QR and a copy button", async ({ page }) => {
     await open(page, "funded");
+    await page.getByTestId("sidebar-receive").click();
     await page.getByTestId("shielded-receive-open").click();
     await expect(page.getByTestId("shielded-receive-address")).toContainText("tdash1zq0k8y");
     await expect(page.getByTestId("shielded-receive-qr")).toBeVisible();
     await expect(page.getByRole("button", { name: "Copy Shielded address" })).toBeVisible();
     await shot(page, "light-shielded-receive");
     expect(await seriousAxeViolations(page)).toEqual([]);
-    await page.getByTestId("shielded-receive-close").click();
-    await expect(page.getByTestId("shielded-receive-sheet")).toHaveCount(0);
+    await page.getByTestId("shielded-receive-open").click();
+    await expect(page.getByTestId("shielded-receive-body")).toHaveCount(0);
   });
 
   test("Add to Shielded quotes the lock, asks for approval and grows the balance", async ({ page }) => {
     await open(page, "funded");
     await amountStep(page, "add", "0.001");
-    await page.getByTestId("shielded-next").click();
+    await page.getByTestId("transfer-continue").click();
     await expect(page.getByTestId("shielded-quote-total")).toContainText("0.00101");
     await expect(page.getByTestId("shielded-quote-gain")).toContainText("0.0009 ");
     // Every fee the quote reports is shown, and the debit reconciles with the credit.
@@ -637,7 +654,7 @@ test.describe("Shielded", () => {
     await page.getByTestId("hero").waitFor();
     await shielded(page, `(s) => (s.shield = "proofWaiting")`);
     await amountStep(page, "add", "0.001");
-    await page.getByTestId("shielded-next").click();
+    await page.getByTestId("transfer-continue").click();
     await page.getByTestId("shielded-go").click();
     await authorize(page);
     await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Locked, not applied yet");
@@ -668,6 +685,7 @@ test.describe("Shielded", () => {
     await authorize(page);
     await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Sent");
     await page.getByTestId("shielded-done").click();
+    await page.getByTestId("sidebar-home").click();
     await expect(page.getByTestId("breakdown-shielded")).toContainText("0.74");
   });
 
@@ -682,7 +700,7 @@ test.describe("Shielded", () => {
   test("the confirm sheet names the fixed pool fee and warns when most of the amount goes to fees", async ({ page }) => {
     await open(page, "funded");
     await amountStep(page, "add", "0.0002");
-    await page.getByTestId("shielded-next").click();
+    await page.getByTestId("transfer-continue").click();
     await expect(page.getByTestId("shielded-quote")).toBeVisible();
     // The quote's own pool fee, not a constant.
     await expect(page.getByTestId("shielded-quote-pool-fee")).toHaveText("0.0001 tDASH");
@@ -690,21 +708,21 @@ test.describe("Shielded", () => {
     await expect(page.getByTestId("shielded-fee-warning")).toHaveText("Most of this goes to fees.");
     await shot(page, "light-shielded-fee-warning");
     await page.getByTestId("shielded-back").click();
-    await page.getByTestId("shielded-amount").fill("0.1");
-    await page.getByTestId("shielded-next").click();
+    await page.getByTestId("transfer-amount").fill("0.1");
+    await page.getByTestId("transfer-continue").click();
     await expect(page.getByTestId("shielded-quote")).toBeVisible();
     await expect(page.getByTestId("shielded-fee-warning")).toHaveCount(0);
     // Between a tenth and a half it says how much, not "most".
     await page.getByTestId("shielded-back").click();
-    await page.getByTestId("shielded-amount").fill("0.001");
-    await page.getByTestId("shielded-next").click();
+    await page.getByTestId("transfer-amount").fill("0.001");
+    await page.getByTestId("transfer-continue").click();
     await expect(page.getByTestId("shielded-fee-warning")).toHaveText("Fees are 11% of this amount.");
   });
 
   test("Move to Dash wallet pays out, and shows in Activity", async ({ page }) => {
     await open(page, "funded");
     await amountStep(page, "out", "0.5");
-    await page.getByTestId("shielded-next").click();
+    await page.getByTestId("transfer-continue").click();
     await expect(page.getByTestId("shielded-quote-receive")).toContainText("0.5");
     await page.getByTestId("shielded-go").click();
     // What the prompt says for money moving (DEC-1058 #8).
@@ -721,7 +739,7 @@ test.describe("Shielded", () => {
   test("Move to Dash wallet says when the pool is too small", async ({ page }) => {
     await open(page, "shielded-pool-small");
     await amountStep(page, "out", "0.5");
-    await page.getByTestId("shielded-next").click();
+    await page.getByTestId("transfer-continue").click();
     await page.getByTestId("shielded-go").click();
     await authorize(page);
     await expect(page.getByTestId("shielded-refusal")).toHaveText("Shielded withdrawals open once the network's shielded pool has enough activity. Try again later.");
@@ -732,15 +750,29 @@ test.describe("Shielded", () => {
     test(`while Shielded syncs its actions wait, say why, and stay readable (${theme})`, async ({ page }) => {
       const errors = await open(page, "shielded-syncing", theme);
       const card = page.getByTestId("shielded-card");
-      await expect(card).toContainText("Shielded is still syncing; try again when it finishes.");
-      for (const id of ["shielded-receive-open", "shielded-send", "shielded-add", "shielded-out"]) {
-        const b = page.getByTestId(id);
-        await expect(b).toBeDisabled();
-        await expect(b).toHaveAttribute("title", "Shielded is still syncing; try again when it finishes.");
-        // Disabled is dimmed, not hidden: its text still has at least 3:1 against what is behind it.
-        expect(await contrast(b)).toBeGreaterThanOrEqual(3);
+      await expect(card).toContainText("Shielded is syncing. Its balance shows when it has.");
+      const waits = async (ids: string[]) => {
+        for (const id of ids) {
+          const b = page.getByTestId(id);
+          await expect(b).toBeDisabled();
+          await expect(b).toHaveAttribute("title", "Shielded is still syncing; try again when it finishes.");
+          // Disabled is dimmed, not hidden: its text still has at least 3:1 against what is behind it.
+          expect(await contrast(b)).toBeGreaterThanOrEqual(3);
+        }
+      };
+      // Both of its Transfer routes wait and say why.
+      for (const open of ["shortcut-transfer", "shielded-card-transfer"]) {
+        await page.getByTestId(open).click();
+        await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing; try again when it finishes.");
+        await expect(page.getByTestId("transfer-amount")).toBeDisabled();
+        await waits(["transfer-max", "transfer-continue"]);
+        if (open === "shielded-card-transfer") await shot(page, `${theme}-shielded-syncing-disabled`);
+        await page.getByTestId("transfer-cancel").click();
       }
-      await shot(page, `${theme}-shielded-syncing-disabled`);
+      await page.getByTestId("sidebar-receive").click();
+      await waits(["shielded-receive-open"]);
+      await page.getByTestId("sidebar-pay").click();
+      await waits(["shielded-send"]);
       expect(errors).toEqual([]);
     });
   }
@@ -750,7 +782,7 @@ test.describe("Shielded", () => {
     await page.getByTestId("hero").waitFor();
     await shielded(page, `(s) => (s.next = "unknown")`);
     await amountStep(page, "out", "0.5");
-    await page.getByTestId("shielded-next").click();
+    await page.getByTestId("transfer-continue").click();
     await page.getByTestId("shielded-go").click();
     await authorize(page);
     await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Not confirmed yet");
@@ -769,7 +801,7 @@ test.describe("Shielded", () => {
   test("says Shielded is not active on this network yet, with no actions", async ({ page }) => {
     const errors = await open(page, "shielded-inactive");
     await expect(page.getByTestId("shielded-card-text")).toHaveText("Shielded is not active on this network yet.");
-    await expect(page.getByTestId("shielded-send")).toHaveCount(0);
+    await expect(page.getByTestId("shielded-card-transfer")).toHaveCount(0);
     await expect(page.getByTestId("breakdown-shielded")).toContainText("—");
     await shot(page, "light-shielded-inactive");
     expect(await seriousAxeViolations(page)).toEqual([]);
