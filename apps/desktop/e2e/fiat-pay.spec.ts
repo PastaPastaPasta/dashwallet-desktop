@@ -49,6 +49,22 @@ async function newPrice(page: Page, price: string) {
   }, price);
 }
 
+/** Waits until no engine command has been called for a while. */
+async function quiet(page: Page) {
+  let last = -1;
+  await expect
+    .poll(
+      async () => {
+        const n = await page.evaluate(() => window.__dwFixture!.calls.length);
+        const still = n === last;
+        last = n;
+        return still;
+      },
+      { intervals: [750], timeout: 15_000 },
+    )
+    .toBe(true);
+}
+
 /** Prices turned on or off through the engine's command, as Settings does, while a form is open. */
 async function setPrices(page: Page, enabled: boolean) {
   await page.evaluate(
@@ -123,19 +139,19 @@ test("a new fresh price converts the typed fiat again; an open Confirm keeps its
   const amount = full(at("51.2345"), false, "DASH");
   await expect(page.getByTestId("pay-confirm-amount")).toContainText(amount);
   await expect(page.getByTestId("pay-confirm-amount-fiat")).toHaveText(fiatText(at("51.2345"), "51.2345", "USD", "en-US")!);
-  // Another price while Confirm is open: the form behind converts again and re-estimates its new
-  // amount, and only the values beside Confirm's amounts move. What is sent is Confirm's amount.
+  // Another price while Confirm is open: the form behind converts again but re-estimates nothing
+  // while the sheet is up, and only the values beside Confirm's amounts move. What is sent is
+  // Confirm's amount.
   await newPrice(page, "60.0000");
   await expect(page.getByTestId("pay-amount-other")).toHaveText(dash(at("60.0000")));
   await expect(page.getByTestId("pay-confirm-amount-fiat")).toHaveText(fiatText(at("51.2345"), "60.0000", "USD", "en-US")!);
-  await expect
-    .poll(() =>
-      page.evaluate(
-        (duffs) => Object.values(window.__dwFixture!.world.send.drafts).some((d) => d.recipients[0]?.amount === duffs),
-        at("60.0000"),
-      ),
-    )
-    .toBe(true);
+  await quiet(page);
+  expect(
+    await page.evaluate(
+      (duffs) => Object.values(window.__dwFixture!.world.send.drafts).some((d) => d.recipients[0]?.amount === duffs),
+      at("60.0000"),
+    ),
+  ).toBe(false);
   await expect(page.getByTestId("pay-confirm-amount")).toContainText(amount);
   await expect(page.getByTestId("pay-confirm-amount")).not.toContainText(full(at("60.0000"), false, "DASH"));
   const before = await world(page, (w) => w.wallets[0].rows.length);

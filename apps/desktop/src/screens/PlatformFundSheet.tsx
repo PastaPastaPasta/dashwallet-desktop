@@ -1,21 +1,17 @@
-// "Add from Dash wallet" (platform/fund.ts): the sheet with the amount, the quote's confirmation,
-// progress and outcome. Home's Platform card (PlatformMoveSheet.tsx) opens it and lists the locks
-// that were not applied yet.
+// "Add from Dash wallet" (platform/fund.ts): the quote's confirmation, progress and outcome, which
+// Transfer shows after its form (TransferSheet.tsx). Home's Platform card (PlatformMoveSheet.tsx)
+// lists the locks that were not applied yet.
 
-import { useId } from "react";
-import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
+import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
 import { CREDITS_PER_DUFF, creditsToDuffs } from "../api/pending";
-import { useBackend, usePlatformFundQuote } from "../api/queries";
-import { useDebounced } from "../app/useDebounced";
+import { usePendingPlatformFunds, usePlatformFundQuote } from "../api/queries";
 import { useUi } from "../app/ui";
 import { DashButton } from "../components/basics";
-import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
-import { fundCanChange, fundErrorText, FUND_COPY as C, type PlatformFundFlow } from "../platform/fund";
-import { GrantSheet } from "./tools/common";
+import { endedBeforeApply, finishAfter, fundCanChange, fundErrorText, FUND_COPY as C, type PlatformFundFlow } from "../platform/fund";
 
 /** Formats for the sheet: Dash in the display unit, masked in discreet mode. */
 function useFormats(network: NetworkInfo) {
@@ -26,55 +22,6 @@ function useFormats(network: NetworkInfo) {
 }
 
 type Formats = ReturnType<typeof useFormats>;
-
-function FormStep({ flow, fmt }: { flow: PlatformFundFlow; fmt: Formats }) {
-  const b = useBackend();
-  const id = useId();
-  const { shown } = fmt;
-  const text = flow.text.trim();
-  const checked = useDebounced(text, 300);
-  const parsed = useQuery({ queryKey: ["parseAmount", shown.unit, checked], queryFn: () => b.parseAmount(checked, shown.unit), enabled: checked !== "", staleTime: Infinity });
-  const amount = checked === text && typeof parsed.data === "number" ? parsed.data : null;
-  const amountProblem = text === "" || checked !== text || parsed.isPending ? null : amount === null || amount <= 0 ? C.form.invalidAmount : null;
-  const ready = amount !== null && amount > 0 && amountProblem === null;
-  return (
-    <form
-      className="topup-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (ready) flow.next(amount);
-      }}
-    >
-      <p className="sheet-text" data-testid="platform-fund-intro">
-        {C.form.intro}
-      </p>
-      <label className="form-field">
-        {C.form.amount} ({shown.name})
-        <input
-          data-testid="platform-fund-amount"
-          inputMode="decimal"
-          autoFocus
-          placeholder={shown.placeholder}
-          value={flow.text}
-          aria-invalid={amountProblem !== null}
-          aria-describedby={`${id}-amount-problem`}
-          onChange={(e) => flow.setText(e.target.value)}
-        />
-      </label>
-      <p className="form-problem" id={`${id}-amount-problem`} role="alert" data-testid="platform-fund-amount-problem">
-        {amountProblem}
-      </p>
-      <div className="sheet-actions">
-        <DashButton variant="tintedGray" size="large" type="button" data-testid="platform-fund-cancel" onClick={() => flow.close()}>
-          {C.form.cancel}
-        </DashButton>
-        <DashButton variant="filledBlue" size="large" type="submit" data-testid="platform-fund-next" disabled={!ready} why={amountProblem ?? C.form.why.amount}>
-          {C.form.next}
-        </DashButton>
-      </div>
-    </form>
-  );
-}
 
 function Row({ label, value, testId, total }: { label: string; value: string; testId: string; total?: boolean }) {
   return (
@@ -147,10 +94,13 @@ function ConfirmStep({ flow, walletId, fmt }: { flow: PlatformFundFlow; walletId
   );
 }
 
-function Outcome({ flow, fmt }: { flow: PlatformFundFlow; fmt: Formats }) {
+function Outcome({ flow, fmt, pending }: { flow: PlatformFundFlow; fmt: Formats; pending: readonly PendingPlatformFund[] | null | undefined }) {
   const o = flow.outcome;
   if (!o) return null;
   const s = o.state;
+  const r = flow.request;
+  const duffs = r?.kind === "add" ? r.duffs : pending?.find((p) => p.txid === o.txid)?.duffs;
+  const ended = s.kind === "notApplied" ? endedBeforeApply(s.error, duffs === undefined ? null : fmt.duffs(duffs)) : null;
   const { title, text } =
     s.kind === "applied"
       ? { title: C.done.applied.title, text: C.done.applied.text(fmt.credits(s.credits)) }
@@ -158,7 +108,7 @@ function Outcome({ flow, fmt }: { flow: PlatformFundFlow; fmt: Formats }) {
         ? C.done.waiting
         : s.kind === "consumptionUnknown"
           ? C.done.checking
-          : { title: C.done.notApplied.title, text: C.done.notApplied.text(s.error) };
+          : { title: C.done.notApplied.title, text: ended ?? C.done.notApplied.text(s.error) };
   return (
     <div role="status">
       <p className="topup-title" data-testid="platform-fund-outcome-title">
@@ -168,7 +118,12 @@ function Outcome({ flow, fmt }: { flow: PlatformFundFlow; fmt: Formats }) {
         {text}
       </p>
       <div className="sheet-actions">
-        <DashButton variant="filledBlue" size="large" data-testid="platform-fund-done" onClick={() => flow.close()}>
+        {ended && (
+          <DashButton variant="filledBlue" size="large" data-testid="platform-fund-outcome-finish" onClick={() => void flow.resume(o.txid)}>
+            {C.approvalEnded.finish}
+          </DashButton>
+        )}
+        <DashButton variant={ended ? "tintedGray" : "filledBlue"} size="large" data-testid="platform-fund-done" onClick={() => flow.close()}>
           {C.close}
         </DashButton>
       </div>
@@ -176,50 +131,53 @@ function Outcome({ flow, fmt }: { flow: PlatformFundFlow; fmt: Formats }) {
   );
 }
 
-export function PlatformFundSheet({ flow, walletId, network }: { flow: PlatformFundFlow; walletId: string; network: NetworkInfo }) {
+/** The steps of an add after its form (Transfer's, TransferSheet.tsx): the quote's confirmation,
+ * progress and outcome, and Finish for a lock its approval left unapplied. */
+export function FundBody({ flow, walletId, network }: { flow: PlatformFundFlow; walletId: string; network: NetworkInfo }) {
   useModel(flow);
   const fmt = useFormats(network);
-  if (!flow.open) return <GrantSheet grants={flow.grants} />;
+  const pending = usePendingPlatformFunds(walletId).data;
   const { step } = flow;
+  const ctx = { request: flow.request, pending };
+  const retry = step === "refused" ? finishAfter(flow.error, ctx) : null;
   return (
-    <>
-      <Sheet title={C.title} width="small" testId="platform-fund-sheet" onClose={() => flow.close()}>
-        <div data-testid="platform-fund-body" data-step={step}>
-          {step === "form" && <FormStep flow={flow} fmt={fmt} />}
-          {step === "confirm" && <ConfirmStep flow={flow} walletId={walletId} fmt={fmt} />}
-          {step === "running" && (
-            <div role="status" className="topup-running">
-              <p className="topup-title">
-                {C.running.title}
-                <span className="spinner" aria-hidden="true" />
-              </p>
-              <p className="sheet-text" data-testid="platform-fund-progress">
-                {C.running.steps.join(" → ")}
-              </p>
-              <p className="sheet-text">{C.running.text}</p>
-            </div>
-          )}
-          {step === "done" && <Outcome flow={flow} fmt={fmt} />}
-          {step === "refused" && (
-            <>
-              <p className="form-problem" role="alert" data-testid="platform-fund-refusal">
-                {fundErrorText(flow.error, fmt.credits, fmt.duffs)}
-              </p>
-              <div className="sheet-actions">
-                {fundCanChange(flow.error) && flow.request?.kind !== "resume" && (
-                  <DashButton variant="tintedGray" size="large" data-testid="platform-fund-refused-back" onClick={() => flow.back()}>
-                    {C.back}
-                  </DashButton>
-                )}
-                <DashButton variant="filledBlue" size="large" data-testid="platform-fund-close" onClick={() => flow.close()}>
-                  {C.close}
-                </DashButton>
-              </div>
-            </>
-          )}
+    <div data-testid="platform-fund-body" data-step={step}>
+      {step === "confirm" && <ConfirmStep flow={flow} walletId={walletId} fmt={fmt} />}
+      {step === "running" && (
+        <div role="status" className="topup-running">
+          <p className="topup-title">
+            {C.running.title}
+            <span className="spinner" aria-hidden="true" />
+          </p>
+          <p className="sheet-text" data-testid="platform-fund-progress">
+            {C.running.steps.join(" → ")}
+          </p>
+          <p className="sheet-text">{C.running.text}</p>
         </div>
-      </Sheet>
-      <GrantSheet grants={flow.grants} />
-    </>
+      )}
+      {step === "done" && <Outcome flow={flow} fmt={fmt} pending={pending} />}
+      {step === "refused" && (
+        <>
+          <p className="form-problem" role="alert" data-testid="platform-fund-refusal">
+            {fundErrorText(flow.error, fmt.credits, fmt.duffs, ctx)}
+          </p>
+          <div className="sheet-actions">
+            {retry && (
+              <DashButton variant="filledBlue" size="large" data-testid="platform-fund-refused-finish" onClick={() => void flow.resume(retry.txid)}>
+                {retry.action === "finish" ? C.approvalEnded.finish : C.approvalEnded.checkAgain}
+              </DashButton>
+            )}
+            {fundCanChange(flow.error) && flow.request?.kind !== "resume" && (
+              <DashButton variant="tintedGray" size="large" data-testid="platform-fund-refused-back" onClick={() => flow.back()}>
+                {C.back}
+              </DashButton>
+            )}
+            <DashButton variant={retry ? "tintedGray" : "filledBlue"} size="large" data-testid="platform-fund-close" onClick={() => flow.close()}>
+              {C.close}
+            </DashButton>
+          </div>
+        </>
+      )}
+    </div>
   );
 }

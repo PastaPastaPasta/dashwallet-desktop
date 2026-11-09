@@ -1,6 +1,6 @@
 // SheetScaffold (UX-SPEC C23): a modal dialog with the 64 pt header (title, close), Escape to
 // close, focus kept inside while open and returned to the opener on close. Focus starts on the
-// element marked `data-autofocus`, else on the first focusable one (the close button), and again
+// element marked `data-autofocus` (when enabled), else on the first focusable one (the close button), and again
 // whenever `focusKey` changes (a sheet with steps). `closable={false}` holds the sheet open while
 // something it must report back is running.
 //
@@ -35,7 +35,8 @@ export function useLayeredSheet(): boolean {
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select, textarea, summary, [tabindex]:not([tabindex="-1"])';
 
 function focusStart(panel: HTMLElement | null) {
-  (panel?.querySelector<HTMLElement>("[data-autofocus]") ?? panel?.querySelector<HTMLElement>(FOCUSABLE))?.focus();
+  // A disabled field takes no focus: the first control that can does.
+  (panel?.querySelector<HTMLElement>("[data-autofocus]:not(:disabled)") ?? panel?.querySelector<HTMLElement>(FOCUSABLE))?.focus();
 }
 
 export function Sheet({

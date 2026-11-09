@@ -28,7 +28,9 @@ import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
 import { PlatformMoveCard } from "./PlatformMoveSheet";
 import { ShieldedCard } from "./ShieldedSheet";
+import { TransferSheet, useTransferPools } from "./TransferSheet";
 import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
+import { defaultRoute, transferFor, TRANSFER_COPY } from "../transfer/model";
 
 /** dash-qt's overview shows this many recent transactions. */
 const RECENT_COUNT = 5;
@@ -145,14 +147,16 @@ function openPay(focusAddress: boolean) {
 
 // U-03 D16: the mobile shortcut bar. The desktop has no camera, so Scan QR opens the address
 // field to paste into, as U-01 routes a scanQr link; Back up comes with the recovery phrase (U-02).
-const SHORTCUTS: { id: string; icon: UsedIcon; title: string; run: (() => void) | null; why?: string }[] = [
+// Transfer opens the sheet at Dash wallet → Shielded, or → Platform when Shielded is not active.
+const SHORTCUTS: { id: string; icon: UsedIcon; title: string; run: ((transfer: () => void) => void) | null; why?: string }[] = [
   { id: "receive", icon: "shortcutReceive", title: "Receive", run: () => navigate("receive") },
   { id: "send", icon: "shortcutSend", title: "Send", run: () => openPay(false) },
+  { id: "transfer", icon: "transfer", title: TRANSFER_COPY.shortcut, run: (transfer) => transfer() },
   { id: "scan", icon: "shortcutScanQR", title: "Scan QR", run: () => openPay(true) },
   { id: "backup", icon: "shortcutBackup", title: "Back up", run: null, why: "Backing up the recovery phrase is not available yet" },
 ];
 
-function ShortcutCard() {
+function ShortcutCard({ onTransfer }: { onTransfer: () => void }) {
   return (
     <nav className="shortcut-card" aria-label="Shortcuts" data-testid="shortcut-card">
       {SHORTCUTS.map((s) => (
@@ -163,7 +167,7 @@ function ShortcutCard() {
           data-testid={`shortcut-${s.id}`}
           aria-disabled={s.run ? undefined : "true"}
           title={s.why}
-          onClick={() => s.run?.()}
+          onClick={() => s.run?.(onTransfer)}
         >
           <Icon id={s.icon} size={46} className="shortcut-icon" />
           <span className="shortcut-title">{s.title}</span>
@@ -212,6 +216,9 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
   const ctx = useRowContext(network);
   const syncing = !!sync.data && isSyncing(sync.data);
   const percent = sync.data ? syncPercent(sync.data) : null;
+  const b = useBackend();
+  const transferPools = useTransferPools(walletId, network);
+  const transfer = transferFor(b, walletId);
 
   // Cold start (U5): the first frame that shows the balance and history (`mark` is idempotent).
   useEffect(() => {
@@ -222,7 +229,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
     <main className="page page-overview" data-testid="page-home">
       <div className="hero-band" data-testid="hero-band">
         <BalanceHero balances={balance.data ?? null} shielded={pools.shielded} platform={pools.platform} network={network} syncing={syncing} />
-        <ShortcutCard />
+        <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
       </div>
       <div className="page-column">
         <RatesConsentCard network={network} />
@@ -230,6 +237,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         <ShieldedCard walletId={walletId} network={network} />
         <PlatformMoveCard walletId={walletId} network={network} platform={pools.platform} dustCredits={pools.platformDust} />
         <UnfinishedTransfersCard walletId={walletId} network={network} />
+        <TransferSheet walletId={walletId} network={network} />
         <CoinJoinCard walletId={walletId} network={network} />
         {/* Who the wallet pays most is payment history: discreet mode hides it too (D8). */}
         {!discreet && <HomeFrequent walletId={walletId} />}

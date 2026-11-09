@@ -4269,6 +4269,207 @@ fn a_second_fork_keeps_the_new_chains_progress_below_it_across_a_crash() {
     a_fork_then_canonical_progress_survives_a_crash(Some(5_040));
 }
 
+/// ROW73 (pasta's 11-08 payment): a normal payment of everything with
+/// Subtract fee, from a wallet that also holds a coin still being mixed and
+/// a fully mixed one.
+mod normal_payment_beside_mixing {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use dashcore::hashes::Hash;
+    use dashcore::{Address, OutPoint, Transaction, TxIn, TxOut, Txid};
+    use dw_vault::{Credential, GrantPurpose};
+    use key_wallet::Utxo;
+    use key_wallet::transaction_checking::TransactionContext;
+
+    use super::{FOREIGN, send_failure};
+    use crate::EngineError;
+    use crate::history::TxEntry;
+    use crate::platform::lease::session_tests::{Fixture, fixture};
+    use crate::send::{CoinSource, FeeMode, Recipient, SendFailure};
+
+    /// The unmixed coin: 215.74478465 DASH.
+    const UNMIXED: u64 = 21_574_478_465;
+    const MIXING: u64 = 100_001_000;
+    const MIXED: u64 = 10_000_100;
+    const RECOMMENDED: FeeMode = FeeMode::Recommended { target_blocks: 6 };
+    /// One P2PKH input, one P2PKH output, no change, at 1000 duff/kB.
+    const FEE: u64 = 192;
+
+    /// A denomination `rounds` mixing transactions deep, as the wallet holds
+    /// it: the chain in the history, the last output in the CoinJoin account.
+    fn coinjoin_coin(f: &Fixture, seed: u8, value: u64, rounds: u32) -> OutPoint {
+        let session = Arc::clone(&f.session);
+        let id = f.wallet;
+        let address: Address = f
+            .engine
+            .block_on(session.on_runtime({
+                let session = Arc::clone(&session);
+                async move {
+                    let mut a = session.reserve_coinjoin_addresses(id, 1, false).await?;
+                    Ok::<_, EngineError>(a.remove(0))
+                }
+            }))
+            .unwrap();
+        let pay = |value| TxOut {
+            value,
+            script_pubkey: address.script_pubkey(),
+        };
+        let spend = |previous_output| TxIn {
+            previous_output,
+            ..Default::default()
+        };
+        // Created beside a non-denominated output: round 0; each spend of it
+        // to itself, in full, adds one.
+        let mut tx = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![spend(OutPoint::new(Txid::from_byte_array([seed; 32]), 0))],
+            output: vec![pay(value), pay(1_234_567)],
+            special_transaction_payload: None,
+        };
+        let mut chain = vec![(tx.clone(), BTreeMap::new())];
+        for _ in 0..rounds {
+            tx = Transaction {
+                input: vec![spend(OutPoint::new(tx.txid(), 0))],
+                output: vec![pay(value)],
+                ..tx
+            };
+            chain.push((tx.clone(), BTreeMap::from([(0, (value, address.clone()))])));
+        }
+        let outpoint = OutPoint::new(tx.txid(), 0);
+        (f.session.hub.history).with_wallet(f.wallet, |h| {
+            for (tx, own_inputs) in chain {
+                let entry = TxEntry {
+                    tx,
+                    context: TransactionContext::Mempool,
+                    instant_locked: false,
+                    first_seen: None,
+                    own_inputs,
+                    abandoned: false,
+                };
+                h.txs.insert(entry.tx.txid(), entry);
+            }
+        });
+        let mut utxo = Utxo::new(outpoint, pay(value), address.clone(), 1, false);
+        utxo.is_confirmed = true;
+        f.engine
+            .block_on(session.on_runtime({
+                let session = Arc::clone(&session);
+                async move {
+                    let wallet = session.wallet(&id).await?;
+                    (wallet
+                        .state_mut()
+                        .await
+                        .core_wallet
+                        .accounts
+                        .coinjoin_accounts)
+                        .get_mut(&0)
+                        .expect("CoinJoin account 0")
+                        .utxos
+                        .insert(outpoint, utxo);
+                    Ok::<_, EngineError>(())
+                }
+            }))
+            .unwrap();
+        outpoint
+    }
+
+    fn max(f: &Fixture, source: CoinSource) -> u64 {
+        f.engine
+            .block_on(f.session.max_spendable(f.wallet, source, RECOMMENDED))
+            .unwrap()
+    }
+
+    fn draft(f: &Fixture, amount: u64) -> Arc<crate::send::TxDraft> {
+        let d = f.session.new_tx_draft(f.wallet).unwrap();
+        d.set_recipients(vec![Recipient {
+            address: FOREIGN.into(),
+            amount,
+            subtract_fee_from_amount: true,
+            label: None,
+            message: None,
+        }])
+        .unwrap();
+        d.set_source(CoinSource::Any).unwrap();
+        d.set_fee(RECOMMENDED).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_full_balance_subtract_fee_payment_spends_only_the_unmixed_coin() {
+        let f = fixture(false);
+        let unmixed = f.credit(1, UNMIXED);
+        coinjoin_coin(&f, 2, MIXING, 2);
+        coinjoin_coin(&f, 3, MIXED, 8);
+        // The mixing view tells the two apart: one fully mixed, one not yet.
+        assert_eq!(max(&f, CoinSource::FullyMixedOnly), MIXED);
+        // A normal payment counts the unmixed coin alone.
+        assert_eq!(max(&f, CoinSource::Any), UNMIXED);
+
+        // Part of it keeps its change: no change becomes fee (LIST row 34).
+        let half = f
+            .engine
+            .block_on(draft(&f, UNMIXED / 2).estimate())
+            .unwrap();
+        assert_eq!(
+            (half.input_count, half.change, half.fee, half.total_sent),
+            (1, Some(UNMIXED - UNMIXED / 2), 226, UNMIXED / 2 - 226)
+        );
+
+        let all = draft(&f, UNMIXED);
+        let e = f.engine.block_on(all.estimate()).unwrap();
+        assert_eq!(
+            (e.input_count, e.change, e.size_bytes, e.fee, e.total_sent),
+            (1, None, 192, FEE, UNMIXED - FEE)
+        );
+        let grant = f.grant(GrantPurpose::Spend { max_duffs: UNMIXED }, Credential::None);
+        let prepared = f.engine.block_on(all.prepare(grant)).unwrap();
+        let s = prepared.summary().clone();
+        assert_eq!(
+            s.inputs.iter().map(|i| i.outpoint).collect::<Vec<_>>(),
+            [unmixed]
+        );
+        assert_eq!(s.outputs.len(), 1, "{:?}", s.outputs);
+        assert!(!s.outputs[0].is_change && !s.outputs[0].is_mine);
+        assert_eq!(
+            (s.outputs[0].amount, s.total_sent, s.fee, s.total_debit),
+            (UNMIXED - FEE, UNMIXED - FEE, FEE, UNMIXED)
+        );
+        // The signed transaction pays that fee (inputs − outputs). The fee
+        // budgets the largest signature (148-byte input), so the signed size
+        // is at most the estimate and the rate it pays at least 1000 duff/kB.
+        let tx: Transaction = dashcore::consensus::deserialize(&prepared.raw().unwrap()).unwrap();
+        assert_eq!(
+            tx.input
+                .iter()
+                .map(|i| i.previous_output)
+                .collect::<Vec<_>>(),
+            [unmixed]
+        );
+        let out: u64 = tx.output.iter().map(|o| o.value).sum();
+        assert_eq!(UNMIXED - out, FEE);
+        let size = dashcore::consensus::serialize(&tx).len() as u64;
+        assert_eq!(size, u64::from(s.size_bytes));
+        assert!((190..=192).contains(&size), "signed size {size}");
+        assert_eq!(s.fee_rate_per_kb, FEE * 1000 / size);
+        assert!(s.fee_rate_per_kb >= 1_000);
+
+        // Normal funds read 0 once it is signed, and once the wallet sees it
+        // spent; the same payment is then refused for them, which is what the
+        // Pay form showed behind the receipt.
+        assert_eq!(max(&f, CoinSource::Any), 0);
+        f.spend_coin(unmixed);
+        assert_eq!(max(&f, CoinSource::Any), 0);
+        assert_eq!(
+            send_failure(f.engine.block_on(all.estimate())),
+            SendFailure::AmountExceedsBalance { available: 0 }
+        );
+        // The CoinJoin account's coins are where they were.
+        assert_eq!(max(&f, CoinSource::FullyMixedOnly), MIXED);
+    }
+}
+
 // ---- rows 59 and 65: a fork truncation no event announces -------------------
 
 impl Fixture {

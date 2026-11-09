@@ -94,3 +94,38 @@ export async function lateFrames(page: Page, ms = 500) {
     },
   };
 }
+
+export type TransferRoute = "coreToShielded" | "coreToPlatform" | "shieldedToCore" | "platformToCore";
+
+/** Home's Transfer sheet at `route`, opened the way Home offers it: the shortcut for the Dash wallet's
+ * routes (picking Platform when it is not the default), a card's balance for its pool's. */
+export async function openTransfer(page: Page, route: TransferRoute) {
+  const body = page.getByTestId("transfer-body");
+  if (route === "shieldedToCore" || route === "platformToCore") await page.getByTestId(route === "shieldedToCore" ? "shielded-card-transfer" : "platform-card-transfer").click();
+  else {
+    await page.getByTestId("shortcut-transfer").click();
+    await body.waitFor();
+    if ((await body.getAttribute("data-route")) !== route) {
+      await page.getByTestId("transfer-to").click();
+      await page.getByTestId(route === "coreToShielded" ? "transfer-picker-shielded" : "transfer-picker-platform").click();
+    }
+  }
+  await expect(body).toHaveAttribute("data-route", route);
+}
+
+/** Platform → Dash wallet through Transfer, at the move's own confirmation. */
+export async function moveFromPlatform(page: Page) {
+  await openTransfer(page, "platformToCore");
+  await page.getByTestId("transfer-continue").click();
+  await expect(page.getByTestId("platform-move-body")).toBeVisible();
+}
+
+/** What Transfer from Platform says while it can't move (Continue waits); the sheet is closed after. */
+export async function platformMoveWhy(page: Page): Promise<string | null> {
+  await openTransfer(page, "platformToCore");
+  await expect(page.getByTestId("transfer-continue")).toBeDisabled();
+  const why = await page.getByTestId("transfer-unavailable").textContent();
+  await page.getByTestId("transfer-cancel").click();
+  await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
+  return why;
+}

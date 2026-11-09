@@ -59,7 +59,7 @@ use platform_wallet::{AssetLockFundingType, PlatformWalletError, TrackedAssetLoc
 
 use super::errors::PlatformError;
 use super::flows::FlowKind;
-use super::lease::{Lease, SignatureCount};
+use super::lease::{Lease, LeaseError, SignatureCount};
 use super::registration_flow::{LockInfo, LockStatus, lock_status};
 pub(crate) use super::unfinished::{
     LockFinish, LockKindId, LockOrigin, TransfersReport, UnfinishedLock, UnfinishedState,
@@ -577,6 +577,50 @@ pub(crate) async fn detect(kind: &impl LockKind) -> Result<Vec<UnfinishedLock>, 
 /// The code a finish of a lock at `vout` ≠ 0 is refused with (module doc).
 pub(crate) const UNSUPPORTED: &str = "recovery.unsupported_output";
 
+/// What a lock's apply runs under: its lease, and the funding signer the
+/// lock's credit key signs through ([`LockKeySigner`]).
+pub(crate) trait ApplyAuthority {
+    fn into_parts(self) -> Result<(Lease, VaultSigner), PlatformError>;
+}
+
+/// A lease the apply alone uses: its funding signer, refused once the
+/// lease's Funding budget is spent (a resume's or Finish's one-duff grant).
+impl ApplyAuthority for Lease {
+    fn into_parts(self) -> Result<(Lease, VaultSigner), PlatformError> {
+        let funding = self.uncounted_funding_signer()?;
+        Ok((self, funding))
+    }
+}
+
+/// A lease whose funding call makes the lock it then applies, and the
+/// funding signer that lease issued before the call charged its budget:
+/// the call may leave no Funding budget, and the apply spends none (as a
+/// top-up's, `topup.rs`). The signer is kept for this apply only, which
+/// still needs the lease's call permit: an ended or revoked lease refuses
+/// it before anything is signed.
+pub(crate) struct FundedLease {
+    lease: Lease,
+    funding: VaultSigner,
+}
+
+impl FundedLease {
+    /// Takes `lease`'s funding signer; call it before the funding call.
+    pub(crate) fn before_funding(lease: Lease) -> Result<Self, LeaseError> {
+        let funding = lease.uncounted_funding_signer()?;
+        Ok(Self { lease, funding })
+    }
+
+    pub(crate) fn lease(&self) -> &Lease {
+        &self.lease
+    }
+}
+
+impl ApplyAuthority for FundedLease {
+    fn into_parts(self) -> Result<(Lease, VaultSigner), PlatformError> {
+        Ok((self.lease, self.funding))
+    }
+}
+
 /// Finishes `kind`'s unfinished lock at `outpoint` under the lease
 /// `lease_of` gives: the lease's funding signer, narrowed to the lock's
 /// credit key ([`LockKeySigner`]), and one call permit sign the kind's
@@ -599,7 +643,7 @@ pub(crate) const UNSUPPORTED: &str = "recovery.unsupported_output";
 /// answer as finished elsewhere ([`LockKind::reported_locks`]:
 /// [`LockFinish::ReportedUsed`], and the lock leaves the lists); a refusal
 /// before the signature is [`LockFinish::NotApplied`].
-pub(crate) async fn finish<K, F, Fut>(
+pub(crate) async fn finish<K, F, Fut, A>(
     kind: &K,
     outpoint: OutPoint,
     lease_of: F,
@@ -607,7 +651,8 @@ pub(crate) async fn finish<K, F, Fut>(
 where
     K: LockKind,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<Lease, PlatformError>>,
+    Fut: Future<Output = Result<A, PlatformError>>,
+    A: ApplyAuthority,
 {
     Ok(run(kind, outpoint, lease_of)
         .await?
@@ -616,7 +661,7 @@ where
 
 /// [`finish`]; `None` when the lock was already finished when read under
 /// the kind's lock (nothing ran).
-async fn run<K, F, Fut>(
+async fn run<K, F, Fut, A>(
     kind: &K,
     outpoint: OutPoint,
     lease_of: F,
@@ -624,7 +669,8 @@ async fn run<K, F, Fut>(
 where
     K: LockKind,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<Lease, PlatformError>>,
+    Fut: Future<Output = Result<A, PlatformError>>,
+    A: ApplyAuthority,
 {
     let wallet_lock = kind.wallet_lock();
     let _held = wallet_lock.lock().await;
@@ -673,8 +719,7 @@ where
         .credit_script(outpoint)
         .await
         .ok_or(PlatformError::Unavailable)?;
-    let lease = lease_of().await?;
-    let funding = lease.uncounted_funding_signer()?;
+    let (lease, funding) = lease_of().await?.into_parts()?;
     let reply = lease
         .scope(async {
             let permit = lease.call_permit(kind.id().label(), None)?;

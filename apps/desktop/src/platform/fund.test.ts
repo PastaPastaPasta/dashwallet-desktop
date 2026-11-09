@@ -7,7 +7,7 @@ import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "../api/generated/PlatformFundOutcome";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { fundCanChange, fundErrorText, fundFor, fundRowView, PlatformFundFlow, resetPlatformFunds } from "./fund";
+import { endedBeforeApply, finishAfter, fundCanChange, fundErrorText, fundFor, fundRowView, PlatformFundFlow, resetPlatformFunds } from "./fund";
 import { onMoveSettled } from "./move";
 
 const APPLIED: PlatformFundOutcome = { txid: "lock1", state: { kind: "applied", credits: "49944000000" } };
@@ -36,6 +36,8 @@ function setup(lock = { encrypted: false }) {
 }
 
 afterEach(() => resetPlatformFunds());
+
+const pendingFund = (p: Partial<PendingPlatformFund> = {}): PendingPlatformFund => ({ txid: "lock1", duffs: 5_000, proved: true, consumptionUnknown: false, state: "ready", ...p });
 
 describe("the Add from Dash wallet flow", () => {
   it("adds under a duffs grant, can close while it runs, and reads again", async () => {
@@ -112,6 +114,51 @@ describe("the Add from Dash wallet flow", () => {
     stop();
   });
 
+  it("a refused Finish offers its own lock again, never another add", async () => {
+    const { flow, api, calls } = setup();
+    api.resumePlatformFund.mockRejectedValueOnce(appError("platform.needs_grant"));
+    await flow.resume("lockA");
+    expect(flow.step).toBe("refused");
+    const ctx = { request: flow.request, pending: [pendingFund({ txid: "lockB" }), pendingFund({ txid: "lockA", duffs: 50_000_000 })] };
+    expect(finishAfter(flow.error, ctx)).toEqual({ txid: "lockA", duffs: 50_000_000, action: "finish" });
+    expect(fundErrorText(flow.error, credits, duffs, ctx)).toBe(
+      "Your 0.5 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
+    );
+    await flow.resume(finishAfter(flow.error, ctx)!.txid);
+    expect(api.resumePlatformFund.mock.calls.map((c) => c[1])).toEqual(["lockA", "lockA"]);
+    expect(calls).toEqual(["resume lockA grant-2"]);
+    expect([flow.step, flow.outcome]).toEqual(["done", APPLIED]);
+  });
+
+  it("a refused Check again keeps Check again on its own lock, whatever else waits, in either order", async () => {
+    const { flow, api } = setup();
+    api.resumePlatformFund.mockRejectedValueOnce(appError("platform.lease_expired"));
+    await flow.resume("lockA");
+    const a = pendingFund({ txid: "lockA", state: "checking", consumptionUnknown: true });
+    const b = pendingFund({ txid: "lockB", duffs: 70_000_000 });
+    for (const pending of [
+      [a, b],
+      [b, a],
+    ]) {
+      const ctx = { request: flow.request, pending };
+      expect(finishAfter(flow.error, ctx)).toEqual({ txid: "lockA", duffs: 5_000, action: "checkAgain" });
+      expect(fundErrorText(flow.error, credits, duffs, ctx)).toBe("Checking that add stopped before Platform answered. Choose Check again: it checks the same lock and adds no more Dash.");
+    }
+  });
+
+  it("a new add's refusal never offers a lock listed for another add", async () => {
+    const { flow, api } = setup();
+    api.platformFund.mockRejectedValueOnce(appError("platform.needs_grant"));
+    flow.begin();
+    flow.next(50_000_000);
+    await flow.run(GRANT);
+    const ctx = { request: flow.request, pending: [pendingFund({ txid: "other", duffs: 70_000_000 })] };
+    expect(finishAfter(flow.error, ctx)).toBeNull();
+    expect(fundErrorText(flow.error, credits, duffs, ctx)).toBe(
+      "Adding to Platform stopped before it finished. If the Platform card shows an add waiting, choose Finish there: it adds the same locked Dash, not more. Otherwise, try again.",
+    );
+  });
+
   it("keeps one flow per wallet", () => {
     const { api } = setup();
     expect(fundFor(api, WALLET_A)).toBe(fundFor(api, WALLET_A));
@@ -131,6 +178,44 @@ describe("the Add from Dash wallet error texts", () => {
     expect(text(appError("credits.too_many_inputs", { kind: "number", value: 700 }))).toBe("That takes too many separate coins at once. Consolidate your coins first, then try again.");
     expect(text(appError("credits.fund_pending", { kind: "txid", txid: "ab" }))).toBe("An earlier add to Platform is not finished. Finish it from the Platform card first.");
     expect(text(appError("platform.feature_off", { kind: "feature", feature: "platform" }))).toBe("Platform addresses are not active on this network yet.");
+  });
+
+  it("a refused Finish names its own lock only while it can still be finished", () => {
+    const ended = ["platform.needs_grant", "platform.lease_revoked", "platform.lease_expired"] as const;
+    const resume = { kind: "resume", txid: "lock1" } as const;
+    const unknown = "Adding to Platform stopped before it finished. If the Platform card shows an add waiting, choose Finish there: it adds the same locked Dash, not more. Otherwise, try again.";
+    for (const code of ended) {
+      const e = appError(code);
+      expect(finishAfter(e, { request: resume, pending: [pendingFund({ txid: "lock1" })] })?.action).toBe("finish");
+      for (const pending of [null, [], [pendingFund({ txid: "lock1", state: "tooSmall" })], [pendingFund({ txid: "other" })]]) {
+        expect(finishAfter(e, { request: resume, pending })).toBeNull();
+        expect(fundErrorText(e, credits, duffs, { request: resume, pending })).toBe(unknown);
+      }
+      expect(text(e)).toBe(unknown);
+      expect(fundCanChange(e)).toBe(false);
+    }
+    expect(finishAfter(appError("platform.broadcast_unknown"), { request: resume, pending: [pendingFund({ txid: "lock1" })] })).toBeNull();
+    expect(finishAfter(new Error("x"), { request: resume, pending: [pendingFund({ txid: "lock1" })] })).toBeNull();
+  });
+
+  it("a refused approval says nothing was locked for a new add, and that the lock still waits for a Finish", () => {
+    const e = appError("platform.grant_invalid");
+    expect(text(e)).toBe("The approval was not accepted, so nothing was locked. Try again.");
+    expect(fundErrorText(e, credits, duffs, { request: { kind: "add", duffs: 50_000_000 } })).toBe("The approval was not accepted, so nothing was locked. Try again.");
+    const resume = { request: { kind: "resume", txid: "lock1" } as const, pending: [pendingFund({ txid: "lock1" })] };
+    expect(fundErrorText(e, credits, duffs, resume)).toBe("The approval was not accepted. Your locked Dash is still waiting: choose Finish again.");
+    expect(finishAfter(e, resume)?.txid).toBe("lock1");
+    for (const code of ["platform.needs_grant", "platform.lease_revoked", "platform.lease_expired", "platform.grant_invalid"] as const) expect(text(appError(code))).not.toContain(code);
+  });
+
+  it("a lock whose approval ended before its apply says it waits for Finish; other reasons keep their words", () => {
+    for (const code of ["platform.needs_grant", "platform.lease_revoked", "platform.lease_expired", "platform.cancelled"]) {
+      expect(endedBeforeApply(code, "0.5 tDASH")).toBe(
+        "Your 0.5 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
+      );
+      expect(endedBeforeApply(code, null)).toContain("Your Dash is locked");
+    }
+    expect(endedBeforeApply("platform.unavailable", "0.5 tDASH")).toBeNull();
   });
 
   it("offers Back for amount-related refusals only", () => {

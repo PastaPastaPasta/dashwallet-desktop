@@ -48,10 +48,6 @@ export const SHIELDED_COPY = {
     pending: (amount: string) => `${amount} is on its way.`,
     /** A spend whose result is not confirmed: the wallet re-sends it itself, so it is never offered again. */
     unresolved: "A payment is still being confirmed. Do not send it again: the wallet checks it itself.",
-    receive: "Receive",
-    send: "Send",
-    add: "Add to Shielded",
-    out: "Move to Dash wallet",
     finish: "Finish",
     /** A lock that may already be applied: the same outpoint is read again, never a new lock. */
     checkAgain: "Check again",
@@ -60,7 +56,7 @@ export const SHIELDED_COPY = {
     unrecorded: "A shielded payment from before a restart may still go through, and its record was lost. Sending or moving from Shielded asks you to confirm first.",
     unfinished: (amount: string) => `${amount} was locked to add to Shielded and is not applied yet.`,
   },
-  titles: { add: "Add to Shielded", send: "Send from Shielded", out: "Move to Dash wallet", resume: "Add to Shielded", receive: "Receive in Shielded" },
+  titles: { add: "Add to Shielded", send: "Send from Shielded", receive: "Receive in Shielded" },
   form: {
     why: { amount: "Enter an amount first.", to: "Enter a Shielded address first.", memo: "The note is too long." },
     add: "Move Dash from your wallet into Shielded. It is locked first, then Dash Platform adds it to your private balance.",
