@@ -607,23 +607,25 @@ impl NetworkSession {
         .await;
         match resumed {
             Ok(Some(target)) => {
-                let mut rescan = self.hub.rescan();
-                if rescan.as_ref().is_some_and(RescanState::finished) {
-                    *rescan = None;
-                }
-                let state = rescan.get_or_insert_with(|| RescanState {
-                    from_height: record.reached.saturating_add(1),
-                    started_at: unix_now(),
-                    wallets: BTreeMap::new(),
+                self.pause_publish().await;
+                self.hub.publish_rescan(|rescan| {
+                    if rescan.as_ref().is_some_and(RescanState::finished) {
+                        *rescan = None;
+                    }
+                    let state = rescan.get_or_insert_with(|| RescanState {
+                        from_height: record.reached.saturating_add(1),
+                        started_at: unix_now(),
+                        wallets: BTreeMap::new(),
+                    });
+                    state.from_height = state.from_height.min(record.reached.saturating_add(1));
+                    state.wallets.insert(
+                        wallet,
+                        WalletRescan {
+                            resume_height: target,
+                            reached: None,
+                        },
+                    );
                 });
-                state.from_height = state.from_height.min(record.reached.saturating_add(1));
-                state.wallets.insert(
-                    wallet,
-                    WalletRescan {
-                        resume_height: target,
-                        reached: None,
-                    },
-                );
             }
             Ok(None) => {
                 tracing::warn!(wallet = %wallet, "replay not resumed: the wallet is not loaded");
@@ -632,6 +634,20 @@ impl NetworkSession {
             Err(e) => {
                 tracing::warn!(error = %e, wallet = %wallet, "replay not resumed: spends wait for a rescan");
                 hold(false).await;
+            }
+        }
+    }
+
+    /// Tests: holds a rescan's publication while a pause is set.
+    async fn pause_publish(&self) {
+        #[cfg(test)]
+        {
+            let pause = self.hub.pause_publish.lock().unwrap().take();
+            if let Some(pause) = pause {
+                pause
+                    .reached
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                pause.release.notified().await;
             }
         }
     }
@@ -667,7 +683,7 @@ impl NetworkSession {
             let _op = this.enter().await?;
             let live = this.live()?;
             let manager = Arc::clone(&live.manager);
-            let Some(mut state) = this.hub.rescan().take() else {
+            let Some(state) = this.hub.rescan().take() else {
                 return Ok(false);
             };
             if state.finished() {
@@ -701,16 +717,13 @@ impl NetworkSession {
                                 tracing::warn!(error = %e, wallet = %id, "could not put back the replay record of a failed cancel");
                             }
                         }
-                        // A fork since lowered the wallets' targets.
-                        for id in state.wallets.keys().copied().collect::<Vec<_>>() {
-                            if let Some(s) = this.hub.wallet_state(&id) {
-                                state.truncate(&id, s.scan_target);
+                        // No higher than the wallets' targets, which a
+                        // fork since lowered.
+                        this.hub.publish_rescan(|rescan| {
+                            if rescan.is_none() {
+                                *rescan = Some(state);
                             }
-                        }
-                        let mut rescan = this.hub.rescan();
-                        if rescan.is_none() {
-                            *rescan = Some(state);
-                        }
+                        });
                         return Err(e);
                     }
                 }
@@ -824,12 +837,19 @@ impl NetworkSession {
                 self.store_birth_height(id, from).await?;
                 self.refresh_wallet_state(&manager, id).await;
             }
-            self.rewind_recorded(&manager, id, from.saturating_sub(1))
-                .await?;
+            let target = (self.rewind_recorded(&manager, id, from.saturating_sub(1))).await?;
+            match (target, state.wallets.get_mut(&id)) {
+                (Some(target), Some(w)) => w.resume_height = w.resume_height.min(target),
+                (None, Some(_)) => {
+                    state.wallets.remove(&id);
+                }
+                _ => {}
+            }
             self.hub.pump.mark_history(id, None);
         }
         if !state.wallets.is_empty() {
-            *self.hub.rescan() = Some(state);
+            self.pause_publish().await;
+            self.hub.publish_rescan(|rescan| *rescan = Some(state));
         }
         self.hub.pump.mark_sync();
         Ok(())

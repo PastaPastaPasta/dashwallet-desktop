@@ -514,6 +514,9 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next resume between its record read and its rewind.
     #[cfg(test)]
     pub(crate) pause_resume: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next rescan's publication, after its rewind.
+    #[cfg(test)]
+    pub(crate) pause_publish: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next truncation between its heights and the rest.
     #[cfg(test)]
     pub(crate) pause_truncation: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
@@ -522,6 +525,9 @@ pub(crate) struct SessionHub {
     /// ([`Self::detect_truncation`]): a check waits for the heights and
     /// the history of one being applied, not only its heights.
     truncating: Mutex<()>,
+    /// The wallets unloaded or removed, and not added again: an event of
+    /// one is stale, from before.
+    unloaded: Mutex<HashSet<WalletId>>,
 }
 
 impl SessionHub {
@@ -620,8 +626,11 @@ impl SessionHub {
             #[cfg(test)]
             pause_resume: Mutex::new(None),
             #[cfg(test)]
+            pause_publish: Mutex::new(None),
+            #[cfg(test)]
             pause_truncation: Mutex::new(None),
             truncating: Mutex::new(()),
+            unloaded: Mutex::new(HashSet::new()),
         }
     }
 
@@ -883,6 +892,7 @@ impl SessionHub {
     /// Forgets the in-memory state of an unloaded wallet; its name stays
     /// (the "Open Wallet" menu lists it).
     pub(crate) fn unload_wallet(&self, id: &WalletId) {
+        (self.unloaded.lock().unwrap_or_else(|p| p.into_inner())).insert(*id);
         self.wallets
             .write()
             .unwrap_or_else(|p| p.into_inner())
@@ -893,8 +903,34 @@ impl SessionHub {
         }
     }
 
+    /// Publishes rescan state: `f` changes the running rescan under the
+    /// lock a fork's truncation is applied under, and each wallet's part
+    /// is then no higher than its replay target. A truncation either
+    /// lowers the target first or finds the published part.
+    pub(crate) fn publish_rescan<R>(&self, f: impl FnOnce(&mut Option<RescanState>) -> R) -> R {
+        let _truncating = self.truncating.lock().unwrap_or_else(|p| p.into_inner());
+        let mut rescan = self.rescan();
+        let out = f(&mut rescan);
+        if let Some(state) = rescan.as_mut() {
+            for id in state.wallets.keys().copied().collect::<Vec<_>>() {
+                if let Some(s) = self.wallet_state(&id) {
+                    state.truncate(&id, s.scan_target);
+                }
+            }
+        }
+        out
+    }
+
+    /// An unloaded or removed wallet joins the manager again: its events
+    /// are heard, and the transactions key-wallet holds are this load's.
+    pub(crate) fn admit(&self, id: WalletId) {
+        (self.unloaded.lock().unwrap_or_else(|p| p.into_inner())).remove(&id);
+        self.history.with_wallet(id, |h| h.held.clear());
+    }
+
     /// Forgets everything about a removed wallet.
     pub(crate) fn forget_wallet(&self, id: &WalletId) {
+        (self.unloaded.lock().unwrap_or_else(|p| p.into_inner())).insert(*id);
         self.wallets
             .write()
             .unwrap_or_else(|p| p.into_inner())
@@ -1052,11 +1088,12 @@ impl SessionHub {
     /// key-wallet no longer holds, and keeps those it holds out of a block
     /// (InstantSend-locked) unconfirmed. The new chain may have advanced
     /// past the fork before the check, so the height can be above it: the
-    /// same applies down to key-wallet's last ChainLock (no fork goes
-    /// below it) to the transactions key-wallet held this session and
-    /// neither holds in a block nor finalized. A record only read from
-    /// storage stays: key-wallet never held it, and nothing tells it
-    /// apart from one mined below the fork.
+    /// same applies below it to the transactions key-wallet held this
+    /// session and neither holds in a block nor finalized, unless the
+    /// history has them in a ChainLocked block (no fork replaces one). A
+    /// record only read from storage stays: key-wallet never held it, and
+    /// nothing tells it apart from one mined below the fork. Key-wallet's
+    /// ChainLock bounds nothing here: it can be the new chain's.
     pub(crate) fn detect_truncation(
         &self,
         id: WalletId,
@@ -1071,9 +1108,6 @@ impl SessionHub {
         {
             return None;
         }
-        let chain_locked = core
-            .last_applied_chain_lock()
-            .map_or(0, |cl| cl.block_height);
         let accounts = core.accounts.all_accounts();
         let held: HashMap<Txid, bool> = (accounts.iter())
             .flat_map(|a| a.transactions().iter())
@@ -1087,9 +1121,9 @@ impl SessionHub {
                 let Some(mined) = entry.context.block_info().map(|b| b.height()) else {
                     continue;
                 };
-                let below = mined <= height;
-                if mined <= chain_locked || (below && !(h.held.contains(txid) && !finalized(txid)))
-                {
+                let is_final = matches!(entry.context, TransactionContext::InChainLockedBlock(_))
+                    || finalized(txid);
+                if mined <= height && (!h.held.contains(txid) || is_final) {
                     continue;
                 }
                 match held.get(txid) {
@@ -1129,6 +1163,9 @@ impl SessionHub {
 
     pub(crate) fn apply_wallet_event(&self, event: &WalletEvent) {
         let id = WalletId(event.wallet_id());
+        if (self.unloaded.lock().unwrap_or_else(|p| p.into_inner())).contains(&id) {
+            return;
+        }
         let now = Some(unix_now());
         self.run_sweep_retry(id);
         let carried = carried_txids(event);
@@ -1310,11 +1347,7 @@ fn carried_txids(event: &WalletEvent) -> Vec<Txid> {
     match event {
         WalletEvent::TransactionDetected { record, .. } => vec![record.txid],
         WalletEvent::TransactionInstantLocked { txid, .. } => vec![*txid],
-        WalletEvent::TransactionsSwept {
-            txids,
-            superseded_by,
-            ..
-        } => txids.iter().chain([superseded_by]).copied().collect(),
+        WalletEvent::TransactionsSwept { txids, .. } => txids.clone(),
         WalletEvent::ChainTruncated {
             txids,
             unconfirmed_txids,

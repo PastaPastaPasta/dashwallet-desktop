@@ -345,6 +345,7 @@ impl NetworkSession {
             // stored replay is resumed (`WalletState::loading`); a store
             // SPV commits for it meanwhile ends no record
             // (`ReplayRecords::committed`).
+            this.hub.admit(id);
             this.hub.update_wallet_state(id, |s| s.loading = true);
             live.store.set_unloaded(id.0, false);
             if let Err(e) = live.manager.load_from_persistor().await {
@@ -506,6 +507,7 @@ impl NetworkSession {
             // DEC-210: before the first write, as an import of a seed.
             let readmit = id.to_string();
             let readmitted = this.appdb_op(move |db| db.readmit_wallet(&readmit)).await?;
+            this.hub.admit(id);
             let store = Arc::clone(&live.store);
             let refused = crate::keys::registration_refused(this.data_dir());
             let stored = tokio::task::spawn_blocking(move || {

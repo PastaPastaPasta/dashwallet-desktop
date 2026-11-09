@@ -578,6 +578,7 @@ impl NetworkSession {
         }
 
         let default_name = self.next_default_name();
+        self.hub.admit(wallet_id);
         let registered = if registration_refused(self.data_dir()) {
             Err(EngineError::Internal("test: registration refused".into()))
         } else {
