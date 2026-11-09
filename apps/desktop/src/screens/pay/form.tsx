@@ -24,8 +24,8 @@ export type Phase = { kind: "editing" } | { kind: "confirm"; confirmed: Confirme
 
 /** A Pay form's sheets (U-03): Review's confirm, then the result. While either is up the form
  * estimates nothing (`held`), so the payment's own events re-check nothing behind them. A payment
- * that went, or may have, ends the form at once (`clear`); its draft closes with the result, as
- * unknown's Try again rebroadcasts through it. A failed one leaves the form as it was. */
+ * that went, or may have, ends the form at once (`clear`); its draft stays open until the result
+ * sheet closes, as unknown's Try again rebroadcasts through it. A failed one leaves the form as it was. */
 export function usePaySheets(walletId: string, draft: DraftApi, clear: () => void) {
   const client = useQueryClient();
   const [phase, setPhase] = useState<Phase>({ kind: "editing" });
