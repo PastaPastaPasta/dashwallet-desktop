@@ -45,8 +45,8 @@ export function switchOutcome(e: unknown, target: ChosenNetwork, from: ChosenNet
       if (waits.length === 0 && !data.mixing) return { problem: NetworkText.busyDraining };
       return { problem: NetworkText.busy(waits, data.mixing, data.stalled && canLock ? flows : []) };
     }
-    if (data?.kind === "networkCloseRefused")
-      return { problem: data.reason === "walletOpening" ? NetworkText.walletOpening : NetworkText.shieldedUnresolved };
+    if (data?.kind === "networkCloseRefused" && data.reason === "walletOpening") return { problem: NetworkText.walletOpening };
+    if (data?.kind === "networkCloseRefused" && data.reason === "shieldedSpendUnresolved") return { problem: NetworkText.shieldedUnresolved };
     if (e.code === "app.network_switch_failed" && data?.kind === "networkSwitch")
       return { reboot: data.rolledBack ? NetworkText.backOn(target, from) : NetworkText.noneOpen(target, from) };
     return { problem: `${NetworkText.notSwitched} ${errorMessage(e)} (${e.code})` };
@@ -67,12 +67,9 @@ export async function bootAgain(note: string | null = null, reload: () => void =
  * Shielded locks, "Add from Dash wallet" locks not applied, top-ups pending or stuck. A read that
  * fails counts as one: the question then says there may be some. */
 export async function hasPendingLocks(backend: Backend, walletIds: string[]): Promise<boolean> {
-  const some = <T>(read: Promise<T[] | null>) => read.then((rows) => (rows?.length ?? 0) > 0).catch(() => true);
+  const some = <T>(read: Promise<T[] | null | undefined>) => read.then((rows) => (rows?.length ?? 0) > 0).catch(() => true);
   const checks = walletIds.flatMap((id) => [
-    backend
-      .unfinishedTransfers(id)
-      .then((t) => (t?.locks.length ?? 0) > 0)
-      .catch(() => true),
+    some(backend.unfinishedTransfers(id).then((t) => t?.locks)),
     some(backend.pendingPlatformFunds(id)),
     some(backend.creditsPendingTopUps(id)),
     some(backend.creditsStuckTopUpFundings(id)),

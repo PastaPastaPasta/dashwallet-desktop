@@ -313,7 +313,12 @@ commands! {
                     let closed = match state.engine.close_network_unless_busy(old, SWITCH_DRAIN, busy).await {
                         Ok(closed) => Ok(closed),
                         Err(CloseRefused::Busy(e)) => return Err(e),
-                        Err(CloseRefused::Draining) => return Err(busy_error(Busy::default().draining())),
+                        Err(CloseRefused::Draining) => {
+                            return Err(busy_error(Busy {
+                                draining: true,
+                                ..Busy::default()
+                            }));
+                        }
                         Err(CloseRefused::Engine(e)) => Err(e),
                     };
                     // A refusal keeps the session active: nothing changed. A
@@ -442,15 +447,6 @@ struct Busy {
     mixing: bool,
     broadcast: bool,
     draining: bool,
-}
-
-impl Busy {
-    fn draining(self) -> Self {
-        Self {
-            draining: true,
-            ..self
-        }
-    }
 }
 
 /// The switch's check of the network it leaves: the error that refuses

@@ -44,7 +44,7 @@ export const NetworkText = {
     return lockStops.length > 0 ? `${text} Locking the wallet stops ${lower(lockStops)}.` : text;
   },
   /** Refused: the network's work in progress did not finish in time. */
-  busyDraining: "Dash Wallet is still finishing work on this network. Try switching again in a moment.",
+  busyDraining: "Dash Wallet is still finishing a request on this network. Try switching again once it is done.",
   walletOpening: "A wallet is still opening. Switch networks once it is open.",
   shieldedUnresolved: "A shielded payment is still being confirmed. Switch networks once it is.",
   /** After a switch that failed: the window went back to the network it left. */

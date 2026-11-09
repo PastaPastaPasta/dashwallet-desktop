@@ -1654,11 +1654,19 @@ pub(crate) async fn coordinator(
     // The store's open rehydrates every stored spend, so it is admitted as
     // a wallet load is (E1 r3 m1): an in-app close waits for one in flight
     // before its check, and none starts from its check to its commit,
-    // where it would bring in a spend the check did not see. `try_read`:
-    // the close holds the write side while the session's close awaits the
-    // supervisor, which may be here (`read().await` would deadlock).
-    let Ok(_admitted) = session.platform.wallet_loads.try_read() else {
-        return Err(PlatformError::NetworkNotOpen);
+    // where it would bring in a spend the check did not see. Not
+    // `read().await`: the close holds the write side while the session's
+    // close awaits the supervisor, which may be here. A network switch's
+    // close holds it while the gate is paused too, and may still be
+    // refused: that is waited out.
+    let _admitted = loop {
+        if let Ok(admitted) = session.platform.wallet_loads.try_read() {
+            break admitted;
+        }
+        if !session.gate.is_paused() {
+            return Err(PlatformError::NetworkNotOpen);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     };
     // Not under a pass (R1-3, `PlatformRuntime::shielded_passes`).
     let _passes = session.platform.shielded_passes.write().await;

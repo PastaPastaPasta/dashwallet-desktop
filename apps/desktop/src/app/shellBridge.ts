@@ -255,9 +255,9 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
     if (!inTauri()) window.addEventListener("keydown", onKey);
     let switching = ui.get().switching;
     const stopWatching = ui.subscribe(() => {
-      const was = switching;
-      switching = ui.get().switching;
-      if (was && !switching) void take();
+      const now = ui.get().switching;
+      if (switching && !now) void take();
+      switching = now;
     });
     return () => {
       void unlisten.then((f) => f());

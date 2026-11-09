@@ -129,15 +129,19 @@ pub async fn create_invitation(
 
 /// What [`hold_close_fence`] holds.
 pub enum CloseFence {
-    /// As a wallet load in flight holds it.
+    /// The load fence, as a wallet load in flight holds it.
     WalletLoad,
-    /// As a signing shielded call holds it.
+    /// The close preflight and an operation guard, as a signing shielded
+    /// call holds them.
     ShieldedSpend,
+    /// An operation guard, as any operation in flight holds it.
+    Operation,
 }
 
 /// Holds `fence` of `session` until the returned sender is dropped, so an
-/// in-app close of it is refused: `wallet` once it waited `load_wait`, or
-/// `shielded_spend_unresolved`. Call it off the engine's runtime.
+/// in-app close of it is refused: `wallet` once it waited `load_wait`,
+/// `shielded_spend_unresolved`, or (a switch's close) not drained. Call it
+/// off the engine's runtime.
 pub fn hold_close_fence(
     session: &std::sync::Arc<NetworkSession>,
     fence: CloseFence,
@@ -148,9 +152,14 @@ pub fn hold_close_fence(
     let (release, released) = tokio::sync::oneshot::channel::<()>();
     let s = std::sync::Arc::clone(session);
     session.rt.spawn(async move {
-        let _held = match fence {
-            CloseFence::WalletLoad => s.platform.wallet_loads.read().await,
-            CloseFence::ShieldedSpend => s.platform.close_preflight.read().await,
+        let _fence = match fence {
+            CloseFence::WalletLoad => Some(s.platform.wallet_loads.read().await),
+            CloseFence::ShieldedSpend => Some(s.platform.close_preflight.read().await),
+            CloseFence::Operation => None,
+        };
+        let _op = match fence {
+            CloseFence::WalletLoad => None,
+            _ => Some(s.enter().await.expect("the session is open")),
         };
         let _ = held_tx.send(());
         let _ = released.await;

@@ -86,7 +86,7 @@ describe("switchOutcome", () => {
 
   it("says work that did not finish in time, when nothing is named", () => {
     expect(switchOutcome(busy([], false, false, { draining: true }), "mainnet", "testnet")).toEqual({
-      problem: "Dash Wallet is still finishing work on this network. Try switching again in a moment.",
+      problem: "Dash Wallet is still finishing a request on this network. Try switching again once it is done.",
     });
   });
 
@@ -98,7 +98,8 @@ describe("switchOutcome", () => {
     expect(switchOutcome(refused("shielded_spend_unresolved", "shieldedSpendUnresolved"), "testnet", "mainnet")).toEqual({
       problem: "A shielded payment is still being confirmed. Switch networks once it is.",
     });
-    // A `wallet` error that is not the close's refusal is not said to be one.
+    // A reason this build does not know, and a `wallet` error that is not the close's refusal.
+    expect(switchOutcome(refused("wallet", "later"), "mainnet", "testnet")).toEqual({ problem: "Dash Wallet could not switch networks. x (wallet)" });
     expect(switchOutcome({ code: "wallet", message: "the wallet file is damaged", data: null }, "mainnet", "testnet")).toEqual({
       problem: "Dash Wallet could not switch networks. the wallet file is damaged (wallet)",
     });

@@ -259,6 +259,11 @@ impl Engine {
             let Some(session) = shared.sessions.lock().await.get(&network).cloned() else {
                 return Ok(false);
             };
+            // Declared before the load fence, so that a refusal releases the
+            // fence before the gate resumes: a shielded store's first open,
+            // which waits while the gate is paused (`shielded_pool::coordinator`),
+            // then finds it free.
+            let mut paused = None;
             // From the check to the commit no wallet loads and no
             // signing shielded call starts (E1 r2 R2-3). A load in
             // flight is waited for, briefly, without the sessions lock,
@@ -272,19 +277,22 @@ impl Engine {
             };
             // After the load wait: a load takes `wallet_loads` before it
             // asks the gate, so none waits on the pause here.
-            let paused = match &pause {
-                Some((drain, busy)) => Some(
-                    session
-                        .gate
-                        .pause(*drain, || busy(&session))
-                        .await
-                        .map_err(|refused| match refused {
-                            PauseRefused::Busy(b) => CloseRefused::Busy(b),
-                            PauseRefused::Draining => CloseRefused::Draining,
-                        })?,
-                ),
-                None => None,
-            };
+            if let Some((drain, busy)) = &pause {
+                // A signing shielded call holds this to read, and an
+                // operation guard, for its whole run: named, not drained.
+                let shielded = || session.platform.close_preflight.try_write().is_err();
+                let unresolved = || CloseRefused::Engine(EngineError::ShieldedSpendUnresolved);
+                if shielded() {
+                    return Err(unresolved());
+                }
+                let gate = paused.insert(session.gate.pause());
+                match gate.check(*drain, || busy(&session)).await {
+                    Ok(()) => {}
+                    Err(PauseRefused::Busy(b)) => return Err(CloseRefused::Busy(b)),
+                    Err(PauseRefused::Draining) if shielded() => return Err(unresolved()),
+                    Err(PauseRefused::Draining) => return Err(CloseRefused::Draining),
+                }
+            }
             let mut sessions = shared.sessions.lock().await;
             // Closed (quit) or reopened while it waited: nothing of this
             // session is left to close.
@@ -300,7 +308,7 @@ impl Engine {
             if session.holds_shielded_spends().await {
                 return Err(CloseRefused::Engine(EngineError::ShieldedSpendUnresolved));
             }
-            if let Some(paused) = paused {
+            if let Some(paused) = paused.take() {
                 paused.seal();
             }
             sessions.remove(&network);

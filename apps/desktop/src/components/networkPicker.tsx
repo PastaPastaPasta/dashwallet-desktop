@@ -44,7 +44,7 @@ export function useNetworkPicker() {
     staleTime: 0,
   });
   const checking = confirming !== null && (wallets.isPending || (wallets.isSuccess && pendingLocks.isPending));
-  const pending = wallets.isError || pendingLocks.isError || pendingLocks.data === true;
+  const pending = !checking && (wallets.isError || pendingLocks.isError || pendingLocks.data === true);
   const run = useMutation({
     mutationFn: (to: ChosenNetwork) => backend.switchNetwork(to),
     onMutate: (to) => {
@@ -78,7 +78,7 @@ export function useNetworkPicker() {
     switching,
     /** The question before a switch: where to, whether it is still checking for unfinished
      * transfers (Switch waits), and whether there are some (or it could not tell). */
-    confirming: confirming && { to: confirming, checking, pending: !checking && pending },
+    confirming: confirming && { to: confirming, checking, pending },
     /** The window was started with `--network` (or a flag of one network): it only saves the choice. */
     pinned: view?.forcedByFlag ? view.active.kind : null,
     problem,

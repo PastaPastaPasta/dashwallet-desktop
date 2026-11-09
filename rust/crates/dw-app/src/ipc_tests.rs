@@ -1999,6 +1999,33 @@ fn a_close_that_refuses_itself_refuses_the_switch_and_changes_nothing() {
     assert_eq!(demo.active(), "testnet");
 }
 
+/// Row 74 r1: an operation still running once the switch's drain ends
+/// refuses it as `draining`, and nothing changes.
+#[test]
+fn a_switch_refuses_while_an_operation_does_not_finish() {
+    use dw_engine::test_support::{CloseFence, hold_close_fence};
+    let demo = launched_on_mainnet();
+    let (wallet, draft) = mainnet_wallet_and_draft(&demo);
+    let grant = platform_grant(&demo, &wallet);
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+    let held = hold_close_fence(
+        &session,
+        CloseFence::Operation,
+        std::time::Duration::from_secs(30),
+    );
+    let e = demo.err(
+        "switch_network",
+        json!({ "network": "testnet" }),
+        "app.network_busy",
+    );
+    assert_eq!(e["data"]["draining"], true, "{e}");
+    assert_eq!(e["data"]["flows"], json!([]));
+    assert_eq!(e["data"]["mixing"], false);
+    assert_eq!(e["data"]["broadcast"], false);
+    drop(held);
+    nothing_changed(&demo, &wallet, &draft, &grant);
+}
+
 /// Row 74 r1: a Platform flow holding a lease refuses the switch; locking
 /// the wallet ends its lease, and the switch goes through.
 #[test]

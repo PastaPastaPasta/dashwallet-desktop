@@ -920,3 +920,51 @@ fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
     let shield = engine.block_on(dp.shield_quote(100_000)).unwrap_err();
     assert_ne!(shield.code(), "shielded.unrecorded_spend", "{shield:?}");
 }
+
+/// Row 74 r1: a network switch's close holds the load fence while it
+/// drains, and may still be refused. A shielded store's first open meanwhile
+/// waits for the decision instead of failing, and opens once the close is
+/// refused (here: an operation still running when the drain ends).
+#[test]
+fn a_shielded_store_open_waits_out_a_switch_close_that_is_refused() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, _) = first_launch(&engine);
+    let manager = session.manager().unwrap();
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let (held_tx, held) = std::sync::mpsc::channel();
+    let s = Arc::clone(&session);
+    session.rt.spawn(async move {
+        let _op = s.enter().await.unwrap();
+        held_tx.send(()).unwrap();
+        let _ = released.await;
+    });
+    held.recv().unwrap();
+    let (closed, configured) = std::thread::scope(|scope| {
+        let closing = scope.spawn(|| {
+            engine.block_on(engine.close_network_unless_busy(
+                DashNetwork::Regtest,
+                Duration::from_millis(500),
+                |_| None::<()>,
+            ))
+        });
+        for _ in 0..2_000 {
+            if session.gate.drains() > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(session.gate.drains(), 1, "the close drains");
+        let (s, m) = (Arc::clone(&session), Arc::clone(&manager));
+        let configured = engine.block_on(async move { pool::coordinator(&s, &m).await.map(drop) });
+        (closing.join().unwrap(), configured)
+    });
+    assert!(
+        matches!(closed, Err(crate::CloseRefused::Draining)),
+        "{closed:?}"
+    );
+    assert!(configured.is_ok(), "{configured:?}");
+    assert!(engine.block_on(manager.shielded_coordinator()).is_some());
+    drop(release);
+    assert!(session.is_open());
+}
