@@ -216,7 +216,9 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
   const waiting = hasUnansweredOp(activity.data);
   const [notice, setNotice] = useState<string | null>(null);
   const asked = sendAmount(max, amount.settled ? amount.duffs : undefined);
-  const quote = usePlatformSendQuote(walletId, to, waiting ? null : asked);
+  // Nothing is quoted behind a result: the send's own events would check its amount against what it left.
+  const showing = flow.step === "done";
+  const quote = usePlatformSendQuote(walletId, to, waiting || showing ? null : asked);
   const empty = balance.data === null || (balance.data !== undefined && BigInt(balance.data.credits) === 0n);
   const sheetOpen = confirmed !== null || flow.running || flow.step !== "confirm";
 
@@ -227,10 +229,10 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
   const requote = quote.refetch;
   const handledAttempts = useRef(flow.attempts);
   useEffect(() => {
-    if (flow.attempts === handledAttempts.current) return;
+    if (flow.attempts === handledAttempts.current || showing) return;
     handledAttempts.current = flow.attempts;
     if (!waiting && asked !== null && to !== "") void requote();
-  }, [flow.attempts]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [flow.attempts, showing]); // eslint-disable-line react-hooks/exhaustive-deps
   // A Confirm whose quote Activity has overtaken goes back to the form, with a fresh quote.
   useEffect(() => {
     if (!confirmed || flow.step !== "confirm" || flow.running || flow.isSpent(confirmed.quote.operation)) return;
@@ -263,6 +265,13 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
     if (got) setConfirmed({ ...got, seen: activity.data });
   };
   const settled = flow.step === "done" ? settledBy(flow.outcome, activity.data) : null;
+  // A send that went ends the form at once, as Pay's Core forms do.
+  const went = flow.step === "done" && (flow.outcome?.state === "done" || settled === "went");
+  useEffect(() => {
+    if (!went) return;
+    amount.setText("");
+    setMax(false);
+  }, [went]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sheet = (
     <>

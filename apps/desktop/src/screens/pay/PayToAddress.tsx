@@ -3,10 +3,10 @@
 // Review opens the confirm sheet, which authenticates, signs and sends; the result follows.
 
 import { useCallback, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { keys, useBackend, useLockStatus } from "../../api/queries";
-import { navigate, ui, type PayPrefill } from "../../app/ui";
+import { useBackend, useLockStatus } from "../../api/queries";
+import { ui, type PayPrefill } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton } from "../../components/basics";
 import { AddressBookPicker } from "../tools/AddressBook";
@@ -14,8 +14,8 @@ import { useDisplay } from "../../format/display";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { PayFromPlatform } from "./PayFromPlatform";
-import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, usePayAmount, type Phase } from "./form";
-import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, type Advanced, type Outcome } from "./model";
+import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
+import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, type Advanced } from "./model";
 import { ResultSheet } from "./ResultSheet";
 import { useDraft } from "./useDraft";
 
@@ -32,7 +32,6 @@ export function PayToAddress({
   network: NetworkInfo;
 }) {
   const b = useBackend();
-  const client = useQueryClient();
   const shown = useDisplay(network);
   const locked = useLockStatus().data?.state === "locked";
   const draft = useDraft(walletId, locked);
@@ -45,7 +44,16 @@ export function PayToAddress({
   const [label, setLabel] = useState(prefill?.label ?? "");
   const [message, setMessage] = useState(prefill?.message ?? "");
   const [advanced, setAdvanced] = useState<Advanced>(coins?.length ? { ...DEFAULT_ADVANCED, coins: "selected", selected: coins } : DEFAULT_ADVANCED);
-  const [phase, setPhase] = useState<Phase>({ kind: "editing" });
+  // A payment that went, or may have, ends the form: paying again is a new payment.
+  const sheets = usePaySheets(walletId, draft, () => {
+    setAddress("");
+    amount.setText("");
+    setSubtractFee(subtractFeeByDefault());
+    setLabel("");
+    setMessage("");
+    setAdvanced(DEFAULT_ADVANCED);
+  });
+  const { phase } = sheets;
   // Closing the confirm or result sheet returns to Review, or to the address of a cleared form.
   const reviewButton = useRef<HTMLButtonElement>(null);
   const addressField = useRef<HTMLInputElement>(null);
@@ -80,9 +88,9 @@ export function PayToAddress({
       ? recipientOf({ address: checkedAddr, amount: duffs, subtractFee, label, message })
       : null;
   const spec = draftSpec(recipient, advanced);
-  const available = useAvailable(walletId, advanced);
+  const available = useAvailable(walletId, advanced, sheets.held);
 
-  const { estimate, general: generalError, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked, shown);
+  const { estimate, general: generalError, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked || sheets.held, shown);
   const ready = estimated && settled && !amount.fiat.error;
   const max = useMax(walletId, advanced, shown, (text) => {
     amount.setText(text);
@@ -90,26 +98,7 @@ export function PayToAddress({
   });
 
   const review = () => {
-    if (ready && estimate.data && spec) setPhase({ kind: "confirm", confirmed: confirmedOf(spec.recipient, estimate.data, spec.change), spec });
-  };
-
-  /** A payment left the editing form behind: start a new one (the draft too). */
-  const reset = () => {
-    setAddress("");
-    amount.setText("");
-    setSubtractFee(subtractFeeByDefault());
-    setLabel("");
-    setMessage("");
-    setAdvanced(DEFAULT_ADVANCED);
-    void draft.close();
-    void client.invalidateQueries({ queryKey: keys.coinsAll(walletId) });
-  };
-
-  const finish = (outcome: Outcome, show: boolean) => {
-    // A sent payment, and one that may have been, ends the form: paying again is a new payment.
-    if (outcome.kind !== "failed") reset();
-    setPhase({ kind: "editing" });
-    if (show && outcome.kind === "sent") navigate("activity", { detail: outcome.txid });
+    if (ready && estimate.data && spec) sheets.review(confirmedOf(spec.recipient, estimate.data, spec.change), spec);
   };
 
   return (
@@ -188,8 +177,8 @@ export function PayToAddress({
           network={network}
           draft={draft}
           returnFocus={backToForm}
-          onCancel={() => setPhase({ kind: "editing" })}
-          onOutcome={(outcome) => setPhase({ kind: "result", outcome })}
+          onCancel={sheets.cancel}
+          onOutcome={sheets.outcome}
         />
       )}
       {phase.kind === "result" && (
@@ -198,8 +187,8 @@ export function PayToAddress({
           network={network}
           draft={draft}
           returnFocus={backToForm}
-          onOutcome={(outcome) => setPhase({ kind: "result", outcome })}
-          onDone={(show) => finish(phase.outcome, show)}
+          onOutcome={sheets.outcome}
+          onDone={sheets.done}
         />
       )}
     </>

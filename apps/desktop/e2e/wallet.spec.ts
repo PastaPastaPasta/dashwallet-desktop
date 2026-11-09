@@ -47,6 +47,50 @@ async function seedMixing(page: Page) {
   await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "coinJoin", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId }); })()`);
 }
 
+/** One unmixed coin of 215.74478465 and a coin still being mixed (no fully mixed ones): a normal
+ * payment of everything with Subtract fee leaves it nothing (ROW73, pasta's 11-08 screenshot). */
+async function seedEmptiedByPayment(page: Page) {
+  await world(page, (w) => {
+    const wallet = w.wallets[0];
+    const c = wallet.coins[0];
+    const coin = (vout: number, amount: number, extra: object) => ({ ...c, outpoint: { ...c.outpoint, vout }, amount, spendable: true, confirmations: 10, ...extra });
+    wallet.coins = [coin(1, 21_574_478_465, { coinjoinDenominated: false, coinjoinRounds: null }), coin(2, 100_001_000, { coinjoinDenominated: true, coinjoinRounds: 1 })];
+    // The fixture's mixing figures are shares of the confirmed balance: make it these coins.
+    const b = wallet.summary.balances!;
+    const confirmed = 21_574_478_465 + 100_001_000;
+    wallet.summary = { ...wallet.summary, balances: { ...b, confirmed, total: b.total - b.confirmed + confirmed } };
+    w.coinjoin.mixers[wallet.summary.walletId] = {
+      state: "idle",
+      stopReason: null,
+      status: { kind: "idle" },
+      progress: { overallPercent: 20, denominatedPercent: 100, partiallyMixedPercent: 100, mixedPercent: 0, averageRounds: 1 },
+      sessions: [],
+      queueSize: 0,
+    };
+  });
+  await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "coinJoin", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId }); })()`);
+}
+
+/** Waits until the app called the backend after `command` and then made no call for 750 ms. */
+async function settledAfter(page: Page, command: string) {
+  const calls = () => page.evaluate(() => [...window.__dwFixture!.calls]);
+  const at = (await calls()).lastIndexOf(command);
+  expect(at).toBeGreaterThanOrEqual(0);
+  await expect.poll(async () => (await calls()).length).toBeGreaterThan(at + 1);
+  let last = -1;
+  await expect
+    .poll(
+      async () => {
+        const n = (await calls()).length;
+        const quiet = n === last;
+        last = n;
+        return quiet;
+      },
+      { intervals: [750], timeout: 15_000 },
+    )
+    .toBe(true);
+}
+
 async function review(page: Page) {
   await expect(page.getByTestId("pay-continue")).toBeEnabled();
   await page.getByTestId("pay-continue").click();
@@ -273,6 +317,9 @@ test.describe("Pay", () => {
     await expect(page.getByTestId("pay-result-unknown")).toBeVisible();
     await expect(page.getByTestId("pay-result-text")).toContainText("Check Activity before you pay again.");
     await expect(page.getByTestId("pay-result-retry")).toBeFocused();
+    // A payment that may have gone ends the form at once; the draft stays open for Try again.
+    await expect(page.getByTestId("pay-address")).toHaveValue("");
+    await expect(page.getByTestId("pay-amount")).toHaveValue("");
     // A retry that fails is still unknown, never "not sent" (U-03 D10): the user must not pay twice.
     // (The engine answers `broadcast_unknown` for a handed-over transaction whatever went wrong.)
     await world(page, (w) => (w.send.broadcast = "noPeers"));
@@ -479,6 +526,109 @@ test.describe("Pay", () => {
     await page.getByTestId("change-custom").check();
     await expect(page.getByTestId("pay-problem")).toHaveText("Enter the custom change address.");
     await expect(page.getByTestId("pay-continue")).toBeDisabled();
+  });
+
+  test("Cancel on the confirm sheet returns to Review, ready (ROW73)", async ({ page }) => {
+    await open(page);
+    await fillPayment(page, PAYEE, "0.5");
+    await review(page);
+    await page.getByTestId("pay-confirm-cancel").click();
+    await expect(page.getByTestId("pay-confirm")).toHaveCount(0);
+    await expect(page.getByTestId("pay-continue")).toBeEnabled();
+    await expect(page.getByTestId("pay-continue")).toBeFocused();
+  });
+
+  test("coins that change while the confirm sheet is up re-check nothing behind it, and Cancel checks again (ROW73)", async ({ page }) => {
+    await open(page);
+    await fillPayment(page, PAYEE, "0.5");
+    const form = page.getByTestId("pay-address-form");
+    const available = form.getByText(/^Available: /);
+    await expect(available).toBeVisible();
+    const before = await available.textContent();
+    await review(page);
+    // Every coin goes (another device spent them), and the engine says so.
+    await page.evaluate(`(() => {
+      const f = window.__dwFixture;
+      const w = f.world.wallets[0];
+      for (const u of w.coins) u.spendable = false;
+      f.emit({ kind: "balances", network: f.world.launch.network.dirName, walletId: w.summary.walletId, balances: w.summary.balances });
+    })()`);
+    const calls = () => page.evaluate(() => window.__dwFixture!.calls.length);
+    let last = -1;
+    await expect
+      .poll(
+        async () => {
+          const n = await calls();
+          const quiet = n === last;
+          last = n;
+          return quiet;
+        },
+        { intervals: [750], timeout: 15_000 },
+      )
+      .toBe(true);
+    await expect(form.locator(".field-error")).toHaveCount(0);
+    await expect(page.getByTestId("pay-problem")).toHaveCount(0);
+    await expect(available).toHaveText(before!);
+    await page.getByTestId("pay-confirm-cancel").click();
+    await expect(page.getByTestId("pay-problem")).toContainText("The amount exceeds");
+    await expect(page.getByTestId("pay-continue")).toBeDisabled();
+  });
+
+  test("Send writes Confirm's payment into the draft before signing, whatever the draft held (ROW73)", async ({ page }) => {
+    await open(page);
+    await fillPayment(page, PAYEE, "0.5");
+    await review(page);
+    // Something writes another amount into the open draft while Confirm is up.
+    const tampered = await page.evaluate(async () => {
+      const f = window.__dwFixture!;
+      const [id, d] = Object.entries(f.world.send.drafts).find(([, d]) => d.recipients[0]?.amount === 50_000_000)!;
+      const invoke = (window as unknown as { __TAURI_INTERNALS__: { invoke(c: string, a: unknown): Promise<unknown> } }).__TAURI_INTERNALS__.invoke;
+      await invoke("draft_set_recipients", { draft: Number(id), recipients: [{ ...d.recipients[0], amount: 20_000_000 }] });
+      return { id: Number(id), from: f.calls.length };
+    });
+    expect(await page.evaluate((id) => window.__dwFixture!.world.send.drafts[id]?.recipients[0]?.amount, tampered.id)).toBe(20_000_000);
+    await sendWithPassphrase(page);
+    // What prepare signed, checked before Confirm compares the summary with what it showed.
+    const after = () => page.evaluate((from) => window.__dwFixture!.calls.slice(from), tampered.from);
+    await expect.poll(async () => (await after()).includes("draft_prepare")).toBe(true);
+    const calls = await after();
+    const rewrite = calls.indexOf("draft_set_recipients");
+    expect(rewrite).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("draft_prepare")).toBeGreaterThan(rewrite);
+    expect(await page.evaluate((id) => window.__dwFixture!.world.send.drafts[id]?.recipients[0]?.amount, tampered.id)).toBe(50_000_000);
+    await expect(page.getByTestId("pay-result-sent")).toBeVisible();
+    await expect(page.getByTestId("pay-result")).toContainText("0.50000000");
+  });
+
+  test("a payment of all the normal funds shows no refusal behind its result, and Close starts a new payment (ROW73)", async ({ page }) => {
+    await open(page);
+    // Pasta's 11-08 wallet: one unmixed coin, and coins still being mixed (none fully mixed yet).
+    await seedEmptiedByPayment(page);
+    await fillPayment(page, PAYEE, "215.74478465");
+    await page.getByTestId("pay-subtract-fee").check();
+    await review(page);
+    await sendWithPassphrase(page);
+    await expect(page.getByTestId("pay-result-sent")).toBeVisible();
+    await expect(page.getByTestId("pay-result")).toContainText("215.74478273");
+    await expect(page.getByTestId("pay-result-facts")).toContainText("0.00000192");
+    // The payment's events reach the form behind the result: wait until the app is quiet again.
+    await settledAfter(page, "draft_broadcast");
+    const form = page.getByTestId("pay-address-form");
+    await expect(form.locator(".field-error")).toHaveCount(0);
+    await expect(page.getByTestId("pay-problem")).toHaveCount(0);
+    await expect(form).not.toContainText("a normal payment can spend");
+
+    await page.getByTestId("pay-result-close").click();
+    await expect(page.getByTestId("pay-result")).toHaveCount(0);
+    await expect(page.getByTestId("pay-address")).toHaveValue("");
+    await expect(page.getByTestId("pay-amount")).toHaveValue("");
+    await expect(form.locator(".field-error")).toHaveCount(0);
+    await expect(page.getByTestId("pay-problem")).toHaveCount(0);
+    await expect(page.getByTestId("pay-continue")).toBeDisabled();
+    // Nothing reaches the confirm sheet again: the payment was signed and sent once.
+    await page.getByTestId("pay-address").press("Enter");
+    await expect(page.getByTestId("pay-confirm")).toHaveCount(0);
+    expect(await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "draft_prepare" || c === "draft_broadcast"))).toEqual(["draft_prepare", "draft_broadcast"]);
   });
 });
 
