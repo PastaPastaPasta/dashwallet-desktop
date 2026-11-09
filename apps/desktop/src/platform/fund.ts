@@ -73,6 +73,13 @@ export const FUND_COPY = {
     checking: { title: "Checking", text: "This amount may already be on your Platform addresses; we can't confirm it yet." },
     notApplied: { title: "Locked, not applied", text: (why: string) => `Your Dash is locked but Dash Platform did not add it yet (${why}). Finish it from the Platform card: nothing is lost.` },
   },
+  approvalEnded: {
+    pending: (amount: string) =>
+      `Your ${amount} is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.`,
+    unknown: "Adding to Platform stopped before it finished. If the Platform card shows an add waiting, choose Finish there: it adds the same locked Dash, not more. Otherwise, try again.",
+    finish: "Finish",
+  },
+  grantInvalid: "The approval was not accepted, so nothing was locked. Try again.",
   unseen: "Your add to Platform has an update.",
   show: "Show",
   close: "Close",
@@ -95,11 +102,27 @@ export function fundRowView(p: Pick<PendingPlatformFund, "duffs" | "state" | "co
   return { kind: "unfinished", text: FUND_COPY.card.unfinished(amount(p.duffs)), action: "finish" };
 }
 
-/** A refusal of the quote or the call, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. */
-export function fundErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string): string {
+/** The approval ended between the lock and its apply, which can leave the lock waiting unapplied. */
+const APPROVAL_ENDED = ["platform.needs_grant", "platform.lease_revoked", "platform.lease_expired"];
+
+/** The add `pending` lists for Finish after `e` ended a fund's approval, or `null`. */
+export function finishAfter(e: unknown, pending: readonly PendingPlatformFund[] | null | undefined): PendingPlatformFund | null {
+  if (!isAppError(e) || !APPROVAL_ENDED.includes(e.code)) return null;
+  return pending?.find((p) => fundRowView(p, String).action === "finish") ?? null;
+}
+
+/** A refusal of the quote or the call, by code. `credits` shows a credit figure as Dash, `duffs` a duff
+ * figure; `pending` is the wallet's adds not applied, when known. */
+export function fundErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, pending?: readonly PendingPlatformFund[] | null): string {
   if (!isAppError(e)) return failureText(e);
   const d = e.data;
+  if (APPROVAL_ENDED.includes(e.code)) {
+    const waiting = finishAfter(e, pending);
+    return waiting ? FUND_COPY.approvalEnded.pending(duffs(waiting.duffs)) : FUND_COPY.approvalEnded.unknown;
+  }
   switch (e.code) {
+    case "platform.grant_invalid":
+      return FUND_COPY.grantInvalid;
     case "credits.below_minimum":
       return d?.kind === "limit" ? `Too small to add: the smallest amount is ${duffs(d.duffs)}.` : "Too small to add.";
     case "credits.funding_insufficient":

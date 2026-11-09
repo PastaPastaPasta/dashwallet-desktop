@@ -39,8 +39,9 @@ const SEND_MIN_CREDITS = 500_000n;
 export type MoveResult = "done" | "pending" | "refused" | "unproved" | "tooManyCoins";
 
 /** What the next `platform_fund` comes to: applied, locked with its proof still missing, locked and
- * possibly already applied (`checking`), or locked and refused by Platform (`notApplied`). */
-export type FundResult = "done" | "proofWaiting" | "checking" | "notApplied";
+ * possibly already applied (`checking`), locked and refused by Platform (`notApplied`), or locked
+ * with its approval ended before the apply (`approvalEnded`: the call fails `platform.needs_grant`). */
+export type FundResult = "done" | "proofWaiting" | "checking" | "notApplied" | "approvalEnded";
 
 /** The Core fee bound of the lock, in duffs. */
 const FUND_LOCK_FEE_DUFFS = 1_000;
@@ -500,6 +501,9 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
       case "notApplied":
         p.funds = [...p.funds, { txid, duffs, proved: true, consumptionUnknown: false, state: "ready" }];
         return { txid, state: { kind: "notApplied", error: "platform.unavailable" } };
+      case "approvalEnded":
+        p.funds = [...p.funds, { txid, duffs, proved: true, consumptionUnknown: false, state: "ready" }];
+        throw fail("platform.needs_grant", "needs a grant", { kind: "needsGrant", purpose: "funding" });
     }
   },
   pending_platform_funds: ({ walletId }: { walletId: string }, { world }: Ctx): PendingPlatformFund[] => {

@@ -6,7 +6,7 @@ import { useId } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { CREDITS_PER_DUFF, creditsToDuffs } from "../api/pending";
-import { useBackend, usePlatformFundQuote } from "../api/queries";
+import { useBackend, usePendingPlatformFunds, usePlatformFundQuote } from "../api/queries";
 import { useDebounced } from "../app/useDebounced";
 import { useUi } from "../app/ui";
 import { DashButton } from "../components/basics";
@@ -14,7 +14,7 @@ import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
-import { fundCanChange, fundErrorText, FUND_COPY as C, type PlatformFundFlow } from "../platform/fund";
+import { finishAfter, fundCanChange, fundErrorText, FUND_COPY as C, type PlatformFundFlow } from "../platform/fund";
 import { GrantSheet } from "./tools/common";
 
 /** Formats for the sheet: Dash in the display unit, masked in discreet mode. */
@@ -179,8 +179,10 @@ function Outcome({ flow, fmt }: { flow: PlatformFundFlow; fmt: Formats }) {
 export function PlatformFundSheet({ flow, walletId, network }: { flow: PlatformFundFlow; walletId: string; network: NetworkInfo }) {
   useModel(flow);
   const fmt = useFormats(network);
+  const pending = usePendingPlatformFunds(walletId).data;
   if (!flow.open) return <GrantSheet grants={flow.grants} />;
   const { step } = flow;
+  const waiting = step === "refused" ? finishAfter(flow.error, pending) : null;
   return (
     <>
       <Sheet title={C.title} width="small" testId="platform-fund-sheet" onClose={() => flow.close()}>
@@ -203,15 +205,20 @@ export function PlatformFundSheet({ flow, walletId, network }: { flow: PlatformF
           {step === "refused" && (
             <>
               <p className="form-problem" role="alert" data-testid="platform-fund-refusal">
-                {fundErrorText(flow.error, fmt.credits, fmt.duffs)}
+                {fundErrorText(flow.error, fmt.credits, fmt.duffs, pending)}
               </p>
               <div className="sheet-actions">
+                {waiting && (
+                  <DashButton variant="filledBlue" size="large" data-testid="platform-fund-refused-finish" onClick={() => void flow.resume(waiting.txid)}>
+                    {C.approvalEnded.finish}
+                  </DashButton>
+                )}
                 {fundCanChange(flow.error) && flow.request?.kind !== "resume" && (
                   <DashButton variant="tintedGray" size="large" data-testid="platform-fund-refused-back" onClick={() => flow.back()}>
                     {C.back}
                   </DashButton>
                 )}
-                <DashButton variant="filledBlue" size="large" data-testid="platform-fund-close" onClick={() => flow.close()}>
+                <DashButton variant={waiting ? "tintedGray" : "filledBlue"} size="large" data-testid="platform-fund-close" onClick={() => flow.close()}>
                   {C.close}
                 </DashButton>
               </div>
