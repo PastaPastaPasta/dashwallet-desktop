@@ -79,6 +79,43 @@ test.describe("Pay from Platform", () => {
     expect(errors).toEqual([]);
   });
 
+  test("ROW73 a send that leaves less than its amount shows no refusal behind its result, and Done starts a new payment", async ({ page }) => {
+    await open(page, "funded");
+    await payTo(page, PAYEE);
+    // 0.25 of the 0.4 Platform balance: what is left could not pay the same amount again.
+    await page.getByTestId("pay-amount").fill("0.25");
+    await page.getByTestId("pay-fee-line").waitFor();
+    await page.getByTestId("pay-continue").click();
+    await page.getByTestId("platform-send-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-send-outcome-title")).toHaveText("Sent");
+    // The payment's events reach the form behind the result: wait until the app is quiet again.
+    const calls = () => page.evaluate(() => [...window.__dwFixture!.calls]);
+    const at = (await calls()).lastIndexOf("platform_send");
+    expect(at).toBeGreaterThanOrEqual(0);
+    let last = -1;
+    await expect
+      .poll(
+        async () => {
+          const n = (await calls()).length;
+          const quiet = n === last;
+          last = n;
+          return quiet;
+        },
+        { intervals: [750], timeout: 15_000 },
+      )
+      .toBe(true);
+    await expect(page.getByTestId("pay-problem")).toHaveCount(0);
+    await expect(page.locator(".field-error")).toHaveCount(0);
+    // A send that went ends the form at once.
+    await expect(page.getByTestId("pay-amount")).toHaveValue("");
+    await page.getByTestId("platform-send-done").click();
+    await expect(page.getByTestId("platform-send-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("pay-address")).toHaveValue("");
+    await expect(page.getByTestId("pay-problem")).toHaveCount(0);
+    expect((await calls()).filter((c) => c === "platform_send")).toHaveLength(1);
+  });
+
   test("Max sends everything and says the fee comes out of the amount", async ({ page }) => {
     await open(page, "funded");
     await payTo(page, PAYEE);
