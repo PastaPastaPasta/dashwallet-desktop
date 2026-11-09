@@ -363,7 +363,10 @@ pub(crate) struct WalletHistory {
     /// with every stored record read, whose transaction was stored (with
     /// its record or as a height-only row): their events came before the
     /// load, so no later one is awaited for them. Empty after a load that
-    /// failed to read a record.
+    /// failed to read a record. A contact's record comes only from a store
+    /// written before platform-wallet stopped persisting those; a contact's
+    /// ProRegTx is never exempt by this alone: its collateral is locked
+    /// from `hidden_registrations`.
     loaded_coins: HashSet<Txid>,
     /// The ProRegTxs whose record is a DashPay contact account's, which
     /// [`Self::upsert`] skips: the history shows none of them, yet each

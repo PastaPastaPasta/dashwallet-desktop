@@ -321,7 +321,11 @@ impl NetworkSession {
             // the records: a coin credited after them, or not stored yet,
             // waits for its own event ([`NetworkSession::coin_snapshot`]).
             // A load that failed to read a record, or read one missing or
-            // another's, keeps every coin waiting.
+            // another's, keeps every coin waiting. A contact's record comes
+            // only from a store written before platform-wallet stopped
+            // persisting those; a contact's ProRegTx is never exempt by
+            // this alone: `upsert` keeps it out of sight for its collateral,
+            // locked as an own one's.
             let loaded_coins: HashSet<Txid> = match info {
                 Some(info) => (crate::coins::read_coins(&info.core_wallet).coins.iter())
                     .map(|c| c.utxo.outpoint.txid)

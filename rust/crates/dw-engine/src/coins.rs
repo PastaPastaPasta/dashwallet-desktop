@@ -802,8 +802,12 @@ impl NetworkSession {
     /// and until then nothing says whether that transaction is a ProRegTx
     /// whose own output this coin is. A coin the wallet held at a clean
     /// history load whose transaction was stored is not held: a collateral
-    /// among those that the history has no ProRegTx for (no record, or one
-    /// it skips) is locked once the masternode list syncs. After a load
+    /// among those that the history has no ProRegTx for (no record) is
+    /// locked once the masternode list syncs. A contact's record comes only
+    /// from a store written before platform-wallet stopped persisting
+    /// those; a contact's ProRegTx is never exempt by the history hold
+    /// alone: its collateral is locked here from the record the history
+    /// keeps out of sight. After a load
     /// that failed to read a record, every such coin missing from the
     /// history stays held for the session, and when the history misses an
     /// event (a lagged event bus), that coin does.
