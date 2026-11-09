@@ -437,6 +437,17 @@ test.describe("CoinJoin is experimental", () => {
     await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
     await expect(page.getByTestId("settings-tabs-coinjoin")).toHaveText("CoinJoin (experimental)");
   });
+
+  for (const theme of THEMES) {
+    test(`the sidebar label stays readable on the selected CoinJoin item (${theme})`, async ({ page }) => {
+      await open(page, "funded", theme);
+      await page.getByTestId("sidebar-coinJoin").click();
+      await expect(page.getByTestId("sidebar-coinJoin")).toHaveAttribute("aria-current", "page");
+      const badge = page.getByTestId("sidebar-coinJoin-experimental");
+      await expect(badge).toBeVisible();
+      expect(await contrast(badge)).toBeGreaterThanOrEqual(4.5);
+    });
+  }
 });
 
 /** Transfer to Platform opens with nothing holding it back; then closed. */
