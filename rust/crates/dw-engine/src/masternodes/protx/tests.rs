@@ -6,7 +6,7 @@
 //! the same data, and check that nothing is sent twice, nothing is lost and
 //! no row whose transaction may be out is deleted.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
@@ -3300,7 +3300,6 @@ fn r71_b_only_a_collateral_amount_is_locked() {
 fn r71_b_a_late_collateral_at_a_later_output_is_locked_alone() {
     use crate::masternodes::aggregate::fixtures::{coins, registration};
     use key_wallet::managed_account::transaction_record::{OutputDetail, OutputRole};
-    use platform_wallet::events::WalletEvent;
     let f = fx(Library::Accept);
     let funding = Transaction {
         version: 2,
@@ -3331,17 +3330,7 @@ fn r71_b_a_late_collateral_at_a_later_output_is_locked_alone() {
             value: MASTERNODE_COLLATERAL,
         })
         .to_vec();
-    (f.session.hub).apply_wallet_event(&WalletEvent::BlockProcessed {
-        wallet_id: f.wallet.0,
-        height: 8,
-        chain_lock: None,
-        inserted: vec![record],
-        updated: Vec::new(),
-        matured: Vec::new(),
-        balance: Default::default(),
-        account_balances: std::collections::BTreeMap::new(),
-        addresses_derived: Vec::new(),
-    });
+    f.block_event(vec![record]);
     f.collateral_pass();
     assert_eq!(f.locked(), HashSet::from([collateral]));
 }
@@ -3396,31 +3385,30 @@ impl Fx {
 
     /// The coins a build reads under a fresh fence: each with whether it is
     /// locked and whether it is reserved.
-    fn held(&self) -> Vec<(OutPoint, bool, bool)> {
+    fn held(&self) -> BTreeSet<(OutPoint, bool, bool)> {
         let fence = self.fence();
         let snapshot = self
             .engine
             .block_on(self.session.fenced_coins(&fence))
             .unwrap();
-        let mut coins: Vec<_> = (snapshot.coins.iter())
+        (snapshot.coins.iter())
             .map(|c| (c.utxo.outpoint, c.user_locked, c.reserved))
-            .collect();
-        coins.sort();
-        coins
+            .collect()
     }
 
-    /// `txs` in a block, through the engine's handling of a `BlockProcessed`
-    /// event built here (key-wallet's own block processing doesn't run).
-    fn block_event(&self, txs: Vec<Transaction>, context: TransactionContext) {
+    /// `inserted` in a block, through the engine's handling of a
+    /// `BlockProcessed` event built here (key-wallet's own block processing
+    /// doesn't run).
+    fn block_event(
+        &self,
+        inserted: Vec<key_wallet::managed_account::transaction_record::TransactionRecord>,
+    ) {
         use platform_wallet::events::WalletEvent;
         (self.session.hub).apply_wallet_event(&WalletEvent::BlockProcessed {
             wallet_id: self.wallet.0,
             height: 8,
             chain_lock: None,
-            inserted: txs
-                .into_iter()
-                .map(|tx| tx_record(tx, context.clone()))
-                .collect(),
+            inserted,
             updated: Vec::new(),
             matured: Vec::new(),
             balance: Default::default(),
@@ -3430,12 +3418,10 @@ impl Fx {
     }
 }
 
-/// Row 71 F4: a coin of exactly a collateral amount is reserved until its
-/// transaction's event reaches the history, as no read can tell before then
-/// whether that transaction is a ProRegTx naming it; then a ProRegTx's own
-/// collateral is locked and a plain transaction's coin is spendable. Both
-/// masternode types, a block and a ChainLocked block (key-wallet keeps no
-/// record of a ChainLocked first sighting in a funds account).
+/// Row 71 F4: a collateral-sized coin credited after the history loaded is
+/// reserved until its transaction's event reaches the history; then a
+/// ProRegTx's own collateral is locked and a plain transaction's coin is
+/// spendable. Both masternode types, a block and a ChainLocked block.
 #[test]
 fn r71_c_a_collateral_sized_coin_waits_for_its_transaction() {
     use crate::masternodes::aggregate::fixtures::{coins, null, registration};
@@ -3458,9 +3444,11 @@ fn r71_c_a_collateral_sized_coin_waits_for_its_transaction() {
             let collateral = OutPoint::new(reg.txid(), 0);
             f.hold(collateral, reg.output[0].clone());
             let (plain, coin) = f.paid(value);
-            let mut before = vec![(collateral, false, true), (coin, false, true)];
-            before.sort();
-            assert_eq!(f.held(), before, "{what}: a read before the event");
+            assert_eq!(
+                f.held(),
+                BTreeSet::from([(collateral, false, true), (coin, false, true)]),
+                "{what}: a read before the event"
+            );
             assert_eq!(
                 send_failure(f.prepare_send()),
                 SendFailure::AmountExceedsBalance { available: 0 },
@@ -3468,7 +3456,10 @@ fn r71_c_a_collateral_sized_coin_waits_for_its_transaction() {
             );
             assert!(f.locked().is_empty(), "{what}");
 
-            f.block_event(vec![reg, plain], context);
+            f.block_event(vec![
+                tx_record(reg, context.clone()),
+                tx_record(plain, context),
+            ]);
             f.clear_pending();
             let after = f.held();
             assert!(after.contains(&(coin, false, false)), "{what}: {after:?}");
@@ -3499,8 +3490,7 @@ fn r71_c_a_coin_of_another_amount_needs_no_history_entry() {
         f.credit_unseen(3, MASTERNODE_COLLATERAL + 1),
         f.credit_unseen(4, EVONODE_COLLATERAL + 1),
     ];
-    let mut expect: Vec<_> = coins.iter().map(|&o| (o, false, false)).collect();
-    expect.sort();
+    let expect: BTreeSet<_> = coins.iter().map(|&o| (o, false, false)).collect();
     assert_eq!(f.held(), expect);
     let inputs = f.prepare_send().unwrap();
     assert_eq!(inputs.len(), 1);
@@ -3530,7 +3520,7 @@ fn r71_d_an_abandoned_registration_seen_again_locks_its_collateral() {
             drop(f.held());
             assert!(f.locked().is_empty(), "{what}: abandoned");
 
-            f.block_event(vec![reg.clone()], context);
+            f.block_event(vec![tx_record(reg.clone(), context)]);
             if follower {
                 f.collateral_pass();
             } else {
