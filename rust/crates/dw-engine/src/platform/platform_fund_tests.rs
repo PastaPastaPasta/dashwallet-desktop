@@ -26,7 +26,7 @@ use platform_wallet::{
 };
 
 use super::errors::{CreditsError, PlatformError};
-use super::flows::{BudgetPurpose, FlowKind};
+use super::flows::{BudgetPurpose, FlowKind, RevokeCause};
 use super::lease::{CallPermit, FlowOutcome, FundingKey, Lease, StoredLock};
 use super::platform_addresses::{PlatformActivity, PlatformActivityKind, PlatformActivityState};
 use super::platform_addresses::{PlatformFundOutcome, PlatformFundQuote, PlatformFundState};
@@ -36,6 +36,7 @@ use super::registration::RegistrationWait;
 use super::registration_flow::{FundError, Spendable};
 use super::requests::tests::Fixture;
 use super::shielded_pool::MAX_LOCK_INPUTS;
+use super::unfinished;
 use super::unfinished_conformance::{self as conformance, End, Rig};
 use super::unfinished_funds::FundLocks;
 use super::unfinished_locks::{
@@ -241,7 +242,7 @@ impl FundLib for FakeFund {
     }
 
     async fn fee_bound(&self) -> Result<u64, PlatformError> {
-        Ok(1_000)
+        self.session.fee_bound_worst(self.wallet).await
     }
 
     fn funding_hold(&self) -> Option<RegistrationWait> {
@@ -395,9 +396,20 @@ fn quote_of(
     })
 }
 
-/// A fund of 1,000,000 duffs, its apply (if any) answered as scripted.
+/// What a quote of `duffs` asks for: the amount and the wallet's
+/// `fee_bound_worst`, exactly what the funding call's permit charges.
+fn exact_grant(fx: &Fixture, duffs: u64) -> u64 {
+    let (s, wallet) = (Arc::clone(&fx.s), fx.wallet);
+    duffs
+        + fx.engine
+            .block_on(async move { s.fee_bound_worst(wallet).await })
+            .unwrap()
+}
+
+/// A fund of 1,000,000 duffs under exactly its quote's grant, its apply
+/// (if any) answered as scripted.
 fn fund_of(fx: &Fixture, lib: &Arc<FakeFund>) -> Result<PlatformFundOutcome, CreditsError> {
-    let (wallet, grant) = (fx.wallet, grant(fx, 2_000_000, 0));
+    let (wallet, grant) = (fx.wallet, grant(fx, exact_grant(fx, 1_000_000), 0));
     run(fx, lib, move |s, lib| async move {
         fund::fund(&s, wallet, &*lib, 1_000_000, &grant).await
     })
@@ -514,13 +526,14 @@ fn a_fund_quote_names_the_fee_the_minimum_and_the_address() {
     let lib = Arc::new(FakeFund::new(&fx));
     assert_eq!(fee(), 56_000_000);
     let q = quote_of(&fx, &lib, 1_000_000).unwrap();
+    let total = exact_grant(&fx, 1_000_000);
     assert_eq!(
         (q.duffs, q.fee_duffs, q.total_duffs),
-        (1_000_000, 1_000, 1_001_000)
+        (1_000_000, total - 1_000_000, total)
     );
     assert_eq!((q.fee_credits, q.credits), (fee(), 1_000_000_000 - fee()));
     assert_eq!(q.to, lib.receive.to_bech32m_string(Network::Testnet));
-    assert_eq!((q.grant.max_duffs, q.grant.max_credits), (1_001_000, 0));
+    assert_eq!((q.grant.max_duffs, q.grant.max_credits), (total, 0));
     let min = fee() / 1_000 + 1;
     assert_eq!(quote_of(&fx, &lib, min).unwrap().credits, 1_000);
     assert_eq!(
@@ -543,7 +556,7 @@ fn a_fund_quote_refuses_what_core_cannot_fund() {
     assert_eq!(
         with(|l| l.spendable.duffs = 1_000_500).unwrap_err(),
         CreditsError::FundingInsufficient {
-            needed: 1_001_000,
+            needed: exact_grant(&fx, 1_000_000),
             available: 1_000_500,
         }
     );
@@ -1321,11 +1334,8 @@ fn a_fund_in_the_handoff_to_the_apply_refuses_the_next() {
     let release = Arc::new(tokio::sync::Notify::new());
     *lib.fund_gate.lock().unwrap() = Some(Arc::clone(&release));
     lib.answer(Answer::Done(None));
-    let (wallet, ga, gb) = (
-        fx.wallet,
-        grant(&fx, 2_000_000, 0),
-        grant(&fx, 2_000_000, 0),
-    );
+    let exact = exact_grant(&fx, 1_000_000);
+    let (wallet, ga, gb) = (fx.wallet, grant(&fx, exact, 0), grant(&fx, exact, 0));
     let (a, b) = run(&fx, &lib, move |s, lib| async move {
         let first = fund::fund(&s, wallet, &*lib, 1_000_000, &ga);
         let in_fund = || lib.in_fund.load(Ordering::SeqCst);
@@ -2183,4 +2193,256 @@ fn arming_names_what_it_did_and_undoing_touches_only_that() {
     assert!(fund_record(&fx, restored.txid).unwrap().restored);
     disarm(restored, Arming::Made);
     assert!(fund_record(&fx, restored.txid).is_none());
+}
+
+/// 0.2 fund needs_grant: the funding call charges its whole quote, so a
+/// grant of exactly the quote leaves no Funding budget, and the apply of
+/// the lock that call made still runs, on the signer taken before it. One
+/// Core lock, applied once, nothing pending.
+#[test]
+fn a_fund_under_exactly_its_quote_grant_applies_its_lock() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let quote = quote_of(&fx, &lib, 1_000_000).unwrap();
+    assert_eq!(quote.grant.max_duffs, exact_grant(&fx, 1_000_000));
+    lib.answer(Answer::Done(Some(944_000_000)));
+    let (wallet, grant) = (fx.wallet, grant(&fx, quote.grant.max_duffs, 0));
+    let out = run(&fx, &lib, move |s, lib| async move {
+        fund::fund(&s, wallet, &*lib, 1_000_000, &grant).await
+    })
+    .unwrap();
+    assert_eq!(
+        out.state,
+        PlatformFundState::Applied {
+            credits: 944_000_000
+        }
+    );
+    let outpoint = lib.outpoint(0);
+    assert_eq!(lib.funds.load(Ordering::SeqCst), 1, "one Core lock");
+    assert_eq!(lib.applied(), [outpoint], "applied once");
+    assert_eq!(*lib.signed.lock().unwrap(), [true]);
+    assert!(settled(&fx).contains(&outpoint.txid));
+    assert!(pending_of(&fx, &lib).is_empty());
+}
+
+/// Applies the proved fund lock `outpoint` on a lease whose funding call
+/// first spent its whole Funding budget, holding the signer that lease
+/// issued before that call (`keep_signer`) or asking the lease for it.
+fn apply_after_spent_funding(
+    fx: &Fixture,
+    lib: &Arc<FakeFund>,
+    outpoint: OutPoint,
+    keep_signer: bool,
+) -> Result<LockFinish, PlatformError> {
+    let (wallet, grant) = (fx.wallet, grant(fx, exact_grant(fx, 1_000_000), 0));
+    run(fx, lib, move |s, lib| async move {
+        let lease = (s.begin_lease(wallet, FlowKind::PlatformAddressFund, &[grant])).await?;
+        let held = locks::FundedLease::before_funding(lease.clone()).unwrap();
+        let key = FundingKey {
+            funding_type: AssetLockFundingType::AssetLockAddressTopUp,
+            identity_index: 0,
+            account: 0,
+        };
+        let step = format!("paddr/spent-{keep_signer}/funding");
+        let permit = (lib.funding_permit(&lease, step, key, 1_000_000))
+            .await
+            .unwrap();
+        permit.finish(true);
+        assert_eq!(lease.available(BudgetPurpose::Funding).unwrap(), 0);
+        let kind = FundLocks::new(&s, wallet, &*lib);
+        match keep_signer {
+            true => locks::finish(&kind, outpoint, || async { Ok(held) }).await,
+            false => locks::finish(&kind, outpoint, || async { Ok(lease) }).await,
+        }
+    })
+}
+
+/// A proved fund lock not applied yet, its funding call's lease gone.
+fn proved_unapplied_fund(fx: &Fixture, lib: &Arc<FakeFund>) -> OutPoint {
+    *lib.funding.lock().unwrap() = Script::Unproved;
+    fund_of(fx, lib).unwrap();
+    let outpoint = lib.outpoint(0);
+    lib.prove(outpoint);
+    lib.answer(Answer::Done(None));
+    outpoint
+}
+
+/// The kept signer is the fund's own call only: once a funding call spent
+/// a lease's whole Funding budget, an apply that asks the lease for its
+/// signer (as a resume, Finish and the recovery do) is still refused
+/// `needs_grant`, while one holding the signer the lease issued before
+/// that call applies the lock.
+#[test]
+fn a_spent_funding_budget_refuses_an_apply_that_did_not_take_its_signer_first() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let outpoint = proved_unapplied_fund(&fx, &lib);
+    assert_eq!(
+        apply_after_spent_funding(&fx, &lib, outpoint, false).unwrap_err(),
+        PlatformError::from(super::lease::LeaseError::NeedsGrant(BudgetPurpose::Funding))
+    );
+    assert!(lib.applied().is_empty(), "nothing applied on a spent lease");
+    assert_eq!(
+        apply_after_spent_funding(&fx, &lib, outpoint, true).unwrap(),
+        LockFinish::Applied
+    );
+    assert_eq!(lib.applied(), [outpoint]);
+    assert_eq!(lib.funds.load(Ordering::SeqCst), 1, "no new lock");
+}
+
+/// The lock an apply refused `needs_grant` leaves behind (as a fund did
+/// before its signer was kept) is listed proved and blocks a new fund; its
+/// Finish, a resume under a one-duff grant, applies that same lock.
+#[test]
+fn a_lock_a_refused_apply_left_finishes_under_one_duff_with_no_new_lock() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let outpoint = proved_unapplied_fund(&fx, &lib);
+    apply_after_spent_funding(&fx, &lib, outpoint, false).unwrap_err();
+    let txid = outpoint.txid.to_string();
+    assert_eq!(pending_of(&fx, &lib), [(txid.clone(), true, false)]);
+    assert_eq!(
+        quote_of(&fx, &lib, 1_000_000).unwrap_err(),
+        CreditsError::FundPending { txid }
+    );
+    lib.answer(Answer::Done(Some(944_000_000)));
+    assert_eq!(
+        resume_of(&fx, &lib, outpoint).unwrap(),
+        PlatformFundState::Applied {
+            credits: 944_000_000
+        }
+    );
+    assert_eq!(lib.applied(), [outpoint]);
+    assert_eq!(lib.funds.load(Ordering::SeqCst), 1, "no second Core lock");
+    assert!(pending_of(&fx, &lib).is_empty());
+}
+
+/// A grant funds one lock: the exact grant a fund redeemed is refused
+/// `grant_invalid` for a second (a redeemed grant begins no other lease),
+/// whatever the first fund's apply did.
+#[test]
+fn an_exact_grant_funds_one_lock() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    lib.answer(Answer::Done(None));
+    let (wallet, grant) = (fx.wallet, grant(&fx, exact_grant(&fx, 1_000_000), 0));
+    let again = grant.clone();
+    run(&fx, &lib, move |s, lib| async move {
+        fund::fund(&s, wallet, &*lib, 1_000_000, &grant).await
+    })
+    .unwrap();
+    let second = run(&fx, &lib, move |s, lib| async move {
+        fund::fund(&s, wallet, &*lib, 1_000_000, &again).await
+    });
+    assert_eq!(code(second), "platform.grant_invalid");
+    assert_eq!(lib.funds.load(Ordering::SeqCst), 1, "one Core lock");
+}
+
+/// The recovery's Finish (`finish_transfer`) of the lock a refused apply
+/// left applies that same lock under a one-duff grant, with no new lock.
+#[test]
+fn the_recovery_finish_applies_the_lock_a_refused_apply_left() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let outpoint = proved_unapplied_fund(&fx, &lib);
+    apply_after_spent_funding(&fx, &lib, outpoint, false).unwrap_err();
+    lib.answer(Answer::Done(Some(944_000_000)));
+    let (wallet, grant) = (fx.wallet, grant(&fx, 1, 0));
+    let finished = run(&fx, &lib, move |s, lib| async move {
+        unfinished::finish_fund(&s, wallet, &*lib, outpoint, &grant).await
+    });
+    assert_eq!(finished.unwrap(), LockFinish::Applied);
+    assert_eq!(lib.applied(), [outpoint]);
+    assert_eq!(lib.funds.load(Ordering::SeqCst), 1, "no new lock");
+    assert!(pending_of(&fx, &lib).is_empty());
+}
+
+/// An exact-grant fund's lock not applied before a restart is listed
+/// again after it, and a resume under a fresh lease applies that lock,
+/// with no new one.
+#[test]
+fn an_unapplied_exact_grant_lock_finishes_on_a_fresh_lease_after_a_reopen() {
+    let (mut w, lib) = fund_world();
+    let outpoint = own_open_fund(&w.f, &lib);
+    let row = (lib.tracked.lock().unwrap().iter())
+        .find(|l| l.out_point == outpoint)
+        .cloned()
+        .unwrap();
+    assert_eq!(lib.funds.load(Ordering::SeqCst), 1);
+    drop(lib);
+    w.reopen();
+    let mut again = FakeFund::new(&w.f);
+    again.receive = w.address(0);
+    let again = Arc::new(again);
+    again.track(row);
+    let txid = outpoint.txid.to_string();
+    assert_eq!(pending_of(&w.f, &again), [(txid, true, false)]);
+    again.answer(Answer::Done(Some(944_000_000)));
+    assert_eq!(
+        resume_of(&w.f, &again, outpoint).unwrap(),
+        PlatformFundState::Applied {
+            credits: 944_000_000
+        }
+    );
+    assert_eq!(again.applied(), [outpoint]);
+    assert_eq!(again.funds.load(Ordering::SeqCst), 0, "no new lock");
+    assert!(pending_of(&w.f, &again).is_empty());
+}
+
+/// The fund's lease revoked between its funding call and its apply: the
+/// kept signer applies nothing (the apply's call permit is refused), the
+/// fund ends `NotApplied` with the revocation's code, the lock stays
+/// pending, and a later Finish applies it once.
+#[test]
+fn a_lease_revoked_between_the_funding_and_the_apply_leaves_the_lock_for_finish() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let release = Arc::new(tokio::sync::Notify::new());
+    *lib.fund_gate.lock().unwrap() = Some(Arc::clone(&release));
+    lib.answer(Answer::Done(Some(944_000_000)));
+    let (wallet, grant) = (fx.wallet, grant(&fx, exact_grant(&fx, 1_000_000), 0));
+    let out = run(&fx, &lib, move |s, lib| async move {
+        let in_fund = || lib.in_fund.load(Ordering::SeqCst);
+        let revoke = async {
+            while !in_fund() {
+                tokio::task::yield_now().await;
+            }
+            let revoking = s.revoking_vault_op(RevokeCause::PassphraseChange, |_| Ok(()));
+            let open = async {
+                for _ in 0..100 {
+                    tokio::task::yield_now().await;
+                }
+                release.notify_one();
+            };
+            let (revoked, ()) = tokio::join!(revoking, open);
+            revoked.unwrap();
+        };
+        let (out, ()) = tokio::join!(fund::fund(&s, wallet, &*lib, 1_000_000, &grant), revoke);
+        out
+    })
+    .unwrap();
+    assert_eq!(
+        out.state,
+        PlatformFundState::NotApplied {
+            error: "platform.lease_revoked".into()
+        }
+    );
+    let outpoint = lib.outpoint(0);
+    assert!(
+        lib.applied().is_empty(),
+        "nothing applied on the revoked lease"
+    );
+    assert!(lib.signed.lock().unwrap().is_empty());
+    assert_eq!(
+        pending_of(&fx, &lib),
+        [(outpoint.txid.to_string(), true, false)]
+    );
+    assert_eq!(
+        resume_of(&fx, &lib, outpoint).unwrap(),
+        PlatformFundState::Applied {
+            credits: 944_000_000
+        }
+    );
+    assert_eq!(lib.applied(), [outpoint], "applied once");
+    assert_eq!(lib.funds.load(Ordering::SeqCst), 1, "no new lock");
 }

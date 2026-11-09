@@ -73,6 +73,18 @@ export const FUND_COPY = {
     checking: { title: "Checking", text: "This amount may already be on your Platform addresses; we can't confirm it yet." },
     notApplied: { title: "Locked, not applied", text: (why: string) => `Your Dash is locked but Dash Platform did not add it yet (${why}). Finish it from the Platform card: nothing is lost.` },
   },
+  approvalEnded: {
+    pending: (amount: string) =>
+      `Your ${amount} is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.`,
+    checking: "Checking that add stopped before Platform answered. Choose Check again: it checks the same lock and adds no more Dash.",
+    unknown: "Adding to Platform stopped before it finished. If the Platform card shows an add waiting, choose Finish there: it adds the same locked Dash, not more. Otherwise, try again.",
+    finish: "Finish",
+    checkAgain: "Check again",
+  },
+  grantInvalid: {
+    add: "The approval was not accepted, so nothing was locked. Try again.",
+    resume: "The approval was not accepted. Your locked Dash is still waiting: choose Finish again.",
+  },
   unseen: "Your add to Platform has an update.",
   show: "Show",
   close: "Close",
@@ -95,11 +107,45 @@ export function fundRowView(p: Pick<PendingPlatformFund, "duffs" | "state" | "co
   return { kind: "unfinished", text: FUND_COPY.card.unfinished(amount(p.duffs)), action: "finish" };
 }
 
-/** A refusal of the quote or the call, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. */
-export function fundErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string): string {
+/** The approval ended, or the vault locked, between a lock and its apply: the lock waits, unapplied. */
+const APPROVAL_ENDED = ["platform.needs_grant", "platform.lease_revoked", "platform.lease_expired"];
+const ENDED_BEFORE_APPLY = [...APPROVAL_ENDED, "platform.cancelled"];
+
+/** The request a refusal or outcome answers, and the wallet's adds not applied, when known. */
+export interface FundContext {
+  request: FundRequest | null;
+  pending?: readonly PendingPlatformFund[] | null;
+}
+
+/** What a refused Finish or Check again offers to run again: its own lock only, with that lock's row
+ * action, never another pending add. A new add's refusal offers nothing (a lock it made comes back as
+ * a `notApplied` outcome instead). */
+export function finishAfter(e: unknown, { request, pending }: FundContext): { txid: string; duffs: number; action: "finish" | "checkAgain" } | null {
+  if (!isAppError(e) || request?.kind !== "resume" || ![...APPROVAL_ENDED, "platform.grant_invalid"].includes(e.code)) return null;
+  const own = pending?.find((p) => p.txid === request.txid);
+  const action = own ? fundRowView(own, String).action : null;
+  return own && action ? { txid: own.txid, duffs: own.duffs, action } : null;
+}
+
+/** A "locked, not applied" outcome whose approval ended before the apply: the text to show, and Finish
+ * on its own lock; `null` for any other reason. `amount` is the lock's, when known. */
+export function endedBeforeApply(error: string, amount: string | null): string | null {
+  return ENDED_BEFORE_APPLY.includes(error) ? FUND_COPY.approvalEnded.pending(amount ?? "Dash") : null;
+}
+
+/** A refusal of the quote or the call, by code. `credits` shows a credit figure as Dash, `duffs` a duff
+ * figure; `ctx` is the request it answers. */
+export function fundErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, ctx: FundContext = { request: null }): string {
   if (!isAppError(e)) return failureText(e);
   const d = e.data;
+  if (APPROVAL_ENDED.includes(e.code)) {
+    const retry = finishAfter(e, ctx);
+    if (!retry) return FUND_COPY.approvalEnded.unknown;
+    return retry.action === "finish" ? FUND_COPY.approvalEnded.pending(duffs(retry.duffs)) : FUND_COPY.approvalEnded.checking;
+  }
   switch (e.code) {
+    case "platform.grant_invalid":
+      return ctx.request?.kind === "resume" ? FUND_COPY.grantInvalid.resume : FUND_COPY.grantInvalid.add;
     case "credits.below_minimum":
       return d?.kind === "limit" ? `Too small to add: the smallest amount is ${duffs(d.duffs)}.` : "Too small to add.";
     case "credits.funding_insufficient":

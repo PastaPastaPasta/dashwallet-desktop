@@ -382,6 +382,47 @@ test.describe("Home", () => {
     expect(errors).toEqual([]);
   });
 
+  test("an add whose approval ended after the lock says so and finishes the same lock", async ({ page }) => {
+    const errors = await open(page, "paddr-fund-approval-ended");
+    await page.getByTestId("platform-fund").click();
+    await page.getByTestId("platform-fund-amount").fill("0.5");
+    await page.getByTestId("platform-fund-next").click();
+    await page.getByTestId("platform-fund-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-fund-outcome-title")).toHaveText("Locked, not applied");
+    await expect(page.getByTestId("platform-fund-outcome-text")).toHaveText(
+      "Your 0.50 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
+    );
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("platform-fund-outcome-finish").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-fund-outcome-title")).toHaveText("Added to Platform");
+    await page.getByTestId("platform-fund-done").click();
+    await expect(page.getByTestId("platform-fund-unfinished")).toHaveCount(0);
+    const calls = await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_fund" || c === "resume_platform_fund"));
+    expect(calls).toEqual(["platform_fund", "resume_platform_fund"]);
+    expect(errors).toEqual([]);
+  });
+
+  test("a Finish refused before its apply offers Finish on the same lock again", async ({ page }) => {
+    const errors = await open(page, "paddr-fund-resume-ended");
+    await page.getByTestId("platform-fund-finish").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-fund-refusal")).toHaveText(
+      "Your 0.50 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
+    );
+    await expect(page.getByTestId("platform-fund-refused-back")).toHaveCount(0);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("platform-fund-refused-finish").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-fund-outcome-title")).toHaveText("Added to Platform");
+    await page.getByTestId("platform-fund-done").click();
+    await expect(page.getByTestId("platform-fund-unfinished")).toHaveCount(0);
+    const calls = await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_fund" || c === "resume_platform_fund"));
+    expect(calls).toEqual(["resume_platform_fund", "resume_platform_fund"]);
+    expect(errors).toEqual([]);
+  });
+
   test("a lock waiting for its proof stays as Pending: Finish applies it", async ({ page }) => {
     const errors = await open(page, "paddr-fund-proof-waiting");
     await expect(page.getByTestId("platform-fund-unfinished")).toContainText("was locked to add to Platform and is not applied yet.");

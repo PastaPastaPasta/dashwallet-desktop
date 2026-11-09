@@ -656,6 +656,20 @@ const SCENARIOS = {
     p.activity = [{ id: `fund-${txid}`, kind: "fromCore", state: "pending", credits: String(50_000_000n * 1000n - 56_000_000n), address: p.receive.address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 600, mayLand: false, estimated: true }, ...p.activity];
     return w;
   },
+  /** The next "Add from Dash wallet" locks, then its approval ends before the apply: "Locked, not applied" offers Finish. */
+  "paddr-fund-approval-ended": (t) => {
+    const w = base(t);
+    w.pending.platform!.nextFund = "approvalEnded";
+    return w;
+  },
+  /** A lock waiting to be applied whose first Finish is refused `platform.needs_grant`: the refusal offers Finish on it. */
+  "paddr-fund-resume-ended": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    p.funds = [{ txid: "f0dd".padEnd(64, "d"), duffs: 50_000_000, proved: true, consumptionUnknown: false, state: "ready" }];
+    p.nextResume = "needsGrant";
+    return w;
+  },
   /** A lock that may already be applied (`consumption_unknown`): "Checking", and Check again. */
   "paddr-fund-checking": (t) => {
     const w = base(t);

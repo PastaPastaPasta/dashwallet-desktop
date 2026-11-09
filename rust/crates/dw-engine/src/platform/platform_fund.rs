@@ -83,7 +83,8 @@ use super::registration_flow::{FundError, PwLib, RegistrationLib as Reg, Spendab
 use super::shielded_pool::{MAX_LOCK_INPUTS, shield_funding};
 use super::unfinished_funds::FundLocks;
 use super::unfinished_locks::{
-    self as locks, KindLock, LockFinish, LockOrigin, UnfinishedLock, UnfinishedState,
+    self as locks, ApplyAuthority, FundedLease, KindLock, LockFinish, LockOrigin, UnfinishedLock,
+    UnfinishedState,
 };
 use crate::{NetworkSession, WalletId};
 
@@ -430,15 +431,14 @@ pub(crate) async fn fund(
         }
         .into());
     }
-    let lease = authority(session, wallet, grant).await?;
-    // The apply's signer exists before the funding charges the budget
-    // (`topup.rs`).
-    lease
-        .uncounted_funding_signer()
+    // The apply's signer is taken before the funding charges the budget,
+    // which an exact grant leaves at 0, and kept for the apply.
+    let held = FundedLease::before_funding(authority(session, wallet, grant).await?)
         .map_err(PlatformError::from)?;
+    let lease = held.lease();
     let funded = lease
         .scope_step(Some(step.clone()), async {
-            let permit = (lib.funding_permit(&lease, step.clone(), funding_key(), duffs)).await?;
+            let permit = (lib.funding_permit(lease, step.clone(), funding_key(), duffs)).await?;
             let funded = lib.fund(duffs, &permit).await;
             permit.finish(funded.is_ok());
             funded
@@ -484,7 +484,7 @@ pub(crate) async fn fund(
     // lock open and is refused (`credits.fund_pending`).
     drop(_funding);
     let state = finish(session, wallet, lib, (outpoint, duffs), || async {
-        Ok(lease)
+        Ok(held)
     })
     .await?;
     Ok(PlatformFundOutcome { txid, state })
@@ -534,7 +534,7 @@ pub(crate) async fn resume(
 /// recovery's runner ([`locks::finish`] over [`FundLocks`]), the one apply
 /// path of a fund, its resume and the recovery's Finish; `lease_of` is
 /// asked only once every refusal that can be read beforehand has passed.
-async fn finish<F, Fut>(
+async fn finish<F, Fut, A>(
     session: &NetworkSession,
     wallet: WalletId,
     lib: &impl FundLib,
@@ -543,7 +543,8 @@ async fn finish<F, Fut>(
 ) -> Result<PlatformFundState, CreditsError>
 where
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<Lease, PlatformError>>,
+    Fut: Future<Output = Result<A, PlatformError>>,
+    A: ApplyAuthority,
 {
     let kind = FundLocks::new(session, wallet, lib);
     Ok(match locks::finish(&kind, outpoint, lease_of).await? {
