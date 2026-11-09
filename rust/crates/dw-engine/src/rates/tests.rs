@@ -211,6 +211,16 @@ fn usd(price: &'static str, at: u64) -> Answer {
     Ok(vec![("USD", price, at), ("EUR", "44", at)])
 }
 
+/// Polls `ready` until it holds, failing after 10 s. The service task applies
+/// an answer some time after it counts the request.
+fn eventually(what: &str, mut ready: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ready() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -499,14 +509,10 @@ fn off_undisclosed_or_not_mainnet_makes_no_request() {
     assert_eq!(rates.currencies(), Vec::new());
     // Mainnet opens: the task asks at once.
     rig.hub.mainnet_opened();
-    for _ in 0..100 {
-        if rig.requests() > 0 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    eventually("the first answer never showed", || {
+        rates.status().state == RateState::Fresh
+    });
     assert_eq!(rig.requests(), 1);
-    assert_eq!(rates.status().state, RateState::Fresh);
     // Off again: nothing more.
     rates
         .set_settings(settings(false, Some("USD"), true))
@@ -1035,20 +1041,12 @@ fn an_off_that_can_be_neither_saved_nor_removed_is_saved_on_a_later_tick() {
         "not saved while read-only"
     );
     mode(0o700);
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let file = stored_file(&rig);
-        if !file.settings.enabled {
-            assert!(file.rates.is_empty(), "no cached price");
-            assert_eq!(file.settings, settings(false, Some("USD"), true));
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the Off was never saved"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    eventually("the Off was never saved", || {
+        !stored_file(&rig).settings.enabled
+    });
+    let file = stored_file(&rig);
+    assert!(file.rates.is_empty(), "no cached price");
+    assert_eq!(file.settings, settings(false, Some("USD"), true));
     assert_eq!(rig.requests(), 1, "no request since the Off");
 }
 
