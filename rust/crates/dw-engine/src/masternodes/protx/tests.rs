@@ -245,8 +245,16 @@ impl Fx {
     }
 
     /// A confirmed coin `seed` of `value` at a fresh BIP44 receive address
-    /// (the same outpoint for the same seed after a restart).
+    /// (the same outpoint for the same seed after a restart), its funding
+    /// transaction in the history.
     fn credit(&self, seed: u8, value: u64) -> OutPoint {
+        let outpoint = self.credit_unseen(seed, value);
+        (self.session.hub.history).hold_funding(self.wallet, outpoint.txid);
+        outpoint
+    }
+
+    /// [`Self::credit`] before its transaction's event reaches the history.
+    fn credit_unseen(&self, seed: u8, value: u64) -> OutPoint {
         let session = Arc::clone(&self.session);
         let id = self.wallet;
         let inner = Arc::clone(&session);
@@ -3356,4 +3364,144 @@ fn r71_b_a_coin_read_leaves_an_existing_collateral_lock_alone() {
     let before = row();
     drop(f.fenced(&f.fence()));
     assert_eq!(row(), before);
+}
+
+impl Fx {
+    /// A transaction paying `value` to a fresh BIP44 receive address, its
+    /// output held by the wallet and the transaction not yet in the history.
+    fn paid(&self, value: u64) -> (Transaction, OutPoint) {
+        let session = Arc::clone(&self.session);
+        let (id, inner) = (self.wallet, Arc::clone(&session));
+        let address = self
+            .engine
+            .block_on(session.on_runtime(async move {
+                let wallet = inner.wallet(&id).await?;
+                Ok(wallet.core().next_receive_address_for_account(0).await?)
+            }))
+            .unwrap();
+        let tx = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: Vec::new(),
+            output: vec![TxOut {
+                value,
+                script_pubkey: address.script_pubkey(),
+            }],
+            special_transaction_payload: None,
+        };
+        let outpoint = OutPoint::new(tx.txid(), 0);
+        self.hold(outpoint, tx.output[0].clone());
+        (tx, outpoint)
+    }
+
+    /// The coins a build reads under a fresh fence: each with whether it is
+    /// locked and whether it is reserved.
+    fn held(&self) -> Vec<(OutPoint, bool, bool)> {
+        let fence = self.fence();
+        let snapshot = self
+            .engine
+            .block_on(self.session.fenced_coins(&fence))
+            .unwrap();
+        let mut coins: Vec<_> = (snapshot.coins.iter())
+            .map(|c| (c.utxo.outpoint, c.user_locked, c.reserved))
+            .collect();
+        coins.sort();
+        coins
+    }
+
+    /// `txs` in a block, through the wallet's event as SPV delivers it.
+    fn block_event(&self, txs: Vec<Transaction>, context: TransactionContext) {
+        use platform_wallet::events::WalletEvent;
+        (self.session.hub).apply_wallet_event(&WalletEvent::BlockProcessed {
+            wallet_id: self.wallet.0,
+            height: 8,
+            chain_lock: None,
+            inserted: txs
+                .into_iter()
+                .map(|tx| tx_record(tx, context.clone()))
+                .collect(),
+            updated: Vec::new(),
+            matured: Vec::new(),
+            balance: Default::default(),
+            account_balances: std::collections::BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        });
+    }
+}
+
+/// Row 71 F4: a coin of exactly a collateral amount is reserved until its
+/// transaction's event reaches the history, as no read can tell before then
+/// whether that transaction is a ProRegTx naming it; then a ProRegTx's own
+/// collateral is locked and a plain transaction's coin is spendable. Both
+/// masternode types, a block and a ChainLocked block (key-wallet keeps no
+/// record of a ChainLocked first sighting in a funds account).
+#[test]
+fn r71_c_a_collateral_sized_coin_waits_for_its_transaction() {
+    use crate::masternodes::aggregate::fixtures::{coins, null, registration};
+    use key_wallet::transaction_checking::BlockInfo;
+    for evonode in [false, true] {
+        for locked in [false, true] {
+            let what = format!("evonode: {evonode}, ChainLocked: {locked}");
+            let value = if evonode {
+                EVONODE_COLLATERAL
+            } else {
+                MASTERNODE_COLLATERAL
+            };
+            let context = if locked {
+                chain_locked(7)
+            } else {
+                TransactionContext::InBlock(BlockInfo::new(7, dashcore::BlockHash::all_zeros(), 0))
+            };
+            let f = fx(Library::Accept);
+            let reg = registration(null(0), evonode, 3, coins(&[value]));
+            let collateral = OutPoint::new(reg.txid(), 0);
+            f.hold(collateral, reg.output[0].clone());
+            let (plain, coin) = f.paid(value);
+            let mut before = vec![(collateral, false, true), (coin, false, true)];
+            before.sort();
+            assert_eq!(f.held(), before, "{what}: a read before the event");
+            assert_eq!(
+                send_failure(f.prepare_send()),
+                SendFailure::AmountExceedsBalance { available: 0 },
+                "{what}: a send before the event"
+            );
+            assert!(f.locked().is_empty(), "{what}");
+
+            f.block_event(vec![reg, plain], context);
+            f.clear_pending();
+            let after = f.held();
+            assert!(after.contains(&(coin, false, false)), "{what}: {after:?}");
+            assert!(
+                after
+                    .iter()
+                    .any(|&(o, locked, _)| o == collateral && locked),
+                "{what}: {after:?}"
+            );
+            assert_eq!(f.locked(), HashSet::from([collateral]), "{what}");
+            assert_eq!(
+                f.prepare_send().unwrap(),
+                vec![coin],
+                "{what}: a send after"
+            );
+        }
+    }
+}
+
+/// Row 71 F4: only a collateral amount waits for its transaction: a coin of
+/// any other amount whose transaction the history doesn't hold yet is
+/// spendable at once.
+#[test]
+fn r71_c_a_coin_of_another_amount_needs_no_history_entry() {
+    let f = fx(Library::Accept);
+    let coins = [
+        f.credit_unseen(2, MASTERNODE_COLLATERAL - 1),
+        f.credit_unseen(3, MASTERNODE_COLLATERAL + 1),
+        f.credit_unseen(4, EVONODE_COLLATERAL + 1),
+    ];
+    let mut expect: Vec<_> = coins.iter().map(|&o| (o, false, false)).collect();
+    expect.sort();
+    assert_eq!(f.held(), expect);
+    let inputs = f.prepare_send().unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert!(coins.contains(&inputs[0]), "{inputs:?}");
 }

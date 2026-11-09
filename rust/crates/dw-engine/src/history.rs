@@ -1299,6 +1299,37 @@ pub(crate) fn detail_of(
 }
 
 #[cfg(test)]
+impl HistoryStore {
+    /// Tests: `wallet`'s history holds `txid`, a transaction with no
+    /// outputs or payload, as a fixture coin's event would have left it
+    /// (an entry already there stays).
+    pub(crate) fn hold_funding(&self, wallet: WalletId, txid: Txid) {
+        use dashcore::hashes::Hash;
+        use key_wallet::transaction_checking::BlockInfo;
+        self.with_wallet(wallet, |h| {
+            h.txs.entry(txid).or_insert_with(|| TxEntry {
+                tx: Transaction {
+                    version: 2,
+                    lock_time: 0,
+                    input: Vec::new(),
+                    output: Vec::new(),
+                    special_transaction_payload: None,
+                },
+                context: TransactionContext::InChainLockedBlock(BlockInfo::new(
+                    1,
+                    dashcore::BlockHash::all_zeros(),
+                    0,
+                )),
+                instant_locked: false,
+                first_seen: None,
+                own_inputs: BTreeMap::new(),
+                abandoned: false,
+            });
+        });
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use dashcore::hashes::Hash;
     use dashcore::{BlockHash, OutPoint, PubkeyHash, ScriptBuf, TxIn, TxOut, Witness};

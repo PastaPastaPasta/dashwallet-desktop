@@ -3273,6 +3273,44 @@ fn a_wallet_opened_mid_session_refuses_spends_until_its_replay_resumes() {
     assert!(replaying(f.pay_from_the_draft(&draft)));
 }
 
+/// A wallet opened mid-session refuses spends until its history is
+/// loaded, so no coin read runs before the history holds the wallet's
+/// transactions.
+#[test]
+fn a_wallet_opened_mid_session_refuses_spends_until_its_history_is_loaded() {
+    use platform_wallet::changeset::CoreChangeSet;
+    let f = fixture(false);
+    let coin = f.late_coin(7, COIN, 150);
+    f.put_coin(coin.clone());
+    f.store_core(CoreChangeSet {
+        new_utxos: vec![coin],
+        synced_height: Some(1_000),
+        ..Default::default()
+    });
+    f.advance(1_000);
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_history.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = {
+        let (s, id) = (Arc::clone(&f.session), f.wallet);
+        f.session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    eventually("the history load's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    assert!(
+        replaying(f.pay_from_the_draft(&draft)),
+        "a payment before the history load"
+    );
+    pause.release.notify_one();
+    f.engine.block_on(load).unwrap().unwrap();
+    let p = f.pay_from_the_draft(&draft).unwrap();
+    f.engine.block_on(draft.abandon(p)).unwrap();
+}
+
 /// A stored replay this build cannot read (another format, or a start
 /// above its target), or a read that fails, holds spends until a rescan
 /// from the birth height.

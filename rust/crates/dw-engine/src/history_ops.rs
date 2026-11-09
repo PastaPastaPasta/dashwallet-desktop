@@ -158,6 +158,15 @@ impl NetworkSession {
 
     /// [`Self::load_history`] for some wallets (a wallet just loaded).
     pub(crate) async fn load_history_for(&self, ids: Vec<WalletId>) -> Result<(), EngineError> {
+        #[cfg(test)]
+        let pause = self.hub.pause_history.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            pause
+                .reached
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            pause.release.notified().await;
+        }
         let live = self.live()?;
         let db_path = self.data_dir().join(WALLET_DB_FILE);
         let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));

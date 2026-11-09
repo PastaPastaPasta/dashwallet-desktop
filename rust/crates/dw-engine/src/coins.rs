@@ -674,6 +674,25 @@ pub(crate) fn unsettled_spend(info: &ManagedWalletInfo) -> Option<Txid> {
     funding_accounts(accounts).find_map(pending)
 }
 
+/// The coins of exactly a masternode collateral amount whose funding
+/// transaction `history` doesn't hold for `wallet` ([`NetworkSession::coin_snapshot`]).
+fn unseen_collateral_sized(
+    history: &crate::history::HistoryStore,
+    wallet: WalletId,
+    coins: &[WalletCoin],
+) -> HashSet<OutPoint> {
+    use dw_protx::params::collateral_amount;
+    history.read(&wallet, |txs| {
+        (coins.iter())
+            .filter(|c| {
+                [collateral_amount(false), collateral_amount(true)].contains(&c.utxo.value())
+            })
+            .filter(|c| !txs.contains_key(&c.utxo.outpoint.txid))
+            .map(|c| c.utxo.outpoint)
+            .collect()
+    })
+}
+
 /// How many unspent outputs the asset-lock builder may fund from: every coin
 /// of the accounts platform-wallet's `ASSET_LOCK_FUNDING_SOURCES` pools
 /// (BIP44, BIP32, DashPay receiving), whatever its maturity, locks or
@@ -736,6 +755,15 @@ impl NetworkSession {
     /// dust-locks small foreign incoming coins (Dash Core: value ≤
     /// threshold, funding transaction not ours; a released dust lock is not
     /// renewed). Both only under the fence (module doc).
+    ///
+    /// A coin of exactly a masternode collateral amount whose transaction
+    /// the history doesn't hold yet is reserved: the wallet's event reaches
+    /// the history one task hop after the coin reaches the wallet, and until
+    /// then nothing says whether that transaction is a ProRegTx whose own
+    /// output this coin is (Core locks it as the coin arrives). Other coins
+    /// can't be a collateral and aren't held. When the history misses the
+    /// event (a lagged event bus) or fails to read at load, such a coin stays
+    /// reserved until the wallet is opened again.
     pub(crate) async fn coin_snapshot(
         &self,
         fence: &CoinFence,
@@ -747,11 +775,14 @@ impl NetworkSession {
             wallet_id.0,
             "the fence of another wallet"
         );
-        let (mut snapshot, lock_inputs) = {
+        let (mut snapshot, lock_inputs, unseen) = {
             let state = wallet.state().await;
+            let snapshot = read_coins(&state.core_wallet);
+            let unseen = unseen_collateral_sized(&self.hub.history, wallet_id, &snapshot.coins);
             (
-                read_coins(&state.core_wallet),
+                snapshot,
                 pending_lock_inputs(state.tracked_asset_locks.values()),
+                unseen,
             )
         };
         // Coins before the history: a ProRegTx that lands between the two
@@ -829,8 +860,10 @@ impl NetworkSession {
             coin.unresolved_lock = !lock_reserved && unresolved.contains(&o);
             // A lock's own input stays held as the lock's.
             let lock_held = lock_reserved || coin.unresolved_lock;
-            let spend_reserved =
-                reserved.contains(&o) || swept.contains(&o) || (spent.contains(&o) && !lock_held);
+            let spend_reserved = reserved.contains(&o)
+                || swept.contains(&o)
+                || (spent.contains(&o) && !lock_held)
+                || unseen.contains(&o);
             coin.lock_input = !spend_reserved && lock_held;
             coin.reserved = spend_reserved || lock_held;
         }

@@ -369,13 +369,16 @@ impl NetworkSession {
                 pause.release.notified().await;
             }
             this.resume_replay(&live.manager, id).await;
+            // Before spends are let in: a coin read holds back a
+            // collateral-sized coin the history doesn't hold yet.
+            let history = this.load_history_for(vec![id]).await;
             this.hub.update_wallet_state(id, |s| s.loading = false);
             this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;
             this.load_payment_locks(id).await;
             // Its contacts' profiles are fetched on its next pass (DP4-01 D12).
             this.expire_contact_profiles(&live.manager, id).await;
-            this.load_history_for(vec![id]).await?;
+            history?;
             this.hub.pump.mark_history(id, None);
             this.hub.pump.mark_balances(id);
             this.sink.emit(EngineEvent::WalletLoadChanged {

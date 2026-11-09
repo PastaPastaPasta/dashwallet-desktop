@@ -460,6 +460,9 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next wallet open before its replay is resumed.
     #[cfg(test)]
     pub(crate) pause_load: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next history load before it reads anything.
+    #[cfg(test)]
+    pub(crate) pause_history: Mutex<Option<Arc<crate::coins::TestPause>>>,
     #[cfg(test)]
     pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
@@ -554,6 +557,8 @@ impl SessionHub {
             pause_seen: Mutex::new(None),
             #[cfg(test)]
             pause_load: Mutex::new(None),
+            #[cfg(test)]
+            pause_history: Mutex::new(None),
             #[cfg(test)]
             pause_abandon: Mutex::new(None),
         }
