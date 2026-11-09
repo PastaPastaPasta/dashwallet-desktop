@@ -3194,6 +3194,29 @@ fn a_replay_the_hub_holds_keeps_its_record() {
     assert!(replaying(f.guard()));
 }
 
+/// A clean quit with the new chain at 901, below the old chain's height
+/// 1000 a fork left stored: the record survives, the reopen replays from
+/// `reached` and sends are back at the new tip; the record goes once the
+/// chain is stored at the old height.
+fn quit_below_then_past_the_old_height(f: Fixture, reached: u32) {
+    f.advance(901);
+    f.commit(901).unwrap();
+    let f = f.reopen();
+    assert_eq!(
+        f.record().map(|r| (r.target, r.reached, r.forked_from)),
+        Some((901, reached, 1_000)),
+        "the clean close kept the record"
+    );
+    assert_eq!(f.synced(), reached);
+    f.advance(901);
+    assert_eq!(f.guard().unwrap(), 901);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    let f = f.reopen();
+    assert_eq!((f.record(), f.synced()), (None, 1_000));
+    assert!(f.guard().is_ok());
+}
+
 /// A fork lowers the replay's target to the new chain, and a restart keeps
 /// it lowered: the replay is done at the shorter chain's tip, though the
 /// stored checkpoint stays above it.
@@ -3222,11 +3245,7 @@ fn a_fork_lowered_replay_target_stays_lowered_after_a_restart() {
     let guard = f.guard();
     eprintln!("ROW58 fork then restart: replay guard at the new tip 900 {guard:?}");
     assert_eq!(guard.unwrap(), 900, "the target went back above the chain");
-    f.advance(901);
-    f.commit(901).unwrap();
-    let f = f.reopen();
-    assert_eq!(f.record(), None);
-    assert!(f.guard().is_ok());
+    quit_below_then_past_the_old_height(f, 399);
 }
 
 /// Without a fork, a replay resumed after a restart is not done below
@@ -3592,8 +3611,8 @@ impl Fixture {
 }
 
 /// A fork lowers the running rescan's target with the record's: the
-/// rescan is back at the shorter chain's tip, and a clean close then ends
-/// the record.
+/// rescan is back at the shorter chain's tip; the record ends once the
+/// chain is stored at the old height.
 #[test]
 fn a_rescan_a_fork_shortened_is_back_at_the_new_tip() {
     let f = fixture(false);
@@ -3612,16 +3631,12 @@ fn a_rescan_a_fork_shortened_is_back_at_the_new_tip() {
         "the rescan waits for the old chain's height"
     );
     assert_eq!(guard.unwrap(), 900);
-    f.advance(901);
-    f.commit(901).unwrap();
-    let f = f.reopen();
-    assert_eq!(f.record(), None, "the clean close kept the record");
-    assert!(f.guard().is_ok());
+    quit_below_then_past_the_old_height(f, 399);
 }
 
 /// After a fork, a cancel leaves the checkpoint at the shorter chain's
-/// tip, and a rescan from the birth height then replays to that tip; a
-/// clean close ends its record.
+/// tip, and a rescan from the birth height then replays to that tip; its
+/// record ends once the chain is stored at the old height.
 #[test]
 fn a_fork_then_a_cancel_and_a_rescan_from_the_birth_height_complete_at_the_shorter_tip() {
     let f = fixture(false);
@@ -3650,11 +3665,7 @@ fn a_fork_then_a_cancel_and_a_rescan_from_the_birth_height_complete_at_the_short
         "ROW58 fork, cancel, rescan from the birth height: replay guard at the new tip 900 {guard:?}, record {record:?}"
     );
     assert_eq!(guard.unwrap(), 900, "the target went back above the chain");
-    f.advance(901);
-    f.commit(901).unwrap();
-    let f = f.reopen();
-    assert_eq!(f.record(), None);
-    assert!(f.guard().is_ok());
+    quit_below_then_past_the_old_height(f, 299);
 }
 
 /// The same after a restart: the stored checkpoint stays the old chain's,
@@ -3685,11 +3696,7 @@ fn a_fork_then_a_cancel_and_a_rescan_from_the_birth_height_complete_at_the_short
          {guard:?}, record {record:?}"
     );
     assert_eq!(guard.unwrap(), 900, "the target went back above the chain");
-    f.advance(901);
-    f.commit(901).unwrap();
-    let f = f.reopen();
-    assert_eq!(f.record(), None);
-    assert!(f.guard().is_ok());
+    quit_below_then_past_the_old_height(f, 299);
 }
 
 /// A stored checkpoint above the target of a record no fork lowered is
@@ -4405,6 +4412,53 @@ fn a_silent_truncation_drops_the_replaced_blocks_spends_from_the_history() {
     assert!(!reserved.contains(&coin), "the coin stays reserved");
 }
 
+/// A check for a fork waits for one being applied: a replay guard read
+/// while a heard fork has lowered the heights but not yet the history
+/// sees the history without the replaced spend.
+#[test]
+fn a_guard_during_a_forks_application_sees_its_history() {
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    use std::sync::Barrier;
+    let f = fixture(false);
+    let coin = f.credit(1, COIN);
+    let dropped = f.spend_of(7, &[coin]);
+    f.see_in(
+        &dropped,
+        TransactionContext::InBlock(BlockInfo::new(950, dashcore::BlockHash::all_zeros(), 9)),
+    );
+    f.advance(1_000);
+    f.truncate_silently(900);
+    let (reached, release) = (Arc::new(Barrier::new(2)), Arc::new(Barrier::new(2)));
+    *f.session.hub.pause_truncation.lock().unwrap() =
+        Some((Arc::clone(&reached), Arc::clone(&release)));
+    let (hub, wallet, txid) = (Arc::clone(&f.session.hub), f.wallet, dropped.txid());
+    let heard = std::thread::spawn(move || {
+        hub.apply_wallet_event(&platform_wallet::events::WalletEvent::ChainTruncated {
+            wallet_id: wallet.0,
+            height: 900,
+            txids: vec![txid],
+            unconfirmed_txids: Vec::new(),
+            restored_outpoints: Vec::new(),
+            balance: key_wallet::wallet::balance::WalletCoreBalance::new(COIN, 0, 0, 0),
+            account_balances: Default::default(),
+        });
+    });
+    reached.wait();
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        release.wait();
+    });
+    let guard = f.guard();
+    let gone = f.entry_of(dropped.txid());
+    heard.join().unwrap();
+    releaser.join().unwrap();
+    eprintln!(
+        "ROW5965 a guard during a heard fork's application: guard {guard:?}, spend mined at 950 {gone:?}"
+    );
+    assert_eq!(guard.unwrap(), 900);
+    assert_eq!(gone, None, "the guard read the history before the fork's");
+}
+
 /// Opus m1: a rescan from 400 to 1000, then a fork to 900 no event
 /// announced, then a cancel: the checkpoint goes back no higher than the
 /// new chain, and a rescan from the birth height ends at its tip.
@@ -4550,20 +4604,27 @@ fn a_wallet_stored_with_its_processed_height_behind_keeps_its_replay_target_at_o
 /// late, after the new chain's progress: nothing is lowered further.
 #[test]
 fn a_truncation_heard_after_it_was_found_lowers_nothing_further() {
-    let f = fixture(false);
-    f.credit(1, COIN);
-    f.advance(1_000);
-    f.commit(1_000).unwrap();
-    f.rescan(400).unwrap();
-    f.truncate_silently(900);
-    f.guard().unwrap_err();
-    f.advance(905);
-    f.commit(905).unwrap();
-    let before = (f.hub_heights(), f.record());
-    f.hear_truncation(900);
-    let after = (f.hub_heights(), f.record());
-    eprintln!("ROW5965 the event of a found truncation, late: before {before:?}, after {after:?}");
-    assert_eq!(before, after);
+    for rescan in [true, false] {
+        let f = fixture(false);
+        f.credit(1, COIN);
+        f.advance(1_000);
+        f.commit(1_000).unwrap();
+        if rescan {
+            f.rescan(400).unwrap();
+        }
+        f.truncate_silently(900);
+        let _ = f.guard();
+        f.advance(905);
+        f.commit(905).unwrap();
+        let before = (f.hub_heights(), f.record());
+        f.hear_truncation(900);
+        let after = (f.hub_heights(), f.record());
+        eprintln!(
+            "ROW5965 the event of a found truncation, late (a rescan's record {rescan}): before {before:?}, after {after:?}"
+        );
+        assert!(before.1.is_some());
+        assert_eq!(before, after);
+    }
 }
 
 /// A later fork's event, after a truncation the hub found, is applied:
@@ -4617,27 +4678,176 @@ fn a_truncation_found_after_its_event_was_heard_is_not_applied_again() {
     assert_eq!(progressed, after);
 }
 
-/// platform#5380: the persister keeps the old chain's checkpoint. A quit
-/// after a fork no event announced, before the new chain passes the old
-/// height: what the reopened wallet scans again.
+/// platform#5380: the store keeps the old chain's checkpoint. A quit after
+/// a fork no event announced, before the new chain passes the old height,
+/// reopens to a replay from where the fork was found (900, or up to the
+/// new chain's 905 when found after its progress), so the new chain's
+/// blocks up to the old height are scanned; the record goes once the
+/// checkpoint is back at the old one. The fork is found by a replay guard
+/// before the new chain's progress, by a guard after it, or with neither
+/// by a reconcile or at the latest by the close.
 #[test]
-fn a_quit_after_a_silent_truncation_below_the_old_height() {
-    for guard_read in [false, true] {
+fn a_quit_after_a_silent_truncation_below_the_old_height_replays_from_the_fork() {
+    for (guard_before, guard_after) in [(true, false), (false, false), (false, true)] {
         let f = fixture(false);
         f.credit(1, COIN);
         f.store_heights(1_000, 1_000);
         f.advance(1_000);
         f.truncate_silently(900);
+        if guard_before {
+            let _ = f.guard();
+        }
         f.advance(905);
         f.commit(905).unwrap();
-        if guard_read {
+        if guard_after {
             let _ = f.guard();
         }
         let record = f.record();
         let f = f.reopen();
         let (synced, reopened) = (f.synced(), f.record());
+        f.advance(950);
+        f.commit(950).unwrap();
+        let f = f.reopen();
+        let (again, at_950) = (f.synced(), f.record());
+        f.advance(1_000);
+        f.commit(1_000).unwrap();
+        let before_quit = f.record();
+        let f = f.reopen();
+        let (past, after) = (f.synced(), f.record());
         eprintln!(
-            "ROW5965 #5380 quit after a silent fork to 900 from 1000, new chain at 905, a guard read {guard_read}: record at the quit {record:?}, filter checkpoint after the reopen {synced}, record {reopened:?}"
+            "ROW5965 #5380 quit after a silent fork to 900 from 1000, new chain at 905, guard before {guard_before} after {guard_after}: record at the quit {record:?}; reopen: checkpoint {synced}, record {reopened:?}; at 950 reopen: checkpoint {again}, record {at_950:?}; at 1000 before the quit {before_quit:?}, reopen: checkpoint {past}, record {after:?}"
         );
+        let shape = |r: Option<crate::replay_record::ReplayRecord>| {
+            r.map(|r| (r.target, r.reached, r.forked_from))
+        };
+        let found = reopened.map_or(0, |r| r.reached);
+        assert!((900..=905).contains(&found), "found at {found}");
+        if guard_before {
+            assert_eq!(found, 900);
+        }
+        if guard_before || guard_after {
+            assert_eq!(shape(record), Some((905, found, 1_000)));
+        }
+        assert_eq!(
+            (synced, shape(reopened)),
+            (found, Some((905, found, 1_000)))
+        );
+        assert_eq!((again, shape(at_950)), (found, Some((950, found, 1_000))));
+        assert_eq!(shape(before_quit), Some((1_000, found, 1_000)));
+        assert_eq!((past, after), (1_000, None));
     }
+}
+
+/// Row 58's record of a replay a fork lowered survives a clean quit
+/// before the new chain passes the old height: the reopen replays from
+/// its start, below the fork.
+#[test]
+fn a_forks_lowered_record_survives_a_clean_quit_below_the_old_height() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    f.truncate(900);
+    f.advance(905);
+    f.commit(905).unwrap();
+    let record = f.record();
+    let f = f.reopen();
+    let (synced, reopened) = (f.synced(), f.record());
+    eprintln!(
+        "ROW5965 a fork lowered a rescan's record, clean quit at 905: record at the quit {record:?}; reopen: checkpoint {synced}, record {reopened:?}"
+    );
+    assert_eq!(
+        reopened.map(|r| (r.target, r.reached, r.forked_from)),
+        Some((905, 399, 1_000))
+    );
+    assert_eq!(synced, 399);
+}
+
+/// A store of the old chain whose note comes before a fork's, applied
+/// after the fork's record is written, does not raise its target back to
+/// the old height.
+#[test]
+fn an_old_chains_store_heard_after_a_forks_record_leaves_its_target() {
+    use crate::replay_record::ReplayNote;
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.truncate_silently(900);
+    f.settle();
+    let wallet = f.wallet;
+    let replay = Arc::clone(&f.session.live().unwrap().replay);
+    replay.note(ReplayNote::Committed {
+        wallet,
+        height: 1_000,
+    });
+    replay.note(ReplayNote::Truncated {
+        wallet,
+        height: 900,
+        from: 1_000,
+    });
+    let record = f.record();
+    eprintln!("ROW5965 the old chain's store at 1000 heard after a fork to 900: record {record:?}");
+    assert_eq!(
+        record.map(|r| (r.target, r.reached, r.forked_from)),
+        Some((900, 900, 1_000))
+    );
+}
+
+/// A fork's record goes once the new chain is stored past the old height:
+/// a quit then leaves none, and the reopen replays nothing.
+#[test]
+fn a_chain_past_the_old_height_at_the_quit_leaves_no_record() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.store_heights(1_000, 1_000);
+    f.advance(1_000);
+    f.truncate_silently(900);
+    let _ = f.guard();
+    f.advance(1_001);
+    f.commit(1_001).unwrap();
+    let record = f.record();
+    let f = f.reopen();
+    let (synced, reopened) = (f.synced(), f.record());
+    eprintln!(
+        "ROW5965 silent fork to 900, new chain stored at 1001: record at the quit {record:?}; reopen: checkpoint {synced}, record {reopened:?}"
+    );
+    assert_eq!((record, reopened, synced), (None, None, 1_001));
+}
+
+/// A fork at the highest checkpoint the wallet can have stored, or above
+/// it, leaves nothing to replay: no record is written.
+#[test]
+fn a_fork_at_the_stored_checkpoint_writes_no_record() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.hear_truncation(1_000);
+    let record = f.record();
+    eprintln!("ROW5965 a fork at the stored checkpoint 1000: record {record:?}");
+    assert_eq!(record, None);
+}
+
+/// After the reopen of a fork's replay, a send waits for the replay to the
+/// new chain's tip only, never for the chain to pass the old height.
+#[test]
+fn a_send_after_a_forks_reopen_waits_only_for_the_replay_to_the_tip() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.store_heights(1_000, 1_000);
+    f.advance(1_000);
+    f.truncate_silently(900);
+    let _ = f.guard();
+    f.advance(905);
+    f.commit(905).unwrap();
+    let f = f.reopen();
+    let replaying = f.guard();
+    f.advance(905);
+    let at_tip = f.guard();
+    eprintln!(
+        "ROW5965 reopen of a fork's replay from 900 to 905, old height 1000: guard while replaying {replaying:?}, at the tip {at_tip:?}"
+    );
+    assert!(matches!(replaying, Err(EngineError::RescanInProgress)));
+    assert_eq!(at_tip.unwrap(), 905);
 }

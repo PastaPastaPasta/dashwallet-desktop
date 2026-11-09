@@ -514,6 +514,14 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next resume between its record read and its rewind.
     #[cfg(test)]
     pub(crate) pause_resume: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next truncation between its heights and the rest.
+    #[cfg(test)]
+    pub(crate) pause_truncation: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
+    /// Held through each fork truncation's application
+    /// ([`Self::apply_truncation`]), and through a check for one
+    /// ([`Self::detect_truncation`]): a check waits for the heights and
+    /// the history of one being applied, not only its heights.
+    truncating: Mutex<()>,
 }
 
 impl SessionHub {
@@ -611,6 +619,9 @@ impl SessionHub {
             pause_abandon: Mutex::new(None),
             #[cfg(test)]
             pause_resume: Mutex::new(None),
+            #[cfg(test)]
+            pause_truncation: Mutex::new(None),
+            truncating: Mutex::new(()),
         }
     }
 
@@ -963,6 +974,7 @@ impl SessionHub {
     /// Returns whether it was applied.
     pub(crate) fn apply_truncation(
         &self,
+        _truncating: &std::sync::MutexGuard<'_, ()>,
         id: WalletId,
         height: u32,
         found: Truncated<'_>,
@@ -995,6 +1007,11 @@ impl SessionHub {
         let Some((from, flipped)) = lowered else {
             return false;
         };
+        #[cfg(test)]
+        if let Some((reached, release)) = self.pause_truncation.lock().unwrap().take() {
+            reached.wait();
+            release.wait();
+        }
         self.note_sweep_news(id, crate::coinjoin::SweepNews::Truncated { height });
         let changed = self
             .history
@@ -1034,6 +1051,7 @@ impl SessionHub {
         core: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
     ) -> Option<u32> {
         use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        let truncating = self.truncating.lock().unwrap_or_else(|p| p.into_inner());
         let height = core.last_processed_height();
         if !self
             .wallet_state(&id)
@@ -1060,6 +1078,7 @@ impl SessionHub {
             }
         });
         self.apply_truncation(
+            &truncating,
             id,
             height,
             Truncated {
@@ -1171,7 +1190,9 @@ impl SessionHub {
                 account_balances,
                 ..
             } => {
+                let truncating = self.truncating.lock().unwrap_or_else(|p| p.into_inner());
                 self.apply_truncation(
+                    &truncating,
                     id,
                     *height,
                     Truncated {

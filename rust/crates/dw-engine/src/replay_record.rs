@@ -40,7 +40,8 @@ pub(crate) struct ReplayRecord {
     pub cancelled: bool,
     /// When a fork lowered the target: the highest checkpoint the wallet
     /// can have stored before it (0: no fork did). A stored checkpoint at
-    /// it or below is the old chain's, which the replay does not reach.
+    /// it or below is the old chain's, which the replay does not reach, so
+    /// the record stays until the wallet's checkpoint is back at it.
     pub forked_from: u32,
 }
 
@@ -63,6 +64,12 @@ impl ReplayRecord {
             u8::from(self.cancelled),
             self.forked_from
         )
+    }
+
+    /// Whether a wallet whose checkpoint is `live` is past the old chain's
+    /// stored checkpoint, if a fork left one ([`Self::forked_from`]).
+    fn past_fork(&self, live: u32) -> bool {
+        live >= self.forked_from
     }
 
     /// A value this build cannot read, or one that starts its replay above
@@ -266,7 +273,10 @@ impl ReplayRecords {
     /// committed every event before it returned: a replay back at its
     /// target, with a store at the target or above committed and none of
     /// the wallet's failed this session, is stored whole, and its record
-    /// goes, unless the hub still holds it. The strict rule of
+    /// goes, unless the hub still holds it or the checkpoint is not back at
+    /// the old chain's a fork left stored. A fork's record first takes the
+    /// session's progress below that ([`Self::raise_forked`]), as its
+    /// commits' notes may not be applied yet. The strict rule of
     /// [`Self::committed`] is for a running session, whose adapter may
     /// still hold a batch made before the rewind.
     pub(crate) async fn close(&self, manager: &Manager, hub: &SessionHub) {
@@ -286,22 +296,29 @@ impl ReplayRecords {
         let wm = wm.read().await;
         let mut records = self.records.lock().await;
         for (wallet, (committed, failed)) in commits {
-            if failed || Self::held(hub, wallet) {
+            if failed {
                 continue;
             }
             let Some(live) = (wm.get_wallet_info(&wallet.0)).map(|i| i.core_wallet.synced_height())
             else {
                 continue;
             };
-            match self.load(&mut records, wallet).await {
-                Ok(Some(r)) if !r.cancelled && live >= r.target && committed >= r.target => {
-                    if let Err(e) = self.write(&mut records, wallet, None).await {
-                        tracing::warn!(error = %e, wallet = %wallet, "could not delete the finished replay record");
-                    }
-                }
-                Ok(_) => {}
+            let record = match self.load(&mut records, wallet).await {
+                Ok(Some(r)) => r,
+                Ok(None) => continue,
                 Err(e) => {
-                    tracing::warn!(error = %e, wallet = %wallet, "could not read the replay record")
+                    tracing::warn!(error = %e, wallet = %wallet, "could not read the replay record");
+                    continue;
+                }
+            };
+            // The session's commits whose notes are not applied yet.
+            let r = (self.raise(&mut records, wallet, record, committed.min(live))).await;
+            if Self::held(hub, wallet) {
+                continue;
+            }
+            if !r.cancelled && live >= r.target && committed >= r.target && r.past_fork(live) {
+                if let Err(e) = self.write(&mut records, wallet, None).await {
+                    tracing::warn!(error = %e, wallet = %wallet, "could not delete the finished replay record");
                 }
             }
         }
@@ -572,7 +589,8 @@ impl ReplayRecords {
     /// under its lock (`stale`), which a new rewind's target is not below,
     /// so a store above both follows the replay. A fork's lower target, or
     /// a resume's below the stored checkpoint, waits for a commit above
-    /// `stale` or a clean close. Nothing ends after a failed store of the
+    /// `stale` or a clean close; a fork's, also for the checkpoint back at
+    /// the old chain's stored one. Nothing ends after a failed store of the
     /// wallet (its later checkpoints are not stored), or while the hub
     /// holds it.
     async fn committed(
@@ -594,7 +612,9 @@ impl ReplayRecords {
                 .get(&wallet)
                 .copied(),
         );
-        self.raise_forked(wallet, height).await;
+        if let Some(live) = Self::live(manager, wallet).await {
+            self.raise_forked(wallet, height.min(live)).await;
+        }
         if committed.is_some_and(|(_, failed)| failed) || height <= stale.unwrap_or(0) {
             return;
         }
@@ -622,7 +642,7 @@ impl ReplayRecords {
         };
         let mut records = self.records.lock().await;
         match self.load(&mut records, wallet).await {
-            Ok(r) if due(r).is_some_and(|r| live >= r.target) => {
+            Ok(r) if due(r).is_some_and(|r| live >= r.target && r.past_fork(live)) => {
                 if let Err(e) = self.write(&mut records, wallet, None).await {
                     tracing::warn!(error = %e, wallet = %wallet, "could not delete the finished replay record");
                 }
@@ -637,23 +657,65 @@ impl ReplayRecords {
     /// A commit at `height` of a replay whose target a fork lowered, above
     /// that target and at most the old chain's height: the stored
     /// checkpoint cannot tell the new chain's progress from the old one's,
-    /// so the target follows the commit.
+    /// so the target follows the commit, up to the wallet's checkpoint: the
+    /// persister lags the wallet, so a store above it is the old chain's,
+    /// stored late. Applied to the record as it was before the truncations
+    /// noted after the commit, as the notes came.
     async fn raise_forked(&self, wallet: WalletId, height: u32) {
         let mut records = self.records.lock().await;
-        match self.load(&mut records, wallet).await {
-            Ok(Some(r)) if r.forked_from > 0 && r.target < height && height <= r.forked_from => {
-                let raised = ReplayRecord {
-                    target: height,
-                    ..r
-                };
-                if let Err(e) = self.write(&mut records, wallet, Some(raised)).await {
-                    tracing::warn!(error = %e, wallet = %wallet, "could not store the replay's progress after a fork");
-                }
+        match self.load_stored(&mut records, wallet).await {
+            Ok(Some(r)) => {
+                self.raise(&mut records, wallet, r, height).await;
             }
-            Ok(_) => {}
+            Ok(None) => {}
             Err(e) => {
                 tracing::warn!(error = %e, wallet = %wallet, "could not read the replay record")
             }
+        }
+    }
+
+    /// `record`, with its target raised to `height` when a fork lowered it
+    /// below and `height` is at most the old chain's ([`Self::raise_forked`]).
+    async fn raise(
+        &self,
+        records: &mut HashMap<WalletId, Option<ReplayRecord>>,
+        wallet: WalletId,
+        record: ReplayRecord,
+        height: u32,
+    ) -> ReplayRecord {
+        if record.forked_from == 0 || record.target >= height || height > record.forked_from {
+            return record;
+        }
+        let raised = ReplayRecord {
+            target: height,
+            ..record
+        };
+        match self.write(records, wallet, Some(raised)).await {
+            Ok(()) => raised,
+            Err(e) => {
+                tracing::warn!(error = %e, wallet = %wallet, "could not store the replay's progress after a fork");
+                record
+            }
+        }
+    }
+
+    /// `wallet`'s filter checkpoint, read under the manager's lock (taken
+    /// before the records').
+    async fn live(manager: &Weak<Manager>, wallet: WalletId) -> Option<u32> {
+        let manager = manager.upgrade()?;
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        (wm.get_wallet_info(&wallet.0)).map(|i| i.core_wallet.synced_height())
+    }
+
+    /// Applies every truncation noted so far to its wallet's record.
+    pub(crate) async fn apply_truncations(&self) {
+        let wallets: Vec<WalletId> = (self.truncations.lock().unwrap_or_else(|p| p.into_inner()))
+            .keys()
+            .copied()
+            .collect();
+        for wallet in wallets {
+            self.truncated(wallet).await;
         }
     }
 
@@ -670,8 +732,10 @@ impl ReplayRecords {
     /// height, not above it. The old target stays the bound of the
     /// in-session clear, and the record keeps the highest checkpoint the
     /// wallet can have stored before the fork, which a resume does not
-    /// replay to; so does a record written later this session. Returns the
-    /// record.
+    /// replay to; so does a record written later this session. With no
+    /// record, a stored checkpoint above the fork gets one from the fork:
+    /// the store keeps the old chain's checkpoint, which a reopen would
+    /// otherwise scan from. Returns the record.
     async fn truncate_record(
         &self,
         records: &mut HashMap<WalletId, Option<ReplayRecord>>,
@@ -689,7 +753,25 @@ impl ReplayRecords {
             let entry = forked.entry(wallet).or_default();
             *entry = (*entry).max(stored);
         }
-        let old = old?;
+        let Some(old) = old else {
+            if stored <= height {
+                return None;
+            }
+            let record = ReplayRecord {
+                target: height,
+                reached: height,
+                cancelled: false,
+                forked_from: stored,
+            };
+            self.note_stale(wallet, stored);
+            return match self.write(records, wallet, Some(record)).await {
+                Ok(()) => Some(record),
+                Err(e) => {
+                    tracing::warn!(error = %e, wallet = %wallet, "could not store the replay record of a fork");
+                    None
+                }
+            };
+        };
         self.note_stale(wallet, old.target);
         let record = ReplayRecord {
             target: old.target.min(height),

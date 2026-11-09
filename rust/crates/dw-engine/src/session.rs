@@ -907,6 +907,18 @@ impl NetworkSession {
         self.abort_resends();
         let report = manager.shutdown().await;
         self.hub.set_spv_running(false);
+        // A fork no trigger found this session is found now: the store
+        // keeps the old chain's checkpoint, which hides it after a reopen.
+        {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            for id in wm.list_wallets() {
+                if let Some(info) = wm.get_wallet_info(id) {
+                    self.hub.detect_truncation(WalletId(*id), &info.core_wallet);
+                }
+            }
+        }
+        live.replay.apply_truncations().await;
         if report.all_clean() {
             live.replay.close(&manager, &self.hub).await;
         }
