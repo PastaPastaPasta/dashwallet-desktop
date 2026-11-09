@@ -361,3 +361,58 @@ for (const theme of THEMES) {
     });
   }
 }
+
+test("ROW73 a payment of all the normal funds shows no refusal behind its result, and Close starts a new payment", async ({ page }) => {
+  await openPay(page);
+  // One unmixed coin and one still being mixed; the fixture's mixing figures are shares of the confirmed balance.
+  await world(page, (w) => {
+    const wallet = w.wallets[0];
+    const c = wallet.coins[0];
+    const coin = (vout: number, amount: number, extra: object) => ({ ...c, outpoint: { ...c.outpoint, vout }, amount, spendable: true, confirmations: 10, ...extra });
+    wallet.coins = [coin(1, 50_000_000, { coinjoinDenominated: false, coinjoinRounds: null }), coin(2, 100_001_000, { coinjoinDenominated: true, coinjoinRounds: 1 })];
+    const b = wallet.summary.balances!;
+    wallet.summary = { ...wallet.summary, balances: { ...b, confirmed: 150_001_000, total: b.total - b.confirmed + 150_001_000 } };
+    w.coinjoin.mixers[wallet.summary.walletId] = {
+      state: "idle",
+      stopReason: null,
+      status: { kind: "idle" },
+      progress: { overallPercent: 20, denominatedPercent: 100, partiallyMixedPercent: 100, mixedPercent: 0, averageRounds: 1 },
+      sessions: [],
+      queueSize: 0,
+    };
+  });
+  await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "coinJoin", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId }); })()`);
+  await page.getByTestId("pay-frequent-chip").first().click();
+  await page.getByTestId("pay-subtract-fee").check();
+  await page.getByTestId("pay-amount").fill("0.5");
+  await page.getByTestId("pay-fee-line").waitFor();
+  await page.getByTestId("pay-continue").and(page.locator(":enabled")).click();
+  await send(page);
+  await expect(page.getByTestId("pay-result-sent")).toBeVisible();
+  // The payment's events reach the form behind the result: wait until the app is quiet again.
+  const calls = () => page.evaluate(() => [...window.__dwFixture!.calls]);
+  const at = (await calls()).lastIndexOf("draft_broadcast");
+  await expect.poll(async () => (await calls()).length).toBeGreaterThan(at + 1);
+  let last = -1;
+  await expect
+    .poll(
+      async () => {
+        const n = (await calls()).length;
+        const quiet = n === last;
+        last = n;
+        return quiet;
+      },
+      { intervals: [750], timeout: 15_000 },
+    )
+    .toBe(true);
+  const form = page.getByTestId("pay-contact-form");
+  await expect(form.locator(".field-error")).toHaveCount(0);
+  await expect(page.getByTestId("pay-problem")).toHaveCount(0);
+
+  await page.getByTestId("pay-result-close").click();
+  await expect(page.getByTestId("pay-result")).toHaveCount(0);
+  await expect(page.getByTestId("pay-amount")).toHaveValue("");
+  await expect(form.locator(".field-error")).toHaveCount(0);
+  await expect(page.getByTestId("pay-continue")).toBeDisabled();
+  expect((await calls()).filter((c) => c === "draft_prepare" || c === "draft_broadcast")).toEqual(["draft_prepare", "draft_broadcast"]);
+});

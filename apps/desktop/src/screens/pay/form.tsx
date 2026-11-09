@@ -3,9 +3,10 @@
 // with the fee line and Review.
 
 import { useId, useState, type ReactNode, type Ref } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
 import { keys, useBackend } from "../../api/queries";
+import { navigate } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton } from "../../components/basics";
 import { FiatSecondary, FiatToggle, useFiatEntry } from "../../fiat/entry";
@@ -20,6 +21,37 @@ type Shown = ReturnType<typeof useDisplay>;
 
 /** Where a form is: editing, confirming, or showing the result. */
 export type Phase = { kind: "editing" } | { kind: "confirm"; confirmed: Confirmed; spec: DraftSpec } | { kind: "result"; outcome: Outcome };
+
+/** A Pay form's sheets (U-03): Review's confirm, then the result. While either is up the form
+ * estimates nothing (`held`), so the payment's own events re-check nothing behind them. A payment
+ * that went, or may have, ends the form at once (`clear`); its draft closes with the result, as
+ * unknown's Try again rebroadcasts through it. A failed one leaves the form as it was. */
+export function usePaySheets(walletId: string, draft: DraftApi, clear: () => void) {
+  const client = useQueryClient();
+  const [phase, setPhase] = useState<Phase>({ kind: "editing" });
+  const outcome = (o: Outcome) => {
+    if (o.kind !== "failed") clear();
+    setPhase({ kind: "result", outcome: o });
+  };
+  const done = (show: boolean) => {
+    if (phase.kind !== "result") return;
+    const o = phase.outcome;
+    if (o.kind !== "failed") {
+      void draft.close();
+      void client.invalidateQueries({ queryKey: keys.coinsAll(walletId) });
+    }
+    setPhase({ kind: "editing" });
+    if (show && o.kind === "sent") navigate("activity", { detail: o.txid });
+  };
+  return {
+    phase,
+    held: phase.kind === "confirm" || (phase.kind === "result" && phase.outcome.kind !== "failed"),
+    review: (confirmed: Confirmed, spec: DraftSpec) => setPhase({ kind: "confirm", confirmed, spec }),
+    cancel: () => setPhase({ kind: "editing" }),
+    outcome,
+    done,
+  };
+}
 
 export function FormField({
   label,
@@ -87,15 +119,16 @@ export function usePayAmount(shown: Shown, initial: string) {
 }
 
 /** What the chosen coin source can spend (the engine's `maxSpendable`), for "Available"; `undefined`
- * while it loads or when "Selected coins" has none yet. Under the coin keys, so coin events refresh it. */
-export function useAvailable(walletId: string, advanced: Advanced): number | undefined {
+ * while it loads or when "Selected coins" has none yet. Under the coin keys, so coin events refresh it,
+ * except while `hold` (a sheet is up). */
+export function useAvailable(walletId: string, advanced: Advanced, hold: boolean): number | undefined {
   const b = useBackend();
   const source = coinSource(advanced);
   const none = advanced.coins === "selected" && advanced.selected.length === 0;
   const available = useQuery({
     queryKey: [...keys.coinsAll(walletId), "available", source] as const,
     queryFn: () => b.maxSpendable(walletId, source, feeMode(advanced) ?? feeMode(DEFAULT_ADVANCED)!),
-    enabled: !none,
+    enabled: !none && !hold,
     retry: false,
   });
   return none ? undefined : available.data;
