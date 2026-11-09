@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { authorize, fixtureUrl } from "./helpers";
+import { authorize, fixtureUrl, openTransfer } from "./helpers";
 import { PAYEE } from "./wallet";
 
 // DEC-1058 fix round 1 (Sol's review): the cases the first batch's tests did not reach. Each test
@@ -332,38 +332,56 @@ test.describe("disabled reasons are visible and described", () => {
     return (await text.textContent())!.trim();
   }
 
-  test("the Shielded card's actions, Finish included, are described by the syncing text", async ({ page }) => {
+  test("Shielded's actions, Finish included, are described by the syncing text", async ({ page }) => {
+    const syncing = "Shielded is still syncing; try again when it finishes.";
     await page.goto(fixtureUrl("shielded-syncing-pending", "light"));
     await page.getByTestId("shielded-card").waitFor();
-    for (const id of ["shielded-receive-open", "shielded-send", "shielded-add", "shielded-out", "shielded-finish"]) {
-      expect(await reasonOf(page, id)).toContain("Shielded is still syncing; try again when it finishes.");
+    expect(await reasonOf(page, "shielded-finish")).toContain(syncing);
+    for (const route of ["coreToShielded", "shieldedToCore"] as const) {
+      await openTransfer(page, route);
+      for (const id of ["transfer-max", "transfer-continue"]) expect(await reasonOf(page, id)).toContain(syncing);
+      await page.getByTestId("transfer-cancel").click();
     }
+    await page.getByTestId("sidebar-receive").click();
+    expect(await reasonOf(page, "shielded-receive-open")).toContain(syncing);
+    await page.getByTestId("sidebar-pay").click();
+    expect(await reasonOf(page, "shielded-send")).toContain(syncing);
   });
 
-  test("the Shielded card says why Send and Move wait with nothing in Shielded", async ({ page }) => {
+  test("Send and Move from Shielded say why they wait with nothing in Shielded", async ({ page }) => {
     await page.goto(fixtureUrl("shielded-empty", "light"));
     await page.getByTestId("shielded-card").waitFor();
-    for (const id of ["shielded-send", "shielded-out"]) expect(await reasonOf(page, id)).toContain("Nothing in Shielded to send yet.");
-    await expect(page.getByTestId("shielded-add")).toBeEnabled();
+    await openTransfer(page, "shieldedToCore");
+    expect(await reasonOf(page, "transfer-continue")).toContain("Nothing in Shielded to send yet.");
+    await page.getByTestId("transfer-cancel").click();
+    await openTransfer(page, "coreToShielded");
+    await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
+    await expect(page.getByTestId("transfer-amount")).toBeEnabled();
+    await page.getByTestId("transfer-cancel").click();
+    await page.getByTestId("sidebar-pay").click();
+    expect(await reasonOf(page, "shielded-send")).toContain("Nothing in Shielded to send yet.");
   });
 
-  test("Shielded's Next says what is missing, and waits while Shielded syncs", async ({ page }) => {
+  test("Transfer's Continue says what is missing, and waits while Shielded syncs", async ({ page }) => {
     await open(page);
-    await page.getByTestId("shielded-add").click();
-    expect(await reasonOf(page, "shielded-next")).toBe("Enter an amount first.");
-    await page.getByTestId("shielded-amount").fill("1");
-    await expect(page.getByTestId("shielded-next")).toBeEnabled();
+    await openTransfer(page, "coreToShielded");
+    expect(await reasonOf(page, "transfer-continue")).toBe("Enter an amount first.");
+    await page.getByTestId("transfer-amount").fill("1");
+    await expect(page.getByTestId("transfer-continue")).toBeEnabled();
     // Readiness lost with the form open: Next waits too.
     await page.evaluate(`(() => { const f = window.__dwFixture; f.world.pending.shielded.ready = false; f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "startup" } }); f.emit({ kind: "eventsOverflowed" }); })()`);
     // The form stays open; Confirm and Next both wait.
-    expect(await reasonOf(page, "shielded-next")).toContain("Shielded is still syncing; try again when it finishes.");
+    expect(await reasonOf(page, "transfer-continue")).toContain("Shielded is still syncing; try again when it finishes.");
   });
 
   test("an inactive Shielded card has no reason lines for actions it does not show", async ({ page }) => {
     await page.goto(fixtureUrl("shielded-inactive", "light"));
     await page.getByTestId("shielded-card").waitFor();
-    await expect(page.getByTestId("shielded-send")).toHaveCount(0);
+    await expect(page.getByTestId("shielded-card-transfer")).toHaveCount(0);
     await expect(page.getByTestId("shielded-card-why")).toHaveCount(0);
+    await page.getByTestId("sidebar-pay").click();
+    await page.getByTestId("pay-tabs-address").waitFor();
+    await expect(page.getByTestId("shielded-send")).toHaveCount(0);
   });
 
   test("Pay keeps the fee line while it re-estimates, and does not ask for what is entered", async ({ page }) => {

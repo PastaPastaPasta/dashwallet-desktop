@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { SECOND_WALLET_ID } from "../src/fixture/scenarios";
-import { authorize, fixtureUrl } from "./helpers";
+import { authorize, fixtureUrl, moveFromPlatform, openTransfer, platformMoveWhy } from "./helpers";
 
 // The 0.1 integration step (E1 shielded m4 v47 + E2 Platform addresses on main): the cases the
 // integration brief adds. Each test failed before its change.
@@ -21,7 +21,7 @@ test.describe("item 2: Move waits for Activity's check", () => {
     await open(page, "funded", "&hold=platform_activity");
     await page.evaluate(`window.__dwFixture.release("platform_activity")`);
     await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "pending"));
-    await page.getByTestId("platform-move").click();
+    await moveFromPlatform(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
@@ -32,24 +32,27 @@ test.describe("item 2: Move waits for Activity's check", () => {
     await page.keyboard.press("Enter");
     await page.getByTestId("hero").waitFor();
     await expect(page.getByTestId("platform-card")).toBeVisible();
-    // Read now, not retried: the button is there and disabled, with its reason beside it.
-    expect(await page.getByTestId("platform-move").isDisabled()).toBe(true);
+    // Read now, not retried: the card says why, and Transfer from Platform waits with the same reason.
     expect(await page.getByTestId("platform-move-why").textContent()).toContain("Checking for an unfinished move");
+    await page.getByTestId("platform-card-transfer").click();
+    expect(await page.getByTestId("transfer-continue").isDisabled()).toBe(true);
+    expect(await page.getByTestId("transfer-unavailable").textContent()).toContain("Checking for an unfinished move");
+    await page.getByTestId("transfer-cancel").click();
     await page.evaluate(`window.__dwFixture.release("platform_activity")`);
     await expect(page.getByTestId("platform-card")).toContainText("Do not move again");
-    await expect(page.getByTestId("platform-move")).toHaveCount(0);
+    expect(await platformMoveWhy(page)).toContain("Do not move again");
   });
 
   test("a failed Activity read holds Move back and can be tried again", async ({ page }) => {
     await open(page, "funded", "&fail=platform_activity:none");
-    await expect(page.getByTestId("platform-move")).toBeDisabled();
     await expect(page.getByTestId("platform-move-why")).toContainText("Could not check for an unfinished move.");
     await expect(page.getByTestId("platform-move-check-again")).toBeVisible();
+    expect(await platformMoveWhy(page)).toContain("Could not check for an unfinished move.");
   });
 
   test("a pending move that turns up while the confirmation is open replaces Confirm with View in Activity", async ({ page }) => {
     await open(page);
-    await page.getByTestId("platform-move").click();
+    await moveFromPlatform(page);
     await expect(page.getByTestId("platform-move-quote")).toBeVisible();
     await expect(page.getByTestId("platform-move-go")).toBeEnabled();
     await world(page, (w) => {
@@ -60,7 +63,7 @@ test.describe("item 2: Move waits for Activity's check", () => {
     await expect(page.getByTestId("platform-move-blocked")).toContainText("Do not move again");
     await expect(page.getByTestId("platform-move-go")).toHaveCount(0);
     await page.getByTestId("platform-move-blocked-view").click();
-    await expect(page.getByTestId("platform-move-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
     await expect(page.getByTestId("tx-list")).toBeVisible();
   });
 });
@@ -70,8 +73,8 @@ test.describe("item 3: movable and dust, the fee actually taken", () => {
     await open(page, "platform-dust");
     await expect(page.getByTestId("breakdown-platform")).toContainText("0.00");
     await expect(page.getByTestId("platform-card")).toContainText("cannot be moved to your Dash wallet right now");
-    await expect(page.getByTestId("platform-move")).toHaveCount(0);
     await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
+    expect(await platformMoveWhy(page)).toContain("cannot be moved to your Dash wallet right now");
   });
 
   test("a remainder that cannot be moved is named beside the movable amount, and not counted", async ({ page }) => {
@@ -79,12 +82,13 @@ test.describe("item 3: movable and dust, the fee actually taken", () => {
     await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
     await expect(page.getByTestId("platform-card-amount")).toContainText("0.4");
     await expect(page.getByTestId("platform-card-dust")).toContainText("0.000015 tDASH");
-    await expect(page.getByTestId("platform-move")).toBeEnabled();
+    await moveFromPlatform(page);
+    await expect(page.getByTestId("platform-move-go")).toBeEnabled();
   });
 
   test("the move's outcome names the fee the engine took", async ({ page }) => {
     await open(page);
-    await page.getByTestId("platform-move").click();
+    await moveFromPlatform(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-text")).toContainText("The network fee was 0.00002 tDASH.");
@@ -109,7 +113,7 @@ test.describe("item 7: replaced moves, an unproved arrival, the 50-coin refusal"
   test("a move whose arrival is not proved shows what left Platform, and no 'arrives' amount", async ({ page }) => {
     await open(page);
     await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "unproved"));
-    await page.getByTestId("platform-move").click();
+    await moveFromPlatform(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     const text = page.getByTestId("platform-move-outcome-text");
@@ -120,7 +124,7 @@ test.describe("item 7: replaced moves, an unproved arrival, the 50-coin refusal"
   test("the 50-coin refusal shows the engine's own words", async ({ page }) => {
     await open(page);
     await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "tooManyCoins"));
-    await page.getByTestId("platform-move").click();
+    await moveFromPlatform(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-refusal")).toHaveText("Your Platform addresses hold too many separate balances to move at once. Consolidate coins first.");
@@ -157,10 +161,10 @@ test.describe("item 9: a lock that may already be applied is 'Checking'", () => 
     await expect(page.getByTestId("shielded-finish")).toHaveText("Check again");
     await expect(page.getByTestId("shielded-unfinished")).toHaveCount(0);
     // It blocks no new shield.
-    await expect(page.getByTestId("shielded-add")).toBeEnabled();
-    await page.getByTestId("shielded-add").click();
-    await page.getByTestId("shielded-amount").fill("0.001");
-    await page.getByTestId("shielded-next").click();
+    await openTransfer(page, "coreToShielded");
+    await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
+    await page.getByTestId("transfer-amount").fill("0.001");
+    await page.getByTestId("transfer-continue").click();
     await page.getByTestId("shielded-go").click();
     await authorize(page);
     await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Added to Shielded");
@@ -180,10 +184,17 @@ test.describe("item 9: a lock that may already be applied is 'Checking'", () => 
 
 test.describe("item 10: a wallet with an unrecorded spend asks before it sends (DEC-1057)", () => {
   const toConfirm = async (page: Page, action: "send" | "out") => {
-    await page.getByTestId(`shielded-${action}`).click();
-    await page.getByTestId("shielded-amount").fill("0.5");
-    if (action === "send") await page.getByTestId("shielded-to").fill("tdash1zq0k8yv6m2e3x9n4c5w7a8s0d2f4g6h8j0k2l4m6n8p0q2r4s6t8u0v2w4x6y8z0a2c4e6g8j0m2");
-    await page.getByTestId("shielded-next").click();
+    if (action === "send") {
+      await page.getByTestId("sidebar-pay").click();
+      await page.getByTestId("shielded-send").click();
+      await page.getByTestId("shielded-amount").fill("0.5");
+      await page.getByTestId("shielded-to").fill("tdash1zq0k8yv6m2e3x9n4c5w7a8s0d2f4g6h8j0k2l4m6n8p0q2r4s6t8u0v2w4x6y8z0a2c4e6g8j0m2");
+      await page.getByTestId("shielded-next").click();
+    } else {
+      await openTransfer(page, "shieldedToCore");
+      await page.getByTestId("transfer-amount").fill("0.5");
+      await page.getByTestId("transfer-continue").click();
+    }
     await page.getByTestId("shielded-go").click();
   };
 
@@ -213,9 +224,9 @@ test.describe("item 10: a wallet with an unrecorded spend asks before it sends (
 
   test("a shield is not held back, and a send with no confirmation shows the engine's refusal text", async ({ page }) => {
     await open(page, "shielded-unrecorded");
-    await page.getByTestId("shielded-add").click();
-    await page.getByTestId("shielded-amount").fill("0.001");
-    await page.getByTestId("shielded-next").click();
+    await openTransfer(page, "coreToShielded");
+    await page.getByTestId("transfer-amount").fill("0.001");
+    await page.getByTestId("transfer-continue").click();
     await page.getByTestId("shielded-go").click();
     await expect(page.getByTestId("shielded-unrecorded-dialog")).toHaveCount(0);
     await authorize(page);

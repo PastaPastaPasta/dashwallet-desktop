@@ -23,7 +23,8 @@ import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
 import { authorizeSet, checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
-import { newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
+import { SHIELD_LOCK_INPUTS } from "./coinjoin";
+import { lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
 import { FIXTURE_NOW } from "./wallet";
 
 /** What a move costs the fixture's wallet, in credits. */
@@ -367,6 +368,8 @@ function fundQuote(ctx: Ctx, walletId: string, duffs: number, call: string): Pla
   const totalDuffs = duffs + FUND_LOCK_FEE_DUFFS;
   const available = w.summary.balances?.confirmed ?? 0;
   if (totalDuffs > available) throw fail("credits.funding_insufficient", "insufficient funds", { kind: "duffs", needed: totalDuffs, available });
+  const inputs = lockInputs(w, totalDuffs);
+  if (inputs > SHIELD_LOCK_INPUTS) throw fail("credits.too_many_inputs", "too many inputs", { kind: "number", value: inputs });
   return { duffs, feeDuffs: FUND_LOCK_FEE_DUFFS, totalDuffs, feeCredits: String(FUND_FEE_CREDITS), credits: String(fundCredits(duffs)), to: p.receive.address, grant: { maxDuffs: totalDuffs, maxCredits: "0" } };
 }
 

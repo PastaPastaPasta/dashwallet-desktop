@@ -24,8 +24,6 @@ export type FundStep = "form" | "confirm" | "running" | "done" | "refused";
 export type FundRequest = { kind: "add"; duffs: number } | { kind: "resume"; txid: string };
 
 export const FUND_COPY = {
-  action: "Add from Dash wallet",
-  title: "Add from Dash wallet",
   card: {
     empty: "Nothing on your Platform addresses yet. Add Dash from your wallet to use it on Dash Platform.",
     unfinished: (amount: string) => `${amount} was locked to add to Platform and is not applied yet.`,
