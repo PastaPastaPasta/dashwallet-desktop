@@ -345,18 +345,21 @@ describe("Dash wallet → Platform quotes only on Continue", () => {
     expect(fill.mock.calls).toEqual([[2_899_999_000], [2_899_999_000]]);
   });
 
-  it("a refused re-quote leaves the field unchanged and shows its refusal", async () => {
+  it("a refused re-quote leaves the amount field unchanged and shows its refusal", async () => {
     const { timers } = manualTimers();
     const platformFundQuote = vi.fn(async (_wallet: string, d: number): Promise<never> => {
       if (d > 2_899_999_000) throw appError("credits.funding_insufficient", { kind: "duffs", needed: d + 1_000, available: 2_900_000_000 });
       throw appError("credits.too_many_inputs", { kind: "number", value: 60 });
     });
-    const t = new TransferModel(flows(), { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
-    const fill = vi.fn();
+    const f = flows();
+    const t = new TransferModel(f, { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
+    t.start("coreToPlatform");
+    // The field as the sheet binds it: the fund flow's text, which Max fills.
+    f.fund.setText("0.3");
     t.typed("coreToPlatform", 30_000_000);
-    await t.max("coreToPlatform", 3_000_000_000, fill);
+    await t.max("coreToPlatform", 3_000_000_000, (duffs) => f.fund.setText(String(duffs / 1e8)));
     expect(platformFundQuote.mock.calls.map(([, d]) => d)).toEqual([3_000_000_000, 2_899_999_000]);
-    expect(fill).not.toHaveBeenCalled();
+    expect(f.fund.text).toBe("0.3");
     expect(t.lines.coreToPlatform.state).toMatchObject({ kind: "refused", amount: 2_899_999_000, error: { code: "credits.too_many_inputs" } });
   });
 
