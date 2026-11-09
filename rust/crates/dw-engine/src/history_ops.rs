@@ -83,9 +83,6 @@ pub(crate) fn owned_scripts(info: &PlatformWalletInfo) -> HashMap<ScriptBuf, Own
     map
 }
 
-/// Txids of persisted transaction records per wallet, read from
-/// `wallet.sqlite` over a read-only connection (SqlitePersister has no
-/// enumeration API; `get_core_tx_record` then reads each record).
 /// One wallet's stored transactions: those whose record is stored, and the
 /// recordless ones (height-only rows, kept for their coins).
 #[derive(Default, Clone)]
@@ -94,6 +91,9 @@ struct Persisted {
     recordless: HashSet<Txid>,
 }
 
+/// Txids of the stored transactions per wallet, read from `wallet.sqlite`
+/// over a read-only connection (SqlitePersister has no enumeration API;
+/// `get_core_tx_record` then reads each record).
 fn persisted_txids(db_path: &Path) -> Result<HashMap<[u8; 32], Persisted>, rusqlite::Error> {
     let conn = rusqlite::Connection::open_with_flags(
         db_path,
@@ -157,9 +157,9 @@ struct LoadedHistory {
     records: Vec<TransactionRecord>,
     seen: Vec<(String, u64)>,
     abandoned: Vec<(Txid, dashcore::Transaction)>,
-    /// The wallet's recordless stored transactions, when every stored
-    /// record was listed and read; else none.
-    recordless: HashSet<Txid>,
+    /// Every stored transaction of the wallet, with a record or not, when
+    /// every stored record was listed and read; else none.
+    stored: HashSet<Txid>,
 }
 
 impl NetworkSession {
@@ -233,8 +233,10 @@ impl NetworkSession {
                         records,
                         seen,
                         abandoned,
-                        recordless: if clean {
-                            persisted.recordless
+                        stored: if clean {
+                            (persisted.records.into_iter())
+                                .chain(persisted.recordless)
+                                .collect()
                         } else {
                             HashSet::new()
                         },
@@ -260,7 +262,7 @@ impl NetworkSession {
             records,
             seen,
             abandoned,
-            recordless,
+            stored,
         } in loaded
         {
             let info = wm.get_wallet_info(&wallet.0);
@@ -273,15 +275,15 @@ impl NetworkSession {
                         .collect()
                 })
                 .unwrap_or_default();
-            // The wallet's coins with no record to load, stored with none:
-            // under the same guard as the records, so a coin credited after
-            // them, or not yet stored, waits for its own event
-            // ([`NetworkSession::coin_snapshot`]). A load that failed to
-            // read a record keeps every coin waiting.
+            // The wallet's coins whose transaction is stored (with its
+            // record, or a height-only row), read under the same guard as
+            // the records: a coin credited after them, or not stored yet,
+            // waits for its own event ([`NetworkSession::coin_snapshot`]).
+            // A load that failed to read a record keeps every coin waiting.
             let loaded_coins: HashSet<Txid> = match info {
                 Some(info) => (crate::coins::read_coins(&info.core_wallet).coins.iter())
                     .map(|c| c.utxo.outpoint.txid)
-                    .filter(|t| recordless.contains(t))
+                    .filter(|t| stored.contains(t))
                     .collect(),
                 None => HashSet::new(),
             };

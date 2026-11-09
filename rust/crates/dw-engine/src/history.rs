@@ -360,10 +360,10 @@ pub(crate) struct WalletHistory {
     /// one follower step that locks nothing.
     named_collaterals: HashSet<OutPoint>,
     /// The txids of the coins the wallet held when its history last loaded
-    /// with every stored record read, that were stored with no record
-    /// (height-only rows): their events came before the load, so no later
-    /// one is awaited for them. Empty after a load that failed to read a
-    /// record.
+    /// with every stored record read, whose transaction was stored (with
+    /// its record or as a height-only row): their events came before the
+    /// load, so no later one is awaited for them. Empty after a load that
+    /// failed to read a record.
     loaded_coins: HashSet<Txid>,
 }
 

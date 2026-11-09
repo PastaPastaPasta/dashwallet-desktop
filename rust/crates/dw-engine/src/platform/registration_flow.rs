@@ -236,9 +236,11 @@ pub(crate) enum FundError {
     /// The engine refused before the library call started (a lease that
     /// no longer signs): nothing was signed, so nothing can be out.
     Refused(PlatformError),
-    /// Refused before the library call: a funding coin is held back (locked,
-    /// or reserved by a send), read under the coin fence the call then
-    /// holds (DEC-173 (3)).
+    /// A funding coin is held back (locked, or reserved by a send), read
+    /// under the coin fence the call then holds (DEC-173 (3)), refused
+    /// before the library call; or the library's build selected a coin that
+    /// read did not find free (one credited since), refused by the funding
+    /// signer before any signature, the call abandoned.
     CoinsLocked,
     /// The proof wait ended without a proof (the 300 s InstantSend wait,
     /// or one bounded ChainLock wait); the lock is still tracked.

@@ -647,7 +647,7 @@ impl CountingFundingSigner {
 
     /// Whether the input cap refused an input.
     pub(crate) fn capped(&self) -> bool {
-        self.cap.is_some() && self.count.abandoned()
+        self.cap.is_some() && self.count.abandoned() && !self.coins_changed()
     }
 
     fn note<T>(&self, r: Result<T, SignerError>) -> Result<T, SignerError> {

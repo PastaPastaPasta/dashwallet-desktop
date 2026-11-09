@@ -4539,10 +4539,14 @@ async fn credit_unseen(
 /// library's selection, the wallet's only coin: the builder takes it, and
 /// the funding signer refuses it before any signature, as no coin the check
 /// read free. The funding reads `CoinsLocked` with nothing signed, so none
-/// sent, and no lock tracked; the call ends `Cancelled`. The next attempt's
-/// check reads the coin and refuses before the library.
+/// sent, and no lock tracked; the call ends `Cancelled` with its Funding
+/// charge refunded and the step `NotSent`, nothing for Repair. The next
+/// attempt's check reads the coin and refuses before the library; once
+/// the coin's transaction reaches the history, the same draft funds from
+/// it.
 #[test]
 fn a_collateral_sized_coin_credited_after_the_coin_check_funds_no_lock() {
+    use super::flows::DispatchState;
     use super::lease::FlowOutcome;
     for (value, chain_locked) in [
         (dw_protx::params::collateral_amount(false), false),
@@ -4556,6 +4560,7 @@ fn a_collateral_sized_coin_credited_after_the_coin_check_funds_no_lock() {
         let lib = f.pw_lib(&wallet);
         let lease = f.lease();
         let draft = prepared(&f, 1);
+        let before = lease.available(BudgetPurpose::Funding).unwrap();
         let (coin, funded, released, outcome) = f.engine.block_on(async {
             let call = permit(&lib, &lease, draft, 1).await.unwrap();
             let coin = credit_unseen(&f, &wallet, value, chain_locked).await;
@@ -4591,10 +4596,40 @@ fn a_collateral_sized_coin_credited_after_the_coin_check_funds_no_lock() {
             "{case}: no lock tracked, so none sent"
         );
         assert_eq!(
+            lease.available(BudgetPurpose::Funding).unwrap(),
+            before,
+            "{case}: its Funding charge refunded"
+        );
+        assert!(
+            f.engine
+                .block_on(f.session.leases.refresh_funding(f.wallet))
+        );
+        assert_eq!(
+            (f.session.leases).funding_status(f.wallet, &flow::funding_step(draft)),
+            Some(DispatchState::NotSent),
+            "{case}"
+        );
+        let views = f.session.leases.registration_funding_steps(f.wallet);
+        assert!(
+            (views.unwrap().iter())
+                .filter(|v| v.draft == draft)
+                .all(|v| v.released_at.is_none() && v.signed.is_empty()),
+            "{case}: nothing for Repair"
+        );
+        assert_eq!(
             f.engine.block_on(lib.fence()).map(drop),
             Err(FundError::CoinsLocked),
             "{case}"
         );
+        // Its transaction's event: a plain payment.
+        (f.session.hub.history).hold_funding(f.wallet, coin.txid);
+        let inputs = f.engine.block_on(async {
+            let call = permit(&lib, &lease, draft, 1).await.unwrap();
+            let (_, inputs) = build_and_track(&f, &wallet, 1, &call).await;
+            call.finish(true);
+            inputs
+        });
+        assert_eq!(inputs, vec![coin], "{case}");
     }
 }
 

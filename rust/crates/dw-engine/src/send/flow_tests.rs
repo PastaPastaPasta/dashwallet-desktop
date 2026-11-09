@@ -3437,6 +3437,54 @@ fn a_failed_record_read_keeps_a_recordless_collateral_sized_coin_held() {
     );
 }
 
+/// A coin of a masternode collateral amount whose transaction is stored
+/// only with a record the history skips (a DashPay contact's account's) is
+/// one the load saw stored: it is not held after a reopen.
+#[test]
+fn a_collateral_sized_coin_whose_stored_record_the_history_skips_is_free_after_a_reopen() {
+    use key_wallet::account::AccountType;
+    use key_wallet::managed_account::transaction_record::{
+        TransactionDirection, TransactionRecord,
+    };
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext, TransactionType};
+    use platform_wallet::changeset::CoreChangeSet;
+    let f = fixture(false);
+    let mut coin = f.late_coin(9, dw_protx::params::MASTERNODE_COLLATERAL, 150);
+    let paid = dashcore::Transaction {
+        version: 2,
+        lock_time: 0,
+        input: Vec::new(),
+        output: vec![coin.txout.clone()],
+        special_transaction_payload: None,
+    };
+    coin.outpoint = OutPoint::new(paid.txid(), 0);
+    let record = TransactionRecord::new(
+        paid,
+        AccountType::DashpayExternalAccount {
+            index: 0,
+            user_identity_id: [0xaa; 32],
+            friend_identity_id: [0xbb; 32],
+        },
+        TransactionContext::InBlock(BlockInfo::new(150, dashcore::BlockHash::all_zeros(), 9)),
+        TransactionType::Standard,
+        TransactionDirection::Incoming,
+        Vec::new(),
+        Vec::new(),
+        0,
+    );
+    assert!(!crate::history::is_wallets(&record));
+    f.put_coin(coin.clone());
+    f.store_core(CoreChangeSet {
+        records: vec![record],
+        new_utxos: vec![coin.clone()],
+        synced_height: Some(1_000),
+        ..Default::default()
+    });
+    f.advance(1_000);
+    f.reopen_wallet();
+    assert_eq!(f.funding_holds(), Vec::new());
+}
+
 /// A coin credited while the history loads, after its read of the stored
 /// transactions and before its read of the wallet, is not one the load
 /// saw stored: of a collateral amount, it is held until its transaction's
