@@ -3409,7 +3409,8 @@ impl Fx {
         coins
     }
 
-    /// `txs` in a block, through the wallet's event as SPV delivers it.
+    /// `txs` in a block, through the engine's handling of a `BlockProcessed`
+    /// event built here (key-wallet's own block processing doesn't run).
     fn block_event(&self, txs: Vec<Transaction>, context: TransactionContext) {
         use platform_wallet::events::WalletEvent;
         (self.session.hub).apply_wallet_event(&WalletEvent::BlockProcessed {
@@ -3504,4 +3505,53 @@ fn r71_c_a_coin_of_another_amount_needs_no_history_entry() {
     let inputs = f.prepare_send().unwrap();
     assert_eq!(inputs.len(), 1);
     assert!(coins.contains(&inputs[0]), "{inputs:?}");
+}
+
+/// Row 71 F5: an abandoned ProRegTx seen again in a block, or with an
+/// InstantSend lock, counts again (the history's status rule, `status_of`):
+/// its own-output collateral is locked by a coin read and by the follower,
+/// and a send refuses it. The user's abandon stays recorded.
+#[test]
+fn r71_d_an_abandoned_registration_seen_again_locks_its_collateral() {
+    use key_wallet::transaction_checking::BlockInfo;
+    let block =
+        || TransactionContext::InBlock(BlockInfo::new(9, dashcore::BlockHash::all_zeros(), 0));
+    let instant = || TransactionContext::InstantSend(Default::default());
+    for follower in [false, true] {
+        for (seen_again, context) in [("block", block()), ("InstantSend", instant())] {
+            let what = format!("{seen_again}, follower: {follower}");
+            let f = fx(Library::Accept);
+            let (reg, collateral) = f.internal_registration_in(f.wallet, 3);
+            f.record(reg.clone(), TransactionContext::Mempool);
+            (f.session.hub.history).with_wallet(f.wallet, |h| {
+                h.txs.get_mut(&reg.txid()).unwrap().abandoned = true;
+            });
+            f.clear_pending();
+            drop(f.held());
+            assert!(f.locked().is_empty(), "{what}: abandoned");
+
+            f.block_event(vec![reg.clone()], context);
+            if follower {
+                f.collateral_pass();
+            } else {
+                f.clear_pending();
+                drop(f.held());
+            }
+            assert_eq!(f.locked(), HashSet::from([collateral]), "{what}");
+            assert_eq!(
+                send_failure(f.prepare_send()),
+                SendFailure::AmountExceedsBalance { available: 0 },
+                "{what}: a send"
+            );
+            assert!(
+                f.session
+                    .hub
+                    .history
+                    .get(&f.wallet, &reg.txid())
+                    .unwrap()
+                    .abandoned,
+                "{what}: the abandon stays"
+            );
+        }
+    }
 }

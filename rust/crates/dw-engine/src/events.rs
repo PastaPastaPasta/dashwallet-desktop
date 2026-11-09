@@ -463,6 +463,9 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next history load before it reads anything.
     #[cfg(test)]
     pub(crate) pause_history: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: the next history load fails to list the stored records.
+    #[cfg(test)]
+    pub(crate) fail_history_read: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
@@ -559,6 +562,8 @@ impl SessionHub {
             pause_load: Mutex::new(None),
             #[cfg(test)]
             pause_history: Mutex::new(None),
+            #[cfg(test)]
+            fail_history_read: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             pause_abandon: Mutex::new(None),
         }

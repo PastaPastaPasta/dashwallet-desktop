@@ -3311,6 +3311,85 @@ fn a_wallet_opened_mid_session_refuses_spends_until_its_history_is_loaded() {
     f.engine.block_on(draft.abandon(p)).unwrap();
 }
 
+impl Fixture {
+    /// A confirmed coin of exactly a masternode collateral amount, stored
+    /// with no transaction record (a height-only row), as legacy rows and
+    /// recordless credits leave it.
+    fn recordless_collateral(&self) -> OutPoint {
+        use platform_wallet::changeset::CoreChangeSet;
+        let coin = self.late_coin(7, dw_protx::params::MASTERNODE_COLLATERAL, 150);
+        self.put_coin(coin.clone());
+        self.store_core(CoreChangeSet {
+            new_utxos: vec![coin.clone()],
+            synced_height: Some(1_000),
+            ..Default::default()
+        });
+        self.advance(1_000);
+        coin.outpoint
+    }
+
+    /// The wallet closed and opened again in the session.
+    fn reopen_wallet(&self) {
+        (self.engine)
+            .block_on(self.session.unload_wallet(self.wallet))
+            .unwrap();
+        (self.engine)
+            .block_on(self.session.load_wallet(self.wallet))
+            .unwrap();
+    }
+
+    /// What an asset-lock funding's policy check finds held
+    /// (`held_funding_coins`; any refuses it with `CoinsLocked`).
+    fn funding_holds(&self) -> Vec<(OutPoint, crate::coins::CoinHold)> {
+        let fence = self
+            .engine
+            .block_on(self.session.coin_fence(self.wallet))
+            .unwrap();
+        let snapshot = self
+            .engine
+            .block_on(self.session.fenced_coins(&fence))
+            .unwrap();
+        (snapshot.held_funding_coins())
+            .map(|h| (h.outpoint, h.hold))
+            .collect()
+    }
+}
+
+/// A coin of a masternode collateral amount the wallet holds when its
+/// history loads, stored with no transaction record, is the wallet's like
+/// any other: no event is awaited for it, so a payment spends it and an
+/// asset-lock funding finds nothing held.
+#[test]
+fn a_recordless_collateral_sized_coin_is_spendable_after_a_reopen() {
+    let f = fixture(false);
+    let coin = f.recordless_collateral();
+    f.reopen_wallet();
+    assert_eq!(f.funding_holds(), Vec::new());
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let p = f.pay_from_the_draft(&draft).unwrap();
+    assert_eq!(p.summary().inputs[0].outpoint, coin);
+    f.engine.block_on(draft.abandon(p)).unwrap();
+}
+
+/// A history load that fails to read the stored records counts no coin
+/// as seen: that coin stays held, from a payment and from a funding.
+#[test]
+fn a_failed_history_read_keeps_a_recordless_collateral_sized_coin_held() {
+    let f = fixture(false);
+    let coin = f.recordless_collateral();
+    (f.session.hub.fail_history_read).store(true, std::sync::atomic::Ordering::SeqCst);
+    f.reopen_wallet();
+    assert_eq!(
+        f.funding_holds(),
+        vec![(coin, crate::coins::CoinHold::AwaitingHistory)]
+    );
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    assert_eq!(
+        send_failure(f.pay_from_the_draft(&draft)),
+        SendFailure::AmountExceedsBalance { available: 0 }
+    );
+}
+
 /// A stored replay this build cannot read (another format, or a start
 /// above its target), or a read that fails, holds spends until a rescan
 /// from the birth height.

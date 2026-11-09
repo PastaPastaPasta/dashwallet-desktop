@@ -275,6 +275,18 @@ pub(crate) struct TxEntry {
     pub abandoned: bool,
 }
 
+impl TxEntry {
+    /// Abandoned as Dash Core counts it: the user's abandon stands only
+    /// while the transaction is in no block and not InstantSend-locked
+    /// (`status_of`'s `Abandoned`; a lock outranks the abandon).
+    pub(crate) fn is_abandoned(&self) -> bool {
+        self.abandoned
+            && self.context.block_info().is_none()
+            && !self.instant_locked
+            && !matches!(self.context, TransactionContext::InstantSend(_))
+    }
+}
+
 fn context_rank(c: &TransactionContext) -> u8 {
     match c {
         TransactionContext::Mempool => 0,
@@ -312,10 +324,6 @@ pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint>
     let in_block: HashMap<OutPoint, Txid> = (txs.iter().filter(|(_, e)| mined(e)))
         .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, *t)))
         .collect();
-    // As `status_of`: an InstantSend lock outranks the abandon.
-    let abandoned = |e: &TxEntry| {
-        e.abandoned && !e.instant_locked && !matches!(e.context, TransactionContext::InstantSend(_))
-    };
     let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
     let mut todo = Vec::new();
     for (t, e) in txs.iter().filter(|(_, e)| !mined(e)) {
@@ -333,7 +341,7 @@ pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint>
         }
     }
     (txs.iter())
-        .filter(|(t, e)| mined(e) || !(abandoned(e) || conflicted.contains(*t)))
+        .filter(|(t, e)| mined(e) || !(e.is_abandoned() || conflicted.contains(*t)))
         .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
         .collect()
 }
@@ -351,6 +359,19 @@ pub(crate) struct WalletHistory {
     /// then refuses locks nothing. Never pruned: a stale entry costs at most
     /// one follower step that locks nothing.
     named_collaterals: HashSet<OutPoint>,
+    /// The txids of the coins the wallet held when its history last loaded
+    /// with every stored record read: their events came before the load, so
+    /// no later one is awaited for them. Empty after a load that failed to
+    /// read a record.
+    loaded_coins: HashSet<Txid>,
+}
+
+impl WalletHistory {
+    /// Sets the coins the wallet held at a load (empty when the load failed
+    /// to read a record).
+    pub fn set_loaded_coins(&mut self, txids: HashSet<Txid>) {
+        self.loaded_coins = txids;
+    }
 }
 
 /// Whether `record` is the wallet's own. A DashPay contact's account
@@ -502,6 +523,21 @@ impl HistoryStore {
         }
     }
 
+    /// Runs `f` over one wallet's entries and the txids of the coins it held
+    /// at its last clean load ([`WalletHistory`]'s `loaded_coins`), under the
+    /// store's read lock.
+    pub fn read_with_loaded<R>(
+        &self,
+        wallet: &WalletId,
+        f: impl FnOnce(&HashMap<Txid, TxEntry>, &HashSet<Txid>) -> R,
+    ) -> R {
+        let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
+        match map.get(wallet) {
+            Some(h) => f(&h.txs, &h.loaded_coins),
+            None => f(&HashMap::new(), &HashSet::new()),
+        }
+    }
+
     /// One transaction of a wallet.
     pub fn get(&self, wallet: &WalletId, txid: &Txid) -> Option<TxEntry> {
         self.wallets
@@ -616,7 +652,7 @@ pub(crate) fn status_of(
             matures_in = Some(COINBASE_MATURITY + 1 - depth);
             TxStatusKind::Immature
         }
-    } else if depth == 0 && entry.abandoned && !instant_locked {
+    } else if entry.is_abandoned() {
         TxStatusKind::Abandoned
     } else if depth == 0 {
         TxStatusKind::Unconfirmed

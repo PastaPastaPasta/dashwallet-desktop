@@ -88,7 +88,7 @@ pub(crate) fn wallet_masternodes(
     history.read(wallet, |entries| {
         add_history(
             &mut txs,
-            entries.values().filter(|e| !e.abandoned).map(|e| {
+            entries.values().filter(|e| !e.is_abandoned()).map(|e| {
                 let block = e.context.block_info();
                 let height = block.map_or(0, |b| b.height());
                 (height, block.and_then(|b| b.position()).unwrap_or(0), &e.tx)

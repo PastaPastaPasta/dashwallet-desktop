@@ -369,8 +369,9 @@ impl NetworkSession {
                 pause.release.notified().await;
             }
             this.resume_replay(&live.manager, id).await;
-            // Before spends are let in: a coin read holds back a
-            // collateral-sized coin the history doesn't hold yet.
+            // Before spends are let in (refused meanwhile, as is every
+            // build): a coin read holds back a collateral-sized coin whose
+            // transaction the history doesn't know.
             let history = this.load_history_for(vec![id]).await;
             this.hub.update_wallet_state(id, |s| s.loading = false);
             this.refresh_wallet_state(&live.manager, id).await;

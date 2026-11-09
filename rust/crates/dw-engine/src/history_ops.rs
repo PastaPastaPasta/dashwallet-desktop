@@ -1,7 +1,7 @@
 //! Session operations over the history read model: loading persisted
 //! history at open, `history_page` and `tx_detail`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -140,6 +140,8 @@ struct LoadedHistory {
     records: Vec<TransactionRecord>,
     seen: Vec<(String, u64)>,
     abandoned: Vec<(Txid, dashcore::Transaction)>,
+    /// Every stored record of the wallet was listed and read.
+    clean: bool,
 }
 
 impl NetworkSession {
@@ -167,18 +169,31 @@ impl NetworkSession {
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             pause.release.notified().await;
         }
+        #[cfg(test)]
+        let fail = (self.hub.fail_history_read).swap(false, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(test))]
+        let fail = false;
         let live = self.live()?;
         let db_path = self.data_dir().join(WALLET_DB_FILE);
         let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
         let wallet_ids = ids.clone();
         let loaded = tokio::task::spawn_blocking(move || {
-            let txids = persisted_txids(&db_path).unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "could not list persisted transactions; history starts empty");
-                HashMap::new()
-            });
+            let listing = if fail {
+                Err(rusqlite::Error::InvalidQuery)
+            } else {
+                persisted_txids(&db_path)
+            };
+            let (txids, listed) = match listing {
+                Ok(txids) => (txids, true),
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not list persisted transactions; history starts empty");
+                    (HashMap::new(), false)
+                }
+            };
             wallet_ids
                 .into_iter()
                 .map(|wallet| {
+                    let mut clean = listed;
                     let records = txids
                         .get(&wallet.0)
                         .into_iter()
@@ -187,6 +202,7 @@ impl NetworkSession {
                             Ok(r) => r,
                             Err(e) => {
                                 tracing::warn!(%wallet, txid = %t, error = %e, "unreadable transaction record");
+                                clean = false;
                                 None
                             }
                         })
@@ -201,6 +217,7 @@ impl NetworkSession {
                         records,
                         seen,
                         abandoned,
+                        clean,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -214,10 +231,11 @@ impl NetworkSession {
             records,
             seen,
             abandoned,
+            clean,
         } in loaded
         {
-            let in_memory: Vec<TransactionRecord> = wm
-                .get_wallet_info(&wallet.0)
+            let info = wm.get_wallet_info(&wallet.0);
+            let in_memory: Vec<TransactionRecord> = info
                 .map(|info| {
                     info.core_wallet
                         .transaction_history()
@@ -226,8 +244,18 @@ impl NetworkSession {
                         .collect()
                 })
                 .unwrap_or_default();
+            // Under the same guard as the records, so a coin credited after
+            // them waits for its own event ([`NetworkSession::coin_snapshot`]).
+            // A load that failed to read a record keeps every coin waiting.
+            let loaded_coins: HashSet<Txid> = match info {
+                Some(info) if clean => (crate::coins::read_coins(&info.core_wallet).coins.iter())
+                    .map(|c| c.utxo.outpoint.txid)
+                    .collect(),
+                _ => HashSet::new(),
+            };
             let seen: HashMap<String, u64> = seen.into_iter().collect();
             self.hub.history.with_wallet(wallet, |h| {
+                h.set_loaded_coins(loaded_coins);
                 for r in records.iter().chain(&in_memory) {
                     h.upsert(r, None);
                 }

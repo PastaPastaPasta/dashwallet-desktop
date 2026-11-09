@@ -200,6 +200,9 @@ pub(crate) struct WalletCoin {
     /// reads neither `Sent` nor `NotSent`, and of no tracked pending lock:
     /// nothing reserves it in the library (review Opus O-2).
     pub unresolved_lock: bool,
+    /// Reserved while its transaction's event hasn't reached the history
+    /// ([`NetworkSession::coin_snapshot`]).
+    pub awaiting_history: bool,
 }
 
 impl WalletCoin {
@@ -258,6 +261,9 @@ pub(crate) enum CoinHold {
     /// would leave Repair no input of it to take. It clears once Repair's
     /// self-spend resolves the step, or its lock is proved.
     UnresolvedLock,
+    /// A coin of a masternode collateral amount whose transaction's event
+    /// hasn't reached the history: it may be a ProRegTx's collateral.
+    AwaitingHistory,
 }
 
 /// One coin that holds a funding build back, for the refusal to name.
@@ -283,7 +289,9 @@ impl CoinSnapshot {
             .iter()
             .filter(|c| c.send_account)
             .filter_map(|c| {
-                let hold = if c.reserved && !c.lock_input {
+                let hold = if c.awaiting_history {
+                    CoinHold::AwaitingHistory
+                } else if c.reserved && !c.lock_input {
                     CoinHold::Reserved
                 } else if c.unresolved_lock {
                     CoinHold::UnresolvedLock
@@ -590,6 +598,7 @@ fn collect(
             reserved: false,
             lock_input: false,
             unresolved_lock: false,
+            awaiting_history: false,
         });
     }
 }
@@ -675,19 +684,21 @@ pub(crate) fn unsettled_spend(info: &ManagedWalletInfo) -> Option<Txid> {
 }
 
 /// The coins of exactly a masternode collateral amount whose funding
-/// transaction `history` doesn't hold for `wallet` ([`NetworkSession::coin_snapshot`]).
+/// transaction `wallet`'s history neither holds nor held a coin of at its
+/// last clean load ([`NetworkSession::coin_snapshot`]).
 fn unseen_collateral_sized(
     history: &crate::history::HistoryStore,
     wallet: WalletId,
     coins: &[WalletCoin],
 ) -> HashSet<OutPoint> {
     use dw_protx::params::collateral_amount;
-    history.read(&wallet, |txs| {
+    history.read_with_loaded(&wallet, |txs, loaded| {
         (coins.iter())
             .filter(|c| {
                 [collateral_amount(false), collateral_amount(true)].contains(&c.utxo.value())
             })
             .filter(|c| !txs.contains_key(&c.utxo.outpoint.txid))
+            .filter(|c| !loaded.contains(&c.utxo.outpoint.txid))
             .map(|c| c.utxo.outpoint)
             .collect()
     })
@@ -756,14 +767,18 @@ impl NetworkSession {
     /// threshold, funding transaction not ours; a released dust lock is not
     /// renewed). Both only under the fence (module doc).
     ///
-    /// A coin of exactly a masternode collateral amount whose transaction
-    /// the history doesn't hold yet is reserved: the wallet's event reaches
-    /// the history one task hop after the coin reaches the wallet, and until
-    /// then nothing says whether that transaction is a ProRegTx whose own
-    /// output this coin is (Core locks it as the coin arrives). Other coins
-    /// can't be a collateral and aren't held. When the history misses the
-    /// event (a lagged event bus) or fails to read at load, such a coin stays
-    /// reserved until the wallet is opened again.
+    /// A coin of exactly a masternode collateral amount credited since the
+    /// history loaded, whose transaction the history doesn't hold yet, is
+    /// reserved (and every asset-lock funding of the wallet refused with
+    /// `CoinsLocked`, [`CoinHold::AwaitingHistory`]): the wallet's event
+    /// reaches the history one task hop after the coin reaches the wallet,
+    /// and until then nothing says whether that transaction is a ProRegTx
+    /// whose own output this coin is. A coin the wallet held at a clean
+    /// history load is not held: a collateral among those that the history
+    /// has no ProRegTx for (no stored record) is locked once the masternode
+    /// list syncs. After a load that failed to read a record, every such
+    /// coin missing from the history stays held for the session, and when
+    /// the history misses an event (a lagged event bus), that coin does.
     pub(crate) async fn coin_snapshot(
         &self,
         fence: &CoinFence,
@@ -790,7 +805,7 @@ impl NetworkSession {
         // without it.
         let collaterals = (self.hub.history).read(&wallet_id, |txs| {
             crate::masternodes::registration_collaterals(
-                txs.values().filter(|e| !e.abandoned).map(|e| &e.tx),
+                txs.values().filter(|e| !e.is_abandoned()).map(|e| &e.tx),
             )
         });
         self.lock_collaterals(fence, collaterals, &snapshot.coins)
@@ -866,6 +881,7 @@ impl NetworkSession {
                 || unseen.contains(&o);
             coin.lock_input = !spend_reserved && lock_held;
             coin.reserved = spend_reserved || lock_held;
+            coin.awaiting_history = unseen.contains(&o);
         }
         Ok(snapshot)
     }
@@ -1147,6 +1163,7 @@ mod tests {
             reserved: false,
             lock_input: false,
             unresolved_lock: false,
+            awaiting_history: false,
         }
     }
 
@@ -1188,6 +1205,7 @@ mod tests {
             reserved: true,
             lock_input: true,
             unresolved_lock: true,
+            awaiting_history: false,
             ..coin(8, true)
         };
         let snapshot = CoinSnapshot {
