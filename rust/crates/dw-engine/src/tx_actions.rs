@@ -139,7 +139,7 @@ fn facts(entry: &TxEntry, view: &ChainView<'_>) -> Facts {
         chain_locked: status.chain_locked,
         instant_locked: status.instant_locked,
         coinbase: entry.tx.is_coin_base(),
-        abandoned: entry.abandoned && depth == 0,
+        abandoned: entry.is_abandoned(),
         from_me,
         credit,
         debit,
@@ -702,6 +702,42 @@ mod tests {
         };
         assert_eq!(cb.abandon_refusal(), Some(TxActionRefusal::Coinbase));
         assert_eq!(cb.resend_refusal(), Some(TxActionRefusal::Coinbase));
+    }
+
+    /// An abandoned transaction seen since with an InstantSend lock counts
+    /// again (the history's status rule), so Abandon refuses it as locked.
+    #[test]
+    fn an_abandoned_transaction_seen_instant_locked_refuses_as_locked() {
+        let entry = TxEntry {
+            tx: Transaction {
+                version: 2,
+                lock_time: 0,
+                input: Vec::new(),
+                output: Vec::new(),
+                special_transaction_payload: None,
+            },
+            context: key_wallet::transaction_checking::TransactionContext::InstantSend(
+                Default::default(),
+            ),
+            instant_locked: false,
+            first_seen: None,
+            own_inputs: Default::default(),
+            abandoned: true,
+        };
+        let (owned, history) = (Default::default(), Default::default());
+        let payees = Default::default();
+        let view = ChainView {
+            owned: &owned,
+            history: &history,
+            tip: 100,
+            chainlock_height: None,
+            network: dashcore::Network::Regtest,
+            payees: &payees,
+        };
+        assert_eq!(
+            facts(&entry, &view).abandon_refusal(),
+            Some(TxActionRefusal::InstantLocked)
+        );
     }
 
     #[test]
