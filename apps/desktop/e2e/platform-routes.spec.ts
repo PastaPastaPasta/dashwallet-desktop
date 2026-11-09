@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
-import { authorize, fixtureUrl, trackPageErrors } from "./helpers";
+import { authorize, fixtureUrl, moveFromPlatform, openTransfer, platformMoveWhy, trackPageErrors } from "./helpers";
 
 // 0.2 X1b slice 1 on the fixture backend: Receive on Platform, and Pay ▸ To an address paying a
 // Platform address from the Platform balance (quote with the fee bound, Max, confirm, outcomes,
@@ -79,6 +79,43 @@ test.describe("Pay from Platform", () => {
     expect(errors).toEqual([]);
   });
 
+  test("ROW73 a send that leaves less than its amount shows no refusal behind its result, and Done starts a new payment", async ({ page }) => {
+    await open(page, "funded");
+    await payTo(page, PAYEE);
+    // 0.25 of the 0.4 Platform balance: what is left could not pay the same amount again.
+    await page.getByTestId("pay-amount").fill("0.25");
+    await page.getByTestId("pay-fee-line").waitFor();
+    await page.getByTestId("pay-continue").click();
+    await page.getByTestId("platform-send-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-send-outcome-title")).toHaveText("Sent");
+    // The payment's events reach the form behind the result: wait until the app is quiet again.
+    const calls = () => page.evaluate(() => [...window.__dwFixture!.calls]);
+    const at = (await calls()).lastIndexOf("platform_send");
+    expect(at).toBeGreaterThanOrEqual(0);
+    let last = -1;
+    await expect
+      .poll(
+        async () => {
+          const n = (await calls()).length;
+          const quiet = n === last;
+          last = n;
+          return quiet;
+        },
+        { intervals: [750], timeout: 15_000 },
+      )
+      .toBe(true);
+    await expect(page.getByTestId("pay-problem")).toHaveCount(0);
+    await expect(page.locator(".field-error")).toHaveCount(0);
+    // A send that went ends the form at once.
+    await expect(page.getByTestId("pay-amount")).toHaveValue("");
+    await page.getByTestId("platform-send-done").click();
+    await expect(page.getByTestId("platform-send-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("pay-address")).toHaveValue("");
+    await expect(page.getByTestId("pay-problem")).toHaveCount(0);
+    expect((await calls()).filter((c) => c === "platform_send")).toHaveLength(1);
+  });
+
   test("Max sends everything and says the fee comes out of the amount", async ({ page }) => {
     await open(page, "funded");
     await payTo(page, PAYEE);
@@ -114,8 +151,11 @@ test.describe("Pay from Platform", () => {
     await expect(page.getByTestId("pay-problem")).toContainText("not confirmed yet");
     await expect(page.getByTestId("pay-continue")).toBeDisabled();
     await page.getByTestId("sidebar-home").click();
-    await expect(page.getByTestId("platform-move")).toHaveCount(0);
     await expect(page.getByTestId("platform-move-view")).toBeVisible();
+    // Transfer from Platform waits, with the card's own words.
+    const why = await platformMoveWhy(page);
+    expect(why).toBeTruthy();
+    await expect(page.getByTestId("platform-card")).toContainText(why!);
   });
 
   test("a send that did not go through in time says it may still go through, keeps the form, and shows in Activity", async ({ page }) => {
@@ -296,9 +336,8 @@ test.describe("Pay from Platform", () => {
 
   test("a held move leaves Move offered, and moving again goes through", async ({ page }) => {
     await open(page, "platform-move-failed-may-land");
-    await expect(page.getByTestId("platform-move")).toBeEnabled();
     await expect(page.getByTestId("platform-move-view")).toHaveCount(0);
-    await page.getByTestId("platform-move").click();
+    await moveFromPlatform(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
@@ -307,11 +346,12 @@ test.describe("Pay from Platform", () => {
   test("a held send says so on the card, and the move's quote refuses before any passphrase", async ({ page }) => {
     await open(page, "platform-send-failed-may-land");
     await expect(page.getByTestId("platform-card-send-held")).toHaveText("A payment from Platform may still go through. Moving waits until it settles.");
-    await page.getByTestId("platform-move").click();
-    await expect(page.getByTestId("platform-move-quote-error")).toHaveText(
+    // Transfer reads the move's quote when the route opens: the refusal shows on its fee line.
+    await openTransfer(page, "platformToCore");
+    await expect(page.getByTestId("transfer-fee")).toHaveText(
       "An earlier payment from Platform may still go through. Wait for it to finish, or send that same payment again from Pay and press Retry that payment, then move again.",
     );
-    await expect(page.getByTestId("platform-move-go")).toBeDisabled();
+    await expect(page.getByTestId("transfer-continue")).toBeDisabled();
     await expect(page.getByTestId("grant-sheet")).toHaveCount(0);
     expect(await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_move_to_core").length)).toBe(0);
   });
@@ -355,10 +395,10 @@ test.describe("Pay from Platform", () => {
 test.describe("Home", () => {
   test("Add from Dash wallet: quote, confirm, applied", async ({ page }) => {
     const errors = await open(page, "funded");
-    await page.getByTestId("platform-fund").click();
+    await openTransfer(page, "coreToPlatform");
     await expect(page.getByTestId("platform-fund-intro")).toBeVisible();
-    await page.getByTestId("platform-fund-amount").fill("0.5");
-    await page.getByTestId("platform-fund-next").click();
+    await page.getByTestId("transfer-amount").fill("0.5");
+    await page.getByTestId("transfer-continue").click();
     const confirm = page.getByTestId("platform-fund-confirm");
     await expect(confirm).toContainText("Your Dash wallet");
     await expect(page.getByTestId("platform-fund-confirm-to-label")).toHaveText("Your Platform address");
@@ -376,9 +416,50 @@ test.describe("Home", () => {
     await expect(page.getByTestId("platform-fund-outcome-title")).toHaveText("Added to Platform");
     await expect(page.getByTestId("platform-fund-outcome-text")).toContainText("was added to your Platform balance.");
     await page.getByTestId("platform-fund-done").click();
-    await expect(page.getByTestId("platform-fund-body")).toHaveCount(0);
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
     await expect(page.getByTestId("platform-fund-finish")).toHaveCount(0);
     expect(await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_fund").length)).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
+  test("an add whose approval ended after the lock says so and finishes the same lock", async ({ page }) => {
+    const errors = await open(page, "paddr-fund-approval-ended");
+    await openTransfer(page, "coreToPlatform");
+    await page.getByTestId("transfer-amount").fill("0.5");
+    await page.getByTestId("transfer-continue").click();
+    await page.getByTestId("platform-fund-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-fund-outcome-title")).toHaveText("Locked, not applied");
+    await expect(page.getByTestId("platform-fund-outcome-text")).toHaveText(
+      "Your 0.50 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
+    );
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("platform-fund-outcome-finish").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-fund-outcome-title")).toHaveText("Added to Platform");
+    await page.getByTestId("platform-fund-done").click();
+    await expect(page.getByTestId("platform-fund-unfinished")).toHaveCount(0);
+    const calls = await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_fund" || c === "resume_platform_fund"));
+    expect(calls).toEqual(["platform_fund", "resume_platform_fund"]);
+    expect(errors).toEqual([]);
+  });
+
+  test("a Finish refused before its apply offers Finish on the same lock again", async ({ page }) => {
+    const errors = await open(page, "paddr-fund-resume-ended");
+    await page.getByTestId("platform-fund-finish").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-fund-refusal")).toHaveText(
+      "Your 0.50 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
+    );
+    await expect(page.getByTestId("platform-fund-refused-back")).toHaveCount(0);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("platform-fund-refused-finish").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-fund-outcome-title")).toHaveText("Added to Platform");
+    await page.getByTestId("platform-fund-done").click();
+    await expect(page.getByTestId("platform-fund-unfinished")).toHaveCount(0);
+    const calls = await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_fund" || c === "resume_platform_fund"));
+    expect(calls).toEqual(["resume_platform_fund", "resume_platform_fund"]);
     expect(errors).toEqual([]);
   });
 
@@ -401,10 +482,10 @@ test.describe("Home", () => {
     await expect(page.getByTestId("platform-fund-finish")).toHaveCount(0);
     await expect(page.getByTestId("platform-fund-unfinished")).toHaveCount(0);
     expect(await seriousAxeViolations(page)).toEqual([]);
-    await expect(page.getByTestId("platform-fund")).toBeEnabled();
-    await page.getByTestId("platform-fund").click();
-    await page.getByTestId("platform-fund-amount").fill("0.5");
-    await page.getByTestId("platform-fund-next").click();
+    await openTransfer(page, "coreToPlatform");
+    await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
+    await page.getByTestId("transfer-amount").fill("0.5");
+    await page.getByTestId("transfer-continue").click();
     await expect(page.getByTestId("platform-fund-confirm")).toContainText("You receive about");
     await expect(page.getByTestId("platform-fund-quote-error")).toHaveCount(0);
     await expect(page.getByTestId("platform-fund-go")).toBeEnabled();
@@ -413,9 +494,9 @@ test.describe("Home", () => {
 
   test("an amount below the minimum names the minimum in the refusal", async ({ page }) => {
     await open(page, "funded");
-    await page.getByTestId("platform-fund").click();
-    await page.getByTestId("platform-fund-amount").fill("0.0001");
-    await page.getByTestId("platform-fund-next").click();
+    await openTransfer(page, "coreToPlatform");
+    await page.getByTestId("transfer-amount").fill("0.0001");
+    await page.getByTestId("transfer-continue").click();
     await expect(page.getByTestId("platform-fund-quote-error")).toHaveText("Too small to add: the smallest amount is 0.00056001 tDASH.");
     await expect(page.getByTestId("platform-fund-go")).toBeDisabled();
   });

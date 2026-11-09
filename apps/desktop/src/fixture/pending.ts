@@ -25,7 +25,8 @@ import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
 import { authorizeSet, checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
-import { newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
+import { SHIELD_LOCK_INPUTS } from "./coinjoin";
+import { lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
 import { restarted } from "./registration";
 import { buildWorld, type World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
@@ -43,8 +44,13 @@ const SEND_MIN_CREDITS = 500_000n;
 export type MoveResult = "done" | "pending" | "refused" | "unproved" | "tooManyCoins";
 
 /** What the next `platform_fund` comes to: applied, locked with its proof still missing, locked and
- * possibly already applied (`checking`), or locked and refused by Platform (`notApplied`). */
-export type FundResult = "done" | "proofWaiting" | "checking" | "notApplied";
+ * possibly already applied (`checking`), locked and refused by Platform (`notApplied`), or locked
+ * with its approval ended before the apply (`approvalEnded`: `notApplied` with `platform.lease_revoked`). */
+export type FundResult = "done" | "proofWaiting" | "checking" | "notApplied" | "approvalEnded";
+
+/** What the next `resume_platform_fund` comes to: applied, or refused `platform.needs_grant` before
+ * its apply, the lock still waiting (`needsGrant`). */
+export type ResumeResult = "done" | "needsGrant";
 
 /** The Core fee bound of the lock, in duffs. */
 const FUND_LOCK_FEE_DUFFS = 1_000;
@@ -101,6 +107,8 @@ export interface PlatformWorld {
   nextSend: SendResult;
   /** What the next "Add from Dash wallet" comes to. */
   nextFund: FundResult;
+  /** What the next Finish of one of those adds comes to. */
+  nextResume: ResumeResult;
   /** The locks of "Add from Dash wallet" not applied yet. */
   funds: PendingPlatformFund[];
   /** What the send after the next one comes to (`null`: the same as the next). */
@@ -147,6 +155,7 @@ export const newPlatformWorld = (): PlatformWorld => ({
   nextMove: "done",
   nextSend: "done",
   nextFund: "done",
+  nextResume: "done",
   funds: [],
   thenSend: null,
   estimateSends: false,
@@ -403,6 +412,8 @@ function fundQuote(ctx: Ctx, walletId: string, duffs: number, call: string): Pla
   const totalDuffs = duffs + FUND_LOCK_FEE_DUFFS;
   const available = w.summary.balances?.confirmed ?? 0;
   if (totalDuffs > available) throw fail("credits.funding_insufficient", "insufficient funds", { kind: "duffs", needed: totalDuffs, available });
+  const inputs = lockInputs(w, totalDuffs);
+  if (inputs > SHIELD_LOCK_INPUTS) throw fail("credits.too_many_inputs", "too many inputs", { kind: "number", value: inputs });
   return { duffs, feeDuffs: FUND_LOCK_FEE_DUFFS, totalDuffs, feeCredits: String(FUND_FEE_CREDITS), credits: String(fundCredits(duffs)), to: p.receive.address, grant: { maxDuffs: totalDuffs, maxCredits: "0" } };
 }
 
@@ -572,6 +583,9 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
       case "notApplied":
         p.funds = [...p.funds, { txid, duffs, proved: true, consumptionUnknown: false, state: "ready" }];
         return { txid, state: { kind: "notApplied", error: "platform.unavailable" } };
+      case "approvalEnded":
+        p.funds = [...p.funds, { txid, duffs, proved: true, consumptionUnknown: false, state: "ready" }];
+        return { txid, state: { kind: "notApplied", error: "platform.lease_revoked" } };
     }
   },
   pending_platform_funds: ({ walletId }: { walletId: string }, { world }: Ctx): PendingPlatformFund[] => {
@@ -587,6 +601,10 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     const g = checkGrant(world, grant, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp" || g.grant.purpose.maxDuffs < 1) throw fail("platform.grant_invalid", "grant invalid");
     useGrant(world, grant);
+    if (p.nextResume === "needsGrant") {
+      p.nextResume = "done";
+      throw fail("platform.needs_grant", "needs a grant", { kind: "needsGrant", purpose: "funding" });
+    }
     const credits = fundCredits(fund.duffs);
     p.nextFund = "done";
     applyFund(p, txid, credits);

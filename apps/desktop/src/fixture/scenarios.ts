@@ -41,6 +41,7 @@ import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
+import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { buildRows, caughtUp, FIXTURE_NOW, FUNDED_BALANCES, makeIds, prng, secs, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
@@ -676,6 +677,20 @@ const SCENARIOS = {
     p.activity = [{ id: `fund-${txid}`, kind: "fromCore", state: "pending", credits: String(50_000_000n * 1000n - 56_000_000n), address: p.receive.address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 600, mayLand: false, estimated: true }, ...p.activity];
     return w;
   },
+  /** The next "Add from Dash wallet" locks, then its approval ends before the apply: "Locked, not applied" offers Finish. */
+  "paddr-fund-approval-ended": (t) => {
+    const w = base(t);
+    w.pending.platform!.nextFund = "approvalEnded";
+    return w;
+  },
+  /** A lock waiting to be applied whose first Finish is refused `platform.needs_grant`: the refusal offers Finish on it. */
+  "paddr-fund-resume-ended": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    p.funds = [{ txid: "f0dd".padEnd(64, "d"), duffs: 50_000_000, proved: true, consumptionUnknown: false, state: "ready" }];
+    p.nextResume = "needsGrant";
+    return w;
+  },
   /** A lock that may already be applied (`consumption_unknown`): "Checking", and Check again. */
   "paddr-fund-checking": (t) => {
     const w = base(t);
@@ -1305,6 +1320,8 @@ const SCENARIOS = {
   ...governanceScenarios(base),
   // Prices in fiat (MP-01): rates.ts.
   ...ratesScenarios(base),
+  // Transfer (POLISH 25): transfer.ts.
+  ...transferScenarios(base),
   /** A new install on Mainnet: onboarding's last step carries the price disclosure. */
   "fiat-first-run": (t): World => onMainnet(buildWorld("no-wallet", t)),
   /** `dashpay-registered` with prices: paying a contact with the fiat toggle. */

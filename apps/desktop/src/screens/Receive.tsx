@@ -26,6 +26,7 @@ import { useLookupPending, useReceived } from "../payments/received";
 import { receivedText } from "./notifications/Received";
 import { shortAddress } from "../format/tx";
 import { Page } from "./Routes";
+import { ShieldedReceiveCard } from "./ShieldedSheet";
 
 const QR_SIDE = 200;
 
@@ -445,6 +446,7 @@ export function ReceivePage({ walletId, network }: { walletId: string; network: 
         <RequestForm walletId={walletId} network={network} onCreated={setShown} />
       </div>
       <PlatformReceiveCard walletId={walletId} />
+      <ShieldedReceiveCard walletId={walletId} network={network} />
       <RequestList walletId={walletId} network={network} onShow={setShown} />
       {shown && <RequestSheet walletId={walletId} request={shown} network={network} onClose={() => setShown(null)} />}
     </Page>

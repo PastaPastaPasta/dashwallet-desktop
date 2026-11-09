@@ -36,6 +36,8 @@ import coinjoin from "@icons/coinjoin@2x.png";
 import coinjoinMixing from "@icons/coinjoin-mixing@2x.png";
 import coinjoinShuffle from "@icons/coinjoin-shuffle@2x.png";
 import coinjoinProtected from "@icons/coinjoin-protected@2x.png";
+import transfer from "@icons/action-transfer@2x.png";
+import transferDark from "@icons/action-transfer-dark@2x.png";
 
 export interface IconFiles {
   light: string;
@@ -66,6 +68,7 @@ export const iconFiles = {
   coinjoinMixing: { light: coinjoinMixing },
   coinjoinShuffle: { light: coinjoinShuffle },
   coinjoinProtected: { light: coinjoinProtected },
+  transfer: { light: transfer, dark: transferDark },
 } satisfies Partial<Record<IconId, IconFiles>>;
 
 export type UsedIcon = keyof typeof iconFiles;

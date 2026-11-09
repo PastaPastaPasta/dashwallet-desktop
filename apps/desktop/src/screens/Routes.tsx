@@ -9,6 +9,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { ui, useUi, type PayTab, type Route } from "../app/ui";
 import { PayToAddress } from "./pay/PayToAddress";
 import { PayToContact } from "./pay/PayToContact";
+import { ShieldedSendLink } from "./ShieldedSheet";
 
 const TITLES: Record<Route, string> = {
   home: "Home",
@@ -144,6 +145,7 @@ export function PayPage({ walletId, network }: { walletId: string; network: Netw
           <PayToContact walletId={walletId} network={network} />
         )}
       </Tabs>
+      <ShieldedSendLink walletId={walletId} network={network} />
     </Page>
   );
 }
