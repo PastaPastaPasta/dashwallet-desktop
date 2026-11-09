@@ -88,17 +88,39 @@ test.describe("Transfer quotes", () => {
     expect(await callsOf(page, "shield_quote")).toBe(1);
   });
 
-  test("Dash wallet → Platform: typing makes no platform_fund_quote call, Continue exactly one", async ({ page }) => {
+  test("Dash wallet → Platform: 0 platform_fund_quote calls while typing, 2 per Max click, 1 on Continue", async ({ page }) => {
     await open(page, "funded");
     await openTransfer(page, "coreToPlatform");
-    await page.getByTestId("transfer-amount").pressSequentially("0.55", { delay: 40 });
+    const amount = page.getByTestId("transfer-amount");
+    await amount.pressSequentially("0.55", { delay: 40 });
     await expect(page.getByTestId("transfer-fee")).toHaveText(FEE_ON_NEXT_STEP);
     // Well past the other routes' debounce: still nothing read.
     await page.waitForTimeout(1_500);
     expect(await callsOf(page, "platform_fund_quote")).toBe(0);
+    // Max: the whole balance, then one re-quote of the most it leaves room for.
+    await page.getByTestId("transfer-max").click();
+    await expect(amount).not.toHaveValue("0.55");
+    await expect(amount).toHaveValue(/^\d+\.\d+$/);
+    await page.waitForTimeout(1_500);
+    expect(await callsOf(page, "platform_fund_quote")).toBe(2);
+    await page.getByTestId("transfer-max").click();
+    await expect(page.getByTestId("transfer-continue")).toBeEnabled();
+    await page.waitForTimeout(1_500);
+    expect(await callsOf(page, "platform_fund_quote")).toBe(4);
     await page.getByTestId("transfer-continue").click();
     await expect(page.getByTestId("platform-fund-confirm")).toContainText("You receive about");
-    expect(await callsOf(page, "platform_fund_quote")).toBe(1);
+    expect(await callsOf(page, "platform_fund_quote")).toBe(5);
+  });
+
+  test("Dash wallet → Platform: Max whose re-quote is refused leaves the amount typed", async ({ page }) => {
+    await open(page, "transfer-many-coins");
+    await openTransfer(page, "coreToPlatform");
+    const amount = page.getByTestId("transfer-amount");
+    await amount.fill("0.3");
+    await page.getByTestId("transfer-max").click();
+    await expect(page.getByTestId("transfer-fee")).toHaveText(/Consolidate your coins first/);
+    await expect(amount).toHaveValue("0.3");
+    expect(await callsOf(page, "platform_fund_quote")).toBe(2);
   });
 
   test("Max never skips the confirmation", async ({ page }) => {
