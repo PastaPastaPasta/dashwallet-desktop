@@ -372,18 +372,32 @@ impl MasternodesRuntime {
         })
     }
 
-    /// Starts following the list for the session's life.
+    /// Starts following the list for the session's life. Each poll first
+    /// locks the collaterals of wallets whose history gained a ProRegTx,
+    /// which needs no list; a new ProRegTx wakes it early.
     pub fn follow(&self, session: &Arc<NetworkSession>) {
         let weak = Arc::downgrade(session);
+        let wake = session.hub.history.collateral_wake();
         let handle = session.rt.spawn(async move {
             let mut followed = Followed::default();
             loop {
                 let Some(s) = weak.upgrade() else { return };
+                // A test seam drives the passes itself.
+                #[cfg(test)]
+                let driven = s.masternodes.protx_seam().is_some();
+                #[cfg(not(test))]
+                let driven = false;
+                if !driven && let Ok(_op) = s.try_enter() {
+                    s.protx_collateral_pass().await;
+                }
                 if let Err(e) = s.masternodes.tick(&s, &mut followed).await {
                     tracing::debug!(error = %e, "masternode follower");
                 }
                 drop(s);
-                tokio::time::sleep(POLL).await;
+                tokio::select! {
+                    () = tokio::time::sleep(POLL) => {}
+                    () = wake.notified() => {}
+                }
             }
         });
         *self.follower.lock().unwrap_or_else(|p| p.into_inner()) = Some(handle);
@@ -467,7 +481,7 @@ impl MasternodesRuntime {
             self.changes.notify.notify_one();
         }
         if let Err(e) = session.protx_follow_pass().await {
-            tracing::debug!(error = %e, "ProTx follower pass");
+            tracing::warn!(error = %e, "ProTx follower pass");
         }
         Ok(())
     }

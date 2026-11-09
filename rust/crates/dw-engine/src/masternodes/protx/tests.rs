@@ -859,7 +859,7 @@ fn mg04_a_crash_between_save_and_record_loses_nothing_and_sends_once() {
                 assert_eq!(refused.code(), "masternodes.operation_state");
                 assert_eq!(f.rows().len(), 1, "never deleted");
             }
-            CrashPoint::SharedOut => unreachable!("not a registration point"),
+            CrashPoint::SharedOut | CrashPoint::Settle => unreachable!("not a registration point"),
         }
         // The saved inputs stay locked across the restart: a new
         // registration can't spend them in a second transaction.
@@ -2752,4 +2752,187 @@ fn mg04_a_replay_holds_protx_fee_inputs() {
     checkpoint(1_000);
     f.update(keep(&hash), f.grant(preview.fee)).unwrap();
     prepare().unwrap();
+}
+
+impl Fx {
+    /// The follower's per-poll lock step for wallets whose history gained a
+    /// ProRegTx.
+    fn collateral_pass(&self) {
+        self.engine.block_on(self.session.protx_collateral_pass());
+    }
+
+    /// A ProRegTx this wallet holds the collateral of but didn't build:
+    /// internal (its own output) or external (a coin of the wallet's).
+    fn foreign_registration(&self, internal: bool, seed: u8) -> (Transaction, OutPoint) {
+        use crate::masternodes::aggregate::fixtures::{coins, null, registration};
+        if internal {
+            let tx = registration(null(0), false, 0, coins(&[MASTERNODE_COLLATERAL]));
+            let collateral = OutPoint::new(tx.txid(), 0);
+            self.hold(collateral, tx.output[0].clone());
+            (tx, collateral)
+        } else {
+            let collateral = self.credit(seed, MASTERNODE_COLLATERAL);
+            // A different payout keeps it apart from an internal one.
+            let tx = registration(collateral, false, 100, coins(&[COIN]));
+            (tx, collateral)
+        }
+    }
+
+    /// `tx` in key-wallet's own history only, then the engine's history
+    /// loaded from it, as at session open.
+    fn load_with(&self, tx: Transaction) {
+        use key_wallet::account::{AccountType, StandardAccountType};
+        use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+        use key_wallet::managed_account::transaction_record::{
+            TransactionDirection, TransactionRecord,
+        };
+        use key_wallet::transaction_checking::{BlockInfo, TransactionContext, TransactionType};
+        let record = TransactionRecord::new(
+            tx,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            TransactionContext::InChainLockedBlock(BlockInfo::new(
+                7,
+                dashcore::BlockHash::all_zeros(),
+                0,
+            )),
+            TransactionType::Standard,
+            TransactionDirection::Internal,
+            Vec::new(),
+            Vec::new(),
+            0,
+        );
+        let session = Arc::clone(&self.session);
+        let (id, inner) = (self.wallet, Arc::clone(&session));
+        self.engine
+            .block_on(session.on_runtime(async move {
+                let wallet = inner.wallet(&id).await?;
+                wallet
+                    .state_mut()
+                    .await
+                    .core_wallet
+                    .accounts
+                    .standard_bip44_accounts
+                    .get_mut(&0)
+                    .expect("BIP44 account 0")
+                    .transactions_mut()
+                    .insert(record.txid, record);
+                inner.load_history_for(vec![id]).await
+            }))
+            .unwrap();
+    }
+
+    fn release(&self, tx: &Transaction) {
+        self.engine
+            .block_on(
+                self.mn()
+                    .release_collateral(self.wallet, tx.txid().to_string()),
+            )
+            .unwrap();
+    }
+}
+
+/// Row 71 item 1: a ProRegTx entering the history locks the collateral it
+/// names, internal or external, with no masternode list.
+#[test]
+fn r71_a_registration_in_the_history_locks_its_collateral_without_the_list() {
+    for internal in [true, false] {
+        let f = fx(Library::Accept);
+        let (tx, collateral) = f.foreign_registration(internal, 2);
+        assert!(f.locked().is_empty());
+        f.record(
+            tx,
+            key_wallet::transaction_checking::TransactionContext::Mempool,
+        );
+        f.collateral_pass();
+        assert_eq!(
+            f.locked(),
+            HashSet::from([collateral]),
+            "internal: {internal}"
+        );
+    }
+}
+
+/// Row 71 item 1: after a load (session open or rescan), before any list.
+#[test]
+fn r71_a_load_locks_both_collateral_shapes_without_the_list() {
+    let f = fx(Library::Accept);
+    let (internal, a) = f.foreign_registration(true, 2);
+    let (external, b) = f.foreign_registration(false, 3);
+    f.load_with(internal);
+    f.load_with(external);
+    f.collateral_pass();
+    assert_eq!(f.locked(), HashSet::from([a, b]));
+}
+
+/// Row 71 item 2: a wallet skipped because a build holds its coin fence is
+/// locked on the next poll, with no new block or list height, from either
+/// path.
+#[test]
+fn r71_a_fence_skip_is_retried_on_the_next_poll() {
+    let f = fx(Library::Accept);
+    let (tx, collateral) = f.foreign_registration(true, 2);
+    f.confirm(tx, 7);
+    let fence = f.engine.block_on(f.session.coin_fence(f.wallet)).unwrap();
+    f.collateral_pass();
+    assert!(f.locked().is_empty(), "the build holds the fence");
+    drop(fence);
+    f.collateral_pass();
+    assert_eq!(f.locked(), HashSet::from([collateral]), "history path");
+
+    let f = fx(Library::Accept);
+    let (tx, collateral) = f.foreign_registration(false, 3);
+    f.confirm(tx, 7);
+    f.session.hub.history.take_collateral_pending();
+    let fence = f.engine.block_on(f.session.coin_fence(f.wallet)).unwrap();
+    f.follow();
+    assert!(f.locked().is_empty(), "the build holds the fence");
+    drop(fence);
+    f.collateral_pass();
+    assert_eq!(f.locked(), HashSet::from([collateral]), "list-tick path");
+}
+
+/// Row 71 item 3: a failed earlier step of the follower pass doesn't skip
+/// the collateral lock.
+#[test]
+fn r71_a_failed_earlier_step_skips_no_collateral_lock() {
+    let f = fx(Library::Accept);
+    let (tx, collateral) = f.foreign_registration(true, 2);
+    f.confirm(tx, 7);
+    f.session.hub.history.take_collateral_pending();
+    f.crash_at(Some(CrashPoint::Settle));
+    f.follow();
+    assert_eq!(f.locked(), HashSet::from([collateral]));
+}
+
+/// Row 71 item 4: the user's release holds against every new lock path.
+#[test]
+fn r71_a_release_holds_on_every_new_path() {
+    let f = fx(Library::Accept);
+    let (tx, collateral) = f.foreign_registration(false, 2);
+    f.confirm(tx.clone(), 7);
+    f.collateral_pass();
+    assert_eq!(f.locked(), HashSet::from([collateral]));
+    f.release(&tx);
+    assert!(f.locked().is_empty());
+
+    f.confirm(tx.clone(), 7);
+    f.collateral_pass();
+    assert!(f.locked().is_empty(), "history insert");
+
+    f.load_with(tx.clone());
+    f.collateral_pass();
+    assert!(f.locked().is_empty(), "load");
+
+    let fence = f.engine.block_on(f.session.coin_fence(f.wallet)).unwrap();
+    f.follow();
+    drop(fence);
+    f.collateral_pass();
+    assert!(f.locked().is_empty(), "fence re-arm");
+
+    f.crash_at(Some(CrashPoint::Settle));
+    f.follow();
+    assert!(f.locked().is_empty(), "past a failed earlier step");
 }

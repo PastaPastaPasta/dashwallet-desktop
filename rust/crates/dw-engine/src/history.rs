@@ -15,7 +15,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use dashcore::blockdata::transaction::special_transaction::TransactionType as SpecialType;
 use dashcore::{Address, Network, OutPoint, ScriptBuf, Transaction, Txid};
@@ -339,6 +339,9 @@ pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint>
 #[derive(Debug, Default)]
 pub(crate) struct WalletHistory {
     pub txs: HashMap<Txid, TxEntry>,
+    /// A ProRegTx was merged since the masternode follower last locked this
+    /// wallet's collaterals (MG-00 D9).
+    collateral_pending: bool,
 }
 
 /// Whether `record` is the wallet's own. A DashPay contact's account
@@ -375,6 +378,9 @@ impl WalletHistory {
             entry
                 .own_inputs
                 .insert(input.index, (input.value, input.address.clone()));
+        }
+        if record.transaction.tx_type() == SpecialType::ProviderRegistration {
+            self.collateral_pending = true;
         }
         new
     }
@@ -428,12 +434,38 @@ impl WalletHistory {
 #[derive(Debug, Default)]
 pub(crate) struct HistoryStore {
     wallets: RwLock<HashMap<WalletId, WalletHistory>>,
+    /// Woken when a wallet's collaterals are pending.
+    collateral_wake: Arc<tokio::sync::Notify>,
 }
 
 impl HistoryStore {
     pub fn with_wallet<R>(&self, wallet: WalletId, f: impl FnOnce(&mut WalletHistory) -> R) -> R {
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
-        f(map.entry(wallet).or_default())
+        let h = map.entry(wallet).or_default();
+        let r = f(h);
+        if h.collateral_pending {
+            self.collateral_wake.notify_one();
+        }
+        r
+    }
+
+    /// The wallets with a ProRegTx merged since the last call, cleared.
+    pub fn take_collateral_pending(&self) -> Vec<WalletId> {
+        let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        map.iter_mut()
+            .filter_map(|(id, h)| std::mem::take(&mut h.collateral_pending).then_some(*id))
+            .collect()
+    }
+
+    /// Marks `wallet`'s collaterals pending again, for the next poll; no
+    /// wake.
+    pub fn rearm_collateral(&self, wallet: WalletId) {
+        let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        map.entry(wallet).or_default().collateral_pending = true;
+    }
+
+    pub fn collateral_wake(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.collateral_wake)
     }
 
     /// A copy of one wallet's entries (empty when unknown).

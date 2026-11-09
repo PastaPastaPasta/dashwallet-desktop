@@ -266,6 +266,8 @@ pub(crate) enum CrashPoint {
     /// A shared session's signed copy saved with `out_at`, not returned
     /// (MG-04b D17).
     SharedOut,
+    /// The follower's settling of operation locks fails.
+    Settle,
 }
 
 /// The test seam of the ProTx hand-off: the library's broadcast faked, and
@@ -510,6 +512,8 @@ impl NetworkSession {
         &self,
         wallet: WalletId,
     ) -> Result<(), MasternodesError> {
+        #[cfg(test)]
+        crash_at(self, CrashPoint::Settle)?;
         let w = wallet.to_string();
         let rows = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
         if rows.iter().all(|r| r.fee_inputs == "[]") {
@@ -642,11 +646,9 @@ impl NetworkSession {
 
 impl NetworkSession {
     /// The follower's pass over every wallet (D9, D25): settled rows' input
-    /// locks released, and each of the wallet's masternodes' collateral
-    /// that the wallet holds unspent locked, unless the user released it
-    /// (Core's `AutoLockMasternodeCollaterals`, rc.3
-    /// `wallet/wallet.cpp:2515-2525`). A wallet whose coin fence a build
-    /// holds waits for the next pass.
+    /// locks released, then the wallet's collaterals locked
+    /// ([`Self::lock_own_collaterals`]). A failed earlier step is logged
+    /// and skips nothing after it.
     pub(crate) async fn protx_follow_pass(&self) -> Result<(), MasternodesError> {
         let manager = self.manager()?;
         let ids = {
@@ -655,59 +657,93 @@ impl NetworkSession {
         };
         for id in ids {
             let wallet = WalletId(id);
-            self.settle_operation_locks(wallet).await?;
-            self.shared_follow_pass(wallet).await?;
-            let Some(_fence) = self.try_coin_fence(wallet).await? else {
-                continue;
-            };
-            self.release_conflicted_collaterals(wallet).await?;
-            let (m, hub) = (Arc::clone(&manager), Arc::clone(&self.hub));
-            let collaterals: Vec<OutPoint> = tokio::task::spawn_blocking(move || {
-                super::super::follow::wallet_masternodes(&m, &hub.history, &wallet)
-                    .map(|(owned, _)| owned.iter().filter_map(|o| o.collateral).collect())
-                    .unwrap_or_default()
-            })
-            .await?;
-            if collaterals.is_empty() {
-                continue;
+            if let Err(e) = self.settle_operation_locks(wallet).await {
+                tracing::warn!(%wallet, error = %e, "settling ProTx operation locks");
             }
-            let (_, unspent) = self.op_view(wallet).await?;
-            let held: Vec<OutPoint> = collaterals
-                .into_iter()
-                .filter(|o| unspent.contains(o))
-                .collect();
-            let w = wallet.to_string();
-            let locked = self
-                .appdb_op(move |db| {
-                    let active: HashSet<(String, u32)> = db
-                        .locks(&w)?
-                        .into_iter()
-                        .filter(|r| r.is_locked())
-                        .map(|r| (r.txid, r.vout))
-                        .collect();
-                    let released: HashSet<String> = db
-                        .settings_with_prefix(&w, RELEASED)?
-                        .into_iter()
-                        .map(|(k, _)| k)
-                        .collect();
-                    let now = now_secs();
-                    let mut changed = false;
-                    for o in &held {
-                        let key = (o.txid.to_string(), o.vout);
-                        let name = format!("{RELEASED}{}-{}", o.txid, o.vout);
-                        if !active.contains(&key) && !released.contains(&name) {
-                            db.lock_manual(&w, &key.0, key.1, now)?;
-                            changed = true;
-                        }
-                    }
-                    Ok(changed)
-                })
-                .await?;
-            if locked {
-                self.hub.pump.mark_balances(wallet);
+            if let Err(e) = self.shared_follow_pass(wallet).await {
+                tracing::warn!(%wallet, error = %e, "following shared masternode sessions");
             }
+            self.collateral_step(wallet).await;
         }
         Ok(())
+    }
+
+    /// Locks the collaterals of the wallets whose history gained a ProRegTx
+    /// since the last call (on insert, a rescan or a load), whether or not
+    /// the masternode list is synced.
+    pub(crate) async fn protx_collateral_pass(&self) {
+        for wallet in self.hub.history.take_collateral_pending() {
+            self.collateral_step(wallet).await;
+        }
+    }
+
+    /// One wallet's [`Self::lock_own_collaterals`]; a wallet whose coin
+    /// fence a build holds is marked pending again, for the next poll.
+    async fn collateral_step(&self, wallet: WalletId) {
+        match self.lock_own_collaterals(wallet).await {
+            Ok(true) => {}
+            Ok(false) => self.hub.history.rearm_collateral(wallet),
+            Err(e) => tracing::warn!(%wallet, error = %e, "locking masternode collaterals"),
+        }
+    }
+
+    /// Locks each of the wallet's masternodes' collateral that the wallet
+    /// holds unspent, unless the user released it, after unlocking what
+    /// conflicted rows locked. Core locks a ProRegTx's own collateral when
+    /// the transaction is added and every listed collateral at load
+    /// (v24.0.0 `wallet/wallet.cpp:1141`, `:2580-2590`). `false` when a
+    /// build holds the wallet's coin fence, so nothing ran.
+    async fn lock_own_collaterals(&self, wallet: WalletId) -> Result<bool, MasternodesError> {
+        let Some(_fence) = self.try_coin_fence(wallet).await? else {
+            return Ok(false);
+        };
+        self.release_conflicted_collaterals(wallet).await?;
+        let (m, hub) = (self.manager()?, Arc::clone(&self.hub));
+        let collaterals: Vec<OutPoint> = tokio::task::spawn_blocking(move || {
+            super::super::follow::wallet_masternodes(&m, &hub.history, &wallet)
+                .map(|(owned, _)| owned.iter().filter_map(|o| o.collateral).collect())
+                .unwrap_or_default()
+        })
+        .await?;
+        if collaterals.is_empty() {
+            return Ok(true);
+        }
+        let (_, unspent) = self.op_view(wallet).await?;
+        let held: Vec<OutPoint> = collaterals
+            .into_iter()
+            .filter(|o| unspent.contains(o))
+            .collect();
+        let w = wallet.to_string();
+        let locked = self
+            .appdb_op(move |db| {
+                let active: HashSet<(String, u32)> = db
+                    .locks(&w)?
+                    .into_iter()
+                    .filter(|r| r.is_locked())
+                    .map(|r| (r.txid, r.vout))
+                    .collect();
+                let released: HashSet<String> = db
+                    .settings_with_prefix(&w, RELEASED)?
+                    .into_iter()
+                    .map(|(k, _)| k)
+                    .collect();
+                let now = now_secs();
+                let mut changed = false;
+                for o in &held {
+                    let key = (o.txid.to_string(), o.vout);
+                    let name = format!("{RELEASED}{}-{}", o.txid, o.vout);
+                    if !active.contains(&key) && !released.contains(&name) {
+                        db.lock_manual(&w, &key.0, key.1, now)?;
+                        changed = true;
+                    }
+                }
+                Ok(changed)
+            })
+            .await?;
+        if locked {
+            self.hub.pump.mark_balances(wallet);
+        }
+        Ok(true)
     }
 }
 
