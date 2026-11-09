@@ -3193,7 +3193,8 @@ fn r71_b_a_generic_unlock_of_a_collateral_is_locked_again() {
 /// Row 71 F3: with no test seam and no list, the session's own follower
 /// locks a ProRegTx's collateral after a real insert and a real load. The
 /// poll is stretched to an hour, so the load's lock can only come from the
-/// history's wake.
+/// history's wake. Assumes nothing else holds the coin fence: a step that
+/// finds it held re-arms with no wake and waits for the poll.
 #[test]
 fn r71_b_the_follower_locks_through_the_wake_with_no_list() {
     use platform_wallet::events::WalletEvent;
@@ -3210,6 +3211,10 @@ fn r71_b_the_follower_locks_through_the_wake_with_no_list() {
         addresses_derived: Vec::new(),
     });
     f.wait_locked(a, "insert");
+    assert!(
+        f.session.hub.history.take_collateral_pending().is_empty(),
+        "the insert's step left the wallet pending"
+    );
 
     let (loaded, b) = f.foreign_registration(true, 3);
     f.load_with(loaded);
@@ -3278,4 +3283,77 @@ fn r71_b_only_a_collateral_amount_is_locked() {
     f.session.hub.history.rearm_collateral(f.wallet);
     f.collateral_pass();
     assert!(f.locked().is_empty(), "abandoned");
+}
+
+/// Row 71 round 2 (Sol N2): a collateral at output 1 of a funding
+/// transaction that arrives in a block after its ProRegTx is locked; the
+/// other output of that transaction, a wallet coin too, isn't.
+#[test]
+fn r71_b_a_late_collateral_at_a_later_output_is_locked_alone() {
+    use crate::masternodes::aggregate::fixtures::{coins, registration};
+    use key_wallet::managed_account::transaction_record::{OutputDetail, OutputRole};
+    use platform_wallet::events::WalletEvent;
+    let f = fx(Library::Accept);
+    let funding = Transaction {
+        version: 2,
+        lock_time: 0,
+        input: Vec::new(),
+        output: coins(&[MASTERNODE_COLLATERAL, MASTERNODE_COLLATERAL]),
+        special_transaction_payload: None,
+    };
+    let (decoy, collateral) = (
+        OutPoint::new(funding.txid(), 0),
+        OutPoint::new(funding.txid(), 1),
+    );
+    f.record(
+        registration(collateral, false, 0, coins(&[COIN])),
+        chain_locked(7),
+    );
+    f.collateral_pass();
+    assert!(f.locked().is_empty());
+
+    f.hold(decoy, funding.output[0].clone());
+    f.hold(collateral, funding.output[1].clone());
+    let mut record = tx_record(funding, chain_locked(5));
+    record.output_details = [0, 1]
+        .map(|index| OutputDetail {
+            index,
+            role: OutputRole::Received,
+            address: None,
+            value: MASTERNODE_COLLATERAL,
+        })
+        .to_vec();
+    (f.session.hub).apply_wallet_event(&WalletEvent::BlockProcessed {
+        wallet_id: f.wallet.0,
+        height: 8,
+        chain_lock: None,
+        inserted: vec![record],
+        updated: Vec::new(),
+        matured: Vec::new(),
+        balance: Default::default(),
+        account_balances: std::collections::BTreeMap::new(),
+        addresses_derived: Vec::new(),
+    });
+    f.collateral_pass();
+    assert_eq!(f.locked(), HashSet::from([collateral]));
+}
+
+/// Row 71 round 2 (Opus n2): a coin read leaves an existing lock row on a
+/// collateral as it is, its reason and time included.
+#[test]
+fn r71_b_a_coin_read_leaves_an_existing_collateral_lock_alone() {
+    let f = fx(Library::Accept);
+    let (tx, collateral) = f.foreign_registration(false, 2);
+    f.record(tx, TransactionContext::Mempool);
+    f.clear_pending();
+    let (w, txid) = (f.wallet.to_string(), collateral.txid.to_string());
+    assert!(f.db().lock_dust(&w, &txid, collateral.vout, 1).unwrap());
+    let row = || {
+        let rows = f.db().locks(&w).unwrap();
+        assert_eq!(rows.len(), 1);
+        (rows[0].reason, rows[0].created_at)
+    };
+    let before = row();
+    drop(f.fenced(&f.fence()));
+    assert_eq!(row(), before);
 }

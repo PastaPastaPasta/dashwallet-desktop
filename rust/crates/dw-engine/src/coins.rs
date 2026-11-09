@@ -754,6 +754,9 @@ impl NetworkSession {
                 pending_lock_inputs(state.tracked_asset_locks.values()),
             )
         };
+        // Coins before the history: a ProRegTx that lands between the two
+        // reads is still seen, where the other order could read its coin
+        // without it.
         let collaterals = (self.hub.history).read(&wallet_id, |txs| {
             crate::masternodes::registration_collaterals(
                 txs.values().filter(|e| !e.abandoned).map(|e| &e.tx),
@@ -949,8 +952,8 @@ impl NetworkSession {
     /// dust protection then leaves alone). A masternode collateral is
     /// locked again by the next coin read or follower pass, where Core keeps
     /// the unlock until a restart: only `release-collateral` frees one. An
-    /// outpoint that is neither
-    /// locked nor an unspent output is `OutpointNotFound`; one a masternode
+    /// outpoint that is neither locked nor an unspent output is
+    /// `OutpointNotFound`; one a masternode
     /// row holds (a ProTx operation's inputs, a shared session's
     /// reservation, MG-04b BL-346) is refused and nothing is unlocked. Under
     /// the coin fence, as "Lock unspent": rows take coins only under it.

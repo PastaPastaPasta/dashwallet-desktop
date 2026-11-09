@@ -348,7 +348,8 @@ pub(crate) struct WalletHistory {
     /// The collateral outpoint of every ProRegTx merged, so a coin that
     /// arrives after its ProRegTx (a restore past the gap) marks the wallet
     /// as its ProRegTx did. Unchecked: a mark for an outpoint the lock step
-    /// then refuses locks nothing.
+    /// then refuses locks nothing. Never pruned: a stale entry costs at most
+    /// one follower step that locks nothing.
     named_collaterals: HashSet<OutPoint>,
 }
 
