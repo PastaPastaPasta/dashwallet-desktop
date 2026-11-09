@@ -2,7 +2,6 @@
 // be moved from, the title is a button that opens Transfer from it, and its hit area covers the head.
 
 import { useId, type ReactNode } from "react";
-import { VisuallyHidden } from "../components/basics";
 import { TRANSFER_COPY } from "../transfer/model";
 
 export function CardHead({ title, text, textTestId, buttonTestId, onTransfer }: { title: string; text: ReactNode; textTestId?: string; buttonTestId: string; onTransfer: (() => void) | null }) {
@@ -19,9 +18,8 @@ export function CardHead({ title, text, textTestId, buttonTestId, onTransfer }: 
   return (
     <div className="card-head">
       <h2 className="platform-card-title">
-        <button type="button" className="card-transfer" data-testid={buttonTestId} aria-describedby={textId} onClick={onTransfer}>
+        <button type="button" className="card-transfer" data-testid={buttonTestId} aria-label={`${title}${TRANSFER_COPY.cardButton}`} aria-describedby={textId} onClick={onTransfer}>
           {title}
-          <VisuallyHidden>{TRANSFER_COPY.cardButton}</VisuallyHidden>
           <span className="card-transfer-chevron" aria-hidden="true">
             {" ›"}
           </span>
