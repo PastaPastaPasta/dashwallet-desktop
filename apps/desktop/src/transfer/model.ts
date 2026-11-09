@@ -386,6 +386,8 @@ export class TransferModel extends Model {
   from: Pool = "core";
   to: Pool = "shielded";
   picking: "from" | "to" | null = null;
+  /** The end of the last pick, counted (`n`): the sheet returns focus there after each one. */
+  picked: { end: "from" | "to"; n: number } | null = null;
   /** Platform → Dash wallet has no form of its own: Continue shows its confirmation. */
   reviewed = false;
   /** Opened by the shortcut before the pools were read: the default route is picked once they are. */
@@ -482,6 +484,7 @@ export class TransferModel extends Model {
   /** A pick: if it makes both ends the same pool, the other end moves to its default. */
   pick(end: "from" | "to", pool: Pool, pools: Pools) {
     this.picking = null;
+    this.picked = { end, n: (this.picked?.n ?? 0) + 1 };
     if (end === "from") this.select(pool, this.to === pool ? defaultTo(pool, pools) : this.to);
     else this.select(this.from === pool ? defaultFrom(pool, pools) : this.from, pool);
   }

@@ -156,6 +156,40 @@ test.describe("Transfer quotes", () => {
     await expect(page.getByTestId("transfer-max")).toBeEnabled();
   });
 
+  test("keyboard: every pick returns focus to the amount when the route can run, else to the end picked", async ({ page }) => {
+    const focused = () => page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? document.activeElement?.tagName ?? null);
+    const pick = async (end: "from" | "to", pool: string) => {
+      const button = page.getByTestId(`transfer-${end}`);
+      await button.focus();
+      await page.keyboard.press("Enter");
+      const list = page.getByTestId("transfer-picker");
+      await expect(button).toHaveAttribute("aria-controls", (await list.getAttribute("id"))!);
+      await page.getByTestId(`transfer-picker-${pool}`).focus();
+      await page.keyboard.press("Enter");
+      await expect(list).toHaveCount(0);
+    };
+    await open(page, "funded");
+    await openTransfer(page, "coreToShielded");
+    // The same pool again: nothing changes, focus still lands.
+    await pick("from", "core");
+    await expect.poll(focused).toBe("transfer-amount");
+    await pick("to", "platform");
+    await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "coreToPlatform");
+    await expect.poll(focused).toBe("transfer-amount");
+    // Shielded → Platform has no command: no amount, focus back on From.
+    await pick("from", "shielded");
+    await pick("to", "platform");
+    await expect(page.getByTestId("transfer-unavailable")).toBeVisible();
+    await expect.poll(focused).toBe("transfer-to");
+    await page.keyboard.press("Escape");
+    // A route that can't run yet (Shielded syncing): its amount is disabled, focus back on To.
+    await open(page, "shielded-syncing");
+    await page.getByTestId("shortcut-transfer").click();
+    await pick("to", "shielded");
+    await expect(page.getByTestId("transfer-amount")).toBeDisabled();
+    await expect.poll(focused).toBe("transfer-to");
+  });
+
   test("Max never skips the confirmation", async ({ page }) => {
     await open(page, "funded");
     await openTransfer(page, "shieldedToCore");

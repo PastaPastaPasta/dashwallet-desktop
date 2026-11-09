@@ -3,7 +3,7 @@
 // line; Continue goes to the route's own confirmation, and from there each route's steps are its own
 // sheet's (ShieldedSheet.tsx, PlatformFundSheet.tsx, PlatformMoveSheet.tsx), unchanged.
 
-import { useEffect, useId } from "react";
+import { useEffect, useId, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
@@ -98,7 +98,7 @@ function RunningLines({ t, here }: { t: TransferModel; here: RouteId | null }) {
 }
 
 /** One end: the pool's icon-less name and balance, a button that opens the picker. */
-function End({ t, end, pools, fmt }: { t: TransferModel; end: "from" | "to"; pools: Pools; fmt: (d: number) => string }) {
+function End({ t, end, pools, fmt, pickerId }: { t: TransferModel; end: "from" | "to"; pools: Pools; fmt: (d: number) => string; pickerId: string }) {
   const pool = t[end];
   const balance = balanceOf(pool, pools);
   return (
@@ -108,6 +108,7 @@ function End({ t, end, pools, fmt }: { t: TransferModel; end: "from" | "to"; poo
       data-testid={`transfer-${end}`}
       data-pool={pool}
       aria-expanded={t.picking === end}
+      aria-controls={t.picking === end ? pickerId : undefined}
       aria-label={`${T[end]}: ${T.pools[pool]}, ${balance === null ? "balance not known" : fmt(balance)}. ${T.pick[end]}`}
       onClick={() => t.togglePicker(end)}
     >
@@ -118,9 +119,9 @@ function End({ t, end, pools, fmt }: { t: TransferModel; end: "from" | "to"; poo
   );
 }
 
-function Picker({ t, end, pools, fmt }: { t: TransferModel; end: "from" | "to"; pools: Pools; fmt: (d: number) => string }) {
+function Picker({ t, end, pools, fmt, id }: { t: TransferModel; end: "from" | "to"; pools: Pools; fmt: (d: number) => string; id: string }) {
   return (
-    <ul className="transfer-picker" data-testid="transfer-picker" aria-label={T.pick[end]}>
+    <ul className="transfer-picker" id={id} data-testid="transfer-picker" aria-label={T.pick[end]}>
       {listedPools(pools).map((pool) => {
         const balance = balanceOf(pool, pools);
         return (
@@ -332,6 +333,7 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
 
 function TransferForm({ t, pools, network, walletId, status }: { t: TransferModel; pools: Pools; network: NetworkInfo; walletId: string; status: ShieldedStatus | null }) {
   const fmt = useAmount(network);
+  const pickerId = useId();
   if (t.awaitingDefault)
     return (
       <>
@@ -363,13 +365,13 @@ function TransferForm({ t, pools, network, walletId, status }: { t: TransferMode
   return (
     <>
       <div className="transfer-ends">
-        <End t={t} end="from" pools={pools} fmt={fmt} />
+        <End t={t} end="from" pools={pools} fmt={fmt} pickerId={pickerId} />
         <button type="button" className="transfer-swap" data-testid="transfer-swap" aria-label={T.swap} title={T.swap} disabled={!canSwap(t.from, t.to)} onClick={() => t.swap()}>
           <Icon id="transfer" size={20} />
         </button>
-        <End t={t} end="to" pools={pools} fmt={fmt} />
+        <End t={t} end="to" pools={pools} fmt={fmt} pickerId={pickerId} />
       </div>
-      {t.picking && <Picker t={t} end={t.picking} pools={pools} fmt={fmt} />}
+      {t.picking && <Picker t={t} end={t.picking} pools={pools} fmt={fmt} id={pickerId} />}
       {route === "unsupported" ? (
         <p className="form-problem" role="status" data-testid="transfer-unavailable">
           {T.unsupported}
@@ -420,6 +422,15 @@ export function TransferSheet({ walletId, network }: { walletId: string; network
   const { block } = usePlatformHold(walletId, move);
   const defaultHere = defaultRoute(pools);
   useEffect(() => t.settleDefault(defaultHere), [t, t.awaitingDefault, defaultHere]);
+  // After a pick the picked item is gone: focus goes to the amount when the route can run, else back
+  // to that end's button (after the sheet's own move to its first control).
+  const body = useRef<HTMLDivElement>(null);
+  const picked = t.picked;
+  useEffect(() => {
+    if (!picked) return;
+    const el = body.current;
+    (el?.querySelector<HTMLElement>("[data-autofocus]:not(:disabled)") ?? el?.querySelector<HTMLElement>(`[data-testid="transfer-${picked.end}"]`))?.focus();
+  }, [picked]);
   const grants = (
     <>
       <GrantSheet grants={fund.grants} />
@@ -434,7 +445,7 @@ export function TransferSheet({ walletId, network }: { walletId: string; network
   return (
     <>
       <Sheet title={T.title} width="small" testId="transfer-sheet" onClose={() => t.close()} focusKey={`${here ?? ""}:${stepName}`}>
-        <div className="transfer" data-testid="transfer-body" data-route={here ?? route ?? ""} data-view={steps ? "steps" : "form"}>
+        <div ref={body} className="transfer" data-testid="transfer-body" data-route={here ?? route ?? ""} data-view={steps ? "steps" : "form"}>
           <RunningLines t={t} here={here} />
           {steps ? (
             <>
