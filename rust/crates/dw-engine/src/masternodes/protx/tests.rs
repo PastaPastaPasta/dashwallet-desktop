@@ -2706,14 +2706,15 @@ fn mg04_a_refresh_reuses_its_own_unspent_input() {
 /// their fee quotes still answer.
 #[test]
 fn mg04_a_replay_holds_protx_fee_inputs() {
-    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
     let f = fx(Library::Accept);
     let (_, op) = f.registered();
     let hash = op.pro_tx_hash.clone().unwrap();
     f.credit(3, MASTERNODE_COLLATERAL + COIN);
     let w = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
     let checkpoint = |height: u32| {
-        (f.engine).block_on(async { w.state_mut().await.core_wallet.update_synced_height(height) })
+        (f.engine).block_on(async {
+            crate::events::set_checkpoint(&mut w.state_mut().await.core_wallet, height)
+        })
     };
     checkpoint(1_000);
     (f.session.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::SyncHeightAdvanced {
@@ -2752,4 +2753,56 @@ fn mg04_a_replay_holds_protx_fee_inputs() {
     checkpoint(1_000);
     f.update(keep(&hash), f.grant(preview.fee)).unwrap();
     prepare().unwrap();
+}
+
+/// Rows 59 and 65: a ProRegTx mined in a block a fork replaced, with no
+/// event announcing it, is no confirmed operation and makes no masternode
+/// of the wallet's once the truncation is found.
+#[test]
+fn a_registration_in_a_replaced_block_is_not_confirmed_after_a_silent_truncation() {
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    let f = fx(Library::Accept);
+    let funding = f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    f.register(request(CollateralChoice::FundNew), f.grant(COIN))
+        .unwrap();
+    let tx = f.lib.sent().pop().unwrap();
+    f.spend(funding);
+    let w = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
+    f.engine.block_on(async {
+        crate::events::set_checkpoint(&mut w.state_mut().await.core_wallet, 1_000)
+    });
+    (f.session.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+        wallet_id: f.wallet.0,
+        height: 1_000,
+    });
+    f.record(
+        tx,
+        TransactionContext::InBlock(BlockInfo::new(950, dashcore::BlockHash::all_zeros(), 0)),
+    );
+    let owned = || {
+        let manager = f.session.manager().unwrap();
+        crate::masternodes::follow::wallet_masternodes(&manager, &f.session.hub.history, &f.wallet)
+            .map(|(owned, _)| owned.len())
+    };
+    assert_eq!(
+        f.operations()[0].state,
+        ProTxOperationState::Confirmed { height: 950 }
+    );
+    assert_eq!(owned(), Some(1));
+    let manager = f.session.manager().unwrap();
+    f.engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        wm.write().await.truncate_above(900).unwrap();
+    });
+    let guard = f.engine.block_on(f.session.replay_guard(f.wallet, 0));
+    let (state, owned) = (f.operations()[0].state.clone(), owned());
+    eprintln!(
+        "ROW5965 ProRegTx at 950, silent truncation to 900: guard {guard:?}, operation {state:?}, owned masternodes {owned:?}"
+    );
+    assert!(
+        !matches!(state, ProTxOperationState::Confirmed { .. }),
+        "{state:?}"
+    );
+    assert_eq!(owned, Some(0));
 }

@@ -2803,7 +2803,6 @@ fn unknown_funding_with_tracked_lock_still_refuses_discard() {
 /// coin is no `CoinsLocked`: `PwLib::fence` refuses for the replay first.
 #[test]
 fn a_replay_outranks_a_held_coin() {
-    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
     let f = fixture(false);
     let (wallet, outpoint) = f.coin();
     f.engine
@@ -2812,7 +2811,7 @@ fn a_replay_outranks_a_held_coin() {
     let lib = f.pw_lib(&wallet);
     let checkpoint = |height| {
         (f.engine).block_on(async {
-            (lib.wallet.state_mut().await.core_wallet).update_synced_height(height)
+            crate::events::set_checkpoint(&mut lib.wallet.state_mut().await.core_wallet, height)
         })
     };
     checkpoint(1_000);

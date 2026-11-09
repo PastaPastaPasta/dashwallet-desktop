@@ -455,7 +455,9 @@ impl NetworkSession {
     /// a doubled balance an event computed before an earlier reconcile.
     /// Looks for duplicates under the read lock first, and takes the write
     /// lock only when there are some (rare: a replay of a coin no restore
-    /// placed).
+    /// placed). Under the read lock it also applies a fork truncation no
+    /// event announced (`SessionHub::detect_truncation`); a drop of the
+    /// header tip starts it as well.
     pub(crate) async fn reconcile_duplicate_coins(&self, id: WalletId) {
         let Ok(manager) = self.manager() else {
             self.hub.reconcile_running(id);
@@ -472,6 +474,7 @@ impl NetworkSession {
                 return;
             };
             let core = &info.core_wallet;
+            self.hub.detect_truncation(id, core);
             if !has_duplicates(core) {
                 self.hub
                     .publish_core_balance(id, &core.balance(), &core.account_balances());

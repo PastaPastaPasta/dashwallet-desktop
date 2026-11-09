@@ -293,7 +293,9 @@ impl NetworkSession {
     /// subscriber of key-wallet's broadcast lost). Returns the checkpoint;
     /// called again with it as `floor` once the coins are selected, a rewind
     /// since refuses too. A rewind replayed back above `floor` by then is not
-    /// seen: the network rejects what such a build spends twice.
+    /// seen: the network rejects what such a build spends twice. A fork
+    /// truncation no event announced is applied first, so the target is
+    /// not left above the chain (`SessionHub::detect_truncation`).
     pub(crate) async fn replay_guard(
         &self,
         wallet_id: WalletId,
@@ -303,6 +305,7 @@ impl NetworkSession {
         // The hub is written under the read lock, so a fork's truncation
         // (under the write lock) lowers the target after this raise.
         let state = wallet.state().await;
+        self.hub.detect_truncation(wallet_id, &state.core_wallet);
         let live = state.core_wallet.synced_height();
         let (refused, target, loading) = self.hub.update_wallet_state(wallet_id, |s| {
             let target = s.scan_target;
@@ -414,6 +417,22 @@ impl NetworkSession {
         let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
             return Ok(None);
         };
+        self.hub.detect_truncation(wallet, &info.core_wallet);
+        // A resume reads its record under this lock, after every truncation
+        // noted so far: one read before it may predate a fork.
+        let (checkpoint, how) = match how {
+            Rewind::Resume { .. } => match replay.get(wallet).await? {
+                Some(r) if !r.cancelled => (
+                    r.reached,
+                    Rewind::Resume {
+                        target: r.target,
+                        forked_from: r.forked_from,
+                    },
+                ),
+                _ => (checkpoint, how),
+            },
+            how => (checkpoint, how),
+        };
         let current = info.core_wallet.synced_height();
         let lower = checkpoint < current;
         let target = self
@@ -452,6 +471,7 @@ impl NetworkSession {
         checkpoint: u32,
     ) -> Result<(), EngineError> {
         let replay = self.live()?.replay;
+        self.hub.detect_truncation(wallet, &info.core_wallet);
         self.record_locked(&replay, wallet, info, checkpoint, Rewind::Ahead)
             .await
             .map(drop)
@@ -497,16 +517,28 @@ impl NetworkSession {
     /// spends wait for the record's target. A cancelled replay is not
     /// resumed: its hold comes back, no lower than a rescan from the birth
     /// height rewinds to. A record that cannot be read, or a failed resume,
-    /// holds spends until such a rescan; the record stays.
+    /// holds spends until such a rescan; the record stays. The record is
+    /// read again under the manager's lock that rewinds, so a fork in
+    /// between lowers what is resumed.
     pub(crate) async fn resume_replay(&self, manager: &crate::session::Manager, wallet: WalletId) {
         let Ok(live) = self.live() else {
             return;
         };
-        let birth = {
+        let (birth, processed) = {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
-            (wm.get_wallet_info(&wallet.0)).map_or(0, |i| i.core_wallet.birth_height())
+            (wm.get_wallet_info(&wallet.0)).map_or((0, 0), |i| {
+                (
+                    i.core_wallet.birth_height(),
+                    i.core_wallet.last_processed_height(),
+                )
+            })
         };
+        // From key-wallet's processed height, so a fork before the rewind's
+        // lock is found under it (`SessionHub::detect_truncation`).
+        self.hub.update_wallet_state(wallet, |s| {
+            s.processed_height = s.processed_height.max(processed);
+        });
         let floor = birth.saturating_sub(1);
         let hold = |reached: u32, target: u32| {
             self.hub.update_wallet_state(wallet, |s| {
@@ -533,6 +565,15 @@ impl NetworkSession {
             };
             hold(reached, record.target);
             return;
+        }
+        #[cfg(test)]
+        let pause = self.hub.pause_resume.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            pause
+                .reached
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            pause.release.notified().await;
         }
         let resumed = (self.rewind(
             manager,
@@ -617,6 +658,7 @@ impl NetworkSession {
             let mut cancels = Vec::new();
             for (id, w) in &state.wallets {
                 if let Some(info) = wm.get_wallet_info(&id.0) {
+                    this.hub.detect_truncation(*id, &info.core_wallet);
                     let current = info.core_wallet.synced_height();
                     // Never above the wallet's replay target, which a fork
                     // lowers.

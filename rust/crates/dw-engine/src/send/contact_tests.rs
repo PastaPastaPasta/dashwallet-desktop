@@ -1988,14 +1988,13 @@ fn a_name_landing_before_the_recheck_is_verified_there() {
 /// the checkpoint under the fence.
 #[test]
 fn a_rewind_while_the_money_gate_waits_refuses_the_payment() {
-    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
     let f = fixture(false);
     let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
     let checkpoint = |height: u32| {
         let (s, id) = (Arc::clone(&f.session), f.wallet);
         f.engine.block_on(async move {
             let w = s.wallet(&id).await.unwrap();
-            w.state_mut().await.core_wallet.update_synced_height(height);
+            crate::events::set_checkpoint(&mut w.state_mut().await.core_wallet, height);
         });
     };
     checkpoint(1_000);

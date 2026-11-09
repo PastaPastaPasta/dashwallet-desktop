@@ -686,6 +686,8 @@ impl NetworkSession {
     /// event-fed balance mirror: no event follows the engine's own changes
     /// to key-wallet state (an abandon, the coins re-placed after a load,
     /// the duplicate reconcile), so the mirror can keep a total they undid.
+    /// A fork truncation no event announced is applied first
+    /// (`SessionHub::detect_truncation`): the read would hide it.
     pub(crate) async fn refresh_wallet_state(&self, manager: &Manager, id: WalletId) {
         let wm = manager.wallet_manager_arc();
         let wm = wm.read().await;
@@ -696,6 +698,7 @@ impl NetworkSession {
         if let Some(cl) = &core.metadata.last_applied_chain_lock {
             self.hub.note_chainlock(cl.block_height, cl.block_hash);
         }
+        self.hub.detect_truncation(id, core);
         let read = WalletState {
             birth_height: core.birth_height(),
             synced_height: core.synced_height(),

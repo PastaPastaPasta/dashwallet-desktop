@@ -585,7 +585,9 @@ fn a_consolidation_is_refused_while_a_replay_runs() {
     let s = &f.session;
     let w = f.engine.block_on(s.wallet(&f.wallet)).unwrap();
     let checkpoint = |height: u32| {
-        (f.engine).block_on(async { w.state_mut().await.core_wallet.update_synced_height(height) })
+        (f.engine).block_on(async {
+            crate::events::set_checkpoint(&mut w.state_mut().await.core_wallet, height)
+        })
     };
     checkpoint(1_000);
     (s.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::SyncHeightAdvanced {

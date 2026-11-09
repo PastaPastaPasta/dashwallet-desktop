@@ -2864,14 +2864,9 @@ fn only_session(f: &Fx) -> String {
 impl Fx {
     /// Sets wallet `w`'s filter checkpoint in key-wallet, as a rewind does.
     fn checkpoint(&self, w: usize, height: u32) {
-        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
         let wallet = self.run(self.session.wallet(&self.wallets[w])).unwrap();
         self.run(async {
-            wallet
-                .state_mut()
-                .await
-                .core_wallet
-                .update_synced_height(height)
+            crate::events::set_checkpoint(&mut wallet.state_mut().await.core_wallet, height)
         });
     }
 
@@ -2934,4 +2929,74 @@ fn test_QT_126_a_replay_holds_a_starts_coins() {
     assert_eq!(issued(1), before, "a refused join issues no address");
     f.checkpoint(1, 1_000);
     join().unwrap();
+}
+
+/// Rows 59 and 65: the scan height an unseen dissolution's status reads
+/// follows a fork truncation no event announced: a dissolution whose
+/// masternode left a list above the new chain's height stays Sent.
+#[test]
+fn an_unseen_dissolution_stays_sent_after_a_silent_truncation() {
+    use crate::masternodes::ProTxOperationState::{Confirmed, Sent};
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    let f = fx(1, true);
+    let wallet = f.wallets[0];
+    f.checkpoint(0, 1_000);
+    (f.session.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+        wallet_id: wallet.0,
+        height: 1_000,
+    });
+    let hash = [7u8; 32];
+    let row = dw_appdb::MasternodeOpRow {
+        id: "a".into(),
+        kind: "dissolve".into(),
+        terms: "{}".into(),
+        request: serde_json::json!({
+            "pro_tx_hash": Txid::from_byte_array(hash).to_string(),
+            "share_index": 0,
+            "fee": 1_000,
+            "penalty": 5,
+            "actor_output": 0,
+        })
+        .to_string(),
+        unsigned_tx: None,
+        sign_address: None,
+        sign_message: None,
+        fee_inputs: "[]".into(),
+        signed_tx: None,
+        txid: None,
+        pro_tx_hash: Some(Txid::from_byte_array(hash).to_string()),
+        locked_collateral: false,
+        fee: 1_000,
+        created_at: 0,
+        signed_at: None,
+        sent_at: None,
+        last_error: None,
+    };
+    let list = crate::masternodes::follow::ListView {
+        synced: true,
+        height: Some(950),
+        entries: Vec::new(),
+    };
+    let status = |f: &Fx| {
+        let (list_bound, scanned) = f.session.list_scan(wallet, &list);
+        let view = super::dissolve::DissolutionView {
+            list: list.clone(),
+            list_bound,
+            scanned,
+            registered: [(hash, 940)].into_iter().collect(),
+        };
+        (scanned, super::dissolve::list_settled(&row, Sent, &view))
+    };
+    assert_eq!(status(&f), (1_000, Confirmed { height: 950 }));
+    let manager = f.session.manager().unwrap();
+    f.run(async {
+        let wm = manager.wallet_manager_arc();
+        wm.write().await.truncate_above(900).unwrap();
+    });
+    let guard = f.run(f.session.replay_guard(wallet, 0));
+    let after = status(&f);
+    eprintln!(
+        "ROW5965 list at 950, silent truncation to 900: guard {guard:?}, scanned and status {after:?}"
+    );
+    assert_eq!(after.1, Sent, "{after:?}");
 }
