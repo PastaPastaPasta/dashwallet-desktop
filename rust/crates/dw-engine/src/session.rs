@@ -221,7 +221,11 @@ pub struct NetworkSession {
     pub(crate) spv_peers: Vec<SocketAddr>,
     pub(crate) hub: Arc<SessionHub>,
     /// Admission of operations vs close (review M1).
-    gate: OpGate,
+    pub(crate) gate: OpGate,
+    /// Other crates' tests: how long an in-app close waits for a wallet
+    /// load (`test_support::hold_close_fence`).
+    #[cfg(all(debug_assertions, feature = "test-support"))]
+    pub(crate) close_load_wait: std::sync::Mutex<Option<std::time::Duration>>,
     /// Wallet registrations and removals, one at a time (DEC-210 (3b)).
     pub(crate) wallet_lifecycle: WalletLifecycle,
     live: RwLock<Option<Live>>,
@@ -531,6 +535,8 @@ impl NetworkSession {
             spv_peers,
             hub: Arc::clone(&hub),
             gate: OpGate::default(),
+            #[cfg(all(debug_assertions, feature = "test-support"))]
+            close_load_wait: Default::default(),
             wallet_lifecycle: WalletLifecycle::default(),
             live: RwLock::new(Some(Live {
                 manager: Arc::clone(&manager),
@@ -880,6 +886,9 @@ impl NetworkSession {
         // No vault operation is admitted from here, so no unlock can follow:
         // the data key and every grant go now, not with the session's last
         // reference (an in-app network switch keeps the process running).
+        // A bare lock, not the vault gate's: no lock event or lease epoch is
+        // needed, as the page reboots after a switch and the leases were
+        // revoked above.
         self.vault.lock();
         // A picture toggle's write lands before the session ends (DP4-02 D37).
         self.platform.avatars.settled().await;

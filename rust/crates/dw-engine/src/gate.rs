@@ -8,20 +8,76 @@
 //! tokio's `RwLock` is fair: once `close` waits for the write lock, new
 //! readers queue behind it, so a stream of new operations cannot starve the
 //! close, and each of them sees the closed flag when it is admitted.
+//!
+//! An in-app close first [`OpGate::pause`]s the gate: async operations
+//! asking for a guard wait, the ones admitted drain, and the close checks
+//! whether the session is busy before it commits. A refused close resumes
+//! the gate and the waiting operations are admitted as if nothing happened;
+//! a committed one seals it and they are refused. The pause is not a
+//! queued writer, so `try_enter` still admits meanwhile: the session's
+//! timers and loops (mixing ticks, the relock) give up on a refused
+//! `try_enter`, and none of them starts what the check looks for.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 
-use tokio::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::{Mutex, MutexGuard, Notify, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 #[derive(Default)]
 pub(crate) struct OpGate {
     closed: AtomicBool,
     lock: RwLock<()>,
+    paused: AtomicBool,
+    /// Guards alive. Read with `paused` in the opposite order to `enter`
+    /// (both `SeqCst`): an operation either sees the pause and backs off,
+    /// or the pause sees it and waits for it.
+    admitted: AtomicUsize,
+    /// A guard was dropped, or the pause ended.
+    changed: Notify,
+    /// Tests: how many pauses reached their drain.
+    #[cfg(test)]
+    drains: AtomicUsize,
 }
 
 /// Held by one admitted operation; dropping it lets a pending close proceed.
 pub(crate) struct OpGuard<'a> {
+    gate: &'a OpGate,
     _guard: RwLockReadGuard<'a, ()>,
+}
+
+impl Drop for OpGuard<'_> {
+    fn drop(&mut self) {
+        self.gate.admitted.fetch_sub(1, Ordering::SeqCst);
+        self.gate.changed.notify_waiters();
+    }
+}
+
+/// A paused gate whose session was not busy ([`OpGate::pause`]). Dropping
+/// it resumes the gate; [`Paused::seal`] first refuses every operation
+/// still waiting, for a close that goes ahead.
+pub(crate) struct Paused<'a> {
+    gate: &'a OpGate,
+}
+
+impl Paused<'_> {
+    pub(crate) fn seal(self) {
+        self.gate.closed.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Drop for Paused<'_> {
+    fn drop(&mut self) {
+        self.gate.paused.store(false, Ordering::SeqCst);
+        self.gate.changed.notify_waiters();
+    }
+}
+
+/// Why [`OpGate::pause`] refused.
+pub(crate) enum PauseRefused<B> {
+    /// What the check found running.
+    Busy(B),
+    /// The admitted operations did not finish within the drain.
+    Draining,
 }
 
 /// Serialises, per session, every operation that registers or removes a
@@ -75,12 +131,40 @@ impl WalletLifecycle {
 impl OpGate {
     /// Admits an async operation, waiting while a close is in progress.
     /// `None` once the gate is closed.
+    /// While the gate is paused it waits for the pause to end.
     pub(crate) async fn enter(&self) -> Option<OpGuard<'_>> {
-        let guard = self.lock.read().await;
-        if self.closed.load(Ordering::Acquire) {
-            return None;
+        loop {
+            self.until_resumed().await;
+            let guard = self.lock.read().await;
+            if self.closed.load(Ordering::Acquire) {
+                return None;
+            }
+            let guard = self.admit(guard);
+            if !self.paused.load(Ordering::SeqCst) || self.closed.load(Ordering::SeqCst) {
+                return Some(guard);
+            }
+            // Paused after the wait: back off, the pause may be draining.
         }
-        Some(OpGuard { _guard: guard })
+    }
+
+    async fn until_resumed(&self) {
+        loop {
+            let resumed = self.changed.notified();
+            tokio::pin!(resumed);
+            resumed.as_mut().enable();
+            if !self.paused.load(Ordering::SeqCst) || self.closed.load(Ordering::SeqCst) {
+                return;
+            }
+            resumed.await;
+        }
+    }
+
+    fn admit<'a>(&'a self, guard: RwLockReadGuard<'a, ()>) -> OpGuard<'a> {
+        self.admitted.fetch_add(1, Ordering::SeqCst);
+        OpGuard {
+            gate: self,
+            _guard: guard,
+        }
     }
 
     /// Admits a synchronous operation without waiting. `None` when the gate
@@ -93,7 +177,51 @@ impl OpGate {
         if self.closed.load(Ordering::Acquire) {
             return None;
         }
-        Some(OpGuard { _guard: guard })
+        Some(self.admit(guard))
+    }
+
+    /// Pauses admissions for a close that must not cut what runs: `busy`
+    /// is checked at once, then again once every admitted operation has
+    /// finished, waiting up to `drain` for them. `Paused` when both checks
+    /// passed; on a refusal the gate is resumed before this returns.
+    /// Operations that asked meanwhile wait, so none starts between the
+    /// second check and the close.
+    pub(crate) async fn pause<B>(
+        &self,
+        drain: Duration,
+        busy: impl Fn() -> Option<B>,
+    ) -> Result<Paused<'_>, PauseRefused<B>> {
+        self.paused.store(true, Ordering::SeqCst);
+        let paused = Paused { gate: self };
+        if let Some(b) = busy() {
+            return Err(PauseRefused::Busy(b));
+        }
+        #[cfg(test)]
+        self.drains.fetch_add(1, Ordering::SeqCst);
+        let drained = tokio::time::timeout(drain, self.until_drained()).await;
+        if let Some(b) = busy() {
+            return Err(PauseRefused::Busy(b));
+        }
+        drained.map_err(|_| PauseRefused::Draining)?;
+        Ok(paused)
+    }
+
+    async fn until_drained(&self) {
+        loop {
+            let dropped = self.changed.notified();
+            tokio::pin!(dropped);
+            dropped.as_mut().enable();
+            if self.admitted.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            dropped.await;
+        }
+    }
+
+    /// Tests: how many pauses reached their drain.
+    #[cfg(test)]
+    pub(crate) fn drains(&self) -> usize {
+        self.drains.load(Ordering::SeqCst)
     }
 
     /// Closes the gate and waits for every admitted operation to finish.
@@ -112,8 +240,6 @@ impl OpGate {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
-    use std::time::Duration;
 
     use super::*;
 
@@ -146,6 +272,83 @@ mod tests {
         };
         assert_eq!(closed.await.unwrap(), 1);
         op.await.unwrap();
+    }
+
+    const LONG: Duration = Duration::from_secs(20);
+
+    async fn until(what: impl Fn() -> bool) {
+        tokio::time::timeout(LONG, async {
+            while !what() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("timed out");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refused_pause_admits_what_waited() {
+        let gate = Arc::new(OpGate::default());
+        let held = gate.enter().await.unwrap();
+        let busy = Arc::new(AtomicBool::new(false));
+        let pausing = {
+            let (gate, busy) = (Arc::clone(&gate), Arc::clone(&busy));
+            tokio::spawn(async move {
+                let refused = gate.pause(LONG, || busy.load(Ordering::SeqCst).then_some(()));
+                matches!(refused.await, Err(PauseRefused::Busy(())))
+            })
+        };
+        until(|| gate.drains() == 1).await;
+        let late = {
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move { gate.enter().await.is_some() })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!late.is_finished(), "an operation waits while paused");
+        // The admitted operation turns the session busy, then finishes.
+        busy.store(true, Ordering::SeqCst);
+        drop(held);
+        assert!(pausing.await.unwrap(), "the check after the drain refuses");
+        assert!(late.await.unwrap(), "admitted once the pause ended");
+        assert!(!gate.is_closed());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sealed_pause_refuses_what_waited() {
+        let gate = Arc::new(OpGate::default());
+        let paused = gate.pause(LONG, || None::<()>).await.ok().unwrap();
+        let late = {
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move { gate.enter().await.is_none() })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!late.is_finished());
+        paused.seal();
+        assert!(late.await.unwrap(), "refused once sealed");
+        assert!(gate.is_closed());
+        drop(gate.close().await);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_pause_waits_for_sync_operations_and_gives_up_after_the_drain() {
+        let gate = Arc::new(OpGate::default());
+        let held = gate.try_enter().unwrap();
+        let refused = gate.pause(Duration::from_millis(50), || None::<()>).await;
+        assert!(matches!(refused, Err(PauseRefused::Draining)));
+        assert!(gate.enter().await.is_some(), "resumed after a refusal");
+        // A sync caller is admitted while paused, and drained.
+        let pausing = {
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move { gate.pause(LONG, || None::<()>).await.is_ok() })
+        };
+        until(|| gate.drains() == 2).await;
+        let during = gate.try_enter();
+        assert!(during.is_some(), "try_enter does not wait for a pause");
+        drop(held);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!pausing.is_finished(), "the drain waits for it too");
+        drop(during);
+        assert!(pausing.await.unwrap());
     }
 
     #[tokio::test]

@@ -126,3 +126,40 @@ pub async fn create_invitation(
     voucher.non_secure_erase();
     Ok(zeroize::Zeroizing::new(uri?))
 }
+
+/// What [`hold_close_fence`] holds.
+pub enum CloseFence {
+    /// As a wallet load in flight holds it.
+    WalletLoad,
+    /// As a signing shielded call holds it.
+    ShieldedSpend,
+}
+
+/// Holds `fence` of `session` until the returned sender is dropped, so an
+/// in-app close of it is refused: `wallet` once it waited `load_wait`, or
+/// `shielded_spend_unresolved`. Call it off the engine's runtime.
+pub fn hold_close_fence(
+    session: &std::sync::Arc<NetworkSession>,
+    fence: CloseFence,
+    load_wait: std::time::Duration,
+) -> tokio::sync::oneshot::Sender<()> {
+    *session.close_load_wait.lock().unwrap() = Some(load_wait);
+    let (held_tx, held) = std::sync::mpsc::channel();
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let s = std::sync::Arc::clone(session);
+    session.rt.spawn(async move {
+        let _held = match fence {
+            CloseFence::WalletLoad => s.platform.wallet_loads.read().await,
+            CloseFence::ShieldedSpend => s.platform.close_preflight.read().await,
+        };
+        let _ = held_tx.send(());
+        let _ = released.await;
+    });
+    held.recv().expect("the fence is held");
+    release
+}
+
+/// Marks `wallet` mixing (or not) without starting its loop.
+pub fn set_mixing(session: &NetworkSession, wallet: crate::WalletId, mixing: bool) {
+    session.coinjoin.set_mixing_for_test(wallet, mixing);
+}
