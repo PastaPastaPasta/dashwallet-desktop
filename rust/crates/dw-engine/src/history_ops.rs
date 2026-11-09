@@ -15,7 +15,7 @@ use key_wallet::managed_account::managed_core_funds_account::ManagedCoreFundsAcc
 use key_wallet::managed_account::transaction_record::TransactionRecord;
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWalletInfo;
-use platform_wallet::changeset::{PersistenceError, PlatformWalletPersistence};
+use platform_wallet::changeset::PlatformWalletPersistence;
 
 use crate::history::{
     AddressChain, ChainView, HistoryPage, HistoryQuery, Labels, Owned, TxDetail, TxEntry,
@@ -84,7 +84,7 @@ pub(crate) fn owned_scripts(info: &PlatformWalletInfo) -> HashMap<ScriptBuf, Own
 }
 
 /// Tests: how the next history load's first stored record read goes wrong
-/// (`EventHub::record_read_fault`).
+/// (`SessionHub::record_read_fault`).
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RecordFault {
@@ -94,20 +94,28 @@ pub(crate) enum RecordFault {
     Missing,
     /// The record read names another txid.
     Mismatched,
+    /// The record read holds another transaction.
+    OtherTransaction,
 }
 
 #[cfg(test)]
 impl RecordFault {
     fn apply(
         self,
-        read: Result<Option<TransactionRecord>, PersistenceError>,
-    ) -> Result<Option<TransactionRecord>, PersistenceError> {
+        read: Result<Option<TransactionRecord>, platform_wallet::changeset::PersistenceError>,
+    ) -> Result<Option<TransactionRecord>, platform_wallet::changeset::PersistenceError> {
         match self {
-            Self::Error => Err(PersistenceError::LockPoisoned),
+            Self::Error => Err(platform_wallet::changeset::PersistenceError::LockPoisoned),
             Self::Missing => Ok(None),
             Self::Mismatched => read.map(|r| {
                 r.map(|mut r| {
                     r.txid = Txid::all_zeros();
+                    r
+                })
+            }),
+            Self::OtherTransaction => read.map(|r| {
+                r.map(|mut r| {
+                    r.transaction.lock_time = r.transaction.lock_time.wrapping_add(1);
                     r
                 })
             }),
@@ -323,8 +331,8 @@ impl NetworkSession {
             // A load that failed to read a record, or read one missing or
             // another's, keeps every coin waiting. A contact's record comes
             // only from a store written before platform-wallet stopped
-            // persisting those; a contact's ProRegTx is never exempt by
-            // this alone: `upsert` keeps it out of sight for its collateral,
+            // persisting those; a contact's ProRegTx is never left to this
+            // hold alone: `upsert` keeps it out of sight for its collateral,
             // locked as an own one's.
             let loaded_coins: HashSet<Txid> = match info {
                 Some(info) => (crate::coins::read_coins(&info.core_wallet).coins.iter())

@@ -805,12 +805,12 @@ impl NetworkSession {
     /// among those that the history has no ProRegTx for (no record) is
     /// locked once the masternode list syncs. A contact's record comes only
     /// from a store written before platform-wallet stopped persisting
-    /// those; a contact's ProRegTx is never exempt by the history hold
-    /// alone: its collateral is locked here from the record the history
-    /// keeps out of sight. After a load
-    /// that failed to read a record, every such coin missing from the
-    /// history stays held for the session, and when the history misses an
-    /// event (a lagged event bus), that coin does.
+    /// those; a contact's ProRegTx is never left to the history hold alone:
+    /// its collateral is locked here from the record the history keeps out
+    /// of sight. After a load that failed to read a record, or read one
+    /// missing or another's, every such coin missing from the history
+    /// stays held for the session, and when the history misses an event (a
+    /// lagged event bus), that coin does.
     pub(crate) async fn coin_snapshot(
         &self,
         fence: &CoinFence,

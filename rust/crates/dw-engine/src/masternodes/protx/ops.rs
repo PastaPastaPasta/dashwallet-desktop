@@ -710,8 +710,10 @@ impl NetworkSession {
     /// collateral holding its type's amount is locked while its ProRegTx is
     /// unconfirmed too, sooner than Core's load; one that never confirms
     /// leaves it locked until `release-collateral`, or "Unlock unspent"
-    /// once it is abandoned. That is the safe side. `false` when a build
-    /// holds the wallet's coin fence, so nothing ran.
+    /// once it is abandoned. That is the safe side. The collateral of a
+    /// ProRegTx the history keeps out of sight (a contact's record) is
+    /// locked with them. `false` when a build holds the wallet's coin
+    /// fence, so nothing ran.
     async fn lock_own_collaterals(&self, wallet: WalletId) -> Result<bool, MasternodesError> {
         let Some(fence) = self.try_coin_fence(wallet).await? else {
             return Ok(false);
@@ -721,18 +723,18 @@ impl NetworkSession {
         self.release_conflicted_collaterals(wallet).await?;
         let (m, hub) = (self.manager()?, Arc::clone(&self.hub));
         let collaterals: Vec<(OutPoint, u64)> = tokio::task::spawn_blocking(move || {
-            let mut collaterals: Vec<(OutPoint, u64)> =
-                super::super::follow::wallet_masternodes(&m, &hub.history, &wallet)
-                    .map(|(owned, _)| {
-                        (owned.iter())
-                            .filter_map(|o| {
-                                Some((o.collateral?, collateral_amount(o.record.is_evonode)))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-            collaterals.extend(hub.history.hidden_registration_collaterals(&wallet));
-            collaterals
+            super::super::follow::wallet_masternodes(&m, &hub.history, &wallet)
+                .map(|(owned, _)| {
+                    (owned.iter())
+                        .filter_map(|o| {
+                            Some((o.collateral?, collateral_amount(o.record.is_evonode)))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .chain(hub.history.hidden_registration_collaterals(&wallet))
+                .collect()
         })
         .await?;
         if !collaterals.is_empty() {

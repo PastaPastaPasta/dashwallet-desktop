@@ -998,7 +998,7 @@ impl SessionHub {
                 // the history drops them too.
                 self.history.with_wallet(id, |h| {
                     for t in txids {
-                        h.txs.remove(t);
+                        h.forget(t);
                     }
                 });
                 self.pump.mark_history(id, Some(txids));

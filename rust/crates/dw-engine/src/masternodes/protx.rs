@@ -15,8 +15,8 @@ mod update;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use dashcore::OutPoint;
 use dashcore::hashes::Hash;
+use dashcore::{OutPoint, Txid};
 use dw_appdb::{Holder, MasternodeOpRow};
 use dw_protx::params::collateral_amount;
 use dw_vault::VaultSigner;
@@ -1002,12 +1002,12 @@ impl NetworkSession {
         })
         .await?
         .unwrap_or_default();
-        let collateral = owned
-            .iter()
-            .find(|o| o.record.pro_tx_hash == hash)
-            .ok_or(MasternodesError::NotFound)?
-            .collateral
-            .ok_or(MasternodesError::CollateralUnavailable)?;
+        let collateral = match owned.iter().find(|o| o.record.pro_tx_hash == hash) {
+            Some(o) => (o.collateral).ok_or(MasternodesError::CollateralUnavailable)?,
+            None => (self.hub.history)
+                .hidden_registration_collateral(&wallet, &Txid::from_byte_array(hash))
+                .ok_or(MasternodesError::NotFound)?,
+        };
         let _fence = self.coin_fence(wallet).await?;
         let (w, key) = (
             wallet.to_string(),

@@ -363,10 +363,11 @@ pub(crate) struct WalletHistory {
     /// with every stored record read, whose transaction was stored (with
     /// its record or as a height-only row): their events came before the
     /// load, so no later one is awaited for them. Empty after a load that
-    /// failed to read a record. A contact's record comes only from a store
-    /// written before platform-wallet stopped persisting those; a contact's
-    /// ProRegTx is never exempt by this alone: its collateral is locked
-    /// from `hidden_registrations`.
+    /// failed to read a record, or read one missing or another's. A
+    /// contact's record comes only from a store written before
+    /// platform-wallet stopped persisting those; a contact's ProRegTx is
+    /// never left to this hold alone: its collateral is locked from
+    /// `hidden_registrations`.
     loaded_coins: HashSet<Txid>,
     /// The ProRegTxs whose record is a DashPay contact account's, which
     /// [`Self::upsert`] skips: the history shows none of them, yet each
@@ -377,21 +378,42 @@ pub(crate) struct WalletHistory {
 
 impl WalletHistory {
     /// Sets the coins the wallet held at a load (empty when the load failed
-    /// to read a record).
+    /// to read a record, or read one missing or another's).
     pub fn set_loaded_coins(&mut self, txids: HashSet<Txid>) {
         self.loaded_coins = txids;
+    }
+
+    /// Names the collateral of `record`'s transaction, when it is a
+    /// ProRegTx, for the follower's next lock step. Returns whether it is.
+    fn name_registration_collateral(&mut self, record: &TransactionRecord) -> bool {
+        let Some(TransactionPayload::ProviderRegistrationPayloadType(p)) =
+            &record.transaction.special_transaction_payload
+        else {
+            return false;
+        };
+        (self.named_collaterals).insert(resolve_collateral(record.txid, p.collateral_outpoint));
+        self.collateral_pending = true;
+        true
     }
 
     /// Keeps a skipped (contact's) record that is a ProRegTx out of sight,
     /// its collateral named and marked as an own ProRegTx's is.
     fn hide_registration(&mut self, record: &TransactionRecord) {
-        if let Some(TransactionPayload::ProviderRegistrationPayloadType(p)) =
-            &record.transaction.special_transaction_payload
-        {
-            (self.named_collaterals).insert(resolve_collateral(record.txid, p.collateral_outpoint));
-            self.collateral_pending = true;
+        if self.name_registration_collateral(record) {
             (self.hidden_registrations).insert(record.txid, record.transaction.clone());
         }
+    }
+
+    /// Drops a transaction upstream deleted, seen or kept out of sight.
+    pub fn forget(&mut self, txid: &Txid) {
+        self.txs.remove(txid);
+        self.hidden_registrations.remove(txid);
+    }
+
+    /// The ProRegTxs kept out of sight that the history has no own entry
+    /// for.
+    fn hidden(&self) -> impl Iterator<Item = (&Txid, &Transaction)> {
+        (self.hidden_registrations.iter()).filter(|(t, _)| !self.txs.contains_key(*t))
     }
 }
 
@@ -432,12 +454,7 @@ impl WalletHistory {
                 .own_inputs
                 .insert(input.index, (input.value, input.address.clone()));
         }
-        if let Some(TransactionPayload::ProviderRegistrationPayloadType(p)) =
-            &record.transaction.special_transaction_payload
-        {
-            (self.named_collaterals).insert(resolve_collateral(record.txid, p.collateral_outpoint));
-            self.collateral_pending = true;
-        }
+        self.name_registration_collateral(record);
         if (record.output_details.iter())
             .any(|o| (self.named_collaterals).contains(&OutPoint::new(record.txid, o.index)))
         {
@@ -461,6 +478,9 @@ impl WalletHistory {
     /// network mines them again) are out of a block, locked. Returns the
     /// transactions that changed.
     pub fn truncate(&mut self, removed: &[Txid], unconfirmed: &[Txid]) -> Vec<Txid> {
+        for txid in removed {
+            self.hidden_registrations.remove(txid);
+        }
         let mut changed: Vec<Txid> = removed
             .iter()
             .filter(|t| self.txs.remove(*t).is_some())
@@ -548,7 +568,8 @@ impl HistoryStore {
 
     /// The collaterals the wallet's ProRegTxs name, with the amount each
     /// type needs: every ProRegTx the history counts (not abandoned), and
-    /// every one it keeps out of sight (a contact's record).
+    /// every one it keeps out of sight (a contact's record) with no own
+    /// entry.
     pub fn registration_collaterals(&self, wallet: &WalletId) -> Vec<(OutPoint, u64)> {
         let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
         let Some(h) = map.get(wallet) else {
@@ -558,17 +579,30 @@ impl HistoryStore {
             (h.txs.values())
                 .filter(|e| !e.is_abandoned())
                 .map(|e| &e.tx)
-                .chain(h.hidden_registrations.values()),
+                .chain(h.hidden().map(|(_, tx)| tx)),
         )
     }
 
-    /// The collaterals only the ProRegTxs kept out of sight name (a
-    /// contact's record), which no masternode the wallet lists holds.
+    /// The collaterals the ProRegTxs kept out of sight (a contact's record)
+    /// with no own entry name.
     pub fn hidden_registration_collaterals(&self, wallet: &WalletId) -> Vec<(OutPoint, u64)> {
         let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
         (map.get(wallet)).map_or_else(Vec::new, |h| {
-            crate::masternodes::registration_collaterals(h.hidden_registrations.values())
+            crate::masternodes::registration_collaterals(h.hidden().map(|(_, tx)| tx))
         })
+    }
+
+    /// The collateral of `pro_tx_hash`, a ProRegTx kept out of sight with
+    /// no own entry, when it names one.
+    pub fn hidden_registration_collateral(
+        &self,
+        wallet: &WalletId,
+        pro_tx_hash: &Txid,
+    ) -> Option<OutPoint> {
+        let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
+        let (_, tx) = map.get(wallet)?.hidden().find(|(t, _)| *t == pro_tx_hash)?;
+        let collaterals = crate::masternodes::registration_collaterals([tx]);
+        collaterals.first().map(|(o, _)| *o)
     }
 
     /// Runs `f` over one wallet's entries and the txids of the coins it held

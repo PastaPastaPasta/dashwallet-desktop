@@ -2754,16 +2754,28 @@ fn tx_record(
     context: TransactionContext,
 ) -> key_wallet::managed_account::transaction_record::TransactionRecord {
     use key_wallet::account::{AccountType, StandardAccountType};
+    tx_record_on(
+        tx,
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        },
+        context,
+    )
+}
+
+fn tx_record_on(
+    tx: Transaction,
+    account: key_wallet::account::AccountType,
+    context: TransactionContext,
+) -> key_wallet::managed_account::transaction_record::TransactionRecord {
     use key_wallet::managed_account::transaction_record::{
         TransactionDirection, TransactionRecord,
     };
     use key_wallet::transaction_checking::TransactionType;
     TransactionRecord::new(
         tx,
-        AccountType::Standard {
-            index: 0,
-            standard_account_type: StandardAccountType::BIP44Account,
-        },
+        account,
         context,
         TransactionType::Standard,
         TransactionDirection::Internal,
@@ -2940,6 +2952,53 @@ fn r71_a_failed_earlier_step_skips_no_collateral_lock() {
             f.locked_in(other),
             HashSet::from([b]),
             "{point:?}, the other wallet"
+        );
+    }
+}
+
+/// A ProRegTx the history keeps out of sight (a DashPay contact's record),
+/// internal or external: the follower's lock step locks its collateral
+/// with no coin read, the user's release frees it for good, and a re-lock
+/// locks it again, all by its hash.
+#[test]
+fn r71_a_contacts_registration_collateral_is_locked_and_released_by_its_hash() {
+    use key_wallet::account::AccountType;
+    for internal in [true, false] {
+        let f = fx(Library::Accept);
+        let (tx, collateral) = f.foreign_registration(internal, 2);
+        let record = tx_record_on(
+            tx.clone(),
+            AccountType::DashpayExternalAccount {
+                index: 0,
+                user_identity_id: [0xaa; 32],
+                friend_identity_id: [0xbb; 32],
+            },
+            chain_locked(7),
+        );
+        (f.session.hub.history).with_wallet(f.wallet, |h| h.upsert(&record, None));
+        assert!(
+            (f.session.hub.history).read(&f.wallet, |txs| !txs.contains_key(&tx.txid())),
+            "internal: {internal}"
+        );
+        f.collateral_pass();
+        assert_eq!(
+            f.locked(),
+            HashSet::from([collateral]),
+            "internal: {internal}"
+        );
+        f.engine
+            .block_on(f.mn().release_collateral(f.wallet, tx.txid().to_string()))
+            .unwrap();
+        assert!(f.locked().is_empty(), "internal: {internal}");
+        f.collateral_pass();
+        assert!(f.locked().is_empty(), "internal: {internal}, released");
+        f.engine
+            .block_on(f.mn().lock_collateral(f.wallet, tx.txid().to_string()))
+            .unwrap();
+        assert_eq!(
+            f.locked(),
+            HashSet::from([collateral]),
+            "internal: {internal}"
         );
     }
 }

@@ -3466,6 +3466,11 @@ fn a_record_naming_another_txid_keeps_a_recordless_collateral_sized_coin_held() 
     a_recordless_collateral_stays_held_after(crate::history_ops::RecordFault::Mismatched);
 }
 
+#[test]
+fn a_record_holding_another_transaction_keeps_a_recordless_collateral_sized_coin_held() {
+    a_recordless_collateral_stays_held_after(crate::history_ops::RecordFault::OtherTransaction);
+}
+
 /// A contact account's stored record of an internal ProRegTx, from a store
 /// written before platform-wallet stopped persisting those, with no record
 /// of its own in key-wallet, no masternode list and no lock: after a
@@ -3528,10 +3533,7 @@ fn a_contacts_stored_registration_locks_its_collateral_after_a_reopen() {
 #[test]
 fn a_collateral_sized_coin_whose_stored_record_the_history_skips_is_free_after_a_reopen() {
     use key_wallet::account::AccountType;
-    use key_wallet::managed_account::transaction_record::{
-        TransactionDirection, TransactionRecord,
-    };
-    use key_wallet::transaction_checking::{BlockInfo, TransactionContext, TransactionType};
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
     use platform_wallet::changeset::CoreChangeSet;
     let f = fixture(false);
     let mut coin = f.late_coin(9, dw_protx::params::MASTERNODE_COLLATERAL, 150);
@@ -3543,7 +3545,7 @@ fn a_collateral_sized_coin_whose_stored_record_the_history_skips_is_free_after_a
         special_transaction_payload: None,
     };
     coin.outpoint = OutPoint::new(paid.txid(), 0);
-    let record = TransactionRecord::new(
+    let record = stored_record(
         paid,
         AccountType::DashpayExternalAccount {
             index: 0,
@@ -3551,11 +3553,6 @@ fn a_collateral_sized_coin_whose_stored_record_the_history_skips_is_free_after_a
             friend_identity_id: [0xbb; 32],
         },
         TransactionContext::InBlock(BlockInfo::new(150, dashcore::BlockHash::all_zeros(), 9)),
-        TransactionType::Standard,
-        TransactionDirection::Incoming,
-        Vec::new(),
-        Vec::new(),
-        0,
     );
     assert!(!crate::history::is_wallets(&record));
     f.put_coin(coin.clone());
