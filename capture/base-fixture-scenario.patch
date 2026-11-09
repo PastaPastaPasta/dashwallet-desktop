@@ -1,0 +1,21 @@
+diff --git a/apps/desktop/src/fixture/scenarios.ts b/apps/desktop/src/fixture/scenarios.ts
+index 4b209b9e..385fdc2e 100644
+--- a/apps/desktop/src/fixture/scenarios.ts
++++ b/apps/desktop/src/fixture/scenarios.ts
+@@ -577,6 +577,16 @@ const SCENARIOS = {
+     w.settings.ui = { ...w.settings.ui, preReleaseNoticeDismissed: false };
+     return w;
+   },
++  /** The first run on a new install, past the notice: no choice saved, so the window is on mainnet (row 74). */
++  "no-wallet-mainnet": (t) => {
++    const w = base(t);
++    w.wallets = [];
++    w.phrases = {};
++    w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
++    w.launch = { ...w.launch, network: { kind: "mainnet", dirName: "mainnet", unitName: "DASH" } };
++    w.pending.networkChoice = { chosen: "mainnet", saved: false };
++    return w;
++  },
+   /** No wallet yet, and Mainnet chosen while this window is on testnet: Welcome asks for a restart. */
+   "no-wallet-network-restart": (t) => {
+     const w = base(t);
