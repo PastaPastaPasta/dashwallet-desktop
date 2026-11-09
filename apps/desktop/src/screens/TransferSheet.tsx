@@ -184,8 +184,12 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   useModel(flow);
   const line = useModel(t.lines[route] as QuoteLine<unknown>);
   const pending = usePendingPlatformFunds(walletId).data;
+  const discreet = useUi((s) => s.discreet);
   const own = t.begunRoute === route;
   const text = own ? flow.text : "";
+  // Max's figure is the pool's balance: in discreet mode it shows masked until it is typed over.
+  const mask = shown.masked();
+  const hidden = discreet && text !== "" && t.maxText[route] === text;
   const amount = useParsed(text, network);
   const blocked = why !== null || flow.running;
   // The fee line follows the amount once it is read; nothing is quoted while the route can't run.
@@ -233,11 +237,12 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
             data-autofocus
             inputMode="decimal"
             placeholder={shown.placeholder}
-            value={text}
+            value={hidden ? mask : text}
             disabled={blocked || !own}
             aria-invalid={amountProblem !== null}
             aria-describedby={`${id}-fee`}
-            onChange={(e) => flow.setText(e.target.value)}
+            onFocus={(e) => hidden && e.target.select()}
+            onChange={(e) => flow.setText(hidden ? e.target.value.split(mask).join("") : e.target.value)}
           />
         </label>
         <DashButton
@@ -247,7 +252,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
           disabled={blocked || !own || !probe || line.maxing}
           why={why ?? (!probe ? T.noCoreBalance : null)}
           whyId={why ? `${id}-why` : undefined}
-          onClick={() => probe && void t.max(route, probe, (duffs) => flow.setText(shown.full(duffs)))}
+          onClick={() => probe && void t.max(route, probe, (duffs) => flow.setText(shown.full(duffs)), shown.full)}
         >
           {T.max}
         </DashButton>
@@ -274,6 +279,7 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
   const shown = useDisplay(network);
   const fmt = useAmount(network);
   const move = useModel(t.flows.move);
+  const discreet = useUi((s) => s.discreet);
   const activity = usePlatformActivity(walletId);
   const blocked = why !== null || move.running;
   const quote = usePlatformMoveQuote(walletId, !blocked);
@@ -299,7 +305,7 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
       <div className="transfer-amount-row">
         <label className="form-field">
           {T.amount} ({shown.name})
-          <input data-testid="transfer-amount" readOnly aria-readonly="true" aria-describedby={`${id}-whole`} value={q ? shown.full(creditsToDuffs(q.credits)) : movable !== null ? shown.full(movable) : ""} />
+          <input data-testid="transfer-amount" readOnly aria-readonly="true" aria-describedby={`${id}-whole`} value={discreet ? shown.masked() : q ? shown.full(creditsToDuffs(q.credits)) : movable !== null ? shown.full(movable) : ""} />
         </label>
         <DashButton variant="tintedBlue" size="medium" data-testid="transfer-max" aria-pressed="true" disabled why={T.wholeBalance} whyId={`${id}-whole`}>
           {T.max}

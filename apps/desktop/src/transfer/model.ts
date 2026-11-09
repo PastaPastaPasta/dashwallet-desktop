@@ -383,6 +383,8 @@ export class TransferModel extends Model {
   reviewed = false;
   /** The route whose flow the sheet opened. */
   private begun: RouteId | null = null;
+  /** The text Max last filled on each route: discreet mode masks it while the field still holds it. */
+  readonly maxText: Partial<Record<Exclude<RouteId, "platformToCore">, string>> = {};
   readonly lines: Lines;
 
   constructor(
@@ -566,11 +568,13 @@ export class TransferModel extends Model {
   }
 
   /** Max on `route`: `probe` is the pool's whole balance in duffs. The field is filled (`fill`, the
-   * amount in duffs) only from a second quote that took it. */
-  async max(route: Exclude<RouteId, "platformToCore">, probe: number, fill: (duffs: number) => void): Promise<void> {
+   * amount in duffs) only from a second quote that took it; `text` is how the field shows that amount. */
+  async max(route: Exclude<RouteId, "platformToCore">, probe: number, fill: (duffs: number) => void, text?: (duffs: number) => string): Promise<void> {
     const line = this.lines[route] as QuoteLine<unknown>;
     const got = await line.max(probe, MAX_DERIVE[route] as (first: Settled<unknown>, probe: number) => number | null);
-    if (got !== null) fill(got);
+    if (got === null) return;
+    if (text) this.maxText[route] = text(got);
+    fill(got);
   }
 }
 

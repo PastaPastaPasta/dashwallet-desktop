@@ -58,6 +58,15 @@ async function run(page: Page, route: TransferRoute) {
   await authorize(page);
 }
 
+/** Every text, field value and label in Transfer's sheet that shows an amount in clear. */
+export async function amountsInClear(page: Page): Promise<string[]> {
+  const sheet = page.getByTestId("transfer-sheet");
+  const seen = [await sheet.innerText()];
+  seen.push(...(await sheet.locator("input").evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value))));
+  seen.push(...(await sheet.locator("[aria-label]").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label") ?? ""))));
+  return seen.filter((v) => /\d+[.,]\d+|\d+ ?t?DASH/.test(v));
+}
+
 /** Max: the field filled from a second quote, the fee line read for that amount (`fee`). */
 async function maxFills(page: Page, quote: string, value: RegExp, fee: RegExp | string = FEE) {
   const before = await callsOf(page, quote);
@@ -377,6 +386,18 @@ export const TRANSFER_STATES: TransferState[] = [
       // Max is the whole balance, fixed on; the amount is the quote's.
       await expect(page.getByTestId("transfer-amount")).toHaveValue(/^0\.4/);
       await expect(page.getByTestId("transfer-max")).toHaveAttribute("aria-pressed", "true");
+    },
+  },
+  {
+    // Discreet mode: the whole balance the route moves, masked like every other figure on the sheet.
+    id: "platformToCore-discreet",
+    scenario: "funded",
+    go: async (page) => {
+      await page.getByTestId("toolbar-discreet").click();
+      await openTransfer(page, "platformToCore");
+      await expect(page.getByTestId("transfer-fee")).toHaveText(/^Fee about #/);
+      await expect(page.getByTestId("transfer-amount")).toHaveValue(/^[#.,]+$/);
+      expect(await amountsInClear(page)).toEqual([]);
     },
   },
   {

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
 import { authorize, fixtureUrl, openTransfer, trackPageErrors } from "./helpers";
-import { callsOf, FEE_ON_NEXT_STEP, hold, lastGrant, release, TRANSFER_STATES } from "./transfer";
+import { amountsInClear, callsOf, FEE_ON_NEXT_STEP, hold, lastGrant, release, TRANSFER_STATES } from "./transfer";
 
 // Transfer (POLISH 25): one sheet over the four routes' own flows. Each state of transfer.ts with
 // no serious axe violation and no page error; each route's grant as its own sheet asked for it.
@@ -121,6 +121,23 @@ test.describe("Transfer quotes", () => {
     await expect(page.getByTestId("transfer-fee")).toHaveText(/Consolidate your coins first/);
     await expect(amount).toHaveValue("0.3");
     expect(await callsOf(page, "platform_fund_quote")).toBe(2);
+  });
+
+  test("discreet mode: no amount shows in clear on any route, Max's fill and the whole balance included", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("toolbar-discreet").click();
+    for (const route of ["coreToShielded", "coreToPlatform", "shieldedToCore", "platformToCore"] as const) {
+      await openTransfer(page, route);
+      if (route === "platformToCore") await expect(page.getByTestId("transfer-fee")).toHaveText(/^Fee about /);
+      else {
+        await page.getByTestId("transfer-max").click();
+        await expect(page.getByTestId("transfer-continue")).toBeEnabled();
+        await expect(page.getByTestId("transfer-amount")).toHaveValue(/^[#.,]+$/);
+      }
+      expect(await amountsInClear(page), route).toEqual([]);
+      await page.getByTestId("transfer-cancel").click();
+      await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
+    }
   });
 
   test("Max never skips the confirmation", async ({ page }) => {
