@@ -207,7 +207,7 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
   return (
     <section className="platform-card card-l1" data-testid="platform-card" aria-label={C.card.title}>
       <div className="platform-card-body">
-        <CardHead title={C.card.title} text={line} buttonTestId="platform-card-transfer" onTransfer={platform != null ? () => transfer.startFrom("platform") : null} />
+        <CardHead title={C.card.title} text={line} buttonTestId="platform-card-transfer" onTransfer={platform != null ? () => transfer.start("platformToCore") : null} />
         {sendHeld && !waiting && (
           <p className="platform-card-text" data-testid="platform-card-send-held">
             {C.waiting.sendHeld}

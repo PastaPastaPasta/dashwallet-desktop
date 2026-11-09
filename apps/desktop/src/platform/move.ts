@@ -18,14 +18,12 @@ import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 export type PlatformMoveApi = Pick<Backend, "platformMoveToCore" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
 export const MOVE_COPY = {
-  action: "Move to Dash wallet",
   card: {
     title: "Platform addresses",
     text: "Your Platform balance is not in your Dash wallet yet. Move it there to spend it as Dash.",
     /** What one move cannot take (below the minimum input, beyond the inputs one transition takes, or the fee reserve): it stays on Platform. */
     dust: (amount: string) => `${amount} on your Platform addresses cannot be moved to your Dash wallet right now.`,
   },
-  title: "Move to Dash wallet",
   message: "Everything on your Platform addresses moves to your Dash wallet. Dash Platform pays it to the address below.",
   rows: { taken: "Taken from Platform, about", fee: "Network fee, about", receive: "You receive about", to: "To your Dash wallet" },
   quoting: "Working out the fee…",

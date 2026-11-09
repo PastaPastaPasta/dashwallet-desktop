@@ -22,7 +22,7 @@ import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shiel
 import { SHIELDED_SYNCING_TEXT, shieldedSyncing } from "../shielded/syncing";
 import { CardHead } from "./CardHead";
 import { Qr } from "./Receive";
-import { shieldedRoute, transferFor, type RouteId } from "../transfer/model";
+import { shieldedRoute, transferFor } from "../transfer/model";
 import { GrantSheet } from "./tools/common";
 
 const MEMO_BYTES = 36;
@@ -311,7 +311,7 @@ export function ShieldedSheet({ flow, walletId, network, status }: { flow: Shiel
 }
 
 /** The Shielded address with its QR (Receive's Shielded section). */
-export function ShieldedReceiveBody({ walletId, network, syncing }: { walletId: string; network: NetworkInfo; syncing: boolean }) {
+export function ShieldedReceiveBody({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const b = useBackend();
   const fmt = useFormats(network);
   const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false });
@@ -320,7 +320,7 @@ export function ShieldedReceiveBody({ walletId, network, syncing }: { walletId: 
       <p className="sheet-text">{C.receive.text}</p>
       {address.isError ? (
         <p className="form-problem" role="alert" data-testid="shielded-receive-error">
-          {isCode(address.error, SHIELDED_CODES.notSynced) ? C.receive.notSynced : shieldedErrorText(address.error, fmt.credits, fmt.duffs, undefined, syncing)}
+          {isCode(address.error, SHIELDED_CODES.notSynced) ? C.receive.notSynced : shieldedErrorText(address.error, fmt.credits, fmt.duffs)}
         </p>
       ) : address.data ? (
         <div className="receive-body" data-testid="shielded-receive">
@@ -347,6 +347,7 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
   const transfer = transferFor(backend, walletId);
   useModel(flow);
   const fmt = useFormats(network);
+  const whyId = useId();
   const s = status.data ?? null;
   const sheet = <ShieldedSheet flow={flow} walletId={walletId} network={network} status={s} />;
   if (s === null) return sheet;
@@ -356,11 +357,12 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
   const finishWhy = syncing ? SHIELDED_SYNCING_TEXT : busy ? C.card.why.busy : null;
   const whyLine = finishWhy && s.pendingShields.length > 0 ? finishWhy : null;
   const text = !s.active ? C.card.inactive : balance === null ? C.card.syncing : C.card.text;
+  const showRoute = shieldedRoute(flow.kind);
   return (
     <>
       <section className="shielded-card card-l1" data-testid="shielded-card" data-active={s.active} aria-label={C.card.title}>
         <div className="shielded-card-body">
-          <CardHead title={C.card.title} text={text} textTestId="shielded-card-text" buttonTestId="shielded-card-transfer" onTransfer={s.active ? () => transfer.startFrom("shielded") : null} />
+          <CardHead title={C.card.title} text={text} textTestId="shielded-card-text" buttonTestId="shielded-card-transfer" onTransfer={s.active ? () => transfer.start("shieldedToCore") : null} />
           {s.active && BigInt(s.pending) > 0n && (
             <p className="platform-card-text" data-testid="shielded-card-pending">
               {C.card.pending(fmt.credits(s.pending))}
@@ -385,20 +387,20 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
               ) : (
                 C.card.unfinished(fmt.duffs(p.duffs))
               )}{" "}
-              <DashButton variant="plainBlue" size="small" data-testid="shielded-finish" disabled={syncing || busy} why={finishWhy} whyId={whyLine ? "shielded-card-why-0" : undefined} onClick={() => void flow.resume(p.txid)}>
+              <DashButton variant="plainBlue" size="small" data-testid="shielded-finish" disabled={syncing || busy} why={finishWhy} whyId={whyLine ? whyId : undefined} onClick={() => void flow.resume(p.txid)}>
                 {p.consumptionUnknown ? C.card.checkAgain : C.card.finish}
               </DashButton>
             </p>
           ))}
           {whyLine && (
-            <p id="shielded-card-why-0" className="field-hint" data-testid="shielded-card-why">
+            <p id={whyId} className="field-hint" data-testid="shielded-card-why">
               {whyLine}
             </p>
           )}
           {flow.unseen && (
             <p className="platform-card-text" data-testid="shielded-unseen">
               {C.unseen}{" "}
-              <DashButton variant="plainBlue" size="small" data-testid="shielded-show" onClick={() => (flow.kind === "send" ? flow.begin("send") : transfer.start(shieldedRoute(flow.kind) as RouteId))}>
+              <DashButton variant="plainBlue" size="small" data-testid="shielded-show" onClick={() => (showRoute === "send" ? flow.begin("send") : transfer.start(showRoute))}>
                 {C.show}
               </DashButton>
             </p>
@@ -441,7 +443,7 @@ export function ShieldedReceiveCard({ walletId, network }: { walletId: string; n
       )}
       {open && !syncing && (
         <div className="platform-receive-body" id={`${id}-body`} data-testid="shielded-receive-body">
-          <ShieldedReceiveBody walletId={walletId} network={network} syncing={syncing} />
+          <ShieldedReceiveBody walletId={walletId} network={network} />
         </div>
       )}
     </section>

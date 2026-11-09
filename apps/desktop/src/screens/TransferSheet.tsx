@@ -21,6 +21,7 @@ import { shieldedSyncing } from "../shielded/syncing";
 import {
   canSwap,
   defaultRoute,
+  feeText,
   listedPools,
   noRouteText,
   ROUTES,
@@ -28,10 +29,8 @@ import {
   shieldedRoute,
   transferFor,
   TRANSFER_COPY as T,
-  type LineState,
   type Pool,
   type Pools,
-  type QuoteLine,
   QUOTE_ON_CONTINUE,
   type RouteId,
   type TransferModel,
@@ -148,28 +147,6 @@ function useParsed(walletText: string, network: NetworkInfo): number | null | un
   return typeof parsed.data === "number" && parsed.data > 0 ? parsed.data : null;
 }
 
-/** What the fee line says for a quote of the amount (`null`: nothing yet). */
-function feeText(route: Exclude<RouteId, "platformToCore">, state: LineState<unknown>, fmt: (d: number) => string): { text: string; refused: boolean } | null {
-  if (state.kind === "idle") return null;
-  if (state.kind === "quoting") return { text: T.quoting, refused: false };
-  if (state.kind === "refused") return { text: "", refused: true };
-  const credits = (c: string | bigint) => fmt(Number(BigInt(c) / CREDITS_PER_DUFF));
-  switch (route) {
-    case "coreToShielded": {
-      const q = state.quote as { feeDuffs: number; poolFeeCredits: string; credits: string };
-      return { text: T.fee(credits(BigInt(q.feeDuffs) * CREDITS_PER_DUFF + BigInt(q.poolFeeCredits)), credits(q.credits)), refused: false };
-    }
-    case "coreToPlatform": {
-      const q = state.quote as { feeDuffs: number; feeCredits: string; credits: string };
-      return { text: T.fee(credits(BigInt(q.feeDuffs) * CREDITS_PER_DUFF + BigInt(q.feeCredits)), credits(q.credits)), refused: false };
-    }
-    case "shieldedToCore": {
-      const q = state.quote as { feeCredits: string; expectedDuffs: number | null; credits: string };
-      return { text: T.fee(credits(q.feeCredits), q.expectedDuffs === null ? credits(q.credits) : fmt(q.expectedDuffs)), refused: false };
-    }
-  }
-}
-
 const INTRO: Record<RouteId, { text: string; testId?: string }> = {
   coreToShielded: { text: SHIELDED_COPY.form.add },
   shieldedToCore: { text: SHIELDED_COPY.form.out },
@@ -182,9 +159,9 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   const id = useId();
   const shown = useDisplay(network);
   const fmt = useAmount(network);
-  const flow = route === "coreToPlatform" ? t.flows.fund : t.flows.shielded;
+  const flow = t.flowOf(route);
   useModel(flow);
-  const line = useModel(t.lines[route] as QuoteLine<unknown>);
+  const line = useModel(t.lineOf(route));
   const pending = usePendingPlatformFunds(walletId).data;
   const discreet = useUi((s) => s.discreet);
   const own = t.begunRoute === route;
@@ -208,7 +185,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
       : route === "coreToPlatform"
         ? fundErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, { request: null, pending })
         : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedSyncing(status));
-  const fee = QUOTE_ON_CONTINUE.has(route) && !line.maxing ? { text: T.feeOnNextStep, refused: false } : feeText(route, line.state, fmt);
+  const fee = QUOTE_ON_CONTINUE.has(route) && !line.maxing ? T.feeOnNextStep : feeText(route, line.state, fmt);
   // A refusal of this very amount: Continue would only meet it again.
   const refusedHere = line.state.kind === "refused" && line.state.amount === amount && !line.maxing;
   const ready = !blocked && amount != null && amountProblem === null && !refusedHere && !line.maxing;
@@ -261,7 +238,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
         </DashButton>
       </div>
       <p className={refusal || amountProblem ? "form-problem" : "field-hint"} id={`${id}-fee`} role="status" data-testid="transfer-fee">
-        {amountProblem ?? refusal ?? fee?.text ?? ""}
+        {amountProblem ?? refusal ?? fee ?? ""}
       </p>
       <div className="sheet-actions">
         <DashButton variant="tintedGray" size="large" type="button" data-testid="transfer-cancel" onClick={() => t.close()}>
