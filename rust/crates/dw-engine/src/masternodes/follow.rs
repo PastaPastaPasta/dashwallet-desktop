@@ -254,6 +254,8 @@ pub(crate) struct MasternodesRuntime {
     changes: Arc<Changes>,
     coalescer: JoinHandle<()>,
     follower: Mutex<Option<JoinHandle<()>>>,
+    /// The follower's poll interval, milliseconds ([`POLL`]).
+    poll_ms: AtomicU64,
     /// Held across each tracking change, so an `attach_key` can't store a
     /// key for a masternode an `untrack` is removing.
     mutations: tokio::sync::Mutex<()>,
@@ -296,6 +298,7 @@ impl MasternodesRuntime {
             changes,
             coalescer,
             follower: Mutex::default(),
+            poll_ms: AtomicU64::new(POLL.as_millis() as u64),
             mutations: tokio::sync::Mutex::new(()),
             updates: tokio::sync::Mutex::new(()),
             unsettled: Mutex::default(),
@@ -315,6 +318,13 @@ impl MasternodesRuntime {
     #[cfg(test)]
     pub(crate) fn protx_seam(&self) -> Option<Arc<super::protx::ops::Seam>> {
         self.protx_seam.lock().unwrap().clone()
+    }
+
+    /// Stretches the follower's poll, so that only a wake runs it.
+    #[cfg(test)]
+    pub(crate) fn set_poll(&self, poll: Duration) {
+        self.poll_ms
+            .store(poll.as_millis() as u64, Ordering::Relaxed);
     }
 
     #[cfg(test)]
@@ -393,9 +403,10 @@ impl MasternodesRuntime {
                 if let Err(e) = s.masternodes.tick(&s, &mut followed).await {
                     tracing::debug!(error = %e, "masternode follower");
                 }
+                let poll = Duration::from_millis(s.masternodes.poll_ms.load(Ordering::Relaxed));
                 drop(s);
                 tokio::select! {
-                    () = tokio::time::sleep(POLL) => {}
+                    () = tokio::time::sleep(poll) => {}
                     () = wake.notified() => {}
                 }
             }

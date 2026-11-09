@@ -3015,3 +3015,235 @@ fn r71_a_registration_marks_its_wallet_and_wakes_the_follower_once() {
     assert!(!woken(), "a re-arm waits for the next poll");
     assert_eq!(store.take_collateral_pending(), vec![wallet]);
 }
+
+/// An address the wallet does not own.
+fn foreign_address() -> String {
+    use dashcore::address::Payload;
+    dashcore::Address::new(
+        dashcore::Network::Regtest,
+        Payload::PubkeyHash(dashcore::PubkeyHash::from_byte_array([5; 20])),
+    )
+    .to_string()
+}
+
+const SEND: u64 = 10_000_000;
+
+fn send_failure<T: std::fmt::Debug>(r: Result<T, crate::EngineError>) -> SendFailure {
+    match r {
+        Err(crate::EngineError::Send(f)) => f,
+        other => panic!("expected a send failure, got {other:?}"),
+    }
+}
+
+impl Fx {
+    /// A send of [`SEND`] to a foreign address, prepared: signed, its
+    /// inputs reserved.
+    fn prepare_send(&self) -> Result<Vec<OutPoint>, crate::EngineError> {
+        let grant = self
+            .session
+            .vault()
+            .authorize(
+                GrantPurpose::Spend {
+                    max_duffs: SEND + 100_000,
+                },
+                Some(&self.wallet.0),
+                Credential::None,
+            )
+            .unwrap()
+            .id;
+        let draft = self.session.new_tx_draft(self.wallet).unwrap();
+        draft
+            .set_recipients(vec![crate::send::Recipient {
+                address: foreign_address(),
+                amount: SEND,
+                subtract_fee_from_amount: false,
+                label: None,
+                message: None,
+            }])
+            .unwrap();
+        let p = self.engine.block_on(draft.prepare(grant))?;
+        let inputs = p.summary().inputs.iter().map(|i| i.outpoint).collect();
+        self.engine.block_on(draft.abandon(p)).unwrap();
+        Ok(inputs)
+    }
+
+    /// The coins a build reads under `fence`, with whether each is locked.
+    fn fenced(&self, fence: &crate::coins::CoinFence) -> Vec<(OutPoint, bool)> {
+        let snapshot = self
+            .engine
+            .block_on(self.session.fenced_coins(fence))
+            .unwrap();
+        (snapshot.coins.iter())
+            .map(|c| (c.utxo.outpoint, c.user_locked))
+            .collect()
+    }
+
+    /// Waits up to two minutes (a loaded machine) for `outpoint` to be
+    /// locked.
+    fn wait_locked(&self, outpoint: OutPoint, what: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while !self.locked().contains(&outpoint) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: not locked by the follower"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
+/// Row 71 F1: a build never selects a coin a ProRegTx in the history names,
+/// though the follower hasn't locked it (its mark taken, its lock not yet
+/// written): inserted or loaded, internal or external collateral.
+#[test]
+fn r71_b_a_send_never_selects_a_known_collateral() {
+    for internal in [true, false] {
+        for load in [false, true] {
+            let what = format!("internal: {internal}, load: {load}");
+            let f = fx(Library::Accept);
+            let (tx, collateral) = f.foreign_registration(internal, 2);
+            if load {
+                f.load_with(tx);
+            } else {
+                f.record(tx, TransactionContext::Mempool);
+            }
+            f.clear_pending();
+            assert!(f.locked().is_empty(), "{what}");
+            assert_eq!(
+                send_failure(f.prepare_send()),
+                SendFailure::AmountExceedsBalance { available: 0 },
+                "{what}"
+            );
+            assert_eq!(f.locked(), HashSet::from([collateral]), "{what}");
+        }
+    }
+}
+
+/// Row 71 F1: a collateral the user released stays selectable: a build's
+/// read leaves it unlocked, and a send spends it (the external shape's coin
+/// is at a wallet address, so the send can sign).
+#[test]
+fn r71_b_a_released_collateral_stays_selectable() {
+    for internal in [true, false] {
+        let f = fx(Library::Accept);
+        let (tx, collateral) = f.foreign_registration(internal, 2);
+        f.record(tx.clone(), TransactionContext::Mempool);
+        f.collateral_pass();
+        assert_eq!(f.locked(), HashSet::from([collateral]));
+        f.engine
+            .block_on(f.mn().release_collateral(f.wallet, tx.txid().to_string()))
+            .unwrap();
+        let fence = f.fence();
+        assert_eq!(
+            f.fenced(&fence),
+            vec![(collateral, false)],
+            "internal: {internal}"
+        );
+        drop(fence);
+        if !internal {
+            assert_eq!(f.prepare_send().unwrap(), vec![collateral]);
+        }
+        assert!(f.locked().is_empty(), "internal: {internal}");
+    }
+}
+
+/// Row 71 F1: the lock applies to every read of the coins after the
+/// ProRegTx entered the history, a read under a fence held across the
+/// insert included; a read from before it isn't undone, as a transaction
+/// Core built before the ProRegTx was added isn't.
+#[test]
+fn r71_b_a_build_holding_the_fence_across_the_insert() {
+    let f = fx(Library::Accept);
+    let (tx, collateral) = f.foreign_registration(false, 2);
+    let fence = f.fence();
+    assert_eq!(f.fenced(&fence), vec![(collateral, false)], "before");
+    f.record(tx, TransactionContext::Mempool);
+    f.collateral_pass();
+    assert!(f.locked().is_empty(), "the follower waits for the fence");
+    assert_eq!(f.fenced(&fence), vec![(collateral, true)], "after");
+    drop(fence);
+    assert_eq!(f.locked(), HashSet::from([collateral]));
+}
+
+/// Row 71 F2: a collateral coin that arrives after its ProRegTx (a restore
+/// past the gap) marks the wallet, and the follower locks it with no list.
+#[test]
+fn r71_b_a_collateral_coin_after_its_registration_is_locked() {
+    use crate::masternodes::aggregate::fixtures::{coins, registration};
+    use key_wallet::managed_account::transaction_record::{OutputDetail, OutputRole};
+    let f = fx(Library::Accept);
+    let funding = Transaction {
+        version: 2,
+        lock_time: 0,
+        input: Vec::new(),
+        output: coins(&[MASTERNODE_COLLATERAL]),
+        special_transaction_payload: None,
+    };
+    let collateral = OutPoint::new(funding.txid(), 0);
+    f.record(
+        registration(collateral, false, 0, coins(&[COIN])),
+        chain_locked(7),
+    );
+    f.collateral_pass();
+    assert!(f.locked().is_empty(), "the coin isn't the wallet's yet");
+
+    f.hold(collateral, funding.output[0].clone());
+    let mut record = tx_record(funding.clone(), chain_locked(5));
+    record.output_details = vec![OutputDetail {
+        index: 0,
+        role: OutputRole::Received,
+        address: None,
+        value: MASTERNODE_COLLATERAL,
+    }];
+    (f.session.hub.history).with_wallet(f.wallet, |h| h.upsert(&record, None));
+    f.collateral_pass();
+    assert_eq!(f.locked(), HashSet::from([collateral]));
+}
+
+/// Row 71 nit: "Unlock unspent" doesn't free a collateral; the next build
+/// locks it again (only `release-collateral` does).
+#[test]
+fn r71_b_a_generic_unlock_of_a_collateral_is_locked_again() {
+    let f = fx(Library::Accept);
+    let (tx, collateral) = f.foreign_registration(false, 2);
+    f.record(tx, TransactionContext::Mempool);
+    f.collateral_pass();
+    assert_eq!(f.locked(), HashSet::from([collateral]));
+    f.engine
+        .block_on(f.session.unlock_outpoints(f.wallet, vec![collateral]))
+        .unwrap();
+    assert!(f.locked().is_empty());
+    assert_eq!(
+        send_failure(f.prepare_send()),
+        SendFailure::AmountExceedsBalance { available: 0 }
+    );
+    assert_eq!(f.locked(), HashSet::from([collateral]));
+}
+
+/// Row 71 F3: with no test seam and no list, the session's own follower
+/// locks a ProRegTx's collateral after a real insert and a real load. The
+/// poll is stretched to an hour, so the load's lock can only come from the
+/// history's wake.
+#[test]
+fn r71_b_the_follower_locks_through_the_wake_with_no_list() {
+    use platform_wallet::events::WalletEvent;
+    let f = fx(Library::Accept);
+    f.session
+        .masternodes
+        .set_poll(std::time::Duration::from_secs(3600));
+    f.session.masternodes.set_protx_seam(None);
+
+    let (inserted, a) = f.foreign_registration(false, 2);
+    (f.session.hub).apply_wallet_event(&WalletEvent::TransactionDetected {
+        wallet_id: f.wallet.0,
+        record: Box::new(tx_record(inserted, TransactionContext::Mempool)),
+        balance: Default::default(),
+        account_balances: std::collections::BTreeMap::new(),
+        addresses_derived: Vec::new(),
+    });
+    f.wait_locked(a, "insert");
+
+    let (loaded, b) = f.foreign_registration(true, 3);
+    f.load_with(loaded);
+    f.wait_locked(b, "load");
+}

@@ -730,10 +730,13 @@ impl NetworkSession {
     }
 
     /// The fenced wallet's coins with user/dust locks and reservations
-    /// applied. With dust protection on, first dust-locks small foreign
-    /// incoming coins (Dash Core: value ≤ threshold, funding transaction
-    /// not ours; a released dust lock is not renewed): only under the
-    /// fence (module doc).
+    /// applied. First locks every coin a ProRegTx in the history names as
+    /// its collateral ([`Self::lock_collaterals`]), so no build selects one
+    /// before the masternode follower has run (Core locks it when the
+    /// ProRegTx is added, v24.0.0 `wallet/wallet.cpp:1141`). With dust
+    /// protection on, then dust-locks small foreign incoming coins (Dash
+    /// Core: value ≤ threshold, funding transaction not ours; a released
+    /// dust lock is not renewed). Both only under the fence (module doc).
     pub(crate) async fn coin_snapshot(
         &self,
         fence: &CoinFence,
@@ -752,6 +755,13 @@ impl NetworkSession {
                 pending_lock_inputs(state.tracked_asset_locks.values()),
             )
         };
+        let unspent: HashSet<OutPoint> = snapshot.coins.iter().map(|c| c.utxo.outpoint).collect();
+        let collaterals = (self.hub.history).read(&wallet_id, |txs| {
+            crate::masternodes::registration_collaterals(
+                txs.values().filter(|e| !e.abandoned).map(|e| &e.tx),
+            )
+        });
+        self.lock_collaterals(fence, collaterals, &unspent).await?;
         let id = wallet_id.to_string();
         let dust_candidates: Vec<(u64, String, u32)> = snapshot
             .coins
@@ -801,7 +811,6 @@ impl NetworkSession {
             }
         }
         let swept = crate::coinjoin::held_inputs(&pending);
-        let unspent: HashSet<OutPoint> = snapshot.coins.iter().map(|c| c.utxo.outpoint).collect();
         self.spends.retain_unspent(&wallet_id, &unspent);
         let reserved = self.spends.snapshot(&wallet_id);
         let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
@@ -937,7 +946,9 @@ impl NetworkSession {
     }
 
     /// "Unlock unspent": deletes a user lock or releases a dust lock (which
-    /// dust protection then leaves alone). An outpoint that is neither
+    /// dust protection then leaves alone). A masternode collateral is
+    /// locked again by the next build or follower pass, as Core relocks it
+    /// at load: only `release-collateral` frees one. An outpoint that is neither
     /// locked nor an unspent output is `OutpointNotFound`; one a masternode
     /// row holds (a ProTx operation's inputs, a shared session's
     /// reservation, MG-04b BL-346) is refused and nothing is unlocked. Under

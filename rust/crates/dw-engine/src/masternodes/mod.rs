@@ -22,6 +22,7 @@ mod tracking;
 
 use std::sync::Arc;
 
+pub(crate) use aggregate::registration_collaterals;
 pub use errors::MasternodesError;
 pub use protx_records::{
     CollateralChoice, CollateralKind, EvonodeTerms, KeepOr, KeyPick, OperatorChoice,

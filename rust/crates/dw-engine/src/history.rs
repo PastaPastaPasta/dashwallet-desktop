@@ -17,6 +17,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
+use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::blockdata::transaction::special_transaction::TransactionType as SpecialType;
 use dashcore::{Address, Network, OutPoint, ScriptBuf, Transaction, Txid};
 use key_wallet::managed_account::transaction_record::TransactionRecord;
@@ -339,9 +340,14 @@ pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint>
 #[derive(Debug, Default)]
 pub(crate) struct WalletHistory {
     pub txs: HashMap<Txid, TxEntry>,
-    /// A ProRegTx was merged since the masternode follower last locked this
-    /// wallet's collaterals (MG-00 D9).
+    /// A ProRegTx, or an output one names as its collateral, was merged
+    /// since the masternode follower last locked this wallet's collaterals
+    /// (MG-00 D9).
     collateral_pending: bool,
+    /// The collateral outpoint of every ProRegTx merged, so a coin that
+    /// arrives after its ProRegTx (a restore past the gap) marks the wallet
+    /// as its ProRegTx did.
+    named_collaterals: HashSet<OutPoint>,
 }
 
 /// Whether `record` is the wallet's own. A DashPay contact's account
@@ -379,7 +385,22 @@ impl WalletHistory {
                 .own_inputs
                 .insert(input.index, (input.value, input.address.clone()));
         }
-        if record.transaction.tx_type() == SpecialType::ProviderRegistration {
+        let registration = match &record.transaction.special_transaction_payload {
+            Some(TransactionPayload::ProviderRegistrationPayloadType(p)) => {
+                (self.named_collaterals).insert(dw_protx::payloads::resolve_collateral(
+                    record.txid,
+                    p.collateral_outpoint,
+                ));
+                true
+            }
+            _ => false,
+        };
+        if registration
+            || (record.output_details.iter()).any(|o| {
+                self.named_collaterals
+                    .contains(&OutPoint::new(record.txid, o.index))
+            })
+        {
             self.collateral_pending = true;
         }
         new
@@ -450,7 +471,8 @@ impl HistoryStore {
         r
     }
 
-    /// The wallets with a ProRegTx merged since the last call, cleared.
+    /// The wallets with a ProRegTx, or a coin one names, merged since the
+    /// last call, cleared.
     pub fn take_collateral_pending(&self) -> Vec<WalletId> {
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
         map.iter_mut()

@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 
+use dashcore::blockdata::transaction::special_transaction::provider_registration::ProviderMasternodeType;
 use dashcore::hashes::Hash;
 use dashcore::transaction::TransactionPayload;
 use dashcore::{OutPoint, Transaction, Txid};
@@ -87,6 +88,23 @@ pub(crate) fn collateral_kind(amount: u64) -> Option<bool> {
         EVONODE_COLLATERAL => Some(true),
         _ => None,
     }
+}
+
+/// The collateral each ProRegTx among `txs` names, as Core accepted it
+/// ([`checked_collateral`]).
+pub(crate) fn registration_collaterals<'a>(
+    txs: impl IntoIterator<Item = &'a Transaction>,
+) -> Vec<OutPoint> {
+    txs.into_iter()
+        .filter_map(|tx| match &tx.special_transaction_payload {
+            Some(TransactionPayload::ProviderRegistrationPayloadType(p)) => checked_collateral(
+                tx,
+                p,
+                p.masternode_type == ProviderMasternodeType::HighPerformance,
+            ),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Adds the provider transactions among `history` that `txs` lacks, then

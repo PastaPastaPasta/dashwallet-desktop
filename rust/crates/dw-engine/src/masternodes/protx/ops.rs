@@ -702,13 +702,17 @@ impl NetworkSession {
     }
 
     /// Locks each of the wallet's masternodes' collateral that the wallet
-    /// holds unspent, unless the user released it, after unlocking what
+    /// holds unspent ([`Self::lock_collaterals`]), after unlocking what
     /// conflicted rows locked. Core locks a ProRegTx's own collateral when
     /// the transaction is added and every listed collateral at load
-    /// (v24.0.0 `wallet/wallet.cpp:1141`, `:2580-2590`). `false` when a
-    /// build holds the wallet's coin fence, so nothing ran.
+    /// (v24.0.0 `wallet/wallet.cpp:1141`, `:2580-2590`). An external
+    /// collateral is locked while its ProRegTx is unconfirmed too, sooner
+    /// than Core's load; one that never confirms leaves it locked until
+    /// `release-collateral`, or "Unlock unspent" once it is abandoned. That
+    /// is the safe side. `false` when a build holds the wallet's coin
+    /// fence, so nothing ran.
     async fn lock_own_collaterals(&self, wallet: WalletId) -> Result<bool, MasternodesError> {
-        let Some(_fence) = self.try_coin_fence(wallet).await? else {
+        let Some(fence) = self.try_coin_fence(wallet).await? else {
             return Ok(false);
         };
         #[cfg(test)]
@@ -721,14 +725,32 @@ impl NetworkSession {
                 .unwrap_or_default()
         })
         .await?;
-        if collaterals.is_empty() {
-            return Ok(true);
+        if !collaterals.is_empty() {
+            let (_, unspent) = self.op_view(wallet).await?;
+            self.lock_collaterals(&fence, collaterals, &unspent).await?;
         }
-        let (_, unspent) = self.op_view(wallet).await?;
+        Ok(true)
+    }
+
+    /// Locks those of `collaterals` the fenced wallet holds unspent
+    /// (`unspent`), unless locked already or released by the user
+    /// (`release-collateral`, D9). The follower's step and every build's
+    /// coin read ([`Self::coin_snapshot`]) run it under the fence they
+    /// hold.
+    pub(crate) async fn lock_collaterals(
+        &self,
+        fence: &CoinFence,
+        collaterals: Vec<OutPoint>,
+        unspent: &HashSet<OutPoint>,
+    ) -> Result<(), EngineError> {
+        let wallet = fence.wallet_id();
         let held: Vec<OutPoint> = collaterals
             .into_iter()
             .filter(|o| unspent.contains(o))
             .collect();
+        if held.is_empty() {
+            return Ok(());
+        }
         let w = wallet.to_string();
         let locked = self
             .appdb_op(move |db| {
@@ -759,7 +781,7 @@ impl NetworkSession {
         if locked {
             self.hub.pump.mark_balances(wallet);
         }
-        Ok(true)
+        Ok(())
     }
 }
 
