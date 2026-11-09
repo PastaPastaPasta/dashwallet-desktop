@@ -440,9 +440,9 @@ test.describe("Home", () => {
     await open(page, "funded");
     await openTransfer(page, "coreToPlatform");
     await page.getByTestId("transfer-amount").fill("0.0001");
-    // Transfer reads the quote as the amount is typed: the refusal shows before any confirmation.
-    await expect(page.getByTestId("transfer-fee")).toHaveText("Too small to add: the smallest amount is 0.00056001 tDASH.");
-    await expect(page.getByTestId("transfer-continue")).toBeDisabled();
+    await page.getByTestId("transfer-continue").click();
+    await expect(page.getByTestId("platform-fund-quote-error")).toHaveText("Too small to add: the smallest amount is 0.00056001 tDASH.");
+    await expect(page.getByTestId("platform-fund-go")).toBeDisabled();
   });
 
   test("a lock that may already be applied says Checking, and Check again resumes it", async ({ page }) => {

@@ -15,6 +15,9 @@ export interface TransferState {
 }
 
 const SYNCING = "Shielded is still syncing; try again when it finishes.";
+/** Dash wallet → Platform reads its quote only on Continue (and Max): its fee line while typing. */
+export const FEE_ON_NEXT_STEP = "Fee shown on the next step";
+const FEE = /^Fee about .* · You receive about /;
 const CONSOLIDATE = /Consolidate your coins first/;
 
 /** The fixture's calls of `command` so far. */
@@ -55,12 +58,12 @@ async function run(page: Page, route: TransferRoute) {
   await authorize(page);
 }
 
-/** Max: the field filled from a second quote, the fee line read for that amount. */
-async function maxFills(page: Page, quote: string, value: RegExp) {
+/** Max: the field filled from a second quote, the fee line read for that amount (`fee`). */
+async function maxFills(page: Page, quote: string, value: RegExp, fee: RegExp | string = FEE) {
   const before = await callsOf(page, quote);
   await page.getByTestId("transfer-max").click();
   await expect(page.getByTestId("transfer-amount")).toHaveValue(value);
-  await expect(page.getByTestId("transfer-fee")).toHaveText(/^Fee about .* · You receive about /);
+  await expect(page.getByTestId("transfer-fee")).toHaveText(fee);
   await expect(page.getByTestId("transfer-continue")).toBeEnabled();
   // The whole balance, then the most it leaves room for: one re-quote, no more.
   expect((await callsOf(page, quote)) - before).toBe(2);
@@ -187,10 +190,12 @@ export const TRANSFER_STATES: TransferState[] = [
     id: "coreToPlatform-earlier-lock",
     scenario: "paddr-fund-proof-waiting",
     go: async (page) => {
-      // The route opens, and its quote says to finish the lock first.
+      // The route opens; its quote, read on Continue, says to finish the lock first.
       await typed(page, "coreToPlatform", "0.5");
-      await expect(page.getByTestId("transfer-fee")).toHaveText("An earlier add to Platform is not finished. Finish it from the Platform card first.");
-      await expect(page.getByTestId("transfer-continue")).toBeDisabled();
+      await expect(page.getByTestId("transfer-fee")).toHaveText(FEE_ON_NEXT_STEP);
+      await page.getByTestId("transfer-continue").click();
+      await expect(page.getByTestId("platform-fund-quote-error")).toHaveText("An earlier add to Platform is not finished. Finish it from the Platform card first.");
+      await expect(page.getByTestId("platform-fund-go")).toBeDisabled();
     },
   },
   {
@@ -198,11 +203,13 @@ export const TRANSFER_STATES: TransferState[] = [
     scenario: "funded",
     go: async (page) => {
       await typed(page, "coreToPlatform", "1000");
-      await expect(page.getByTestId("transfer-fee")).toHaveText(/^Not enough Dash in your wallet: /);
-      await expect(page.getByTestId("transfer-continue")).toBeDisabled();
+      await expect(page.getByTestId("transfer-fee")).toHaveText(FEE_ON_NEXT_STEP);
+      await page.getByTestId("transfer-continue").click();
+      await expect(page.getByTestId("platform-fund-quote-error")).toHaveText(/^Not enough Dash in your wallet: /);
+      await expect(page.getByTestId("platform-fund-go")).toBeDisabled();
     },
   },
-  { id: "coreToPlatform-max", scenario: "funded", go: async (page) => (await openTransfer(page, "coreToPlatform"), await maxFills(page, "platform_fund_quote", /^\d+\.\d+$/)) },
+  { id: "coreToPlatform-max", scenario: "funded", go: async (page) => (await openTransfer(page, "coreToPlatform"), await maxFills(page, "platform_fund_quote", /^\d+\.\d+$/, FEE_ON_NEXT_STEP)) },
   {
     id: "coreToPlatform-max-refused",
     scenario: "paddr-fund-proof-waiting",

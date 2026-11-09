@@ -32,6 +32,7 @@ import {
   type Pool,
   type Pools,
   type QuoteLine,
+  QUOTE_ON_CONTINUE,
   type RouteId,
   type TransferModel,
 } from "../transfer/model";
@@ -189,8 +190,8 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   const blocked = why !== null || flow.running;
   // The fee line follows the amount once it is read; nothing is quoted while the route can't run.
   useEffect(() => {
-    if (amount !== undefined) line.set(blocked ? null : amount);
-  }, [line, amount, blocked]);
+    if (amount !== undefined) t.typed(route, blocked ? null : amount);
+  }, [t, route, amount, blocked]);
   useEffect(() => () => line.set(null), [line]);
   const amountProblem = text.trim() !== "" && amount === null ? T.invalidAmount : null;
   const refusal =
@@ -199,7 +200,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
       : route === "coreToPlatform"
         ? fundErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, pending)
         : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedSyncing(status));
-  const fee = feeText(route, line.state, fmt);
+  const fee = QUOTE_ON_CONTINUE.has(route) && !line.maxing ? { text: T.feeOnNextStep, refused: false } : feeText(route, line.state, fmt);
   // A refusal of this very amount: Continue would only meet it again.
   const refusedHere = line.state.kind === "refused" && line.state.amount === amount && !line.maxing;
   const probe = balanceOf(ROUTES[route].from, pools);

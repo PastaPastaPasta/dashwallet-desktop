@@ -294,6 +294,63 @@ describe("the fee line", () => {
   });
 });
 
+describe("Dash wallet → Platform quotes only on Continue", () => {
+  /** A model whose Platform quote refuses the whole balance with its shortfall and takes less. */
+  function fundModel() {
+    const { timers, tick } = manualTimers();
+    const platformFundQuote = vi.fn(async (_wallet: string, d: number) => {
+      if (d > 2_899_999_000) throw appError("credits.funding_insufficient", { kind: "duffs", needed: d + 1_000, available: 2_900_000_000 });
+      return { duffs: d } as never;
+    });
+    const shieldQuote = vi.fn(async (_wallet: string, d: number) => ({ duffs: d }) as never);
+    const t = new TransferModel(flows(), { shieldQuote, unshieldQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
+    return { t, tick, platformFundQuote, shieldQuote };
+  }
+
+  it("typing an amount makes no platform_fund_quote call; the other routes still quote it", async () => {
+    const { t, tick, platformFundQuote, shieldQuote } = fundModel();
+    t.typed("coreToPlatform", 5);
+    t.typed("coreToPlatform", 50_000_000);
+    tick(2_000);
+    await flush();
+    expect(platformFundQuote).not.toHaveBeenCalled();
+    expect(t.lines.coreToPlatform.state).toEqual({ kind: "idle" });
+    t.typed("coreToShielded", 100_000);
+    tick(400);
+    await flush();
+    expect(shieldQuote.mock.calls).toEqual([[WALLET_A, 100_000]]);
+  });
+
+  it("Max is a click, not typing: two calls (the whole balance, then the most it leaves room for), and typing after it quotes nothing", async () => {
+    const { t, tick, platformFundQuote } = fundModel();
+    const fill = vi.fn();
+    await t.max("coreToPlatform", 3_000_000_000, fill);
+    expect(platformFundQuote.mock.calls.map(([, d]) => d)).toEqual([3_000_000_000, 2_899_999_000]);
+    expect(fill).toHaveBeenCalledWith(2_899_999_000);
+    t.typed("coreToPlatform", 2_899_999_000);
+    t.typed("coreToPlatform", 1_000_000);
+    tick(2_000);
+    await flush();
+    expect(platformFundQuote).toHaveBeenCalledTimes(2);
+    expect(t.lines.coreToPlatform.state).toEqual({ kind: "idle" });
+  });
+
+  it("a refusal Max showed stays until the amount is typed, which clears it without a quote", async () => {
+    const { timers, tick } = manualTimers();
+    const platformFundQuote = vi.fn(async (): Promise<never> => {
+      throw appError("credits.fund_pending", { kind: "txid", txid: "t" });
+    });
+    const t = new TransferModel(flows(), { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
+    await t.max("coreToPlatform", 3_000_000_000, vi.fn());
+    expect(t.lines.coreToPlatform.state).toMatchObject({ kind: "refused", error: { code: "credits.fund_pending" } });
+    t.typed("coreToPlatform", 1_000_000);
+    tick(2_000);
+    await flush();
+    expect(t.lines.coreToPlatform.state).toEqual({ kind: "idle" });
+    expect(platformFundQuote).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("the sheet over the routes' flows", () => {
   it("opens a route's flow at a fresh form, and closes it with the sheet", () => {
     const { t, shielded, fund } = model();

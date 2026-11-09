@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
 import { authorize, fixtureUrl, openTransfer, trackPageErrors } from "./helpers";
-import { callsOf, hold, lastGrant, release, TRANSFER_STATES } from "./transfer";
+import { callsOf, FEE_ON_NEXT_STEP, hold, lastGrant, release, TRANSFER_STATES } from "./transfer";
 
 // Transfer (POLISH 25): one sheet over the four routes' own flows. Each state of transfer.ts with
 // no serious axe violation and no page error; each route's grant as its own sheet asked for it.
@@ -86,6 +86,19 @@ test.describe("Transfer quotes", () => {
     await page.getByTestId("transfer-amount").pressSequentially("0.0015", { delay: 40 });
     await expect(page.getByTestId("transfer-fee")).toHaveText(/^Fee about /);
     expect(await callsOf(page, "shield_quote")).toBe(1);
+  });
+
+  test("Dash wallet → Platform: typing makes no platform_fund_quote call, Continue exactly one", async ({ page }) => {
+    await open(page, "funded");
+    await openTransfer(page, "coreToPlatform");
+    await page.getByTestId("transfer-amount").pressSequentially("0.55", { delay: 40 });
+    await expect(page.getByTestId("transfer-fee")).toHaveText(FEE_ON_NEXT_STEP);
+    // Well past the other routes' debounce: still nothing read.
+    await page.waitForTimeout(1_500);
+    expect(await callsOf(page, "platform_fund_quote")).toBe(0);
+    await page.getByTestId("transfer-continue").click();
+    await expect(page.getByTestId("platform-fund-confirm")).toContainText("You receive about");
+    expect(await callsOf(page, "platform_fund_quote")).toBe(1);
   });
 
   test("Max never skips the confirmation", async ({ page }) => {

@@ -49,6 +49,7 @@ export const TRANSFER_COPY = {
   wholeBalance: "Platform moves its whole balance.",
   fee: (fee: string, receive: string) => `Fee about ${fee} · You receive about ${receive}`,
   quoting: "Working out the fee…",
+  feeOnNextStep: "Fee shown on the next step",
   invalidAmount: "Enter an amount.",
   why: { amount: "Enter an amount first.", quote: "Wait for the fee first.", max: "Working out the most you can move…" },
   continue: "Continue",
@@ -194,6 +195,10 @@ const WINDOW_TIMERS: Timers = { set: (f, ms) => setTimeout(f, ms), clear: (t) =>
 /** How long the amount stays the same before the fee line reads its quote. */
 export const QUOTE_DEBOUNCE_MS = 400;
 
+/** Routes whose quote is read only on Continue (and Max), never while typing: `platform_fund_quote`
+ * may derive a receive address under the wallet-manager write lock (platform_fund.rs:743-751). */
+export const QUOTE_ON_CONTINUE: ReadonlySet<RouteId> = new Set<RouteId>(["coreToPlatform"]);
+
 /** The fee line of one route: the route's own quote of the amount typed, read once the amount has
  * stayed the same for `QUOTE_DEBOUNCE_MS`, one quote at a time. A newer amount wins: an older answer is
  * dropped, and the newest amount is read once the call out has answered. */
@@ -218,7 +223,8 @@ export class QuoteLine<Q> extends Model {
 
   /** The amount to quote, in duffs; `null`: nothing to quote (no amount, or the route can't run). */
   set(amount: number | null) {
-    if (amount === this.target && !this.maxing) return;
+    // Nothing to quote still clears what Max left (its refusal names no amount typed).
+    if (amount === this.target && !this.maxing && (amount !== null || this.state.kind === "idle")) return;
     this.maxGen++;
     this.maxing = false;
     this.target = amount;
@@ -551,6 +557,12 @@ export class TransferModel extends Model {
     if (route === "coreToPlatform") return fund.open;
     if (route === "platformToCore") return move.open;
     return shielded.open && shielded.kind !== "send" && shieldedRoute(shielded.kind) === route;
+  }
+
+  /** The amount typed on `route` (`null`: none, or the route can't run): the fee line quotes it,
+   * except on a route quoted only on Continue, where typing only clears what Max left. */
+  typed(route: Exclude<RouteId, "platformToCore">, amount: number | null) {
+    (this.lines[route] as QuoteLine<unknown>).set(QUOTE_ON_CONTINUE.has(route) ? null : amount);
   }
 
   /** Max on `route`: `probe` is the pool's whole balance in duffs. The field is filled (`fill`, the
