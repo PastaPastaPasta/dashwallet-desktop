@@ -401,9 +401,13 @@ impl NetworkSession {
     }
 
     /// The checkpoint abandoning `abandoned` rewinds to: below the lowest
-    /// funding height of the wallet's coins it releases (key-wallet's
-    /// records name them), or below the birth height when the hub has not
-    /// heard of one of the transactions, or of a coin's funding block.
+    /// funding height of the wallet's coins it releases, or below the birth
+    /// height when a coin's funding block is unknown. Each transaction's
+    /// coins are the union of the wallet-owned inputs its key-wallet records
+    /// name and those the history's record names (key-wallet holds none for
+    /// a send an earlier session recorded, and may name fewer); one that
+    /// neither holds replays from the birth height. No coins released, no
+    /// rewind.
     fn abandon_rewind(
         &self,
         wallet: WalletId,
@@ -411,19 +415,30 @@ impl NetworkSession {
         info: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
     ) -> Option<u32> {
         let birth = info.birth_height().saturating_sub(1);
-        if (abandoned.iter()).any(|t| self.hub.history.get(&wallet, t).is_none()) {
-            return Some(birth);
+        let own = |tx: &Transaction, indexes: &mut dyn Iterator<Item = u32>| -> Vec<OutPoint> {
+            indexes
+                .filter_map(|i| tx.input.get(i as usize))
+                .map(|i| i.previous_output)
+                .collect()
+        };
+        let mut released = BTreeSet::new();
+        for t in abandoned {
+            let records: Vec<_> = (info.accounts.all_accounts().into_iter())
+                .filter_map(|a| a.transactions().get(t))
+                .collect();
+            let entry = self.hub.history.get(&wallet, t);
+            if records.is_empty() && entry.is_none() {
+                return Some(birth);
+            }
+            let recorded = (records.iter())
+                .flat_map(|r| own(&r.transaction, &mut r.input_details.iter().map(|i| i.index)));
+            let held = (entry.iter()).flat_map(|e| own(&e.tx, &mut e.own_inputs.keys().copied()));
+            released.extend(
+                recorded
+                    .chain(held)
+                    .filter(|o| !abandoned.contains(&o.txid)),
+            );
         }
-        let released: BTreeSet<OutPoint> = (info.accounts.all_accounts().into_iter())
-            .flat_map(|a| a.transactions().iter())
-            .filter(|(t, _)| abandoned.contains(*t))
-            .flat_map(|(_, r)| {
-                (r.input_details.iter())
-                    .filter_map(|i| r.transaction.input.get(i.index as usize))
-                    .map(|i| i.previous_output)
-            })
-            .filter(|o| !abandoned.contains(&o.txid))
-            .collect();
         let mut lowest = None::<u32>;
         for o in &released {
             let funded = (self.hub.history.get(&wallet, &o.txid))

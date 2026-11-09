@@ -389,6 +389,64 @@ fn give_identity(engine: &Engine, s: &Arc<NetworkSession>, id: WalletId) {
     });
 }
 
+/// The Platform loops a session on [`blackhole`] points at it: each pass
+/// any of them has in flight at a stop may still be waiting at the deadline.
+const BLACKHOLED_LOOPS: [&str; 5] = [
+    "identity_sync",
+    "dashpay_sync",
+    "dpns_sync",
+    "platform_address_sync",
+    "shielded_sync",
+];
+
+/// Whether `stopped` is the stop's refusal naming the loops still in flight
+/// at its deadline (`bringup.rs` `stop_platform`): at least one, and only
+/// [`BLACKHOLED_LOOPS`]. Which of them are still in flight depends on timing.
+fn names_only_stuck_loops(stopped: &Result<(), EngineError>) -> bool {
+    let Err(EngineError::Sdk(detail)) = stopped else {
+        return false;
+    };
+    let Some(names) = detail.strip_prefix("SPV stopped, but this Platform work did not end: ")
+    else {
+        return false;
+    };
+    !names.is_empty() && names.split(", ").all(|n| BLACKHOLED_LOOPS.contains(&n))
+}
+
+/// 0.1.x row 66: the stop names whichever loops are still in flight, and on
+/// CI that was `dpns_sync` alone, with the DashPay pass already ended.
+#[test]
+fn the_stop_check_takes_whichever_blackholed_loops_are_stuck() {
+    let refused = |names: &str| -> Result<(), EngineError> {
+        Err(EngineError::Sdk(format!(
+            "SPV stopped, but this Platform work did not end: {names}"
+        )))
+    };
+    for names in [
+        "dpns_sync",
+        "dashpay_sync",
+        "shielded_sync",
+        "identity_sync, dpns_sync, platform_address_sync",
+    ] {
+        assert!(names_only_stuck_loops(&refused(names)), "{names}");
+    }
+    for names in [
+        "",
+        "a vault key read",
+        "dpns_sync, a vault key read",
+        "dpns",
+    ] {
+        assert!(!names_only_stuck_loops(&refused(names)), "{names:?}");
+    }
+    assert!(!names_only_stuck_loops(&Ok(())));
+    assert!(!names_only_stuck_loops(&Err(EngineError::Sdk(
+        "dpns_sync".into()
+    ))));
+    assert!(!names_only_stuck_loops(&Err(EngineError::Wallet(
+        "SPV stopped, but this Platform work did not end: dpns_sync".into()
+    ))));
+}
+
 /// Review DW-E0-05-r1-gpt M1: a loop pass that outlives the drain deadline
 /// makes `stop_spv` fail visibly (SPV is stopped anyway), and the next
 /// `start_spv` does not wait for that pass: the drain is retried inside the
@@ -417,13 +475,7 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
         "stop with a stuck pass took {:?}: {stopped:?}",
         stopping.elapsed()
     );
-    // The shielded pass (0.1 E1) is stuck on the same blackhole; under load
-    // either pass may be the one still in flight at the deadline.
-    assert!(
-        matches!(&stopped, Err(EngineError::Sdk(detail))
-            if detail.contains("dashpay_sync") || detail.contains("shielded_sync")),
-        "{stopped:?}"
-    );
+    assert!(names_only_stuck_loops(&stopped), "{stopped:?}");
     assert_eq!(s.spv_state().unwrap(), SpvState::Stopped);
 
     let starting = Instant::now();
