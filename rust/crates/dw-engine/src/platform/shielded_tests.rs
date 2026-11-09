@@ -2792,6 +2792,7 @@ fn a_shield_lock_of_51_coins_is_refused_by_its_signer_and_leaves_nothing() {
         let lib = pool::PwShielded::open(&s, wallet).await.unwrap();
         let lease = (s.begin_lease(wallet, FlowKind::Shield, &[grant]).await).unwrap();
         let before = lease.available(BudgetPurpose::Funding).unwrap();
+        assert!(s.leases.refresh_funding(wallet).await);
         let step = pool::next_step(&s, wallet).unwrap();
         let key = FundingKey {
             funding_type: AssetLockFundingType::AssetLockShieldedAddressTopUp,
@@ -2865,6 +2866,7 @@ fn a_shield_refuses_a_coin_credited_after_its_coin_check() {
     let (funded, outcome, released) = engine.block_on(async move {
         let lib = pool::PwShielded::open(&s, wallet).await.unwrap();
         let lease = (s.begin_lease(wallet, FlowKind::Shield, &[grant]).await).unwrap();
+        assert!(s.leases.refresh_funding(wallet).await);
         let step = pool::next_step(&s, wallet).unwrap();
         let key = FundingKey {
             funding_type: AssetLockFundingType::AssetLockShieldedAddressTopUp,
