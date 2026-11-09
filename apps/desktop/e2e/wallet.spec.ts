@@ -574,6 +574,32 @@ test.describe("Pay", () => {
     await expect(page.getByTestId("pay-continue")).toBeDisabled();
   });
 
+  test("Send writes Confirm's payment into the draft before signing, whatever the draft held (ROW73)", async ({ page }) => {
+    await open(page);
+    await fillPayment(page, PAYEE, "0.5");
+    await review(page);
+    // Something writes another amount into the open draft while Confirm is up.
+    const tampered = await page.evaluate(async () => {
+      const f = window.__dwFixture!;
+      const [id, d] = Object.entries(f.world.send.drafts).find(([, d]) => d.recipients[0]?.amount === 50_000_000)!;
+      const invoke = (window as unknown as { __TAURI_INTERNALS__: { invoke(c: string, a: unknown): Promise<unknown> } }).__TAURI_INTERNALS__.invoke;
+      await invoke("draft_set_recipients", { draft: Number(id), recipients: [{ ...d.recipients[0], amount: 20_000_000 }] });
+      return { id: Number(id), from: f.calls.length };
+    });
+    expect(await page.evaluate((id) => window.__dwFixture!.world.send.drafts[id]?.recipients[0]?.amount, tampered.id)).toBe(20_000_000);
+    await sendWithPassphrase(page);
+    // What prepare signed, checked before Confirm compares the summary with what it showed.
+    const after = () => page.evaluate((from) => window.__dwFixture!.calls.slice(from), tampered.from);
+    await expect.poll(async () => (await after()).includes("draft_prepare")).toBe(true);
+    const calls = await after();
+    const rewrite = calls.indexOf("draft_set_recipients");
+    expect(rewrite).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("draft_prepare")).toBeGreaterThan(rewrite);
+    expect(await page.evaluate((id) => window.__dwFixture!.world.send.drafts[id]?.recipients[0]?.amount, tampered.id)).toBe(50_000_000);
+    await expect(page.getByTestId("pay-result-sent")).toBeVisible();
+    await expect(page.getByTestId("pay-result")).toContainText("0.50000000");
+  });
+
   test("a payment of all the normal funds shows no refusal behind its result, and Close starts a new payment (ROW73)", async ({ page }) => {
     await open(page);
     // Pasta's 11-08 wallet: one unmixed coin, and coins still being mixed (none fully mixed yet).

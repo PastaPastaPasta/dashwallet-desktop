@@ -362,6 +362,42 @@ for (const theme of THEMES) {
   }
 }
 
+test("ROW73 coins that change while the confirm sheet is up re-check nothing behind it, and Cancel checks again", async ({ page }) => {
+  await openPay(page);
+  await page.getByTestId("pay-frequent-chip").first().click();
+  const form = page.getByTestId("pay-contact-form");
+  const available = page.getByText(/^Available: /);
+  await expect(available).toBeVisible();
+  const before = await available.textContent();
+  await fillAmount(page, "0.01");
+  // Every coin goes (another device spent them), and the engine says so.
+  await page.evaluate(`(() => {
+    const f = window.__dwFixture;
+    const w = f.world.wallets[0];
+    for (const u of w.coins) u.spendable = false;
+    f.emit({ kind: "balances", network: f.world.launch.network.dirName, walletId: w.summary.walletId, balances: w.summary.balances });
+  })()`);
+  const calls = () => page.evaluate(() => window.__dwFixture!.calls.length);
+  let last = -1;
+  await expect
+    .poll(
+      async () => {
+        const n = await calls();
+        const quiet = n === last;
+        last = n;
+        return quiet;
+      },
+      { intervals: [750], timeout: 15_000 },
+    )
+    .toBe(true);
+  await expect(form.locator(".field-error")).toHaveCount(0);
+  await expect(page.getByTestId("pay-problem")).toHaveCount(0);
+  await expect(available).toHaveText(before!);
+  await page.getByTestId("pay-confirm-cancel").click();
+  await expect(page.getByTestId("pay-problem")).toContainText("The amount exceeds");
+  await expect(page.getByTestId("pay-continue")).toBeDisabled();
+});
+
 test("ROW73 a payment of all the normal funds shows no refusal behind its result, and Close starts a new payment", async ({ page }) => {
   await openPay(page);
   // One unmixed coin and one still being mixed; the fixture's mixing figures are shares of the confirmed balance.
