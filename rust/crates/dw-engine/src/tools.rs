@@ -518,8 +518,9 @@ impl NetworkSession {
     /// resumed: its hold comes back, no lower than a rescan from the birth
     /// height rewinds to. A record that cannot be read, or a failed resume,
     /// holds spends until such a rescan; the record stays. The record is
-    /// read again under the manager's lock that rewinds, so a fork in
-    /// between lowers what is resumed.
+    /// read again under the manager's lock, which a fork's truncation
+    /// takes, before it is resumed or its hold published, so a fork in
+    /// between lowers what is.
     pub(crate) async fn resume_replay(&self, manager: &crate::session::Manager, wallet: WalletId) {
         let Ok(live) = self.live() else {
             return;
@@ -540,7 +541,31 @@ impl NetworkSession {
             s.processed_height = s.processed_height.max(processed);
         });
         let floor = birth.saturating_sub(1);
-        let hold = |reached: u32, target: u32| {
+        // Under the manager's lock, after the truncations found under it:
+        // the hold's target is the record's then, and a fork after it
+        // lowers the published one.
+        let replay = &live.replay;
+        let hold = |raise: bool| async move {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.write().await;
+            if let Some(info) = wm.get_wallet_info(&wallet.0) {
+                self.hub.detect_truncation(wallet, &info.core_wallet);
+            }
+            let raised = if raise {
+                (replay.raise_hold(wallet, floor).await)
+                    .inspect_err(|e| tracing::warn!(error = %e, wallet = %wallet, "could not store the replay hold at the birth height"))
+                    .ok()
+            } else {
+                None
+            };
+            let (reached, target) = match replay.get(wallet).await {
+                Ok(Some(r)) => (raised.unwrap_or(r.reached.max(floor)), r.target),
+                Ok(None) => return,
+                Err(e) => {
+                    tracing::warn!(error = %e, wallet = %wallet, "could not read the replay record: spends wait for a rescan from the birth height");
+                    (floor, 0)
+                }
+            };
             self.hub.update_wallet_state(wallet, |s| {
                 s.scan_target = s.scan_target.max(target);
                 s.replay_cancelled = Some(s.replay_cancelled.map_or(reached, |h| h.min(reached)));
@@ -551,21 +576,12 @@ impl NetworkSession {
             Ok(None) => return,
             Err(e) => {
                 tracing::warn!(error = %e, wallet = %wallet, "could not read the replay record: spends wait for a rescan from the birth height");
-                hold(floor, 0);
+                self.hub.update_wallet_state(wallet, |s| {
+                    s.replay_cancelled = Some(s.replay_cancelled.map_or(floor, |h| h.min(floor)));
+                });
                 return;
             }
         };
-        if record.cancelled {
-            let reached = match live.replay.raise_hold(wallet, floor).await {
-                Ok(reached) => reached,
-                Err(e) => {
-                    tracing::warn!(error = %e, wallet = %wallet, "could not store the replay hold at the birth height");
-                    record.reached.max(floor)
-                }
-            };
-            hold(reached, record.target);
-            return;
-        }
         #[cfg(test)]
         let pause = self.hub.pause_resume.lock().unwrap().take();
         #[cfg(test)]
@@ -574,6 +590,10 @@ impl NetworkSession {
                 .reached
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             pause.release.notified().await;
+        }
+        if record.cancelled {
+            hold(true).await;
+            return;
         }
         let resumed = (self.rewind(
             manager,
@@ -607,11 +627,11 @@ impl NetworkSession {
             }
             Ok(None) => {
                 tracing::warn!(wallet = %wallet, "replay not resumed: the wallet is not loaded");
-                hold(record.reached.max(floor), record.target);
+                hold(false).await;
             }
             Err(e) => {
                 tracing::warn!(error = %e, wallet = %wallet, "replay not resumed: spends wait for a rescan");
-                hold(record.reached.max(floor), record.target);
+                hold(false).await;
             }
         }
     }
@@ -647,7 +667,7 @@ impl NetworkSession {
             let _op = this.enter().await?;
             let live = this.live()?;
             let manager = Arc::clone(&live.manager);
-            let Some(state) = this.hub.rescan().take() else {
+            let Some(mut state) = this.hub.rescan().take() else {
                 return Ok(false);
             };
             if state.finished() {
@@ -679,6 +699,12 @@ impl NetworkSession {
                         for (id, old) in stored {
                             if let Err(e) = live.replay.restore(id, old).await {
                                 tracing::warn!(error = %e, wallet = %id, "could not put back the replay record of a failed cancel");
+                            }
+                        }
+                        // A fork since lowered the wallets' targets.
+                        for id in state.wallets.keys().copied().collect::<Vec<_>>() {
+                            if let Some(s) = this.hub.wallet_state(&id) {
+                                state.truncate(&id, s.scan_target);
                             }
                         }
                         let mut rescan = this.hub.rescan();

@@ -222,6 +222,7 @@ impl NetworkSession {
                 for r in records.iter().chain(&in_memory) {
                     h.upsert(r, None);
                 }
+                h.held.extend(in_memory.iter().map(|r| r.txid));
                 // Abandoned transactions are gone from wallet.sqlite; the
                 // app database keeps them so the history still shows them.
                 for (txid, tx) in &abandoned {

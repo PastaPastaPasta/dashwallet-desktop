@@ -365,20 +365,33 @@ impl ReplayRecords {
         let _ = applied.await;
     }
 
-    /// `wallet`'s record, with the truncations noted so far applied.
+    /// `wallet`'s record, with the truncations noted so far applied. Each
+    /// stays noted until its record is stored: one that cannot be fails
+    /// the read, and the next read applies it again.
     async fn load(
         &self,
         records: &mut HashMap<WalletId, Option<ReplayRecord>>,
         wallet: WalletId,
     ) -> Result<Option<ReplayRecord>, EngineError> {
         let mut record = self.load_stored(records, wallet).await?;
-        let noted = (self.truncations.lock().unwrap_or_else(|p| p.into_inner())).remove(&wallet);
-        for (height, from) in noted.into_iter().flatten() {
-            record = self
-                .truncate_record(records, wallet, record, height, from)
-                .await;
+        while let Some((height, from)) = self.next_truncation(wallet) {
+            record = (self.truncate_record(records, wallet, record, height, from)).await?;
+            let mut noted = self.truncations.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(queue) = noted.get_mut(&wallet) {
+                queue.remove(0);
+                if queue.is_empty() {
+                    noted.remove(&wallet);
+                }
+            }
         }
         Ok(record)
+    }
+
+    /// The first truncation of `wallet` noted and not yet applied.
+    fn next_truncation(&self, wallet: WalletId) -> Option<(u32, u32)> {
+        (self.truncations.lock().unwrap_or_else(|p| p.into_inner()))
+            .get(&wallet)
+            .and_then(|queue| queue.first().copied())
     }
 
     async fn load_stored(
@@ -603,6 +616,19 @@ impl ReplayRecords {
         manager: &Weak<Manager>,
         hub: &Weak<SessionHub>,
     ) {
+        if let Some(live) = Self::live(manager, wallet).await {
+            self.raise_forked(wallet, height, live).await;
+        }
+        // Read first: the truncations noted so far raise `stale`.
+        let due = |r: Option<ReplayRecord>| r.filter(|r| !r.cancelled && height > r.target);
+        match self.get(wallet).await {
+            Ok(r) if due(r).is_some() => {}
+            Ok(_) => return,
+            Err(e) => {
+                tracing::warn!(error = %e, wallet = %wallet, "could not read the replay record");
+                return;
+            }
+        }
         let (committed, stale) = (
             self.commits
                 .lock()
@@ -615,23 +641,11 @@ impl ReplayRecords {
                 .get(&wallet)
                 .copied(),
         );
-        if let Some(live) = Self::live(manager, wallet).await {
-            self.raise_forked(wallet, height.min(live)).await;
-        }
         if committed.is_some_and(|(_, failed)| failed) || height <= stale.unwrap_or(0) {
             return;
         }
         if hub.upgrade().is_none_or(|hub| Self::held(&hub, wallet)) {
             return;
-        }
-        let due = |r: Option<ReplayRecord>| r.filter(|r| !r.cancelled && height > r.target);
-        match self.get(wallet).await {
-            Ok(r) if due(r).is_some() => {}
-            Ok(_) => return,
-            Err(e) => {
-                tracing::warn!(error = %e, wallet = %wallet, "could not read the replay record");
-                return;
-            }
         }
         let Some(manager) = manager.upgrade() else {
             return;
@@ -663,12 +677,31 @@ impl ReplayRecords {
     /// so the target follows the commit, up to the wallet's checkpoint: the
     /// persister lags the wallet, so a store above it is the old chain's,
     /// stored late. Applied to the record as it was before the truncations
-    /// noted after the commit, as the notes came.
-    async fn raise_forked(&self, wallet: WalletId, height: u32) {
+    /// noted after the commit, as the notes came. A commit above `live`,
+    /// the wallet's checkpoint, after a fork is the old chain's: the
+    /// highest checkpoint stored before the fork (`forked_from`, and
+    /// `forked`) is at least its height.
+    async fn raise_forked(&self, wallet: WalletId, height: u32, live: u32) {
+        let lift = height > live && {
+            let mut forked = self.forked.lock().unwrap_or_else(|p| p.into_inner());
+            forked
+                .get_mut(&wallet)
+                .map(|f| *f = (*f).max(height))
+                .is_some()
+        };
         let mut records = self.records.lock().await;
         match self.load_stored(&mut records, wallet).await {
             Ok(Some(r)) => {
-                self.raise(&mut records, wallet, r, height).await;
+                let r = self.raise(&mut records, wallet, r, height.min(live)).await;
+                if (lift || r.forked_from > 0) && height > live && r.forked_from < height {
+                    let lifted = ReplayRecord {
+                        forked_from: height,
+                        ..r
+                    };
+                    if let Err(e) = self.write(&mut records, wallet, Some(lifted)).await {
+                        tracing::warn!(error = %e, wallet = %wallet, "could not store the old chain's checkpoint of a fork");
+                    }
+                }
             }
             Ok(None) => {}
             Err(e) => {
@@ -711,7 +744,8 @@ impl ReplayRecords {
         (wm.get_wallet_info(&wallet.0)).map(|i| i.core_wallet.synced_height())
     }
 
-    /// Applies every truncation noted so far to its wallet's record.
+    /// Applies every truncation noted so far to its wallet's record. One
+    /// that cannot be stored stays noted.
     pub(crate) async fn apply_truncations(&self) {
         let wallets: Vec<WalletId> = (self.truncations.lock().unwrap_or_else(|p| p.into_inner()))
             .keys()
@@ -726,7 +760,7 @@ impl ReplayRecords {
     async fn truncated(&self, wallet: WalletId) {
         let mut records = self.records.lock().await;
         if let Err(e) = self.load(&mut records, wallet).await {
-            tracing::warn!(error = %e, wallet = %wallet, "could not read the replay record");
+            tracing::error!(error = %e, wallet = %wallet, "could not store the replay record of a fork: a reopen may scan from the old chain's checkpoint");
         }
     }
 
@@ -738,7 +772,8 @@ impl ReplayRecords {
     /// replay to; so does a record written later this session. With no
     /// record, a stored checkpoint above the fork gets one from the fork:
     /// the store keeps the old chain's checkpoint, which a reopen would
-    /// otherwise scan from. Returns the record.
+    /// otherwise scan from. Returns the record, or the failed write's
+    /// error.
     async fn truncate_record(
         &self,
         records: &mut HashMap<WalletId, Option<ReplayRecord>>,
@@ -746,7 +781,7 @@ impl ReplayRecords {
         old: Option<ReplayRecord>,
         height: u32,
         from: u32,
-    ) -> Option<ReplayRecord> {
+    ) -> Result<Option<ReplayRecord>, EngineError> {
         let committed = (self.commits.lock().unwrap_or_else(|p| p.into_inner()))
             .get(&wallet)
             .map_or(0, |c| c.0);
@@ -758,7 +793,7 @@ impl ReplayRecords {
         }
         let Some(old) = old else {
             if stored <= height {
-                return None;
+                return Ok(None);
             }
             let record = ReplayRecord {
                 target: height,
@@ -767,13 +802,8 @@ impl ReplayRecords {
                 forked_from: stored,
             };
             self.note_stale(wallet, stored);
-            return match self.write(records, wallet, Some(record)).await {
-                Ok(()) => Some(record),
-                Err(e) => {
-                    tracing::warn!(error = %e, wallet = %wallet, "could not store the replay record of a fork");
-                    None
-                }
-            };
+            self.write(records, wallet, Some(record)).await?;
+            return Ok(Some(record));
         };
         self.note_stale(wallet, old.target);
         let record = ReplayRecord {
@@ -786,16 +816,10 @@ impl ReplayRecords {
             },
             ..old
         };
-        if record == old {
-            return Some(old);
+        if record != old {
+            self.write(records, wallet, Some(record)).await?;
         }
-        match self.write(records, wallet, Some(record)).await {
-            Ok(()) => Some(record),
-            Err(e) => {
-                tracing::warn!(error = %e, wallet = %wallet, "could not store the truncated replay record");
-                Some(old)
-            }
-        }
+        Ok(Some(record))
     }
 }
 

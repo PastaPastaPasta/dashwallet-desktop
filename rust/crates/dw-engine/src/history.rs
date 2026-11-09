@@ -339,6 +339,11 @@ pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint>
 #[derive(Debug, Default)]
 pub(crate) struct WalletHistory {
     pub txs: HashMap<Txid, TxEntry>,
+    /// Transactions key-wallet held this session: its records when the
+    /// history was filled at open and each one its events named since.
+    /// Records only read from storage are not among them (platform-wallet
+    /// rebuilds no records at load).
+    pub held: HashSet<Txid>,
 }
 
 /// Whether `record` is the wallet's own. A DashPay contact's account
@@ -458,6 +463,16 @@ impl HistoryStore {
             .unwrap_or_else(|p| p.into_inner())
             .get(wallet)
             .and_then(|h| h.txs.get(txid).cloned())
+    }
+
+    /// Runs `f` over one wallet's history under the store's read lock
+    /// (empty when unknown).
+    pub fn read_wallet<R>(&self, wallet: &WalletId, f: impl FnOnce(&WalletHistory) -> R) -> R {
+        let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
+        match map.get(wallet) {
+            Some(h) => f(h),
+            None => f(&WalletHistory::default()),
+        }
     }
 
     pub fn remove_wallet(&self, wallet: &WalletId) {

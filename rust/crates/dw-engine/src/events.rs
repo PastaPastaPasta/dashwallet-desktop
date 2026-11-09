@@ -984,11 +984,15 @@ impl SessionHub {
         let lowered = {
             let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
             let state = map.entry(id).or_default();
+            // An event is matched to a found truncation by its height
+            // alone. That holds while a truncation's event reaches the hub
+            // before the new chain's progress past its height does, so a
+            // truncation is never found above its own event's height.
             let heard = !found.detected
                 && state.detected.is_some_and(|d| {
                     height == d || (height > d && state.processed_height <= height)
                 });
-            if !found.detected && state.detected.is_some_and(|d| height <= d) {
+            if heard || (!found.detected && state.detected.is_some_and(|d| height <= d)) {
                 state.detected = None;
             }
             let news = !heard && (!found.detected || state.processed_height > height);
@@ -1041,10 +1045,18 @@ impl SessionHub {
     /// Applies a truncation of wallet `id` that no event announced
     /// (dash-spv truncates with its event monitor stopped): key-wallet's
     /// processed height, read with `core` under the manager's lock, is
-    /// below the hub's. Only a truncation lowers it. The history drops
-    /// the transactions in blocks above it that key-wallet no longer
-    /// holds, and keeps those it holds out of a block (InstantSend-locked)
-    /// unconfirmed. Returns the height when applied.
+    /// below the hub's. Only a truncation lowers it. Returns the height
+    /// when applied.
+    ///
+    /// The history drops the transactions mined above that height that
+    /// key-wallet no longer holds, and keeps those it holds out of a block
+    /// (InstantSend-locked) unconfirmed. The new chain may have advanced
+    /// past the fork before the check, so the height can be above it: the
+    /// same applies down to key-wallet's last ChainLock (no fork goes
+    /// below it) to the transactions key-wallet held this session and
+    /// neither holds in a block nor finalized. A record only read from
+    /// storage stays: key-wallet never held it, and nothing tells it
+    /// apart from one mined below the fork.
     pub(crate) fn detect_truncation(
         &self,
         id: WalletId,
@@ -1059,15 +1071,25 @@ impl SessionHub {
         {
             return None;
         }
-        let held: HashMap<Txid, bool> = (core.accounts.all_accounts().into_iter())
+        let chain_locked = core
+            .last_applied_chain_lock()
+            .map_or(0, |cl| cl.block_height);
+        let accounts = core.accounts.all_accounts();
+        let held: HashMap<Txid, bool> = (accounts.iter())
             .flat_map(|a| a.transactions().iter())
             .filter(|(_, r)| crate::history::is_wallets(r))
             .map(|(t, r)| (*t, r.context.block_info().is_some()))
             .collect();
+        let finalized = |t: &Txid| accounts.iter().any(|a| a.transaction_is_finalized(t));
         let (mut removed, mut unconfirmed) = (Vec::new(), Vec::new());
-        self.history.read(&id, |txs| {
-            for (txid, entry) in txs {
-                if !(entry.context.block_info()).is_some_and(|b| b.height() > height) {
+        self.history.read_wallet(&id, |h| {
+            for (txid, entry) in &h.txs {
+                let Some(mined) = entry.context.block_info().map(|b| b.height()) else {
+                    continue;
+                };
+                let below = mined <= height;
+                if mined <= chain_locked || (below && !(h.held.contains(txid) && !finalized(txid)))
+                {
                     continue;
                 }
                 match held.get(txid) {
@@ -1109,6 +1131,10 @@ impl SessionHub {
         let id = WalletId(event.wallet_id());
         let now = Some(unix_now());
         self.run_sweep_retry(id);
+        let carried = carried_txids(event);
+        if !carried.is_empty() {
+            self.history.with_wallet(id, |h| h.held.extend(carried));
+        }
         match event {
             WalletEvent::TransactionDetected {
                 record,
@@ -1276,6 +1302,37 @@ impl SessionHub {
                 self.note_seen(id, locked_transactions.values().flatten().copied());
             }
         }
+    }
+}
+
+/// The transactions a wallet event names.
+fn carried_txids(event: &WalletEvent) -> Vec<Txid> {
+    match event {
+        WalletEvent::TransactionDetected { record, .. } => vec![record.txid],
+        WalletEvent::TransactionInstantLocked { txid, .. } => vec![*txid],
+        WalletEvent::TransactionsSwept {
+            txids,
+            superseded_by,
+            ..
+        } => txids.iter().chain([superseded_by]).copied().collect(),
+        WalletEvent::ChainTruncated {
+            txids,
+            unconfirmed_txids,
+            ..
+        } => txids.iter().chain(unconfirmed_txids).copied().collect(),
+        WalletEvent::BlockProcessed {
+            inserted,
+            updated,
+            matured,
+            ..
+        } => (inserted.iter().chain(updated).chain(matured))
+            .map(|r| r.txid)
+            .collect(),
+        WalletEvent::SyncHeightAdvanced { .. } => Vec::new(),
+        WalletEvent::ChainLockProcessed {
+            locked_transactions,
+            ..
+        } => locked_transactions.values().flatten().copied().collect(),
     }
 }
 
