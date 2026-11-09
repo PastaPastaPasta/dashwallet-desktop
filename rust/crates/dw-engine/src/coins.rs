@@ -801,9 +801,9 @@ impl NetworkSession {
     /// reaches the history one task hop after the coin reaches the wallet,
     /// and until then nothing says whether that transaction is a ProRegTx
     /// whose own output this coin is. A coin the wallet held at a clean
-    /// history load is not held: a collateral among those that the history
-    /// has no ProRegTx for (no stored record) is locked once the masternode
-    /// list syncs. After a load that failed to read a record, every such
+    /// history load, stored with no transaction record, is not held: a
+    /// collateral among those (the history has no ProRegTx for it) is
+    /// locked once the masternode list syncs. After a load that failed to read a record, every such
     /// coin missing from the history stays held for the session, and when
     /// the history misses an event (a lagged event bus), that coin does.
     pub(crate) async fn coin_snapshot(

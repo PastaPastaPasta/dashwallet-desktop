@@ -3390,6 +3390,86 @@ fn a_failed_history_read_keeps_a_recordless_collateral_sized_coin_held() {
     );
 }
 
+/// A history load that fails to read one stored record counts no coin as
+/// seen: a recordless coin of a collateral amount stays held.
+#[test]
+fn a_failed_record_read_keeps_a_recordless_collateral_sized_coin_held() {
+    use key_wallet::account::{AccountType, StandardAccountType};
+    use key_wallet::managed_account::transaction_record::{
+        TransactionDirection, TransactionRecord,
+    };
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext, TransactionType};
+    use platform_wallet::changeset::CoreChangeSet;
+    let f = fixture(false);
+    let coin = f.recordless_collateral();
+    let paid = dashcore::Transaction {
+        version: 2,
+        lock_time: 0,
+        input: Vec::new(),
+        output: vec![TxOut {
+            value: COIN,
+            script_pubkey: dashcore::ScriptBuf::new(),
+        }],
+        special_transaction_payload: None,
+    };
+    let record = TransactionRecord::new(
+        paid,
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        },
+        TransactionContext::InBlock(BlockInfo::new(120, dashcore::BlockHash::all_zeros(), 9)),
+        TransactionType::Standard,
+        TransactionDirection::Internal,
+        Vec::new(),
+        Vec::new(),
+        0,
+    );
+    f.store_core(CoreChangeSet {
+        records: vec![record],
+        ..Default::default()
+    });
+    (f.session.hub.fail_record_read).store(true, std::sync::atomic::Ordering::SeqCst);
+    f.reopen_wallet();
+    assert_eq!(
+        f.funding_holds(),
+        vec![(coin, crate::coins::CoinHold::AwaitingHistory)]
+    );
+}
+
+/// A coin credited while the history loads, after its read of the stored
+/// transactions and before its read of the wallet, is not one the load
+/// saw stored: of a collateral amount, it is held until its transaction's
+/// event reaches the history.
+#[test]
+fn a_collateral_sized_coin_credited_during_the_history_load_waits_for_its_event() {
+    let f = fixture(false);
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_history.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = {
+        let (s, id) = (Arc::clone(&f.session), f.wallet);
+        f.session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    eventually("the history load's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let coin = f.late_coin(8, dw_protx::params::MASTERNODE_COLLATERAL, 150);
+    let outpoint = coin.outpoint;
+    f.put_coin(coin);
+    pause.release.notify_one();
+    f.engine.block_on(load).unwrap().unwrap();
+    assert_eq!(
+        f.funding_holds(),
+        vec![(outpoint, crate::coins::CoinHold::AwaitingHistory)]
+    );
+    // Its transaction's event.
+    (f.session.hub.history).hold_funding(f.wallet, outpoint.txid);
+    assert_eq!(f.funding_holds(), Vec::new());
+}
+
 /// A stored replay this build cannot read (another format, or a start
 /// above its target), or a read that fails, holds spends until a rescan
 /// from the birth height.
