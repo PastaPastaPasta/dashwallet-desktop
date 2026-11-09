@@ -316,10 +316,13 @@ impl ReplayRecords {
             if Self::held(hub, wallet) {
                 continue;
             }
-            if !r.cancelled && live >= r.target && committed >= r.target && r.past_fork(live) {
-                if let Err(e) = self.write(&mut records, wallet, None).await {
-                    tracing::warn!(error = %e, wallet = %wallet, "could not delete the finished replay record");
-                }
+            if !r.cancelled
+                && live >= r.target
+                && committed >= r.target
+                && r.past_fork(live)
+                && let Err(e) = self.write(&mut records, wallet, None).await
+            {
+                tracing::warn!(error = %e, wallet = %wallet, "could not delete the finished replay record");
             }
         }
     }

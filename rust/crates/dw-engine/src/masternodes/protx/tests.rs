@@ -2796,7 +2796,7 @@ fn a_registration_in_a_replaced_block_is_not_confirmed_after_a_silent_truncation
         wm.write().await.truncate_above(900).unwrap();
     });
     let guard = f.engine.block_on(f.session.replay_guard(f.wallet, 0));
-    let (state, owned) = (f.operations()[0].state.clone(), owned());
+    let (state, owned) = (f.operations()[0].state, owned());
     eprintln!(
         "ROW5965 ProRegTx at 950, silent truncation to 900: guard {guard:?}, operation {state:?}, owned masternodes {owned:?}"
     );
