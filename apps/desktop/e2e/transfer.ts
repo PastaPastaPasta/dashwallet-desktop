@@ -485,6 +485,17 @@ export const TRANSFER_STATES: TransferState[] = [
     },
   },
   {
+    // The shortcut before Shielded and the Platform addresses are read: a loading line, no route yet.
+    id: "loading",
+    scenario: "funded",
+    extra: "&hold=shielded_status&hold=platform_addresses",
+    go: async (page) => {
+      await page.getByTestId("shortcut-transfer").click();
+      await expect(page.getByTestId("transfer-loading")).toHaveText("Reading your balances…");
+      await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
+    },
+  },
+  {
     id: "entry-shielded-card",
     scenario: "funded",
     go: async (page) => {

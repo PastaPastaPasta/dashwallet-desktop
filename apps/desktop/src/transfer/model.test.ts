@@ -122,6 +122,36 @@ describe("routes", () => {
   });
 });
 
+describe("the shortcut before the pools are read", () => {
+  const LOADING: Pools = { core: null, shielded: undefined, platform: undefined };
+
+  it("loading is not absent: no default route yet, and each route says it is reading", () => {
+    const { t } = model();
+    expect(defaultRoute(LOADING)).toBeUndefined();
+    // Shielded inactive, Platform still read: Platform may yet be the default.
+    expect(defaultRoute({ ...POOLS, shielded: { active: false, syncing: false, duffs: null }, platform: undefined })).toBeUndefined();
+    for (const r of ["coreToShielded", "shieldedToCore", "coreToPlatform", "platformToCore"] as const) expect(routeWhy(r, LOADING, t.flows)).toBe(TRANSFER_COPY.loading);
+  });
+
+  it("opens waiting, then on the default route once the pools are read", () => {
+    const { t, shielded } = model();
+    t.start(defaultRoute(LOADING));
+    expect([t.shown, t.awaitingDefault, t.begunRoute, shielded.open]).toEqual([true, true, null, false]);
+    t.settleDefault(defaultRoute(LOADING));
+    expect(t.awaitingDefault).toBe(true);
+    t.settleDefault(defaultRoute(POOLS));
+    expect([t.awaitingDefault, t.begunRoute, shielded.open, shielded.kind, shielded.step]).toEqual([false, "coreToShielded", true, "add", "form"]);
+  });
+
+  it("a sheet closed while waiting does not open when the pools arrive", () => {
+    const { t, shielded } = model();
+    t.start(undefined);
+    t.close();
+    t.settleDefault(defaultRoute(POOLS));
+    expect([t.shown, shielded.open]).toEqual([false, false]);
+  });
+});
+
 describe("the default route", () => {
   it("is Dash wallet → Shielded, or → Platform when Shielded is not active", () => {
     expect(defaultRoute(POOLS)).toBe("coreToShielded");

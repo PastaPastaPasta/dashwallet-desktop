@@ -140,6 +140,22 @@ test.describe("Transfer quotes", () => {
     }
   });
 
+  test("the shortcut before the balances are read waits, then opens on the default route", async ({ page }) => {
+    await open(page, "funded", "&hold=shielded_status&hold=platform_addresses");
+    await page.getByTestId("shortcut-transfer").click();
+    await expect(page.getByTestId("transfer-loading")).toHaveText("Reading your balances…");
+    await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
+    await expect(page.getByTestId("transfer-amount")).toHaveCount(0);
+    await page.evaluate(() => {
+      window.__dwFixture!.release("shielded_status");
+      window.__dwFixture!.release("platform_addresses");
+    });
+    await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "coreToShielded");
+    await expect(page.getByTestId("transfer-loading")).toHaveCount(0);
+    await expect(page.getByTestId("transfer-amount")).toBeEnabled();
+    await expect(page.getByTestId("transfer-max")).toBeEnabled();
+  });
+
   test("Max never skips the confirmation", async ({ page }) => {
     await open(page, "funded");
     await openTransfer(page, "shieldedToCore");

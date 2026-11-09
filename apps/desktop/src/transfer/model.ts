@@ -61,6 +61,7 @@ export const TRANSFER_COPY = {
   },
   platformEmpty: "Nothing on your Platform addresses to move yet.",
   noCoreBalance: "Nothing in your Dash wallet to move yet.",
+  loading: "Reading your balances…",
   running: (what: string) => `Running: ${what}.`,
   show: "Show",
   routeNames: {
@@ -76,10 +77,12 @@ export const TRANSFER_COPY = {
 export interface Pools {
   /** The Dash wallet's balance in duffs; `null` while it is not read. */
   core: number | null;
-  /** `null`: this dw-app has no Shielded commands. `duffs` is `null` while it is no reading. */
-  shielded: { active: boolean; syncing: boolean; duffs: number | null } | null;
-  /** `null`: this dw-app has no Platform addresses. `duffs`: what a move of everything would take. */
-  platform: { duffs: number | null; dust: boolean; dustText: string; block: MoveBlock | null; waitingText: string } | null;
+  /** `null`: this dw-app has no Shielded commands; `undefined`: still being read. `duffs` is `null`
+   * while it is no reading. */
+  shielded: { active: boolean; syncing: boolean; duffs: number | null } | null | undefined;
+  /** `null`: this dw-app has no Platform addresses; `undefined`: still being read. `duffs`: what a
+   * move of everything would take. */
+  platform: { duffs: number | null; dust: boolean; dustText: string; block: MoveBlock | null; waitingText: string } | null | undefined;
 }
 
 /** The pools the picker lists: the Dash wallet always, the others while this dw-app has them. */
@@ -88,10 +91,12 @@ export function listedPools(pools: Pools): Pool[] {
 }
 
 /** The route the shortcut opens: to Shielded, or to Platform when Shielded is not active. `null`:
- * neither is there, and `noRouteText` says why. */
-export function defaultRoute(pools: Pools): RouteId | null {
+ * neither is there, and `noRouteText` says why; `undefined`: not known until the pools are read. */
+export function defaultRoute(pools: Pools): RouteId | null | undefined {
   if (pools.shielded?.active) return "coreToShielded";
+  if (pools.shielded === undefined) return undefined;
   if (pools.platform) return "coreToPlatform";
+  if (pools.platform === undefined) return undefined;
   return null;
 }
 
@@ -151,6 +156,7 @@ export function routeWhy(route: RouteId, pools: Pools, flows: Flows): string | n
     case "coreToShielded":
     case "shieldedToCore": {
       const s = pools.shielded;
+      if (s === undefined) return TRANSFER_COPY.loading;
       if (!s?.active) return SHIELDED_COPY.card.inactive;
       if (s.syncing) return SHIELDED_SYNCING_TEXT;
       const f = flows.shielded;
@@ -161,9 +167,10 @@ export function routeWhy(route: RouteId, pools: Pools, flows: Flows): string | n
       return null;
     }
     case "coreToPlatform":
-      return pools.platform ? null : "Platform addresses are not active on this network yet.";
+      return pools.platform ? null : pools.platform === undefined ? TRANSFER_COPY.loading : "Platform addresses are not active on this network yet.";
     case "platformToCore": {
       const p = pools.platform;
+      if (p === undefined) return TRANSFER_COPY.loading;
       if (!p) return "Platform addresses are not active on this network yet.";
       if (flows.move.pending || p.block === "pending") return p.waitingText;
       if (p.block === "checking") return MOVE_COPY.check.loading;
@@ -381,6 +388,8 @@ export class TransferModel extends Model {
   picking: "from" | "to" | null = null;
   /** Platform → Dash wallet has no form of its own: Continue shows its confirmation. */
   reviewed = false;
+  /** Opened by the shortcut before the pools were read: the default route is picked once they are. */
+  awaitingDefault = false;
   /** The route whose flow the sheet opened. */
   private begun: RouteId | null = null;
   /** The text Max last filled on each route: discreet mode masks it while the field still holds it. */
@@ -442,12 +451,20 @@ export class TransferModel extends Model {
     }
   }
 
-  /** Opens the sheet at `route` (`null`: where it was, or nowhere when nothing can be moved). */
-  start(route: RouteId | null) {
+  /** Opens the sheet at `route` (`null`: where it was, or nowhere when nothing can be moved;
+   * `undefined`: the default route is not known yet, `settleDefault` picks it). */
+  start(route: RouteId | null | undefined) {
     this.open = true;
     this.picking = null;
+    this.awaitingDefault = route === undefined;
     if (route) this.select(ROUTES[route].from, ROUTES[route].to);
     else this.changed();
+  }
+
+  /** The pools were read: a sheet waiting for its default route opens on it. */
+  settleDefault(route: RouteId | null | undefined) {
+    if (!this.awaitingDefault || route === undefined) return;
+    this.start(route);
   }
 
   /** Opens the sheet from a card's pool, to the Dash wallet. */
@@ -483,6 +500,7 @@ export class TransferModel extends Model {
   close() {
     this.open = false;
     this.picking = null;
+    this.awaitingDefault = false;
     this.reviewed = false;
     const r = this.begun ?? this.flowRoute();
     this.begun = null;
@@ -491,6 +509,7 @@ export class TransferModel extends Model {
   }
 
   private select(from: Pool, to: Pool) {
+    this.awaitingDefault = false;
     const before = this.begun;
     this.begun = null;
     this.from = from;

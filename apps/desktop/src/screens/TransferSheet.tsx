@@ -45,17 +45,18 @@ import { GrantSheet } from "./tools/common";
 export function useTransferPools(walletId: string, network: NetworkInfo): Pools {
   const b = useBackend();
   const balance = useBalance(walletId);
-  const status = useShieldedStatus(walletId).data ?? null;
+  const statusRead = useShieldedStatus(walletId);
+  const status = statusRead.isError ? null : statusRead.data;
   const pools = usePoolBalances(walletId);
   const hold = usePlatformHold(walletId, transferFor(b, walletId).flows.move);
   const fmt = useAmount(network);
   const core = balance.data ? balance.data.confirmed + balance.data.unconfirmed : null;
   return {
     core,
-    shielded: status ? { active: status.active, syncing: shieldedSyncing(status), duffs: shieldedDuffs(status) } : null,
+    shielded: status ? { active: status.active, syncing: shieldedSyncing(status), duffs: shieldedDuffs(status) } : status,
     platform:
       pools.platform == null
-        ? null
+        ? pools.platform
         : { duffs: pools.platform, dust: BigInt(pools.platformDust) > 0n, dustText: MOVE_COPY.card.dust(fmt(creditsToDuffs(pools.platformDust))), block: hold.block, waitingText: hold.waitingText },
   };
 }
@@ -240,7 +241,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
             value={hidden ? mask : text}
             disabled={blocked || !own}
             aria-invalid={amountProblem !== null}
-            aria-describedby={`${id}-fee`}
+            aria-describedby={why ? `${id}-why ${id}-fee` : `${id}-fee`}
             onFocus={(e) => hidden && e.target.select()}
             onChange={(e) => flow.setText(hidden ? e.target.value.split(mask).join("") : e.target.value)}
           />
@@ -250,7 +251,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
           size="medium"
           data-testid="transfer-max"
           disabled={blocked || !own || !probe || line.maxing}
-          why={why ?? (!probe ? T.noCoreBalance : null)}
+          why={why ?? (probe === null ? T.loading : !probe ? T.noCoreBalance : line.maxing ? T.why.max : null)}
           whyId={why ? `${id}-why` : undefined}
           onClick={() => probe && void t.max(route, probe, (duffs) => flow.setText(shown.full(duffs)), shown.full)}
         >
@@ -331,6 +332,19 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
 
 function TransferForm({ t, pools, network, walletId, status }: { t: TransferModel; pools: Pools; network: NetworkInfo; walletId: string; status: ShieldedStatus | null }) {
   const fmt = useAmount(network);
+  if (t.awaitingDefault)
+    return (
+      <>
+        <p className="sheet-text" role="status" data-testid="transfer-loading">
+          {T.loading}
+        </p>
+        <div className="sheet-actions">
+          <DashButton variant="tintedGray" size="large" data-testid="transfer-cancel" onClick={() => t.close()}>
+            {T.cancel}
+          </DashButton>
+        </div>
+      </>
+    );
   if (defaultRoute(pools) === null)
     return (
       <>
@@ -404,6 +418,8 @@ export function TransferSheet({ walletId, network }: { walletId: string; network
   const pools = useTransferPools(walletId, network);
   const status = useShieldedStatus(walletId).data ?? null;
   const { block } = usePlatformHold(walletId, move);
+  const defaultHere = defaultRoute(pools);
+  useEffect(() => t.settleDefault(defaultHere), [t, t.awaitingDefault, defaultHere]);
   const grants = (
     <>
       <GrantSheet grants={fund.grants} />
