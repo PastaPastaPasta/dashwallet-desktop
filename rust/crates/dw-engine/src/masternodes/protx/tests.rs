@@ -3054,7 +3054,9 @@ impl Fx {
 
 /// Row 71 F1: a build never selects a coin a ProRegTx in the history names,
 /// though the follower hasn't locked it (its mark taken, its lock not yet
-/// written): inserted or loaded, internal or external collateral.
+/// written): inserted or loaded, internal or external collateral, read
+/// under a build's fence; and a send (external, the coin at a wallet
+/// address, so it could sign) refused.
 #[test]
 fn r71_b_a_send_never_selects_a_known_collateral() {
     for internal in [true, false] {
@@ -3069,14 +3071,22 @@ fn r71_b_a_send_never_selects_a_known_collateral() {
             }
             f.clear_pending();
             assert!(f.locked().is_empty(), "{what}");
-            assert_eq!(
-                send_failure(f.prepare_send()),
-                SendFailure::AmountExceedsBalance { available: 0 },
-                "{what}"
-            );
+            let fence = f.fence();
+            assert_eq!(f.fenced(&fence), vec![(collateral, true)], "{what}");
+            drop(fence);
             assert_eq!(f.locked(), HashSet::from([collateral]), "{what}");
         }
     }
+    let f = fx(Library::Accept);
+    let (tx, collateral) = f.foreign_registration(false, 2);
+    f.record(tx, TransactionContext::Mempool);
+    f.clear_pending();
+    assert_eq!(
+        send_failure(f.prepare_send()),
+        SendFailure::AmountExceedsBalance { available: 0 },
+        "a send"
+    );
+    assert_eq!(f.locked(), HashSet::from([collateral]));
 }
 
 /// Row 71 F1: a collateral the user released stays selectable: a build's
@@ -3204,4 +3214,68 @@ fn r71_b_the_follower_locks_through_the_wake_with_no_list() {
     let (loaded, b) = f.foreign_registration(true, 3);
     f.load_with(loaded);
     f.wait_locked(b, "load");
+}
+
+/// Row 71 round 2: only a coin holding its type's collateral amount is
+/// locked (Core accepts no other), regular or evonode, internal or
+/// external, from a build's read and from the follower; an abandoned
+/// ProRegTx's coin isn't locked again once unlocked.
+#[test]
+fn r71_b_only_a_collateral_amount_is_locked() {
+    use crate::masternodes::aggregate::fixtures::{coins, null, registration};
+    for follower in [false, true] {
+        let f = fx(Library::Accept);
+        let mut expect = HashSet::new();
+        let mut external = |seed: u8, value: u64, evonode: bool, locks: bool| {
+            let collateral = f.credit(seed, value);
+            f.record(
+                registration(collateral, evonode, 0, coins(&[COIN])),
+                TransactionContext::Mempool,
+            );
+            if locks {
+                expect.insert(collateral);
+            }
+        };
+        external(2, MASTERNODE_COLLATERAL, false, true);
+        external(3, EVONODE_COLLATERAL, true, true);
+        external(4, COIN, false, false);
+        external(5, MASTERNODE_COLLATERAL, true, false);
+        external(6, EVONODE_COLLATERAL, false, false);
+        for (seed, value, evonode, locks) in [
+            (7, EVONODE_COLLATERAL, true, true),
+            (8, COIN, false, false),
+            (9, MASTERNODE_COLLATERAL, true, false),
+        ] {
+            let tx = registration(null(0), evonode, seed, coins(&[value]));
+            let collateral = OutPoint::new(tx.txid(), 0);
+            f.hold(collateral, tx.output[0].clone());
+            f.record(tx, TransactionContext::Mempool);
+            if locks {
+                expect.insert(collateral);
+            }
+        }
+        if follower {
+            f.collateral_pass();
+        } else {
+            f.clear_pending();
+            drop(f.fenced(&f.fence()));
+        }
+        assert_eq!(f.locked(), expect, "follower: {follower}");
+    }
+
+    let f = fx(Library::Accept);
+    let (tx, collateral) = f.foreign_registration(false, 2);
+    f.record(tx.clone(), TransactionContext::Mempool);
+    f.collateral_pass();
+    assert_eq!(f.locked(), HashSet::from([collateral]));
+    (f.session.hub.history).with_wallet(f.wallet, |h| {
+        h.txs.get_mut(&tx.txid()).unwrap().abandoned = true;
+    });
+    f.engine
+        .block_on(f.session.unlock_outpoints(f.wallet, vec![collateral]))
+        .unwrap();
+    drop(f.fenced(&f.fence()));
+    f.session.hub.history.rearm_collateral(f.wallet);
+    f.collateral_pass();
+    assert!(f.locked().is_empty(), "abandoned");
 }

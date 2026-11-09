@@ -10,7 +10,7 @@ use dashcore::blockdata::transaction::special_transaction::provider_registration
 use dashcore::hashes::Hash;
 use dashcore::transaction::TransactionPayload;
 use dashcore::{OutPoint, Transaction, Txid};
-use dw_protx::params::{EVONODE_COLLATERAL, MASTERNODE_COLLATERAL};
+use dw_protx::params::{EVONODE_COLLATERAL, MASTERNODE_COLLATERAL, collateral_amount};
 use dw_protx::payloads::checked_collateral;
 use platform_wallet::masternode::{ListMembership, MasternodeRecord, aggregate_masternodes};
 
@@ -91,17 +91,19 @@ pub(crate) fn collateral_kind(amount: u64) -> Option<bool> {
 }
 
 /// The collateral each ProRegTx among `txs` names, as Core accepted it
-/// ([`checked_collateral`]).
+/// ([`checked_collateral`]), with the amount its type needs.
 pub(crate) fn registration_collaterals<'a>(
     txs: impl IntoIterator<Item = &'a Transaction>,
-) -> Vec<OutPoint> {
+) -> Vec<(OutPoint, u64)> {
     txs.into_iter()
         .filter_map(|tx| match &tx.special_transaction_payload {
-            Some(TransactionPayload::ProviderRegistrationPayloadType(p)) => checked_collateral(
-                tx,
-                p,
-                p.masternode_type == ProviderMasternodeType::HighPerformance,
-            ),
+            Some(TransactionPayload::ProviderRegistrationPayloadType(p)) => {
+                let evonode = p.masternode_type == ProviderMasternodeType::HighPerformance;
+                Some((
+                    checked_collateral(tx, p, evonode)?,
+                    collateral_amount(evonode),
+                ))
+            }
             _ => None,
         })
         .collect()

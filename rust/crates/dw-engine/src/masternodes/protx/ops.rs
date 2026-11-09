@@ -17,13 +17,14 @@ use std::sync::Arc;
 
 use dashcore::{OutPoint, Transaction, Txid};
 use dw_appdb::{AttemptEnd, Holder, MasternodeOpRow};
+use dw_protx::params::collateral_amount;
 
 use super::super::MasternodesError;
 use super::super::protx_records::{
     ProTxOperation, ProTxOperationKind, ProTxOperationState, ProTxTerms, SignRequest,
 };
 use super::super::shared::list_settled;
-use crate::coins::{CoinFence, now_secs, read_coins};
+use crate::coins::{CoinFence, WalletCoin, now_secs, read_coins};
 use crate::history::TxEntry;
 use crate::send::{PreparedSummary, SpendCharge};
 use crate::{EngineError, NetworkSession, WalletId};
@@ -706,11 +707,11 @@ impl NetworkSession {
     /// conflicted rows locked. Core locks a ProRegTx's own collateral when
     /// the transaction is added and every listed collateral at load
     /// (v24.0.0 `wallet/wallet.cpp:1141`, `:2580-2590`). An external
-    /// collateral is locked while its ProRegTx is unconfirmed too, sooner
-    /// than Core's load; one that never confirms leaves it locked until
-    /// `release-collateral`, or "Unlock unspent" once it is abandoned. That
-    /// is the safe side. `false` when a build holds the wallet's coin
-    /// fence, so nothing ran.
+    /// collateral holding its type's amount is locked while its ProRegTx is
+    /// unconfirmed too, sooner than Core's load; one that never confirms
+    /// leaves it locked until `release-collateral`, or "Unlock unspent"
+    /// once it is abandoned. That is the safe side. `false` when a build
+    /// holds the wallet's coin fence, so nothing ran.
     async fn lock_own_collaterals(&self, wallet: WalletId) -> Result<bool, MasternodesError> {
         let Some(fence) = self.try_coin_fence(wallet).await? else {
             return Ok(false);
@@ -719,34 +720,45 @@ impl NetworkSession {
         crash_at(self, CrashPoint::LockStep)?;
         self.release_conflicted_collaterals(wallet).await?;
         let (m, hub) = (self.manager()?, Arc::clone(&self.hub));
-        let collaterals: Vec<OutPoint> = tokio::task::spawn_blocking(move || {
+        let collaterals: Vec<(OutPoint, u64)> = tokio::task::spawn_blocking(move || {
             super::super::follow::wallet_masternodes(&m, &hub.history, &wallet)
-                .map(|(owned, _)| owned.iter().filter_map(|o| o.collateral).collect())
+                .map(|(owned, _)| {
+                    (owned.iter())
+                        .filter_map(|o| {
+                            Some((o.collateral?, collateral_amount(o.record.is_evonode)))
+                        })
+                        .collect()
+                })
                 .unwrap_or_default()
         })
         .await?;
         if !collaterals.is_empty() {
-            let (_, unspent) = self.op_view(wallet).await?;
-            self.lock_collaterals(&fence, collaterals, &unspent).await?;
+            let w = self.wallet(&wallet).await?;
+            let coins = read_coins(&w.state().await.core_wallet).coins;
+            self.lock_collaterals(&fence, collaterals, &coins).await?;
         }
         Ok(true)
     }
 
-    /// Locks those of `collaterals` the fenced wallet holds unspent
-    /// (`unspent`), unless locked already or released by the user
-    /// (`release-collateral`, D9). The follower's step and every build's
-    /// coin read ([`Self::coin_snapshot`]) run it under the fence they
-    /// hold.
+    /// Locks each of `collaterals` (an outpoint and the amount its type
+    /// needs) that is one of the fenced wallet's unspent `coins` holding that
+    /// amount, unless locked already or released by the user
+    /// (`release-collateral`, D9). Core accepts no other amount, so a
+    /// ProRegTx naming another coin locks nothing. The follower's step and
+    /// every build's coin read ([`Self::coin_snapshot`]) run it under the
+    /// fence they hold.
     pub(crate) async fn lock_collaterals(
         &self,
         fence: &CoinFence,
-        collaterals: Vec<OutPoint>,
-        unspent: &HashSet<OutPoint>,
+        collaterals: Vec<(OutPoint, u64)>,
+        coins: &[WalletCoin],
     ) -> Result<(), EngineError> {
         let wallet = fence.wallet_id();
-        let held: Vec<OutPoint> = collaterals
-            .into_iter()
-            .filter(|o| unspent.contains(o))
+        let held: Vec<OutPoint> = (collaterals.into_iter())
+            .filter(|(o, amount)| {
+                (coins.iter()).any(|c| c.utxo.outpoint == *o && c.utxo.value() == *amount)
+            })
+            .map(|(o, _)| o)
             .collect();
         if held.is_empty() {
             return Ok(());

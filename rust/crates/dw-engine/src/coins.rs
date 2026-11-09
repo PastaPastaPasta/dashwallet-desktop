@@ -754,13 +754,13 @@ impl NetworkSession {
                 pending_lock_inputs(state.tracked_asset_locks.values()),
             )
         };
-        let unspent: HashSet<OutPoint> = snapshot.coins.iter().map(|c| c.utxo.outpoint).collect();
         let collaterals = (self.hub.history).read(&wallet_id, |txs| {
             crate::masternodes::registration_collaterals(
                 txs.values().filter(|e| !e.abandoned).map(|e| &e.tx),
             )
         });
-        self.lock_collaterals(fence, collaterals, &unspent).await?;
+        self.lock_collaterals(fence, collaterals, &snapshot.coins)
+            .await?;
         let id = wallet_id.to_string();
         let dust_candidates: Vec<(u64, String, u32)> = snapshot
             .coins
@@ -810,6 +810,7 @@ impl NetworkSession {
             }
         }
         let swept = crate::coinjoin::held_inputs(&pending);
+        let unspent: HashSet<OutPoint> = snapshot.coins.iter().map(|c| c.utxo.outpoint).collect();
         self.spends.retain_unspent(&wallet_id, &unspent);
         let reserved = self.spends.snapshot(&wallet_id);
         let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
@@ -946,8 +947,9 @@ impl NetworkSession {
 
     /// "Unlock unspent": deletes a user lock or releases a dust lock (which
     /// dust protection then leaves alone). A masternode collateral is
-    /// locked again by the next build or follower pass, as Core relocks it
-    /// at load: only `release-collateral` frees one. An outpoint that is neither
+    /// locked again by the next coin read or follower pass, where Core keeps
+    /// the unlock until a restart: only `release-collateral` frees one. An
+    /// outpoint that is neither
     /// locked nor an unspent output is `OutpointNotFound`; one a masternode
     /// row holds (a ProTx operation's inputs, a shared session's
     /// reservation, MG-04b BL-346) is refused and nothing is unlocked. Under
