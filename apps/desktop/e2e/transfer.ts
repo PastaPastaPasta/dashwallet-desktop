@@ -58,6 +58,17 @@ async function run(page: Page, route: TransferRoute) {
   await authorize(page);
 }
 
+/** A Home pool card's head: its title is a heading, and the button in it is named from the visible title
+ * first (WCAG 2.5.3), holds no other control and is left focused. */
+async function cardHead(page: Page, card: string, title: string) {
+  const heading = page.getByTestId(card).getByRole("heading", { level: 2 });
+  await expect(heading).toHaveCount(1);
+  const button = heading.getByRole("button", { name: `${title}, transfer`, exact: true });
+  await expect(button).toHaveAttribute("data-testid", `${card}-transfer`);
+  await expect(button.locator("button, a, input")).toHaveCount(0);
+  await button.focus();
+}
+
 /** Every text, field value and label in Transfer's sheet that shows an amount in clear. */
 export async function amountsInClear(page: Page): Promise<string[]> {
   const sheet = page.getByTestId("transfer-sheet");
@@ -499,21 +510,14 @@ export const TRANSFER_STATES: TransferState[] = [
     id: "entry-shielded-card",
     scenario: "funded",
     go: async (page) => {
-      const card = page.getByRole("button", { name: "Transfer from Shielded" });
-      await expect(card).toHaveAttribute("data-testid", "shielded-card-transfer");
-      // No control inside the card's button.
-      await expect(card.locator("button, a, input")).toHaveCount(0);
-      await card.focus();
+      await cardHead(page, "shielded-card", "Shielded");
     },
   },
   {
     id: "entry-platform-card",
     scenario: "funded",
     go: async (page) => {
-      const card = page.getByRole("button", { name: "Transfer from Platform" });
-      await expect(card).toHaveAttribute("data-testid", "platform-card-transfer");
-      await expect(card.locator("button, a, input")).toHaveCount(0);
-      await card.focus();
+      await cardHead(page, "platform-card", "Platform addresses");
     },
   },
   {

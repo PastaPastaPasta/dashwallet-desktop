@@ -1,7 +1,7 @@
 // "Move to Dash wallet" (platform/move.ts): the steps Transfer shows for it (the quote, Confirm & move,
-// progress and outcome), and Home's Platform card, whose line opens Transfer from Platform.
+// progress and outcome), and Home's Platform card, whose title opens Transfer from Platform.
 
-import { useEffect, useId } from "react";
+import { useEffect } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { creditsToDuffs } from "../api/pending";
 import { useBackend, usePendingPlatformFunds, usePlatformActivity, usePlatformMoveQuote } from "../api/queries";
@@ -12,7 +12,8 @@ import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
 import { fundFor, fundRowView, FUND_COPY as F } from "../platform/fund";
-import { transferFor, TRANSFER_COPY } from "../transfer/model";
+import { transferFor } from "../transfer/model";
+import { CardHead } from "./CardHead";
 
 function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string; block: MoveBlock | null }) {
   const quote = usePlatformMoveQuote(walletId, true);
@@ -175,7 +176,7 @@ export function usePlatformHold(walletId: string, flow: PlatformMoveFlow) {
 }
 
 /** Home's Platform card: shown while the Platform addresses are known (`platform` is their balance in
- * duffs; `null`/`undefined`: not known, no card). Its line opens Transfer from Platform. It also
+ * duffs; `null`/`undefined`: not known, no card). Its title opens Transfer from Platform. It also
  * carries a move's hold, the locks an add left unapplied, and the results not seen yet. */
 export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0" }: { walletId: string; network: NetworkInfo; platform: number | null | undefined; dustCredits?: string }) {
   const backend = useBackend();
@@ -184,7 +185,6 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
   const transfer = transferFor(backend, walletId);
   useModel(flow);
   useModel(fund);
-  const textId = useId();
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
   const { activity, waiting, sendHeld, block } = usePlatformHold(walletId, flow);
@@ -207,19 +207,7 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
   return (
     <section className="platform-card card-l1" data-testid="platform-card" aria-label={C.card.title}>
       <div className="platform-card-body">
-        {platform != null ? (
-          <button type="button" className="card-transfer" data-testid="platform-card-transfer" aria-label={TRANSFER_COPY.cardButton.platform} aria-describedby={textId} onClick={() => transfer.startFrom("platform")}>
-            <span className="platform-card-title">{C.card.title}</span>
-            <span className="platform-card-text" id={textId}>
-              {line}
-            </span>
-          </button>
-        ) : (
-          <>
-            <h2 className="platform-card-title">{C.card.title}</h2>
-            <p className="platform-card-text">{line}</p>
-          </>
-        )}
+        <CardHead title={C.card.title} text={line} buttonTestId="platform-card-transfer" onTransfer={platform != null ? () => transfer.startFrom("platform") : null} />
         {sendHeld && !waiting && (
           <p className="platform-card-text" data-testid="platform-card-send-held">
             {C.waiting.sendHeld}

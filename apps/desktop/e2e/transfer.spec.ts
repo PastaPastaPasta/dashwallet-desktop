@@ -190,6 +190,22 @@ test.describe("Transfer quotes", () => {
     await expect.poll(focused).toBe("transfer-to");
   });
 
+  test("the Shielded and Platform cards: a heading each, and a hit area over the whole head, the same width on both", async ({ page }) => {
+    await open(page, "funded");
+    const heads = ["shielded-card", "platform-card"].map((c) => page.getByTestId(c).locator(".card-head"));
+    const [shielded, platform] = await Promise.all(heads.map((h) => h.boundingBox()));
+    expect(shielded!.width).toBeGreaterThan(0);
+    expect(Math.abs(shielded!.width - platform!.width)).toBeLessThanOrEqual(1);
+    for (const [card, route, box] of [["shielded-card", "shieldedToCore", shielded], ["platform-card", "platformToCore", platform]] as const) {
+      await expect(page.getByTestId(card).getByRole("heading", { level: 2 })).toHaveCount(1);
+      // The far corner of the head, over its text, opens Transfer from the card's pool.
+      await page.mouse.click(box!.x + box!.width - 3, box!.y + box!.height - 3);
+      await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", route);
+      await page.getByTestId("transfer-cancel").click();
+      await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
+    }
+  });
+
   test("Max never skips the confirmation", async ({ page }) => {
     await open(page, "funded");
     await openTransfer(page, "shieldedToCore");

@@ -42,7 +42,8 @@ export const TRANSFER_COPY = {
   pick: { from: "Transfer from", to: "Transfer to" },
   swap: "Swap From and To",
   pools: { core: "Dash wallet", shielded: "Shielded", platform: "Platform" } satisfies Record<Pool, string>,
-  cardButton: { shielded: "Transfer from Shielded", platform: "Transfer from Platform" },
+  /** After a pool card's title, it names the button that opens Transfer from that pool. */
+  cardButton: ", transfer",
   unknownBalance: "—",
   amount: "Amount",
   max: "Max",
