@@ -452,6 +452,7 @@ test.describe("network choice", () => {
 
   test("a switch whose choice could not be saved says so on the new network", async ({ page }) => {
     await open(page, "no-wallet");
+    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
     await setKnobs(page, { saveFails: true });
     await page.getByTestId("onboarding-network-mainnet").click();
     await expect.poll(() => activeNetwork(page)).toBe("mainnet");
