@@ -595,7 +595,9 @@ impl ApplyAuthority for Lease {
 /// A lease whose funding call makes the lock it then applies, and the
 /// funding signer that lease issued before the call charged its budget:
 /// the call may leave no Funding budget, and the apply spends none (as a
-/// top-up's, `topup.rs`). The signer still ends with the lease.
+/// top-up's, `topup.rs`). The signer is kept for this apply only, which
+/// still needs the lease's call permit: an ended or revoked lease refuses
+/// it before anything is signed.
 pub(crate) struct FundedLease {
     lease: Lease,
     funding: VaultSigner,

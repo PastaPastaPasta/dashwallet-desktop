@@ -198,7 +198,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
     line.state.kind !== "refused"
       ? null
       : route === "coreToPlatform"
-        ? fundErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, pending)
+        ? fundErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, { request: null, pending })
         : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedSyncing(status));
   const fee = QUOTE_ON_CONTINUE.has(route) && !line.maxing ? { text: T.feeOnNextStep, refused: false } : feeText(route, line.state, fmt);
   // A refusal of this very amount: Continue would only meet it again.

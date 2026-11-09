@@ -392,6 +392,25 @@ test.describe("Home", () => {
     await page.getByTestId("transfer-continue").click();
     await page.getByTestId("platform-fund-go").click();
     await authorize(page);
+    await expect(page.getByTestId("platform-fund-outcome-title")).toHaveText("Locked, not applied");
+    await expect(page.getByTestId("platform-fund-outcome-text")).toHaveText(
+      "Your 0.50 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
+    );
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("platform-fund-outcome-finish").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-fund-outcome-title")).toHaveText("Added to Platform");
+    await page.getByTestId("platform-fund-done").click();
+    await expect(page.getByTestId("platform-fund-unfinished")).toHaveCount(0);
+    const calls = await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_fund" || c === "resume_platform_fund"));
+    expect(calls).toEqual(["platform_fund", "resume_platform_fund"]);
+    expect(errors).toEqual([]);
+  });
+
+  test("a Finish refused before its apply offers Finish on the same lock again", async ({ page }) => {
+    const errors = await open(page, "paddr-fund-resume-ended");
+    await page.getByTestId("platform-fund-finish").click();
+    await authorize(page);
     await expect(page.getByTestId("platform-fund-refusal")).toHaveText(
       "Your 0.50 tDASH is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.",
     );
@@ -403,7 +422,7 @@ test.describe("Home", () => {
     await page.getByTestId("platform-fund-done").click();
     await expect(page.getByTestId("platform-fund-unfinished")).toHaveCount(0);
     const calls = await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_fund" || c === "resume_platform_fund"));
-    expect(calls).toEqual(["platform_fund", "resume_platform_fund"]);
+    expect(calls).toEqual(["resume_platform_fund", "resume_platform_fund"]);
     expect(errors).toEqual([]);
   });
 
