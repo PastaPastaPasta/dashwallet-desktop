@@ -4413,8 +4413,8 @@ fn a_silent_truncation_drops_the_replaced_blocks_spends_from_the_history() {
 }
 
 /// A check for a fork waits for one being applied: a replay guard read
-/// while a heard fork has lowered the heights but not yet the history
-/// sees the history without the replaced spend.
+/// while a fork, heard or found, has lowered the heights but not yet the
+/// history sees the history without the replaced spend.
 #[test]
 fn a_guard_during_a_forks_application_sees_its_history() {
     use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
@@ -4427,10 +4427,12 @@ fn a_guard_during_a_forks_application_sees_its_history() {
         TransactionContext::InBlock(BlockInfo::new(950, dashcore::BlockHash::all_zeros(), 9)),
     );
     f.advance(1_000);
-    f.truncate_silently(900);
+    // Set before the fork: the first to apply it pauses, the event below or
+    // a reconcile the advance scheduled.
     let (reached, release) = (Arc::new(Barrier::new(2)), Arc::new(Barrier::new(2)));
     *f.session.hub.pause_truncation.lock().unwrap() =
         Some((Arc::clone(&reached), Arc::clone(&release)));
+    f.truncate_silently(900);
     let (hub, wallet, txid) = (Arc::clone(&f.session.hub), f.wallet, dropped.txid());
     let heard = std::thread::spawn(move || {
         hub.apply_wallet_event(&platform_wallet::events::WalletEvent::ChainTruncated {
