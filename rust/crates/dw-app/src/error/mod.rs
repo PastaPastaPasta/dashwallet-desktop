@@ -153,6 +153,14 @@ codes! {
         ScreenCaptureUnavailable = "app.screen_capture_unavailable",
         /// The screen capture failed.
         ScreenCapture = "app.screen_capture",
+        /// `switch_network` refused: closing the network would cut what
+        /// runs on it ([`ErrorData::NetworkBusy`] names it). Nothing changed.
+        NetworkBusy = "app.network_busy",
+        /// `switch_network` could not open the chosen network
+        /// ([`ErrorData::NetworkSwitch`]): the window is back on the
+        /// network it left, or, when that reopen failed too, on none (the
+        /// splash's Retry opens it). The choice was not saved.
+        NetworkSwitchFailed = "app.network_switch_failed",
     }
 }
 
@@ -167,6 +175,21 @@ codes! {
 pub enum ErrorData {
     /// `vault.throttled`: when to allow the next try.
     RetryAfter { secs: u64 },
+    /// `app.network_busy`: what runs on the network the window would leave.
+    NetworkBusy {
+        /// The Platform flows holding a lease.
+        flows: Vec<crate::dto::platform::FlowKindName>,
+        /// A wallet mixes.
+        mixing: bool,
+        /// A broadcast has not returned.
+        broadcast: bool,
+    },
+    /// `app.network_switch_failed`: the network that did not open, and
+    /// whether the window is back on the one it left.
+    NetworkSwitch {
+        network: crate::dto::NetworkInfo,
+        rolled_back: bool,
+    },
     /// `vault.wrong_passphrase`: failed attempts so far, and the wait before
     /// the next try once the vault throttles.
     WrongPassphrase {

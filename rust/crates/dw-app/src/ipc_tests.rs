@@ -1706,3 +1706,196 @@ fn a_refused_close_keeps_the_active_session() {
     assert!(closed.is_err());
     assert!(slot.is_none());
 }
+
+/// A launch on mainnet with no network flag (so not pinned) and no SPV. The
+/// windows' sessions open with unreachable local endpoints (a test seam): a
+/// test reaches no public DAPI or quorum service.
+fn launched_on_mainnet() -> Demo {
+    let demo = Demo::launched(|launch, _| {
+        launch.network = DashNetwork::Mainnet;
+        launch.network_given = false;
+        launch.sync = Some(false);
+    });
+    *demo.state().test_endpoints.lock().unwrap() = Some(crate::api::network::SessionSettings {
+        dapi_addresses: vec!["https://127.0.0.1:1".into()],
+        quorum_url: Some("https://127.0.0.1:1".into()),
+        spv_peers: vec!["127.0.0.1:1".into()],
+        no_platform: true,
+        ..Default::default()
+    });
+    demo
+}
+
+impl Demo {
+    fn state(&self) -> tauri::State<'_, crate::state::AppState> {
+        use tauri::Manager;
+        self.app.state::<crate::state::AppState>()
+    }
+
+    fn data_root(&self) -> std::path::PathBuf {
+        self.state().data_root.clone()
+    }
+
+    fn active(&self) -> Value {
+        self.ok("active_network", json!({}))["dirName"].clone()
+    }
+}
+
+/// Row 74: choosing the other network switches the running window, with no
+/// restart; the renderer's next boot (`launch_info`) and `open_network(null)`
+/// follow it, and the choice is saved for the next start.
+#[test]
+fn a_network_choice_switches_the_running_window() {
+    let demo = launched_on_mainnet();
+    assert_eq!(
+        demo.ok("open_network", json!({}))["network"]["dirName"],
+        "mainnet"
+    );
+    let switched = demo.ok("switch_network", json!({ "network": "testnet" }));
+    assert_eq!(
+        switched["opened"]["network"]["dirName"], "testnet",
+        "{switched}"
+    );
+    assert_eq!(switched["choice"]["chosen"], "testnet");
+    assert_eq!(switched["choice"]["saved"], true);
+    assert_eq!(switched["choice"]["active"]["dirName"], "testnet");
+    assert_eq!(switched["choice"]["forcedByFlag"], false);
+    assert_eq!(demo.active(), "testnet");
+    assert_eq!(
+        demo.ok("launch_info", json!({}))["network"]["dirName"],
+        "testnet"
+    );
+    assert_eq!(
+        demo.ok("open_network", json!({}))["network"]["dirName"],
+        "testnet"
+    );
+    assert_eq!(
+        demo.ok("get_network_choice", json!({}))["chosen"],
+        "testnet"
+    );
+    // Already the window's: kept as it is.
+    let again = demo.ok("switch_network", json!({ "network": "testnet" }));
+    assert_eq!(again["opened"]["network"]["dirName"], "testnet");
+    // And back, in the same process.
+    demo.ok("switch_network", json!({ "network": "mainnet" }));
+    assert_eq!(demo.active(), "mainnet");
+    assert_eq!(
+        demo.ok("get_network_choice", json!({}))["chosen"],
+        "mainnet"
+    );
+}
+
+/// Row 74: the launch's trust flags (`--spv-peer`, `--dapi`, `--quorum-url`,
+/// `--ca-cert`, …) belong to the network they were given for, so without
+/// `--network` they pin the launch network: a choice is only saved.
+#[test]
+fn trust_flags_pin_the_launch_network() {
+    let demo = Demo::launched(|launch, _| {
+        launch.network = DashNetwork::Testnet;
+        launch.network_given = false;
+        launch.sync = Some(false);
+        launch.no_platform = true;
+        launch.spv_peers = vec!["127.0.0.1:1".into()];
+        launch.dapi_addresses = vec!["https://127.0.0.1:1".into()];
+        launch.quorum_url = Some("https://127.0.0.1:1".into());
+    });
+    assert_eq!(
+        demo.ok("get_network_choice", json!({}))["forcedByFlag"],
+        true
+    );
+    demo.ok("open_network", json!({}));
+    let saved = demo.ok("switch_network", json!({ "network": "mainnet" }));
+    assert_eq!(saved["opened"], Value::Null, "{saved}");
+    assert_eq!(saved["choice"]["chosen"], "mainnet");
+    assert_eq!(saved["choice"]["active"]["dirName"], "testnet");
+    assert_eq!(demo.active(), "testnet");
+}
+
+/// Row 74: a network that does not open leaves the window on the one it
+/// left, and the choice unsaved.
+#[test]
+fn a_failed_switch_rolls_back_and_saves_nothing() {
+    let demo = launched_on_mainnet();
+    demo.ok("open_network", json!({}));
+    // A file where the network's directory goes: its open fails.
+    std::fs::write(demo.data_root().join("testnet"), b"").unwrap();
+    let e = demo.err(
+        "switch_network",
+        json!({ "network": "testnet" }),
+        "app.network_switch_failed",
+    );
+    assert_eq!(e["data"]["kind"], "networkSwitch", "{e}");
+    assert_eq!(e["data"]["network"]["dirName"], "testnet");
+    assert_eq!(e["data"]["rolledBack"], true);
+    assert_eq!(demo.active(), "mainnet");
+    assert_eq!(
+        demo.ok("launch_info", json!({}))["network"]["dirName"],
+        "mainnet"
+    );
+    let choice = demo.ok("get_network_choice", json!({}));
+    assert_eq!(choice["chosen"], "mainnet", "{choice}");
+    assert_eq!(choice["saved"], false);
+}
+
+/// Row 74: when the network left does not reopen either, the window has
+/// none; it stays the window's, so the splash's Retry (`open_network(null)`)
+/// opens it once it can.
+#[test]
+fn a_failed_rollback_leaves_the_old_network_to_retry() {
+    let demo = launched_on_mainnet();
+    demo.ok("open_network", json!({}));
+    let root = demo.data_root();
+    std::fs::write(root.join("testnet"), b"").unwrap();
+    let away = root.join("mainnet.away");
+    {
+        let (root, away) = (root.clone(), away.clone());
+        *demo.state().before_rollback.lock().unwrap() = Some(Box::new(move || {
+            std::fs::rename(root.join("mainnet"), &away).unwrap();
+            std::fs::write(root.join("mainnet"), b"").unwrap();
+        }));
+    }
+    let e = demo.err(
+        "switch_network",
+        json!({ "network": "testnet" }),
+        "app.network_switch_failed",
+    );
+    assert_eq!(e["data"]["rolledBack"], false, "{e}");
+    assert_eq!(demo.ok("active_network", json!({})), Value::Null);
+    assert_eq!(
+        demo.ok("launch_info", json!({}))["network"]["dirName"],
+        "mainnet"
+    );
+    assert_eq!(demo.ok("get_network_choice", json!({}))["saved"], false);
+    // Retry, once the old network can open again.
+    *demo.state().before_rollback.lock().unwrap() = None;
+    std::fs::remove_file(root.join("mainnet")).unwrap();
+    std::fs::rename(&away, root.join("mainnet")).unwrap();
+    assert_eq!(
+        demo.ok("open_network", json!({}))["network"]["dirName"],
+        "mainnet"
+    );
+}
+
+/// Row 74: closing the network would cut what runs on it, so the switch
+/// refuses and changes nothing (here a broadcast that has not returned).
+#[test]
+fn a_switch_refuses_while_a_broadcast_has_not_returned() {
+    let demo = launched_on_mainnet();
+    demo.ok("open_network", json!({}));
+    let state = demo.state();
+    let in_flight = state.broadcasting();
+    let e = demo.err(
+        "switch_network",
+        json!({ "network": "testnet" }),
+        "app.network_busy",
+    );
+    assert_eq!(e["data"]["kind"], "networkBusy", "{e}");
+    assert_eq!(e["data"]["broadcast"], true);
+    assert_eq!(e["data"]["mixing"], false);
+    assert_eq!(e["data"]["flows"], json!([]));
+    assert_eq!(demo.active(), "mainnet");
+    assert_eq!(demo.ok("get_network_choice", json!({}))["saved"], false);
+    drop(in_flight);
+    demo.ok("switch_network", json!({ "network": "testnet" }));
+    assert_eq!(demo.active(), "testnet");
+}

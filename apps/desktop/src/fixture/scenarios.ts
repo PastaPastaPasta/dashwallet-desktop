@@ -11,6 +11,7 @@ import type { InvitationStatus } from "../api/generated/InvitationStatus";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
 import type { QuorumSource } from "../api/generated/QuorumSource";
 import type { DispatchStateName } from "../api/generated/DispatchStateName";
+import type { FlowKindName } from "../api/generated/FlowKindName";
 import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
@@ -60,6 +61,15 @@ export const AVATAR_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEklEQ
 
 /** What the fixture's engine knows. Handlers mutate it, like the engine's own state. */
 export interface World {
+  /** Row 74: what the next `switch_network` to the other network does instead of switching: refuse
+   * (`busy`, or close's own refusal `closeRefused`), or fail after the close (`fail`; when it did
+   * not roll back, the next `open_network` fails once too, `reopenFails`). */
+  networkSwitch?: {
+    busy?: { flows: FlowKindName[]; mixing: boolean; broadcast: boolean };
+    closeRefused?: "wallet" | "shielded_spend_unresolved";
+    fail?: { rolledBack: boolean };
+    reopenFails?: boolean;
+  };
   launch: LaunchInfo;
   passphrase: string;
   lock: LockStatus;
@@ -577,13 +587,21 @@ const SCENARIOS = {
     w.settings.ui = { ...w.settings.ui, preReleaseNoticeDismissed: false };
     return w;
   },
-  /** No wallet yet, and Mainnet chosen while this window is on testnet: Welcome asks for a restart. */
-  "no-wallet-network-restart": (t) => {
+  /** A window started with `--network regtest` and a wallet: the choice only saves for the next start (row 74). */
+  "network-pinned": (t) => {
+    const w = base(t);
+    w.launch = { ...w.launch, network: { kind: "regtest", dirName: "regtest", unitName: "DASH" } };
+    w.pending.networkChoice = { chosen: "mainnet", saved: true };
+    return w;
+  },
+  /** The first run on a new install, past the notice: no choice saved, so the window is on mainnet (row 74). */
+  "no-wallet-mainnet": (t) => {
     const w = base(t);
     w.wallets = [];
     w.phrases = {};
     w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
-    w.pending.networkChoice = { chosen: "mainnet", saved: true };
+    w.launch = { ...w.launch, network: { kind: "mainnet", dirName: "mainnet", unitName: "DASH" } };
+    w.pending.networkChoice = { chosen: "mainnet", saved: false };
     return w;
   },
   /** The funded wallet when dw-app has no shielded or Platform command: Home shows "—" for both. */

@@ -144,10 +144,43 @@ impl LaunchOptions {
     /// launches name their peers and pass `--sync` (the self-test and E2E
     /// jobs open regtest without it).
     pub fn starts_spv(&self) -> bool {
+        self.starts_spv_on(&self.network)
+    }
+
+    /// [`Self::starts_spv`] for opening `network`, which a switch may have
+    /// made the window's network instead of the launch's.
+    pub fn starts_spv_on(&self, network: &DashNetwork) -> bool {
         self.sync.unwrap_or(matches!(
-            self.network,
+            network,
             DashNetwork::Mainnet | DashNetwork::Testnet
         ))
+    }
+
+    /// The window stays on the launch network: `--network` named it, or a
+    /// flag that belongs to one network was given (its SPV peers, DAPI
+    /// endpoints, quorum service, CA, protocol version, `--no-platform`,
+    /// `--collateral-rpc`), which a switch would otherwise carry over to
+    /// the other network. The choice is then saved for a later start only.
+    pub fn pinned(&self) -> bool {
+        let LaunchOptions {
+            network_given,
+            spv_peers,
+            dapi_addresses,
+            quorum_url,
+            ca_cert_path,
+            initial_protocol_version,
+            no_platform,
+            collateral_rpc,
+            ..
+        } = self;
+        *network_given
+            || !spv_peers.is_empty()
+            || !dapi_addresses.is_empty()
+            || quorum_url.is_some()
+            || ca_cert_path.is_some()
+            || initial_protocol_version.is_some()
+            || *no_platform
+            || collateral_rpc.is_some()
     }
 
     /// Opens the saved network choice of `root` unless `--network` was
@@ -340,6 +373,31 @@ mod tests {
         assert!(!run(&["--network", "devnet-paloma"]).starts_spv());
         // The last of the two wins.
         assert!(run(&["--no-sync", "--sync"]).starts_spv());
+    }
+
+    #[test]
+    fn network_flags_pin_the_window() {
+        assert!(!run(&[]).pinned());
+        assert!(!run(&["--no-sync", "--theme", "dark"]).pinned());
+        assert!(run(&["--network", "testnet"]).pinned());
+        for flags in [
+            &["--spv-peer", "127.0.0.1:9999"][..],
+            &["--dapi", "https://127.0.0.1:1"],
+            &["--quorum-url", "https://127.0.0.1:1"],
+            &["--ca-cert", "/tmp/gw.pem"],
+            &["--protocol-version", "9"],
+            &["--no-platform"],
+        ] {
+            assert!(run(flags).pinned(), "{flags:?}");
+        }
+    }
+
+    #[test]
+    fn spv_starts_by_the_network_opened() {
+        let o = run(&[]);
+        assert!(o.starts_spv_on(&DashNetwork::Testnet));
+        assert!(!o.starts_spv_on(&DashNetwork::Regtest));
+        assert!(!run(&["--no-sync"]).starts_spv_on(&DashNetwork::Testnet));
     }
 
     #[test]

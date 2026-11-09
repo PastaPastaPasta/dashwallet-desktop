@@ -10,11 +10,12 @@ use crate::settings::{self, UiSettings};
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
 
 commands! {
-    /// How the app was launched: the self-test, the forced theme and the
-    /// network `openNetwork` opens by default.
+    /// How the app was launched: the self-test, the forced theme, and the
+    /// network `openNetwork` opens by default: the window's, which
+    /// `switchNetwork` changes.
     #[facade()]
     fn launch_info(state) -> LaunchInfo {
-        Ok(LaunchInfo::new(&state.launch))
+        Ok(LaunchInfo::new(&state.launch, &state.window_network()))
     }
 
     /// The last 64 engine notices, oldest first, kept apart from the event

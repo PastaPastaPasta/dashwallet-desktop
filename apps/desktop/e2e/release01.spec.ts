@@ -291,42 +291,22 @@ test.describe("first-run notice", () => {
 });
 
 test.describe("network choice", () => {
-  test("Welcome waits for the restart when the choice is not this window's network", async ({ page }) => {
-    await open(page, "no-wallet-network-restart");
-    await expect(page.getByTestId("onboarding-network-restart")).toContainText("Restart Dash Wallet to use Mainnet.");
-    await expect(page.getByTestId("onboarding-network-mainnet")).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByTestId("onboarding-create")).toBeDisabled();
-    await expect(page.getByTestId("onboarding-restore")).toBeDisabled();
-    await shot(page, "light-onboarding-network-restart");
-    await page.getByTestId("onboarding-network-testnet").click();
-    await expect(page.getByTestId("onboarding-network-restart")).toHaveCount(0);
-    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
-    expect(await world(page, (w) => w.pending.networkChoice?.chosen)).toBe("testnet");
-  });
-
-  test("Welcome waits while a choice is being saved, then for the saved view", async ({ page }) => {
-    await open(page, "no-wallet");
-    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
-    // The save's reply is late: the picker still shows the old choice, so neither action may go on.
-    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("set_network_choice"));
-    await page.getByTestId("onboarding-network-mainnet").click();
-    await expect(page.getByTestId("onboarding-create")).toBeDisabled();
-    await expect(page.getByTestId("onboarding-restore")).toBeDisabled();
-    await expect(page.getByTestId("onboarding-network-restart")).toHaveCount(0);
-    await release.evaluate((r) => (r as () => void)());
-    // The saved view says this window is on the wrong network: still not.
-    await expect(page.getByTestId("onboarding-network-restart")).toContainText("Restart Dash Wallet to use Mainnet.");
-    await expect(page.getByTestId("onboarding-create")).toBeDisabled();
-    await expect(page.getByTestId("onboarding-restore")).toBeDisabled();
-    // Back to this window's network (a held save again): it goes on once the saved view allows it.
-    const release2 = await page.evaluateHandle(() => window.__dwFixture!.hold("set_network_choice"));
-    await page.getByTestId("onboarding-network-testnet").click();
-    await expect(page.getByTestId("onboarding-create")).toBeDisabled();
-    await release2.evaluate((r) => (r as () => void)());
-    await expect(page.getByTestId("onboarding-network-restart")).toHaveCount(0);
-    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
-    await expect(page.getByTestId("onboarding-restore")).toBeEnabled();
-  });
+  // Row 74: a choice moves the running window to that network (`switch_network`), then the page
+  // boots again on it. A window started with `--network` (or a flag of one network) only saves it.
+  // `null` while the page boots again (no IPC yet, or the reload tore the context down).
+  const activeNetwork = (page: Page) =>
+    page
+      .evaluate(async () => {
+        const ipc = (window as unknown as { __TAURI_INTERNALS__?: { invoke(c: string, a: unknown): Promise<{ dirName: string } | null> } }).__TAURI_INTERNALS__;
+        return ipc ? ((await ipc.invoke("active_network", {}))?.dirName ?? null) : null;
+      })
+      .catch(() => null);
+  const toSettings = async (page: Page) => {
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+  };
+  type Knobs = NonNullable<NonNullable<Window["__dwFixture"]>["world"]["networkSwitch"]>;
+  const setKnobs = (page: Page, knobs: Knobs) => page.evaluate((k) => void (window.__dwFixture!.world.networkSwitch = k), knobs);
 
   test("Welcome offers the choice, mainnet or testnet", async ({ page }) => {
     await open(page, "no-wallet");
@@ -335,19 +315,180 @@ test.describe("network choice", () => {
     await shot(page, "light-onboarding-welcome");
   });
 
-  test("Settings saves the choice and says a restart applies it", async ({ page }) => {
+  test("Welcome on a first run: choosing Testnet switches the window at once, and Create goes on", async ({ page }, info) => {
+    await open(page, "no-wallet-mainnet");
+    await expect(page.getByTestId("onboarding-network-mainnet")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
+    // The switch is held: the blocking card is up and neither action may go on.
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("switch_network"));
+    const started = Date.now();
+    await page.getByTestId("onboarding-network-testnet").click();
+    // No wallet on this network: no confirmation.
+    await expect(page.getByTestId("network-switch-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("network-switching")).toContainText("Opening Testnet…");
+    await expect(page.getByTestId("onboarding-create")).toBeDisabled();
+    await expect(page.getByTestId("onboarding-restore")).toBeDisabled();
+    await shot(page, "light-onboarding-network-switching");
+    await release.evaluate((r) => (r as () => void)());
+    await expect.poll(() => activeNetwork(page)).toBe("testnet");
+    await expect(page.getByTestId("onboarding-network-testnet")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
+    info.annotations.push({ type: "switch-ms (fixture, choice to Create enabled, held reply included)", description: String(Date.now() - started) });
+    await expect(page.getByTestId("onboarding-restore")).toBeEnabled();
+    await expect(page.getByTestId("network-switching")).toHaveCount(0);
+    await page.getByTestId("onboarding-create").click();
+    await expect(page.getByTestId("onboarding-passphrase-new")).toBeVisible();
+  });
+
+  test("measures a switch from the choice to Create enabled", async ({ page }, info) => {
+    await open(page, "no-wallet-mainnet");
+    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
+    const started = Date.now();
+    await page.getByTestId("onboarding-network-testnet").click();
+    await expect.poll(() => activeNetwork(page), { intervals: [20] }).toBe("testnet");
+    await expect(page.getByTestId("onboarding-network-testnet")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
+    const ms = Date.now() - started;
+    info.annotations.push({ type: "switch-ms (fixture, choice to Create enabled)", description: String(ms) });
+    console.log(`row74 switch-ms ${info.project.name} ${ms}`);
+  });
+
+  test("Settings asks first on a network with a wallet, then switches the window, and back", async ({ page }) => {
+    const errors = await open(page, "funded");
+    await toSettings(page);
+    await expect(page.getByTestId("settings-network-choice-testnet")).toHaveAttribute("aria-pressed", "true");
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    const sheet = page.getByTestId("network-switch-sheet");
+    await expect(sheet).toContainText("Switch to Mainnet?");
+    await expect(sheet).toContainText("Dash Wallet locks this wallet and opens Mainnet. Payments you haven't sent are dropped. Your Testnet wallet stays on this computer.");
+    await expect(page.getByTestId("network-switch-pending")).toHaveCount(0);
+    await shot(page, "light-settings-network-confirm");
+    // Cancel changes nothing.
+    await sheet.getByRole("button", { name: "Cancel" }).click();
+    await expect(sheet).toHaveCount(0);
+    expect(await activeNetwork(page)).toBe("testnet");
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await page.getByTestId("network-switch-confirm").click();
+    await expect.poll(() => activeNetwork(page)).toBe("mainnet");
+    // This data directory has no mainnet wallet: Welcome, on Mainnet, and Create goes on.
+    await expect(page.getByTestId("onboarding-network-mainnet")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
+    expect(await world(page, (w) => w.pending.networkChoice)).toEqual({ chosen: "mainnet", saved: true });
+    // Back to Testnet (no wallet here, so no confirmation): its wallet is there, locked.
+    await page.getByTestId("onboarding-network-testnet").click();
+    await expect.poll(() => activeNetwork(page)).toBe("testnet");
+    await expect(page.getByTestId("lock-screen")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test("the confirmation says unfinished transfers and locks stay on the network", async ({ page }) => {
+    await open(page, "recovery-one");
+    await toSettings(page);
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await expect(page.getByTestId("network-switch-pending")).toHaveText(
+      "Unfinished transfers and locks stay on Testnet. You can finish them after switching back.",
+    );
+    await shot(page, "light-settings-network-confirm-pending");
+  });
+
+  test("a busy network refuses the switch and says what to wait for", async ({ page }) => {
+    await open(page, "funded");
+    await toSettings(page);
+    await setKnobs(page, { busy: { flows: ["registration", "topUp"], mixing: true, broadcast: true } });
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await page.getByTestId("network-switch-confirm").click();
+    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText(
+      "Wait for the payment, username registration and credit top-up to finish, or stop mixing, before switching networks.",
+    );
+    await expect(page.getByTestId("network-switching")).toHaveCount(0);
+    await expect(page.getByTestId("settings-network-choice-testnet")).toHaveAttribute("aria-pressed", "true");
+    expect(await activeNetwork(page)).toBe("testnet");
+    await shot(page, "light-settings-network-busy");
+    await setKnobs(page, { busy: { flows: [], mixing: true, broadcast: false } });
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await page.getByTestId("network-switch-confirm").click();
+    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("Stop mixing before switching networks.");
+  });
+
+  test("close's own refusals have their own words", async ({ page }) => {
+    await open(page, "funded");
+    await toSettings(page);
+    await setKnobs(page, { closeRefused: "wallet" });
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await page.getByTestId("network-switch-confirm").click();
+    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("A wallet is still opening. Switch networks once it is open.");
+    await setKnobs(page, { closeRefused: "shielded_spend_unresolved" });
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await page.getByTestId("network-switch-confirm").click();
+    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("A shielded payment is still being confirmed. Switch networks once it is.");
+    expect(await activeNetwork(page)).toBe("testnet");
+  });
+
+  test("a switch that fails and rolls back boots again on the old network, with a note", async ({ page }) => {
+    await open(page, "funded");
+    await toSettings(page);
+    await setKnobs(page, { fail: { rolledBack: true } });
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await page.getByTestId("network-switch-confirm").click();
+    await expect(page.locator(".toast")).toContainText("Mainnet did not open. Dash Wallet is back on Testnet.");
+    expect(await activeNetwork(page)).toBe("testnet");
+    await expect(page.getByTestId("lock-screen")).toBeVisible();
+    expect(await world(page, (w) => w.pending.networkChoice?.chosen)).toBe("testnet");
+  });
+
+  test("a switch whose way back fails too leaves the splash's Retry", async ({ page }) => {
+    await open(page, "funded");
+    await toSettings(page);
+    await setKnobs(page, { fail: { rolledBack: false } });
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await page.getByTestId("network-switch-confirm").click();
+    await expect(page.locator(".toast")).toContainText("Mainnet did not open, and neither did Testnet again.");
+    await expect(page.getByTestId("splash").getByRole("alert")).toContainText("Dash Wallet could not open the wallet");
+    await shot(page, "light-network-switch-none-open");
+    await page.getByTestId("splash").getByRole("button", { name: "Try again" }).click();
+    await expect(page.getByTestId("lock-screen")).toBeVisible();
+    expect(await activeNetwork(page)).toBe("testnet");
+  });
+
+  test("a window started with --network only saves the choice", async ({ page }) => {
+    await open(page, "network-pinned");
+    await toSettings(page);
+    await expect(page.getByTestId("settings-network-choice-pinned")).toContainText("--network regtest");
+    await expect(page.getByTestId("settings-network-choice-mainnet")).toHaveAttribute("aria-pressed", "true");
+    await page.getByTestId("settings-network-choice-testnet").click();
+    // Saved for the next start, no confirmation and no switch.
+    await expect(page.getByTestId("settings-network-choice-testnet")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("network-switch-sheet")).toHaveCount(0);
+    expect(await world(page, (w) => w.pending.networkChoice)).toEqual({ chosen: "testnet", saved: true });
+    expect(await activeNetwork(page)).toBe("regtest");
+    await expect(page.getByTestId("settings-network-name")).toBeVisible();
+  });
+
+  test("a late event of the network the window left paints nothing", async ({ page }) => {
+    await open(page, "no-wallet");
+    await page.getByTestId("onboarding-network-mainnet").click();
+    await expect.poll(() => activeNetwork(page)).toBe("mainnet");
+    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
+    const before = await page.evaluate(() => ({ calls: window.__dwFixture!.calls.length, text: document.body.innerText }));
+    // What the testnet session's last command and close would send, arriving after the reboot.
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      f.emit({ kind: "sessionClosed", network: "testnet" });
+      f.emit({ kind: "vaultLockState", network: "testnet", state: "locked" });
+      f.emit({ kind: "walletCreated", network: "testnet", walletId: "late" });
+      f.emit({ kind: "notice", network: "testnet", code: "spvError", detail: "late" });
+    });
+    await page.waitForTimeout(700);
+    const after = await page.evaluate(() => ({ calls: window.__dwFixture!.calls.length, text: document.body.innerText }));
+    expect(after).toEqual(before);
+  });
+
+  test("Add a wallet does not offer the network choice", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("toolbar").waitFor();
-    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
-    const picker = page.getByTestId("settings-network-choice");
-    await expect(picker).toBeVisible();
-    await expect(page.getByTestId("settings-network-choice-restart")).toHaveCount(0);
-    await page.getByTestId("settings-network-choice-mainnet").click();
-    await expect(page.getByTestId("settings-network-choice-restart")).toContainText("Restart Dash Wallet to use Mainnet.");
-    expect(await world(page, (w) => w.pending.networkChoice?.chosen)).toBe("mainnet");
-    await shot(page, "light-settings-network");
-    await page.getByTestId("settings-network-choice-testnet").click();
-    await expect(page.getByTestId("settings-network-choice-restart")).toHaveCount(0);
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "addWallet" }));
+    await expect(page.getByTestId("onboarding-create")).toBeVisible();
+    await expect(page.getByTestId("onboarding-network")).toHaveCount(0);
   });
 });
 

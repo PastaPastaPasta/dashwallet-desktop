@@ -4188,11 +4188,13 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
 
 | Command | Semantics | Errors |
 |---|---|---|
-| `getNetworkChoice()` | `NetworkChoiceView{chosen, saved, launched, forcedByFlag, restartNeeded}`: the saved choice (`mainnet` when none, `saved: false`, which onboarding reads as "not asked yet"), the network this run opens by default (`launchInfo.network`), whether `--network` named it (the saved choice then applies only to a launch without the flag), and whether the choice differs from what this run opened (the app restarts to switch). | `io` |
-| `setNetworkChoice(network)` | Saves `mainnet` or `testnet` and returns the view; the running session is left as it is. | `io`, `invalid_argument` |
+| `getNetworkChoice()` | `NetworkChoiceView{chosen, saved, active, forcedByFlag}`: the saved choice (`mainnet` when none, `saved: false`, which onboarding reads as "not asked yet"), the network the window is on (`active`; `launchInfo.network` follows it), and whether `--network` or a flag of one network pinned the window (`forcedByFlag`; the saved choice then applies only to a launch without the flag). | `io` |
+| `switchNetwork(network)` | `NetworkSwitch{opened, choice}`. A pinned window saves `mainnet` or `testnet` and stays (`opened: null`). Otherwise it moves the window: it refuses while a Platform flow (a lease not revoked or ended), mixing or an unreturned broadcast runs; closes the window's network (the vault locks, grants go) and opens the other, SPV as at launch; on a failed open it reopens the network it left (`rolledBack`) and saves nothing; on success it sets the window network and title, then saves the choice. The renderer then boots the page again. | `app.network_busy` (`networkBusy{flows, mixing, broadcast}`), close's `wallet` and `shielded_spend_unresolved`, `app.network_switch_failed` (`networkSwitch{network, rolledBack}`), `invalid_argument` |
 
 - **Which network opens.** `--network` when given; else the saved choice; else mainnet. Read once, when the data root
-  is known (`AppState::new`); the window title follows it.
+  is known (`AppState::new`); a `switchNetwork` moves it afterwards, and the window title follows it. `--network`, or
+  any flag of one network (peers, DAPI, quorum URL, CA certificate, protocol version, `--no-platform`, collateral RPC),
+  pins the window: a switch only saves the choice.
 - **SPV by default.** Opening the launch network starts SPV on mainnet and testnet unless the app was launched with
   `--no-sync`; on regtest and devnets only with `--sync` (they name their peers; the self-test and the E2E jobs open
   regtest without `--sync` and see no change). `--sync` is still accepted everywhere; the last of `--sync` and

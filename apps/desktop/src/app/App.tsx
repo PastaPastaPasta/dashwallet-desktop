@@ -9,6 +9,7 @@ import { EmptyState, LoadingState } from "../components/history";
 import { SheetLayer, useLayeredSheet } from "../components/sheet";
 import { chipState, Sidebar, StatusBar, Toolbar } from "../components/shell";
 import { showToast, ToastHost } from "../components/toast";
+import { takeSwitchNote } from "../network/switch";
 import { ForgotPassphraseSheet } from "../screens/ForgotPassphrase";
 import { LockScreen, UnlockSheet } from "../screens/LockScreen";
 import { Onboarding } from "../screens/Onboarding";
@@ -313,6 +314,11 @@ export function App() {
   // Opening the network loads the wallet database; the splash is up meanwhile.
   const network = useOpenNetwork();
   useEffect(() => mark("shell"), []);
+  // A network switch that failed booted this page again; it says what happened (row 74).
+  useEffect(() => {
+    const note = takeSwitchNote();
+    if (note !== null) showToast(note, 8);
+  }, []);
   return (
     <div className="app" data-testid="app-shell">
       {network.isSuccess ? (

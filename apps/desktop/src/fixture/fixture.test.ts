@@ -142,8 +142,9 @@ describe("fixture backend", () => {
       const { b } = backend({ scenario });
       const launch = await b.launchInfo();
       expect(launch.engineVersion, scenario).toBe("fixture");
-      // Prices are Mainnet's (MP-01): the fiat scenarios open it.
-      expect((await b.openNetwork()).network.dirName, scenario).toBe(scenario.startsWith("fiat") ? "mainnet" : "testnet");
+      // Prices are Mainnet's (MP-01): the fiat scenarios open it, as does a first run with no choice saved.
+      const network = scenario.startsWith("fiat") || scenario === "no-wallet-mainnet" ? "mainnet" : scenario === "network-pinned" ? "regtest" : "testnet";
+      expect((await b.openNetwork()).network.dirName, scenario).toBe(network);
       const wallets = await b.listWallets();
       const count = scenario.startsWith("no-wallet") || scenario === "fiat-first-run" ? 0 : scenario.endsWith("two-wallets") ? 2 : 1;
       expect(wallets.length, scenario).toBe(count);

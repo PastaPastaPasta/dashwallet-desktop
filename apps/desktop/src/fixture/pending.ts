@@ -12,6 +12,8 @@ import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
 import type { MoveToCoreQuote } from "../api/generated/MoveToCoreQuote";
 import type { ChosenNetwork } from "../api/generated/ChosenNetwork";
 import type { NetworkChoiceView } from "../api/generated/NetworkChoiceView";
+import type { NetworkInfo } from "../api/generated/NetworkInfo";
+import type { NetworkSwitch } from "../api/generated/NetworkSwitch";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { PlatformAddressBalance } from "../api/generated/PlatformAddressBalance";
 import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
@@ -24,6 +26,8 @@ import { classifyAddress } from "./send";
 import { authorizeSet, checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
 import { newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
+import { restarted } from "./registration";
+import { buildWorld, type World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
 
 /** What a move costs the fixture's wallet, in credits. */
@@ -170,8 +174,50 @@ const forced = (kind: string) => kind !== "mainnet" && kind !== "testnet";
 
 function networkView(world: Ctx["world"]): NetworkChoiceView {
   const saved = world.pending.networkChoice!;
-  const launched = world.launch.network;
-  return { chosen: saved.chosen, saved: saved.saved, launched, forcedByFlag: forced(launched.kind), restartNeeded: !forced(launched.kind) && saved.chosen !== launched.kind };
+  const active = world.launch.network;
+  return { chosen: saved.chosen, saved: saved.saved, active, forcedByFlag: forced(active.kind) };
+}
+
+const networkInfo = (choice: ChosenNetwork): NetworkInfo => ({ kind: choice, dirName: choice, unitName: choice === "mainnet" ? "DASH" : "tDASH" });
+
+/** The other networks' worlds of this data root (row 74): a switch keeps the world it leaves, as
+ * the engine keeps that network's directory, and opens the other one's, or a new one with no
+ * wallet. The page boots again after a switch, so the worlds are kept in the tab's session
+ * storage until the next page takes them (`switchedWorld`). */
+const SWITCH_KEY = "dw-fixture-switch";
+let otherNetworks: Record<string, World> = {};
+
+/** The world a switch left for this page load, if this load follows one; consumed. */
+export function switchedWorld(): World | null {
+  if (typeof sessionStorage === "undefined") return null;
+  const saved = sessionStorage.getItem(SWITCH_KEY);
+  if (saved === null) return null;
+  sessionStorage.removeItem(SWITCH_KEY);
+  const { active, others } = JSON.parse(saved) as { active: World; others: Record<string, World> };
+  otherNetworks = others;
+  return active;
+}
+
+function keepWorlds(world: World) {
+  if (typeof sessionStorage !== "undefined") sessionStorage.setItem(SWITCH_KEY, JSON.stringify({ active: world, others: otherNetworks }));
+}
+
+/** Closes the window's network as the engine does (grants, leases and mixing gone, the vault
+ * locked) and opens `to`: its kept world, or a new one with no wallet. The choice and the display
+ * settings are the data root's, shared by both. */
+function moveWorld(world: World, to: ChosenNetwork) {
+  const left = restarted(JSON.parse(JSON.stringify(world)) as World);
+  otherNetworks[left.launch.network.dirName] = left;
+  const kept = otherNetworks[to];
+  delete otherNetworks[to];
+  const next = kept ?? buildWorld("no-wallet", left.launch.theme);
+  next.launch = { ...left.launch, network: networkInfo(to) };
+  next.settings = left.settings;
+  next.networkSwitch = left.networkSwitch;
+  next.pending.networkChoice = { chosen: to, saved: true };
+  for (const key of Object.keys(world)) delete (world as unknown as Record<string, unknown>)[key];
+  Object.assign(world, next);
+  keepWorlds(world);
 }
 
 const total = (p: PlatformWorld) => p.addresses.reduce((n, a) => n + BigInt(a.credits), 0n);
@@ -367,11 +413,30 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     if (world.pending.networkChoice === null) throw absent("get_network_choice");
     return networkView(world);
   },
-  set_network_choice: ({ network }: { network: ChosenNetwork }, { world }: Ctx) => {
-    if (world.pending.networkChoice === null) throw absent("set_network_choice");
+  // Row 74: dw-app's `switch_network`, with the refusals and failures a test sets in
+  // `world.networkSwitch`.
+  switch_network: ({ network }: { network: ChosenNetwork }, { world }: Ctx): NetworkSwitch => {
+    if (world.pending.networkChoice === null) throw absent("switch_network");
     if (network !== "mainnet" && network !== "testnet") throw fail("invalid_argument", "not a network", { kind: "reason", reason: "not a network" });
+    if (forced(world.launch.network.kind)) {
+      world.pending.networkChoice = { chosen: network, saved: true };
+      return { opened: null, choice: networkView(world) };
+    }
+    if (network !== world.launch.network.kind) {
+      const knobs = world.networkSwitch ?? {};
+      if (knobs.busy) throw fail("app.network_busy", "closing the network would cut what runs", { kind: "networkBusy", ...knobs.busy });
+      if (knobs.closeRefused) throw fail(knobs.closeRefused, "the close was refused");
+      if (knobs.fail) {
+        // The close happened: what the page knew of this network is gone, so it boots again.
+        restarted(world);
+        world.networkSwitch = { ...knobs, fail: undefined, reopenFails: !knobs.fail.rolledBack };
+        keepWorlds(world);
+        throw fail("app.network_switch_failed", `fixture: opening ${network} failed`, { kind: "networkSwitch", network: networkInfo(network), rolledBack: knobs.fail.rolledBack });
+      }
+      moveWorld(world, network);
+    }
     world.pending.networkChoice = { chosen: network, saved: true };
-    return networkView(world);
+    return { opened: { network: world.launch.network, lock: world.lock }, choice: networkView(world) };
   },
   ...SHIELDED_HANDLERS,
   ...RECOVERY_HANDLERS,

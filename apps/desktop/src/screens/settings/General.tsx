@@ -248,8 +248,8 @@ function DustCard() {
   );
 }
 
-/** The window's network and data directory, and the network the next start opens (the 0.1
- * release plan; D6's switch without a restart is U-04b). */
+/** The window's network and data directory, and the switch to the other one (the 0.1 release
+ * plan; D6's switch without a restart, row 74). */
 function NetworkCard() {
   const { network } = useLaunch();
   const node = useNodeInfo();

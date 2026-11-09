@@ -14,7 +14,7 @@ import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { ThemeName } from "../api/generated/ThemeName";
 import { isErrorClass, sampleError, type ErrorClass } from "./errors";
-import { landSend, PENDING_HANDLERS } from "./pending";
+import { landSend, PENDING_HANDLERS, switchedWorld } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
 import { restarted } from "./registration";
 import { buildWorld, DEFAULT_SCENARIO, FIXTURE_WALLET_ID, isScenario, type ScenarioName, type World } from "./scenarios";
@@ -96,7 +96,7 @@ function relaunchedWorld(): World | null {
 }
 
 export function installFixture(opts: FixtureOptions): FixtureHandle {
-  const world = relaunchedWorld() ?? buildWorld(opts.scenario, opts.theme ?? null);
+  const world = relaunchedWorld() ?? switchedWorld() ?? buildWorld(opts.scenario, opts.theme ?? null);
   const failures = new Map(Object.entries(opts.failures ?? {}) as [CommandName, ErrorClass][]);
   const calls: string[] = [];
   const held = new Map<string, Promise<void>>();
