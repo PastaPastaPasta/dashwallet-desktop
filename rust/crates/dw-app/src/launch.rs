@@ -390,6 +390,12 @@ mod tests {
         ] {
             assert!(run(flags).pinned(), "{flags:?}");
         }
+        // `--collateral-rpc` parses only beside `--network regtest`.
+        let collateral = LaunchOptions {
+            collateral_rpc: Some("http://dw:dw@127.0.0.1:19898".into()),
+            ..LaunchOptions::default()
+        };
+        assert!(collateral.pinned());
     }
 
     #[test]

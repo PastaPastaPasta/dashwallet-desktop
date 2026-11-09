@@ -1751,6 +1751,9 @@ fn a_network_choice_switches_the_running_window() {
         demo.ok("open_network", json!({}))["network"]["dirName"],
         "mainnet"
     );
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let draft = demo.ok("new_tx_draft", json!({ "walletId": wallet }));
     let switched = demo.ok("switch_network", json!({ "network": "testnet" }));
     assert_eq!(
         switched["opened"]["network"]["dirName"], "testnet",
@@ -1761,6 +1764,16 @@ fn a_network_choice_switches_the_running_window() {
     assert_eq!(switched["choice"]["active"]["dirName"], "testnet");
     assert_eq!(switched["choice"]["forcedByFlag"], false);
     assert_eq!(demo.active(), "testnet");
+    // Nothing of mainnet is reachable from the testnet window.
+    demo.err(
+        "draft_wallet_id",
+        json!({ "draft": draft }),
+        "app.unknown_handle",
+    );
+    assert_eq!(
+        demo.ok("list_wallets", json!({})).as_array().unwrap().len(),
+        0
+    );
     assert_eq!(
         demo.ok("launch_info", json!({}))["network"]["dirName"],
         "testnet"
@@ -1776,9 +1789,13 @@ fn a_network_choice_switches_the_running_window() {
     // Already the window's: kept as it is.
     let again = demo.ok("switch_network", json!({ "network": "testnet" }));
     assert_eq!(again["opened"]["network"]["dirName"], "testnet");
-    // And back, in the same process.
+    // And back, in the same process: its wallet is there.
     demo.ok("switch_network", json!({ "network": "mainnet" }));
     assert_eq!(demo.active(), "mainnet");
+    assert_eq!(
+        demo.ok("list_wallets", json!({})).as_array().unwrap().len(),
+        1
+    );
     assert_eq!(
         demo.ok("get_network_choice", json!({}))["chosen"],
         "mainnet"

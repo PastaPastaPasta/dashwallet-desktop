@@ -69,6 +69,8 @@ export interface World {
     closeRefused?: "wallet" | "shielded_spend_unresolved";
     fail?: { rolledBack: boolean };
     reopenFails?: boolean;
+    /** The switch goes through but its choice is not written. */
+    saveFails?: boolean;
   };
   launch: LaunchInfo;
   passphrase: string;

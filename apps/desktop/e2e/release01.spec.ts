@@ -450,6 +450,15 @@ test.describe("network choice", () => {
     expect(await activeNetwork(page)).toBe("testnet");
   });
 
+  test("a switch whose choice could not be saved says so on the new network", async ({ page }) => {
+    await open(page, "no-wallet");
+    await setKnobs(page, { saveFails: true });
+    await page.getByTestId("onboarding-network-mainnet").click();
+    await expect.poll(() => activeNetwork(page)).toBe("mainnet");
+    await expect(page.locator(".toast")).toContainText("The network choice could not be saved.");
+    expect(await world(page, (w) => w.pending.networkChoice?.chosen)).toBe("testnet");
+  });
+
   test("a window started with --network only saves the choice", async ({ page }) => {
     await open(page, "network-pinned");
     await toSettings(page);

@@ -29,14 +29,16 @@ export function useNetworkPicker() {
   // A pinned window shows what the next start opens; any other, the network it is on.
   const current = view ? (pinned ? view.chosen : chosenOf(view.active.kind)) : null;
   const walletIds = wallets.data?.map((w) => w.walletId) ?? [];
+  // Asks unless the network is known to have no wallet (the list may still be loading, or failed).
+  const noWallet = wallets.isSuccess && walletIds.length === 0;
   const run = useMutation({
     mutationFn: (to: ChosenNetwork) => backend.switchNetwork(to),
     onMutate: (to) => {
       setProblem(null);
       setSwitching(to);
     },
-    onSuccess: (result) => {
-      if (result.opened !== null) return void bootAgain();
+    onSuccess: (result, to) => {
+      if (result.opened !== null) return void bootAgain(result.choice.chosen === to ? null : NetworkText.notSaved);
       // Pinned: saved for the next start, and the window stays.
       setSwitching(null);
       client.setQueryData(keys.networkChoice, result.choice);
@@ -50,7 +52,7 @@ export function useNetworkPicker() {
   });
   const choose = (to: ChosenNetwork) => {
     if (to === current || switching) return;
-    if (pinned || walletIds.length === 0) return run.mutate(to);
+    if (pinned || noWallet) return run.mutate(to);
     setConfirming({ to, pending: false });
     void hasPendingLocks(backend, walletIds).then((pending) => setConfirming((c) => (c?.to === to ? { to, pending } : c)));
   };
@@ -63,7 +65,7 @@ export function useNetworkPicker() {
     switching,
     confirming,
     /** The window was started with `--network` (or a flag of one network): it only saves the choice. */
-    pinned: pinned && view ? view.active.kind : null,
+    pinned: view?.forcedByFlag ? view.active.kind : null,
     problem,
     choose,
     confirm: () => {

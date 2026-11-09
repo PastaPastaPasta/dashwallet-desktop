@@ -256,8 +256,9 @@ commands! {
     #[facade("NetworkSession::broadcast_psbt")]
     fn broadcast_psbt(state, psbt: String) -> String {
         let psbt = parse_psbt(&psbt)?;
+        let session = state.session().await?;
         let _in_flight = state.broadcasting();
-        Ok(state.session().await?.broadcast_psbt(psbt).await?.to_string())
+        Ok(session.broadcast_psbt(psbt).await?.to_string())
     }
 
     /// The coin control list of a wallet, largest first.

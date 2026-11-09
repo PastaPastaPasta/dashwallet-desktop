@@ -11,7 +11,7 @@ export const NETWORK_CHOICES: { choice: ChosenNetwork; label: string }[] = [
   { choice: "testnet", label: "Testnet" },
 ];
 
-export const networkName = (choice: ChosenNetwork) => (choice === "mainnet" ? "Mainnet" : "Testnet");
+const networkName = (choice: ChosenNetwork) => (choice === "mainnet" ? "Mainnet" : "Testnet");
 
 /** "a", "a and b", "a, b and c". */
 const listed = (items: string[]) => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
@@ -20,8 +20,9 @@ export const NetworkText = {
   title: "Network",
   hint: "Mainnet is the real Dash network. Testnet uses test coins with no value.",
   unavailable: "Choosing the network is not available in this build yet.",
-  notSaved: "The network choice could not be saved.",
   notSwitched: "Dash Wallet could not switch networks.",
+  /** After a switch that went through but whose choice was not written: the next start opens the old network. */
+  notSaved: "The network choice could not be saved.",
   /** A window started with `--network regtest` or `devnet-<name>` is not on either choice. */
   pinned: (current: string) => `This window was started with --network ${current}, which wins until the next start without it.`,
   /** The blocking card while the switch runs. */

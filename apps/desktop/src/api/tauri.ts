@@ -28,7 +28,7 @@ function tracked(registered: Promise<() => void>): Promise<() => void> {
     // Tauri's unlisten is async (its `plugin:event|unlisten` call) though typed `() => void`.
     const end = () => {
       liveListeners.delete(end);
-      ended ??= Promise.resolve(unlisten() as unknown).then(() => undefined);
+      ended ??= Promise.resolve(unlisten());
       return ended;
     };
     liveListeners.add(end);

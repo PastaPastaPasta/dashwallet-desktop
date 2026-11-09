@@ -234,14 +234,14 @@ commands! {
         settings: Option<SessionSettings>,
     ) -> OpenedNetwork {
         let engine = &state.engine;
-        let window = state.window_network();
-        let network = match network {
-            Some(name) => parse_network(&name)?,
-            None => window.clone(),
-        };
+        let requested = network.as_deref().map(parse_network).transpose()?;
         let settings = settings.unwrap_or_default();
-        settings.check_trust(&network)?;
         let mut slot = state.session_slot().await;
+        // Read under the slot: a switch moves the window network while it
+        // holds it.
+        let window = state.window_network();
+        let network = requested.unwrap_or_else(|| window.clone());
+        settings.check_trust(&network)?;
         let session = match &*slot {
             Some(s) if *s.network() == network => Arc::clone(s),
             active => {
@@ -296,7 +296,15 @@ commands! {
                     preflight(&state, &s)?;
                     let old = s.network().clone();
                     drop(s);
-                    close_active(&state, &mut slot, state.engine.close_network(old).await)?;
+                    // A refusal keeps the session active: nothing changed. A
+                    // close that failed once the session was gone goes on
+                    // like one that went through.
+                    if let Err(e) = close_active(&state, &mut slot, state.engine.close_network(old).await) {
+                        if slot.is_some() {
+                            return Err(e);
+                        }
+                        eprintln!("dw-app: the close of {} failed: {e}", left.dir_name());
+                    }
                 }
                 match open_window_network(&state, &target, SessionSettings::default()).await {
                     Ok(s) => {

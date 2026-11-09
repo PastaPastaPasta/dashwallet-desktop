@@ -214,10 +214,8 @@ function moveWorld(world: World, to: ChosenNetwork) {
   next.launch = { ...left.launch, network: networkInfo(to) };
   next.settings = left.settings;
   next.networkSwitch = left.networkSwitch;
-  next.pending.networkChoice = { chosen: to, saved: true };
   for (const key of Object.keys(world)) delete (world as unknown as Record<string, unknown>)[key];
   Object.assign(world, next);
-  keepWorlds(world);
 }
 
 const total = (p: PlatformWorld) => p.addresses.reduce((n, a) => n + BigInt(a.credits), 0n);
@@ -433,7 +431,12 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
         keepWorlds(world);
         throw fail("app.network_switch_failed", `fixture: opening ${network} failed`, { kind: "networkSwitch", network: networkInfo(network), rolledBack: knobs.fail.rolledBack });
       }
+      const before = world.pending.networkChoice;
       moveWorld(world, network);
+      // Saved last, as dw-app saves it; `saveFails` keeps the choice the switch started from.
+      world.pending.networkChoice = knobs.saveFails ? before : { chosen: network, saved: true };
+      keepWorlds(world);
+      return { opened: { network: world.launch.network, lock: world.lock }, choice: networkView(world) };
     }
     world.pending.networkChoice = { chosen: network, saved: true };
     return { opened: { network: world.launch.network, lock: world.lock }, choice: networkView(world) };
