@@ -78,6 +78,12 @@ export async function amountsInClear(page: Page): Promise<string[]> {
   return seen.filter((v) => /\d+[.,]\d+|\d+ ?t?DASH/.test(v));
 }
 
+/** A route that can't run reads no quote: Platform → Dash wallet's, while it waits. */
+async function noMoveQuote(page: Page) {
+  await page.waitForTimeout(500);
+  expect(await callsOf(page, "platform_move_to_core_quote")).toBe(0);
+}
+
 /** Max: the field filled from a second quote, the fee line read for that amount (`fee`). */
 async function maxFills(page: Page, quote: string, value: RegExp, fee: RegExp | string = FEE) {
   const before = await callsOf(page, quote);
@@ -385,6 +391,7 @@ export const TRANSFER_STATES: TransferState[] = [
       await openTransfer(page, "platformToCore");
       await expect(page.getByTestId("transfer-unavailable")).toHaveText("Nothing on your Platform addresses to move yet.");
       await expect(page.getByTestId("transfer-continue")).toBeDisabled();
+      await noMoveQuote(page);
     },
   },
   {
@@ -394,6 +401,7 @@ export const TRANSFER_STATES: TransferState[] = [
       await openTransfer(page, "platformToCore");
       await expect(page.getByTestId("transfer-unavailable")).toContainText("cannot be moved to your Dash wallet right now");
       await expect(page.getByTestId("transfer-continue")).toBeDisabled();
+      await noMoveQuote(page);
     },
   },
   {

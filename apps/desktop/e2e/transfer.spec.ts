@@ -206,6 +206,54 @@ test.describe("Transfer quotes", () => {
     }
   });
 
+  test("an amount typed on a route that then can't run is not quoted, and is quoted again once it can", async ({ page }) => {
+    const ready = (on: boolean) =>
+      page.evaluate(
+        `(() => { const f = window.__dwFixture; f.world.pending.shielded.ready = ${on}; f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "startup" } }); f.emit({ kind: "eventsOverflowed" }); })()`,
+      );
+    await open(page, "funded");
+    await openTransfer(page, "coreToShielded");
+    await page.getByTestId("transfer-amount").fill("0.001");
+    await expect(page.getByTestId("transfer-fee")).toHaveText(/^Fee about /);
+    expect(await callsOf(page, "shield_quote")).toBe(1);
+    await ready(false);
+    await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing; try again when it finishes.");
+    await expect(page.getByTestId("transfer-fee")).toHaveText("");
+    await ready(true);
+    await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
+    await expect(page.getByTestId("transfer-fee")).toHaveText(/^Fee about /);
+    expect(await callsOf(page, "shield_quote")).toBe(2);
+  });
+
+  test("a route's own run has no Running line; another route's has one, and its Show opens it", async ({ page }) => {
+    await open(page, "funded");
+    await hold(page, "platform_move_to_core");
+    await openTransfer(page, "platformToCore");
+    await page.getByTestId("transfer-continue").click();
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-view", "steps");
+    await expect(page.getByTestId("transfer-running")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
+    // Dash wallet → Shielded runs too: on its own steps, only Platform's line shows.
+    await hold(page, "shield_from_core");
+    await openTransfer(page, "coreToShielded");
+    await expect(page.getByTestId("transfer-running")).toHaveAttribute("data-route", "platformToCore");
+    await page.getByTestId("transfer-amount").fill("0.001");
+    await page.getByTestId("transfer-continue").click();
+    await page.getByTestId("shielded-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("shielded-progress")).toBeVisible();
+    await expect(page.getByTestId("transfer-running")).toHaveCount(1);
+    await expect(page.getByTestId("transfer-running")).toHaveAttribute("data-route", "platformToCore");
+    await page.getByTestId("transfer-running-show").click();
+    await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "platformToCore");
+    await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-view", "steps");
+    await expect(page.getByTestId("transfer-running")).toHaveAttribute("data-route", "coreToShielded");
+    await expect(page.getByTestId("transfer-running")).toHaveCount(1);
+  });
+
   test("Max never skips the confirmation", async ({ page }) => {
     await open(page, "funded");
     await openTransfer(page, "shieldedToCore");

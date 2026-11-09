@@ -6,13 +6,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ShieldedSpendQuote } from "../api/generated/ShieldedSpendQuote";
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
 import { SHIELDED_CODES } from "../api/pending";
+import type { PlatformFundQuote } from "../api/generated/PlatformFundQuote";
+import type { ShieldQuote } from "../api/generated/ShieldQuote";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { PlatformFundFlow, resetPlatformFunds } from "../platform/fund";
 import { MOVE_COPY, PlatformMoveFlow, resetPlatformMoves } from "../platform/move";
 import { resetShielded, SHIELDED_COPY, ShieldedFlow } from "../shielded/flow";
 import { SHIELDED_SYNCING_TEXT } from "../shielded/syncing";
 import { fakeVault } from "../tools/testApi";
-import { coreFundedMax, defaultRoute, listedPools, noRouteText, QuoteLine, routeOf, routeWhy, shieldedSpendMax, TRANSFER_COPY, TransferModel, type Pools, type Settled, type Timers } from "./model";
+import { coreFundedMax, defaultRoute, feeText, listedPools, noRouteText, QuoteLine, routeOf, routeWhy, shieldedSpendMax, TRANSFER_COPY, TransferModel, type Pools, type Settled, type Timers } from "./model";
 
 /** Timers run by hand: `tick(ms)` fires those due. */
 function manualTimers() {
@@ -497,5 +499,110 @@ describe("the sheet over the routes' flows", () => {
     expect(t.stepFlow()).toBe("platformToCore");
     t.pick("to", "shielded", POOLS);
     expect([t.reviewed, move.open]).toEqual([false, false]);
+  });
+});
+
+describe("test gaps (review r1 §8)", () => {
+  it("a move Platform has not confirmed: Platform → Dash wallet is not begun again, and the route says why", () => {
+    const { t, move } = model();
+    Object.assign(move, { step: "done", outcome: { state: "pending" } });
+    expect(move.pending).toBe(true);
+    t.start("platformToCore");
+    expect([t.begunRoute, move.open, t.route]).toEqual([null, false, "platformToCore"]);
+    expect(routeWhy("platformToCore", POOLS, t.flows)).toBe(POOLS.platform!.waitingText);
+  });
+
+  /** A line whose every quote is answered by hand, in call order. */
+  function heldLine() {
+    const { timers, tick } = manualTimers();
+    const calls: number[] = [];
+    const answers: ReturnType<typeof deferred<{ duffs: number }>>[] = [];
+    const line = new QuoteLine((d: number) => {
+      calls.push(d);
+      const a = deferred<{ duffs: number }>();
+      answers.push(a);
+      return a.promise;
+    }, timers);
+    return { line, tick, calls, answers };
+  }
+  const short = (needed: number, available: number) => appError("credits.funding_insufficient", { kind: "duffs", needed, available });
+
+  it("Max stops at whichever answer comes after the amount changed: the quote it waited for, its probe, or its re-quote", async () => {
+    const derive = coreFundedMax("credits.funding_insufficient");
+
+    // 1. Typed while Max waits for a quote already out: no probe.
+    {
+      const { line, tick, calls, answers } = heldLine();
+      line.set(5);
+      tick(400);
+      const d = vi.fn(derive);
+      const max = line.max(100, d);
+      line.set(6);
+      answers[0].resolve({ duffs: 5 });
+      await flush();
+      expect(calls).toEqual([5]);
+      for (const a of answers.slice(1)) a.reject(short(110, 100));
+      expect(await max).toBeNull();
+      expect(d).not.toHaveBeenCalled();
+    }
+    // 2. Typed while the probe is out: no re-quote.
+    {
+      const { line, calls, answers } = heldLine();
+      const d = vi.fn(derive);
+      const max = line.max(100, d);
+      await flush();
+      line.set(6);
+      answers[0].reject(short(110, 100));
+      await flush();
+      expect(calls).toEqual([100]);
+      for (const a of answers.slice(1)) a.resolve({ duffs: 90 });
+      expect(await max).toBeNull();
+      expect(d).not.toHaveBeenCalled();
+    }
+    // 3. Typed while the re-quote is out: its answer neither fills nor shows.
+    {
+      const { line, calls, answers } = heldLine();
+      const max = line.max(100, derive);
+      await flush();
+      answers[0].reject(short(110, 100));
+      await flush();
+      expect(calls).toEqual([100, 90]);
+      line.set(6);
+      answers[1].resolve({ duffs: 90 });
+      expect(await max).toBeNull();
+      expect(line.state).toEqual({ kind: "quoting" });
+      expect(line.maxing).toBe(false);
+    }
+  });
+
+  it("a debounced answer that arrives while Max runs leaves Max's line alone", async () => {
+    const { line, tick, calls, answers } = heldLine();
+    line.set(5);
+    tick(400);
+    const max = line.max(100, coreFundedMax("credits.funding_insufficient"));
+    answers[0].resolve({ duffs: 5 });
+    await flush();
+    expect([line.state, line.maxing]).toEqual([{ kind: "quoting" }, true]);
+    expect(calls).toEqual([5, 100]);
+    answers[1].reject(short(110, 100));
+    await flush();
+    answers[2].resolve({ duffs: 90 });
+    expect(await max).toBe(90);
+    expect(line.state).toEqual({ kind: "quoted", amount: 90, quote: { duffs: 90 } });
+  });
+
+  it("the fee line's figures, exactly, per route", () => {
+    const fmt = (d: number) => `${d} duffs`;
+    const quoted = <Q,>(quote: Q) => ({ kind: "quoted" as const, amount: 1, quote });
+    // Dash wallet → Shielded: the lock's fee plus the pool's, in credits; you receive the credits.
+    expect(feeText("coreToShielded", quoted({ feeDuffs: 1_000, poolFeeCredits: "500000", credits: "99500000" } as ShieldQuote), fmt)).toBe("Fee about 1500 duffs · You receive about 99500 duffs");
+    // Dash wallet → Platform: the lock's fee plus Platform's.
+    expect(feeText("coreToPlatform", quoted({ feeDuffs: 1_000, feeCredits: "2000000", credits: "48000000" } as PlatformFundQuote), fmt)).toBe("Fee about 3000 duffs · You receive about 48000 duffs");
+    // Shielded → Dash wallet: what arrives in the Dash wallet when known, else the credits.
+    expect(feeText("shieldedToCore", quoted({ feeCredits: "3000000", expectedDuffs: 49_000, credits: "52000000" } as ShieldedSpendQuote), fmt)).toBe("Fee about 3000 duffs · You receive about 49000 duffs");
+    expect(feeText("shieldedToCore", quoted({ feeCredits: "3000000", expectedDuffs: null, credits: "52000000" } as ShieldedSpendQuote), fmt)).toBe("Fee about 3000 duffs · You receive about 52000 duffs");
+    expect(feeText("coreToShielded", { kind: "quoting" }, fmt)).toBe(TRANSFER_COPY.quoting);
+    expect(feeText("coreToShielded", { kind: "idle" }, fmt)).toBeNull();
+    expect(feeText("coreToShielded", { kind: "refused", amount: 1, error: null }, fmt)).toBeNull();
   });
 });
