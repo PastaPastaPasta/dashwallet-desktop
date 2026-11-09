@@ -17,6 +17,18 @@ The developer works on this machine while agents build and test. These rules ove
 - Tests that touch the real Keychain, Touch ID or notifications must be opt-in behind an environment variable (for example `DWD_BIOMETRIC_TEST=1`) and must not run by default.
 - Do Linux and CrossUI visual QA in Docker (Xvfb/GTK) with `scripts/crossui-linux-demo.sh`; nothing appears on the host.
 
+## UI artifacts on every UI pull request
+
+Every pull request that changes anything a user sees (the renderer, Swift or CrossUI views, styles, icons, copy) carries its UI artifacts on the PR itself, in the description or a PR comment:
+
+- screenshots or a short recording of every changed state, in light **and** dark;
+- before and after for any state that changed: "before" from the exact base revision, "after" from the PR head;
+- fixture data only: no real seeds, keys, addresses tied to real funds, or private hostnames or IPs. Open every image before you upload it;
+- images committed to a non-main assets branch (for example `pr-artifacts/pr<N>`), never to `main`, and linked inline by raw URLs pinned to that branch's commit SHA;
+- each image captioned with its state and the revision it was shot at.
+
+A local screenshot run, committed visual baselines, or "N states shot" in the description does not count.
+
 ## Product scope
 
 This app is the DashPay wallet on the desktop: the iOS and Android wallets, adapted to macOS, Windows and Linux. It is not a full replacement for Dash Core. Dash Core (dash-qt) stays the power-user tool. The authoritative scope is `docs/design/DASHPAY.md` (DEC-01, §5a); the task plan is `docs/design/ROADMAP.md`.
