@@ -528,6 +528,16 @@ test.describe("Pay", () => {
     await expect(page.getByTestId("pay-continue")).toBeDisabled();
   });
 
+  test("Cancel on the confirm sheet returns to Review, ready (ROW73)", async ({ page }) => {
+    await open(page);
+    await fillPayment(page, PAYEE, "0.5");
+    await review(page);
+    await page.getByTestId("pay-confirm-cancel").click();
+    await expect(page.getByTestId("pay-confirm")).toHaveCount(0);
+    await expect(page.getByTestId("pay-continue")).toBeEnabled();
+    await expect(page.getByTestId("pay-continue")).toBeFocused();
+  });
+
   test("coins that change while the confirm sheet is up re-check nothing behind it, and Cancel checks again (ROW73)", async ({ page }) => {
     await open(page);
     await fillPayment(page, PAYEE, "0.5");
