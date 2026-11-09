@@ -563,6 +563,13 @@ impl CoinJoinRuntime {
         self.mixers().values().any(|m| m.mixing)
     }
 
+    /// A wallet mixes, or a mixing session of one is still open.
+    fn any_busy(&self) -> bool {
+        self.mixers()
+            .values()
+            .any(|m| m.mixing || !m.sessions.is_empty())
+    }
+
     /// Stops every task (session close).
     pub(crate) fn shutdown(&self) {
         for m in self.mixers().values_mut() {
@@ -1160,6 +1167,12 @@ impl NetworkSession {
     }
 
     // ---- status ----------------------------------------------------------
+
+    /// A wallet of this session mixes, or a mixing session of one is still
+    /// open: closing the network would cut it (a network switch refuses).
+    pub fn mixing_busy(&self) -> bool {
+        self.coinjoin.any_busy()
+    }
 
     /// The wallet's mixing status. In-memory read of the status the
     /// refresher keeps (once a second); the first call for a wallet computes

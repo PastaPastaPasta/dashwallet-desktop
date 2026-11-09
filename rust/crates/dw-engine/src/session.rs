@@ -877,6 +877,10 @@ impl NetworkSession {
         // Registration flows waiting keyless for a proof hold no lease.
         self.platform.registrations.abort_all();
         let _closing = self.gate.close().await;
+        // No vault operation is admitted from here, so no unlock can follow:
+        // the data key and every grant go now, not with the session's last
+        // reference (an in-app network switch keeps the process running).
+        self.vault.lock();
         // A picture toggle's write lands before the session ends (DP4-02 D37).
         self.platform.avatars.settled().await;
         self.platform.deactivate(true).await;
