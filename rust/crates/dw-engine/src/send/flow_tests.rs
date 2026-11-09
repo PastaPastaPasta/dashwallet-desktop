@@ -5306,7 +5306,7 @@ fn a_fork_above_a_chain_lock_drops_what_it_replaced_and_keeps_what_key_wallet_ho
 /// The transactions key-wallet held are the session's: an unload forgets
 /// them, an event key-wallet sent before the unload and heard after it
 /// brings back neither them nor the wallet's history, and the wallet
-/// loaded again starts anew.
+/// loaded again starts anew, whatever the set held before.
 #[test]
 fn the_transactions_key_wallet_held_are_forgotten_at_unload() {
     use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
@@ -5330,6 +5330,9 @@ fn the_transactions_key_wallet_held_are_forgotten_at_unload() {
     let unloaded = held();
     f.session.hub.apply_wallet_event(&stale);
     let (after_stale, entry) = (held(), f.entry_of(late.txid()));
+    f.session.hub.history.with_wallet(f.wallet, |h| {
+        h.held.insert(late.txid());
+    });
     f.engine.block_on(f.session.load_wallet(f.wallet)).unwrap();
     let loaded = held();
     eprintln!(
