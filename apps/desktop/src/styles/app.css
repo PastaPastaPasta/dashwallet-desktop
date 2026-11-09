@@ -807,6 +807,12 @@ button {
   white-space: nowrap;
 }
 
+/* The selected item's accent fill sits under the badge in both themes, so it gets its own fixed pair. */
+.sidebar-item.is-current .experimental-badge {
+  background: var(--dw-c-white);
+  color: var(--dw-c-black);
+}
+
 .network-capsule-slot {
   display: block;
   height: 19px; /* capsule height, so the hero never jumps on mainnet */
