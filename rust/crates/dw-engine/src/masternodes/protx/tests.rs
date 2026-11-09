@@ -27,6 +27,7 @@ use crate::masternodes::{
     PlatformNodeChoice, ProTxOperation, ProTxOperationKind, ProTxOperationState,
     RegistrationRequest, UpdateRegistrarPreview, UpdateRegistrarRequest, VotingChoice,
 };
+use crate::send::test_support::{FOREIGN, pay, send_failure};
 use crate::send::{SendFailure, SpendOwner, TestBroadcaster};
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
 
@@ -228,13 +229,17 @@ impl Fx {
     }
 
     fn grant(&self, max_duffs: u64) -> String {
+        self.authorize(GrantPurpose::MasternodeOp { max_duffs })
+    }
+
+    fn spend_grant(&self, max_duffs: u64) -> String {
+        self.authorize(GrantPurpose::Spend { max_duffs })
+    }
+
+    fn authorize(&self, purpose: GrantPurpose) -> String {
         self.session
             .vault()
-            .authorize(
-                GrantPurpose::MasternodeOp { max_duffs },
-                Some(&self.wallet.0),
-                Credential::None,
-            )
+            .authorize(purpose, Some(&self.wallet.0), Credential::None)
             .unwrap()
             .id
     }
@@ -1852,16 +1857,7 @@ fn mg04_update_registrar_requests_are_refused_in_order() {
         "{reuse:?}"
     );
     // A grant of another purpose signs nothing.
-    let spend = f
-        .session
-        .vault()
-        .authorize(
-            GrantPurpose::Spend { max_duffs: COIN },
-            Some(&f.wallet.0),
-            Credential::None,
-        )
-        .unwrap()
-        .id;
+    let spend = f.spend_grant(COIN);
     let e = f.update(keep(&hash), spend).unwrap_err();
     assert_eq!(e.code(), "platform.grant_invalid");
     assert_eq!(f.lib.sent().len(), 1, "only the registration");
@@ -3016,51 +3012,15 @@ fn r71_a_registration_marks_its_wallet_and_wakes_the_follower_once() {
     assert_eq!(store.take_collateral_pending(), vec![wallet]);
 }
 
-/// An address the wallet does not own.
-fn foreign_address() -> String {
-    use dashcore::address::Payload;
-    dashcore::Address::new(
-        dashcore::Network::Regtest,
-        Payload::PubkeyHash(dashcore::PubkeyHash::from_byte_array([5; 20])),
-    )
-    .to_string()
-}
-
 const SEND: u64 = 10_000_000;
-
-fn send_failure<T: std::fmt::Debug>(r: Result<T, crate::EngineError>) -> SendFailure {
-    match r {
-        Err(crate::EngineError::Send(f)) => f,
-        other => panic!("expected a send failure, got {other:?}"),
-    }
-}
 
 impl Fx {
     /// A send of [`SEND`] to a foreign address, prepared: signed, its
     /// inputs reserved.
     fn prepare_send(&self) -> Result<Vec<OutPoint>, crate::EngineError> {
-        let grant = self
-            .session
-            .vault()
-            .authorize(
-                GrantPurpose::Spend {
-                    max_duffs: SEND + 100_000,
-                },
-                Some(&self.wallet.0),
-                Credential::None,
-            )
-            .unwrap()
-            .id;
+        let grant = self.spend_grant(SEND + 100_000);
         let draft = self.session.new_tx_draft(self.wallet).unwrap();
-        draft
-            .set_recipients(vec![crate::send::Recipient {
-                address: foreign_address(),
-                amount: SEND,
-                subtract_fee_from_amount: false,
-                label: None,
-                message: None,
-            }])
-            .unwrap();
+        draft.set_recipients(vec![pay(FOREIGN, SEND)]).unwrap();
         let p = self.engine.block_on(draft.prepare(grant))?;
         let inputs = p.summary().inputs.iter().map(|i| i.outpoint).collect();
         self.engine.block_on(draft.abandon(p)).unwrap();
@@ -3228,9 +3188,7 @@ fn r71_b_a_generic_unlock_of_a_collateral_is_locked_again() {
 fn r71_b_the_follower_locks_through_the_wake_with_no_list() {
     use platform_wallet::events::WalletEvent;
     let f = fx(Library::Accept);
-    f.session
-        .masternodes
-        .set_poll(std::time::Duration::from_secs(3600));
+    f.session.masternodes.set_poll(3600);
     f.session.masternodes.set_protx_seam(None);
 
     let (inserted, a) = f.foreign_registration(false, 2);

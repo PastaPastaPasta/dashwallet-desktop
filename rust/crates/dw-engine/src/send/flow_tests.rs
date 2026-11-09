@@ -14,6 +14,7 @@ use key_wallet::Utxo;
 use zeroize::Zeroizing;
 
 use super::psbt::{PsbtFailure, PsbtSignability};
+use super::test_support::{FOREIGN, pay, send_failure};
 use super::*;
 use crate::{
     BookPurpose, CoinFilter, DashNetwork, Engine, EngineConfig, EventSink, ImportOptions,
@@ -22,8 +23,6 @@ use crate::{
 
 const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-/// Someone else's regtest address (dashd `signmessagewithprivkey` vector).
-const FOREIGN: &str = "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n";
 const COIN: u64 = 100_000_000;
 
 struct NullSink;
@@ -277,26 +276,9 @@ fn other_foreign() -> String {
     .to_string()
 }
 
-fn pay(address: &str, amount: u64) -> Recipient {
-    Recipient {
-        address: address.into(),
-        amount,
-        subtract_fee_from_amount: false,
-        label: None,
-        message: None,
-    }
-}
-
 /// Room for the fee in a grant whose test is not about the cap: a few
 /// inputs at the default rate cost well under this.
 const FEE_ROOM: u64 = 10_000;
-
-fn send_failure<T: std::fmt::Debug>(r: Result<T, EngineError>) -> SendFailure {
-    match r {
-        Err(EngineError::Send(f)) => f,
-        other => panic!("expected a send failure, got {other:?}"),
-    }
-}
 
 #[test]
 fn prepare_signs_reserves_and_abandon_releases() {

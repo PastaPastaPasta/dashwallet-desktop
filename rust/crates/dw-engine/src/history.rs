@@ -20,6 +20,7 @@ use std::sync::{Arc, RwLock};
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::blockdata::transaction::special_transaction::TransactionType as SpecialType;
 use dashcore::{Address, Network, OutPoint, ScriptBuf, Transaction, Txid};
+use dw_protx::payloads::resolve_collateral;
 use key_wallet::managed_account::transaction_record::TransactionRecord;
 use key_wallet::transaction_checking::TransactionContext;
 
@@ -346,7 +347,8 @@ pub(crate) struct WalletHistory {
     collateral_pending: bool,
     /// The collateral outpoint of every ProRegTx merged, so a coin that
     /// arrives after its ProRegTx (a restore past the gap) marks the wallet
-    /// as its ProRegTx did.
+    /// as its ProRegTx did. Unchecked: a mark for an outpoint the lock step
+    /// then refuses locks nothing.
     named_collaterals: HashSet<OutPoint>,
 }
 
@@ -385,21 +387,14 @@ impl WalletHistory {
                 .own_inputs
                 .insert(input.index, (input.value, input.address.clone()));
         }
-        let registration = match &record.transaction.special_transaction_payload {
-            Some(TransactionPayload::ProviderRegistrationPayloadType(p)) => {
-                (self.named_collaterals).insert(dw_protx::payloads::resolve_collateral(
-                    record.txid,
-                    p.collateral_outpoint,
-                ));
-                true
-            }
-            _ => false,
-        };
-        if registration
-            || (record.output_details.iter()).any(|o| {
-                self.named_collaterals
-                    .contains(&OutPoint::new(record.txid, o.index))
-            })
+        if let Some(TransactionPayload::ProviderRegistrationPayloadType(p)) =
+            &record.transaction.special_transaction_payload
+        {
+            (self.named_collaterals).insert(resolve_collateral(record.txid, p.collateral_outpoint));
+            self.collateral_pending = true;
+        }
+        if (record.output_details.iter())
+            .any(|o| (self.named_collaterals).contains(&OutPoint::new(record.txid, o.index)))
         {
             self.collateral_pending = true;
         }

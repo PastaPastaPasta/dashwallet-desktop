@@ -730,13 +730,12 @@ impl NetworkSession {
     }
 
     /// The fenced wallet's coins with user/dust locks and reservations
-    /// applied. First locks every coin a ProRegTx in the history names as
-    /// its collateral ([`Self::lock_collaterals`]), so no build selects one
-    /// before the masternode follower has run (Core locks it when the
-    /// ProRegTx is added, v24.0.0 `wallet/wallet.cpp:1141`). With dust
-    /// protection on, then dust-locks small foreign incoming coins (Dash
-    /// Core: value ≤ threshold, funding transaction not ours; a released
-    /// dust lock is not renewed). Both only under the fence (module doc).
+    /// applied. First locks the collaterals a ProRegTx in the history names
+    /// ([`Self::lock_collaterals`]), so no build selects one before the
+    /// masternode follower has run. With dust protection on, then
+    /// dust-locks small foreign incoming coins (Dash Core: value ≤
+    /// threshold, funding transaction not ours; a released dust lock is not
+    /// renewed). Both only under the fence (module doc).
     pub(crate) async fn coin_snapshot(
         &self,
         fence: &CoinFence,
