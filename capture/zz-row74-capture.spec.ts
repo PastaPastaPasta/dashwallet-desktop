@@ -1,9 +1,9 @@
 // Row 74 DEC-1484 capture (scratch, not committed): the network choice's states, light and dark.
-// REV=base|head; head-only states are skipped at base. Shots go to $DW_SHOTS/<rev>/<theme>-<state>.png.
+// REV=base|head|r2; head-only states are skipped at base. Shots go to $DW_SHOTS/<rev>/<theme>-<state>.png.
 import { expect, test, type Page } from "@playwright/test";
 import { fixtureUrl, fontsReady, type Theme } from "./helpers";
 
-const rev = process.env.REV as "base" | "head";
+const rev = process.env.REV as "base" | "head" | "r2";
 const out = `${process.env.DW_SHOTS}/${rev}`;
 const THEMES: Theme[] = ["light", "dark"];
 
@@ -21,7 +21,7 @@ const toSettings = async (page: Page) => {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const knobs = (page: Page, k: any) => page.evaluate((k) => void ((window.__dwFixture!.world as any).networkSwitch = k), k);
 const hold = (page: Page, cmd: string) => page.evaluateHandle((c) => window.__dwFixture!.hold(c as never), cmd);
-const headOnly = () => test.skip(rev !== "head", "a state the base does not have");
+const headOnly = () => test.skip(rev === "base", "a state the base does not have");
 
 for (const theme of THEMES) {
   test.describe(theme, () => {
@@ -157,6 +157,27 @@ for (const theme of THEMES) {
       await expect(page.locator(".toast")).toContainText("The network choice could not be saved.");
       await expect(page.getByTestId("onboarding-network-mainnet")).toHaveAttribute("aria-pressed", "true");
       await shot(page, theme, "switch-save-failed");
+    });
+
+    test("switch-link-not-opened", async ({ page }) => {
+      headOnly();
+      await go(page, "funded", theme);
+      await toSettings(page);
+      await page.getByTestId("settings-network-choice-mainnet").click();
+      await expect(page.getByTestId("network-switch-confirm")).toBeEnabled();
+      const takes = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "take_links").length);
+      const taken = await takes();
+      const releaseTake = await page.evaluateHandle(() => window.__dwFixture!.hold("take_links"));
+      await page.evaluate(() => window.__dwFixture!.deliverLinks([{ kind: "scanQr" }]));
+      await expect.poll(takes).toBe(taken + 1);
+      const releaseSwitch = await page.evaluateHandle(() => window.__dwFixture!.hold("switch_network"));
+      await page.getByTestId("network-switch-confirm").click();
+      await expect(page.getByTestId("network-switching")).toContainText("Opening Mainnet…");
+      await releaseTake.evaluate((r) => r());
+      await releaseSwitch.evaluate((r) => r());
+      await expect(page.locator(".toast")).toContainText("A link that arrived during the network switch was for Testnet, so it was not opened. Open it again.");
+      await expect(page.getByTestId("onboarding-create")).toBeEnabled();
+      await shot(page, theme, "switch-link-not-opened");
     });
 
     test("settings-pinned", async ({ page }) => {

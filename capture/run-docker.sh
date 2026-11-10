@@ -24,7 +24,7 @@ playwright=$(cd $app && node -p 'require("./package.json").devDependencies["@pla
 pnpm_version=$(cd $app && node -p 'require("./package.json").packageManager.split("@")[1]')
 image="mcr.microsoft.com/playwright:v${playwright}-noble"
 cache=$R/capture/e2e-cache-$rev
-shots=$R/capture/shots2
+shots=${SHOTS_DIR:-$R/capture/shots2}
 mkdir -p "$cache/node_modules" "$shots/$rev"
 echo "=== $rev $(git -C $wt rev-parse HEAD) image $image $(date -u +%T)"
 docker run --rm --init --ipc=host --user "$(id -u):$(id -g)" \

@@ -1,0 +1,36 @@
+SAME dark-add-wallet.png 
+DIFF dark-settings-busy-draining.png (794, 401, 1114, 431)
+DIFF dark-settings-busy-lock.png (873, 401, 1114, 431)
+DIFF dark-settings-busy.png (950, 401, 1114, 431)
+DIFF dark-settings-close-refused-shielded.png (684, 401, 1114, 431)
+DIFF dark-settings-close-refused-wallet.png (684, 401, 1114, 431)
+DIFF dark-settings-confirm-checking.png (964, 401, 1114, 431)
+DIFF dark-settings-confirm-pending.png (964, 401, 1114, 431)
+DIFF dark-settings-mainnet-chosen.png (964, 401, 1114, 431)
+DIFF dark-settings-picker.png (684, 392, 1114, 422)
+DIFF dark-settings-pinned.png (795, 359, 1114, 389)
+DIFF dark-settings-switching.png (964, 401, 1114, 431)
+NEW  dark-switch-link-not-opened.png
+SAME dark-switch-none-open.png 
+SAME dark-switch-rolled-back.png 
+SAME dark-switch-save-failed.png 
+SAME dark-welcome-switching.png 
+SAME dark-welcome-testnet-chosen.png 
+SAME light-add-wallet.png 
+DIFF light-settings-busy-draining.png (794, 391, 1128, 451)
+DIFF light-settings-busy-lock.png (873, 391, 1128, 451)
+DIFF light-settings-busy.png (950, 391, 1128, 451)
+DIFF light-settings-close-refused-shielded.png (684, 391, 1128, 451)
+DIFF light-settings-close-refused-wallet.png (684, 391, 1128, 451)
+DIFF light-settings-confirm-checking.png (964, 391, 1128, 451)
+DIFF light-settings-confirm-pending.png (964, 391, 1128, 451)
+DIFF light-settings-mainnet-chosen.png (964, 391, 1128, 451)
+DIFF light-settings-picker.png (684, 382, 1128, 442)
+DIFF light-settings-pinned.png (781, 349, 1114, 409)
+DIFF light-settings-switching.png (964, 391, 1128, 451)
+NEW  light-switch-link-not-opened.png
+SAME light-switch-none-open.png 
+SAME light-switch-rolled-back.png 
+SAME light-switch-save-failed.png 
+SAME light-welcome-switching.png 
+SAME light-welcome-testnet-chosen.png 
