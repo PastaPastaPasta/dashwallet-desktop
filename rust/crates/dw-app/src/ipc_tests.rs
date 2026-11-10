@@ -2026,6 +2026,56 @@ fn a_switch_refuses_while_an_operation_does_not_finish() {
     nothing_changed(&demo, &wallet, &draft, &grant);
 }
 
+/// Row 74 r2 (test gap): a Platform send counts as a broadcast for as long
+/// as its engine call runs. Held before the engine admits it, it refuses a
+/// switch asked meanwhile.
+#[test]
+fn a_switch_refuses_while_a_platform_send_runs() {
+    let demo = launched_on_mainnet();
+    let (wallet, draft) = mainnet_wallet_and_draft(&demo);
+    let grant = platform_grant(&demo, &wallet);
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+    let (held, release) = dw_engine::test_support::hold_platform_send(&session);
+    drop(session);
+    let key = demo.app.invoke_key().to_string();
+    let args = json!({ "walletId": wallet, "operation": "op", "grant": "g" });
+    let (webview, key) = (&demo.webview, &key);
+    let e = std::thread::scope(|s| {
+        let sending = s.spawn(move || invoke(webview, key, "platform_send", args));
+        held.recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the send reached the engine");
+        let e = demo.err(
+            "switch_network",
+            json!({ "network": "testnet" }),
+            "app.network_busy",
+        );
+        drop(release);
+        let _ = sending.join().unwrap();
+        e
+    });
+    assert_eq!(e["data"]["broadcast"], true, "{e}");
+    assert_eq!(e["data"]["draining"], false);
+    nothing_changed(&demo, &wallet, &draft, &grant);
+}
+
+/// Row 74 r2: a take of the links for the network the window left, which a
+/// switch went ahead of, takes none; the new network's take gets them.
+#[test]
+fn a_take_for_the_network_a_switch_left_leaves_the_links_queued() {
+    let demo = launched_on_mainnet();
+    demo.ok("open_network", json!({}));
+    demo.ok("switch_network", json!({ "network": "testnet" }));
+    assert!(demo.state().shell.inbox.deliver("dashwallet://scanqr".into()));
+    assert_eq!(
+        demo.ok("take_links", json!({ "network": "mainnet" })),
+        json!([])
+    );
+    assert_eq!(
+        demo.ok("take_links", json!({ "network": "testnet" })),
+        json!([{ "kind": "scanQr" }])
+    );
+}
+
 /// Row 74 r1: a Platform flow holding a lease refuses the switch; locking
 /// the wallet ends its lease, and the switch goes through.
 #[test]

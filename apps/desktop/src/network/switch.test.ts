@@ -84,9 +84,12 @@ describe("switchOutcome", () => {
     });
   });
 
-  it("says work that did not finish in time, when nothing is named", () => {
+  it("says work that did not finish in time by its flag, and gives a busy reply naming nothing the generic words", () => {
     expect(switchOutcome(busy([], false, false, { draining: true }), "mainnet", "testnet")).toEqual({
       problem: "Dash Wallet is still finishing a request on this network. Try switching again once it is done.",
+    });
+    expect(switchOutcome(busy([], false, false), "mainnet", "testnet")).toEqual({
+      problem: "Dash Wallet could not switch networks. busy (app.network_busy)",
     });
   });
 

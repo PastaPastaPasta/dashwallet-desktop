@@ -392,15 +392,23 @@ test.describe("network choice", () => {
     await shot(page, "light-settings-network-confirm-pending");
   });
 
-  test("a busy network refuses the switch and says what to wait for", async ({ page }) => {
+  test("a busy network refuses the switch and says what to wait for, under a picker that stays put", async ({ page }) => {
     await open(page, "funded");
     await toSettings(page);
+    const mainnet = page.getByTestId("settings-network-choice-mainnet");
+    // Across, where a long refusal used to push it: the card's own width, not the line's.
+    const across = async () => {
+      const box = await mainnet.boundingBox();
+      return box && { x: box.x, width: box.width };
+    };
+    const before = await across();
     await setKnobs(page, { busy: { flows: ["registration", "topUp"], mixing: true, broadcast: true } });
-    await page.getByTestId("settings-network-choice-mainnet").click();
+    await mainnet.click();
     await page.getByTestId("network-switch-confirm").click();
     await expect(page.getByTestId("settings-network-choice-problem")).toHaveText(
       "Wait for the payment, username registration and credit top-up to finish, or stop mixing, before switching networks.",
     );
+    expect(await across()).toEqual(before);
     await expect(page.getByTestId("network-switching")).toHaveCount(0);
     await expect(page.getByTestId("settings-network-choice-testnet")).toHaveAttribute("aria-pressed", "true");
     expect(await activeNetwork(page)).toBe("testnet");
@@ -425,7 +433,7 @@ test.describe("network choice", () => {
     expect(await activeNetwork(page)).toBe("testnet");
   });
 
-  test("a switch's card covers the window, and menu commands, shortcuts and links wait for it", async ({ page }) => {
+  test("a switch's card covers the window: menu commands and shortcuts are ignored, and links wait", async ({ page }) => {
     await open(page, "funded");
     await toSettings(page);
     await page.getByTestId("settings-network-choice-mainnet").click();
@@ -454,6 +462,72 @@ test.describe("network choice", () => {
     await release.evaluate((r) => r());
     await expect.poll(() => activeNetwork(page)).toBe("mainnet");
     await expect(page.getByTestId("onboarding-create")).toBeEnabled();
+  });
+
+  // Row 74 r2: a link take asked for just before the switch, its reply arriving while the switch
+  // runs. Neither applied under the card nor lost: opened once the switch is refused, and on the
+  // network it was taken for only.
+  const takeHeldAcrossSwitch = async (page: Page, knobs: Knobs = {}) => {
+    await toSettings(page);
+    await setKnobs(page, knobs);
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await expect(page.getByTestId("network-switch-confirm")).toBeEnabled();
+    const takes = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "take_links").length);
+    const taken = await takes();
+    const releaseTake = await page.evaluateHandle(() => window.__dwFixture!.hold("take_links"));
+    await page.evaluate(() => window.__dwFixture!.deliverLinks([{ kind: "scanQr" }]));
+    await expect.poll(takes).toBe(taken + 1);
+    const releaseSwitch = await page.evaluateHandle(() => window.__dwFixture!.hold("switch_network"));
+    await page.getByTestId("network-switch-confirm").click();
+    await expect(page.getByTestId("network-switching")).toContainText("Opening Mainnet…");
+    await releaseTake.evaluate((r) => r());
+    await expect.poll(() => page.evaluate(() => sessionStorage.getItem("dw-links-held-by-switch"))).not.toBeNull();
+    await expect(page.getByTestId("page-pay")).toHaveCount(0);
+    await expect(page.getByTestId("settings-network-choice")).toBeVisible();
+    await releaseSwitch.evaluate((r) => r());
+  };
+
+  test("a link taken just before a switch that is refused opens once it is", async ({ page }) => {
+    await open(page, "funded");
+    await takeHeldAcrossSwitch(page, { busy: { flows: [], mixing: true, broadcast: false } });
+    await expect(page.getByTestId("network-switching")).toHaveCount(0);
+    await expect(page.getByTestId("page-pay")).toBeVisible();
+    expect(await activeNetwork(page)).toBe("testnet");
+  });
+
+  test("a link taken just before a switch that goes through is not opened on the other network", async ({ page }) => {
+    await open(page, "funded");
+    await takeHeldAcrossSwitch(page);
+    await expect.poll(() => activeNetwork(page)).toBe("mainnet");
+    await expect(page.locator(".toast")).toContainText(
+      "A link that arrived during the network switch was for Testnet, so it was not opened. Open it again.",
+    );
+    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
+    await expect(page.getByTestId("page-pay")).toHaveCount(0);
+  });
+
+  test("a question asked again waits for its own transfer reads, and a read that fails gives the warning", async ({ page }) => {
+    trackPageErrors(page);
+    await open(page, "funded");
+    await toSettings(page);
+    const sheet = page.getByTestId("network-switch-sheet");
+    const confirm = page.getByTestId("network-switch-confirm");
+    const checking = page.getByTestId("network-switch-checking");
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await expect(confirm).toBeEnabled();
+    await expect(page.getByTestId("network-switch-pending")).toHaveCount(0);
+    await sheet.getByRole("button", { name: "Cancel" }).click();
+    await expect(sheet).toHaveCount(0);
+    // Asked again: one read is held, another fails.
+    const releaseRead = await page.evaluateHandle(() => window.__dwFixture!.hold("unfinished_transfers"));
+    await page.evaluate(() => window.__dwFixture!.fail("credits_pending_top_ups", "none"));
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await expect(checking).toHaveText("Checking for unfinished transfers…");
+    await expect(confirm).toBeDisabled();
+    await releaseRead.evaluate((r) => r());
+    await expect(page.getByTestId("network-switch-pending")).toBeVisible();
+    await expect(checking).toHaveCount(0);
+    await expect(confirm).toBeEnabled();
   });
 
   test("the question waits for the wallet list and the transfer reads before Switch works", async ({ page }) => {

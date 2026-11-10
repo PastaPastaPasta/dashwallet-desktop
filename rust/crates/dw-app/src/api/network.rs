@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use dw_engine::network_choice::{self, NetworkChoice};
-use dw_engine::platform::LeaseStateView;
+use dw_engine::platform::{LeaseStateView, LeaseView};
 use dw_engine::{CloseRefused, DashNetwork, NetworkDataInfo, NetworkSession, SessionOptions};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -461,24 +461,32 @@ fn busy_check(
             Ok(leases) => leases,
             Err(e) => return Some(e.into()),
         };
-        let mut busy = Busy::default();
-        let mut stalled = true;
-        for lease in leases {
-            let flow = lease.flow.into();
-            match lease.state {
-                LeaseStateView::Revoked { .. } | LeaseStateView::Ended => continue,
-                LeaseStateView::Parked { .. } | LeaseStateView::NeedsGrant => {}
-                _ => stalled = false,
-            }
-            if !busy.flows.contains(&flow) {
-                busy.flows.push(flow);
-            }
-        }
-        busy.stalled = stalled && !busy.flows.is_empty();
-        busy.mixing = session.mixing_busy();
-        busy.broadcast = broadcasts.load(Ordering::SeqCst) > 0;
-        (!busy.flows.is_empty() || busy.mixing || busy.broadcast).then(|| busy_error(busy))
+        let broadcast = broadcasts.load(Ordering::SeqCst) > 0;
+        busy_of(&leases, session.mixing_busy(), broadcast).map(busy_error)
     }
+}
+
+/// What `leases`, mixing and a broadcast not yet returned make busy.
+/// `stalled`: every flow's lease is parked or waits for a grant, so
+/// locking the wallet ends them.
+fn busy_of(leases: &[LeaseView], mixing: bool, broadcast: bool) -> Option<Busy> {
+    let mut busy = Busy::default();
+    let mut stalled = true;
+    for lease in leases {
+        let flow = lease.flow.into();
+        match lease.state {
+            LeaseStateView::Revoked { .. } | LeaseStateView::Ended => continue,
+            LeaseStateView::Parked { .. } | LeaseStateView::NeedsGrant => {}
+            _ => stalled = false,
+        }
+        if !busy.flows.contains(&flow) {
+            busy.flows.push(flow);
+        }
+    }
+    busy.stalled = stalled && !busy.flows.is_empty();
+    busy.mixing = mixing;
+    busy.broadcast = broadcast;
+    (!busy.flows.is_empty() || busy.mixing || busy.broadcast).then_some(busy)
 }
 
 fn busy_error(busy: Busy) -> AppError {
@@ -534,6 +542,43 @@ pub(crate) fn close_active(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lease(flow: dw_engine::platform::FlowKind, state: LeaseStateView) -> LeaseView {
+        LeaseView {
+            id: "00000000".into(),
+            wallet_id: "00".repeat(32),
+            flow,
+            state,
+            own_key: false,
+            key_expires_in_secs: None,
+            funds_committed: false,
+            budgets: Vec::new(),
+            in_flight: 0,
+            call_running: false,
+        }
+    }
+
+    #[test]
+    fn flows_that_only_wait_for_a_grant_or_a_proof_are_stalled() {
+        use dw_engine::platform::{FlowKind, ParkReason};
+        let waiting = lease(FlowKind::ContactRequest, LeaseStateView::NeedsGrant);
+        let parked = lease(
+            FlowKind::Registration,
+            LeaseStateView::Parked {
+                reason: ParkReason::ProofWaiting,
+            },
+        );
+        let active = lease(FlowKind::TopUp, LeaseStateView::Active);
+        let ended = lease(FlowKind::TopUp, LeaseStateView::Ended);
+        let busy = busy_of(&[waiting.clone(), parked.clone(), ended.clone()], false, false).unwrap();
+        assert_eq!(busy.flows.len(), 2);
+        assert!(busy.stalled);
+        let busy = busy_of(&[waiting, active], false, false).unwrap();
+        assert!(!busy.stalled, "a flow still running is not stalled");
+        let busy = busy_of(std::slice::from_ref(&ended), true, false).unwrap();
+        assert!(!busy.stalled, "no flow, nothing to stall");
+        assert!(busy_of(&[ended], false, false).is_none());
+    }
 
     #[test]
     fn settings_fall_back_to_the_launch_flags() {

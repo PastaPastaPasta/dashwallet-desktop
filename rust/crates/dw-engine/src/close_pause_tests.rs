@@ -279,3 +279,114 @@ fn an_idle_session_closes_and_refuses_what_waited() {
             .is_none()
     );
 }
+
+/// A mixing start, funded, spawned on the session; `entering` holds it
+/// in the gate before it is admitted.
+fn held_mixing_start(
+    f: &Fixture,
+) -> (
+    Arc<TestPause>,
+    tokio::task::JoinHandle<Result<(), crate::EngineError>>,
+) {
+    for n in 1..=4 {
+        f.credit_coinjoin(n, COIN);
+    }
+    hook(f, 500, &[]);
+    let entering = gate_pause(&f.session.gate.hold_entering);
+    let starting = {
+        let (s, w) = (Arc::clone(&f.session), f.wallet);
+        (f.session.rt).spawn(async move { s.start_mixing(w).await })
+    };
+    reached(&entering);
+    (entering, starting)
+}
+
+fn gate_pause(slot: &std::sync::Mutex<Option<Arc<TestPause>>>) -> Arc<TestPause> {
+    let pause = Arc::new(TestPause::default());
+    *slot.lock().unwrap() = Some(Arc::clone(&pause));
+    pause
+}
+
+/// Waits until the close sealed the gate and ended its pause.
+fn sealed(f: &Fixture) {
+    for _ in 0..2_000 {
+        if f.session.gate.is_closed() && f.session.gate.pause_ended() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("the close never sealed");
+}
+
+/// The held mixing start was refused, and mixing never started.
+fn refused_start(f: &Fixture, starting: tokio::task::JoinHandle<Result<(), crate::EngineError>>) {
+    let started = f.engine.block_on(starting).unwrap();
+    assert!(
+        started.is_err(),
+        "admitted on a sealed session: {started:?}"
+    );
+    assert!(!f.session.coinjoin.is_mixing(&f.wallet));
+    assert!(
+        (f.session.coinjoin.mixers().get(&f.wallet)).is_none_or(|m| m.task.is_none()),
+        "its loop was spawned"
+    );
+    assert!(!f.session.is_open());
+}
+
+/// Row 74 r2 M1: an entrant past the gate's closed check when the switch
+/// pauses, admitted after both checks passed and before the commit, reads
+/// the pause and the seal on either side of the commit. It is refused, and
+/// the mixing start it carries neither sets the flag nor spawns its loop.
+#[test]
+fn an_entrant_admitted_across_the_commit_is_refused() {
+    let f = fixture(false);
+    let (entering, starting) = held_mixing_start(&f);
+    let between = gate_pause(&f.session.gate.hold_between_loads);
+    let checked = gate_pause(&f.session.gate.hold_before_sessions);
+    let _release = ReleaseOnDrop(vec![
+        Arc::clone(&entering),
+        Arc::clone(&between),
+        Arc::clone(&checked),
+    ]);
+    let broadcasts = Arc::new(AtomicUsize::new(0));
+    std::thread::scope(|scope| {
+        let closing = scope.spawn(|| close(&f, &broadcasts));
+        reached(&checked);
+        assert_eq!(f.session.gate.drains(), 1, "both checks passed");
+        // Admitted now. Reading the seal first, it would wait between its
+        // loads; it reads the pause, which is still there, and backs off.
+        entering.release.notify_one();
+        for _ in 0..600 {
+            if between.reached.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        checked.release.notify_one();
+        sealed(&f);
+        between.release.notify_one();
+        assert!(matches!(closing.join().unwrap(), Ok(true)));
+    });
+    f.session.gate.hold_between_loads.lock().unwrap().take();
+    refused_start(&f, starting);
+}
+
+/// Row 74 r2 M1: an entrant past the gate's closed check when the switch
+/// pauses, admitted only once the commit sealed the gate and ended the
+/// pause, is refused.
+#[test]
+fn an_entrant_admitted_after_the_commit_is_refused() {
+    let f = fixture(false);
+    let (entering, starting) = held_mixing_start(&f);
+    let _release = ReleaseOnDrop(vec![Arc::clone(&entering)]);
+    let broadcasts = Arc::new(AtomicUsize::new(0));
+    std::thread::scope(|scope| {
+        let closing = scope.spawn(|| close(&f, &broadcasts));
+        sealed(&f);
+        assert_eq!(f.session.gate.drains(), 1, "both checks passed");
+        // Its read lock keeps the session's close at the gate meanwhile.
+        entering.release.notify_one();
+        assert!(matches!(closing.join().unwrap(), Ok(true)));
+    });
+    refused_start(&f, starting);
+}

@@ -2521,7 +2521,7 @@ fn a_pass_records_each_stored_spend_and_waits_for_the_wallets_lease() {
     let m = Arc::clone(&manager);
     engine.block_on(async move {
         assert!(pool::admit_pass(&s, &m).await.is_ok(), "nothing stored");
-        let coordinator = pool::coordinator(&s, &m).await.unwrap();
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
         let redrive = PendingRedrive {
             activity_id: [5; 32],
             anchor: [0; 32],
@@ -2606,7 +2606,7 @@ fn a_wallet_bound_during_a_pass_waits_for_it_and_is_admitted_before_its_spend_is
     let manager = session.manager().unwrap();
     let (s, m) = (Arc::clone(session), Arc::clone(&manager));
     engine.block_on(async move {
-        let coordinator = pool::coordinator(&s, &m).await.unwrap();
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
         let sub = SubwalletId::new(b.0, dw_vault::SHIELDED_ACCOUNT);
         (coordinator.store().write().await)
             .arm_redrive(sub, redrive)

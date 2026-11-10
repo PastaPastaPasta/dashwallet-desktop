@@ -53,8 +53,8 @@ export interface FixtureHandle {
   shellCommand(command: ShellCommand): void;
   /** Makes `command` reject with a sample of `cls` from now on (`null` clears it). */
   fail(command: CommandName, cls: ErrorClass | null): void;
-  /** Holds the next call of `command`: it answers from the world as it is when called, but only
-   * once the returned function is called (a reply that arrives late). */
+  /** Holds the next call of `command`: it answers from the world as it is when called, a result
+   * or an error, but only once the returned function is called (a reply that arrives late). */
   hold(command: CommandName): () => void;
   /** Releases the call a `hold=` URL option held at the start (no-op when none is out). */
   release(command: CommandName): void;
@@ -119,13 +119,19 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
       if (cls) throw sampleError(cls);
       const handler = (HANDLERS[cmd as CommandName] ?? PENDING_HANDLERS[cmd]) as ((args: unknown, ctx: Ctx) => unknown) | undefined;
       if (!handler) throw notImplemented(cmd);
-      const result = handler(payload ?? {}, ctx);
+      let answer: { result: unknown } | { error: unknown };
+      try {
+        answer = { result: handler(payload ?? {}, ctx) };
+      } catch (error) {
+        answer = { error };
+      }
       const release = held.get(cmd);
       if (release) {
         held.delete(cmd);
         await release;
       }
-      return result;
+      if ("error" in answer) throw answer.error;
+      return answer.result;
     },
     { shouldMockEvents: true },
   );

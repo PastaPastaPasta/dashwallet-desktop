@@ -92,8 +92,8 @@ export interface UiState {
    * reports a stop, so a vault that could not be deleted is said, not covered (U-04 D33). */
   wiping: boolean;
   /** A network switch runs (row 74): the window is moving to this network until the page boots
-   * again or the switch is refused. Its card covers the window; menu commands, shortcuts and
-   * links wait meanwhile. */
+   * again or the switch is refused. Its card covers the window; menu commands and shortcuts are
+   * ignored meanwhile, and links wait (`useShellBridge`). */
   switching: ChosenNetwork | null;
   /** How many mounted views show a recovery phrase (`useSecretScreen`, U-02 D15). */
   secrets: number;
