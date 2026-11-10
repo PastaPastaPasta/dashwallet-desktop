@@ -8,6 +8,7 @@ import { errorMessage, isAppError } from "../api/backend";
 import type { ChosenNetwork } from "../api/generated/ChosenNetwork";
 import { FLOW_NAME } from "../api/lockReport";
 import { releaseListeners } from "../api/tauri";
+import { linksTaken } from "../app/shellBridge";
 import { prefsWritten } from "../settings/prefs";
 import { NetworkText } from "./choice";
 
@@ -40,10 +41,10 @@ export function switchOutcome(e: unknown, target: ChosenNetwork, from: ChosenNet
   if (isAppError(e)) {
     const data = e.data;
     if (e.code === "app.network_busy" && data?.kind === "networkBusy") {
+      if (data.draining) return { problem: NetworkText.busyDraining };
       const flows = data.flows.map((f) => FLOW_NAME[f]);
       const waits = [...(data.broadcast ? ["the payment"] : []), ...flows];
-      if (waits.length === 0 && !data.mixing) return { problem: NetworkText.busyDraining };
-      return { problem: NetworkText.busy(waits, data.mixing, data.stalled && canLock ? flows : []) };
+      if (waits.length > 0 || data.mixing) return { problem: NetworkText.busy(waits, data.mixing, data.stalled && canLock ? flows : []) };
     }
     if (data?.kind === "networkCloseRefused" && data.reason === "walletOpening") return { problem: NetworkText.walletOpening };
     if (data?.kind === "networkCloseRefused" && data.reason === "shieldedSpendUnresolved") return { problem: NetworkText.shieldedUnresolved };
@@ -59,6 +60,7 @@ export function switchOutcome(e: unknown, target: ChosenNetwork, from: ChosenNet
 export async function bootAgain(note: string | null = null, reload: () => void = () => location.reload()) {
   if (note !== null) leaveSwitchNote(note);
   await prefsWritten();
+  await linksTaken();
   await releaseListeners();
   reload();
 }

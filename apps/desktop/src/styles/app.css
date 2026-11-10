@@ -2895,6 +2895,12 @@ button {
   padding-right: 0;
 }
 
+/* The card's width, not its longest line: a refusal under the picker wraps there and leaves the
+ * switch where it was (row 74). */
+.settings-card > .network-picker {
+  align-self: stretch;
+}
+
 .settings-row {
   display: flex;
   flex-wrap: wrap;

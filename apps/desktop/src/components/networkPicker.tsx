@@ -24,6 +24,8 @@ export function useNetworkPicker() {
   const wallets = useWallets();
   const lock = useLockStatus();
   const [confirming, setConfirming] = useState<ChosenNetwork | null>(null);
+  // Each question reads afresh: one asked again does not go by the answer to the last.
+  const [attempt, setAttempt] = useState(0);
   const [problem, setProblem] = useState<string | null>(null);
   // The network the window is moving to, until the page boots again (or a refusal ends it).
   const switching = useUi((s) => s.switching);
@@ -34,10 +36,11 @@ export function useNetworkPicker() {
   const walletIds = wallets.data?.map((w) => w.walletId) ?? [];
   // Asks unless the network is known to have no wallet (the list may still be loading, or failed).
   const noWallet = wallets.isSuccess && walletIds.length === 0;
-  // While the question is up: whether a wallet has a transfer or a lock to finish, read again
-  // when the wallet list arrives or changes. A list or a read that failed counts as one.
+  // While the question is up: whether a wallet has a transfer or a lock to finish, read for this
+  // question, and again when the wallet list arrives or changes. A list or a read that failed
+  // counts as one.
   const pendingLocks = useQuery({
-    queryKey: ["networkSwitchPending", walletIds],
+    queryKey: ["networkSwitchPending", attempt, walletIds],
     queryFn: () => hasPendingLocks(backend, walletIds),
     enabled: confirming !== null && wallets.isSuccess,
     gcTime: 0,
@@ -67,6 +70,7 @@ export function useNetworkPicker() {
   const choose = (to: ChosenNetwork) => {
     if (to === current || switching) return;
     if (pinned || noWallet) return run.mutate(to);
+    setAttempt((n) => n + 1);
     setConfirming(to);
   };
   return {

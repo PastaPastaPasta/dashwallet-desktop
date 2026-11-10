@@ -51,4 +51,10 @@ export const NetworkText = {
   backOn: (to: ChosenNetwork, from: ChosenNetwork) => `${networkName(to)} did not open. Dash Wallet is back on ${networkName(from)}.`,
   /** After a switch that failed, and the way back too: the splash's Retry opens `from`. */
   noneOpen: (to: ChosenNetwork, from: ChosenNetwork) => `${networkName(to)} did not open, and neither did ${networkName(from)} again.`,
+  /** After a switch: links that arrived while it ran were read for the network the window left
+   * (`from`, a directory name), so they were not opened. */
+  linksDropped: (from: string) => {
+    const name = from === "mainnet" || from === "testnet" ? networkName(from) : from;
+    return `A link that arrived during the network switch was for ${name}, so it was not opened. Open it again.`;
+  },
 };
