@@ -48,9 +48,9 @@ test.describe("item 2: Move waits for Activity's check", () => {
     await expect(page.getByTestId("platform-move-why")).toContainText("Could not check for an unfinished move.");
     await expect(page.getByTestId("platform-move-check-again")).toBeVisible();
     await openTransfer(page, "platformToCore");
-    await expect(page.getByTestId("transfer-continue")).toBeDisabled();
     // The form's new Activity observer can start another read after the first one failed.
     await expect(page.getByTestId("transfer-unavailable")).toContainText("Could not check for an unfinished move.");
+    await expect(page.getByTestId("transfer-continue")).toBeDisabled();
   });
 
   test("a pending move that turns up while the confirmation is open replaces Confirm with View in Activity", async ({ page }) => {
