@@ -357,6 +357,7 @@ impl LabelKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceiveRequestRow {
+    pub include_username: Option<bool>,
     pub id: i64,
     pub created_at: u64,
     pub address: String,
@@ -944,20 +945,37 @@ impl AppDb {
         label: Option<&str>,
         message: Option<&str>,
     ) -> Result<i64> {
+        self.add_receive_request_with_username(
+            wallet_id, created_at, address, amount, label, message, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_receive_request_with_username(
+        &self,
+        wallet_id: &str,
+        created_at: u64,
+        address: &str,
+        amount: Option<u64>,
+        label: Option<&str>,
+        message: Option<&str>,
+        include_username: Option<bool>,
+    ) -> Result<i64> {
         let amount = amount
             .map(|a| i64::try_from(a).map_err(|_| AppDbError::Corrupt(format!("amount {a}"))))
             .transpose()?;
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO receive_requests (wallet_id, created_at, address, amount, label, message)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO receive_requests (wallet_id, created_at, address, amount, label, message, include_username)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 wallet_id,
                 created_at as i64,
                 address,
                 amount,
                 label,
-                message
+                message,
+                include_username
             ],
         )?;
         if conn.changes() == 0 {
@@ -970,7 +988,7 @@ impl AppDb {
     pub fn receive_requests(&self, wallet_id: &str) -> Result<Vec<ReceiveRequestRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, created_at, address, amount, label, message FROM receive_requests
+            "SELECT id, created_at, address, amount, label, message, include_username FROM receive_requests
              WHERE wallet_id = ?1 ORDER BY created_at DESC, id DESC",
         )?;
         let rows = stmt.query_map([wallet_id], |r| {
@@ -981,6 +999,7 @@ impl AppDb {
                 amount: r.get::<_, Option<i64>>(3)?.map(|a| a as u64),
                 label: r.get(4)?,
                 message: r.get(5)?,
+                include_username: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)

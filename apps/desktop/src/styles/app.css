@@ -2174,6 +2174,8 @@ button {
   border-radius: var(--dw-radius-card);
 }
 
+.receive-card[hidden] { display: none; }
+
 .receive-card .qr,
 .receive-card .qr-placeholder,
 .receive-card .qr-problem {
@@ -5862,6 +5864,9 @@ button.bell-row-open:focus-visible {
   padding: 0 var(--dw-space-xs);
   border-radius: var(--dw-radius-small);
 }
+
+.receive-selector { align-self: center; width: 100%; }
+.receive-body .receive-selector { flex-shrink: 0; }
 
 @media (max-width: 979px) {
   .shortcut-card {

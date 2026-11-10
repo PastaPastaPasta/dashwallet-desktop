@@ -4,7 +4,7 @@
 // address with its QR that Receive shows. The card says "not active on this network yet" while the
 // network does not take shielded transitions, and is not there while dw-app has no such commands.
 
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
@@ -311,7 +311,7 @@ export function ShieldedSheet({ flow, walletId, network, status }: { flow: Shiel
 }
 
 /** The Shielded address with its QR (Receive's Shielded section). */
-export function ShieldedReceiveBody({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+export function ShieldedReceiveBody({ walletId, network, selector }: { walletId: string; network: NetworkInfo; selector?: ReactNode }) {
   const b = useBackend();
   const fmt = useFormats(network);
   const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false });
@@ -325,6 +325,7 @@ export function ShieldedReceiveBody({ walletId, network }: { walletId: string; n
       ) : address.data ? (
         <div className="receive-body" data-testid="shielded-receive">
           <Qr text={address.data.address} label={`QR code of ${address.data.address}`} testId="shielded-receive-qr" />
+          {selector}
           <p className="withdraw-to" data-testid="shielded-receive-address">
             <CopyValue value={address.data.address} label="Shielded address" mono />
           </p>
@@ -334,6 +335,7 @@ export function ShieldedReceiveBody({ walletId, network }: { walletId: string; n
           {C.receive.loading}
         </p>
       )}
+      {!address.data && selector}
     </>
   );
 }

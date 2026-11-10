@@ -690,8 +690,8 @@ export function addresses(walletId: string, filter: AddressFilter): Promise<Arra
  * Stores a payment request on a freshly issued address. An amount of 0
  * means any amount.
  */
-export function createReceiveRequest(walletId: string, amount: number | null, label: string | null, message: string | null): Promise<ReceiveRequest> {
-  return invoke<ReceiveRequest>("create_receive_request", { walletId, amount, label, message });
+export function createReceiveRequest(walletId: string, amount: number | null, label: string | null, message: string | null, includeUsername: boolean | null): Promise<ReceiveRequest> {
+  return invoke<ReceiveRequest>("create_receive_request", { walletId, amount, label, message, includeUsername });
 }
 
 /**
@@ -711,8 +711,7 @@ export function receiveUsername(walletId: string): Promise<string | null> {
 
 /**
  * "Include my username in payment requests" for the wallet (DP3-03b);
- * on by default. Off, `receiveUsername` is `null` and requests carry
- * no username.
+ * off by default. Requests can override this default individually.
  */
 export function usernameInRequests(walletId: string): Promise<boolean> {
   return invoke<boolean>("username_in_requests", { walletId });
@@ -2785,7 +2784,7 @@ export type CommandArgs = {
   current_receive_address: { walletId: string };
   next_receive_address: { walletId: string; label: string | null };
   addresses: { walletId: string; filter: AddressFilter };
-  create_receive_request: { walletId: string; amount: number | null; label: string | null; message: string | null };
+  create_receive_request: { walletId: string; amount: number | null; label: string | null; message: string | null; includeUsername: boolean | null };
   receive_requests: { walletId: string };
   receive_username: { walletId: string };
   username_in_requests: { walletId: string };

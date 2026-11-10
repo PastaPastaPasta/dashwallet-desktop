@@ -1,5 +1,5 @@
 // Settings ▸ General ▸ Privacy (DP3-03b, DASHPAY §5 F15): "Include my username in payment
-// requests" for the window's wallet. The engine keeps it per wallet, on by default (DP3-02 D21).
+// requests" for the window's wallet. The engine keeps it per wallet, off by default (DP3-02 D21).
 // "Load contact pictures" (DP4-03 D14) is the network's, on by default (DP4-02 D17).
 
 import { useQueryClient } from "@tanstack/react-query";
@@ -118,7 +118,7 @@ function UsernameInRequests({ wallet }: { wallet: WalletSummary }) {
       </label>
       <Hint id={hint}>
         The Receive QR code and the payment requests of “{wallet.name}” show its DashPay username, once it has one, so whoever sees them knows the Dash
-        address is yours. Turned off, they hold only the address and what you enter.
+        address is yours. Off by default. You can also include it for a single request in Receive.
       </Hint>
       <Problem text={problem} testId="settings-username-problem" />
     </>
