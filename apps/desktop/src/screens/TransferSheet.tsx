@@ -242,11 +242,12 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
           data-testid="transfer-max"
           aria-busy={line.maxing}
           disabled={blocked || !own || !probe || line.maxing}
-          why={why ?? (probe === null ? T.loading : !probe ? T.noCoreBalance : line.maxing ? T.why.max : null)}
+          why={why ?? (probe === null ? T.loading : !probe ? T.noCoreBalance : null)}
+          title={line.maxing ? T.why.max : undefined}
           whyId={why ? `${id}-why` : undefined}
           onClick={() => probe && void t.max(route, probe, (duffs) => flow.setText(shown.full(duffs)), shown.full)}
         >
-          {T.max}{line.maxing && <span className="spinner" aria-hidden="true" />}
+          {T.max}<span className="spinner" aria-hidden="true" style={{ visibility: line.maxing ? "visible" : "hidden" }} />
         </DashButton>
       </div>
       <p className={refusal || amountProblem ? "form-problem" : "field-hint"} id={`${id}-fee`} role="status" data-testid="transfer-fee">

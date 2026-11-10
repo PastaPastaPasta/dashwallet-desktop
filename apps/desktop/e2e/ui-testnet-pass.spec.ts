@@ -17,12 +17,17 @@ for (const theme of ["light", "dark"] as const) {
     await openTransfer(page, "coreToPlatform");
     const field = page.getByTestId("transfer-amount");
     await field.fill("0.5");
+    const beforeMax = (await field.boundingBox())!;
     await hold(page, "platform_fund_quote");
     await page.getByTestId("transfer-max").click();
     await expect(field).toHaveValue("0.5");
     await expect(page.getByTestId("transfer-continue")).toBeEnabled();
     await expect(page.getByTestId("transfer-max")).toHaveAttribute("aria-busy", "true");
     await expect(page.getByTestId("transfer-fee")).not.toContainText("Working out");
+    await expect(page.locator(".transfer-amount-row .dash-button-why")).toHaveCount(0);
+    const duringMax = (await field.boundingBox())!;
+    expect(duringMax.width).toBe(beforeMax.width);
+    expect(duringMax.x).toBe(beforeMax.x);
     await release(page);
     await expect(page.getByTestId("transfer-continue")).toBeEnabled();
     await expect(page.getByTestId("transfer-to")).not.toContainText("+0.00");
