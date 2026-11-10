@@ -482,5 +482,27 @@
       "width": 1280,
       "height": 820
     }
+  },
+  {
+    "file": "contacts-compact-light.png",
+    "state": "contacts-compact",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 800,
+      "height": 620
+    }
+  },
+  {
+    "file": "contacts-compact-dark.png",
+    "state": "contacts-compact",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 800,
+      "height": 620
+    }
   }
 ]
